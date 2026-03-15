@@ -24,7 +24,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://agentnode.net"
-Repository = "https://github.com/agentnode/agentnode"
+Repository = "https://github.com/agentnode-ai/agentnode"
 Documentation = "https://agentnode.net/docs"
 
 [project.optional-dependencies]

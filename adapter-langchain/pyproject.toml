@@ -25,7 +25,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://agentnode.net"
-Repository = "https://github.com/agentnode/agentnode"
+Repository = "https://github.com/agentnode-ai/agentnode"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio"]
