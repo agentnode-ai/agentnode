@@ -1,0 +1,29 @@
+http:
+  routers:
+    agentnode-http:
+      rule: "Host(`agentnode.net`) || Host(`www.agentnode.net`)"
+      entryPoints:
+        - http
+      middlewares:
+        - redirect-to-https
+      service: agentnode-service
+
+    agentnode-https:
+      rule: "Host(`agentnode.net`) || Host(`www.agentnode.net`)"
+      entryPoints:
+        - https
+      tls:
+        certResolver: letsencrypt
+      service: agentnode-service
+
+  middlewares:
+    redirect-to-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+  services:
+    agentnode-service:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:3080"

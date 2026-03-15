@@ -1,0 +1,90 @@
+manifest_version: "0.1"
+package_id: "webpage-extractor-pack"
+package_type: "toolpack"
+name: "Webpage Extractor Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Extract clean text and metadata from any webpage."
+description: |
+  Wraps trafilatura to provide reliable webpage content extraction.
+  Handles boilerplate removal, returns clean text and metadata.
+
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "webpage_extractor_pack.tool"
+
+capabilities:
+  tools:
+    - name: "extract_webpage"
+      capability_id: "webpage_extraction"
+      description: "Extract clean text and metadata from a webpage URL"
+      input_schema:
+        type: "object"
+        properties:
+          url:
+            type: "string"
+            description: "The webpage URL to extract from"
+          include_links:
+            type: "boolean"
+            default: false
+            description: "Whether to include hyperlinks in extracted text"
+        required: ["url"]
+      output_schema:
+        type: "object"
+        properties:
+          title:
+            type: "string"
+          text:
+            type: "string"
+          url:
+            type: "string"
+  resources: []
+  prompts: []
+
+tags: ["web", "extraction", "scraping", "text"]
+categories: ["web-and-browsing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+dependencies: []
+
+permissions:
+  network:
+    level: "unrestricted"
+    allowed_domains: []
+  filesystem:
+    level: "none"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "never"
+  external_integrations: []
+
+upgrade_roles: ["web_extraction", "content_processing"]
+recommended_for:
+  - agent_type: "research-agent"
+    missing_capability: "webpage_extraction"
+replaces: []
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: ""
+  provenance:
+    source_repo: "https://github.com/agentnode/starter-packs"
+    commit: ""
+    build_system: "manual"
+
+support:
+  homepage: "https://agentnode.net/packages/webpage-extractor-pack"
+  issues: "https://github.com/agentnode/starter-packs/issues"
+
+deprecation_policy: "6-months-notice"

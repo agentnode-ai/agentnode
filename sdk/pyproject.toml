@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentnode-sdk"
+version = "0.1.0"
+description = "Python SDK for AgentNode — the open upgrade and discovery infrastructure for AI agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+keywords = ["ai", "agent", "capabilities", "agentnode", "mcp", "langchain"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "httpx>=0.25",
+]
+
+[project.urls]
+Homepage = "https://agentnode.net"
+Repository = "https://github.com/agentnode/agentnode"
+Documentation = "https://agentnode.net/docs"
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "respx"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["agentnode_sdk"]

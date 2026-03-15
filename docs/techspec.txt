@@ -1,0 +1,2244 @@
+# AgentNode.net – Technical Implementation Spec v3 Final
+# Claude Code Ready · Phase A + B (MVP)
+# März 2026
+## 1. PROJEKT-ÜBERSICHT
+AgentNode ist eine Registry + Resolution Engine für installierbare AI-Agent-Capabilities.
+Entwickler veröffentlichen ANP-Pakete (AgentNode Packages), andere Entwickler suchen,
+prüfen und integrieren sie über CLI, SDK oder Web.
+Lokale Paketinstallation erfolgt im MVP ausschließlich über die CLI.
+Das Python SDK dient im MVP für Search, Resolution, Policy-Checks und Install-Metadaten,
+nicht für lokales pip install.
+Kernflow: Capability Gap → Resolution → Install
+## 2. TECH-STACK (final, keine Alternativen)
+```
+Backend:      Python 3.12 + FastAPI + Uvicorn
+ORM:          SQLAlchemy 2.0 (async only, AsyncSession)
+Migrations:   Alembic
+Datenbank:    PostgreSQL 16 (async via asyncpg)
+Cache:        Redis 7
+Suche:        Meilisearch v1.6
+Storage:      S3-kompatibel (Cloudflare R2 prod, MinIO lokal)
+Auth:         JWT (access + refresh, stateless) + API Keys (SHA-256 hash) + TOTP (2FA)
+Validation:   Pydantic v2
+CLI:          Node.js 20+ (TypeScript) → npm package "agentnode"
+SDK:          Python → PyPI package "agentnode-sdk"
+Frontend:     Next.js 14 (React, TypeScript, Tailwind CSS)
+Testing:      pytest + httpx (Backend), vitest (CLI)
+CI/CD:        GitHub Actions
+Hosting:      Fly.io (Backend) + Vercel (Frontend) + Cloudflare R2 (Artifacts)
+```
+WICHTIG – Zwei Installationspfade:
+```
+CLI für Entwickler:     npm install -g agentnode
+Python SDK für Code:    pip install agentnode-sdk
+```
+Diese MÜSSEN überall konsistent unterschieden werden.
+## 3. REPOSITORY-STRUKTUR
+```
+agentnode/
+├── backend/                    # FastAPI Backend (Python)
+│   ├── alembic/
+│   │   ├── versions/
+│   │   └── env.py
+│   ├── app/
+│   │   ├── __init__.py
+│   │   ├── main.py             # FastAPI app, CORS, routers, healthz/readyz
+│   │   ├── config.py           # Settings from env vars (pydantic-settings)
+│   │   ├── database.py         # async engine, AsyncSession factory
+│   │   ├── auth/
+│   │   │   ├── router.py       # /v1/auth/*
+│   │   │   ├── service.py      # register, login, token logic
+│   │   │   ├── models.py       # User, ApiKey SQLAlchemy models
+│   │   │   ├── schemas.py      # Pydantic request/response
+│   │   │   ├── dependencies.py # get_current_user, require_publisher, require_2fa
+│   │   │   └── security.py     # password hashing (bcrypt), api key hashing (sha256), JWT, TOTP
+│   │   ├── publishers/
+│   │   │   ├── router.py       # /v1/publishers/*
+│   │   │   ├── service.py
+│   │   │   ├── models.py
+│   │   │   └── schemas.py
+│   │   ├── packages/
+│   │   │   ├── router.py       # /v1/packages/*
+│   │   │   ├── service.py      # publish, get, deprecate, yank, report
+│   │   │   ├── models.py       # Package, PackageVersion, Capability, etc.
+│   │   │   ├── schemas.py
+│   │   │   ├── validator.py    # ANP manifest validation
+│   │   │   ├── assembler.py    # Assembles 7-block detail response
+│   │   │   └── version_queries.py  # Shared version selection helpers
+│   │   ├── search/
+│   │   │   ├── router.py       # POST /v1/search
+│   │   │   ├── service.py      # Meilisearch queries + DB hydration
+│   │   │   └── schemas.py
+│   │   ├── resolution/
+│   │   │   ├── router.py       # /v1/resolve-upgrade, /v1/recommend, /v1/check-policy
+│   │   │   ├── engine.py       # Scoring + matching (DB-first)
+│   │   │   ├── policy.py       # Shared PolicySchema + evaluate_policy()
+│   │   │   ├── service.py
+│   │   │   └── schemas.py
+│   │   ├── trust/
+│   │   │   ├── router.py       # /v1/packages/{slug}/trust
+│   │   │   ├── service.py
+│   │   │   ├── scanner.py      # Async security scanning
+│   │   │   ├── models.py       # SecurityFinding, PackageReport
+│   │   │   └── schemas.py
+│   │   ├── install/
+│   │   │   ├── router.py       # /v1/packages/{slug}/install
+│   │   │   ├── service.py      # Presigned URL generation, install tracking
+│   │   │   ├── models.py       # Installation
+│   │   │   └── schemas.py
+│   │   └── shared/
+│   │       ├── models.py       # Base model, timestamps mixin
+│   │       ├── storage.py      # S3/R2 client (upload, presigned URL generation)
+│   │       ├── exceptions.py   # Custom exceptions → error responses
+│   │       ├── meili.py        # Meilisearch client + index sync
+│   │       └── rate_limit.py   # Redis-based rate limiter
+│   ├── scripts/
+│   │   ├── seed_capability_taxonomy.py
+│   │   ├── create_local_bucket.py
+│   │   ├── init_meilisearch.py
+│   │   ├── clear_quarantine.py
+│   │   ├── reject_version.py
+│   │   ├── set_trust_level.py
+│   │   ├── suspend_publisher.py
+│   │   └── reindex_search.py
+│   ├── tests/
+│   ├── pyproject.toml
+│   ├── Dockerfile
+│   └── alembic.ini
+│
+├── cli/                        # CLI (Node.js/TypeScript)
+│   ├── src/
+│   │   ├── index.ts            # Commander.js entry
+│   │   ├── commands/           # One file per command
+│   │   │   ├── login.ts
+│   │   │   ├── search.ts
+│   │   │   ├── info.ts
+│   │   │   ├── install.ts
+│   │   │   ├── publish.ts
+│   │   │   ├── validate.ts
+│   │   │   ├── update.ts
+│   │   │   ├── rollback.ts
+│   │   │   ├── audit.ts
+│   │   │   ├── list.ts
+│   │   │   ├── report.ts
+│   │   │   ├── recommend.ts
+│   │   │   ├── resolve-upgrade.ts
+│   │   │   └── policy-check.ts
+│   │   ├── api-client.ts       # HTTP client wrapper
+│   │   ├── config.ts           # ~/.agentnode/config.json management
+│   │   ├── lockfile.ts         # agentnode.lock read/write
+│   │   ├── installer.ts        # Download, verify hash, pip install, cleanup
+│   │   ├── python-resolver.ts  # Python interpreter detection
+│   │   └── output.ts           # Colors, tables, JSON mode
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── tests/
+│
+├── sdk/                        # Python SDK
+│   ├── agentnode_sdk/
+│   │   ├── __init__.py         # exports AgentNode, AgentNodeError
+│   │   ├── client.py           # AgentNode class with all methods
+│   │   ├── models.py           # Response dataclasses
+│   │   └── exceptions.py       # AgentNodeError, NotFoundError, AuthError, ValidationError
+│   ├── tests/
+│   ├── pyproject.toml          # package name: agentnode-sdk
+│   └── README.md
+│
+├── adapter-langchain/          # LangChain Adapter (thin wrapper over SDK)
+│   ├── agentnode_langchain/
+│   │   ├── __init__.py
+│   │   └── loader.py           # load_tool()
+│   ├── tests/
+│   ├── pyproject.toml          # package name: agentnode-langchain
+│   └── README.md
+│
+├── starter-packs/
+│   ├── web-search-pack/
+│   │   ├── agentnode.yaml
+│   │   ├── src/web_search_pack/
+│   │   │   ├── __init__.py
+│   │   │   └── tool.py         # run() function
+│   │   ├── tests/
+│   │   ├── pyproject.toml
+│   │   └── README.md
+│   ├── pdf-reader-pack/
+│   │   ├── agentnode.yaml
+│   │   ├── src/pdf_reader_pack/
+│   │   │   ├── __init__.py
+│   │   │   └── tool.py
+│   │   ├── tests/
+│   │   ├── pyproject.toml
+│   │   └── README.md
+│   └── webpage-extractor-pack/
+│       ├── agentnode.yaml
+│       ├── src/webpage_extractor_pack/
+│       │   ├── __init__.py
+│       │   └── tool.py
+│       ├── tests/
+│       ├── pyproject.toml
+│       └── README.md
+│
+├── web/                        # Next.js Frontend
+│   ├── src/app/
+│   │   ├── layout.tsx
+│   │   ├── page.tsx                    # Landing
+│   │   ├── search/page.tsx
+│   │   ├── packages/page.tsx           # Browse
+│   │   ├── packages/[slug]/page.tsx    # Detail (7 blocks)
+│   │   ├── publishers/[slug]/page.tsx
+│   │   ├── publish/page.tsx
+│   │   ├── dashboard/page.tsx
+│   │   ├── docs/page.tsx
+│   │   └── auth/login/page.tsx
+│   │       └── register/page.tsx
+│   ├── src/components/
+│   ├── src/lib/api.ts          # Backend API client (through /api proxy)
+│   ├── next.config.js          # API proxy to backend
+│   ├── package.json
+│   ├── tailwind.config.js
+│   └── tsconfig.json
+│
+├── docs/
+│   ├── getting-started.md
+│   ├── publishing.md
+│   ├── anp-format.md
+│   ├── api-reference.md
+│   ├── cli-reference.md
+│   ├── sdk-reference.md
+│   └── capability-taxonomy.md
+│
+├── docker-compose.yml
+├── .github/workflows/
+│   ├── backend.yml
+│   ├── cli.yml
+│   └── sdk.yml
+└── README.md
+```
+## 4. DATENBANK-SCHEMA (PostgreSQL)
+```sql
+-- ============================================================
+-- EXTENSIONS
+-- ============================================================
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+-- ============================================================
+-- USERS
+-- ============================================================
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email TEXT NOT NULL UNIQUE,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,           -- bcrypt via passlib
+    is_email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    two_factor_secret TEXT,               -- TOTP secret, stored plaintext in MVP (encryption deferred)
+    two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_username ON users(username);
+-- ============================================================
+-- API KEYS (SHA-256 hashed, NOT bcrypt)
+-- ============================================================
+CREATE TABLE api_keys (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key_prefix TEXT NOT NULL,             -- first 8 chars "ank_xxxx" for display/lookup
+    key_hash_sha256 TEXT NOT NULL,        -- SHA-256 hash of full key
+    label TEXT,
+    last_used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at TIMESTAMPTZ
+);
+CREATE INDEX idx_api_keys_user ON api_keys(user_id);
+CREATE INDEX idx_api_keys_prefix ON api_keys(key_prefix);
+-- ============================================================
+-- PUBLISHERS
+-- ============================================================
+CREATE TYPE trust_level AS ENUM ('unverified', 'verified', 'trusted', 'curated');
+CREATE TABLE publishers (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    display_name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,            -- [a-z0-9-], 3-40 chars
+    bio TEXT,
+    website_url TEXT,
+    github_url TEXT,
+    trust_level trust_level NOT NULL DEFAULT 'unverified',
+    is_suspended BOOLEAN NOT NULL DEFAULT FALSE,
+    suspension_reason TEXT,
+    packages_published_count INTEGER NOT NULL DEFAULT 0,
+    packages_cleared_count INTEGER NOT NULL DEFAULT 0,  -- quarantine-cleared count
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_publishers_slug ON publishers(slug);
+-- ============================================================
+-- PACKAGES
+-- ============================================================
+CREATE TYPE package_type AS ENUM ('agent', 'toolpack', 'upgrade');
+CREATE TYPE pricing_model AS ENUM ('free', 'one_time', 'subscription');
+CREATE TABLE packages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    publisher_id UUID NOT NULL REFERENCES publishers(id) ON DELETE CASCADE,
+    slug TEXT NOT NULL UNIQUE,            -- [a-z0-9-], 3-60 chars
+    name TEXT NOT NULL,
+    package_type package_type NOT NULL,
+    summary TEXT NOT NULL,                -- max 200 chars
+    description TEXT,
+    license_model TEXT DEFAULT 'MIT',
+    pricing_model pricing_model NOT NULL DEFAULT 'free',
+    is_deprecated BOOLEAN NOT NULL DEFAULT FALSE,
+    download_count INTEGER NOT NULL DEFAULT 0,
+    latest_version_id UUID,               -- set via ALTER TABLE after package_versions exists
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_packages_slug ON packages(slug);
+CREATE INDEX idx_packages_publisher ON packages(publisher_id);
+CREATE INDEX idx_packages_type ON packages(package_type);
+-- ============================================================
+-- PACKAGE VERSIONS
+-- ============================================================
+CREATE TYPE version_channel AS ENUM ('stable', 'beta');
+CREATE TYPE runtime_type AS ENUM ('python', 'typescript', 'docker', 'remote', 'mcp');
+CREATE TYPE install_mode AS ENUM ('package', 'remote_endpoint', 'mcp_server');
+CREATE TYPE hosting_type AS ENUM ('self_hosted', 'agentnode_hosted', 'remote');
+CREATE TYPE quarantine_status AS ENUM ('none', 'quarantined', 'cleared', 'rejected');
+CREATE TABLE package_versions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    package_id UUID NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
+    version_number TEXT NOT NULL,          -- semver "1.0.0"
+    channel version_channel NOT NULL DEFAULT 'stable',
+    manifest_raw JSONB NOT NULL,           -- full agentnode.yaml as JSON
+    runtime runtime_type NOT NULL,
+    install_mode install_mode NOT NULL DEFAULT 'package',
+    hosting_type hosting_type NOT NULL DEFAULT 'agentnode_hosted',
+    entrypoint TEXT,                       -- Python import path "pdf_reader_pack.tool"
+    changelog TEXT,
+    -- Artifact (stored as object key, NOT full URL)
+    artifact_object_key TEXT,             -- e.g. "artifacts/pdf-reader-pack/1.0.0/package.tar.gz"
+    artifact_hash_sha256 TEXT,
+    artifact_size_bytes BIGINT,
+    signature TEXT,
+    -- Provenance
+    source_repo_url TEXT,
+    source_commit TEXT,
+    build_system TEXT,
+    -- Quarantine
+    quarantine_status quarantine_status NOT NULL DEFAULT 'none',
+    quarantined_at TIMESTAMPTZ,
+    quarantine_reason TEXT,
+    -- Lifecycle
+    is_yanked BOOLEAN NOT NULL DEFAULT FALSE,
+    published_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(package_id, version_number)
+);
+CREATE INDEX idx_versions_package ON package_versions(package_id);
+CREATE INDEX idx_versions_published ON package_versions(published_at DESC);
+CREATE INDEX idx_versions_quarantine ON package_versions(quarantine_status);
+-- FK for latest_version_id (after both tables exist)
+ALTER TABLE packages ADD CONSTRAINT fk_latest_version
+    FOREIGN KEY (latest_version_id) REFERENCES package_versions(id) ON DELETE SET NULL;
+-- ============================================================
+-- CAPABILITY TAXONOMY (official IDs, flat list)
+-- ============================================================
+CREATE TABLE capability_taxonomy (
+    id TEXT PRIMARY KEY,                   -- "pdf_extraction"
+    display_name TEXT NOT NULL,            -- "PDF Extraction"
+    description TEXT,
+    category TEXT,                         -- "document-processing"
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- ============================================================
+-- CAPABILITIES (per version)
+-- ============================================================
+CREATE TYPE capability_type AS ENUM ('tool', 'resource', 'prompt');
+CREATE TABLE capabilities (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    package_version_id UUID NOT NULL REFERENCES package_versions(id) ON DELETE CASCADE,
+    capability_type capability_type NOT NULL,
+    capability_id TEXT NOT NULL REFERENCES capability_taxonomy(id),
+    name TEXT NOT NULL,
+    description TEXT,
+    input_schema JSONB,
+    output_schema JSONB
+);
+CREATE INDEX idx_capabilities_version ON capabilities(package_version_id);
+CREATE INDEX idx_capabilities_id ON capabilities(capability_id);
+-- ============================================================
+-- TAGS & CATEGORIES
+-- ============================================================
+CREATE TABLE package_tags (
+    package_version_id UUID NOT NULL REFERENCES package_versions(id) ON DELETE CASCADE,
+    tag TEXT NOT NULL,
+    PRIMARY KEY (package_version_id, tag)
+);
+CREATE TABLE package_categories (
+    package_version_id UUID NOT NULL REFERENCES package_versions(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,
+    PRIMARY KEY (package_version_id, category)
+);
+-- ============================================================
+-- COMPATIBILITY RULES
+-- ============================================================
+CREATE TABLE compatibility_rules (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    package_version_id UUID NOT NULL REFERENCES package_versions(id) ON DELETE CASCADE,
+    framework TEXT,
+    runtime_version TEXT,                  -- ">=3.10"
+    protocol TEXT
+);
+CREATE INDEX idx_compat_version ON compatibility_rules(package_version_id);
+CREATE INDEX idx_compat_framework ON compatibility_rules(framework);
+-- ============================================================
+-- DEPENDENCIES
+-- ============================================================
+CREATE TABLE dependencies (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    package_version_id UUID NOT NULL REFERENCES package_versions(id) ON DELETE CASCADE,
+    dependency_package_slug TEXT NOT NULL,
+    role TEXT,
+    is_required BOOLEAN NOT NULL DEFAULT TRUE,
+    min_version TEXT,
+    fallback_package_slug TEXT
+);
+-- ============================================================
+-- PERMISSIONS
+-- ============================================================
+CREATE TYPE permission_level AS ENUM ('none', 'restricted', 'unrestricted');
+CREATE TYPE fs_level AS ENUM ('none', 'temp', 'workspace_read', 'workspace_write', 'any');
+CREATE TYPE exec_level AS ENUM ('none', 'limited_subprocess', 'shell');
+CREATE TYPE data_level AS ENUM ('input_only', 'connected_accounts', 'persistent');
+CREATE TYPE approval_level AS ENUM ('always', 'high_risk_only', 'once', 'never');
+CREATE TABLE permissions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    package_version_id UUID NOT NULL UNIQUE REFERENCES package_versions(id) ON DELETE CASCADE,
+    network_level permission_level NOT NULL DEFAULT 'none',
+    allowed_domains JSONB DEFAULT '[]',
+    filesystem_level fs_level NOT NULL DEFAULT 'none',
+    code_execution_level exec_level NOT NULL DEFAULT 'none',
+    data_access_level data_level NOT NULL DEFAULT 'input_only',
+    user_approval_level approval_level NOT NULL DEFAULT 'never',
+    external_integrations JSONB DEFAULT '[]'
+);
+-- ============================================================
+-- UPGRADE METADATA
+-- ============================================================
+CREATE TABLE upgrade_metadata (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    package_version_id UUID NOT NULL UNIQUE REFERENCES package_versions(id) ON DELETE CASCADE,
+    upgrade_roles JSONB DEFAULT '[]',
+    recommended_for JSONB DEFAULT '[]',
+    replaces_packages JSONB DEFAULT '[]',
+    install_strategy TEXT NOT NULL DEFAULT 'local',
+    delegation_mode TEXT,
+    fallback_behavior TEXT NOT NULL DEFAULT 'skip',
+    policy_requirements JSONB DEFAULT '{}'
+);
+-- ============================================================
+-- SECURITY FINDINGS
+-- ============================================================
+CREATE TYPE severity_level AS ENUM ('low', 'medium', 'high', 'critical');
+CREATE TABLE security_findings (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    package_version_id UUID NOT NULL REFERENCES package_versions(id) ON DELETE CASCADE,
+    severity severity_level NOT NULL,
+    finding_type TEXT NOT NULL,
+    description TEXT,
+    scanner TEXT,
+    is_resolved BOOLEAN NOT NULL DEFAULT FALSE,
+    found_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- ============================================================
+-- INSTALLATIONS
+-- ============================================================
+CREATE TYPE install_source AS ENUM ('cli', 'api', 'web', 'sdk', 'adapter');
+CREATE TYPE install_status AS ENUM ('installed', 'active', 'failed', 'uninstalled');
+CREATE TYPE install_event_type AS ENUM ('install', 'update', 'rollback');
+CREATE TABLE installations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    package_id UUID NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
+    package_version_id UUID NOT NULL REFERENCES package_versions(id) ON DELETE CASCADE,
+    source install_source NOT NULL,
+    status install_status NOT NULL DEFAULT 'installed',
+    event_type install_event_type NOT NULL DEFAULT 'install',
+    installation_context JSONB DEFAULT '{}',
+    installed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    activated_at TIMESTAMPTZ,
+    uninstalled_at TIMESTAMPTZ
+);
+CREATE INDEX idx_installations_user ON installations(user_id);
+CREATE INDEX idx_installations_package ON installations(package_id);
+-- ============================================================
+-- REVIEWS (minimal in MVP – optional, no ranking dependency)
+-- ============================================================
+CREATE TABLE reviews (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    package_id UUID NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
+    rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+    comment TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, package_id)
+);
+-- ============================================================
+-- PACKAGE REPORTS
+-- ============================================================
+CREATE TABLE package_reports (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    package_id UUID NOT NULL REFERENCES packages(id),
+    reporter_user_id UUID NOT NULL REFERENCES users(id),
+    reason TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'submitted',  -- submitted|reviewing|resolved|dismissed
+    resolved_by UUID REFERENCES users(id),
+    resolution_note TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ
+);
+-- ============================================================
+-- UPGRADE RECOMMENDATIONS (logged for analytics)
+-- ============================================================
+CREATE TABLE upgrade_recommendations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    requester_type TEXT NOT NULL,
+    requester_id TEXT,
+    missing_capability TEXT NOT NULL,
+    framework TEXT,
+    runtime TEXT,
+    context JSONB DEFAULT '{}',
+    response JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_recommendations_capability ON upgrade_recommendations(missing_capability);
+-- ============================================================
+-- CAPABILITY GAPS (aggregated from searches/resolutions)
+-- ============================================================
+CREATE TABLE capability_gaps (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    capability_name TEXT NOT NULL,
+    derived_from TEXT NOT NULL,
+    frequency INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_gaps_capability ON capability_gaps(capability_name);
+```
+## 4.1 VERSION LIFECYCLE RULES
+```
+latest_version_id semantics:
+- MUST point to the newest PUBLIC, STABLE, non-yanked, non-quarantined version
+- If NO such version exists → latest_version_id MUST be NULL
+- MUST be recalculated in the SAME transaction when ANY of these happen:
+  - publish
+  - deprecate
+  - yank / unyank
+  - clear quarantine
+  - reject version
+Definitions:
+- public version  = quarantine_status IN ('none', 'cleared') AND is_yanked = false
+- stable version  = channel = 'stable'
+- latest_version_id = newest public + stable version ordered by published_at DESC
+                      Returns NULL if no qualifying version exists.
+Deprecation:
+- is_deprecated is on the PACKAGE level, not per-version
+- deprecated means: the whole package is considered outdated
+- individual versions are removed via yanking, not per-version deprecation
+- no per-version deprecation state in MVP
+```
+## 4.2 VERSION SELECTION HELPERS
+```
+Implement shared query helpers in backend/app/packages/version_queries.py:
+get_public_versions(package_id) → list
+  Returns: stable/beta versions WHERE quarantine_status IN ('none','cleared')
+           AND is_yanked = false, ordered by published_at DESC
+get_owner_visible_versions(package_id, owner_user_id) → list
+  Returns: ALL versions including quarantined/yanked, each annotated with status metadata
+get_latest_public_version(package_id) → PackageVersion | None
+  Returns: newest stable public version, or None
+recalculate_latest_version_id(session, package_id) → None
+  Queries get_latest_public_version and sets packages.latest_version_id accordingly.
+  Sets to NULL if no qualifying version exists.
+These helpers MUST be reused across:
+- package detail endpoint
+- versions endpoint
+- install endpoint
+- publish flow
+- yank/unyank flow
+- quarantine clear/reject scripts
+```
+## 5. ANP MANIFEST SCHEMA (agentnode.yaml)
+```yaml
+# ================================================================
+# ANP (AgentNode Package) Manifest – v0.1
+# ================================================================
+# === IDENTITÄT (Pflicht) ===
+manifest_version: "0.1"
+package_id: "pdf-reader-pack"            # [a-z0-9-], 3-60 chars, unique
+package_type: "toolpack"                 # "agent" | "toolpack" | "upgrade"
+name: "PDF Reader Pack"
+publisher: "dev-marco"                   # must match existing publisher slug
+version: "1.0.0"                         # valid semver
+summary: "Extract text and tables from PDF files."  # max 200 chars
+description: |                           # optional, markdown ok
+  Wraps pdfplumber to provide reliable PDF text and table extraction.
+# === RUNTIME (Pflicht) ===
+runtime: "python"                        # "python"|"typescript"|"docker"|"remote"|"mcp"
+install_mode: "package"                  # "package"|"remote_endpoint"|"mcp_server"
+hosting_type: "agentnode_hosted"          # "self_hosted"|"agentnode_hosted"|"remote"
+entrypoint: "pdf_reader_pack.tool"       # Python import path to module with run()
+# === CAPABILITIES (Pflicht, min 1 tool) ===
+capabilities:
+  tools:
+    - name: "extract_pdf_text"
+      capability_id: "pdf_extraction"    # MUST exist in capability_taxonomy
+      description: "Extracts text content from a PDF file"
+      input_schema:
+        type: "object"
+        properties:
+          file_path: { type: "string", description: "Path to PDF file" }
+          pages: { type: "string", default: "all", description: "Page range" }
+        required: ["file_path"]
+      output_schema:
+        type: "object"
+        properties:
+          text: { type: "string" }
+          pages: { type: "array" }
+  resources: []
+  prompts: []
+# === DISCOVERY ===
+tags: ["pdf", "extraction", "documents"]
+categories: ["document-processing"]
+# === COMPATIBILITY (Pflicht, min 1 framework) ===
+compatibility:
+  frameworks: ["langchain", "crewai", "mcp", "generic"]
+  python: ">=3.10"
+# === DEPENDENCIES (optional) ===
+dependencies: []
+# === PERMISSIONS (Pflicht) ===
+permissions:
+  network: { level: "none", allowed_domains: [] }
+  filesystem: { level: "temp" }
+  code_execution: { level: "none" }
+  data_access: { level: "input_only" }
+  user_approval: { required: "never" }
+  external_integrations: []
+# === UPGRADE METADATA (optional) ===
+upgrade_roles: ["document_processing", "pdf_extraction"]
+recommended_for:
+  - agent_type: "legal-assistant"
+    missing_capability: "pdf_extraction"
+replaces: []
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+# === SECURITY ===
+security:
+  signature: ""                          # SHA256, filled at publish
+  provenance:
+    source_repo: "https://github.com/agentnode/starter-packs"
+    commit: ""
+    build_system: "github-actions"
+# === SUPPORT ===
+support:
+  homepage: "https://agentnode.net/packages/pdf-reader-pack"
+  issues: "https://github.com/agentnode/starter-packs/issues"
+# === LIFECYCLE ===
+deprecation_policy: "6-months-notice"
+```
+## 6. MANIFEST VALIDATION RULES
+```
+manifest_version     MUST == "0.1"
+package_id           MUST match [a-z0-9-], 3-60 chars
+package_type         MUST be valid enum
+name                 MUST be 1-100 chars
+publisher            MUST be existing publisher slug
+version              MUST be valid semver
+summary              MUST be 1-200 chars
+runtime              MUST be "python" (MVP restriction)
+install_mode         MUST be "package" (MVP restriction)
+hosting_type         MUST be "agentnode_hosted" (MVP restriction)
+capabilities.tools   MUST have at least 1 tool
+each tool.name       MUST be non-empty
+each tool.capability_id  MUST exist in capability_taxonomy table
+each tool.input_schema   MUST be valid JSON Schema
+permissions          ALL fields MUST have valid enum values
+compatibility.frameworks MUST have at least 1 entry
+```
+## 6.1 PYPROJECT.TOML REQUIREMENTS
+The artifact tar.gz MUST contain a valid `pyproject.toml` at the archive root.
+Minimum required fields:
+```toml
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "pdf-reader-pack"
+version = "1.0.0"
+```
+Validation rules:
+```
+pyproject.toml MUST exist at archive root
+project.name MUST be present
+project.version MUST be present
+project.version MUST match the version in agentnode.yaml manifest
+  (if mismatch → MANIFEST_INVALID error with details)
+```
+## 6.2 SLUG VS PYTHON MODULE PATH
+```
+Package slug (package_id) and Python entrypoint are SEPARATE fields.
+  slug:       "pdf-reader-pack"     (hyphens allowed)
+  entrypoint: "pdf_reader_pack.tool" (Python import path, underscores)
+NEVER automatically infer one from the other.
+The entrypoint field in the manifest is always the source of truth for imports.
+```
+## 7. CAPABILITY TAXONOMY v0.1 (30 IDs, flat, no hierarchy)
+This is the complete seed data for `scripts/seed_capability_taxonomy.py`.
+Every row MUST be inserted. `description` is optional and may be NULL initially.
+```
+ID                    | display_name             | category
+----------------------|--------------------------|------------------------
+pdf_extraction        | PDF Extraction           | document-processing
+document_parsing      | Document Parsing         | document-processing
+document_summary      | Document Summary         | document-processing
+web_search            | Web Search               | web-and-browsing
+webpage_extraction    | Webpage Extraction       | web-and-browsing
+browser_navigation    | Browser Navigation       | web-and-browsing
+link_discovery        | Link Discovery           | web-and-browsing
+citation_extraction   | Citation Extraction      | document-processing
+csv_analysis          | CSV Analysis             | data-analysis
+spreadsheet_parsing   | Spreadsheet Parsing      | data-analysis
+data_cleaning         | Data Cleaning            | data-analysis
+statistics_analysis   | Statistics Analysis      | data-analysis
+chart_generation      | Chart Generation         | data-analysis
+json_processing       | JSON Processing          | data-analysis
+sql_generation        | SQL Generation           | data-analysis
+log_analysis          | Log Analysis             | data-analysis
+vector_memory         | Vector Memory            | memory-and-retrieval
+knowledge_retrieval   | Knowledge Retrieval      | memory-and-retrieval
+semantic_search       | Semantic Search          | memory-and-retrieval
+embedding_generation  | Embedding Generation     | memory-and-retrieval
+document_indexing     | Document Indexing        | memory-and-retrieval
+conversation_memory   | Conversation Memory      | memory-and-retrieval
+email_drafting        | Email Drafting           | communication
+email_summary         | Email Summary            | communication
+meeting_summary       | Meeting Summary          | communication
+scheduling            | Scheduling               | productivity
+task_management       | Task Management          | productivity
+translation           | Translation              | language
+tone_adjustment       | Tone Adjustment          | language
+code_analysis         | Code Analysis            | development
+```
+## 8. API SPECIFICATION
+Base URL: `https://api.agentnode.net/v1`
+Auth: Bearer JWT OR `X-API-Key: ank_xxx...`
+### 8.0 HEALTH ENDPOINTS
+```
+GET /healthz
+  → 200: { "status": "ok" }
+  Meaning: process is running, no dependency checks
+GET /readyz
+  → 200: { "status": "ready" }
+  Checks:
+    - PostgreSQL reachable (execute SELECT 1)
+    - Redis reachable (PING)
+    - Meilisearch reachable (GET /health) – optional in MVP, log warning if unavailable
+  If any critical dependency (DB or Redis) unavailable → 503: { "status": "not_ready", "details": {...} }
+```
+### 8.1 AUTH
+```
+POST /v1/auth/register
+  Body: { email, username, password }
+  Validation:
+    - email: validated via Pydantic EmailStr
+    - username: [a-z0-9_-], 3-30 chars, case-insensitive unique
+    - password: minimum 8 characters
+  → 201: { id, email, username }
+POST /v1/auth/login
+  Body: { email, password, totp_code? }
+  → 200: { access_token, refresh_token, token_type: "bearer" }
+POST /v1/auth/refresh
+  Body: { refresh_token }
+  → 200: { access_token }
+  Rules:
+    - MUST accept only JWTs with token_type = "refresh"
+    - MUST reject access tokens used as refresh tokens
+    - Stateless in MVP, no rotation, no server-side revocation
+POST /v1/auth/api-keys
+  Auth: required
+  Body: { label? }
+  → 201: { id, key: "ank_full_key", key_prefix: "ank_xxxx", label }
+  Note: full key returned ONLY at creation. Stored as SHA-256 hash.
+GET /v1/auth/me
+  Auth: required
+  → 200: { id, email, username, publisher, two_factor_enabled }
+  Note: publisher field is ALWAYS present. If user has no publisher profile, publisher = null.
+POST /v1/auth/2fa/setup
+  Auth: required
+  → 200: { secret, qr_uri }
+POST /v1/auth/2fa/verify
+  Auth: required
+  Body: { totp_code }
+  → 200: { two_factor_enabled: true }
+Note: Once enabled, 2FA CANNOT be disabled in MVP. No disable endpoint exists.
+      Future versions may allow disabling with additional verification.
+```
+### 8.1.1 JWT TOKEN SPEC
+```
+Token model (MVP):
+- access_token and refresh_token are BOTH JWTs
+- access_token claims: { sub: user_id, token_type: "access", exp: <short> }
+- refresh_token claims: { sub: user_id, token_type: "refresh", exp: <long> }
+- Same JWT_SECRET for both (acceptable in MVP)
+- Access token expiry: JWT_ACCESS_TOKEN_EXPIRE_MINUTES (default 60)
+- Refresh token expiry: JWT_REFRESH_TOKEN_EXPIRE_DAYS (default 30)
+- No refresh token rotation in MVP
+- No server-side token revocation in MVP
+- /v1/auth/refresh MUST validate token_type == "refresh" before issuing new access token
+```
+### 8.1.2 API KEY VALIDATION FLOW
+```
+API key format: ank_<random_secret> (full key ~40 chars)
+key_prefix: first 8 chars stored for fast DB lookup, e.g. "ank_ab12"
+Validation flow:
+1. Extract key from X-API-Key header
+2. Extract prefix (first 8 chars)
+3. Query api_keys table by key_prefix (may return multiple candidates)
+4. Compute SHA-256 of full provided key
+5. Compare against key_hash_sha256 of each candidate
+6. If match found AND revoked_at IS NULL → authenticated
+7. If revoked_at IS NOT NULL → reject with AUTH_API_KEY_REVOKED (401)
+8. If no match → reject with AUTH_API_KEY_INVALID (401)
+9. On success: update last_used_at (async or inline, acceptable to skip in hot path)
+Notes:
+- API keys are user-scoped (inherit all permissions of owning user)
+- API keys do NOT bypass ownership checks
+- API keys do NOT bypass 2FA requirement for publish
+```
+### 8.2 PUBLISHERS
+```
+POST /v1/publishers
+  Auth: required
+  Body: { display_name, slug, bio?, website_url?, github_url? }
+  → 201: { id, slug, display_name, trust_level: "unverified" }
+  Validation: slug must match [a-z0-9-], 3-40 chars, unique
+GET /v1/publishers/{slug}
+  → 200: { id, display_name, slug, bio, trust_level, website_url, github_url, package_count, created_at }
+```
+### 8.3 PACKAGES
+```
+POST /v1/packages/validate
+  Auth: required
+  Body: { manifest: { ...agentnode.yaml as JSON } }
+  → 200: { valid: bool, errors: [str], warnings: [str] }
+POST /v1/packages/publish
+  Auth: required + 2FA enabled
+  Content-Type: multipart/form-data
+  Fields: manifest (JSON string), artifact (.tar.gz file)
+  Constraints: max artifact size 50MB, only .tar.gz, reject path traversal, reject symlinks
+  → 201: { package_id, package_slug, version_id, version_number, artifact_hash, warnings?: [str] }
+  Processing:
+    1. Validate manifest (all rules from section 6)
+    2. Check publish idempotency (package_id + version_number must not exist → 409)
+    3. Slug ownership check:
+       - If slug does not exist → create new package
+       - If slug exists AND publisher owns it → add new version
+       - If slug exists BUT publisher does NOT own it → reject with PACKAGE_SLUG_TAKEN (409)
+    4. Check typosquatting against existing slugs
+    4. Create/update package record
+    5. Upload artifact to S3/R2 (store object_key, not URL)
+    6. Calculate SHA256 hash (SERVER hash is source of truth, see 8.3.1)
+    7. Extract capabilities, permissions, compatibility, upgrade_metadata into DB
+    8. Set quarantine_status (auto-quarantine if publisher.packages_cleared_count < 3)
+    9. Recalculate latest_version_id via recalculate_latest_version_id() in SAME transaction
+    10. Sync to Meilisearch index (only if not quarantined)
+    11. Queue async security scan (BackgroundTasks)
+GET /v1/packages/{slug}
+  → 200: 7-block response (assembled by packages/assembler.py)
+  {
+    slug, name, package_type, summary, description,
+    publisher: { slug, display_name, trust_level },
+    latest_version, download_count, is_deprecated,
+    blocks: {
+      capabilities: [...],
+      recommended_for: [...],
+      install: { cli_command, sdk_code, entrypoint, post_install },
+      compatibility: { frameworks, python?, dependencies },
+      permissions: { network_level, filesystem_level, code_execution_level, data_access_level, user_approval_level },
+      performance: { download_count, review_count, avg_rating },
+      trust: { publisher_trust_level, signature_present, provenance_present, security_findings_count, last_updated }
+    }
+  }
+  Note: Assemble from separate service calls per block, NOT one giant query.
+        Use selectinload/joinedload to avoid N+1 queries.
+  Version display rules:
+    - latest_version ALWAYS refers to latest PUBLIC version (even for owners)
+    - Owner visibility: see section 8.3.3
+GET /v1/packages/{slug}/versions
+  → 200: { versions: [{ version_number, channel, changelog, published_at, quarantine_status?, is_yanked? }] }
+  Note: quarantine_status and is_yanked fields only included for authenticated package owner.
+        Non-owners see only public, non-yanked, non-quarantined versions.
+POST /v1/packages/{slug}/deprecate
+  Auth: required, must own package
+  Processing: Set is_deprecated = true. Recalculate latest_version_id in same transaction.
+  → 200: { deprecated: true }
+POST /v1/packages/{slug}/versions/{version}/yank
+  Auth: required, must own package
+  Processing:
+    - Set is_yanked = true on the specified version
+    - Recalculate latest_version_id via recalculate_latest_version_id() in SAME transaction
+    - Remove/update Meilisearch index if the yanked version was latest
+  → 200: { yanked: true }
+  Error: PACKAGE_VERSION_NOT_FOUND (404) if version does not exist
+```
+### 8.3.1 ARTIFACT HASH RULES
+```
+- The server-calculated SHA256 hash of the uploaded tar.gz is the SOURCE OF TRUTH
+- Artifact object key MUST use pattern: artifacts/{package_slug}/{version}/package.tar.gz
+- CLI may calculate a local pre-upload hash for display/debugging but it is not authoritative
+- Only the server hash is stored in DB (artifact_hash_sha256) and returned by the API
+- Install verification (CLI) MUST always use the hash returned by the install API
+- If CLI-calculated hash and server hash differ, the server hash wins
+```
+### 8.3.2 PACKAGE DETAIL VERSION SEMANTICS
+```
+Public package detail:
+- latest_version ALWAYS refers to latest PUBLIC version
+- Hidden versions (quarantined/yanked) are NEVER included for non-owners
+Owner package detail:
+- latest_version STILL refers to latest PUBLIC version (NOT changed for owner)
+- Owner additionally sees non-public versions in the versions list with status badges
+- Owner visibility MUST NOT change the meaning of the latest_version field
+```
+### 8.4 SEARCH
+```
+POST /v1/search
+  Body: {
+    query?: str,
+    capability_id?: str,
+    package_type?: str,
+    framework?: str,
+    runtime?: str,
+    min_trust_level?: str,
+    sort_by?: "relevance"|"downloads"|"recent",
+    page?: int (default 1),
+    per_page?: int (default 20, max 100)
+  }
+  → 200: {
+    results: [{ slug, name, package_type, summary, capability_ids, publisher: { slug, trust_level },
+                latest_version, download_count, frameworks, score }],
+    total, page, per_page
+  }
+  Implementation: Meilisearch-first for text search + filtering.
+                  DB hydration for trust/version data if needed.
+                  Quarantined packages are EXCLUDED from results.
+  Search defaults:
+    - if query is present and sort_by is omitted → default sort_by = "relevance"
+    - if query is empty (filter-only search) and sort_by is omitted → default sort_by = "downloads"
+    - capability_id is ALWAYS an exact filter against official taxonomy IDs (not fuzzy)
+    - query is free text handled by Meilisearch relevance ranking
+```
+### 8.5 RESOLUTION
+```
+POST /v1/resolve-upgrade
+  Auth: required
+  Body: {
+    missing_capability: str,           # from taxonomy
+    current_capabilities?: [str],
+    framework?: str,
+    runtime?: str,
+    max_results?: int,                 # default 10, max 50
+    policy?: { min_trust?, allow_shell?: bool, allow_network?: bool, max_price_cents?: int }
+  }
+  → 200: {
+    resolution_id: uuid,
+    missing_capability: str,
+    recommended: [{
+      package_slug, package_name, version,
+      compatibility_score: float,
+      trust_level, risk_level: "low"|"medium"|"high",
+      policy_result: "allowed"|"blocked"|"requires_approval",
+      policy_reasons?: [str],
+      install_command: str,
+      dependencies: [str]
+    }]
+  }
+  Implementation: Database-first query. Score in Python. Log to upgrade_recommendations.
+                  Meilisearch NOT used as source of truth for trust, policy, or permissions.
+                  Quarantined packages EXCLUDED.
+  Empty result behavior:
+    - If missing_capability is not in capability_taxonomy → 422 CAPABILITY_ID_UNKNOWN
+    - If capability is valid but no packages match → 200 with recommended: []
+    - NEVER return 404 for zero matches. 404 is only for unknown resources.
+  Sorting: recommended results MUST be sorted by compatibility_score descending.
+POST /v1/recommend
+  Auth: required
+  Body: { missing_capabilities: [str], framework?, runtime? }
+  → 200: { recommendations: [{ capability_id, packages: [{ slug, name, compatibility_score, trust_level }] }] }
+POST /v1/check-policy
+  Auth: required
+  Body: { package_slug, framework?, runtime?, policy: { min_trust?, allow_shell?, allow_network? } }
+  → 200: { result: "allowed"|"blocked"|"requires_approval", reasons: [str], package_permissions, package_trust_level }
+```
+### 8.5.1 POLICY RESULT SEMANTICS
+```
+Policy results (used by BOTH resolve-upgrade and check-policy via shared evaluate_policy()):
+"allowed":
+  Package satisfies all hard policy constraints and does not require extra approval.
+"blocked":
+  Package violates at least one hard policy constraint.
+  Triggers:
+    - package is yanked or quarantined
+    - trust_level below policy.min_trust
+    - code_execution_level == "shell" AND policy.allow_shell == false
+    - network_level == "unrestricted" AND policy.allow_network == false
+"requires_approval":
+  Package is technically compatible but approval is needed due to declared rules.
+  Triggers:
+    - permissions.user_approval_level == "always"
+    - permissions.user_approval_level == "high_risk_only" AND risk_level != "low"
+    - policy_requirements.requires_approval == true in manifest
+evaluate_policy() MUST be a single shared function in resolution/policy.py.
+Both resolve-upgrade and check-policy MUST call this same function.
+```
+### 8.6 INSTALL
+```
+GET /v1/packages/{slug}/install-info
+  Auth: optional
+  Query params: version?: str
+  → 200: {
+    package_slug, latest_version, artifact_url: "presigned_temporary_url",
+    artifact_hash: str, entrypoint: str, post_install_code: str, deprecated: bool
+  }
+  Purpose: Return installation metadata WITHOUT any side effects.
+  This endpoint MUST NOT create installation records, increment download_count, or modify any state.
+  Used by: SDK get_install_metadata(), and any client that needs metadata without triggering install tracking.
+  Eligibility: Same rules as POST /install:
+    - yanked versions → 410 PACKAGE_YANKED
+    - quarantined versions → 403 PACKAGE_QUARANTINED
+    - deprecated versions → allowed, but deprecated: true in response
+  Presigned URL: Generated on demand from artifact_object_key. Valid for 15 minutes.
+POST /v1/packages/{slug}/install
+  Auth: required
+  Body: { version?: str, source: "cli"|"api"|"sdk"|"adapter", event_type?: "install"|"update"|"rollback" }
+  → 200: {
+    package_slug, version, install_strategy: "local",
+    artifact_url: "presigned_temporary_url",  # generated on demand, valid for 15 minutes
+    artifact_hash: str,
+    entrypoint: str,
+    post_install_code: str,
+    installation_id: uuid,
+    deprecated: bool                  # true if package is deprecated (warning)
+  }
+  Eligibility:
+    - public stable versions: allowed
+    - deprecated versions: allowed, but "deprecated": true in response
+    - yanked versions: REJECTED with PACKAGE_YANKED (410)
+    - quarantined versions: REJECTED with PACKAGE_QUARANTINED (403)
+  Side effects:
+    - create installation record (with event_type and installation_context JSONB)
+    - increment download_count ONLY if event_type is "install" or "update"
+      AND 24h user+package+version dedupe passes
+    - rollback (event_type = "rollback") creates installation record but does NOT
+      increment download_count
+  Rollback rules:
+    - Rollback requests are treated as normal install requests
+    - If the requested version is yanked → PACKAGE_YANKED (410)
+    - If the requested version is quarantined → PACKAGE_QUARANTINED (403)
+    - No special exceptions for previously installed versions in MVP
+### 8.6.2 CHECK UPDATES (batch version check)
+```
+POST /v1/packages/check-updates
+  Auth: required
+  Body: { packages: [{ slug: str, version: str }] }
+  → 200: {
+    updates: [{
+      slug, current_version, latest_version, has_update: bool
+    }]
+  }
+  Note: latest_version refers to newest public stable version.
+        Used by CLI `agentnode update --all`.
+        Max 100 packages per request.
+```
+### 8.6.3 INSTALLATION MANAGEMENT
+```
+POST /v1/installations/{id}/activate
+  Auth: required
+  Ownership: ONLY the user who created the installation may activate it.
+             If installation.user_id != authenticated user → 403 INSTALLATION_NOT_OWNED
+  → 200: { activated: true }
+POST /v1/installations/{id}/uninstall
+  Auth: required
+  Ownership: ONLY the user who created the installation may uninstall it.
+             If installation.user_id != authenticated user → 403 INSTALLATION_NOT_OWNED
+  → 200: { uninstalled: true }
+```
+### 8.6.1 INSTALLATION CONTEXT (MVP shape)
+```json
+{
+  "cwd_hash": "sha256:...",
+  "platform": "linux|darwin|win32",
+  "python_version": "3.12.2",
+  "cli_version": "0.1.0",
+  "adapter": null
+}
+```
+```
+installation_context is optional but SHOULD include:
+- cwd_hash: SHA256 of current working directory path (not contents)
+- platform: OS platform identifier
+- python_version: detected Python version
+- cli_version: CLI version that performed the install
+- adapter: name of adapter if install was initiated through an adapter, else null
+CLI populates these fields automatically. SDK sends source="sdk" and minimal context.
+```
+### 8.7 TRUST
+```
+GET /v1/packages/{slug}/trust
+  → 200: {
+    publisher_trust_level, publisher_slug, signature_present, provenance_present,
+    source_repo?, security_findings_count,
+    open_findings: [{ severity, finding_type, description }],
+    quarantine_status, last_scan_at?
+  }
+```
+### 8.8 REVIEWS (minimal, optional in MVP)
+```
+POST /v1/packages/{slug}/reviews
+  Auth: required
+  Body: { rating: 1-5, comment?: str (max 1000 chars) }
+  → 201: { id }
+  Constraint: user MUST have at least one installation record for this package.
+              Return 403 REVIEW_NOT_ALLOWED if no installation exists.
+GET /v1/packages/{slug}/reviews
+  → 200: { reviews: [{ username, rating, comment, created_at }], avg_rating, total }
+```
+### 8.9 REPORTS
+```
+POST /v1/packages/{slug}/report
+  Auth: required
+  Body: { reason: "malware|typosquatting|spam|misleading|policy_violation|other", description: str }
+  → 201: { report_id, status: "submitted" }
+  Constraints:
+    - max 3 active reports per user per package (active = submitted OR reviewing)
+    - max 10 reports per user per hour
+    - return 429 if limits exceeded
+  Active report statuses: submitted, reviewing
+  Inactive report statuses: resolved, dismissed
+  The "max 3 active" rule counts only active statuses.
+```
+## 9. RESOLUTION ENGINE
+```python
+# backend/app/resolution/engine.py
+WEIGHTS = {
+    "capability_match": 0.40,
+    "framework_match": 0.20,
+    "runtime_match": 0.15,
+    "trust_score": 0.15,
+    "permissions_fit": 0.10,
+}
+TRUST_SCORES = {
+    "curated": 1.0, "trusted": 0.8, "verified": 0.6, "unverified": 0.3,
+}
+def score_package(pkg_version, request) -> float | None:
+    """Returns score 0-1 or None if excluded."""
+    # --- HARD EXCLUSIONS ---
+    if pkg_version.is_yanked:
+        return None
+    if pkg_version.quarantine_status not in ("none", "cleared"):
+        return None
+    # Policy hard blocks
+    if request.policy:
+        pkg_trust = pkg_version.package.publisher.trust_level
+        if request.policy.min_trust and TRUST_SCORES.get(pkg_trust, 0) < TRUST_SCORES.get(request.policy.min_trust, 0):
+            return None
+        if not request.policy.allow_shell and pkg_version.permissions.code_execution_level == "shell":
+            return None
+        if not request.policy.allow_network and pkg_version.permissions.network_level == "unrestricted":
+            return None
+    # --- HARD MATCHING ---
+    # Capability: HARD requirement
+    cap_ids = [c.capability_id for c in pkg_version.capabilities]
+    if request.missing_capability not in cap_ids:
+        return None
+    # Runtime: HARD requirement if specified
+    if request.runtime and pkg_version.runtime != request.runtime:
+        return None
+    # Framework: HARD requirement if specified (unless "generic" is listed)
+    frameworks = [r.framework for r in pkg_version.compatibility_rules]
+    if request.framework and request.framework not in frameworks and "generic" not in frameworks:
+        return None
+    # --- SOFT SCORING ---
+    s_cap = 1.0  # already validated above
+    s_fw = 1.0   # already validated above
+    s_rt = 1.0   # already validated above
+    s_trust = TRUST_SCORES.get(pkg_version.package.publisher.trust_level, 0.3)
+    perm = pkg_version.permissions
+    s_perm = 1.0
+    if perm.network_level == "unrestricted": s_perm -= 0.3
+    if perm.code_execution_level == "shell": s_perm -= 0.4
+    if perm.filesystem_level in ("workspace_write", "any"): s_perm -= 0.2
+    s_perm = max(0.0, s_perm)
+    # Deprecated packages get a penalty but are NOT excluded
+    deprecated_penalty = 0.15 if pkg_version.package.is_deprecated else 0.0
+    total = (s_cap * WEIGHTS["capability_match"] + s_fw * WEIGHTS["framework_match"] +
+             s_rt * WEIGHTS["runtime_match"] + s_trust * WEIGHTS["trust_score"] +
+             s_perm * WEIGHTS["permissions_fit"]) - deprecated_penalty
+    return round(max(0.0, total), 4)
+```
+## 10. SECURITY SCANNER
+```python
+# backend/app/trust/scanner.py
+# Runs ASYNC after publish, does NOT block publish response
+SECRET_PATTERNS = [
+    r'(?i)(api[_-]?key|secret|token|password)\s*[=:]\s*["\'][^"\']{8,}',
+    r'(?i)sk-[a-zA-Z0-9]{20,}',           # OpenAI
+    r'(?i)ghp_[a-zA-Z0-9]{36}',           # GitHub
+    r'(?i)AKIA[0-9A-Z]{16}',              # AWS
+    r'(?i)-----BEGIN (RSA |EC )?PRIVATE KEY-----',
+]
+DANGEROUS_PATTERNS = [
+    r'subprocess\.(run|Popen|call)\(',
+    r'os\.system\(', r'exec\(', r'eval\(',
+    r'__import__\(', r'shutil\.rmtree\(',
+]
+NETWORK_PATTERNS = [
+    r'requests\.(get|post|put|delete)\(',
+    r'httpx\.', r'urllib\.request', r'socket\.',
+]
+# For each pattern match:
+# - SECRET → severity: high, finding_type: "secret_detected"
+# - DANGEROUS + permissions.code_execution == "none" → severity: medium, finding_type: "undeclared_code_execution"
+# - NETWORK + permissions.network_level == "none" → severity: medium, finding_type: "undeclared_network_access"
+```
+### 10.1 SCANNER LIMITATIONS
+```
+MVP scanner is best-effort only:
+- It is NOT a full malware analysis system
+- It provides heuristic findings, not guarantees
+- Findings do NOT automatically hard-block publish in MVP
+- Findings affect trust visibility, review priority, and quarantine workflows
+- Manual review remains necessary for suspicious packages
+- AgentNode does NOT guarantee package safety
+```
+## 11. TYPOSQUATTING DETECTION
+```python
+from difflib import SequenceMatcher
+def check_typosquatting(new_slug: str, existing_slugs: list[str]) -> list[str]:
+    suspicious = []
+    norm_new = new_slug.replace("-", "").replace("_", "")
+    for existing in existing_slugs:
+        if new_slug == existing:
+            continue
+        if SequenceMatcher(None, new_slug, existing).ratio() > 0.85:
+            suspicious.append(existing)
+        if norm_new == existing.replace("-", "").replace("_", ""):
+            suspicious.append(existing)
+    return list(set(suspicious))
+# If suspicious: set quarantine_status = "quarantined" with reason "typosquatting_suspected"
+```
+## 12. TRUST LEVEL TRANSITIONS
+```
+unverified → verified:  two_factor_enabled + 1 package published
+                        (email verification NOT required in MVP – field exists but is not enforced)
+verified → trusted:     3+ packages + 50+ total downloads + 0 open high/critical findings + 30+ days active
+trusted → curated:      manual admin only (via DB/script, no admin UI in MVP)
+any → suspended:        manual admin (via DB/script)
+suspended → verified:   manual admin after appeal (via DB/script)
+```
+Note: All admin actions in MVP happen via direct DB access or internal scripts. No admin UI.
+## 12.1 PUBLIC VISIBILITY RULES (system-wide, applies to ALL endpoints)
+### Consolidated Truth Table
+```
+State          | Search | Detail | Versions | Resolution | Install | latest_version_id
+---------------|--------|--------|----------|------------|---------|------------------
+normal         |  ✅    |  ✅    |  ✅      |  ✅        |  ✅     | candidate
+deprecated     |  ✅    |  ✅*   |  ✅      |  ✅**      |  ✅*    | candidate
+yanked         |  ❌    |  ❌    |  ❌      |  ❌        |  ❌     | excluded
+quarantined    |  ❌    |  ❌    |  ❌      |  ❌        |  ❌     | excluded
+*  = marked with deprecation warning
+** = included in results but with scoring penalty (not excluded)
+```
+### Owner Exceptions
+```
+State          | Owner sees in detail | Owner sees in versions | Owner can install
+---------------|---------------------|-----------------------|------------------
+yanked         |  ❌                  |  ✅ (marked)           |  ❌
+quarantined    |  ✅ (marked)         |  ✅ (marked)           |  ❌ (admin only)
+```
+```
+latest_version_id:  ALWAYS resolves to newest PUBLIC, STABLE, non-yanked, non-quarantined version.
+                    NULL if no qualifying version exists.
+                    This meaning is NEVER changed for owners.
+```
+## 12.2 INSTALL ELIGIBILITY RULES
+```
+public stable versions:    installable by any authenticated user
+deprecated versions:       installable, but response includes "deprecated": true warning
+yanked versions:           NOT installable (return PACKAGE_YANKED 410)
+quarantined versions:      NOT installable via public API (admin/internal only)
+```
+## 12.3 MVP ENUM RESTRICTIONS
+In Phase A/B, the validator and publish endpoint MUST REJECT anything except:
+```
+runtime:      ONLY "python" accepted
+install_mode: ONLY "package" accepted
+hosting_type: ONLY "agentnode_hosted" accepted
+```
+The enum types remain broad in the DB schema for future use, but validation enforces MVP scope.
+## 12.4 DOWNLOAD COUNT RULES
+```
+download_count increments ONLY when:
+  - POST /v1/packages/{slug}/install succeeds
+  - AND event_type is "install" or "update" (NOT "rollback")
+  - AND a new installation record is created
+  - AND NOT a repeated install of same version by same user within 24h (dedupe)
+Rollback detection:
+  - The install endpoint accepts event_type in the request body
+  - CLI sends event_type = "rollback" when running `agentnode rollback`
+  - CLI sends event_type = "install" for fresh installs
+  - CLI sends event_type = "update" for `agentnode update`
+  - The event_type is stored on the installation record (install_event_type enum)
+install_count and download_count are the same metric in MVP.
+activation_count is tracked separately via POST /v1/installations/{id}/activate.
+```
+## 12.5 TYPOSQUATTING BEHAVIOR
+```
+When typosquatting is suspected during publish:
+  - Publish SUCCEEDS (NOT a hard error)
+  - Version is created with quarantine_status = "quarantined"
+  - quarantine_reason = "typosquatting_suspected: similar to <existing_slug>"
+  - Response includes warning field: { "warnings": ["typosquatting_suspected: similar to ..."] }
+  - Package is NOT indexed in Meilisearch until quarantine is cleared
+```
+## 12.6 PUBLISH IDEMPOTENCY
+```
+If POST /v1/packages/publish is called with a (package_id, version_number) that already exists:
+  - MUST fail with PACKAGE_VERSION_EXISTS (409)
+  - MUST NOT upload a new artifact
+  - MUST NOT create duplicate DB rows
+  - MUST NOT trigger duplicate security scans
+  - MUST NOT update Meilisearch index
+```
+## 13. CLI SPECIFICATION
+### 13.1 Config (`~/.agentnode/config.json`)
+```json
+{ "api_url": "https://api.agentnode.net/v1", "api_key": "ank_xxx...", "username": "dev-marco" }
+```
+File permissions: 0600 (user-only read/write). CLI MUST warn if permissions are too open.
+### 13.2 Lockfile (`agentnode.lock` in project root)
+```json
+{
+  "lockfile_version": "0.1",
+  "updated_at": "2026-03-15T14:30:00Z",
+  "packages": {
+    "pdf-reader-pack": {
+      "version": "1.0.0",
+      "package_type": "toolpack",
+      "entrypoint": "pdf_reader_pack.tool",
+      "capability_ids": ["pdf_extraction"],
+      "artifact_hash": "sha256:abc123...",
+      "installed_at": "2026-03-15T14:30:00Z",
+      "source": "cli"
+    }
+  }
+}
+```
+### 13.2.1 Lockfile Conflict Behavior
+```
+When installing a package that already exists in agentnode.lock:
+Case 1 — same slug, same version:
+  → skip installation, print "pdf-reader-pack@1.0.0 already installed"
+Case 2 — same slug, different version (install or update):
+  → perform installation of new version
+  → update lockfile entry with new version, hash, timestamp
+  → print "pdf-reader-pack upgraded 1.0.0 → 1.1.0"
+Case 3 — rollback to specific version:
+  → perform installation of target version
+  → replace lockfile entry with target version
+  → print "pdf-reader-pack rolled back to 1.0.0"
+```
+### 13.3 Python Interpreter Selection
+```
+CLI Python resolution order:
+1. If VIRTUAL_ENV env var is set → use $VIRTUAL_ENV/bin/python (or Scripts\python.exe on Windows)
+2. Else if .venv/bin/python exists in current directory → use it
+3. Else try python3
+4. Else try python
+5. If none found → fail with clear error:
+   "No Python interpreter found. Please activate a virtual environment or ensure python3 is on PATH."
+The CLI MUST print which Python interpreter is used when --verbose is set.
+The CLI MUST use the resolved Python for: python -m pip install <path>
+Important:
+- CLI always installs into the currently active/detected Python environment
+- CLI NEVER creates virtual environments automatically
+- If no venv is active, packages are installed into the system/user Python (user's responsibility)
+```
+### 13.4 Install Flow (technical)
+```
+1. POST /v1/packages/{slug}/install (with event_type "install"|"update"|"rollback") → get presigned artifact_url + hash
+2. Download artifact to temp directory
+3. Verify SHA256 hash matches API-returned hash (FAIL if mismatch, delete temp, abort)
+4. Validate archive:
+   - reject path traversal (../)
+   - reject symlinks
+   - reject nested archives
+   - reject individual files > 10MB
+   - reject archives with > 500 files
+   - reject if no agentnode.yaml at archive root
+   - reject if no pyproject.toml at archive root
+5. Extract tar.gz to temp dir
+6. Verify entrypoint module path exists in extracted files
+7. Resolve Python interpreter (section 13.3)
+8. Run: <resolved_python> -m pip install <temp_dir_path>
+9. On success: write to agentnode.lock (incl package_type + entrypoint), print post_install_code
+10. On failure: print error with clear message
+11. ALWAYS clean up temp dir regardless of success/failure
+```
+### 13.5.1 CLI Timeout and Retry Rules
+```
+HTTP timeout: 30 seconds for all API calls
+Download timeout: 120 seconds for artifact download
+Retries: NONE in MVP. No automatic retry on any error.
+On timeout: print clear error "Request timed out. Please try again."
+On 5xx: print "Server error (status). Please try again later."
+On network failure: print "Network error: <details>. Check your connection."
+Future: configurable retry for downloads (transient network errors only)
+```
+Every command supports `--json` flag for machine-readable output.
+Output uses colors: ✓ green, ⚠ yellow, ✗ red.
+```
+agentnode login           # Prompt for API key, store in config, verify with GET /v1/auth/me
+agentnode validate <dir>  # Read agentnode.yaml, POST /v1/packages/validate, show errors/warnings
+agentnode publish <dir>   # Read yaml, validate locally first (fast feedback), create tar.gz (excl .git/__pycache__),
+                         #   POST /v1/packages/publish. Backend validates again (source of truth).
+agentnode search <query>  # POST /v1/search, flags: --capability, --framework, --runtime, --type, --sort
+agentnode info <slug>     # GET /v1/packages/{slug}, show 7 blocks. --versions flag
+agentnode install <slug>  # Full install flow (section 13.4), sends event_type="install". --version flag
+agentnode update <slug>   # Check versions, install latest if newer, sends event_type="update". --all flag
+                         # --all: reads lockfile, calls POST /v1/packages/check-updates,
+                         #   shows upgrade list, installs sequentially
+agentnode rollback <slug>@<ver>  # Install specific older version, sends event_type="rollback"
+agentnode audit <slug>    # GET /v1/packages/{slug}/trust, show trust info
+agentnode list            # Read agentnode.lock, show table
+agentnode report <slug>   # POST /v1/packages/{slug}/report, prompt for reason
+agentnode recommend       # POST /v1/recommend. --missing flag
+agentnode resolve-upgrade # POST /v1/resolve-upgrade. --missing, --framework, --runtime, --min-trust, --no-shell
+agentnode policy-check    # POST /v1/check-policy. --package, --framework, --min-trust, --no-shell, --no-network
+```
+## 14. PYTHON SDK (package: agentnode-sdk)
+### 14.1 Exception Hierarchy
+```python
+# sdk/agentnode_sdk/exceptions.py
+class AgentNodeError(Exception):
+    """Base error for all AgentNode API errors."""
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(f"[{code}] {message}")
+class NotFoundError(AgentNodeError):
+    """Package or resource not found (404)."""
+    pass
+class AuthError(AgentNodeError):
+    """Authentication or authorization failure (401/403)."""
+    pass
+class ValidationError(AgentNodeError):
+    """Manifest or input validation failure (422)."""
+    pass
+```
+### 14.2 Exports
+```python
+# sdk/agentnode_sdk/__init__.py
+from .client import AgentNode
+from .exceptions import AgentNodeError, NotFoundError, AuthError, ValidationError
+```
+### 14.3 Client
+```python
+# sdk/agentnode_sdk/client.py
+import httpx
+from .exceptions import AgentNodeError, NotFoundError, AuthError, ValidationError
+ERROR_CLASS_MAP = {
+    401: AuthError,
+    403: AuthError,
+    404: NotFoundError,
+    422: ValidationError,
+}
+class AgentNode:
+    def __init__(self, api_key: str, base_url: str = "https://api.agentnode.net/v1"):
+        self._client = httpx.Client(base_url=base_url, headers={"X-API-Key": api_key}, timeout=30)
+    def search(self, query: str = "", capability_id: str = "", framework: str = "",
+               sort_by: str = "relevance", page: int = 1) -> dict:
+        return self._post("/search", query=query, capability_id=capability_id,
+                          framework=framework, sort_by=sort_by, page=page)
+    def resolve_upgrade(self, missing_capability: str, framework: str = "", runtime: str = "",
+                        current_capabilities: list[str] = [], policy: dict = {}) -> dict:
+        return self._post("/resolve-upgrade", missing_capability=missing_capability,
+                          current_capabilities=current_capabilities, framework=framework,
+                          runtime=runtime, policy=policy)
+    def check_policy(self, package_slug: str, framework: str = "", policy: dict = {}) -> dict:
+        return self._post("/check-policy", package_slug=package_slug, framework=framework, policy=policy)
+    def get_install_metadata(self, package_slug: str, version: str = "") -> dict:
+        """Request install metadata from AgentNode WITHOUT side effects.
+        Calls GET /install-info (read-only). Does NOT create installation records
+        or increment download counts. Does NOT perform local pip installation.
+        Local installation is handled by the CLI (agentnode install)."""
+        params = {"version": version} if version else {}
+        return self._handle(self._client.get(f"/packages/{package_slug}/install-info",
+                                             params=params))
+    def get_package(self, slug: str) -> dict:
+        return self._handle(self._client.get(f"/packages/{slug}"))
+    def validate(self, manifest: dict) -> dict:
+        return self._handle(self._client.post("/packages/validate", json={"manifest": manifest}))
+    def _post(self, path: str, **kwargs) -> dict:
+        return self._handle(self._client.post(path, json={k: v for k, v in kwargs.items() if v}))
+    def _handle(self, response) -> dict:
+        """Parse response. Raise typed AgentNodeError on API errors."""
+        if response.status_code >= 400:
+            try:
+                body = response.json()
+                err = body.get("error", {})
+                code = err.get("code", "UNKNOWN")
+                message = err.get("message", response.text)
+            except (ValueError, KeyError):
+                code, message = "UNKNOWN", response.text
+            exc_class = ERROR_CLASS_MAP.get(response.status_code, AgentNodeError)
+            raise exc_class(code, message)
+        return response.json()
+```
+Usage:
+```python
+from agentnode_sdk import AgentNode, AgentNodeError
+an = AgentNode(api_key="ank_xxx")
+# Search and resolve
+result = an.resolve_upgrade(missing_capability="pdf_extraction", framework="langchain")
+meta = an.get_install_metadata("pdf-reader-pack")  # read-only, no side effects
+# Error handling
+try:
+    pkg = an.get_package("nonexistent-pack")
+except AgentNodeError as e:
+    print(e.code)  # "PACKAGE_NOT_FOUND"
+```
+## 15. LANGCHAIN ADAPTER
+```python
+# adapter-langchain/agentnode_langchain/loader.py
+from agentnode_sdk import AgentNode
+from langchain_core.tools import StructuredTool
+import importlib
+def load_tool(package_slug: str, api_key: str = "", version: str = "") -> StructuredTool:
+    """Load an installed ANP package as a LangChain StructuredTool.
+    IMPORTANT: The package MUST already be installed via `agentnode install <slug>`.
+    This adapter does NOT auto-install packages. If the package is not found locally,
+    it raises ImportError with instructions to install via CLI.
+    """
+    client = AgentNode(api_key=api_key)
+    pkg = client.get_package(package_slug)
+    entrypoint = pkg["blocks"]["install"]["entrypoint"]
+    try:
+        module = importlib.import_module(entrypoint)
+    except ImportError:
+        raise ImportError(
+            f"Package '{package_slug}' is not installed locally. "
+            f"Run: agentnode install {package_slug}"
+        )
+    cap = pkg["blocks"]["capabilities"][0]
+    return StructuredTool.from_function(
+        func=module.run,
+        name=cap["name"],
+        description=cap["description"],
+    )
+```
+Every ANP tool pack MUST export a `run()` function from its entrypoint module.
+### 15.1 LANGCHAIN ADAPTER SCHEMA HANDLING
+```
+MVP adapter behavior:
+- v0 creates StructuredTool.from_function WITHOUT full JSON Schema → Pydantic args_schema conversion
+- This is a known MVP simplification
+- LangChain will infer argument types from the run() function signature
+- Strict argument validation may be limited compared to tools with explicit args_schema
+Future (Phase 2):
+- Add JSON Schema → Pydantic model conversion using input_schema from package detail
+- This will enable full argument validation in LangChain agent flows
+```
+Usage:
+```python
+from agentnode_langchain import load_tool
+tool = load_tool("pdf-reader-pack", api_key="ank_xxx")
+agent_tools = [tool]
+```
+## 16. STARTER PACKS
+### 16.1 pdf-reader-pack
+Wraps: pdfplumber (MIT). Capability: pdf_extraction. Permissions: network none, fs temp.
+```python
+def run(file_path: str, pages: str = "all") -> dict:
+    import pdfplumber
+    result = {"text": "", "pages": [], "tables": []}
+    with pdfplumber.open(file_path) as pdf:
+        page_list = pdf.pages if pages == "all" else pdf.pages[int(pages.split("-")[0])-1:int(pages.split("-")[1])]
+        for p in page_list:
+            text = p.extract_text() or ""
+            result["pages"].append({"page_number": p.page_number, "content": text})
+            result["text"] += text + "\n"
+            for t in p.extract_tables():
+                result["tables"].append({"page_number": p.page_number, "data": t})
+    return result
+```
+### 16.2 web-search-pack
+Wraps: duckduckgo-search (MIT). Capability: web_search. Permissions: network restricted (duckduckgo.com).
+```python
+def run(query: str, max_results: int = 5) -> dict:
+    from duckduckgo_search import DDGS
+    results = []
+    with DDGS() as ddgs:
+        for r in ddgs.text(query, max_results=min(max_results, 20)):
+            results.append({"title": r.get("title",""), "url": r.get("href",""), "snippet": r.get("body","")})
+    return {"results": results}
+```
+### 16.3 webpage-extractor-pack
+Wraps: trafilatura (Apache-2.0). Capability: webpage_extraction.
+Permissions: network **unrestricted** (fetches user-provided arbitrary URLs), filesystem: none.
+NOTE: This pack requires unrestricted network because it fetches any URL the user provides.
+This MUST be declared honestly as "unrestricted", not "restricted".
+```python
+def run(url: str, include_links: bool = False) -> dict:
+    import trafilatura
+    downloaded = trafilatura.fetch_url(url)
+    if not downloaded:
+        return {"title": "", "text": "", "url": url, "error": "Failed to fetch URL"}
+    text = trafilatura.extract(downloaded, include_links=include_links) or ""
+    metadata = trafilatura.extract(downloaded, output_format="json")
+    import json
+    meta = json.loads(metadata) if metadata else {}
+    return {"title": meta.get("title", ""), "text": text, "url": url}
+```
+## 17. MEILISEARCH INDEX
+Index: `packages`. Updated on every publish/deprecate/yank. Quarantined packages excluded.
+### 17.1 Index Settings
+```json
+{
+  "primaryKey": "slug",
+  "searchableAttributes": ["name", "summary", "description", "capability_ids", "tags", "publisher_name"],
+  "filterableAttributes": ["package_type", "capability_ids", "frameworks", "runtime", "trust_level", "is_deprecated"],
+  "sortableAttributes": ["download_count", "published_at"],
+  "rankingRules": ["words", "typo", "proximity", "attribute", "sort", "exactness", "download_count:desc"]
+}
+```
+### 17.2 Document Shape
+Each package is stored as a single document. This is the exact JSON structure written to Meilisearch:
+```json
+{
+  "slug": "pdf-reader-pack",
+  "name": "PDF Reader Pack",
+  "summary": "Extract text and tables from PDF files.",
+  "description": "Wraps pdfplumber to provide reliable PDF text and table extraction.",
+  "capability_ids": ["pdf_extraction"],
+  "tags": ["pdf", "extraction", "documents"],
+  "publisher_name": "dev-marco",
+  "package_type": "toolpack",
+  "frameworks": ["langchain", "crewai", "generic"],
+  "runtime": "python",
+  "trust_level": "verified",
+  "is_deprecated": false,
+  "download_count": 42,
+  "published_at": "2026-03-15T10:22:00Z"
+}
+```
+Fields are derived from the latest public version + package-level data.
+On publish/yank/deprecate: rebuild this document from DB and upsert into Meilisearch.
+On deprecate: document remains in index, only is_deprecated is updated to true.
+On yank that removes the last public version: DELETE document from Meilisearch.
+## 18. ERROR HANDLING
+Standard format: `{ "error": { "code": "PACKAGE_NOT_FOUND", "message": "...", "details": {} } }`
+```
+AUTH_INVALID_CREDENTIALS     401    AUTH_TOKEN_EXPIRED          401
+AUTH_2FA_REQUIRED            403    AUTH_2FA_INVALID            403
+AUTH_API_KEY_INVALID         401    AUTH_API_KEY_REVOKED        401
+PUBLISHER_SLUG_TAKEN         409    PUBLISHER_SUSPENDED         403
+PUBLISHER_2FA_REQUIRED       403    PACKAGE_NOT_FOUND           404
+PACKAGE_SLUG_TAKEN           409    PACKAGE_DEPRECATED          410
+PACKAGE_VERSION_EXISTS       409    PACKAGE_NOT_OWNED           403
+PACKAGE_VERSION_NOT_FOUND    404    MANIFEST_INVALID            422
+CAPABILITY_ID_UNKNOWN        422    ARTIFACT_TOO_LARGE          413
+ARTIFACT_INVALID_FORMAT      422    ARTIFACT_PATH_TRAVERSAL     422
+ARTIFACT_HASH_MISMATCH       422    ARTIFACT_ENTRYPOINT_MISSING 422
+ARTIFACT_PYPROJECT_INVALID   422    RESOLUTION_ALL_BLOCKED      403    PACKAGE_QUARANTINED         403
+PACKAGE_YANKED               410    REVIEW_NOT_ALLOWED          403
+INSTALLATION_NOT_OWNED       403    INSTALLATION_NOT_FOUND      404
+RATE_LIMITED                 429    INTERNAL_ERROR              500
+```
+## 19. RATE LIMITING (Redis-based)
+```
+Unauthenticated:
+  login:          10/min/IP AND 5/min/email (brute force protection)
+  search:         30/min/IP
+  package detail: 60/min/IP
+Authenticated:
+  search:   120/min
+  resolve:  60/min
+  install:  60/min
+  publish:  10/min
+  reports:  10/hour/user
+  other:    120/min
+Headers: X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset
+Rate limit key:
+  - authenticated requests: key = user_id
+  - unauthenticated requests: key = client IP
+```
+## 20. FRONTEND PAGES
+### Landing (/)
+Hero: "Find and install the capabilities your AI agent is missing" + terminal animation.
+Primary CTA: `npm install -g agentnode` (CLI). Secondary CTA: `pip install agentnode-sdk` (Python SDK).
+Links to docs, GitHub. 3 starter pack cards. "How it works" (Search → Resolve → Install). Trust callouts.
+### Search (/search)
+Search bar + filter sidebar (type, framework, runtime, trust, category). Result cards. Sort + pagination.
+### Package Detail (/packages/[slug])
+7 blocks as sections. Each block is a separate React component:
+1. CapabilitiesBlock  2. RecommendedForBlock  3. InstallBlock
+4. CompatibilityBlock  5. PermissionsBlock (with color-coded matrix)
+6. PerformanceBlock  7. TrustBlock
+### Publisher (/publishers/[slug])
+Name, bio, trust badge, links, package list.
+### Publish (/publish)
+Auth required. File upload or YAML editor. Live validation. Publish button.
+### Dashboard (/dashboard)
+Auth required. My packages + downloads chart + API key management.
+### Auth (/auth/login, /auth/register)
+Forms. 2FA setup flow (QR code display + verification).
+Frontend API calls go through Next.js `/api` proxy routes to avoid CORS.
+### 20.1 Frontend API Proxy Pattern
+```
+Single catch-all route handler: /api/[...path]/route.ts
+Flow:
+1. Browser calls /api/packages/pdf-reader-pack
+2. Next.js route handler reads httpOnly auth cookie
+3. Forwards request to backend: https://api.agentnode.net/v1/packages/pdf-reader-pack
+   with Authorization: Bearer <token> header
+4. Returns backend response to browser
+Implementation:
+- ONE catch-all route handler, NOT separate handlers per endpoint
+- Reads access_token from httpOnly cookie, sets Authorization header
+- If no cookie present, forwards request without auth (for public endpoints)
+- Passes through query params, request body, and Content-Type
+- Returns backend status code and response body as-is
+```
+## 21. PHASE 1.1 FEATURES (post-MVP)
+### agentnode doctor
+Reads `agentnode.lock`. Compares installed capability_ids vs typical sets. Shows missing, updates, security.
+```
+$ agentnode doctor
+Installed: 2 packs (web_search, pdf_extraction)
+Missing:   ⚠ webpage_extraction → webpage-extractor-pack
+Updates:   pdf-reader-pack 1.0.0 → 1.1.0 available
+Security:  ✓ All signatures valid
+```
+### agentnode explain <slug>
+GET /v1/packages/{slug} formatted for terminal: capabilities, use cases, often-paired packs.
+### GitHub Action
+```yaml
+- uses: agentnode/publish-action@v1
+  with:
+    api-key: ${{ secrets.AGENTNODE_API_KEY }}
+    package-dir: "."
+```
+## 22. PHASE 2 FEATURES (technical notes)
+### AgentNode as MCP Server (https://mcp.agentnode.net)
+Tools: agentnode_search, agentnode_resolve_upgrade, agentnode_explain
+### Capability Graph
+```sql
+CREATE TABLE capability_relations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    capability_a TEXT NOT NULL REFERENCES capability_taxonomy(id),
+    capability_b TEXT NOT NULL REFERENCES capability_taxonomy(id),
+    relation_type TEXT NOT NULL,  -- complements|replaces|requires|often_paired
+    strength FLOAT NOT NULL DEFAULT 0.5,
+    source TEXT NOT NULL,         -- curated|usage_data|co_install
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+### Upgrade Advisor
+Async job: checks for new versions, security findings, deprecated packs, trust changes.
+## 23. BACKGROUND TASKS & FAILURE HANDLING
+### 23.1 Security Scanner
+MVP uses **FastAPI BackgroundTasks** (in-process async) for security scanning after publish.
+This is NOT durable across process restarts. Acceptable for MVP.
+Future: move to Redis queue / Celery worker.
+```python
+# In publish endpoint:
+from fastapi import BackgroundTasks
+@router.post("/packages/publish")
+async def publish(bg: BackgroundTasks, ...):
+    # ... create package, upload artifact ...
+    bg.add_task(run_security_scan, version_id=version.id)
+    return {"package_id": ..., "version_id": ...}
+```
+### 23.2 Meilisearch Sync Failure
+```
+DB is the source of truth. ALWAYS.
+Publish flow:
+1. DB transaction commits FIRST
+2. Meilisearch sync happens AFTER commit
+3. If Meilisearch sync fails:
+   - Log error (logger.error with package slug and version)
+   - Package remains valid and accessible via direct API (DB-backed)
+   - DO NOT set a DB flag in MVP. Use logging only.
+   - Search may be temporarily stale until manual reindex
+   - Install/detail/resolution endpoints remain authoritative via DB
+4. scripts/reindex_search.py can be run manually to fix stale index
+   (queries all non-quarantined, non-yanked packages from DB and re-syncs to Meilisearch)
+```
+### 23.3 Artifact Validation (expanded)
+After archive extraction, BEFORE pip install:
+```
+1. agentnode.yaml MUST exist at archive root
+2. pyproject.toml MUST exist at archive root
+3. pyproject.toml project.version MUST match manifest version
+4. Entrypoint module path MUST exist in extracted files
+   (e.g. if entrypoint is "pdf_reader_pack.tool", then pdf_reader_pack/tool.py must exist)
+5. No path traversal (../)
+6. No symlinks
+7. No nested archives (.tar.gz, .zip inside)
+8. No individual file > 10MB
+9. No more than 500 files total
+10. Total archive < 50MB
+```
+### 23.4 WEB AUTH MECHANISM
+```
+Web frontend stores auth via secure httpOnly cookies through Next.js server-side route handlers.
+Flow:
+1. User submits login form → Next.js /api/auth/login route handler
+2. Route handler calls backend POST /v1/auth/login
+3. Backend returns JWT access_token + refresh_token
+4. Route handler sets both as httpOnly, secure, sameSite=strict cookies
+5. Subsequent frontend API calls go through /api proxy which reads cookie and forwards as Bearer header
+6. Browser JavaScript NEVER has direct access to JWTs
+7. Browser JavaScript MUST NOT store JWTs in localStorage or sessionStorage
+Logout:
+- Next.js /api/auth/logout clears cookies
+- No server-side token revocation in MVP
+- Compromised refresh tokens remain valid until expiry (documented limitation)
+Session expiry:
+- Refresh tokens expire after JWT_REFRESH_TOKEN_EXPIRE_DAYS (default 30 days)
+- After expiry: user is automatically logged out and must re-authenticate
+- No "remember me" or session extension in MVP
+```
+### 23.5 CLI PACKAGING RULES (for `agentnode publish`)
+```
+When creating tar.gz from package directory:
+Excluded paths:
+  .git, .venv, venv, env, node_modules, dist, build,
+  __pycache__, .pytest_cache, .mypy_cache, .ruff_cache,
+  *.egg-info, .DS_Store, .env, .env.local
+Archive rules:
+  - File order SHOULD be deterministic (lexicographic sort)
+  - Timestamps normalized to epoch 0 if practical (for hash reproducibility)
+  - Archive format: tar.gz (gzip compressed tar)
+  - Root of archive must contain agentnode.yaml and pyproject.toml
+```
+### 23.6 NAMING CONSISTENCY (system-wide reference)
+```
+CLI npm package:     agentnode           → npm install -g agentnode
+Python SDK package:  agentnode-sdk       → pip install agentnode-sdk
+Python SDK import:   agentnode_sdk       → from agentnode_sdk import AgentNode
+LangChain adapter:   agentnode-langchain → pip install agentnode-langchain
+LangChain import:    agentnode_langchain → from agentnode_langchain import load_tool
+```
+These names MUST be used consistently in: landing page, docs, README, API responses,
+install block on package detail, all code examples, and all CTAs.
+## 24. LOCAL BOOTSTRAP RULES
+```
+Local development bootstrap MUST:
+1. Run docker-compose up to start Postgres, Redis, Meilisearch, MinIO
+2. Run Alembic migrations: alembic upgrade head
+3. Seed capability taxonomy: python scripts/seed_capability_taxonomy.py
+4. Create S3/MinIO bucket: python scripts/create_local_bucket.py
+5. Initialize Meilisearch index: python scripts/init_meilisearch.py
+6. Start backend: uvicorn app.main:app --reload
+scripts/seed_capability_taxonomy.py:
+  Inserts all 30 capability IDs from section 7 into capability_taxonomy table.
+  Idempotent (skip existing).
+scripts/create_local_bucket.py:
+  Creates the S3_BUCKET in MinIO if it doesn't exist.
+scripts/init_meilisearch.py:
+  Creates the "packages" index with settings from section 17 if it doesn't exist.
+```
+## 25. OUT OF SCOPE FOR PHASE A/B (DO NOT BUILD)
+- Semantic vector search
+- Capability graph / relations
+- MCP server mode
+- Team / organization accounts
+- Payments / Stripe / marketplace payouts
+- Private packages
+- Email verification flow (is_email_verified field exists but is NOT enforced in MVP trust transitions)
+- Enterprise SSO
+- Webhooks
+- Background advisor/Dependabot jobs (except basic async security scan)
+- Docker/OCI artifact support
+- Remote/subagent execution modes
+- Agent-autonomous install flows
+- Admin UI (all admin actions via DB/scripts)
+- runtime types other than "python"
+- install_mode other than "package"
+- hosting_type other than "agentnode_hosted"
+- Meilisearch reindex DB flag (use logging + manual reindex script only)
+- Refresh token rotation
+- Per-token server-side revocation
+- Unyank API endpoint (use internal script if needed)
+- Per-version deprecation (only package-level)
+- LangChain args_schema JSON Schema → Pydantic conversion
+- 2FA disable endpoint (once enabled, cannot be disabled in MVP)
+- Rollback exceptions for yanked versions (same eligibility rules as install)
+- Package deletion (packages can only be deprecated, not deleted)
+- Publisher slug changes (publisher slug is immutable in MVP)
+- Undeprecate endpoint (reversal only via internal admin script)
+- CLI automatic retries (no retries in MVP, fail with clear error message)
+## 26. BUILD ORDER
+### Phase A – Core Prototype (Weeks 1-12)
+**Sprint 1-2: Foundation + Auth**
+- [ ] Repo setup (monorepo structure)
+- [ ] docker-compose.yml (Postgres + Redis + Meilisearch + MinIO)
+- [ ] FastAPI app skeleton (main.py, config.py, database.py with AsyncSession)
+- [ ] CORS middleware configuration (section 28.1)
+- [ ] Health endpoints (GET /healthz, GET /readyz)
+- [ ] Alembic setup + first migration (users, api_keys)
+- [ ] Auth module: register, login (JWT with token_type claims), API keys (SHA-256), 2FA setup/verify
+- [ ] Auth dependencies: get_current_user, require_publisher, require_2fa
+- [ ] Bootstrap scripts (seed_capability_taxonomy, create_local_bucket, init_meilisearch)
+- [ ] Tests
+**Sprint 3-4: Publishers + Packages + Taxonomy + Validator**
+- [ ] Publishers: create, get
+- [ ] Capability taxonomy table + seed 30 IDs
+- [ ] Package + PackageVersion + Capability + Permissions + Compatibility + Dependencies models
+- [ ] Version selection helpers (version_queries.py)
+- [ ] ANP manifest validator (all rules section 6)
+- [ ] Typosquatting detection
+- [ ] Tests
+**Sprint 5-6: Publish + Storage + Package Detail**
+- [ ] S3/R2 integration (upload artifact, store object_key)
+- [ ] POST /v1/packages/publish (full flow incl. quarantine, latest_version_id recalc, server hash)
+- [ ] SHA256 hash calculation (server-side, source of truth)
+- [ ] Meilisearch sync on publish
+- [ ] Async security scanner (background task)
+- [ ] GET /v1/packages/{slug} with 7-block assembler (incl. owner visibility logic)
+- [ ] GET /v1/packages/{slug}/versions (incl. owner visibility)
+- [ ] POST /v1/packages/{slug}/versions/{version}/yank
+- [ ] Shared policy evaluation function (resolution/policy.py)
+- [ ] Tests
+**Sprint 7: Search**
+- [ ] Meilisearch index setup (schema from section 17)
+- [ ] POST /v1/search with filters + sorting + defaults
+- [ ] Tests
+**Sprint 8: Install Flow**
+- [ ] GET /v1/packages/{slug}/install-info (read-only metadata, no side effects)
+- [ ] POST /v1/packages/{slug}/install (presigned URL, install tracking, event_type, installation_context)
+- [ ] POST /v1/packages/check-updates (batch version check for update --all)
+- [ ] POST /v1/installations/{id}/activate (with ownership check)
+- [ ] POST /v1/installations/{id}/uninstall (with ownership check)
+- [ ] download_count increment (with event_type and dedupe logic)
+- [ ] GET /v1/packages/{slug}/trust
+- [ ] Tests
+**Sprint 9: Resolution Engine**
+- [ ] Resolution engine (engine.py with hard matching + soft scoring from section 9)
+- [ ] POST /v1/resolve-upgrade (using shared evaluate_policy)
+- [ ] POST /v1/recommend
+- [ ] POST /v1/check-policy (using shared evaluate_policy)
+- [ ] upgrade_recommendations logging
+- [ ] capability_gaps tracking
+- [ ] Tests
+**Sprint 10: SDK + First Pack**
+- [ ] Python SDK (agentnode-sdk PyPI package)
+- [ ] pdf-reader-pack (wrapper around pdfplumber)
+- [ ] Publish pack to own registry
+- [ ] SDK integration test: search → resolve → get_install_metadata
+- [ ] Auto-generated API docs (FastAPI /docs)
+### Phase B – MVP (Weeks 13-22)
+**Sprint 11-12: CLI**
+- [ ] CLI skeleton (Node.js, TypeScript, Commander.js, native fetch)
+- [ ] Python interpreter resolver (python-resolver.ts, section 13.3)
+- [ ] All commands from section 13.5 (incl. event_type on install/update/rollback)
+- [ ] Lockfile management
+- [ ] Config management (~/.agentnode/)
+- [ ] Install flow (download, verify server hash, pip install, cleanup, installation_context)
+- [ ] npm publish as "agentnode"
+**Sprint 13-14: Web Frontend**
+- [ ] Next.js setup with Tailwind
+- [ ] Landing page (with both CTAs: npm install -g agentnode + pip install agentnode-sdk)
+- [ ] Search page
+- [ ] Package detail page (7 blocks as components, owner visibility, latest_version semantics)
+- [ ] Publisher page
+- [ ] Auth pages (login/register/2FA) with httpOnly cookie auth
+- [ ] Publish flow (web UI)
+- [ ] Dashboard
+**Sprint 15-16: Packs + Agent + Polish + Launch**
+- [ ] web-search-pack
+- [ ] webpage-extractor-pack
+- [ ] Research Agent (reference agent using 3 packs)
+- [ ] LangChain adapter (agentnode-langchain, requires pre-installed packs, no args_schema in v0)
+- [ ] Reviews (minimal: POST + GET, with installation check, 403 REVIEW_NOT_ALLOWED)
+- [ ] Reports (POST, with active/inactive status tracking and spam limits)
+- [ ] Rate limiting
+- [ ] Docs (getting-started, publishing, anp-format, api-ref, cli-ref, sdk-ref)
+- [ ] README
+- [ ] Admin scripts (stubs: clear_quarantine, reject_version, set_trust_level, suspend_publisher, reindex_search)
+- [ ] Launch preparation
+## 27. ENVIRONMENT VARIABLES
+```
+DATABASE_URL=postgresql+asyncpg://agentnode:agentnode@localhost:5432/agentnode
+REDIS_URL=redis://localhost:6379
+MEILISEARCH_URL=http://localhost:7700
+MEILISEARCH_KEY=masterKey
+S3_ENDPOINT=http://localhost:9000
+S3_ACCESS_KEY=minioadmin
+S3_SECRET_KEY=minioadmin
+S3_BUCKET=agentnode-artifacts
+S3_REGION=auto
+JWT_SECRET=change-me-in-production
+JWT_ALGORITHM=HS256
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES=60
+JWT_REFRESH_TOKEN_EXPIRE_DAYS=30
+API_KEY_PREFIX=ank_
+ENVIRONMENT=development
+```
+## 28. DOCKER COMPOSE
+```yaml
+version: "3.9"
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: agentnode
+      POSTGRES_PASSWORD: agentnode
+      POSTGRES_DB: agentnode
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+  meilisearch:
+    image: getmeili/meilisearch:v1.6
+    environment:
+      MEILI_MASTER_KEY: masterKey
+    ports: ["7700:7700"]
+    volumes: [msdata:/meili_data]
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [miniodata:/data]
+volumes:
+  pgdata:
+  msdata:
+  miniodata:
+```
+## 28.1 CORS CONFIGURATION
+```
+Backend CORS settings (configured in main.py):
+Allowed origins:
+  - https://agentnode.net
+  - https://www.agentnode.net
+  - http://localhost:3000   (development only, controlled by ENVIRONMENT env var)
+Allowed methods: GET, POST, PUT, DELETE, OPTIONS
+Allowed headers: Authorization, Content-Type, X-API-Key
+Allow credentials: true (required for httpOnly cookie auth from web frontend)
+Note: CLI and SDK do not use cookies and are not affected by CORS.
+      CORS only matters for browser-based requests.
+```
+## 30. TEST FIXTURES
+For integration tests, use these reference objects:
+```python
+TEST_USER = {
+    "email": "test@agentnode.dev",
+    "username": "testuser",
+    "password": "TestPass123!"
+}
+TEST_PUBLISHER = {
+    "display_name": "Test Publisher",
+    "slug": "test-publisher"
+}
+TEST_MANIFEST = {
+    "manifest_version": "0.1",
+    "package_id": "test-pack",
+    "package_type": "toolpack",
+    "name": "Test Pack",
+    "publisher": "test-publisher",
+    "version": "1.0.0",
+    "summary": "A test package for integration testing.",
+    "runtime": "python",
+    "install_mode": "package",
+    "hosting_type": "agentnode_hosted",
+    "entrypoint": "test_pack.tool",
+    "capabilities": {
+        "tools": [{
+            "name": "test_tool",
+            "capability_id": "pdf_extraction",
+            "description": "Test tool",
+            "input_schema": {"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]},
+            "output_schema": {"type": "object", "properties": {"output": {"type": "string"}}}
+        }],
+        "resources": [],
+        "prompts": []
+    },
+    "compatibility": {"frameworks": ["generic"], "python": ">=3.10"},
+    "permissions": {
+        "network": {"level": "none", "allowed_domains": []},
+        "filesystem": {"level": "temp"},
+        "code_execution": {"level": "none"},
+        "data_access": {"level": "input_only"},
+        "user_approval": {"required": "never"},
+        "external_integrations": []
+    },
+    "tags": ["test"],
+    "categories": ["document-processing"],
+    "dependencies": [],
+    "security": {"signature": "", "provenance": {"source_repo": "", "commit": "", "build_system": ""}},
+    "support": {"homepage": "", "issues": ""}
+}
+```
+Test artifact: Create a minimal tar.gz containing agentnode.yaml, pyproject.toml,
+and a test_pack/tool.py with `def run(input: str) -> dict: return {"output": input}`.
+Use this fixture for publish → search → resolve → install-info E2E tests.
+## 31. DESIGN RULES FOR CLAUDE CODE
+```
+DB & ORM:
+1.  ALWAYS use AsyncSession, NEVER sync SQLAlchemy sessions
+2.  ALWAYS wrap multi-row DB writes in explicit transactions
+3.  ALWAYS use selectinload/joinedload for detail endpoints (avoid N+1)
+4.  ALL timestamps MUST be UTC (TIMESTAMPTZ)
+5.  ALL primary keys MUST be UUID
+6.  latest_version_id MUST point to newest public, stable, non-yanked, non-quarantined version.
+    If no qualifying version exists, latest_version_id MUST be NULL.
+7.  latest_version_id MUST be recalculated via recalculate_latest_version_id() in SAME transaction
+    as publish/yank/deprecate/quarantine-clear/reject
+Auth & Security:
+8.  Passwords MUST use bcrypt (passlib)
+9.  API keys MUST use SHA-256 hash + prefix lookup (NOT bcrypt – bcrypt too slow for key checks)
+10. NEVER return password_hash or two_factor_secret in responses
+11. NEVER store long-lived artifact URLs – store object_key, generate presigned URLs on demand
+12. 2FA MUST be enabled before publisher can call POST /v1/packages/publish
+13. ALWAYS check publisher ownership before publish/deprecate/yank
+14. MVP uses stateless JWTs for both access and refresh tokens.
+    access_token has token_type="access", refresh_token has token_type="refresh".
+    No rotation, no server-side revocation. Logout = clear local tokens only.
+15. Login endpoint MUST have rate limiting: max 10 attempts/min per IP, max 5/min per email
+16. CLI config file (~/.agentnode/config.json) MUST have 0600 permissions. Warn if too open.
+17. API key validation: prefix lookup → SHA-256 compare → check revoked_at → update last_used_at
+Packages & Artifacts:
+18. Artifact uploads: max 50MB, only .tar.gz
+19. Archive extraction MUST reject: path traversal (../), symlinks, nested archives,
+    files > 10MB individually, archives with > 500 files
+20. Archive MUST contain agentnode.yaml at root and valid pyproject.toml
+21. ALWAYS calculate and store SHA256 hash at publish time. Server hash is source of truth.
+22. ALWAYS run security scanner ASYNC after publish (don't block response).
+    Scanner is best-effort heuristic, not a security guarantee.
+23. Quarantined versions EXCLUDED from search, resolution, and public version lists
+24. Publisher sees own quarantined versions when authenticated
+25. New publishers (packages_cleared_count < 3) → auto-quarantine new versions
+26. Meilisearch index MUST be updated on publish/deprecate/yank (skip if quarantined)
+27. manifest_raw stores complete YAML as JSONB
+28. Capability IDs in tools MUST exist in capability_taxonomy table
+29. is_deprecated is package-level only, not per-version. No per-version deprecation in MVP.
+MVP Scope Enforcement:
+30. Phase A/B validator MUST REJECT: runtime != "python", install_mode != "package",
+    hosting_type != "agentnode_hosted". DB enums stay broad for future, validation is strict.
+Resolution:
+31. Resolution endpoint is DATABASE-FIRST, not Meilisearch
+32. NEVER use Meilisearch as source of truth for trust, policy, or permissions
+33. ALWAYS log resolution requests to upgrade_recommendations table
+34. check-policy and resolve-upgrade MUST use the SAME evaluate_policy() function
+    in resolution/policy.py. No divergence allowed.
+35. Capability match = HARD. Runtime match = HARD (if specified). Framework match = HARD
+    (excluded if not in compatibility and "generic" not listed). See section 9.
+36. Deprecated packages get scoring penalty but are NOT excluded from resolution results.
+Install & Download:
+37. download_count increments ONLY on successful new installation record with event_type
+    "install" or "update" (NOT "rollback")
+38. Dedupe: same user + same package + same version within 24h = no increment
+39. Rollback creates installation record with event_type = "rollback", does NOT increment download_count
+40. Install endpoint MUST accept event_type in request body ("install"|"update"|"rollback")
+41. Installation ownership: only the creating user may activate/uninstall. Check user_id match.
+CLI:
+42. CLI MUST write agentnode.lock on every install/update/rollback
+43. CLI MUST verify SHA256 hash (from API response) after download, BEFORE installing
+44. CLI MUST resolve Python interpreter per section 13.3 and use <python> -m pip install <path>
+45. CLI MUST use temp directory and clean up ALWAYS (success or failure)
+46. CLI MUST fail clearly if Python interpreter not found (with remediation hint)
+47. CLI MUST support --json flag on ALL commands
+48. CLI parser: Commander.js. HTTP client: native fetch (Node 20+).
+49. CLI MUST send correct event_type: "install" for install, "update" for update, "rollback" for rollback
+50. CLI MUST populate installation_context with: cwd_hash, platform, python_version, cli_version
+API:
+51. ALWAYS use standard error format: { error: { code, message, details } }
+52. ALWAYS apply rate limiting (section 19)
+53. Package detail response MUST be assembled from separate block assembler methods
+54. Frontend uses Next.js server-side route handlers as /api proxy. Browser NEVER calls backend directly in prod.
+55. Health endpoints: GET /healthz (process alive), GET /readyz (DB + Redis reachable)
+Reviews:
+56. Reviews ONLY allowed if user has at least one installation record for that package
+57. Return 403 REVIEW_NOT_ALLOWED if no installation exists
+58. Comment max length: 1000 chars
+Reports:
+59. Max 3 active reports per user per package. Active = submitted OR reviewing.
+60. Rate limit: max 10 reports per user per hour
+Validation:
+61. Publisher slug: [a-z0-9-], 3-40 chars
+62. Package slug: [a-z0-9-], 3-60 chars
+63. Version: valid semver
+64. Summary: max 200 chars
+65. Search: capability_id = exact filter, query = freetext. Default sort: relevance if query present,
+    downloads if filter-only.
+66. Username: [a-z0-9_-], 3-30 chars, case-insensitive unique
+67. Password: minimum 8 characters
+68. Email: validated via Pydantic EmailStr
+Admin:
+69. No admin UI in Phase A/B. All admin actions (quarantine clear/reject,
+    suspend/unsuspend, trust level changes, unyank) via direct DB or internal scripts.
+Testing:
+70. Backend: unit tests (validator, scoring, scanner, policy evaluation) +
+    integration tests (auth, publish, search, install, yank) +
+    one E2E test (publish → search → resolve → install metadata)
+71. CLI: command tests with mocked API + one integration test against local docker backend
+72. Starter packs: each pack MUST have at least one functional test for run()
+Naming:
+73. SDK PyPI package is "agentnode-sdk", import is "agentnode_sdk". NEVER "agentnode" for the SDK.
+74. CLI npm package is "agentnode". NEVER "agentnode-cli".
+75. LangChain adapter PyPI package is "agentnode-langchain", import is "agentnode_langchain".
+76. LangChain adapter imports from agentnode_sdk, NEVER from agentnode.
+Version Helpers:
+77. ALL version visibility logic MUST go through shared helpers in version_queries.py (section 4.2).
+    No endpoint may implement its own visibility filtering.
+78. recalculate_latest_version_id() MUST be called in every transaction that changes
+    version state (publish, yank, quarantine clear, reject).
+SDK & Install:
+79. SDK get_install_metadata() calls GET /install-info (read-only, no side effects).
+    POST /install is for actual installations only (CLI, adapter).
+80. SDK MUST parse API error responses and raise typed exceptions (AgentNodeError, NotFoundError,
+    AuthError, ValidationError). Never expose raw httpx exceptions to SDK consumers.
+81. Rollback follows same eligibility rules as install. No exceptions for previously
+    installed versions. Yanked = not installable, period.
+Lockfile:
+82. Same slug + same version already in lockfile → skip, print "already installed".
+83. Same slug + different version → install new version, update lockfile entry.
+Infra:
+84. CORS: allow origins = production domain + localhost:3000 (dev only). Allow credentials.
+85. Meilisearch documents follow exact shape in section 17.2. Rebuild from DB on every mutation.
+    On deprecate: update is_deprecated only, do not delete document.
+86. Resolution endpoints accept max_results (default 10, max 50). Filter in DB BEFORE scoring.
+    Results MUST be sorted by compatibility_score descending.
+87. check-updates endpoint accepts max 100 packages per request.
+88. 2FA cannot be disabled in MVP. No disable endpoint.
+89. Presigned artifact URLs MUST expire after 15 minutes. Configured in storage.py.
+90. Resolution returns 200 with empty recommended:[] when no packages match.
+    Only return 422 CAPABILITY_ID_UNKNOWN if the capability_id itself is invalid.
+    NEVER return 404 for zero resolution matches.
+91. Publisher slug is immutable in MVP. No rename endpoint.
+92. Packages cannot be deleted in MVP. Only deprecated or individual versions yanked.
+93. Artifact object key pattern: artifacts/{package_slug}/{version}/package.tar.gz
+94. TOTP secret stored plaintext in MVP. Encryption deferred to post-MVP.
+95. GET /v1/auth/me always includes publisher field. If no publisher exists, publisher = null.
+96. CLI publish validates manifest locally before upload (fast feedback).
+    Backend validation remains source of truth.
+```

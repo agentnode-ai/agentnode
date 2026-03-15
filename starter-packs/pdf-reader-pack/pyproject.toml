@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-reader-pack"
+version = "1.0.0"
+description = "Extract text, tables, and metadata from PDF files."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["pdfplumber>=0.10"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

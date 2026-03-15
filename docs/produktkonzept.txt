@@ -1,0 +1,484 @@
+AgentNode.net – Produktkonzept v5.5 Final
+Build-Ready Gründer-Unterlage · März 2026
+1. Executive Summary
+AgentNode ist die offene Upgrade- und Discovery-Infrastruktur für AI-Agenten.
+Die Plattform hilft Agent-Hosts, Frameworks und Entwicklern dabei, fehlende Fähigkeiten zu erkennen, passende Erweiterungen zu finden und diese sicher zu integrieren.
+AgentNode ist kein klassischer Agent-Marktplatz und kein bloßes Directory. Der Kernnutzen liegt in der Auflösung eines konkreten Fähigkeitsproblems: Welche Fähigkeit fehlt, welches Paket passt, ist es vertrauenswürdig, ist es kompatibel und darf es gemäß Policy integriert werden?
+Fünf Kernelemente:
+ANP – ein offenes Paketformat für installierbare Agent-Upgrades (Agent Node Package)
+Registry – ein Verzeichnis für ANP-Pakete mit gehosteten Artefakten
+Resolution Engine – regelbasierte Upgrade-Auflösung (im MVP), später datengetrieben
+Trust & Policy – Sicherheits- und Governance-Schicht
+CLI / API / SDK / Adapter – Integrationsschicht für Hosts, Frameworks und Entwickler
+AgentNode — where agents find upgrades.
+2. Why now
+Agent-Ökosysteme wachsen stark
+Tool- und Agent-Protokolle konsolidieren sich (MCP, A2A, AAIF)
+Entwickler bauen zunehmend modulare Agent-Systeme statt monolithischer Assistenten
+Sicherheits- und Governance-Fragen werden wichtiger
+Es fehlt eine offene Schicht dafür, welche Fähigkeit für welchen Agenten in welcher Situation die richtige ist
+Genau diese Lücke besetzt AgentNode.
+3. Die Kernidee
+AI-Agenten können heute mit Tools arbeiten, kommunizieren und orchestriert werden. Was fehlt, ist eine neutrale, trust-aware Auflösungsschicht, über die Hosts und Frameworks gezielt neue Fähigkeiten finden, bewerten und integrieren können.
+Der operative Pfad:
+Fähigkeitslücke erkennen → passende Erweiterung auflösen → Trust und Kompatibilität prüfen → Policy anwenden → Integrationsstrategie bestimmen → integrieren → Wirkung messen → bei Bedarf aktualisieren oder ersetzen
+4. Positionierung
+Ein-Satz: AgentNode ist das offene Upgrade- und Discovery-Netzwerk für AI-Agenten.
+Technisch: Die Capability Resolution Layer zwischen Agent-Hosts, Frameworks, MCP-kompatiblen Tool-Beschreibungen und installierbaren Upgrade-Paketen.
+Markt: Capability-first, trust-first, framework-agnostisch, CLI-first, offen im Format, proprietär in der Plattform.
+5. Was AgentNode ist – und was nicht
+Ist: Registry, Resolution-Schicht, Trust-Layer, Integrationsinfrastruktur, langfristig Upgrade-Netzwerk.
+Ist NICHT: Agent-Store, Directory-Dienst, Modell-Hub, Hosting-Produkt, Blockchain-Produkt, Runtime, Frontend für MCP/A2A.
+Fokus: Resolution, Trust, Integration, Registry. Nicht: Hosting, Consumer-UX, Token-Systeme im MVP.
+6. Für wen AgentNode am Anfang wirklich besser ist
+AgentNode ist am Anfang nicht primär besser für jemanden, der in 10 Minuten irgendein GitHub-Repo installieren will.
+AgentNode ist zuerst besser für:
+Entwickler, die Kompatibilität schneller prüfen wollen
+Teams, die Trust und Governance brauchen
+Agent-Hosts, die wiederholt Fähigkeiten nachladen
+Framework-basierte Projekte, die strukturiert statt ad hoc integrieren
+Ehrlicher Status-quo-Vergleich:
+Der größte Mehrwert entsteht bei Teams, Hosts und wiederholten Workflows – nicht zwingend beim einmaligen Hobby-Prototyp.
+7. Die ersten echten Nutzer
+Persona 1: Marco
+Baut mit LangChain einen Legal-/Dokumenten-Agenten. Braucht PDF-Extraktion. Heute sucht er Lösungen über GitHub, Blogs und Foren. Problem: keine verlässliche Vergleichbarkeit, keine klare Integrationslogik.
+Persona 2: Sarah
+Baut einen Research Agent. Braucht Websuche, Extraktion und Zusammenfassung. Problem: Tool-Landschaft fragmentiert, keine strukturierte Upgrade-Empfehlung.
+Persona 3: Timo
+Arbeitet in einem kleinen AI-Produktteam. Will neue Fähigkeiten schnell und verlässlich evaluieren. Problem: Tool-Evaluation kostet zu viel Zeit.
+8. Verhältnis zu MCP, A2A und AgentNode
+AgentNode konkurriert nicht mit MCP oder A2A, sondern besetzt eine andere Schicht.
+Why not just MCP Registry?
+Eine MCP Registry beantwortet: welche MCP-Server oder Tools existieren.
+AgentNode beantwortet zusätzlich:
+Welcher davon für dieses Setup am besten passt
+Welcher laut Policy erlaubt ist
+Welcher vertrauenswürdig ist
+Welcher ein bestehendes Pack ersetzen sollte
+Welcher Upgrade-Pfad sinnvoll ist
+MCP Registry = Discovery. AgentNode = Discovery + Resolution + Trust + Policy.
+AgentNode ist keine Alternative zu MCP, sondern eine Entscheidungsschicht oberhalb von MCP. MCP-Beschreibungen können importiert und um Upgrade-Metadaten, Trust, Policy, Kompatibilitätsauflösung und Ranking angereichert werden.
+9. Die Produkt-Objekte
+9.1 Agent
+Vollständiger, eigenständig nutzbarer Agent.
+9.2 Tool-Pack
+Modulares Fähigkeitspaket mit standardisierter Tool-Beschreibung und Python-Referenzcode.
+9.3 Upgrade-Pack
+Gezielte Erweiterung die eine bestehende Fähigkeit ergänzt oder ersetzt.
+MVP-Klarstellung: Im MVP liegt der Fokus auf Tool-Packs. Nicht auf vollwertigen autonomen Subagents.
+10. Capability-first
+Gesucht wird nicht nach Produktnamen, sondern nach fehlenden Fähigkeiten: pdf_extraction, web_search, document_summary, browser_navigation, knowledge_retrieval.
+Pakete sind Träger dieser Fähigkeiten, aber nicht die primäre Suchlogik.
+11. Die drei Kernfeatures
+11.1 Resolution Engine (Herzstück)
+Ein Host, Framework oder Entwickler meldet eine fehlende Fähigkeit an AgentNode. AgentNode liefert: passende Kandidaten, Kompatibilitätsgrad, Trust-Level, Risiko, Integrationsstrategie, Alternativen.
+Ehrliche MVP-Einordnung: Im MVP ist die Resolution Engine eine regelbasierte, policy-aware, capability-basierte Auflösung mit Ranking. Noch keine datengetriebene Recommendation Engine. Der volle Mehrwert entsteht mit wachsendem Katalog und echten Nutzungsdaten.
+MVP-Scoring:
+Sofort-Ausschluss bei: verbotene Permission, inkompatible Runtime, Trust unter Minimum, deprecated Paket.
+11.2 Trust & Policy
+Jede Empfehlung läuft durch eine Policy-Prüfung. Ergebnisse: erlaubt, Freigabe nötig, verboten.
+MVP Trust-Messaging: Nicht "Trust schon bewiesen", sondern: "AgentNode wird von Anfang an trust-ready gebaut, damit bei wachsendem Ökosystem die Sicherheitsinfrastruktur bereits steht."
+11.3 Upgrade Advisor (Phase 2+)
+Langfristig reagiert AgentNode nicht nur auf Suchanfragen, sondern weist aktiv auf sinnvolle Updates hin – eine "Dependabot für Agent-Fähigkeiten"-Schicht:
+Pack deprecated
+Security-Problem entdeckt
+Kompatible bessere Alternative verfügbar
+Setup kann durch Upgrade verbessert werden
+12. ANP – Agent Node Package Format
+12.1 Warum ANP?
+"ACP" ist in der Agent-Welt bereits durch IBMs Agent Communication Protocol vorbelastet. "AUP" wäre generisch. Deshalb: ANP – Agent Node Package. Der Name ist produktnah, eindeutig und sofort verständlich.
+12.2 Die Ambition
+ANP ist zunächst ein offenes, dokumentiertes Paketformat für installierbare Agent-Upgrades. Kein "offener Industriestandard" vom ersten Tag. Wenn sich das Format verbreitet, kann es zum De-facto-Standard werden.
+Offizielle Definition:
+ANP (AgentNode Package) – The native package format for installable capabilities in the AgentNode ecosystem.
+Strategischer Vorteil des Namens: ANP bindet das Format direkt an die Plattform – genau wie Chrome Extensions, Docker Images oder npm Packages. Das schafft ein klares mentales Modell: Ein ANP gehört zu AgentNode, kommt aus der AgentNode Registry, wird über AgentNode installiert. ANP kann später verschiedene Pakettypen abdecken (ANP Tool Pack, ANP Upgrade Pack, ANP Agent Pack) ohne semantische Einschränkung.
+12.3 Was ANP beschreibt
+Welche Fähigkeit es liefert, wie sie aufgerufen wird, welche Berechtigungen nötig sind, womit sie kompatibel ist, wie sie integriert wird, wie vertrauenswürdig sie ist.
+12.4 Compliance Levels
+12.5 Governance
+Versionierte Spezifikation, klare Pflicht-/Optionalfelder, offizieller Validator, Referenzbeispiele, Backward-Compatibility-Regeln. AUP wird semantisch versioniert.
+12.6 Tool-Beschreibung: MCP-kompatibel, nicht eigenes Interface
+Im MVP definiert AgentNode kein eigenes Tool-Interface als Konkurrenz zu MCP. Tool-Beschreibungen in ANP orientieren sich am MCP-Tool-Schema. AgentNode ergänzt MCP um: Upgrade-Metadaten, Trust, Policy, Kompatibilitätsauflösung, Ranking.
+13. Was ist ein Pack im MVP – technisch konkret
+13.1 Pack-Definition
+Ein Pack besteht im MVP aus:
+agentnode.yaml (ANP Manifest)
+MCP-kompatible Tool-Beschreibung
+Python-Referenzcode als paketierbares Artefakt
+Optional: Beispielcode, Tests, README
+13.2 Was agentnode install pdf-reader-pack konkret macht
+AgentNode prüft Version, Trust, Kompatibilität, Policy
+Lädt das Paket-Artefakt aus der AgentNode-Registry (nicht PyPI, nicht GitHub)
+Installiert es in die lokale Python-Umgebung
+Schreibt Einträge in agentnode.lock
+Gibt direkt nutzbaren Integrationscode aus
+$ agentnode install pdf-reader-pack
+Installed:
+  pdf-reader-pack==1.0.0
+Files updated:
+  agentnode.lock
+Next step:
+  from pdf_reader_pack import tool
+13.3 Warum AgentNode Artefakte selbst hostet
+Wenn agentnode install nur auf PyPI oder GitHub verweist, ist es nur ein hübscherer pip install. Für den MVP braucht AgentNode einen echten Install-Moment mit eigener Artifact-Infrastruktur.
+13.4 Spätere Erweiterungen
+Später kann AgentNode zusätzlich unterstützen: PyPI-backed Packs, GitHub-backed Packs, MCP-Server-backed Packs, Remote Packs. Aber nicht im MVP.
+13.5 Wrapper-Strategie für Starter-Packs
+Die ersten Packs sind saubere ANP-Wrapper um bestehende gute Open-Source-Tools, nicht komplett eigenentwickelt:
+pdfplumber oder PyMuPDF wird zu pdf-reader-pack
+Suchbibliotheken/APIs werden zu web-search-pack
+Summarization-Libraries werden zu document-summary-pack
+Vorteil: Weniger Eigenentwicklung, schneller bessere Qualität, zeigt Publishern wie sie eigene Tools in AUP verpacken können.
+14. Capability-Taxonomie
+14.1 MVP: Flache Liste, keine Ontologie
+Keine große Hierarchie, keine komplexe Wissensstruktur. Stattdessen: 30–50 feste Capability-IDs, manuell kuratiert, neue IDs nur auf Vorschlag und Review.
+14.2 Beispiele
+pdf_extraction, document_summary, web_search, browser_navigation, knowledge_retrieval, email_drafting, csv_analysis, scheduling, vector_memory, citation_extraction
+14.3 Regel
+Ranking und Resolution basieren auf offiziellen Capability-IDs. Freie Tags sind erlaubt, aber sekundär.
+15. Das Manifest
+Das agentnode.yaml ist die Referenzdarstellung von ANP.
+15.1 Designprinzipien
+Maschinenlesbar, validierbar, versionsfähig, framework-neutral, minimal im Core, erweiterbar.
+15.2 Pflichtbereiche
+Identität, Runtime, Tool-Beschreibung (MCP-kompatibel), Compatibility, Dependencies, Permissions, Security, Lifecycle.
+15.3 Upgrade-spezifische Felder
+15.4 Regel
+A2A- oder MCP-bezogene Metadaten werden bei Bedarf aus ANP abgeleitet, nicht umgekehrt.
+Ein Pack ist im MVP technisch primär: MCP-kompatible Tool-Beschreibung + AgentNode-gehostetes Python-Artefakt. Nicht gleichzeitig Docker, Remote-Services und Subagent-Architekturen.
+16. Produktarchitektur (6 Schichten)
+┌──────────────────────────────────────────────────┐
+│  1. DISCOVERY LAYER                              │
+│  Suche · Filter · Capability-first · Ranking     │
+├──────────────────────────────────────────────────┤
+│  2. RESOLUTION LAYER (Herzstück)                 │
+│  Regelbasierte Auflösung · Policy-Check ·         │
+│  Kompatibilitätsberechnung · Scoring              │
+├──────────────────────────────────────────────────┤
+│  3. REGISTRY LAYER                                │
+│  Paket-Metadaten · Versionen · Capabilities ·     │
+│  Kompatibilitäten · Trust-Level                   │
+├──────────────────────────────────────────────────┤
+│  4. TRUST & POLICY LAYER                          │
+│  2FA · Signaturen · Scans · Moderation ·           │
+│  Policy Engine · Quarantäne                        │
+├──────────────────────────────────────────────────┤
+│  5. INSTALL & INTEGRATION LAYER                    │
+│  CLI · REST API · Python SDK · Adapter ·            │
+│  Artifact Hosting · Lockfile · Rollback             │
+├──────────────────────────────────────────────────┤
+│  6. OBSERVABILITY LAYER                            │
+│  Downloads · Aktivierungen · Fehler · Health        │
+└──────────────────────────────────────────────────┘
+Im MVP als modularer Monolith.
+17. Trust, Sicherheit und Governance
+Trust-Stufen: Unverified → Verified → Trusted → Curated
+MVP-Maßnahmen: 2FA für Publisher, Signaturen/Hashes, Provenance, Secret Detection, statische Scans, Typosquatting Detection, Quarantäne für neue Publisher, sichtbare Permissions, Report-Funktion, Moderations-Queue.
+Governance: Risikobasierte Moderation, dokumentierte Suspendierungsgründe, Appeal-Prozess, strengere Regeln für riskante Pakete.
+18. Permissions- und Policy-Modell
+Policy-Ergebnisse: automatisch erlaubt, Freigabe nötig, nur Sandbox, verboten.
+19. Package-Detailseite (7 Blöcke)
+Was es kann – Capabilities in normaler Sprache
+Für welche Lücken es empfohlen wird – Missing Capabilities, Agent-Typen
+Wie es installiert wird – CLI-Befehl, Integrationscode
+Womit es kompatibel ist – Frameworks, Runtimes, Dependencies
+Was es darf – Permissions-Matrix, Scopes
+Wie gut es funktioniert – Erfolgsquote, Aktivierung, Reviews
+Warum man ihm trauen kann – Trust-Stufe, Signatur, Provenance, Changelog
+20. CLI
+20.1 MVP-Befehle
+agentnode login
+agentnode validate ./package
+agentnode publish ./package
+agentnode search "pdf extraction"
+agentnode info pdf-reader-pack
+agentnode install pdf-reader-pack
+agentnode update pdf-reader-pack
+agentnode rollback pdf-reader-pack@1.4.2
+agentnode audit pdf-reader-pack
+agentnode list
+agentnode report pdf-reader-pack
+20.2 Upgrade-Befehle
+agentnode recommend --missing=pdf_extraction
+agentnode resolve-upgrade --missing=browser_automation --framework=langchain
+agentnode policy-check --package=memory-upgrade --framework=langchain
+20.3 Phase 1.1: Doctor & Explain
+agentnode doctor – liest agentnode.lock (automatisch aus Installationen aufgebaut), vergleicht mit typischen Capability-Sets, schlägt fehlende Upgrades vor. Kein manuelles Profil nötig.
+agentnode explain <pack> – Capabilities, Use Cases, oft zusammen installierte Packs, Permissions, Trust.
+21. API
+21.1 Discovery API
+Suche, Filterung, Ranking.
+21.2 Resolution API (Herzstück)
+POST /v1/resolve-upgrade, POST /v1/recommend, POST /v1/check-policy
+21.3 Install API
+POST /v1/packages/{slug}/install, Update, Rollback.
+21.4 Trust API
+Trust Status, Permissions, Publisher Status.
+21.5 Publish API
+POST /v1/packages/validate, POST /v1/packages/publish, Deprecate.
+22. SDK und Adapter
+22.1 Architekturregel
+Python SDK ist der primäre Integrationspfad. LangChain-Adapter ist nur ein dünner Wrapper darüber. Alle Kernfeatures müssen ohne LangChain vollständig benutzbar sein.
+22.2 Python SDK
+from agentnode import AgentNode
+an = AgentNode(api_key="...")
+# Suchen
+results = an.search("pdf extraction")
+# Auflösen
+result = an.resolve_upgrade(
+    missing="pdf_extraction",
+    framework="langchain",
+    runtime="python",
+    policy={"min_trust": "verified", "allow_shell": False}
+)
+# Policy prüfen
+policy = an.check_policy("browser-pack", framework="langchain")
+# Installieren
+install = an.install("pdf-reader-pack")
+22.3 LangChain-Adapter (dünner Wrapper)
+from agentnode_langchain import load_tool
+tool = load_tool("pdf-reader-pack", api_key="...")
+agent_tools = [tool]
+22.4 Alle SDKs und Adapter sind Open Source (MIT)
+22.5 Spätere Adapter
+CrewAI, MCP, OpenAI – Phase 2.
+22.6 AgentNode als MCP Server (Phase 2)
+AgentNode kann später selbst als MCP Server auftreten: agentnode_search, agentnode_resolve_upgrade, agentnode_explain_package
+MCP-fähige Agenten können AgentNode dann direkt konsultieren, ohne eigenes SDK.
+23. Datenmodell
+23.1 Kernentitäten
+User, Publisher, Package, PackageVersion, Capability, Dependency, CompatibilityRule, Installation, Review, SecurityFinding, TrustStatus.
+23.2 AgentNode-spezifische Entitäten
+23.3 Regel
+Package, Version, Capability und Trust bleiben strikt getrennt.
+24. Starter-Packs und Referenz-Agent
+24.1 MVP: 3 exzellente Packs (Wrapper-Strategie)
+Weitere Packs kommen nach Launch, nicht gleichzeitig.
+24.2 Referenz-Agent
+Research Agent – nutzt die 3 MVP-Packs und demonstriert den Kernflow: Capability Resolution → Installation → Integration.
+24.3 Publisher-Strategie
+Die ersten Packs kommen von uns (Wrapper um Open-Source-Tools). Externe Publisher kommen erst wenn es genug Consumers gibt. Das wird offen kommuniziert.
+25. Open Core Geschäftsmodell
+25.1 Offen
+ANP-Format, CLI, SDKs, Adapter, Referenz-Packs, Capability-Liste.
+25.2 Proprietär
+Registry Backend, Resolution Layer, Ranking, Trust-Logik, spätere Recommendation-/Advisor-Daten, Marketplace, Analytics.
+25.3 Marke schützen
+Trademark auf "AgentNode", Domain kontrollieren, Registry als zentrale Instanz, API Terms of Service.
+Open format. Open tools. Closed platform.
+26. Monetarisierung
+26.1 MVP: Komplett kostenlos
+Keine Plattform-Fee, kein Stripe, keine Publisher-Payouts, keine Credits, keine Paid Features. Jede frühe Monetarisierung erzeugt Reibung und lenkt vom Kernproblem ab.
+26.2 Phase 2
+Team-Funktionen, private Pakete, Analytics, ggf. Credits.
+26.3 Phase 3
+Enterprise Registry, Hosted Execution Connector, optionale Payment-Integration.
+27. Distribution und Cold Start
+27.1 Zentrales Risiko
+Chicken-and-Egg: keine Packs → keine Nutzer → keine Publisher.
+27.2 Lösung
+3 hochwertige Starter-Packs (Wrapper-Strategie), 1 Referenzagent, CLI, Python SDK, LangChain-Adapter, GitHub-First (öffentliches Repo), gute Doku.
+27.3 GitHub Action (Phase 1.1)
+- uses: agentnode/publish@v1
+  with:
+    package: ./my-pack
+Senkt die Publishing-Hürde auf null. Nutzt bestehenden CI/CD-Workflow. Wahrscheinlich wichtiger als viele spätere Komfortfeatures.
+27.4 Priorität
+Distribution ist wichtiger als Monetarisierung.
+27.5 Das Ökosystem-Flywheel
+mehr Packs
+  → mehr Capability-Suchen
+    → mehr Installationen
+      → mehr Nutzungsdaten
+        → bessere Resolution
+          → mehr Nutzen für Entwickler
+            → mehr Packs
+Ohne diesen Kreislauf bleibt AgentNode ein statisches Verzeichnis. Der gesamte MVP ist darauf ausgerichtet, die erste Umdrehung dieses Flywheels auszulösen.
+27.6 Langfristige Infrastruktur-Vision
+Die CLI ist der Einstieg. Das Langfristziel ist größer: AgentNode wird zur Hintergrund-Infrastruktur die Agent-Hosts automatisch konsultieren wenn eine Fähigkeit fehlt. Nicht mehr ein Ort den man besucht, sondern ein System das im Runtime-Flow mitläuft.
+Der Weg dahin führt aber immer über den manuellen, sichtbaren, CLI-basierten Einstieg. Frameworks bauen AgentNode erst ein wenn genug Entwickler es nutzen. Entwickler nutzen es erst wenn die CLI-Erfahrung gut genug ist.
+Die Vision ist "default capability resolver". Der Weg dahin ist "beste CLI-Erfahrung für Capability-Suche und Installation."
+28. MVP
+28.1 MVP-Ziel
+Ein Entwickler soll in wenigen Minuten:
+Ein ANP-Paket validieren und veröffentlichen
+Es über Web, API oder CLI finden
+Trust und Kompatibilität prüfen
+Eine Fähigkeitslücke auflösen lassen
+Integrationshinweise und echten Code erhalten
+Das Pack einbinden
+28.2 Exakt zehn MVP-Bausteine
+28.3 Nicht im MVP
+Capability Graph, Team/Enterprise, Hosting, Credits, Agent-autonome Installation, semantische Vektor-Suche, große Analytics, MCP Server, GitHub Action.
+29. Roadmap
+Phase A – Core Prototype (10–12 Wochen)
+ANP Validator, Capability-Liste, Registry API, Package Upload, Search, Python SDK Basis, 1 Pack.
+Phase B – MVP (weitere 8–12 Wochen)
+Resolve API, Install Flow mit Artifact Hosting, 3 Packs, Web UI, LangChain-Adapter, Lockfile, Docs, Referenzagent, Trust Basics.
+Phase 1.1 – Adoption
+agentnode doctor, agentnode explain, GitHub Action, Tutorials, bessere DX, erste Launch-Kanäle.
+Phase 2 – Growth
+Capability Graph (aus kuratierten Relationen + Nutzungsdaten), semantische Suche, mehr Adapter (CrewAI, MCP, OpenAI), AgentNode als MCP Server, private Packs, Team-Accounts, Risk Score, Upgrade Advisor, erste Monetarisierung.
+Phase 3 – Plattform
+Enterprise Registry, On-prem Mirror, kontrollierte Agent-to-Agent Flows, optionale Hosted Execution, Benchmarking/Evals.
+Gesamtzeit bis MVP: ca. 5–6 Monate.
+30. Day-1-Launch-Plan
+30.1 Ziel
+Ein Entwickler soll in 5 Minuten das Aha-Erlebnis haben.
+30.2 Day-1-Flow
+Entwickler sieht Launch-Post (Hacker News, Reddit, X, GitHub)
+Klickt Landing Page
+Sieht klaren CTA: pip install agentnode
+Führt agentnode search pdf aus
+Sieht 3 Ergebnisse mit Trust und Kompatibilität
+Führt agentnode install pdf-reader-pack aus
+Bekommt funktionierenden Python-Integrationscode
+Denkt: "Das war einfacher und strukturierter als GitHub-Suche."
+Wenn Schritt 8 nicht passiert, ist das Produkt noch nicht bereit.
+30.3 Landing Page Struktur
+Headline: "Find and install the capabilities your AI agent is missing"
+Subline: "AgentNode helps developers and AI hosts resolve capability gaps with trust-aware, framework-compatible upgrade recommendations."
+Hero: Terminal-Animation mit agentnode search pdf → Ergebnis → agentnode install pdf-reader-pack
+3 Beispiel-Packs: Web Search, PDF Reader, Document Summary
+Trust-Blöcke: Compatibility, Policy-aware, Structured install
+CTA: pip install agentnode + Links zu Docs und GitHub
+31. Competitive Response
+31.1 Bedrohung
+Wenn Frameworks oder Plattformen eigene Registries bauen (z.B. LangChain install, MCP Official Registry), könnte AgentNode optional werden.
+31.2 Der echte Burggraben
+Registry ist kopierbar. Resolution-Daten sind schwer kopierbar.
+Der Burggraben entsteht langfristig durch:
+Welche Packs existieren und wie sie bewertet sind
+Welche in welchen Setups funktionieren
+Welche Trust-Historie sie haben
+Welche Upgrade-Pfade sich bewährt haben
+Welche Integrationsmuster erfolgreich waren
+AgentNode weiß nicht nur, welche Packs existieren. AgentNode weiß, welches Pack in welcher Situation wirklich passt.
+31.3 Competitive-Response-Regel
+AgentNode bleibt wertvoll, solange es die beste Antwort auf diese Frage liefert:
+Welches Pack funktioniert in meinem konkreten Setup am besten?
+32. Strategische Architekturentscheidung
+32.1 Registry vs. Resolution Layer
+Ebene A: Registry – Pakete speichern, Metadaten, Suche, Publishing. Ebene B: Resolution – Lücken auflösen, Empfehlungen, Policy, Kompatibilität.
+Wenn Ebene A fehlt, keine Plattform. Wenn Ebene B fehlt, nur ein Katalog.
+32.2 Produktformel
+Every agent upgrade decision should pass through AgentNode.
+32.3 Build-Prioritäten
+Der erste Code ist nicht die Website, sondern:
+AUP Validator + Registry API
+Python SDK
+Resolve-Upgrade API
+1 Starter-Pack
+Die Website ist Schaufenster + Management UI, nicht das Herz.
+33. Tech Stack
+Prämisse: einfach, schnell, wartbar.
+34. Risiken
+35. Warum AgentNode gewinnen kann
+AgentNode hat eine reale Chance, wenn drei Dinge gelingen:
+Ein nützliches offenes Paketformat etablieren (ANP)
+Bessere Upgrade-Entscheidungen liefern als GitHub-Suche (Resolution + Trust + Policy)
+Schnell über SDK, CLI und LangChain in echte Workflows kommen (Distribution)
+Nicht ein weiteres Directory gewinnt. Nicht der schönste Store gewinnt. Gewinnen kann die Plattform, die konkrete Fähigkeitsprobleme operativ löst.
+36. Finale Kernbotschaft
+AgentNode ist nicht der nächste Agent-Marktplatz. AgentNode ist die Upgrade- und Auflösungsschicht für installierbare Agent-Fähigkeiten.
+Open format. Open tools. Closed platform.
+AgentNode — where agents find upgrades.
+AgentNode.net – The open upgrade and discovery network for AI agents.
+
+=== TABLE 1 ===
+Schritt | Heute (GitHub) | AgentNode
+Problem merken | ✅ | ✅
+Lösung suchen | Google → GitHub → README lesen | agentnode search pdf → Trust + Kompatibilität sofort sichtbar
+Bewerten | Stars zählen, Issues lesen | Trust-Level, Permissions, Policy-Check
+Installieren | pip install x + hoffen | agentnode install x → geprüftes Artefakt + Lockfile
+Langfristig profitieren | manuelles Monitoring | Upgrade-Advisor, Deprecation-Warnings
+
+=== TABLE 2 ===
+Schicht | Was es tut
+A2A | Wie Agenten miteinander kommunizieren
+MCP | Wie Tools, Resources und Prompts angebunden und beschrieben werden
+AgentNode | Welches Upgrade für welchen Agenten am besten passt
+
+=== TABLE 3 ===
+Signal | Gewicht
+capability_match | 0.40
+framework_match | 0.20
+runtime_match | 0.15
+trust_score | 0.15
+permissions_fit | 0.10
+
+=== TABLE 4 ===
+Level | Inhalt
+ANP Core | Identität, Version, Typ, Capabilities, Runtime, Kompatibilität, Permissions
+ANP Trust | + Signaturen, Provenance, Security Findings, Publisher-Status
+ANP Upgrade | + upgrade_roles, recommended_for, replaces, fallback_behavior, policy_requirements
+ANP Full | + Observability Hooks, Healthchecks, Delegation Modes
+
+=== TABLE 5 ===
+Feld | Zweck
+upgrade_roles | Wofür als Upgrade geeignet
+recommended_for | Für welche Agent-Typen und fehlende Capabilities
+replaces | Welches ältere Paket ersetzt wird
+install_strategy | local (MVP) / remote / subagent (später)
+fallback_behavior | Verhalten bei Fehlschlag
+policy_requirements | Mindest-Trust, Approval-Regeln
+
+=== TABLE 6 ===
+Kategorie | Abstufungen
+Netzwerk | none → restricted → unrestricted
+Dateisystem | none → temp → workspace-read → workspace-write → any
+Code-Ausführung | none → limited-subprocess → shell
+Datenzugriff | input-only → connected-accounts → persistent
+Nutzerfreigabe | always → high-risk-only → once → never
+
+=== TABLE 7 ===
+Entität | Zweck
+UpgradeRecommendation | Fehlende Fähigkeit, empfohlene Packs, Policy-Ergebnis
+CapabilityGap | Was fehlt, wie oft, abgeleitet aus Search/Errors
+CapabilityRelation | complements, replaces, requires, often_paired (Phase 2)
+
+=== TABLE 8 ===
+Pack | Wraps | Capability
+web-search-pack | Such-APIs | web_search
+pdf-reader-pack | pdfplumber / PyMuPDF | pdf_extraction
+document-summary-pack | Summarization-Libraries | document_summary
+
+=== TABLE 9 ===
+# | Baustein
+1 | ANP Format v0.1 + Validator
+2 | Capability-Liste v0.1 (30–50 IDs)
+3 | Package/Version/Capability-Datenmodell + Artifact Hosting
+4 | Websuche mit Capability-Filtern
+5 | Detailseite mit 7 Blöcken
+6 | CLI Core (login, validate, publish, search, info, install, update, rollback, audit, list)
+7 | Resolution API v0.1 (resolve-upgrade, recommend, check-policy)
+8 | 2FA + Signaturen + einfache Scans + Quarantäne
+9 | Python SDK
+10 | LangChain-Adapter + 3 Starter-Packs + 1 Referenzagent
+
+=== TABLE 10 ===
+Komponente | Empfehlung
+Frontend | Next.js
+Backend API | Fastify oder FastAPI
+Datenbank | PostgreSQL
+Cache | Redis
+Suche | Meilisearch
+Artifact Storage | S3-kompatibel (Cloudflare R2)
+Auth | JWT + API Keys + TOTP
+CLI | Node.js (npm)
+SDK | Python (PyPI)
+Security | VirusTotal API + Custom Static Analysis
+
+=== TABLE 11 ===
+Risiko | Gegenmaßnahme
+Resolve-Flow nicht besser als GitHub | Auf Teams, Hosts, wiederholte Workflows fokussieren
+Resolution mit 3 Packs trivial | Ehrlich: MVP beweist Flow, nicht vollen Markt
+Capability-Taxonomie zu komplex | Flache Liste, keine Ontologie
+Eigenes Tool-Interface neben MCP | MCP-kompatible Beschreibung nutzen
+Zu viele Starter-Packs | 3 exzellente statt 10 mittelmäßige
+Publisher-Motivation fehlt | Wrapper-Strategie, eigene Packs zuerst
+Trust-Claim im MVP hohl | trust-ready by design kommunizieren
+LangChain-Abhängigkeit | SDK ist Kern, Adapter nur Wrapper
+MCP Registry wird stark | AgentNode als Resolution-Schicht darüber
+Timeline zu sportlich | 5–6 Monate, nicht 3
+Zu viel Scope | Kostenlos, eng, lokal, Python-first

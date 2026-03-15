@@ -1,0 +1,92 @@
+manifest_version: "0.1"
+package_id: "pdf-reader-pack"
+package_type: "toolpack"
+name: "PDF Reader Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Extract text, tables, and metadata from PDF files."
+description: |
+  Wraps pdfplumber to provide reliable PDF text and table extraction.
+  Returns structured output with per-page content and extracted tables.
+
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "pdf_reader_pack.tool"
+
+capabilities:
+  tools:
+    - name: "extract_pdf_text"
+      capability_id: "pdf_extraction"
+      description: "Extracts text content and tables from a PDF file"
+      input_schema:
+        type: "object"
+        properties:
+          file_path:
+            type: "string"
+            description: "Path to PDF file"
+          pages:
+            type: "string"
+            default: "all"
+            description: "Page range — 'all' or '1-3'"
+        required: ["file_path"]
+      output_schema:
+        type: "object"
+        properties:
+          text:
+            type: "string"
+          pages:
+            type: "array"
+          tables:
+            type: "array"
+  resources: []
+  prompts: []
+
+tags: ["pdf", "extraction", "documents"]
+categories: ["document-processing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+dependencies: []
+
+permissions:
+  network:
+    level: "none"
+    allowed_domains: []
+  filesystem:
+    level: "temp"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "never"
+  external_integrations: []
+
+upgrade_roles: ["document_processing", "pdf_extraction"]
+recommended_for:
+  - agent_type: "legal-assistant"
+    missing_capability: "pdf_extraction"
+  - agent_type: "research-agent"
+    missing_capability: "pdf_extraction"
+replaces: []
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: ""
+  provenance:
+    source_repo: "https://github.com/agentnode/starter-packs"
+    commit: ""
+    build_system: "manual"
+
+support:
+  homepage: "https://agentnode.net/packages/pdf-reader-pack"
+  issues: "https://github.com/agentnode/starter-packs/issues"
+
+deprecation_policy: "6-months-notice"

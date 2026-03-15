@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "web-search-pack"
+version = "1.0.0"
+description = "Search the web and retrieve structured results for AI agents."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["duckduckgo-search>=6.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

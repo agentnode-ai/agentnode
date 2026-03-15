@@ -1,0 +1,121 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+
+export default function LoginPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [totpCode, setTotpCode] = useState("");
+  const [needs2FA, setNeeds2FA] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+
+    try {
+      const body: Record<string, string> = { email, password };
+      if (totpCode) body.totp_code = totpCode;
+
+      const res = await fetch("/api/v1/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        const err = data.error || {};
+        if (err.code === "AUTH_2FA_REQUIRED") {
+          setNeeds2FA(true);
+          setLoading(false);
+          return;
+        }
+        throw new Error(err.message || "Login failed");
+      }
+
+      // Store tokens
+      localStorage.setItem("access_token", data.access_token);
+      localStorage.setItem("refresh_token", data.refresh_token);
+      router.push("/dashboard");
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-md px-6 py-24">
+      <h1 className="mb-2 text-2xl font-bold text-foreground">Sign in</h1>
+      <p className="mb-8 text-sm text-muted">
+        Don&apos;t have an account?{" "}
+        <Link href="/auth/register" className="text-primary hover:underline">
+          Create one
+        </Link>
+      </p>
+
+      {error && (
+        <div className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
+          {error}
+        </div>
+      )}
+
+      <form onSubmit={handleLogin} className="space-y-4">
+        <div>
+          <label className="mb-1 block text-sm text-muted">Email</label>
+          <input
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full rounded-md border border-border bg-card px-4 py-2.5 text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none"
+            placeholder="you@example.com"
+          />
+        </div>
+
+        <div>
+          <label className="mb-1 block text-sm text-muted">Password</label>
+          <input
+            type="password"
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full rounded-md border border-border bg-card px-4 py-2.5 text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none"
+            placeholder="••••••••"
+          />
+        </div>
+
+        {needs2FA && (
+          <div>
+            <label className="mb-1 block text-sm text-muted">2FA Code</label>
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              value={totpCode}
+              onChange={(e) => setTotpCode(e.target.value)}
+              className="w-full rounded-md border border-border bg-card px-4 py-2.5 text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none"
+              placeholder="123456"
+              autoFocus
+            />
+          </div>
+        )}
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
+        >
+          {loading ? "Signing in..." : "Sign in"}
+        </button>
+      </form>
+    </div>
+  );
+}

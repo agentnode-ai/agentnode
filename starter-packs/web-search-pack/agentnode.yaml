@@ -1,0 +1,95 @@
+manifest_version: "0.1"
+package_id: "web-search-pack"
+package_type: "toolpack"
+name: "Web Search Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Search the web and retrieve structured results for AI agents."
+description: |
+  Wraps duckduckgo-search to provide web search capabilities.
+  Returns structured results with title, URL, and snippet.
+
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "web_search_pack.tool"
+
+capabilities:
+  tools:
+    - name: "search_web"
+      capability_id: "web_search"
+      description: "Search the web and return structured results"
+      input_schema:
+        type: "object"
+        properties:
+          query:
+            type: "string"
+            description: "The search query"
+          max_results:
+            type: "integer"
+            default: 5
+            description: "Maximum number of results (1-20)"
+        required: ["query"]
+      output_schema:
+        type: "object"
+        properties:
+          results:
+            type: "array"
+            items:
+              type: "object"
+              properties:
+                title:
+                  type: "string"
+                url:
+                  type: "string"
+                snippet:
+                  type: "string"
+  resources: []
+  prompts: []
+
+tags: ["search", "web", "duckduckgo"]
+categories: ["web-and-browsing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+dependencies: []
+
+permissions:
+  network:
+    level: "restricted"
+    allowed_domains: ["duckduckgo.com"]
+  filesystem:
+    level: "none"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "never"
+  external_integrations: []
+
+upgrade_roles: ["web_search", "information_retrieval"]
+recommended_for:
+  - agent_type: "research-agent"
+    missing_capability: "web_search"
+replaces: []
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: ""
+  provenance:
+    source_repo: "https://github.com/agentnode/starter-packs"
+    commit: ""
+    build_system: "manual"
+
+support:
+  homepage: "https://agentnode.net/packages/web-search-pack"
+  issues: "https://github.com/agentnode/starter-packs/issues"
+
+deprecation_policy: "6-months-notice"

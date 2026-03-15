@@ -1,0 +1,18 @@
+Traceback (most recent call last):
+  File "<string>", line 6, in <module>
+    print(p.text)
+    ~~~~~^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 25: character maps to <undefined>
+# AgentNode.net – Technical Implementation Spec v3 Final
+# Claude Code Ready · Phase A + B (MVP)
+# März 2026
+## 1. PROJEKT-ÜBERSICHT
+AgentNode ist eine Registry + Resolution Engine für installierbare AI-Agent-Capabilities.
+Entwickler veröffentlichen ANP-Pakete (AgentNode Packages), andere Entwickler suchen,
+prüfen und integrieren sie über CLI, SDK oder Web.
+Lokale Paketinstallation erfolgt im MVP ausschließlich über die CLI.
+Das Python SDK dient im MVP für Search, Resolution, Policy-Checks und Install-Metadaten,
+nicht für lokales pip install.

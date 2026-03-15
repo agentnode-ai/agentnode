@@ -1,0 +1,54 @@
+name: SDK & Adapter CI
+
+on:
+  push:
+    branches: [main]
+    paths: [sdk/**, adapter-langchain/**]
+  pull_request:
+    branches: [main]
+    paths: [sdk/**, adapter-langchain/**]
+
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - run: pytest -v
+
+  adapter-langchain:
+    runs-on: ubuntu-latest
+    needs: sdk
+    defaults:
+      run:
+        working-directory: adapter-langchain
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ../sdk -e ".[dev]"
+      - run: pytest -v
+
+  web-lint-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build

@@ -1,0 +1,31 @@
+Traceback (most recent call last):
+  File "<string>", line 7, in <module>
+    print(p.text)
+    ~~~~~^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 25: character maps to <undefined>
+AgentNode.net – Produktkonzept v5.5 Final
+Build-Ready Gründer-Unterlage · März 2026
+1. Executive Summary
+AgentNode ist die offene Upgrade- und Discovery-Infrastruktur für AI-Agenten.
+Die Plattform hilft Agent-Hosts, Frameworks und Entwicklern dabei, fehlende Fähigkeiten zu erkennen, passende Erweiterungen zu finden und diese sicher zu integrieren.
+AgentNode ist kein klassischer Agent-Marktplatz und kein bloßes Directory. Der Kernnutzen liegt in der Auflösung eines konkreten Fähigkeitsproblems: Welche Fähigkeit fehlt, welches Paket passt, ist es vertrauenswürdig, ist es kompatibel und darf es gemäß Policy integriert werden?
+Fünf Kernelemente:
+ANP – ein offenes Paketformat für installierbare Agent-Upgrades (Agent Node Package)
+Registry – ein Verzeichnis für ANP-Pakete mit gehosteten Artefakten
+Resolution Engine – regelbasierte Upgrade-Auflösung (im MVP), später datengetrieben
+Trust & Policy – Sicherheits- und Governance-Schicht
+CLI / API / SDK / Adapter – Integrationsschicht für Hosts, Frameworks und Entwickler
+AgentNode — where agents find upgrades.
+2. Why now
+Agent-Ökosysteme wachsen stark
+Tool- und Agent-Protokolle konsolidieren sich (MCP, A2A, AAIF)
+Entwickler bauen zunehmend modulare Agent-Systeme statt monolithischer Assistenten
+Sicherheits- und Governance-Fragen werden wichtiger
+Es fehlt eine offene Schicht dafür, welche Fähigkeit für welchen Agenten in welcher Situation die richtige ist
+Genau diese Lücke besetzt AgentNode.
+3. Die Kernidee
+AI-Agenten können heute mit Tools arbeiten, kommunizieren und orchestriert werden. Was fehlt, ist eine neutrale, trust-aware Auflösungsschicht, über die Hosts und Frameworks gezielt neue Fähigkeiten finden, bewerten und integrieren können.
+Der operative Pfad:
