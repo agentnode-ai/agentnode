@@ -31,7 +31,7 @@ $ agentnode install pdf-reader-pack
 ### CLI
 
 ```bash
-npm install -g agentnode
+npm install -g agentnode-cli
 
 agentnode search "pdf extraction"
 agentnode install pdf-reader-pack
