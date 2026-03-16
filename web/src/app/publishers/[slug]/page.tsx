@@ -12,12 +12,15 @@ async function getPublisher(slug: string) {
 }
 
 async function getPublisherPackages(slug: string) {
-  const res = await fetch(`${BACKEND_URL}/v1/search?q=&limit=50`, {
+  const res = await fetch(`${BACKEND_URL}/v1/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ publisher_slug: slug, per_page: 50 }),
     next: { revalidate: 60 },
   });
   if (!res.ok) return [];
   const data = await res.json();
-  return (data.hits || []).filter((h: any) => h.publisher_slug === slug);
+  return data.hits || [];
 }
 
 export default async function PublisherPage({

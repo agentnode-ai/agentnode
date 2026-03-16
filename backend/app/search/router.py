@@ -37,6 +37,8 @@ async def search_packages(body: SearchRequest):
         filters.append(f'runtime = "{body.runtime}"')
     if body.trust_level:
         filters.append(f'trust_level = "{body.trust_level}"')
+    if body.publisher_slug:
+        filters.append(f'publisher_slug = "{body.publisher_slug}"')
     filters.append("is_deprecated = false")
 
     meili_body: dict = {

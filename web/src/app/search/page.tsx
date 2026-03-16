@@ -15,6 +15,7 @@ const FILTER_OPTIONS = {
 
 interface Filters {
   package_type: string;
+  capability_id: string;
   framework: string;
   runtime: string;
   trust_level: string;
@@ -27,6 +28,7 @@ function SearchContent() {
   const [query, setQuery] = useState(searchParams.get("q") ?? "");
   const [filters, setFilters] = useState<Filters>({
     package_type: searchParams.get("package_type") ?? "",
+    capability_id: searchParams.get("capability_id") ?? "",
     framework: searchParams.get("framework") ?? "",
     runtime: searchParams.get("runtime") ?? "",
     trust_level: searchParams.get("trust_level") ?? "",
@@ -44,6 +46,7 @@ function SearchContent() {
       const params = new URLSearchParams();
       if (q) params.set("q", q);
       if (f.package_type) params.set("package_type", f.package_type);
+      if (f.capability_id) params.set("capability_id", f.capability_id);
       if (f.framework) params.set("framework", f.framework);
       if (f.runtime) params.set("runtime", f.runtime);
       if (f.trust_level) params.set("trust_level", f.trust_level);
@@ -56,6 +59,7 @@ function SearchContent() {
         const body: Record<string, unknown> = {};
         if (q) body.q = q;
         if (f.package_type) body.package_type = f.package_type;
+        if (f.capability_id) body.capability_id = f.capability_id;
         if (f.framework) body.framework = f.framework;
         if (f.runtime) body.runtime = f.runtime;
         if (f.trust_level) body.trust_level = f.trust_level;
@@ -126,6 +130,21 @@ function SearchContent() {
         {/* Filters sidebar */}
         <aside className="w-full shrink-0 lg:w-56">
           <div className="sticky top-24 space-y-6">
+            {/* Active capability filter badge */}
+            {filters.capability_id && (
+              <div>
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted">
+                  Capability
+                </h3>
+                <button
+                  onClick={() => handleFilterChange("capability_id", filters.capability_id)}
+                  className="flex items-center gap-2 rounded-md border border-primary/20 bg-primary/10 px-3 py-1.5 text-xs text-primary"
+                >
+                  <span className="font-mono">{filters.capability_id}</span>
+                  <span className="text-muted hover:text-foreground">✕</span>
+                </button>
+              </div>
+            )}
             {(
               Object.entries(FILTER_OPTIONS) as [keyof Filters, string[]][]
             ).map(([key, options]) => (

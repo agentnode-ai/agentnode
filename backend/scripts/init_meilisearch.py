@@ -10,7 +10,7 @@ INDEX_SETTINGS = {
         "name", "summary", "description", "capability_ids", "tags", "publisher_name",
     ],
     "filterableAttributes": [
-        "package_type", "capability_ids", "frameworks", "runtime", "trust_level", "is_deprecated",
+        "package_type", "capability_ids", "frameworks", "runtime", "trust_level", "is_deprecated", "publisher_slug",
     ],
     "sortableAttributes": ["download_count", "published_at"],
     "rankingRules": [
