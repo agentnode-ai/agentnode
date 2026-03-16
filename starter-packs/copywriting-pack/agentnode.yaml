@@ -1,0 +1,66 @@
+manifest_version: "0.1"
+package_id: "copywriting-pack"
+package_type: "toolpack"
+name: "Copywriting Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Generate marketing copy using proven copywriting frameworks."
+description: "Generate marketing copy using proven copywriting frameworks."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "copywriting_pack.tool"
+
+capabilities:
+  tools:
+    - name: "tone_adjustment"
+      capability_id: "tone_adjustment"
+      description: "Generate marketing copy using a proven copywriting framework."
+      input_schema:
+        type: "object"
+        properties:
+          product: {type: "string"}
+          audience: {type: "string", default: ""}
+          framework: {type: "string", default: "aida"}
+          tone: {type: "string", default: "persuasive"}
+        required: ['product']
+  resources: []
+  prompts: []
+
+tags: ["copywriting"]
+categories: ["language"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["tone_adjustment"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "tone_adjustment"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/copywriting-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

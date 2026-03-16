@@ -1,0 +1,67 @@
+manifest_version: "0.1"
+package_id: "crm-connector-pack"
+package_type: "toolpack"
+name: "Crm Connector Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Connect to CRM platforms (HubSpot) to manage contacts and deals."
+description: "Connect to CRM platforms (HubSpot) to manage contacts and deals."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "crm_connector_pack.tool"
+
+capabilities:
+  tools:
+    - name: "task_management"
+      capability_id: "task_management"
+      description: "Interact with a CRM platform."
+      input_schema:
+        type: "object"
+        properties:
+          provider: {type: "string"}
+          api_key: {type: "string"}
+          operation: {type: "string"}
+        required: ['provider', 'api_key', 'operation']
+  resources: []
+  prompts: []
+
+tags: ["crm", "connector"]
+categories: ["productivity"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "httpx>=0.25"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["task_management"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "task_management"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/crm-connector-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

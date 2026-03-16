@@ -12,12 +12,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.packages.models import (
     Capability,
+    CapabilityTaxonomy,
     CompatibilityRule,
     Package,
     PackageVersion,
@@ -55,6 +56,7 @@ class ResolveRequest:
     runtime: str | None = None
     package_type: str | None = None
     limit: int = 10
+    policy: dict | None = None  # Optional policy constraints
 
 
 @dataclass
@@ -67,8 +69,48 @@ class ScoredPackage:
     publisher_slug: str
     trust_level: str
     score: float
+    policy_result: str = "allowed"  # allowed | requires_approval | blocked
     breakdown: dict = field(default_factory=dict)
     matched_capabilities: list[str] = field(default_factory=list)
+    download_count: int = 0
+
+
+async def _expand_capabilities(
+    capabilities: list[str], session: AsyncSession
+) -> set[str]:
+    """Expand requested capabilities using taxonomy — find related IDs
+    in the same category for fuzzy matching."""
+    expanded = set(capabilities)
+
+    if not capabilities:
+        return expanded
+
+    # Find categories for the requested capabilities
+    result = await session.execute(
+        select(CapabilityTaxonomy.id, CapabilityTaxonomy.category)
+        .where(CapabilityTaxonomy.id.in_(capabilities))
+    )
+    known_caps = result.all()
+
+    # If a requested capability is NOT in taxonomy, try prefix/substring matching
+    known_ids = {row[0] for row in known_caps}
+    unknown = [c for c in capabilities if c not in known_ids]
+
+    if unknown:
+        # Fuzzy: find taxonomy entries whose ID contains the search term
+        all_caps_result = await session.execute(
+            select(CapabilityTaxonomy.id)
+        )
+        all_cap_ids = [row[0] for row in all_caps_result.all()]
+
+        for query in unknown:
+            query_normalized = query.replace("-", "_").lower()
+            for cap_id in all_cap_ids:
+                # Prefix match or contains match
+                if cap_id.startswith(query_normalized) or query_normalized in cap_id:
+                    expanded.add(cap_id)
+
+    return expanded
 
 
 async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPackage]:
@@ -77,12 +119,15 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
     if not req.capabilities:
         return []
 
+    # Expand capabilities with fuzzy matching via taxonomy
+    expanded_caps = await _expand_capabilities(req.capabilities, session)
+
     # Find all package versions that have at least one matching capability
     cap_result = await session.execute(
         select(Capability.package_version_id, Capability.capability_id)
-        .where(Capability.capability_id.in_(req.capabilities))
+        .where(Capability.capability_id.in_(expanded_caps))
     )
-    cap_rows = cap_rows = cap_result.all()
+    cap_rows = cap_result.all()
 
     if not cap_rows:
         return []
@@ -120,9 +165,17 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
             if v.published_at and existing.published_at and v.published_at > existing.published_at:
                 best_version_per_package[pkg_id] = v
 
+    # Optional policy evaluation
+    policy_evaluator = None
+    if req.policy:
+        from app.resolution.policy import evaluate_policy_inline
+        policy_evaluator = evaluate_policy_inline
+
     # Score each package
     results: list[ScoredPackage] = []
     requested_caps = set(req.capabilities)
+    # For scoring, we match against the original requested caps
+    scoring_caps = requested_caps
 
     for pkg_id, version in best_version_per_package.items():
         pkg = version.package
@@ -133,12 +186,21 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
         if req.package_type and pkg.package_type != req.package_type:
             continue
 
-        matched = version_caps.get(version.id, set()) & requested_caps
+        matched = version_caps.get(version.id, set()) & expanded_caps
+        # Score based on original request coverage
+        original_matched = matched & requested_caps
+        # Also count expanded matches (lower weight)
+        expanded_only = matched - requested_caps
+
         if not matched:
             continue
 
         # Capability score: fraction of requested capabilities matched
-        cap_score = len(matched) / len(requested_caps)
+        cap_score = len(original_matched) / len(requested_caps) if requested_caps else 0.0
+        # Bonus for expanded matches (up to 0.5 of remaining gap)
+        if expanded_only and cap_score < 1.0:
+            bonus = min(0.5 * (1.0 - cap_score), len(expanded_only) * 0.1)
+            cap_score += bonus
 
         # Framework score
         fw_score = 0.0
@@ -188,6 +250,20 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
         if pkg.is_deprecated:
             total = max(0.0, total - 0.15)
 
+        # Policy evaluation (integrated — Punkt 11)
+        policy_result = "allowed"
+        if policy_evaluator and req.policy:
+            policy_result = policy_evaluator(
+                trust_level=pkg.publisher.trust_level,
+                permissions=version.permissions,
+                quarantine_status=version.quarantine_status,
+                is_yanked=version.is_yanked,
+                policy=req.policy,
+            )
+            # Skip blocked packages
+            if policy_result == "blocked":
+                continue
+
         results.append(ScoredPackage(
             slug=pkg.slug,
             name=pkg.name,
@@ -197,6 +273,7 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
             publisher_slug=pkg.publisher.slug,
             trust_level=pkg.publisher.trust_level,
             score=round(total, 4),
+            policy_result=policy_result,
             breakdown={
                 "capability": round(cap_score, 4),
                 "framework": round(fw_score, 4),
@@ -205,9 +282,10 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
                 "permissions": round(perm_score, 4),
             },
             matched_capabilities=sorted(matched),
+            download_count=pkg.download_count,
         ))
 
-    # Sort by score descending
-    results.sort(key=lambda r: -r.score)
+    # Sort by score descending, then by downloads (tiebreaker), then alphabetical
+    results.sort(key=lambda r: (-r.score, -r.download_count, r.slug))
 
     return results[:req.limit]

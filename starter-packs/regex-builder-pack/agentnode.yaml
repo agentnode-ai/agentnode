@@ -1,0 +1,65 @@
+manifest_version: "0.1"
+package_id: "regex-builder-pack"
+package_type: "toolpack"
+name: "Regex Builder Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Test, match, find, split, and substitute text with regular expressions."
+description: "Test, match, find, split, and substitute text with regular expressions."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "regex_builder_pack.tool"
+
+capabilities:
+  tools:
+    - name: "data_cleaning"
+      capability_id: "data_cleaning"
+      description: "Build, test, and apply regular expressions."
+      input_schema:
+        type: "object"
+        properties:
+          pattern: {type: "string"}
+          test_string: {type: "string", default: ""}
+          operation: {type: "string", default: "test"}
+        required: ['pattern']
+  resources: []
+  prompts: []
+
+tags: ["regex", "builder"]
+categories: ["data-analysis"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["data_cleaning"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "data_cleaning"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/regex-builder-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

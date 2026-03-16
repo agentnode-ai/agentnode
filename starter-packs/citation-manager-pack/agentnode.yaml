@@ -1,0 +1,64 @@
+manifest_version: "0.1"
+package_id: "citation-manager-pack"
+package_type: "toolpack"
+name: "Citation Manager Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Generate citations in APA, MLA, Chicago, and Harvard styles"
+description: "Generate citations in APA, MLA, Chicago, and Harvard styles"
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "citation_manager_pack.tool"
+
+capabilities:
+  tools:
+    - name: "citation_extraction"
+      capability_id: "citation_extraction"
+      description: "Generate a formatted citation and BibTeX entry."
+      input_schema:
+        type: "object"
+        properties:
+          source: {type: "object"}
+          style: {type: "string", default: "apa"}
+        required: ['source']
+  resources: []
+  prompts: []
+
+tags: ["citation", "manager"]
+categories: ["document-processing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["citation_extraction"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "citation_extraction"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/citation-manager-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

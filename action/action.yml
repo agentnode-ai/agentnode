@@ -1,0 +1,112 @@
+name: "AgentNode Publish"
+description: "Validate and publish an AgentNode pack to the registry"
+branding:
+  icon: "package"
+  color: "blue"
+
+inputs:
+  api-key:
+    description: "AgentNode API key (publisher token)"
+    required: true
+  manifest:
+    description: "Path to agentnode.yaml manifest (default: auto-detect in repo root)"
+    required: false
+    default: ""
+  api-url:
+    description: "AgentNode API URL"
+    required: false
+    default: "https://api.agentnode.net"
+  dry-run:
+    description: "Validate only, do not publish"
+    required: false
+    default: "false"
+
+outputs:
+  slug:
+    description: "Published package slug"
+    value: ${{ steps.publish.outputs.slug }}
+  version:
+    description: "Published version"
+    value: ${{ steps.publish.outputs.version }}
+  validation-status:
+    description: "Validation result (valid/invalid)"
+    value: ${{ steps.validate.outputs.status }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Install AgentNode CLI
+      shell: bash
+      run: npm install -g agentnode-cli
+
+    - name: Detect manifest
+      id: detect
+      shell: bash
+      run: |
+        MANIFEST="${{ inputs.manifest }}"
+        if [ -z "$MANIFEST" ]; then
+          if [ -f "agentnode.yaml" ]; then
+            MANIFEST="agentnode.yaml"
+          elif [ -f "agentnode.yml" ]; then
+            MANIFEST="agentnode.yml"
+          elif [ -f "agentnode.json" ]; then
+            MANIFEST="agentnode.json"
+          else
+            echo "::error::No agentnode.yaml found in repo root. Specify path via 'manifest' input."
+            exit 1
+          fi
+        fi
+        echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
+        echo "Found manifest: $MANIFEST"
+
+    - name: Validate manifest
+      id: validate
+      shell: bash
+      env:
+        AGENTNODE_API_URL: ${{ inputs.api-url }}
+        AGENTNODE_API_KEY: ${{ inputs.api-key }}
+      run: |
+        echo "Validating ${{ steps.detect.outputs.manifest }}..."
+        if agentnode validate "${{ steps.detect.outputs.manifest }}"; then
+          echo "status=valid" >> "$GITHUB_OUTPUT"
+          echo "::notice::Manifest validation passed"
+        else
+          echo "status=invalid" >> "$GITHUB_OUTPUT"
+          echo "::error::Manifest validation failed"
+          exit 1
+        fi
+
+    - name: Publish pack
+      id: publish
+      if: inputs.dry-run != 'true'
+      shell: bash
+      env:
+        AGENTNODE_API_URL: ${{ inputs.api-url }}
+        AGENTNODE_API_KEY: ${{ inputs.api-key }}
+      run: |
+        echo "Publishing ${{ steps.detect.outputs.manifest }}..."
+        OUTPUT=$(agentnode publish "${{ steps.detect.outputs.manifest }}" --json 2>&1) || {
+          echo "::error::Publish failed: $OUTPUT"
+          exit 1
+        }
+        echo "$OUTPUT"
+
+        # Extract slug and version from JSON output
+        SLUG=$(echo "$OUTPUT" | grep -o '"slug":"[^"]*"' | head -1 | cut -d'"' -f4)
+        VERSION=$(echo "$OUTPUT" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+        echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "::notice::Published $SLUG@$VERSION"
+
+    - name: Dry-run summary
+      if: inputs.dry-run == 'true'
+      shell: bash
+      run: |
+        echo "::notice::Dry-run mode — manifest is valid, skipping publish."
+        echo "To publish, set dry-run: false or remove the dry-run input."

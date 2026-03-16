@@ -1,0 +1,64 @@
+manifest_version: "0.1"
+package_id: "user-story-planner-pack"
+package_type: "toolpack"
+name: "User Story Planner Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Generate user stories and acceptance criteria from feature descriptions."
+description: "Generate user stories and acceptance criteria from feature descriptions."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "user_story_planner_pack.tool"
+
+capabilities:
+  tools:
+    - name: "task_management"
+      capability_id: "task_management"
+      description: "Generate user stories from a feature description."
+      input_schema:
+        type: "object"
+        properties:
+          feature_description: {type: "string"}
+          format: {type: "string", default: "agile"}
+        required: ['feature_description']
+  resources: []
+  prompts: []
+
+tags: ["user", "story", "planner"]
+categories: ["productivity"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["task_management"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "task_management"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/user-story-planner-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

@@ -1,0 +1,69 @@
+manifest_version: "0.1"
+package_id: "semantic-search-pack"
+package_type: "toolpack"
+name: "Semantic Search Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Semantic similarity search over documents using sentence-transformers."
+description: "Semantic similarity search over documents using sentence-transformers."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "semantic_search_pack.tool"
+
+capabilities:
+  tools:
+    - name: "semantic_search"
+      capability_id: "semantic_search"
+      description: "Find the most semantically similar documents to a query."
+      input_schema:
+        type: "object"
+        properties:
+          query: {type: "string"}
+          documents: {type: "array"}
+          model_name: {type: "string", default: "all-MiniLM-L6-v2"}
+          top_k: {type: "integer", default: 5}
+        required: ['query', 'documents']
+  resources: []
+  prompts: []
+
+tags: ["semantic", "search"]
+categories: ["memory-and-retrieval"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "sentence-transformers>=2.0"
+    - "numpy>=1.24"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["semantic_search"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "semantic_search"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/semantic-search-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

@@ -1,0 +1,64 @@
+manifest_version: "0.1"
+package_id: "web-design-pack"
+package_type: "toolpack"
+name: "Web Design Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Generate complete design systems with color palettes, typography, and spacing."
+description: "Generate complete design systems with color palettes, typography, and spacing."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "web_design_pack.tool"
+
+capabilities:
+  tools:
+    - name: "webpage_extraction"
+      capability_id: "webpage_extraction"
+      description: "Generate a complete design system."
+      input_schema:
+        type: "object"
+        properties:
+          brand_name: {type: "string", default: ""}
+          primary_color: {type: "string", default: "#3b82f6"}
+          style: {type: "string", default: "modern"}
+  resources: []
+  prompts: []
+
+tags: ["web", "design"]
+categories: ["web-and-browsing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["webpage_extraction"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "webpage_extraction"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/web-design-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

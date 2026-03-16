@@ -1,0 +1,69 @@
+manifest_version: "0.1"
+package_id: "icon-generator-pack"
+package_type: "toolpack"
+name: "Icon Generator Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Generate favicon-style icons from text using Pillow."
+description: "Generate favicon-style icons from text using Pillow."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "icon_generator_pack.tool"
+
+capabilities:
+  tools:
+    - name: "chart_generation"
+      capability_id: "chart_generation"
+      description: "Generate favicon-style icons with text on a coloured background."
+      input_schema:
+        type: "object"
+        properties:
+          text: {type: "string"}
+          output_dir: {type: "string", default: ""}
+          background_color: {type: "string", default: "#3b82f6"}
+          text_color: {type: "string", default: "#ffffff"}
+          sizes: {type: "integer"}
+        required: ['text']
+  resources: []
+  prompts: []
+
+tags: ["icon", "generator"]
+categories: ["data-analysis"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "Pillow>=10.0"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "workspace_write"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["chart_generation"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "chart_generation"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/icon-generator-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

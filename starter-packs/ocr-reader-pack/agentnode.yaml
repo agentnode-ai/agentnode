@@ -1,0 +1,68 @@
+manifest_version: "0.1"
+package_id: "ocr-reader-pack"
+package_type: "toolpack"
+name: "Ocr Reader Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Extract text from images using Tesseract OCR"
+description: "Extract text from images using Tesseract OCR"
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "ocr_reader_pack.tool"
+
+capabilities:
+  tools:
+    - name: "document_parsing"
+      capability_id: "document_parsing"
+      description: "Perform OCR on an image file using Tesseract."
+      input_schema:
+        type: "object"
+        properties:
+          image_path: {type: "string"}
+          language: {type: "string", default: "eng"}
+          output_format: {type: "string", default: "text"}
+        required: ['image_path']
+  resources: []
+  prompts: []
+
+tags: ["ocr", "reader"]
+categories: ["document-processing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "pytesseract>=0.3.10"
+    - "Pillow>=10.0"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "workspace_read"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["document_parsing"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "document_parsing"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/ocr-reader-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

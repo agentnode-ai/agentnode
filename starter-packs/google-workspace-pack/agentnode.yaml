@@ -1,0 +1,68 @@
+manifest_version: "0.1"
+package_id: "google-workspace-pack"
+package_type: "toolpack"
+name: "Google Workspace Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Interact with Gmail, Google Calendar, and Google Drive."
+description: "Interact with Gmail, Google Calendar, and Google Drive."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "google_workspace_pack.tool"
+
+capabilities:
+  tools:
+    - name: "email_drafting"
+      capability_id: "email_drafting"
+      description: "Interact with Gmail, Google Calendar, and Google Drive."
+      input_schema:
+        type: "object"
+        properties:
+          credentials_json: {type: "string"}
+          service: {type: "string"}
+          operation: {type: "string"}
+        required: ['credentials_json', 'service', 'operation']
+  resources: []
+  prompts: []
+
+tags: ["google", "workspace"]
+categories: ["communication"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "google-api-python-client>=2.100"
+    - "google-auth>=2.23"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["email_drafting"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "email_drafting"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/google-workspace-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

@@ -1,0 +1,67 @@
+manifest_version: "0.1"
+package_id: "discord-connector-pack"
+package_type: "toolpack"
+name: "Discord Connector Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Send messages, list guilds, and read channels via the Discord REST API."
+description: "Send messages, list guilds, and read channels via the Discord REST API."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "discord_connector_pack.tool"
+
+capabilities:
+  tools:
+    - name: "email_summary"
+      capability_id: "email_summary"
+      description: "Send messages, list guilds, and read channels via the Discord REST API."
+      input_schema:
+        type: "object"
+        properties:
+          token: {type: "string"}
+          operation: {type: "string"}
+          channel_id: {type: "string", default: ""}
+        required: ['token', 'operation']
+  resources: []
+  prompts: []
+
+tags: ["discord", "connector"]
+categories: ["communication"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "httpx>=0.25"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["email_summary"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "email_summary"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/discord-connector-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

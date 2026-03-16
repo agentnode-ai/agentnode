@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useState, useEffect, useCallback } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import SearchInput from "@/components/SearchInput";
 import PackageCard from "@/components/PackageCard";
 import type { SearchHit, SearchResponse } from "@/lib/api";
@@ -22,7 +22,6 @@ interface Filters {
 }
 
 function SearchContent() {
-  const router = useRouter();
   const searchParams = useSearchParams();
 
   const [query, setQuery] = useState(searchParams.get("q") ?? "");
@@ -51,9 +50,9 @@ function SearchContent() {
       if (f.runtime) params.set("runtime", f.runtime);
       if (f.trust_level) params.set("trust_level", f.trust_level);
 
-      // Update URL
+      // Update URL without triggering React re-render
       const qs = params.toString();
-      router.replace(`/search${qs ? `?${qs}` : ""}`, { scroll: false });
+      window.history.replaceState(null, "", `/search${qs ? `?${qs}` : ""}`);
 
       try {
         const body: Record<string, unknown> = {};
@@ -84,7 +83,7 @@ function SearchContent() {
         setLoading(false);
       }
     },
-    [router]
+    []
   );
 
   // Search on mount — always load packages

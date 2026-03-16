@@ -23,5 +23,6 @@ class Publisher(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     suspension_reason = Column(Text, nullable=True)
     packages_published_count = Column(Integer, nullable=False, default=0)
     packages_cleared_count = Column(Integer, nullable=False, default=0)
+    signing_public_key = Column(Text, nullable=True)
 
     user = relationship("User", back_populates="publisher")

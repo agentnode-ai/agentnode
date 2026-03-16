@@ -1,0 +1,66 @@
+manifest_version: "0.1"
+package_id: "security-audit-pack"
+package_type: "toolpack"
+name: "Security Audit Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Run security audits on Python code using bandit."
+description: "Run security audits on Python code using bandit."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "security_audit_pack.tool"
+
+capabilities:
+  tools:
+    - name: "code_analysis"
+      capability_id: "code_analysis"
+      description: "Run bandit security analysis on Python code."
+      input_schema:
+        type: "object"
+        properties:
+          code: {type: "string"}
+          severity: {type: "string", default: "LOW"}
+        required: ['code']
+  resources: []
+  prompts: []
+
+tags: ["security", "audit"]
+categories: ["development"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "bandit>=1.7"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["code_analysis"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "code_analysis"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/security-audit-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

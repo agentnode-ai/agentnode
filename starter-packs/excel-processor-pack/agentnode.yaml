@@ -1,0 +1,68 @@
+manifest_version: "0.1"
+package_id: "excel-processor-pack"
+package_type: "toolpack"
+name: "Excel Processor Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Create, read, and append data to Excel workbooks"
+description: "Create, read, and append data to Excel workbooks"
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "excel_processor_pack.tool"
+
+capabilities:
+  tools:
+    - name: "spreadsheet_parsing"
+      capability_id: "spreadsheet_parsing"
+      description: "Create, read, or append data to an Excel workbook."
+      input_schema:
+        type: "object"
+        properties:
+          operation: {type: "string", default: "create"}
+          file_path: {type: "string", default: ""}
+          data: {type: "array"}
+          output_path: {type: "string", default: ""}
+          sheet_name: {type: "string", default: "Sheet1"}
+  resources: []
+  prompts: []
+
+tags: ["excel", "processor"]
+categories: ["data-analysis"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "openpyxl>=3.1"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "workspace_read"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["spreadsheet_parsing"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "spreadsheet_parsing"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/excel-processor-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

@@ -1,0 +1,65 @@
+manifest_version: "0.1"
+package_id: "docker-manager-pack"
+package_type: "toolpack"
+name: "Docker Manager Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Manage Docker containers and images"
+description: "Manage Docker containers and images"
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "docker_manager_pack.tool"
+
+capabilities:
+  tools:
+    - name: "code_analysis"
+      capability_id: "code_analysis"
+      description: "Manage Docker containers and images."
+      input_schema:
+        type: "object"
+        properties:
+          operation: {type: "string"}
+        required: ['operation']
+  resources: []
+  prompts: []
+
+tags: ["docker", "manager"]
+categories: ["development"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "docker>=7.0"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "none"}
+  code_execution: {level: "shell"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["code_analysis"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "code_analysis"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/docker-manager-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

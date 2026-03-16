@@ -1,0 +1,67 @@
+manifest_version: "0.1"
+package_id: "code-linter-pack"
+package_type: "toolpack"
+name: "Code Linter Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Lint Python code using ruff and optionally auto-fix issues."
+description: "Lint Python code using ruff and optionally auto-fix issues."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "code_linter_pack.tool"
+
+capabilities:
+  tools:
+    - name: "code_analysis"
+      capability_id: "code_analysis"
+      description: "Lint Python code with ruff."
+      input_schema:
+        type: "object"
+        properties:
+          code: {type: "string"}
+          language: {type: "string", default: "python"}
+          fix: {type: "boolean", default: false}
+        required: ['code']
+  resources: []
+  prompts: []
+
+tags: ["code", "linter"]
+categories: ["development"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "ruff>=0.4"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "limited_subprocess"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["code_analysis"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "code_analysis"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/code-linter-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

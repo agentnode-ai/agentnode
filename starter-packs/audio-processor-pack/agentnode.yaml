@@ -1,0 +1,67 @@
+manifest_version: "0.1"
+package_id: "audio-processor-pack"
+package_type: "toolpack"
+name: "Audio Processor Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Process audio files with trimming, conversion, and volume adjustment"
+description: "Process audio files with trimming, conversion, and volume adjustment"
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "audio_processor_pack.tool"
+
+capabilities:
+  tools:
+    - name: "document_parsing"
+      capability_id: "document_parsing"
+      description: "Process audio files."
+      input_schema:
+        type: "object"
+        properties:
+          operation: {type: "string"}
+          file_path: {type: "string"}
+          output_path: {type: "string", default: ""}
+        required: ['operation', 'file_path']
+  resources: []
+  prompts: []
+
+tags: ["audio", "processor"]
+categories: ["document-processing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "pydub>=0.25"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "workspace_read"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["document_parsing"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "document_parsing"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/audio-processor-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

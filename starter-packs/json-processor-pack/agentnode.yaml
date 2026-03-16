@@ -1,0 +1,67 @@
+manifest_version: "0.1"
+package_id: "json-processor-pack"
+package_type: "toolpack"
+name: "Json Processor Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Process, query, and validate JSON data with JMESPath and JSON Schema."
+description: "Process, query, and validate JSON data with JMESPath and JSON Schema."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "json_processor_pack.tool"
+
+capabilities:
+  tools:
+    - name: "json_processing"
+      capability_id: "json_processing"
+      description: "Process JSON data: query with JMESPath, validate against JSON Schema, or parse/format."
+      input_schema:
+        type: "object"
+        properties:
+          data: {type: "array"}
+          query: {type: "string", default: ""}
+          validate_schema: {type: "object"}
+        required: ['data']
+  resources: []
+  prompts: []
+
+tags: ["json", "processor"]
+categories: ["data-analysis"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "jmespath>=1.0"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["json_processing"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "json_processing"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/json-processor-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

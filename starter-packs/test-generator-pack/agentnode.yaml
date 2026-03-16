@@ -1,0 +1,65 @@
+manifest_version: "0.1"
+package_id: "test-generator-pack"
+package_type: "toolpack"
+name: "Test Generator Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Generate test stubs for Python functions using ast parsing."
+description: "Generate test stubs for Python functions using ast parsing."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "test_generator_pack.tool"
+
+capabilities:
+  tools:
+    - name: "code_analysis"
+      capability_id: "code_analysis"
+      description: "Generate test stubs for Python functions."
+      input_schema:
+        type: "object"
+        properties:
+          code: {type: "string"}
+          framework: {type: "string", default: "pytest"}
+          function_name: {type: "string", default: ""}
+        required: ['code']
+  resources: []
+  prompts: []
+
+tags: ["test", "generator"]
+categories: ["development"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "workspace_write"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["code_analysis"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "code_analysis"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/test-generator-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

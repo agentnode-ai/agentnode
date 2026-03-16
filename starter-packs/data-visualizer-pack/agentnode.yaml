@@ -1,0 +1,69 @@
+manifest_version: "0.1"
+package_id: "data-visualizer-pack"
+package_type: "toolpack"
+name: "Data Visualizer Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Create charts and visualizations from data using matplotlib."
+description: "Create charts and visualizations from data using matplotlib."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "data_visualizer_pack.tool"
+
+capabilities:
+  tools:
+    - name: "chart_generation"
+      capability_id: "chart_generation"
+      description: "Create a chart from data and save it to a file."
+      input_schema:
+        type: "object"
+        properties:
+          data: {type: "object"}
+          chart_type: {type: "string", default: "bar"}
+          title: {type: "string", default: ""}
+          output_path: {type: "string", default: ""}
+        required: ['data']
+  resources: []
+  prompts: []
+
+tags: ["data", "visualizer"]
+categories: ["data-analysis"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "matplotlib>=3.7"
+    - "pandas>=2.0"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["chart_generation"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "chart_generation"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/data-visualizer-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

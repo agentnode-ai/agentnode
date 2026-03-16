@@ -15,7 +15,7 @@ export interface CliConfig {
 
 const CONFIG_DIR = join(homedir(), ".agentnode");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
-const DEFAULT_API_URL = "https://agentnode.net";
+const DEFAULT_API_URL = "https://api.agentnode.net";
 
 export function getConfigDir(): string {
   return CONFIG_DIR;

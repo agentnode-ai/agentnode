@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentnode-mcp"
+version = "0.1.0"
+description = "MCP server adapter for AgentNode — expose AgentNode packs as MCP tools for OpenClaw, Claude Code, Cursor, and other MCP clients."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["mcp>=1.0", "httpx>=0.25"]
+
+[project.scripts]
+agentnode-mcp = "agentnode_mcp.server:main"
+agentnode-mcp-platform = "agentnode_mcp.platform_server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]

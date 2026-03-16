@@ -75,11 +75,45 @@ const docs = [
     description: "Python SDK for search, resolution, and policy checks.",
     sections: [
       "pip install agentnode-sdk",
-      "from agentnode import AgentNode",
-      "client = AgentNode(api_key='ank_...')",
+      "from agentnode_sdk import AgentNodeClient",
+      "client = AgentNodeClient(api_key='ank_...')",
       "client.search('pdf')",
       "client.resolve(['pdf_extraction'])",
       "client.check_policy('pdf-reader-pack')",
+    ],
+  },
+  {
+    title: "MCP Integration",
+    description: "Expose AgentNode packs as MCP tools for Claude Code, Cursor, and other MCP clients.",
+    sections: [
+      "pip install agentnode-mcp",
+      "Pack server: agentnode-mcp --pack pdf-reader-pack",
+      "Platform server: agentnode-mcp-platform --api-url https://api.agentnode.net",
+      "Tools: agentnode_search, agentnode_resolve, agentnode_explain, agentnode_capabilities",
+      'Config: Add to claude_desktop_config.json under "mcpServers"',
+    ],
+  },
+  {
+    title: "GitHub Action",
+    description: "Automate pack publishing from CI/CD with agentnode/publish@v1.",
+    sections: [
+      "Add agentnode.yaml to your repository root",
+      "Set AGENTNODE_API_KEY as a repository secret",
+      "uses: agentnode/publish@v1 with api-key: ${{ secrets.AGENTNODE_API_KEY }}",
+      "Trigger on release or workflow_dispatch",
+      "Supports dry-run mode for validation only",
+    ],
+  },
+  {
+    title: "Capability Taxonomy",
+    description: "97 standardized capability IDs across 14 categories for semantic resolution.",
+    sections: [
+      "Document Processing: pdf_extraction, document_summary, ocr_reading, ...",
+      "Web & Browsing: web_search, webpage_extraction, browser_automation, ...",
+      "Communication: email_sending, slack_messaging, discord_messaging, ...",
+      "Data Analysis: csv_analysis, data_visualization, database_query, ...",
+      "Developer Tools: code_execution, code_linting, test_generation, ...",
+      "API: GET /v1/capabilities — list all capability IDs",
     ],
   },
 ];

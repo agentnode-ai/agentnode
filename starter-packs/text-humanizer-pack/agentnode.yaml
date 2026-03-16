@@ -1,0 +1,64 @@
+manifest_version: "0.1"
+package_id: "text-humanizer-pack"
+package_type: "toolpack"
+name: "Text Humanizer Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Transform stiff or corporate text into natural, human-sounding language."
+description: "Transform stiff or corporate text into natural, human-sounding language."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "text_humanizer_pack.tool"
+
+capabilities:
+  tools:
+    - name: "tone_adjustment"
+      capability_id: "tone_adjustment"
+      description: "Transform text into more natural, human-sounding language."
+      input_schema:
+        type: "object"
+        properties:
+          text: {type: "string"}
+          style: {type: "string", default: "casual"}
+        required: ['text']
+  resources: []
+  prompts: []
+
+tags: ["text", "humanizer"]
+categories: ["language"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["tone_adjustment"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "tone_adjustment"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/text-humanizer-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

@@ -1,0 +1,67 @@
+manifest_version: "0.1"
+package_id: "whatsapp-connector-pack"
+package_type: "toolpack"
+name: "Whatsapp Connector Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Send messages and templates via the WhatsApp Business Cloud API."
+description: "Send messages and templates via the WhatsApp Business Cloud API."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "whatsapp_connector_pack.tool"
+
+capabilities:
+  tools:
+    - name: "email_summary"
+      capability_id: "email_summary"
+      description: "Send messages and templates via the WhatsApp Business Cloud API."
+      input_schema:
+        type: "object"
+        properties:
+          token: {type: "string"}
+          phone_number_id: {type: "string"}
+          operation: {type: "string"}
+        required: ['token', 'phone_number_id', 'operation']
+  resources: []
+  prompts: []
+
+tags: ["whatsapp", "connector"]
+categories: ["communication"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "httpx>=0.25"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["email_summary"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "email_summary"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/whatsapp-connector-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

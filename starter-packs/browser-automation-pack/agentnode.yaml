@@ -1,0 +1,68 @@
+manifest_version: "0.1"
+package_id: "browser-automation-pack"
+package_type: "toolpack"
+name: "Browser Automation Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Automate browser interactions: screenshots, text extraction, clicks, and form filling."
+description: "Automate browser interactions: screenshots, text extraction, clicks, and form filling."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "browser_automation_pack.tool"
+
+capabilities:
+  tools:
+    - name: "browser_navigation"
+      capability_id: "browser_navigation"
+      description: "Automate browser interactions with Playwright."
+      input_schema:
+        type: "object"
+        properties:
+          url: {type: "string"}
+          action: {type: "string", default: "screenshot"}
+          selector: {type: "string", default: ""}
+          output_path: {type: "string", default: ""}
+        required: ['url']
+  resources: []
+  prompts: []
+
+tags: ["browser", "automation"]
+categories: ["web-and-browsing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "playwright>=1.40"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "temp"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["browser_navigation"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "browser_navigation"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/browser-automation-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

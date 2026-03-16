@@ -1,0 +1,68 @@
+manifest_version: "0.1"
+package_id: "file-converter-pack"
+package_type: "toolpack"
+name: "File Converter Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Convert files between formats: md, html, csv, json, txt"
+description: "Convert files between formats: md, html, csv, json, txt"
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "file_converter_pack.tool"
+
+capabilities:
+  tools:
+    - name: "document_parsing"
+      capability_id: "document_parsing"
+      description: "Convert a file to a different format."
+      input_schema:
+        type: "object"
+        properties:
+          input_path: {type: "string"}
+          output_format: {type: "string"}
+          output_path: {type: "string", default: ""}
+        required: ['input_path', 'output_format']
+  resources: []
+  prompts: []
+
+tags: ["file", "converter"]
+categories: ["document-processing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "markdown>=3.5"
+    - "python-docx>=1.0"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "workspace_read"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["document_parsing"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "document_parsing"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/file-converter-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

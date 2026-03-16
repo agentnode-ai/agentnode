@@ -108,6 +108,74 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* How it works */}
+      <section className="border-b border-border bg-card/30">
+        <div className="mx-auto max-w-6xl px-6 py-20">
+          <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
+            How it works
+          </h2>
+          <p className="mb-12 text-center text-muted">
+            Three steps from capability gap to working code.
+          </p>
+          <div className="grid gap-8 sm:grid-cols-3">
+            <div className="flex flex-col items-center text-center">
+              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-xl font-bold text-primary">1</div>
+              <h3 className="mb-2 text-lg font-semibold text-foreground">Search or Resolve</h3>
+              <p className="text-sm text-muted">Describe what your agent needs &mdash; PDF extraction, web search, summarization &mdash; and get ranked, trust-verified results.</p>
+              <code className="mt-3 rounded border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground">agentnode search &quot;pdf extraction&quot;</code>
+            </div>
+            <div className="flex flex-col items-center text-center">
+              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-xl font-bold text-primary">2</div>
+              <h3 className="mb-2 text-lg font-semibold text-foreground">Install</h3>
+              <p className="text-sm text-muted">One command installs the pack with hash verification, permission checks, and automatic dependency resolution.</p>
+              <code className="mt-3 rounded border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground">agentnode install pdf-reader-pack</code>
+            </div>
+            <div className="flex flex-col items-center text-center">
+              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-xl font-bold text-primary">3</div>
+              <h3 className="mb-2 text-lg font-semibold text-foreground">Use</h3>
+              <p className="text-sm text-muted">Import the pack and call the run() function. Every pack follows the same simple interface.</p>
+              <code className="mt-3 rounded border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground">from pdf_reader_pack import tool</code>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Code Example */}
+      <section className="border-b border-border">
+        <div className="mx-auto max-w-6xl px-6 py-20">
+          <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
+            Simple, consistent API
+          </h2>
+          <p className="mb-12 text-center text-muted">
+            Every pack exports a <code className="rounded bg-card px-1.5 py-0.5 font-mono text-sm">run()</code> function. No boilerplate, no framework lock-in.
+          </p>
+          <div className="mx-auto max-w-2xl overflow-hidden rounded-lg border border-border bg-[#0d1117]">
+            <div className="flex items-center gap-2 border-b border-border/50 px-4 py-2">
+              <div className="h-3 w-3 rounded-full bg-red-500/60" />
+              <div className="h-3 w-3 rounded-full bg-yellow-500/60" />
+              <div className="h-3 w-3 rounded-full bg-green-500/60" />
+              <span className="ml-2 font-mono text-xs text-muted">example.py</span>
+            </div>
+            <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-gray-300">
+              <code>{`from pdf_reader_pack.tool import run
+
+# Extract text from a PDF
+result = run("report.pdf")
+print(result["text"])
+print(f"Pages: {len(result['pages'])}")
+
+# Or use the SDK to resolve capabilities
+from agentnode_sdk import AgentNodeClient
+
+client = AgentNodeClient()
+matches = client.resolve(["pdf_extraction", "web_search"])
+for pkg in matches.results:
+    print(f"{pkg.slug} (score: {pkg.score})")`}</code>
+            </pre>
+          </div>
+        </div>
+      </section>
+
       {/* Starter Packs */}
       <section className="border-b border-border">
         <div className="mx-auto max-w-6xl px-6 py-20">

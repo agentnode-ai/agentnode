@@ -1,0 +1,134 @@
+manifest_version: "0.1"
+package_id: "research-agent-pack"
+package_type: "agent"
+name: "Research Agent Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Reference agent that orchestrates web search, PDF analysis, and summarization to produce structured research reports."
+description: |
+  Reference Research Agent demonstrating the AgentNode core flow:
+  Capability Resolution -> Installation -> Integration.
+
+  Orchestrates three MVP packs:
+    - web-search-pack for web searching
+    - pdf-reader-pack for PDF text extraction
+    - document-summarizer-pack for extractive summarization
+
+  Accepts a research query (and optional PDF path), searches the web,
+  optionally extracts PDF content, summarizes all findings, and returns
+  a structured report with query, sources, findings, and summary.
+
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "research_agent_pack.tool"
+
+capabilities:
+  tools:
+    - name: "research"
+      capability_id: "research_orchestration"
+      description: "Conduct multi-source research on a topic and produce a structured report"
+      input_schema:
+        type: "object"
+        properties:
+          query:
+            type: "string"
+            description: "The research topic or question"
+          pdf_path:
+            type: "string"
+            default: ""
+            description: "Optional path to a PDF file to include in research"
+          max_sources:
+            type: "integer"
+            default: 5
+            description: "Maximum number of web sources to retrieve (1-20)"
+        required: ["query"]
+      output_schema:
+        type: "object"
+        properties:
+          query:
+            type: "string"
+          sources:
+            type: "array"
+            items:
+              type: "object"
+              properties:
+                title:
+                  type: "string"
+                url:
+                  type: "string"
+                snippet:
+                  type: "string"
+                source_type:
+                  type: "string"
+          findings:
+            type: "array"
+            items:
+              type: "object"
+              properties:
+                source:
+                  type: "string"
+                content:
+                  type: "string"
+          summary:
+            type: "string"
+  resources: []
+  prompts: []
+
+tags: ["research", "agent", "orchestration", "reference"]
+categories: ["agents", "research"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+dependencies:
+  - package_id: "web-search-pack"
+    role: "web_search"
+    is_required: true
+  - package_id: "pdf-reader-pack"
+    role: "pdf_extraction"
+    is_required: false
+  - package_id: "document-summarizer-pack"
+    role: "document_summary"
+    is_required: true
+
+permissions:
+  network:
+    level: "restricted"
+    allowed_domains: ["duckduckgo.com"]
+  filesystem:
+    level: "temp"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "never"
+  external_integrations: []
+
+upgrade_roles: ["research_orchestration", "multi_source_research"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "research_orchestration"
+  - agent_type: "knowledge-worker"
+    missing_capability: "research_orchestration"
+replaces: []
+install_strategy: "local"
+fallback_behavior: "error"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: ""
+  provenance:
+    source_repo: "https://github.com/agentnode/starter-packs"
+    commit: ""
+    build_system: "manual"
+
+support:
+  homepage: "https://agentnode.net/packages/research-agent-pack"
+  issues: "https://github.com/agentnode/starter-packs/issues"
+
+deprecation_policy: "6-months-notice"

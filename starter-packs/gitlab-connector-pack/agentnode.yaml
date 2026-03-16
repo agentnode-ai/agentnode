@@ -1,0 +1,68 @@
+manifest_version: "0.1"
+package_id: "gitlab-connector-pack"
+package_type: "toolpack"
+name: "Gitlab Connector Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Interact with GitLab projects, merge requests, and pipelines."
+description: "Interact with GitLab projects, merge requests, and pipelines."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "gitlab_connector_pack.tool"
+
+capabilities:
+  tools:
+    - name: "code_analysis"
+      capability_id: "code_analysis"
+      description: "Interact with GitLab projects, merge requests, and pipelines."
+      input_schema:
+        type: "object"
+        properties:
+          url: {type: "string"}
+          token: {type: "string"}
+          operation: {type: "string"}
+          project: {type: "string", default: ""}
+        required: ['url', 'token', 'operation']
+  resources: []
+  prompts: []
+
+tags: ["gitlab", "connector"]
+categories: ["development"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "python-gitlab>=4.0"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["code_analysis"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "code_analysis"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/gitlab-connector-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

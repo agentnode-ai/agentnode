@@ -1,0 +1,67 @@
+manifest_version: "0.1"
+package_id: "microsoft-365-pack"
+package_type: "toolpack"
+name: "Microsoft 365 Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Interact with Outlook Mail, Calendar, OneDrive, and Teams via Microsoft Graph."
+description: "Interact with Outlook Mail, Calendar, OneDrive, and Teams via Microsoft Graph."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "microsoft_365_pack.tool"
+
+capabilities:
+  tools:
+    - name: "email_drafting"
+      capability_id: "email_drafting"
+      description: "Interact with Outlook Mail, Calendar, OneDrive, and Teams via Microsoft Graph."
+      input_schema:
+        type: "object"
+        properties:
+          access_token: {type: "string"}
+          service: {type: "string"}
+          operation: {type: "string"}
+        required: ['access_token', 'service', 'operation']
+  resources: []
+  prompts: []
+
+tags: ["microsoft", "365"]
+categories: ["communication"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "httpx>=0.25"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["email_drafting"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "email_drafting"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/microsoft-365-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

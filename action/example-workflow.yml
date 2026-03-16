@@ -1,0 +1,29 @@
+# Example: Add this to .github/workflows/publish.yml in your pack repo
+#
+# Prerequisites:
+#   1. Add your AgentNode API key as a repository secret named AGENTNODE_API_KEY
+#   2. Have an agentnode.yaml manifest in your repo root
+#
+name: Publish to AgentNode
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Validate only (no publish)"
+        type: boolean
+        default: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish to AgentNode
+        uses: agentnode/publish@v1
+        with:
+          api-key: ${{ secrets.AGENTNODE_API_KEY }}
+          dry-run: ${{ github.event.inputs.dry-run || 'false' }}

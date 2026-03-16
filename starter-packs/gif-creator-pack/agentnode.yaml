@@ -1,0 +1,69 @@
+manifest_version: "0.1"
+package_id: "gif-creator-pack"
+package_type: "toolpack"
+name: "Gif Creator Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Create animated GIFs from images or text frames"
+description: "Create animated GIFs from images or text frames"
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "gif_creator_pack.tool"
+
+capabilities:
+  tools:
+    - name: "chart_generation"
+      capability_id: "chart_generation"
+      description: "Create an animated GIF from image files or text strings."
+      input_schema:
+        type: "object"
+        properties:
+          frames: {type: "array"}
+          text_frames: {type: "array"}
+          output_path: {type: "string", default: ""}
+          duration: {type: "integer", default: 500}
+          width: {type: "integer", default: 400}
+          height: {type: "integer", default: 300}
+  resources: []
+  prompts: []
+
+tags: ["gif", "creator"]
+categories: ["data-analysis"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "Pillow>=10.0"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "workspace_write"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["chart_generation"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "chart_generation"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/gif-creator-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

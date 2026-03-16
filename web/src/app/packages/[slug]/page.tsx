@@ -33,6 +33,7 @@ export default async function PackageDetailPage({ params }: PageProps) {
   const publisher = pkg.publisher ?? {};
   const version = pkg.latest_version?.version_number ?? "unknown";
   const capabilities = blocks.capabilities ?? [];
+  const recommendedFor = blocks.recommended_for ?? [];
   const install = blocks.install ?? {};
   const compat = blocks.compatibility ?? {};
   const perms = blocks.permissions;
@@ -100,6 +101,34 @@ export default async function PackageDetailPage({ params }: PageProps) {
               </div>
             )}
           </section>
+
+          {/* Block 2: Recommended For */}
+          {recommendedFor.length > 0 && (
+            <section className="rounded-xl border border-border bg-card p-6">
+              <h2 className="mb-4 text-lg font-semibold text-foreground">
+                Recommended For
+              </h2>
+              <div className="space-y-2">
+                {recommendedFor.map((rec: any, i: number) => (
+                  <div
+                    key={i}
+                    className="flex items-center gap-3 rounded-lg border border-border bg-background p-3"
+                  >
+                    {rec.agent_type && (
+                      <span className="rounded-md bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
+                        {rec.agent_type}
+                      </span>
+                    )}
+                    {rec.missing_capability && (
+                      <span className="text-sm text-muted">
+                        missing <span className="font-mono text-foreground">{rec.missing_capability}</span>
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Block 3: Install */}
           <section className="rounded-xl border border-border bg-card p-6">

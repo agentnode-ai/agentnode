@@ -1,0 +1,66 @@
+manifest_version: "0.1"
+package_id: "prompt-engineer-pack"
+package_type: "toolpack"
+name: "Prompt Engineer Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Generate optimized LLM prompts using various prompting techniques."
+description: "Generate optimized LLM prompts using various prompting techniques."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "prompt_engineer_pack.tool"
+
+capabilities:
+  tools:
+    - name: "tone_adjustment"
+      capability_id: "tone_adjustment"
+      description: "Generate an optimized prompt for an LLM."
+      input_schema:
+        type: "object"
+        properties:
+          task: {type: "string"}
+          technique: {type: "string", default: "chain_of_thought"}
+          context: {type: "string", default: ""}
+          examples: {type: "array"}
+        required: ['task']
+  resources: []
+  prompts: []
+
+tags: ["prompt", "engineer"]
+categories: ["language"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["tone_adjustment"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "tone_adjustment"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/prompt-engineer-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

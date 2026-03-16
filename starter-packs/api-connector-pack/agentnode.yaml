@@ -1,0 +1,72 @@
+manifest_version: "0.1"
+package_id: "api-connector-pack"
+package_type: "toolpack"
+name: "Api Connector Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Universal REST API client with authentication and retry logic."
+description: "Universal REST API client with authentication and retry logic."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "api_connector_pack.tool"
+
+capabilities:
+  tools:
+    - name: "web_search"
+      capability_id: "web_search"
+      description: "Make an HTTP request to any REST API with authentication and retry logic."
+      input_schema:
+        type: "object"
+        properties:
+          url: {type: "string"}
+          method: {type: "string", default: "GET"}
+          headers: {type: "object"}
+          body: {type: "object"}
+          auth_type: {type: "string", default: ""}
+          auth_token: {type: "string", default: ""}
+          timeout: {type: "integer", default: 30}
+          retries: {type: "integer", default: 3}
+        required: ['url']
+  resources: []
+  prompts: []
+
+tags: ["api", "connector"]
+categories: ["web-and-browsing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "httpx>=0.25"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["web_search"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "web_search"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/api-connector-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

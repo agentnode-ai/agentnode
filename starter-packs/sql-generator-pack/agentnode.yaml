@@ -1,0 +1,67 @@
+manifest_version: "0.1"
+package_id: "sql-generator-pack"
+package_type: "toolpack"
+name: "Sql Generator Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Generate and format SQL queries from natural language descriptions."
+description: "Generate and format SQL queries from natural language descriptions."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "sql_generator_pack.tool"
+
+capabilities:
+  tools:
+    - name: "sql_generation"
+      capability_id: "sql_generation"
+      description: "Generate SQL from a natural language description."
+      input_schema:
+        type: "object"
+        properties:
+          description: {type: "string"}
+          schema: {type: "string", default: ""}
+          dialect: {type: "string", default: "postgresql"}
+        required: ['description']
+  resources: []
+  prompts: []
+
+tags: ["sql", "generator"]
+categories: ["data-analysis"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "sqlparse>=0.5"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "workspace_write"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["sql_generation"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "sql_generation"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/sql-generator-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

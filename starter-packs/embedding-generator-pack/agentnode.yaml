@@ -1,0 +1,66 @@
+manifest_version: "0.1"
+package_id: "embedding-generator-pack"
+package_type: "toolpack"
+name: "Embedding Generator Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Generate text embeddings using sentence-transformers models."
+description: "Generate text embeddings using sentence-transformers models."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "embedding_generator_pack.tool"
+
+capabilities:
+  tools:
+    - name: "embedding_generation"
+      capability_id: "embedding_generation"
+      description: "Generate embeddings for one or more texts."
+      input_schema:
+        type: "object"
+        properties:
+          texts: {type: "array"}
+          model_name: {type: "string", default: "all-MiniLM-L6-v2"}
+        required: ['texts']
+  resources: []
+  prompts: []
+
+tags: ["embedding", "generator"]
+categories: ["memory-and-retrieval"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "sentence-transformers>=2.0"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "workspace_write"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["embedding_generation"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "embedding_generation"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/embedding-generator-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

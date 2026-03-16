@@ -1,0 +1,69 @@
+manifest_version: "0.1"
+package_id: "screenshot-capture-pack"
+package_type: "toolpack"
+name: "Screenshot Capture Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Capture high-quality webpage screenshots with Playwright."
+description: "Capture high-quality webpage screenshots with Playwright."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "screenshot_capture_pack.tool"
+
+capabilities:
+  tools:
+    - name: "browser_navigation"
+      capability_id: "browser_navigation"
+      description: "Capture a screenshot of a webpage using Playwright."
+      input_schema:
+        type: "object"
+        properties:
+          url: {type: "string"}
+          output_path: {type: "string", default: ""}
+          full_page: {type: "boolean", default: true}
+          viewport_width: {type: "integer", default: 1280}
+          viewport_height: {type: "integer", default: 720}
+        required: ['url']
+  resources: []
+  prompts: []
+
+tags: ["screenshot", "capture"]
+categories: ["web-and-browsing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "playwright>=1.40"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "temp"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["browser_navigation"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "browser_navigation"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/screenshot-capture-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

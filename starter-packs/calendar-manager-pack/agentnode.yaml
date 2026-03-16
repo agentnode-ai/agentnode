@@ -1,0 +1,64 @@
+manifest_version: "0.1"
+package_id: "calendar-manager-pack"
+package_type: "toolpack"
+name: "Calendar Manager Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Create, parse, and manage iCalendar (.ics) files using stdlib."
+description: "Create, parse, and manage iCalendar (.ics) files using stdlib."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "calendar_manager_pack.tool"
+
+capabilities:
+  tools:
+    - name: "scheduling"
+      capability_id: "scheduling"
+      description: "Manage iCalendar events and .ics files."
+      input_schema:
+        type: "object"
+        properties:
+          operation: {type: "string"}
+          calendar_file: {type: "string", default: ""}
+        required: ['operation']
+  resources: []
+  prompts: []
+
+tags: ["calendar", "manager"]
+categories: ["productivity"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["scheduling"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "scheduling"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/calendar-manager-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

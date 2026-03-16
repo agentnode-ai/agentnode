@@ -1,0 +1,65 @@
+manifest_version: "0.1"
+package_id: "document-summarizer-pack"
+package_type: "toolpack"
+name: "Document Summarizer Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Extractive text summarization using word frequency scoring"
+description: "Extractive text summarization using word frequency scoring"
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "document_summarizer_pack.tool"
+
+capabilities:
+  tools:
+    - name: "document_summary"
+      capability_id: "document_summary"
+      description: "Summarize text using extractive summarization."
+      input_schema:
+        type: "object"
+        properties:
+          text: {type: "string"}
+          max_sentences: {type: "integer", default: 5}
+          method: {type: "string", default: "extractive"}
+        required: ['text']
+  resources: []
+  prompts: []
+
+tags: ["document", "summarizer"]
+categories: ["document-processing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["document_summary"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "document_summary"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/document-summarizer-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "research-agent-pack"
+version = "1.0.0"
+description = "Reference research agent orchestrating web search, PDF analysis, and summarization."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "agentnode-sdk>=0.1.0",
+    "web-search-pack>=1.0.0",
+    "pdf-reader-pack>=1.0.0",
+    "document-summarizer-pack>=1.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

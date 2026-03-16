@@ -1,0 +1,66 @@
+manifest_version: "0.1"
+package_id: "image-analyzer-pack"
+package_type: "toolpack"
+name: "Image Analyzer Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Analyze images for metadata, colors, and statistics"
+description: "Analyze images for metadata, colors, and statistics"
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "image_analyzer_pack.tool"
+
+capabilities:
+  tools:
+    - name: "document_parsing"
+      capability_id: "document_parsing"
+      description: "Analyse an image and return metadata, colours, and statistics."
+      input_schema:
+        type: "object"
+        properties:
+          image_path: {type: "string"}
+          operations: {type: "array"}
+        required: ['image_path']
+  resources: []
+  prompts: []
+
+tags: ["image", "analyzer"]
+categories: ["document-processing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "Pillow>=10.0"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "workspace_read"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["document_parsing"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "document_parsing"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/image-analyzer-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

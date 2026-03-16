@@ -82,6 +82,16 @@ async def publish_package(
     similar = check_typosquatting(slug, existing_slugs)
     quarantine_for_typosquatting = bool(similar)
 
+    # 2b. Check if this is a new publisher's first package — auto-quarantine
+    from app.publishers.models import Publisher
+    pub_result = await session.execute(
+        select(Publisher).where(Publisher.id == publisher_id)
+    )
+    publisher_obj = pub_result.scalar_one_or_none()
+    quarantine_for_new_publisher = False
+    if publisher_obj and publisher_obj.packages_cleared_count == 0:
+        quarantine_for_new_publisher = True
+
     # 3. Check if package exists
     result = await session.execute(select(Package).where(Package.slug == slug))
     pkg = result.scalar_one_or_none()
@@ -125,9 +135,35 @@ async def publish_package(
         artifact_key = f"artifacts/{slug}/{version_str}/package.tar.gz"
         upload_artifact(artifact_key, artifact_bytes)
 
-    # 5. Provenance
+    # 5. Provenance & signature verification
     security = manifest.get("security", {})
     provenance = security.get("provenance", {})
+
+    # Verify signature if provided
+    signature_verified = False
+    if security.get("signature") and artifact_hash:
+        publisher_result = await session.execute(
+            select(Package.publisher_id).where(Package.id == pkg.id)
+        ) if pkg.id else None
+        from app.publishers.models import Publisher
+        pub_result = await session.execute(
+            select(Publisher).where(Publisher.id == publisher_id)
+        )
+        publisher_obj = pub_result.scalar_one_or_none()
+        if publisher_obj and publisher_obj.signing_public_key:
+            try:
+                from app.trust.signatures import verify_signature
+                signature_verified = verify_signature(
+                    publisher_obj.signing_public_key,
+                    security["signature"],
+                    artifact_hash,
+                )
+                if not signature_verified:
+                    logger.warning(f"Signature verification FAILED for {slug}@{version_str}")
+            except Exception as e:
+                logger.warning(f"Signature verification error for {slug}@{version_str}: {e}")
+        elif security.get("signature"):
+            logger.info(f"Signature provided but no public key registered for publisher {publisher_id}")
 
     # 6. Create PackageVersion
     pv = PackageVersion(
@@ -148,9 +184,13 @@ async def publish_package(
         source_repo_url=provenance.get("source_repo"),
         source_commit=provenance.get("commit"),
         build_system=provenance.get("build_system"),
-        quarantine_status="quarantined" if quarantine_for_typosquatting else "none",
-        quarantine_reason="typosquatting_suspected" if quarantine_for_typosquatting else None,
-        quarantined_at=datetime.now(timezone.utc) if quarantine_for_typosquatting else None,
+        quarantine_status="quarantined" if (quarantine_for_typosquatting or quarantine_for_new_publisher) else "none",
+        quarantine_reason=(
+            "typosquatting_suspected" if quarantine_for_typosquatting
+            else "new_publisher_review" if quarantine_for_new_publisher
+            else None
+        ),
+        quarantined_at=datetime.now(timezone.utc) if (quarantine_for_typosquatting or quarantine_for_new_publisher) else None,
     )
     session.add(pv)
     await session.flush()  # Get pv.id
@@ -258,6 +298,11 @@ async def publish_package(
         publish_warnings.append(
             f"Slug '{slug}' is similar to existing packages: {', '.join(similar)}. "
             "Version has been quarantined for review."
+        )
+    if quarantine_for_new_publisher:
+        publish_warnings.append(
+            "First-time publisher: version has been quarantined for review. "
+            "Once approved, future packages will publish directly."
         )
 
     return pkg, pv, publish_warnings

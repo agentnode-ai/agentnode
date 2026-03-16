@@ -1,0 +1,69 @@
+manifest_version: "0.1"
+package_id: "pdf-extractor-pack"
+package_type: "toolpack"
+name: "Pdf Extractor Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Extract text, tables, and images from PDF files"
+description: "Extract text, tables, and images from PDF files"
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "pdf_extractor_pack.tool"
+
+capabilities:
+  tools:
+    - name: "pdf_extraction"
+      capability_id: "pdf_extraction"
+      description: "Extract text, tables, and optionally images from a PDF file."
+      input_schema:
+        type: "object"
+        properties:
+          file_path: {type: "string"}
+          pages: {type: "string", default: "all"}
+          extract_tables: {type: "boolean", default: true}
+          extract_images: {type: "boolean", default: false}
+        required: ['file_path']
+  resources: []
+  prompts: []
+
+tags: ["pdf", "extractor"]
+categories: ["document-processing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "pdfplumber>=0.10"
+    - "Pillow>=10.0"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "workspace_read"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["pdf_extraction"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "pdf_extraction"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/pdf-extractor-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

@@ -1,0 +1,64 @@
+manifest_version: "0.1"
+package_id: "document-redaction-pack"
+package_type: "toolpack"
+name: "Document Redaction Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Redact sensitive information from text using regex patterns"
+description: "Redact sensitive information from text using regex patterns"
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "document_redaction_pack.tool"
+
+capabilities:
+  tools:
+    - name: "document_parsing"
+      capability_id: "document_parsing"
+      description: "Redact sensitive information from text."
+      input_schema:
+        type: "object"
+        properties:
+          text: {type: "string"}
+          redact_types: {type: "array"}
+        required: ['text']
+  resources: []
+  prompts: []
+
+tags: ["document", "redaction"]
+categories: ["document-processing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["document_parsing"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "document_parsing"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/document-redaction-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

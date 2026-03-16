@@ -1,0 +1,66 @@
+manifest_version: "0.1"
+package_id: "database-connector-pack"
+package_type: "toolpack"
+name: "Database Connector Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Query and manage databases via SQLAlchemy."
+description: "Query and manage databases via SQLAlchemy."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "database_connector_pack.tool"
+
+capabilities:
+  tools:
+    - name: "sql_generation"
+      capability_id: "sql_generation"
+      description: "Interact with a database via SQLAlchemy."
+      input_schema:
+        type: "object"
+        properties:
+          connection_string: {type: "string"}
+          operation: {type: "string"}
+        required: ['connection_string', 'operation']
+  resources: []
+  prompts: []
+
+tags: ["database", "connector"]
+categories: ["data-analysis"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "sqlalchemy>=2.0"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["sql_generation"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "sql_generation"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/database-connector-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

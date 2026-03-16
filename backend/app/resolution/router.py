@@ -29,12 +29,21 @@ async def resolve_capabilities(
     session: AsyncSession = Depends(get_session),
 ):
     """Resolve requested capabilities to ranked packages."""
+    policy_dict = None
+    if body.policy:
+        policy_dict = {
+            "min_trust": body.policy.min_trust,
+            "allow_shell": body.policy.allow_shell,
+            "allow_network": body.policy.allow_network,
+        }
+
     req = ResolveRequest(
         capabilities=body.capabilities,
         framework=body.framework,
         runtime=body.runtime,
         package_type=body.package_type,
         limit=body.limit,
+        policy=policy_dict,
     )
     scored = await resolve(req, session)
 
@@ -48,6 +57,7 @@ async def resolve_capabilities(
             publisher_slug=s.publisher_slug,
             trust_level=s.trust_level,
             score=s.score,
+            policy_result=s.policy_result,
             breakdown=ScoreBreakdown(**s.breakdown),
             matched_capabilities=s.matched_capabilities,
         )

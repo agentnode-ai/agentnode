@@ -1,0 +1,67 @@
+manifest_version: "0.1"
+package_id: "aws-toolkit-pack"
+package_type: "toolpack"
+name: "Aws Toolkit Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "AWS toolkit for S3, EC2, and Lambda operations"
+description: "AWS toolkit for S3, EC2, and Lambda operations"
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "aws_toolkit_pack.tool"
+
+capabilities:
+  tools:
+    - name: "code_analysis"
+      capability_id: "code_analysis"
+      description: "Execute an AWS operation."
+      input_schema:
+        type: "object"
+        properties:
+          service: {type: "string"}
+          operation: {type: "string"}
+          region: {type: "string", default: "us-east-1"}
+        required: ['service', 'operation']
+  resources: []
+  prompts: []
+
+tags: ["aws", "toolkit"]
+categories: ["development"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "boto3>=1.33"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["code_analysis"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "code_analysis"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/aws-toolkit-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

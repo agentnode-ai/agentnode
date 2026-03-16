@@ -1,0 +1,66 @@
+manifest_version: "0.1"
+package_id: "csv-analyzer-pack"
+package_type: "toolpack"
+name: "Csv Analyzer Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Analyze CSV files with pandas: statistics, filtering, and column inspection."
+description: "Analyze CSV files with pandas: statistics, filtering, and column inspection."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "csv_analyzer_pack.tool"
+
+capabilities:
+  tools:
+    - name: "csv_analysis"
+      capability_id: "csv_analysis"
+      description: "Analyze a CSV file."
+      input_schema:
+        type: "object"
+        properties:
+          file_path: {type: "string"}
+          operation: {type: "string", default: "describe"}
+        required: ['file_path']
+  resources: []
+  prompts: []
+
+tags: ["csv", "analyzer"]
+categories: ["data-analysis"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "pandas>=2.0"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["csv_analysis"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "csv_analysis"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/csv-analyzer-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

@@ -1,0 +1,68 @@
+manifest_version: "0.1"
+package_id: "home-automation-pack"
+package_type: "toolpack"
+name: "Home Automation Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Control Home Assistant entities via the REST API."
+description: "Control Home Assistant entities via the REST API."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "home_automation_pack.tool"
+
+capabilities:
+  tools:
+    - name: "scheduling"
+      capability_id: "scheduling"
+      description: "Interact with Home Assistant."
+      input_schema:
+        type: "object"
+        properties:
+          ha_url: {type: "string"}
+          token: {type: "string"}
+          operation: {type: "string"}
+          entity_id: {type: "string", default: ""}
+        required: ['ha_url', 'token', 'operation']
+  resources: []
+  prompts: []
+
+tags: ["home", "automation"]
+categories: ["productivity"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "httpx>=0.25"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["scheduling"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "scheduling"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/home-automation-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

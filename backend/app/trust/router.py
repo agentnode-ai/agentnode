@@ -48,11 +48,37 @@ async def get_trust_info(
                     "description": f.description,
                 })
 
+    # Verify provenance if present
+    provenance_verified = None
+    if pv and pv.source_repo_url:
+        try:
+            from app.trust.provenance import verify_provenance
+            prov_result = await verify_provenance(pv.source_repo_url, pv.source_commit)
+            provenance_verified = prov_result.get("repo_exists")
+        except Exception:
+            provenance_verified = None
+
+    # Check if signature can be verified
+    signature_verified = False
+    if pv and pv.signature and publisher and publisher.signing_public_key:
+        try:
+            from app.trust.signatures import verify_signature
+            if pv.artifact_hash_sha256:
+                signature_verified = verify_signature(
+                    publisher.signing_public_key,
+                    pv.signature,
+                    pv.artifact_hash_sha256,
+                )
+        except Exception:
+            pass
+
     return {
         "publisher_trust_level": publisher.trust_level if publisher else "unverified",
         "publisher_slug": publisher.slug if publisher else None,
         "signature_present": bool(pv and pv.signature),
+        "signature_verified": signature_verified,
         "provenance_present": bool(pv and pv.source_repo_url),
+        "provenance_verified": provenance_verified,
         "source_repo": pv.source_repo_url if pv else None,
         "security_findings_count": findings_count,
         "open_findings": open_findings,

@@ -1,0 +1,68 @@
+manifest_version: "0.1"
+package_id: "smart-lights-pack"
+package_type: "toolpack"
+name: "Smart Lights Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Control Philips Hue smart lights via the bridge REST API."
+description: "Control Philips Hue smart lights via the bridge REST API."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "smart_lights_pack.tool"
+
+capabilities:
+  tools:
+    - name: "scheduling"
+      capability_id: "scheduling"
+      description: "Control Philips Hue lights."
+      input_schema:
+        type: "object"
+        properties:
+          bridge_ip: {type: "string"}
+          api_key: {type: "string"}
+          operation: {type: "string"}
+          light_id: {type: "string", default: ""}
+        required: ['bridge_ip', 'api_key', 'operation']
+  resources: []
+  prompts: []
+
+tags: ["smart", "lights"]
+categories: ["productivity"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "httpx>=0.25"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["scheduling"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "scheduling"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/smart-lights-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

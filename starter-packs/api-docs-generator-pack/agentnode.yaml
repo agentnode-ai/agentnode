@@ -1,0 +1,65 @@
+manifest_version: "0.1"
+package_id: "api-docs-generator-pack"
+package_type: "toolpack"
+name: "Api Docs Generator Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Generate API documentation from Python source code."
+description: "Generate API documentation from Python source code."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "api_docs_generator_pack.tool"
+
+capabilities:
+  tools:
+    - name: "code_analysis"
+      capability_id: "code_analysis"
+      description: "Generate documentation from Python source code."
+      input_schema:
+        type: "object"
+        properties:
+          code: {type: "string"}
+          format: {type: "string", default: "markdown"}
+          title: {type: "string", default: "API Documentation"}
+        required: ['code']
+  resources: []
+  prompts: []
+
+tags: ["api", "docs", "generator"]
+categories: ["development"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "workspace_write"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["code_analysis"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "code_analysis"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/api-docs-generator-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

@@ -1,0 +1,67 @@
+manifest_version: "0.1"
+package_id: "task-manager-pack"
+package_type: "toolpack"
+name: "Task Manager Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Manage tasks and issues via the Linear GraphQL API."
+description: "Manage tasks and issues via the Linear GraphQL API."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "task_manager_pack.tool"
+
+capabilities:
+  tools:
+    - name: "task_management"
+      capability_id: "task_management"
+      description: "Manage tasks and issues on Linear."
+      input_schema:
+        type: "object"
+        properties:
+          provider: {type: "string"}
+          api_key: {type: "string"}
+          operation: {type: "string"}
+        required: ['provider', 'api_key', 'operation']
+  resources: []
+  prompts: []
+
+tags: ["task", "manager"]
+categories: ["productivity"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "httpx>=0.25"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["task_management"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "task_management"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/task-manager-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

@@ -1,0 +1,67 @@
+manifest_version: "0.1"
+package_id: "email-automation-pack"
+package_type: "toolpack"
+name: "Email Automation Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Send, read, and manage emails via SMTP and IMAP."
+description: "Send, read, and manage emails via SMTP and IMAP."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "email_automation_pack.tool"
+
+capabilities:
+  tools:
+    - name: "email_drafting"
+      capability_id: "email_drafting"
+      description: "Perform email operations: send, read, or list_folders."
+      input_schema:
+        type: "object"
+        properties:
+          operation: {type: "string"}
+          smtp_host: {type: "string", default: ""}
+          smtp_port: {type: "integer", default: 587}
+          username: {type: "string", default: ""}
+          password: {type: "string", default: ""}
+        required: ['operation']
+  resources: []
+  prompts: []
+
+tags: ["email", "automation"]
+categories: ["communication"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["email_drafting"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "email_drafting"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/email-automation-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

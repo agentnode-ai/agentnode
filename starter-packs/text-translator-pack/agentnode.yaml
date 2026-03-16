@@ -1,0 +1,67 @@
+manifest_version: "0.1"
+package_id: "text-translator-pack"
+package_type: "toolpack"
+name: "Text Translator Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Translate text between languages using Google Translate."
+description: "Translate text between languages using Google Translate."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "text_translator_pack.tool"
+
+capabilities:
+  tools:
+    - name: "translation"
+      capability_id: "translation"
+      description: "Translate text between languages using Google Translate."
+      input_schema:
+        type: "object"
+        properties:
+          text: {type: "string"}
+          target_language: {type: "string", default: "en"}
+          source_language: {type: "string", default: "auto"}
+        required: ['text']
+  resources: []
+  prompts: []
+
+tags: ["text", "translator"]
+categories: ["language"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "deep-translator>=1.11"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["translation"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "translation"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/text-translator-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

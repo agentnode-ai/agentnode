@@ -1,0 +1,71 @@
+manifest_version: "0.1"
+package_id: "ai-image-generator-pack"
+package_type: "toolpack"
+name: "Ai Image Generator Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Generate images from text prompts using Stability AI or Replicate APIs."
+description: "Generate images from text prompts using Stability AI or Replicate APIs."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "ai_image_generator_pack.tool"
+
+capabilities:
+  tools:
+    - name: "chart_generation"
+      capability_id: "chart_generation"
+      description: "Generate an image from a text prompt."
+      input_schema:
+        type: "object"
+        properties:
+          prompt: {type: "string"}
+          provider: {type: "string", default: "stability"}
+          api_key: {type: "string", default: ""}
+          output_path: {type: "string", default: ""}
+          width: {type: "integer", default: 512}
+          height: {type: "integer", default: 512}
+        required: ['prompt']
+  resources: []
+  prompts: []
+
+tags: ["ai", "image", "generator"]
+categories: ["data-analysis"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "httpx>=0.25"
+    - "Pillow>=10.0"
+
+permissions:
+  network: {level: "unrestricted"}
+  filesystem: {level: "workspace_write"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["chart_generation"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "chart_generation"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/ai-image-generator-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

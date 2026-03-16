@@ -1,0 +1,66 @@
+manifest_version: "0.1"
+package_id: "code-refactor-pack"
+package_type: "toolpack"
+name: "Code Refactor Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Analyze and refactor Python code using ast analysis and rope."
+description: "Analyze and refactor Python code using ast analysis and rope."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "code_refactor_pack.tool"
+
+capabilities:
+  tools:
+    - name: "code_analysis"
+      capability_id: "code_analysis"
+      description: "Analyze or refactor Python code."
+      input_schema:
+        type: "object"
+        properties:
+          code: {type: "string"}
+          operation: {type: "string", default: "analyze"}
+        required: ['code']
+  resources: []
+  prompts: []
+
+tags: ["code", "refactor"]
+categories: ["development"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+  dependencies:
+    - "rope>=1.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "limited_subprocess"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["code_analysis"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "code_analysis"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/code-refactor-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

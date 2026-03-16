@@ -442,3 +442,94 @@ async def resolve_report(
     await session.commit()
 
     return {"resolved": True, "status": body.status}
+
+
+# --- GET /v1/admin/stats (Observability) ---
+
+@router.get("/stats")
+async def get_platform_stats(
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Platform-wide observability stats."""
+    from sqlalchemy import func
+    from app.packages.models import Installation
+
+    # Package counts
+    pkg_count = await session.execute(select(func.count(Package.id)))
+    total_packages = pkg_count.scalar() or 0
+
+    # Version counts
+    ver_count = await session.execute(select(func.count(PackageVersion.id)))
+    total_versions = ver_count.scalar() or 0
+
+    # Total downloads
+    dl_sum = await session.execute(select(func.sum(Package.download_count)))
+    total_downloads = dl_sum.scalar() or 0
+
+    # Installation stats
+    install_total = await session.execute(select(func.count(Installation.id)))
+    total_installs = install_total.scalar() or 0
+
+    active_installs = await session.execute(
+        select(func.count(Installation.id)).where(Installation.status == "active")
+    )
+    total_active = active_installs.scalar() or 0
+
+    failed_installs = await session.execute(
+        select(func.count(Installation.id)).where(Installation.status == "failed")
+    )
+    total_failed = failed_installs.scalar() or 0
+
+    # Publisher counts
+    pub_count = await session.execute(select(func.count(Publisher.id)))
+    total_publishers = pub_count.scalar() or 0
+
+    suspended_count = await session.execute(
+        select(func.count(Publisher.id)).where(Publisher.is_suspended == True)
+    )
+    total_suspended = suspended_count.scalar() or 0
+
+    # Quarantined versions
+    quarantined_count = await session.execute(
+        select(func.count(PackageVersion.id)).where(PackageVersion.quarantine_status == "quarantined")
+    )
+    total_quarantined = quarantined_count.scalar() or 0
+
+    # Open reports
+    open_reports = await session.execute(
+        select(func.count(PackageReport.id)).where(PackageReport.status == "submitted")
+    )
+    total_open_reports = open_reports.scalar() or 0
+
+    # Top packages by downloads
+    top_packages_result = await session.execute(
+        select(Package.slug, Package.download_count)
+        .order_by(Package.download_count.desc())
+        .limit(10)
+    )
+    top_packages = [{"slug": row[0], "downloads": row[1]} for row in top_packages_result.all()]
+
+    return {
+        "packages": {
+            "total": total_packages,
+            "total_versions": total_versions,
+            "quarantined": total_quarantined,
+        },
+        "downloads": {
+            "total": total_downloads,
+            "top_packages": top_packages,
+        },
+        "installations": {
+            "total": total_installs,
+            "active": total_active,
+            "failed": total_failed,
+        },
+        "publishers": {
+            "total": total_publishers,
+            "suspended": total_suspended,
+        },
+        "moderation": {
+            "open_reports": total_open_reports,
+        },
+    }

@@ -1,0 +1,66 @@
+manifest_version: "0.1"
+package_id: "contract-review-pack"
+package_type: "toolpack"
+name: "Contract Review Pack"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Analyze legal contracts and flag risky clauses."
+description: "Analyze legal contracts and flag risky clauses."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "contract_review_pack.tool"
+
+capabilities:
+  tools:
+    - name: "document_parsing"
+      capability_id: "document_parsing"
+      description: "Analyze a legal contract text for risky clauses and key terms."
+      input_schema:
+        type: "object"
+        properties:
+          text: {type: "string"}
+          check_risks: {type: "boolean", default: true}
+          extract_terms: {type: "boolean", default: true}
+          severity_filter: {type: "string", default: ""}
+        required: ['text']
+  resources: []
+  prompts: []
+
+tags: ["contract", "review"]
+categories: ["document-processing"]
+
+compatibility:
+  frameworks: ["langchain", "crewai", "generic"]
+  python: ">=3.10"
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
+
+upgrade_roles: ["document_parsing"]
+recommended_for:
+  - agent_type: "general-assistant"
+    missing_capability: "document_parsing"
+
+install_strategy: "local"
+fallback_behavior: "skip"
+policy_requirements:
+  min_trust_level: "unverified"
+  requires_approval: false
+
+security:
+  signature: null
+  provenance:
+    source_repo: null
+    commit: null
+    build_system: null
+
+support:
+  homepage: "https://agentnode.net/packages/contract-review-pack"
+  issues: "https://github.com/agentnode-ai/agentnode/issues"
+
+deprecation_policy: "6-months-notice"

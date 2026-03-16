@@ -96,3 +96,41 @@ def evaluate_policy(pkg: PolicyInput, policy: PolicyConstraints) -> PolicyResult
         return PolicyResult(result="requires_approval", reasons=approval_reasons)
 
     return PolicyResult(result="allowed", reasons=[])
+
+
+def evaluate_policy_inline(
+    trust_level: str,
+    permissions,
+    quarantine_status: str,
+    is_yanked: bool,
+    policy: dict,
+) -> str:
+    """Simplified policy check for use inside Resolution Engine.
+
+    Args:
+        trust_level: Publisher trust level string.
+        permissions: Permission model object (or None).
+        quarantine_status: Version quarantine status.
+        is_yanked: Whether version is yanked.
+        policy: Dict with min_trust, allow_shell, allow_network.
+
+    Returns:
+        "allowed", "blocked", or "requires_approval".
+    """
+    pkg_input = PolicyInput(
+        trust_level=trust_level,
+        network_level=permissions.network_level if permissions else "none",
+        filesystem_level=permissions.filesystem_level if permissions else "none",
+        code_execution_level=permissions.code_execution_level if permissions else "none",
+        data_access_level=permissions.data_access_level if permissions else "input_only",
+        user_approval_level=permissions.user_approval_level if permissions else "never",
+        is_yanked=is_yanked,
+        is_quarantined=quarantine_status not in ("none", "cleared"),
+    )
+    constraints = PolicyConstraints(
+        min_trust=policy.get("min_trust"),
+        allow_shell=policy.get("allow_shell", True),
+        allow_network=policy.get("allow_network", True),
+    )
+    result = evaluate_policy(pkg_input, constraints)
+    return result.result
