@@ -1,0 +1,17 @@
+AgentNode — Dual License
+
+This repository contains multiple components under different licenses:
+
+1. Backend (backend/)
+   Licensed under the Business Source License 1.1 (BSL)
+   See LICENSE-BSL for details.
+
+   The BSL allows you to read, modify, and use the code for any purpose
+   EXCEPT running a competing hosted registry service. After 4 years,
+   the code automatically converts to Apache 2.0.
+
+2. Everything else (cli/, sdk/, adapter-*, starter-packs/, action/)
+   Licensed under the MIT License.
+   See LICENSE-MIT for details.
+
+For commercial licensing inquiries, contact: hello@agentnode.net
