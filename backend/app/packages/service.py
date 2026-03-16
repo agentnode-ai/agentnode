@@ -19,7 +19,7 @@ from app.packages.models import (
     UpgradeMetadata,
 )
 from app.packages.typosquatting import check_typosquatting
-from app.packages.validator import validate_manifest
+from app.packages.validator import validate_manifest, validate_artifact_quality
 from app.packages.version_queries import recalculate_latest_version_id
 from app.shared.exceptions import AppError
 from app.shared.meili import sync_package_to_meilisearch
@@ -73,6 +73,21 @@ async def publish_package(
     valid, errors, warnings = await validate_manifest(manifest, session)
     if not valid:
         raise AppError("MANIFEST_INVALID", "Manifest validation failed", 422, details=errors)
+
+    # 1b. Quality Gate — validate artifact contains tests
+    publish_warnings = list(warnings)
+    if artifact_bytes:
+        qg_errors, qg_warnings = validate_artifact_quality(
+            artifact_bytes, manifest.get("package_id", "")
+        )
+        publish_warnings.extend(qg_warnings)
+        if qg_errors:
+            raise AppError(
+                "QUALITY_GATE_FAILED",
+                "Quality gate check failed",
+                422,
+                details=qg_errors,
+            )
 
     slug = manifest["package_id"]
     version_str = manifest["version"]
@@ -293,7 +308,6 @@ async def publish_package(
     if not quarantine_for_typosquatting:
         await sync_package_to_meilisearch(build_meili_document(pkg, pv, manifest))
 
-    publish_warnings = []
     if quarantine_for_typosquatting:
         publish_warnings.append(
             f"Slug '{slug}' is similar to existing packages: {', '.join(similar)}. "

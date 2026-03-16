@@ -225,3 +225,56 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
             warnings.append("recommended_for is recommended for upgrade packages")
 
     return len(errors) == 0, errors, warnings
+
+
+def validate_artifact_quality(artifact_bytes: bytes, slug: str) -> tuple[list[str], list[str]]:
+    """Quality Gate — validate artifact contains tests and required structure.
+
+    Returns (errors, warnings). Errors block publishing.
+    """
+    import io
+    import tarfile
+
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    try:
+        with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
+            names = tar.getnames()
+    except (tarfile.TarError, EOFError):
+        errors.append("Artifact is not a valid .tar.gz archive")
+        return errors, warnings
+
+    # Normalize paths (remove leading pack-name prefix if present)
+    normalized = []
+    for n in names:
+        parts = n.split("/", 1)
+        normalized.append(parts[1] if len(parts) > 1 else parts[0])
+
+    # Check for test files
+    test_files = [
+        f for f in normalized
+        if (f.startswith("tests/") or f.startswith("test/") or f.startswith("test_"))
+        and f.endswith(".py")
+        and not f.endswith("__init__.py")
+    ]
+
+    if not test_files:
+        errors.append(
+            "Quality Gate: No test files found. "
+            "Add a tests/ directory with at least one test_*.py file."
+        )
+
+    # Check for pyproject.toml or setup.py
+    has_project_file = any(
+        f in ("pyproject.toml", "setup.py", "setup.cfg") for f in normalized
+    )
+    if not has_project_file:
+        warnings.append("No pyproject.toml or setup.py found — recommended for proper packaging")
+
+    # Check for agentnode.yaml manifest in artifact
+    has_manifest = any(f == "agentnode.yaml" for f in normalized)
+    if not has_manifest:
+        warnings.append("No agentnode.yaml found in artifact — recommended to include manifest")
+
+    return errors, warnings

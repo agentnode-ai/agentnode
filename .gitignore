@@ -15,10 +15,11 @@ cli/dist/
 web/.next/
 web/out/
 
-# Environment
+# Environment & Secrets
 .env
 .env.local
 .env.production
+.pypirc
 
 # IDE
 .idea/

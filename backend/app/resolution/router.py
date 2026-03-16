@@ -239,11 +239,18 @@ async def resolve_upgrade(
 
 
 # --- POST /v1/recommend (Spec §8.5) ---
+# Different from /resolve:
+#   /resolve  = exact capability matching, strict scoring, policy-aware
+#   /recommend = broader discovery, includes related capabilities,
+#                filters already-installed packages, explains reasoning
 
 class RecommendRequest(BaseModel):
-    missing_capabilities: list[str] = Field(..., min_length=1)
+    missing_capabilities: list[str] = Field(default_factory=list)
+    installed_packages: list[str] = Field(default_factory=list)
+    agent_description: str | None = None
     framework: str | None = None
     runtime: str | None = None
+    limit: int = Field(10, ge=1, le=30)
 
 
 @router.post("/recommend", dependencies=[Depends(rate_limit_authenticated(60, 60))])
@@ -252,42 +259,152 @@ async def recommend(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Recommend packages for missing capabilities. Spec §8.5."""
+    """Recommend packages based on missing capabilities, installed packs, or agent description.
+
+    Unlike /resolve (strict capability matching), /recommend provides broader
+    discovery: related capabilities, category-based suggestions, and reasoning.
+    """
+    if not body.missing_capabilities and not body.agent_description:
+        raise AppError(
+            "INVALID_REQUEST",
+            "Provide missing_capabilities or agent_description",
+            422,
+        )
+
+    installed_set = set(body.installed_packages)
     recommendations = []
 
-    for cap_id in body.missing_capabilities:
-        # Validate capability exists in taxonomy
-        tax_result = await session.execute(
-            select(CapabilityTaxonomy).where(CapabilityTaxonomy.id == cap_id)
-        )
-        if not tax_result.scalar_one_or_none():
-            raise AppError("CAPABILITY_ID_UNKNOWN", f"Unknown capability: {cap_id}", 422)
+    # 1) Resolve each missing capability with related suggestions
+    cap_ids_to_resolve = list(body.missing_capabilities)
 
-        # Find packages with this capability
+    # 2) If agent_description provided, infer capabilities from keywords
+    if body.agent_description:
+        all_tax = await session.execute(
+            select(CapabilityTaxonomy)
+        )
+        taxonomy = all_tax.scalars().all()
+        desc_lower = body.agent_description.lower()
+        for cap in taxonomy:
+            # Match if description mentions the capability name or keywords
+            cap_terms = cap.id.replace("_", " ").split()
+            display_terms = cap.display_name.lower().split() if cap.display_name else []
+            all_terms = cap_terms + display_terms
+            if any(term in desc_lower for term in all_terms if len(term) > 3):
+                if cap.id not in cap_ids_to_resolve:
+                    cap_ids_to_resolve.append(cap.id)
+
+    # 3) For each capability, find related capabilities in the same category
+    seen_caps = set(cap_ids_to_resolve)
+    related_caps = []
+    if cap_ids_to_resolve:
+        tax_result = await session.execute(
+            select(CapabilityTaxonomy)
+            .where(CapabilityTaxonomy.id.in_(cap_ids_to_resolve))
+        )
+        requested_taxonomy = tax_result.scalars().all()
+        categories = {t.category for t in requested_taxonomy if t.category}
+
+        if categories:
+            related_result = await session.execute(
+                select(CapabilityTaxonomy)
+                .where(
+                    CapabilityTaxonomy.category.in_(categories),
+                    CapabilityTaxonomy.id.notin_(seen_caps),
+                )
+            )
+            related_caps = [r.id for r in related_result.scalars().all()]
+
+    # 4) Resolve primary capabilities
+    for cap_id in cap_ids_to_resolve:
         req = ResolveRequest(
             capabilities=[cap_id],
             framework=body.framework,
             runtime=body.runtime,
-            limit=10,
+            limit=5,
         )
         scored = await resolve(req, session)
 
-        packages = [
-            {
+        packages = []
+        for s in scored:
+            if s.slug in installed_set:
+                continue
+            # Find additional capabilities this package provides
+            cap_result = await session.execute(
+                select(Capability.capability_id)
+                .join(PackageVersion, Capability.package_version_id == PackageVersion.id)
+                .join(Package, PackageVersion.package_id == Package.id)
+                .where(Package.slug == s.slug)
+            )
+            all_caps = [row[0] for row in cap_result.all()]
+            also_provides = [c for c in all_caps if c != cap_id]
+
+            packages.append({
                 "slug": s.slug,
                 "name": s.name,
+                "version": s.version,
                 "compatibility_score": s.score,
                 "trust_level": s.trust_level,
-            }
-            for s in scored
-        ]
+                "reason": f"Provides {cap_id} capability"
+                + (f" (+ {', '.join(also_provides[:3])})" if also_provides else ""),
+                "also_provides": also_provides,
+                "install_command": f"agentnode install {s.slug}",
+            })
 
-        recommendations.append({
-            "capability_id": cap_id,
-            "packages": packages,
-        })
+        if packages:
+            recommendations.append({
+                "capability_id": cap_id,
+                "source": "requested",
+                "packages": packages,
+            })
 
-    return {"recommendations": recommendations}
+    # 5) Suggest related capabilities the user didn't ask for
+    if related_caps:
+        for cap_id in related_caps[:5]:
+            req = ResolveRequest(
+                capabilities=[cap_id],
+                framework=body.framework,
+                runtime=body.runtime,
+                limit=2,
+            )
+            scored = await resolve(req, session)
+            packages = [
+                {
+                    "slug": s.slug,
+                    "name": s.name,
+                    "version": s.version,
+                    "compatibility_score": s.score,
+                    "trust_level": s.trust_level,
+                    "reason": f"Related capability in same category",
+                    "also_provides": [],
+                    "install_command": f"agentnode install {s.slug}",
+                }
+                for s in scored
+                if s.slug not in installed_set
+            ]
+            if packages:
+                recommendations.append({
+                    "capability_id": cap_id,
+                    "source": "related",
+                    "packages": packages,
+                })
+
+    # Deduplicate and limit
+    seen_slugs: set[str] = set()
+    final: list[dict] = []
+    for rec in recommendations:
+        deduped_packages = []
+        for pkg in rec["packages"]:
+            if pkg["slug"] not in seen_slugs:
+                seen_slugs.add(pkg["slug"])
+                deduped_packages.append(pkg)
+        if deduped_packages:
+            rec["packages"] = deduped_packages
+            final.append(rec)
+
+    return {
+        "recommendations": final[:body.limit],
+        "total_packages": len(seen_slugs),
+    }
 
 
 # --- GET /v1/capabilities (public listing) ---
