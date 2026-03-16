@@ -1,30 +1,34 @@
 # AgentNode
 
-**The open upgrade and discovery infrastructure for AI agents.**
+**The open package registry for AI agent capabilities.**
 
-AgentNode helps developers and AI hosts resolve capability gaps with trust-aware, framework-compatible upgrade recommendations.
+AgentNode helps developers and AI agents discover, resolve, and install trust-verified capability upgrades. One registry for every framework.
+
+[![License: MIT](https://img.shields.io/badge/CLI%20%2F%20SDK-MIT-green)](LICENSE-MIT)
+[![License: BSL 1.1](https://img.shields.io/badge/Backend-BSL%201.1-blue)](LICENSE-BSL)
+[![Website](https://img.shields.io/badge/web-agentnode.net-purple)](https://agentnode.net)
 
 ```bash
 $ agentnode search "pdf extraction"
 
-  pdf-reader-pack  v1.0.0  ★ unverified
-  Extract text, tables, and metadata from PDF files.
-  Capabilities: pdf_extraction
+  pdf-reader-pack  v1.2.0  ★ trusted
+  Extract text, tables, and metadata from PDF documents.
+  Capabilities: pdf_extraction, document_summary
   Frameworks: langchain, crewai, generic
 
 $ agentnode install pdf-reader-pack
 
-  Installed: pdf-reader-pack@1.0.0
+  Installed: pdf-reader-pack@1.2.0
   Entrypoint: from pdf_reader_pack import tool
 ```
 
 ## What AgentNode Does
 
-- **Discover** capabilities through search and resolution
-- **Resolve** capability gaps to ranked, compatible packages
-- **Evaluate** security policies before installation
-- **Install** packages with trust verification and lockfile tracking
-- **Upgrade** to better versions while maintaining policy compliance
+- **Discover** — Search 76+ starter packs across 97 capability IDs
+- **Resolve** — Match capability gaps to ranked, compatible packages
+- **Verify** — Ed25519 signatures, security scanning, typosquatting detection
+- **Install** — Trust-verified packages with lockfile tracking
+- **Integrate** — Works with LangChain, CrewAI, AutoGPT, or any Python framework
 
 ## Quick Start
 
@@ -33,8 +37,11 @@ $ agentnode install pdf-reader-pack
 ```bash
 npm install -g agentnode-cli
 
+agentnode login
 agentnode search "pdf extraction"
 agentnode install pdf-reader-pack
+agentnode validate .
+agentnode publish .
 ```
 
 ### Python SDK
@@ -44,26 +51,36 @@ pip install agentnode-sdk
 ```
 
 ```python
-from agentnode import AgentNode
+from agentnode_sdk import AgentNodeClient
 
-an = AgentNode(api_key="ank_...")
-results = an.search("pdf extraction")
-result = an.resolve_upgrade(
-    missing_capability="pdf_extraction",
-    framework="langchain"
-)
+client = AgentNodeClient(api_key="ank_...")
+results = client.search("pdf extraction")
+resolved = client.resolve(["pdf_extraction"], framework="langchain")
+policy = client.check_policy("pdf-reader-pack")
 ```
 
-### LangChain Adapter
+### MCP Integration
+
+Use AgentNode packs as tools in Claude Code, Cursor, and other MCP clients:
 
 ```bash
-pip install agentnode-langchain
+pip install agentnode-mcp
+
+# Expose a single pack as MCP tools
+agentnode-mcp --pack pdf-reader-pack
+
+# Expose the full platform (search, resolve, explain)
+agentnode-mcp-platform --api-url https://api.agentnode.net
 ```
 
-```python
-from agentnode_langchain import load_tool
+### GitHub Action
 
-tool = load_tool("pdf-reader-pack", api_key="ank_...")
+Automate pack publishing from CI/CD:
+
+```yaml
+- uses: agentnode/publish@v1
+  with:
+    api-key: ${{ secrets.AGENTNODE_API_KEY }}
 ```
 
 ## Architecture
@@ -71,35 +88,37 @@ tool = load_tool("pdf-reader-pack", api_key="ank_...")
 ```
 agentnode/
 ├── backend/           # FastAPI + PostgreSQL + Redis + Meilisearch
-├── cli/               # TypeScript CLI (npm package)
-├── sdk/               # Python SDK (PyPI package)
-├── adapter-langchain/ # LangChain integration
-├── web/               # Next.js frontend
-├── starter-packs/     # 3 reference packages
-│   ├── pdf-reader-pack/
-│   ├── web-search-pack/
-│   └── webpage-extractor-pack/
-├── examples/          # Research agent demo
-└── docs/              # Documentation
+├── cli/               # TypeScript CLI (npm)
+├── sdk/               # Python SDK (PyPI)
+├── adapter-mcp/       # MCP server integration
+├── web/               # Next.js frontend (agentnode.net)
+├── action/            # GitHub Action for CI/CD publishing
+├── starter-packs/     # 76+ reference packages with tests
+├── docs/              # Documentation
+└── scripts/           # Tooling and seed scripts
 ```
 
 ## Core Concepts
 
-### ANP — Agent Node Package
+### ANP Format
 
-The native package format for installable agent capabilities. Each package has an `agentnode.yaml` manifest declaring capabilities, permissions, compatibility, and trust metadata.
+Every package has an `agentnode.yaml` manifest declaring identity, capabilities, permissions, framework compatibility, and trust metadata. This is the native package format for the registry.
 
 ### Resolution Engine
 
-Scores packages based on capability match (40%), framework compatibility (20%), runtime match (15%), trust level (15%), and permission safety (10%).
+Scores packages based on capability match (40%), framework compatibility (20%), runtime match (15%), trust level (15%), and permission safety (10%). Supports fuzzy matching and policy-aware filtering.
 
-### Trust & Policy
+### Trust Layer
 
-Four trust levels: `unverified` → `verified` → `trusted` → `curated`. Policy checks evaluate trust, permissions, and approval requirements before installation.
+- **4 trust levels:** `unverified` > `verified` > `trusted` > `curated`
+- **Ed25519 signatures** for provenance verification
+- **Bandit security scanning** for vulnerability detection
+- **Typosquatting detection** to prevent name confusion attacks
+- **Publisher quarantine** for flagged accounts
 
 ### Capability Taxonomy
 
-30 curated capability IDs across document processing, web & browsing, data analysis, memory & retrieval, communication, productivity, language, and development.
+97 standardized capability IDs across 14 categories: Document Processing, Web & Browsing, Communication, Data Analysis, Developer Tools, Cloud & DevOps, AI & ML, Media, IoT, Security, Productivity, Design, Finance, and Science.
 
 ## Documentation
 
@@ -110,48 +129,50 @@ Four trust levels: `unverified` → `verified` → `trusted` → `curated`. Poli
 - [Publishing Guide](docs/publishing.md)
 - [ANP Format](docs/anp-format.md)
 - [Capability Taxonomy](docs/capability-taxonomy.md)
+- [Deployment](docs/deployment.md)
 
 ## Development
 
-### Backend
+### Prerequisites
+
+- Python 3.12+
+- Node.js 20+
+- Docker (for local services)
+
+### Local Setup
 
 ```bash
+# Start infrastructure
+docker-compose up -d  # PostgreSQL, Redis, Meilisearch, MinIO
+
+# Backend
 cd backend
+python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest
-```
+alembic upgrade head
+uvicorn app.main:app --reload --port 8001
 
-### CLI
-
-```bash
-cd cli
-npm install
-npm run build
-npm test
-```
-
-### Web
-
-```bash
+# Web
 cd web
 npm install
 npm run dev
+
+# CLI
+cd cli
+npm install
+npm run build
 ```
-
-### Local Services
-
-```bash
-docker-compose up -d  # PostgreSQL, Redis, Meilisearch, MinIO
-```
-
-## Open Core
-
-- **Open:** ANP format, CLI, SDKs, adapters, starter packs, capability taxonomy
-- **Proprietary:** Registry backend, resolution engine, trust logic, ranking data
 
 ## License
 
-See individual component directories for license information.
+AgentNode uses a dual-license model:
+
+| Component | License | Details |
+|---|---|---|
+| `cli/`, `sdk/`, `adapter-mcp/`, `starter-packs/`, `action/` | [MIT](LICENSE-MIT) | Free to use, modify, redistribute |
+| `backend/` | [BSL 1.1](LICENSE-BSL) | Free to use except hosting a competing registry. Converts to Apache 2.0 on 2030-03-16 |
+
+See [LICENSE](LICENSE) for the full overview or visit [agentnode.net/license](https://agentnode.net/license).
 
 ---
 

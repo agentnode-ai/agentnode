@@ -92,6 +92,15 @@ function SearchContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Debounced search while typing (300ms)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      performSearch(query, filters);
+    }, 300);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
   const handleSubmit = useCallback(() => {
     performSearch(query, filters);
   }, [query, filters, performSearch]);
