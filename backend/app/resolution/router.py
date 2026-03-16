@@ -8,6 +8,7 @@ from app.auth.dependencies import get_current_user
 from app.auth.models import User
 from app.database import get_session
 from app.packages.models import Capability, CapabilityTaxonomy, Package, PackageVersion
+from sqlalchemy import func
 from app.resolution.engine import ResolveRequest, ScoredPackage, resolve
 from app.resolution.policy import PolicyConstraints, PolicyInput, evaluate_policy
 from app.shared.exceptions import AppError
@@ -277,3 +278,32 @@ async def recommend(
         })
 
     return {"recommendations": recommendations}
+
+
+# --- GET /v1/capabilities (public listing) ---
+
+@router.get("/capabilities", dependencies=[Depends(rate_limit(60, 60))])
+async def list_capabilities(
+    category: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """List all capabilities in the taxonomy. Public endpoint."""
+    query = select(CapabilityTaxonomy).order_by(CapabilityTaxonomy.category, CapabilityTaxonomy.id)
+    if category:
+        query = query.where(CapabilityTaxonomy.category == category)
+
+    result = await session.execute(query)
+    caps = result.scalars().all()
+
+    return {
+        "capabilities": [
+            {
+                "id": c.id,
+                "display_name": c.display_name,
+                "description": c.description,
+                "category": c.category,
+            }
+            for c in caps
+        ],
+        "total": len(caps),
+    }

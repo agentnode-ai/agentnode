@@ -20,6 +20,13 @@ class CreatePublisherRequest(BaseModel):
         return v
 
 
+class UpdatePublisherRequest(BaseModel):
+    display_name: str | None = None
+    bio: str | None = None
+    website_url: str | None = None
+    github_url: str | None = None
+
+
 class PublisherResponse(BaseModel):
     id: UUID
     display_name: str

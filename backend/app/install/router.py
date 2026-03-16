@@ -29,6 +29,47 @@ router = APIRouter(prefix="/v1/packages", tags=["install"])
 installations_router = APIRouter(prefix="/v1/installations", tags=["install"])
 
 
+# --- GET /v1/installations (User's own installations) ---
+
+@installations_router.get("")
+async def list_my_installations(
+    status: str | None = None,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """List current user's installations."""
+    query = (
+        select(Installation, Package.slug, PackageVersion.version_number)
+        .join(Package, Installation.package_id == Package.id)
+        .join(PackageVersion, Installation.package_version_id == PackageVersion.id)
+        .where(Installation.user_id == user.id)
+    )
+    if status:
+        query = query.where(Installation.status == status)
+    query = query.order_by(Installation.installed_at.desc()).limit(100)
+
+    result = await session.execute(query)
+    rows = result.all()
+
+    return {
+        "installations": [
+            {
+                "id": str(inst.id),
+                "package_slug": pkg_slug,
+                "version": ver_num,
+                "status": inst.status,
+                "source": inst.source,
+                "event_type": inst.event_type,
+                "installed_at": inst.installed_at.isoformat() if inst.installed_at else None,
+                "activated_at": inst.activated_at.isoformat() if inst.activated_at else None,
+                "uninstalled_at": inst.uninstalled_at.isoformat() if inst.uninstalled_at else None,
+            }
+            for inst, pkg_slug, ver_num in rows
+        ],
+        "total": len(rows),
+    }
+
+
 @router.get("/{slug}/install-info", response_model=InstallMetadataResponse)
 async def get_install_metadata(
     slug: str,

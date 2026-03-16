@@ -26,6 +26,7 @@ from app.packages.validator import validate_manifest
 from app.packages.version_queries import get_owner_visible_versions, get_public_versions
 from app.shared.exceptions import AppError
 from app.trust.scanner import run_security_scan
+from app.webhooks.service import fire_event
 
 router = APIRouter(prefix="/v1/packages", tags=["packages"])
 
@@ -64,6 +65,11 @@ async def publish(
 
     # Schedule async security scan (does NOT block publish response)
     background_tasks.add_task(run_security_scan, pv.id)
+
+    # Fire webhook event (after commit in publish_package)
+    await fire_event(session, user.publisher.id, "version.published", {
+        "slug": pkg.slug, "version": pv.version_number, "package_type": pkg.package_type,
+    })
 
     message = f"Published {pkg.slug}@{pv.version_number}"
     if warnings:
@@ -186,6 +192,8 @@ async def deprecate_package(
     await recalculate_latest_version_id(session, pkg.id)
     await session.commit()
 
+    await fire_event(session, pkg.publisher_id, "package.deprecated", {"slug": pkg.slug})
+
     return {"deprecated": True}
 
 
@@ -220,6 +228,8 @@ async def yank_version(
     from app.packages.version_queries import recalculate_latest_version_id
     await recalculate_latest_version_id(session, pkg.id)
     await session.commit()
+
+    await fire_event(session, pkg.publisher_id, "version.yanked", {"slug": pkg.slug, "version": version})
 
     return {"yanked": True}
 
