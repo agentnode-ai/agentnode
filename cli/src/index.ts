@@ -18,6 +18,7 @@ import { policyCheckCommand } from "./commands/policy-check.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { explainCommand } from "./commands/explain.js";
 import { apiKeysCommand } from "./commands/api-keys.js";
+import { importCommand } from "./commands/import.js";
 
 const program = new Command();
 
@@ -44,5 +45,6 @@ program.addCommand(policyCheckCommand);
 program.addCommand(doctorCommand);
 program.addCommand(explainCommand);
 program.addCommand(apiKeysCommand);
+program.addCommand(importCommand);
 
 program.parse();

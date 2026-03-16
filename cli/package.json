@@ -1,6 +1,6 @@
 {
   "name": "agentnode-cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "CLI for AgentNode — discover, resolve, and install AI agent capabilities.",
   "type": "module",
   "bin": {
