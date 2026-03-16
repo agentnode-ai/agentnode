@@ -157,8 +157,13 @@ function extractTarGz(tarPath: string, destDir: string): void {
   // mkdirSync already imported at top
   mkdirSync(destDir, { recursive: true });
 
-  // Use tar command (available on all platforms with Node 20+)
-  execSync(`tar xzf "${tarPath}" -C "${destDir}"`, {
+  // On Windows, tar interprets colons as remote host specifiers (host:path).
+  // Convert backslashes to forward slashes so Windows tar (bsdtar) can parse
+  // drive-letter paths like C:/Users/... without treating "C" as a hostname.
+  const safeTarPath = tarPath.replace(/\\/g, "/");
+  const safeDestDir = destDir.replace(/\\/g, "/");
+
+  execSync(`tar xzf "${safeTarPath}" -C "${safeDestDir}" --force-local`, {
     timeout: 30_000,
     stdio: "pipe",
   });

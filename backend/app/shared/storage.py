@@ -4,6 +4,7 @@ from botocore.config import Config
 from app.config import settings
 
 _client = None
+_public_client = None
 
 
 def get_s3_client():
@@ -20,6 +21,22 @@ def get_s3_client():
     return _client
 
 
+def _get_public_s3_client():
+    """Client using the public endpoint for generating presigned download URLs."""
+    global _public_client
+    if _public_client is None:
+        endpoint = settings.S3_PUBLIC_ENDPOINT or settings.S3_ENDPOINT
+        _public_client = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=settings.S3_ACCESS_KEY,
+            aws_secret_access_key=settings.S3_SECRET_KEY,
+            region_name=settings.S3_REGION,
+            config=Config(signature_version="s3v4"),
+        )
+    return _public_client
+
+
 def upload_artifact(object_key: str, data: bytes, content_type: str = "application/gzip") -> None:
     client = get_s3_client()
     client.put_object(
@@ -32,7 +49,7 @@ def upload_artifact(object_key: str, data: bytes, content_type: str = "applicati
 
 def generate_presigned_url(object_key: str, expires_in: int = 900) -> str:
     """Generate a presigned download URL. Default expiry: 15 minutes."""
-    client = get_s3_client()
+    client = _get_public_s3_client()
     return client.generate_presigned_url(
         "get_object",
         Params={"Bucket": settings.S3_BUCKET, "Key": object_key},

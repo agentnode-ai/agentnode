@@ -67,6 +67,7 @@ app.include_router(webhooks_router)
 
 
 @app.get("/healthz")
+@app.get("/v1/healthz")
 async def healthz():
     return {"status": "ok"}
 

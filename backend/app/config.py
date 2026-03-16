@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     # S3 / MinIO
     S3_ENDPOINT: str = "http://localhost:9000"
+    S3_PUBLIC_ENDPOINT: str = ""  # Public URL for presigned download URLs (if different from S3_ENDPOINT)
     S3_ACCESS_KEY: str = "minioadmin"
     S3_SECRET_KEY: str = "minioadmin"
     S3_BUCKET: str = "agentnode-artifacts"
