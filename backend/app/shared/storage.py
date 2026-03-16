@@ -47,6 +47,13 @@ def upload_artifact(object_key: str, data: bytes, content_type: str = "applicati
     )
 
 
+def download_artifact(object_key: str) -> bytes:
+    """Download an artifact from S3 and return the raw bytes."""
+    client = get_s3_client()
+    response = client.get_object(Bucket=settings.S3_BUCKET, Key=object_key)
+    return response["Body"].read()
+
+
 def generate_presigned_url(object_key: str, expires_in: int = 900) -> str:
     """Generate a presigned download URL. Default expiry: 15 minutes."""
     client = _get_public_s3_client()

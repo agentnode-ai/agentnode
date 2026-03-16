@@ -1,0 +1,96 @@
+name: "AgentNode Publish"
+description: "Publish an ANP package to the AgentNode registry"
+branding:
+  icon: "package"
+  color: "blue"
+
+inputs:
+  api-key:
+    description: "AgentNode API key (ank_...)"
+    required: true
+  package-dir:
+    description: "Path to the package directory containing agentnode.yaml"
+    required: false
+    default: "."
+  registry-url:
+    description: "AgentNode registry URL"
+    required: false
+    default: "https://api.agentnode.net"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Validate manifest exists
+      shell: bash
+      run: |
+        if [ ! -f "${{ inputs.package-dir }}/agentnode.yaml" ]; then
+          echo "::error::agentnode.yaml not found in ${{ inputs.package-dir }}"
+          exit 1
+        fi
+        echo "Found agentnode.yaml"
+
+    - name: Install yq
+      shell: bash
+      run: |
+        if ! command -v yq &> /dev/null; then
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+        fi
+
+    - name: Build and publish
+      shell: bash
+      env:
+        AGENTNODE_API_KEY: ${{ inputs.api-key }}
+        REGISTRY_URL: ${{ inputs.registry-url }}
+        PACKAGE_DIR: ${{ inputs.package-dir }}
+      run: |
+        set -euo pipefail
+
+        cd "$PACKAGE_DIR"
+
+        # Convert manifest to JSON
+        MANIFEST_JSON=$(yq -o=json agentnode.yaml)
+        SLUG=$(echo "$MANIFEST_JSON" | yq -r '.package_id')
+        VERSION=$(echo "$MANIFEST_JSON" | yq -r '.version')
+
+        echo "Publishing $SLUG@$VERSION to $REGISTRY_URL"
+
+        # Create tar.gz artifact
+        ARTIFACT="/tmp/agentnode-artifact.tar.gz"
+        tar czf "$ARTIFACT" \
+          --exclude='.git' \
+          --exclude='node_modules' \
+          --exclude='__pycache__' \
+          --exclude='.venv' \
+          --exclude='venv' \
+          --exclude='env' \
+          --exclude='dist' \
+          --exclude='build' \
+          --exclude='*.egg-info' \
+          --exclude='.pytest_cache' \
+          --exclude='.mypy_cache' \
+          --exclude='.ruff_cache' \
+          --exclude='.DS_Store' \
+          --exclude='.env' \
+          --exclude='.env.local' \
+          .
+
+        # Publish to registry
+        RESPONSE=$(curl -s -w "\n%{http_code}" \
+          -X POST "$REGISTRY_URL/v1/packages/publish" \
+          -H "X-API-Key: $AGENTNODE_API_KEY" \
+          -F "manifest=$MANIFEST_JSON" \
+          -F "artifact=@$ARTIFACT")
+
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY=$(echo "$RESPONSE" | sed '$d')
+
+        rm -f "$ARTIFACT"
+
+        if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+          echo "::notice::Published $SLUG@$VERSION successfully"
+          echo "$BODY" | yq -r '.message // "Success"'
+        else
+          echo "::error::Publish failed (HTTP $HTTP_CODE): $BODY"
+          exit 1
+        fi

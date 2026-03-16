@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user
 from app.auth.models import User
-from app.shared.rate_limit import rate_limit
+from app.shared.rate_limit import check_login_rate_limits, rate_limit
 from app.auth.schemas import (
     ApiKeyResponse,
     CreateApiKeyRequest,
@@ -39,8 +39,9 @@ async def register(body: RegisterRequest, session: AsyncSession = Depends(get_se
     return RegisterResponse(id=user.id, email=user.email, username=user.username)
 
 
-@router.post("/login", response_model=TokenResponse, dependencies=[Depends(rate_limit(20, 60))])
-async def login(body: LoginRequest, session: AsyncSession = Depends(get_session)):
+@router.post("/login", response_model=TokenResponse)
+async def login(body: LoginRequest, request: Request, response: Response, session: AsyncSession = Depends(get_session)):
+    await check_login_rate_limits(request, response, body.email)
     result = await login_user(session, body.email, body.password, body.totp_code)
     return TokenResponse(**result)
 

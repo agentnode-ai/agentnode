@@ -12,7 +12,7 @@ from app.auth.models import User
 from app.database import get_session
 from app.packages.models import Installation, Package, PackageVersion
 from app.shared.exceptions import AppError
-from app.shared.rate_limit import rate_limit
+from app.shared.rate_limit import rate_limit, rate_limit_authenticated
 from app.install.schemas import (
     ArtifactInfo,
     CapabilityInfo,
@@ -91,7 +91,7 @@ async def get_install_metadata(
     )
 
 
-@router.post("/{slug}/install", response_model=InstallResponse, dependencies=[Depends(rate_limit(30, 60))])
+@router.post("/{slug}/install", response_model=InstallResponse, dependencies=[Depends(rate_limit_authenticated(60, 60))])
 async def install_package(
     slug: str,
     body: InstallRequest,

@@ -1,0 +1,13 @@
+# AgentNode SDK (from the local project)
+agentnode-sdk>=0.1.0
+
+# Starter packs (from the local project)
+web-search-pack>=1.0.0
+webpage-extractor-pack>=1.0.0
+pdf-reader-pack>=1.0.0
+
+# Transitive dependencies (pulled in by the packs above)
+# duckduckgo-search>=6.0    # via web-search-pack
+# trafilatura>=1.6          # via webpage-extractor-pack
+# pdfplumber>=0.10          # via pdf-reader-pack
+# httpx>=0.25               # via agentnode-sdk

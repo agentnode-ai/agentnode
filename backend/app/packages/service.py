@@ -149,6 +149,8 @@ async def publish_package(
         source_commit=provenance.get("commit"),
         build_system=provenance.get("build_system"),
         quarantine_status="quarantined" if quarantine_for_typosquatting else "none",
+        quarantine_reason="typosquatting_suspected" if quarantine_for_typosquatting else None,
+        quarantined_at=datetime.now(timezone.utc) if quarantine_for_typosquatting else None,
     )
     session.add(pv)
     await session.flush()  # Get pv.id

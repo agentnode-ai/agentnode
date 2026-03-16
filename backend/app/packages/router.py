@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +25,7 @@ from app.packages.service import publish_package
 from app.packages.validator import validate_manifest
 from app.packages.version_queries import get_owner_visible_versions, get_public_versions
 from app.shared.exceptions import AppError
+from app.trust.scanner import run_security_scan
 
 router = APIRouter(prefix="/v1/packages", tags=["packages"])
 
@@ -43,6 +44,7 @@ async def validate_package(
 async def publish(
     manifest: str = Form(...),
     artifact: UploadFile | None = File(None),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     user: User = Depends(require_publisher),
     session: AsyncSession = Depends(get_session),
 ):
@@ -59,6 +61,9 @@ async def publish(
         session=session,
         artifact_bytes=artifact_bytes,
     )
+
+    # Schedule async security scan (does NOT block publish response)
+    background_tasks.add_task(run_security_scan, pv.id)
 
     message = f"Published {pkg.slug}@{pv.version_number}"
     if warnings:

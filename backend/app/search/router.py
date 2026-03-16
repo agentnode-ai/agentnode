@@ -17,7 +17,7 @@ MEILI_INDEX = "packages"
 DEFAULT_SORT = "download_count:desc"
 
 
-@router.post("/search", response_model=SearchResponse, dependencies=[Depends(rate_limit(60, 60))])
+@router.post("/search", response_model=SearchResponse, dependencies=[Depends(rate_limit(30, 60))])
 async def search_packages(body: SearchRequest):
     """Full-text search over published packages via Meilisearch. Spec §8.2."""
     q = body.q

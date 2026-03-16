@@ -11,7 +11,7 @@ from app.packages.models import Capability, CapabilityTaxonomy, Package, Package
 from app.resolution.engine import ResolveRequest, ScoredPackage, resolve
 from app.resolution.policy import PolicyConstraints, PolicyInput, evaluate_policy
 from app.shared.exceptions import AppError
-from app.shared.rate_limit import rate_limit
+from app.shared.rate_limit import rate_limit, rate_limit_authenticated
 from app.resolution.schemas import (
     ResolvedPackage,
     ResolveRequestSchema,
@@ -22,7 +22,7 @@ from app.resolution.schemas import (
 router = APIRouter(prefix="/v1", tags=["resolution"])
 
 
-@router.post("/resolve", response_model=ResolveResponse, dependencies=[Depends(rate_limit(60, 60))])
+@router.post("/resolve", response_model=ResolveResponse, dependencies=[Depends(rate_limit_authenticated(60, 60))])
 async def resolve_capabilities(
     body: ResolveRequestSchema,
     session: AsyncSession = Depends(get_session),
@@ -71,7 +71,7 @@ class CheckPolicyRequest(BaseModel):
     policy: PolicySchema = Field(default_factory=PolicySchema)
 
 
-@router.post("/check-policy", dependencies=[Depends(rate_limit(60, 60))])
+@router.post("/check-policy", dependencies=[Depends(rate_limit_authenticated(60, 60))])
 async def check_policy(
     body: CheckPolicyRequest,
     user: User = Depends(get_current_user),
@@ -140,7 +140,7 @@ class ResolveUpgradeRequest(BaseModel):
     policy: PolicySchema = Field(default_factory=PolicySchema)
 
 
-@router.post("/resolve-upgrade", dependencies=[Depends(rate_limit(60, 60))])
+@router.post("/resolve-upgrade", dependencies=[Depends(rate_limit_authenticated(60, 60))])
 async def resolve_upgrade(
     body: ResolveUpgradeRequest,
     user: User = Depends(get_current_user),
@@ -235,7 +235,7 @@ class RecommendRequest(BaseModel):
     runtime: str | None = None
 
 
-@router.post("/recommend", dependencies=[Depends(rate_limit(60, 60))])
+@router.post("/recommend", dependencies=[Depends(rate_limit_authenticated(60, 60))])
 async def recommend(
     body: RecommendRequest,
     user: User = Depends(get_current_user),
