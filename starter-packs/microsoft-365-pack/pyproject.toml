@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "microsoft-365-pack"
+version = "1.0.0"
+description = "Interact with Outlook Mail, Calendar, OneDrive, and Teams via Microsoft Graph."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["httpx>=0.25"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "text-translator-pack"
+version = "1.0.0"
+description = "Translate text between languages using Google Translate."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["deep-translator>=1.11"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

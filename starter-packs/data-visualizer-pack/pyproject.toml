@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "data-visualizer-pack"
+version = "1.0.0"
+description = "Create charts and visualizations from data using matplotlib."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["matplotlib>=3.7", "pandas>=2.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "google-workspace-pack"
+version = "1.0.0"
+description = "Interact with Gmail, Google Calendar, and Google Drive."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["google-api-python-client>=2.100", "google-auth>=2.23"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

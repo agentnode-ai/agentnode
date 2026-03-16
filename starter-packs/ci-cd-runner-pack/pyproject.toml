@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ci-cd-runner-pack"
+version = "1.0.0"
+description = "Trigger and monitor CI/CD pipelines on GitHub and GitLab"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["httpx>=0.25"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

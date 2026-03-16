@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "csv-analyzer-pack"
+version = "1.0.0"
+description = "Analyze CSV files with pandas: statistics, filtering, and column inspection."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["pandas>=2.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

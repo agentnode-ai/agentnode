@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-refactor-pack"
+version = "1.0.0"
+description = "Analyze and refactor Python code using ast analysis and rope."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["rope>=1.10"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

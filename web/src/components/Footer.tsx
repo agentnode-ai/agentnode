@@ -14,6 +14,12 @@ export default function Footer() {
           <Link href="/search" className="transition-colors hover:text-foreground">
             Search
           </Link>
+          <Link href="/for-developers" className="transition-colors hover:text-foreground">
+            For Developers
+          </Link>
+          <Link href="/why-agentnode" className="transition-colors hover:text-foreground">
+            Why AgentNode
+          </Link>
           <Link href="/docs" className="transition-colors hover:text-foreground">
             Docs
           </Link>

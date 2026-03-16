@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "file-converter-pack"
+version = "1.0.0"
+description = "Convert files between formats: md, html, csv, json, txt"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["markdown>=3.5", "python-docx>=1.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

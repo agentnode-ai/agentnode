@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kubernetes-manager-pack"
+version = "1.0.0"
+description = "Manage Kubernetes clusters, pods, and deployments"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["kubernetes>=28.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

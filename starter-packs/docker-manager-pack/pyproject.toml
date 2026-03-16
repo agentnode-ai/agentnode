@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docker-manager-pack"
+version = "1.0.0"
+description = "Manage Docker containers and images"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["docker>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

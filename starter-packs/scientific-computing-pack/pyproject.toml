@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scientific-computing-pack"
+version = "1.0.0"
+description = "Scientific computing operations: statistics, linear regression, FFT, and linear algebra."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["numpy>=1.24", "scipy>=1.10"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

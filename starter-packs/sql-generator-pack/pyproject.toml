@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sql-generator-pack"
+version = "1.0.0"
+description = "Generate and format SQL queries from natural language descriptions."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["sqlparse>=0.5"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

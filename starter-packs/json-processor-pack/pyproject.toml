@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "json-processor-pack"
+version = "1.0.0"
+description = "Process, query, and validate JSON data with JMESPath and JSON Schema."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["jmespath>=1.0", "jsonschema>=4.20"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "screenshot-capture-pack"
+version = "1.0.0"
+description = "Capture high-quality webpage screenshots with Playwright."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["playwright>=1.40"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "document-summarizer-pack"
+version = "1.0.0"
+description = "Extractive text summarization using word frequency scoring"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]

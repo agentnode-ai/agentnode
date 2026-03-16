@@ -1,0 +1,39 @@
+{
+  "lockfile_version": "0.1",
+  "updated_at": "2026-03-16T01:18:25.346Z",
+  "packages": {
+    "pdf-reader-pack": {
+      "version": "1.0.0",
+      "package_type": "toolpack",
+      "entrypoint": "pdf_reader_pack.tool",
+      "capability_ids": [
+        "pdf_extraction"
+      ],
+      "artifact_hash": "sha256:cf781b9bd6c47cc0fe5f92f02bb739a8348f9377424211ff3569b53ea57bef8b",
+      "installed_at": "2026-03-16T01:17:22.135Z",
+      "source": "cli"
+    },
+    "web-search-pack": {
+      "version": "1.0.0",
+      "package_type": "toolpack",
+      "entrypoint": "web_search_pack.tool",
+      "capability_ids": [
+        "web_search"
+      ],
+      "artifact_hash": "sha256:3e667ba523ceddf6137a1a15f4103d48a59085d1d277750f30addf2758228d12",
+      "installed_at": "2026-03-16T01:18:09.103Z",
+      "source": "cli"
+    },
+    "webpage-extractor-pack": {
+      "version": "1.0.0",
+      "package_type": "toolpack",
+      "entrypoint": "webpage_extractor_pack.tool",
+      "capability_ids": [
+        "webpage_extraction"
+      ],
+      "artifact_hash": "sha256:460292a6d27a8bc9b6628bc5bab42e796a473e3e5c6158b64a1707ef97ed83ac",
+      "installed_at": "2026-03-16T01:18:25.344Z",
+      "source": "cli"
+    }
+  }
+}

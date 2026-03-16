@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "azure-toolkit-pack"
+version = "1.0.0"
+description = "Azure toolkit for managing resource groups and VMs"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["azure-identity>=1.15", "azure-mgmt-compute>=30.0", "azure-mgmt-resource>=23.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

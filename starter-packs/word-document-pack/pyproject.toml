@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "word-document-pack"
+version = "1.0.0"
+description = "Create Word documents with headings, paragraphs, tables, and lists"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["python-docx>=1.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

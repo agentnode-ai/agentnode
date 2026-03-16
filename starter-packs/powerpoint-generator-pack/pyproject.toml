@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "powerpoint-generator-pack"
+version = "1.0.0"
+description = "Generate PowerPoint presentations with proper layouts"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["python-pptx>=0.6.21"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

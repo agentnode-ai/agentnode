@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-linter-pack"
+version = "1.0.0"
+description = "Lint Python code using ruff and optionally auto-fix issues."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["ruff>=0.4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

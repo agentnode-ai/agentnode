@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "test-generator-pack"
+version = "1.0.0"
+description = "Generate test stubs for Python functions using ast parsing."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]

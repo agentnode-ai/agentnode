@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "image-analyzer-pack"
+version = "1.0.0"
+description = "Analyze images for metadata, colors, and statistics"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["Pillow>=10.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

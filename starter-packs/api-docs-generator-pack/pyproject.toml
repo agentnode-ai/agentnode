@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "api-docs-generator-pack"
+version = "1.0.0"
+description = "Generate API documentation from Python source code."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "regex-builder-pack"
+version = "1.0.0"
+description = "Test, match, find, split, and substitute text with regular expressions."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]

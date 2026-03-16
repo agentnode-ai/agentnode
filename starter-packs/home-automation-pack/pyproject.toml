@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "home-automation-pack"
+version = "1.0.0"
+description = "Control Home Assistant entities via the REST API."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["httpx>=0.25"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
