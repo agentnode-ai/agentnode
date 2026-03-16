@@ -17,6 +17,7 @@ import { resolveUpgradeCommand } from "./commands/resolve-upgrade.js";
 import { policyCheckCommand } from "./commands/policy-check.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { explainCommand } from "./commands/explain.js";
+import { apiKeysCommand } from "./commands/api-keys.js";
 
 const program = new Command();
 
@@ -42,5 +43,6 @@ program.addCommand(resolveUpgradeCommand);
 program.addCommand(policyCheckCommand);
 program.addCommand(doctorCommand);
 program.addCommand(explainCommand);
+program.addCommand(apiKeysCommand);
 
 program.parse();

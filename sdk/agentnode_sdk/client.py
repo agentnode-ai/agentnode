@@ -7,6 +7,7 @@ from agentnode_sdk.exceptions import (
     AgentNodeError,
     AuthError,
     NotFoundError,
+    RateLimitError,
     ValidationError,
 )
 from agentnode_sdk.models import (
@@ -30,6 +31,7 @@ ERROR_CLASS_MAP = {
     403: AuthError,
     404: NotFoundError,
     422: ValidationError,
+    429: RateLimitError,
 }
 
 

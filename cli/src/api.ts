@@ -134,6 +134,25 @@ export async function resolveUpgrade(
   });
 }
 
+export async function createApiKey(label: string, token: string): Promise<any> {
+  const url = `${getBaseUrl()}/v1/auth/api-keys`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ label }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const data = await resp.json();
+  if (!resp.ok) {
+    const err = data.error || {};
+    throw new Error(`[${err.code || resp.status}] ${err.message || "Failed to create API key"}`);
+  }
+  return data;
+}
+
 export async function publishPackage(manifest: string, token: string): Promise<any> {
   const url = `${getBaseUrl()}/v1/packages/publish`;
   const formData = new FormData();

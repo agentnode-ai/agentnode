@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 
 const navLinks = [
   { href: "/search", label: "Search" },
+  { href: "/capabilities", label: "Capabilities" },
   { href: "/docs", label: "Docs" },
   { href: "https://github.com/agentnode", label: "GitHub", external: true },
 ];

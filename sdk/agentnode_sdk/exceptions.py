@@ -23,3 +23,8 @@ class AuthError(AgentNodeError):
 class ValidationError(AgentNodeError):
     """Manifest or input validation failure (422)."""
     pass
+
+
+class RateLimitError(AgentNodeError):
+    """Rate limit exceeded (429)."""
+    pass
