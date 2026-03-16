@@ -18,7 +18,7 @@ export default function Footer() {
             Docs
           </Link>
           <a
-            href="https://github.com/agentnode"
+            href="https://github.com/agentnode-ai/agentnode"
             target="_blank"
             rel="noopener noreferrer"
             className="transition-colors hover:text-foreground"

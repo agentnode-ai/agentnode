@@ -8,7 +8,7 @@ const navLinks = [
   { href: "/search", label: "Search" },
   { href: "/capabilities", label: "Capabilities" },
   { href: "/docs", label: "Docs" },
-  { href: "https://github.com/agentnode", label: "GitHub", external: true },
+  { href: "https://github.com/agentnode-ai/agentnode", label: "GitHub", external: true },
 ];
 
 export default function Navbar() {
