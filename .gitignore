@@ -43,5 +43,16 @@ htmlcov/
 # Spec documents
 *.docx
 
+# Screenshots & temp files
+*.png
+screenshots/
+test-screenshots/
+spec_extracted.txt
+calendar.ics
+events.json
+
+# Playwright
+.playwright-mcp/
+
 # Claude Code
 .claude/
