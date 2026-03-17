@@ -30,6 +30,9 @@ export default function AdminInstallationsPage() {
   const [page, setPage] = useState(1);
   const [filterStatus, setFilterStatus] = useState("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState("");
 
   useEffect(() => { loadInstalls(); }, [page, filterStatus]);
 
@@ -44,11 +47,31 @@ export default function AdminInstallationsPage() {
     finally { setLoading(false); }
   }
 
+  async function deleteInstallation(id: string) {
+    setError(""); setSuccess("");
+    const res = await fetchWithAuth(`/admin/installations/${id}`, {
+      method: "DELETE",
+    });
+    if (res.ok) { setSuccess("Installation deleted"); setConfirmDeleteId(""); await loadInstalls(); }
+    else { const d = await res.json(); setError(d.error?.message || "Failed to delete installation"); }
+  }
+
   const totalPages = Math.ceil(total / 50);
 
   return (
     <div>
       <h1 className="mb-6 text-xl font-bold text-foreground">Installations ({total})</h1>
+
+      {error && (
+        <div className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
+          {error} <button onClick={() => setError("")} className="ml-2 underline">dismiss</button>
+        </div>
+      )}
+      {success && (
+        <div className="mb-4 rounded-md border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
+          {success} <button onClick={() => setSuccess("")} className="ml-2 underline">dismiss</button>
+        </div>
+      )}
 
       <div className="mb-4">
         <select
@@ -73,13 +96,14 @@ export default function AdminInstallationsPage() {
               <th className="px-4 py-2.5">Event</th>
               <th className="px-4 py-2.5">User</th>
               <th className="px-4 py-2.5">Installed</th>
+              <th className="px-4 py-2.5"></th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-muted">Loading...</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-muted">Loading...</td></tr>
             ) : installs.length === 0 ? (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-muted">No installations found.</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-muted">No installations found.</td></tr>
             ) : (
               installs.map((i) => (
                 <tr key={i.id} className="border-b border-border/50 last:border-0 hover:bg-card/80">
@@ -105,6 +129,16 @@ export default function AdminInstallationsPage() {
                     )}
                   </td>
                   <td className="px-4 py-2.5 text-muted text-xs">{i.installed_at ? new Date(i.installed_at).toLocaleString() : "-"}</td>
+                  <td className="px-4 py-2.5">
+                    {confirmDeleteId === i.id ? (
+                      <div className="flex gap-1">
+                        <button onClick={() => deleteInstallation(i.id)} className="rounded bg-danger px-2 py-1 text-xs font-medium text-white hover:bg-danger/90">Confirm</button>
+                        <button onClick={() => setConfirmDeleteId("")} className="text-xs text-muted hover:text-foreground">Cancel</button>
+                      </div>
+                    ) : (
+                      <button onClick={() => setConfirmDeleteId(i.id)} className="rounded bg-danger/20 px-2 py-1 text-xs font-medium text-danger hover:bg-danger/30">Delete</button>
+                    )}
+                  </td>
                 </tr>
               ))
             )}

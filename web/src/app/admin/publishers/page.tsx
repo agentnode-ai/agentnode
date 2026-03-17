@@ -36,6 +36,8 @@ export default function AdminPublishersPage() {
   const [suspendSlug, setSuspendSlug] = useState("");
   const [suspendReason, setSuspendReason] = useState("");
   const [confirmUnsuspend, setConfirmUnsuspend] = useState("");
+  const [deleteSlug, setDeleteSlug] = useState("");
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState("");
 
   useEffect(() => { loadPublishers(); }, [page, search, filterTrust]);
 
@@ -80,6 +82,15 @@ export default function AdminPublishersPage() {
     });
     if (res.ok) { setSuccess(`Publisher '${slug}' unsuspended`); setConfirmUnsuspend(""); await loadPublishers(); }
     else { const d = await res.json(); setError(d.error?.message || "Failed"); }
+  }
+
+  async function deletePublisher(slug: string) {
+    setError(""); setSuccess("");
+    const res = await fetchWithAuth(`/admin/publishers/${slug}`, {
+      method: "DELETE",
+    });
+    if (res.ok) { setSuccess(`Publisher '${slug}' deleted`); setDeleteSlug(""); setDeleteConfirmInput(""); await loadPublishers(); }
+    else { const d = await res.json(); setError(d.error?.message || "Failed to delete publisher"); }
   }
 
   const totalPages = Math.ceil(total / 50);
@@ -165,21 +176,27 @@ export default function AdminPublishersPage() {
                   <td className="px-4 py-2.5 text-right font-mono text-foreground">{p.packages_published_count}</td>
                   <td className="px-4 py-2.5 text-muted text-xs">{p.created_at ? new Date(p.created_at).toLocaleDateString() : "-"}</td>
                   <td className="px-4 py-2.5">
-                    {p.is_suspended ? (
-                      confirmUnsuspend === p.slug ? (
-                        <div className="flex gap-1">
-                          <button onClick={() => unsuspend(p.slug)} className="rounded bg-primary px-2 py-1 text-xs font-medium text-white hover:bg-primary/90">Confirm</button>
-                          <button onClick={() => setConfirmUnsuspend("")} className="text-xs text-muted hover:text-foreground">Cancel</button>
-                        </div>
+                    <div className="flex items-center gap-1">
+                      {p.is_suspended ? (
+                        confirmUnsuspend === p.slug ? (
+                          <div className="flex gap-1">
+                            <button onClick={() => unsuspend(p.slug)} className="rounded bg-primary px-2 py-1 text-xs font-medium text-white hover:bg-primary/90">Confirm</button>
+                            <button onClick={() => setConfirmUnsuspend("")} className="text-xs text-muted hover:text-foreground">Cancel</button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setConfirmUnsuspend(p.slug)} className="rounded bg-primary/20 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/30">Unsuspend</button>
+                        )
                       ) : (
-                        <button onClick={() => setConfirmUnsuspend(p.slug)} className="rounded bg-primary/20 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/30">Unsuspend</button>
-                      )
-                    ) : (
+                        <button
+                          onClick={() => setSuspendSlug(p.slug)}
+                          className="rounded bg-danger/20 px-2 py-1 text-xs font-medium text-danger hover:bg-danger/30"
+                        >Suspend</button>
+                      )}
                       <button
-                        onClick={() => setSuspendSlug(p.slug)}
-                        className="rounded bg-danger/20 px-2 py-1 text-xs font-medium text-danger hover:bg-danger/30"
-                      >Suspend</button>
-                    )}
+                        onClick={() => { setDeleteSlug(p.slug); setDeleteConfirmInput(""); }}
+                        className="rounded bg-danger px-2 py-1 text-xs font-medium text-white hover:bg-danger/90"
+                      >Delete</button>
+                    </div>
                   </td>
                 </tr>
               ))
@@ -205,6 +222,29 @@ export default function AdminPublishersPage() {
               className="rounded bg-danger px-4 py-2 text-sm text-white hover:bg-danger/90 disabled:opacity-50"
             >Suspend</button>
             <button onClick={() => { setSuspendSlug(""); setSuspendReason(""); }} className="rounded border border-border px-4 py-2 text-sm text-muted hover:bg-card">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Delete publisher dialog */}
+      {deleteSlug && (
+        <div className="mt-4 rounded-lg border border-danger/30 bg-card p-4">
+          <h3 className="mb-2 text-sm font-semibold text-danger">Delete Publisher @{deleteSlug}</h3>
+          <p className="mb-3 text-xs text-muted">
+            This action is irreversible. Type <span className="font-mono font-bold text-foreground">{deleteSlug}</span> to confirm deletion.
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="text" placeholder={`Type "${deleteSlug}" to confirm...`}
+              value={deleteConfirmInput} onChange={(e) => setDeleteConfirmInput(e.target.value)}
+              className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-danger focus:outline-none"
+            />
+            <button
+              onClick={() => deletePublisher(deleteSlug)}
+              disabled={deleteConfirmInput !== deleteSlug}
+              className="rounded bg-danger px-4 py-2 text-sm text-white hover:bg-danger/90 disabled:opacity-50"
+            >Delete Publisher</button>
+            <button onClick={() => { setDeleteSlug(""); setDeleteConfirmInput(""); }} className="rounded border border-border px-4 py-2 text-sm text-muted hover:bg-card">Cancel</button>
           </div>
         </div>
       )}

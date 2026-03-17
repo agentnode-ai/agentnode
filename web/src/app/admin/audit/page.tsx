@@ -55,15 +55,22 @@ export default function AdminAuditPage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [filterAction, setFilterAction] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [adminUsername, setAdminUsername] = useState("");
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
 
-  useEffect(() => { loadLogs(); }, [page, filterAction]);
+  useEffect(() => { loadLogs(); }, [page, filterAction, dateFrom, dateTo, adminUsername]);
 
   async function loadLogs() {
     setLoading(true);
     try {
       const params = new URLSearchParams({ page: String(page), per_page: "50" });
       if (filterAction) params.set("action", filterAction);
+      if (dateFrom) params.set("date_from", dateFrom);
+      if (dateTo) params.set("date_to", dateTo);
+      if (adminUsername) params.set("admin_username", adminUsername);
       const res = await fetchWithAuth(`/admin/audit?${params}`);
       if (res.ok) {
         const d = await res.json();
@@ -82,21 +89,84 @@ export default function AdminAuditPage() {
     "promote_admin", "demote_admin", "resolve_report",
   ];
 
+  async function exportAuditLog() {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (filterAction) params.set("action", filterAction);
+      if (dateFrom) params.set("date_from", dateFrom);
+      if (dateTo) params.set("date_to", dateTo);
+      if (adminUsername) params.set("admin_username", adminUsername);
+      const res = await fetchWithAuth(`/admin/audit/export?${params}`);
+      if (res.ok) {
+        const data = await res.json();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `audit-log-export-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch {}
+    finally { setExporting(false); }
+  }
+
   return (
     <div>
       <h1 className="mb-6 text-xl font-bold text-foreground">Audit Log ({total})</h1>
 
-      <div className="mb-4">
-        <select
-          value={filterAction}
-          onChange={(e) => { setFilterAction(e.target.value); setPage(1); }}
-          className="rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <div>
+          <label className="mb-1 block text-xs text-muted">Action</label>
+          <select
+            value={filterAction}
+            onChange={(e) => { setFilterAction(e.target.value); setPage(1); }}
+            className="rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+          >
+            <option value="">All actions</option>
+            {allActions.map((a) => (
+              <option key={a} value={a}>{ACTION_LABELS[a] || a}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-muted">From</label>
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
+            className="rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-muted">To</label>
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
+            className="rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-muted">Admin User</label>
+          <input
+            type="text"
+            placeholder="Filter by admin..."
+            value={adminUsername}
+            onChange={(e) => { setAdminUsername(e.target.value); setPage(1); }}
+            className="rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted/50 focus:border-primary focus:outline-none"
+          />
+        </div>
+        <button
+          onClick={exportAuditLog}
+          disabled={exporting}
+          className="rounded-md border border-border bg-card px-4 py-2 text-sm text-foreground hover:bg-card/80 disabled:opacity-50"
         >
-          <option value="">All actions</option>
-          {allActions.map((a) => (
-            <option key={a} value={a}>{ACTION_LABELS[a] || a}</option>
-          ))}
-        </select>
+          {exporting ? "Exporting..." : "Export JSON"}
+        </button>
       </div>
 
       <div className="rounded-lg border border-border bg-card overflow-x-auto">

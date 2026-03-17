@@ -15,6 +15,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     is_admin = Column(Boolean, nullable=False, default=False)
     two_factor_secret = Column(Text, nullable=True)
     two_factor_enabled = Column(Boolean, nullable=False, default=False)
+    is_banned = Column(Boolean, nullable=False, default=False)
+    ban_reason = Column(Text, nullable=True)
     email_preferences = Column(JSONB, nullable=False, server_default='{}')
 
     api_keys = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")

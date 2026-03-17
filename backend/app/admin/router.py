@@ -541,6 +541,50 @@ async def resolve_report(
     return {"resolved": True, "status": body.status}
 
 
+# --- Report Admin Actions ---
+
+
+@router.delete("/reports/{report_id}", dependencies=[Depends(rate_limit(10, 60))])
+async def delete_report(
+    report_id: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete a report."""
+    result = await session.execute(select(PackageReport).where(PackageReport.id == UUID(report_id)))
+    report = result.scalar_one_or_none()
+    if not report:
+        raise AppError("REPORT_NOT_FOUND", "Report not found", 404)
+    await _audit(session, request, user, "delete_report", "report", report_id)
+    await session.delete(report)
+    await session.commit()
+    return {"message": "Report deleted."}
+
+
+@router.post("/reports/{report_id}/reopen", dependencies=[Depends(rate_limit(10, 60))])
+async def reopen_report(
+    report_id: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Reopen a resolved or dismissed report."""
+    result = await session.execute(select(PackageReport).where(PackageReport.id == UUID(report_id)))
+    report = result.scalar_one_or_none()
+    if not report:
+        raise AppError("REPORT_NOT_FOUND", "Report not found", 404)
+    if report.status == "submitted":
+        raise AppError("ALREADY_OPEN", "Report is already open", 409)
+    report.status = "submitted"
+    report.resolution_note = None
+    report.resolved_by = None
+    report.resolved_at = None
+    await _audit(session, request, user, "reopen_report", "report", report_id)
+    await session.commit()
+    return {"message": "Report reopened."}
+
+
 # --- GET /v1/admin/stats (Observability) ---
 
 @router.get("/stats")
@@ -689,6 +733,8 @@ async def list_users(
                 "is_admin": u.is_admin,
                 "is_email_verified": u.is_email_verified,
                 "two_factor_enabled": u.two_factor_enabled,
+                "is_banned": u.is_banned,
+                "ban_reason": u.ban_reason,
                 "publisher_slug": u.publisher.slug if u.publisher else None,
                 "created_at": u.created_at.isoformat() if u.created_at else None,
             }
@@ -743,6 +789,219 @@ async def demote_user(
     await _audit(session, request, user, "demote_admin", "user", user_id, {"username": target_user.username})
     await session.commit()
     return {"message": f"User '{target_user.username}' demoted from admin."}
+
+
+# --- User Ban/Suspend ---
+
+class BanUserRequest(BaseModel):
+    reason: str = Field("Admin action", max_length=500)
+
+class EditUserRequest(BaseModel):
+    email: str | None = None
+    username: str | None = None
+
+
+@router.post("/users/{user_id}/ban", dependencies=[Depends(rate_limit(5, 60))])
+async def ban_user(
+    user_id: str,
+    body: BanUserRequest,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Ban a user."""
+    if str(user.id) == user_id:
+        raise AppError("SELF_BAN", "You cannot ban yourself", 400)
+    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target_user = target.scalar_one_or_none()
+    if not target_user:
+        raise AppError("USER_NOT_FOUND", "User not found", 404)
+    if target_user.is_banned:
+        raise AppError("ALREADY_BANNED", "User is already banned", 409)
+    target_user.is_banned = True
+    target_user.ban_reason = body.reason
+    await _audit(session, request, user, "ban_user", "user", user_id, {"username": target_user.username, "reason": body.reason})
+    await session.commit()
+    return {"message": f"User '{target_user.username}' has been banned."}
+
+
+@router.post("/users/{user_id}/unban", dependencies=[Depends(rate_limit(5, 60))])
+async def unban_user(
+    user_id: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Unban a user."""
+    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target_user = target.scalar_one_or_none()
+    if not target_user:
+        raise AppError("USER_NOT_FOUND", "User not found", 404)
+    if not target_user.is_banned:
+        raise AppError("NOT_BANNED", "User is not banned", 409)
+    target_user.is_banned = False
+    target_user.ban_reason = None
+    await _audit(session, request, user, "unban_user", "user", user_id, {"username": target_user.username})
+    await session.commit()
+    return {"message": f"User '{target_user.username}' has been unbanned."}
+
+
+@router.post("/users/{user_id}/verify-email", dependencies=[Depends(rate_limit(5, 60))])
+async def verify_user_email(
+    user_id: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Manually verify a user's email."""
+    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target_user = target.scalar_one_or_none()
+    if not target_user:
+        raise AppError("USER_NOT_FOUND", "User not found", 404)
+    if target_user.is_email_verified:
+        raise AppError("ALREADY_VERIFIED", "Email is already verified", 409)
+    target_user.is_email_verified = True
+    await _audit(session, request, user, "verify_email", "user", user_id, {"username": target_user.username})
+    await session.commit()
+    return {"message": f"Email verified for '{target_user.username}'."}
+
+
+@router.post("/users/{user_id}/unverify-email", dependencies=[Depends(rate_limit(5, 60))])
+async def unverify_user_email(
+    user_id: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Manually unverify a user's email."""
+    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target_user = target.scalar_one_or_none()
+    if not target_user:
+        raise AppError("USER_NOT_FOUND", "User not found", 404)
+    if not target_user.is_email_verified:
+        raise AppError("NOT_VERIFIED", "Email is not verified", 409)
+    target_user.is_email_verified = False
+    await _audit(session, request, user, "unverify_email", "user", user_id, {"username": target_user.username})
+    await session.commit()
+    return {"message": f"Email unverified for '{target_user.username}'."}
+
+
+@router.post("/users/{user_id}/disable-2fa", dependencies=[Depends(rate_limit(5, 60))])
+async def disable_user_2fa(
+    user_id: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Disable 2FA for a user (admin override for lockout recovery)."""
+    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target_user = target.scalar_one_or_none()
+    if not target_user:
+        raise AppError("USER_NOT_FOUND", "User not found", 404)
+    if not target_user.two_factor_enabled:
+        raise AppError("2FA_NOT_ENABLED", "2FA is not enabled for this user", 409)
+    target_user.two_factor_enabled = False
+    target_user.two_factor_secret = None
+    await _audit(session, request, user, "disable_2fa", "user", user_id, {"username": target_user.username})
+    await session.commit()
+    return {"message": f"2FA disabled for '{target_user.username}'."}
+
+
+@router.post("/users/{user_id}/reset-password", dependencies=[Depends(rate_limit(3, 60))])
+async def reset_user_password(
+    user_id: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Reset a user's password to a temporary one and optionally send email."""
+    import secrets
+    from app.auth.security import hash_password
+
+    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target_user = target.scalar_one_or_none()
+    if not target_user:
+        raise AppError("USER_NOT_FOUND", "User not found", 404)
+
+    temp_password = f"Tmp-{secrets.token_urlsafe(12)}"
+    target_user.password_hash = hash_password(temp_password)
+    await _audit(session, request, user, "reset_password", "user", user_id, {"username": target_user.username})
+    await session.commit()
+
+    # Try to send email
+    try:
+        from app.shared.email import send_email
+        await send_email(
+            to=target_user.email,
+            subject="AgentNode — Password Reset by Admin",
+            html_body=f"<p>Your password has been reset by an administrator.</p><p>Temporary password: <strong>{temp_password}</strong></p><p>Please change it immediately after logging in.</p>",
+            text_body=f"Your password has been reset by an administrator. Temporary password: {temp_password}",
+        )
+    except Exception:
+        pass
+
+    return {"message": f"Password reset for '{target_user.username}'.", "temp_password": temp_password}
+
+
+@router.put("/users/{user_id}", dependencies=[Depends(rate_limit(5, 60))])
+async def edit_user(
+    user_id: str,
+    body: EditUserRequest,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Edit a user's profile (email, username)."""
+    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target_user = target.scalar_one_or_none()
+    if not target_user:
+        raise AppError("USER_NOT_FOUND", "User not found", 404)
+
+    changes = {}
+    if body.email and body.email != target_user.email:
+        # Check uniqueness
+        existing = await session.execute(select(User).where(User.email == body.email))
+        if existing.scalar_one_or_none():
+            raise AppError("EMAIL_TAKEN", "Email is already in use", 409)
+        changes["email"] = {"old": target_user.email, "new": body.email}
+        target_user.email = body.email
+
+    if body.username and body.username != target_user.username:
+        existing = await session.execute(select(User).where(User.username == body.username))
+        if existing.scalar_one_or_none():
+            raise AppError("USERNAME_TAKEN", "Username is already in use", 409)
+        changes["username"] = {"old": target_user.username, "new": body.username}
+        target_user.username = body.username
+
+    if not changes:
+        return {"message": "No changes made."}
+
+    await _audit(session, request, user, "edit_user", "user", user_id, changes)
+    await session.commit()
+    return {"message": f"User updated.", "changes": changes}
+
+
+@router.delete("/users/{user_id}", dependencies=[Depends(rate_limit(3, 60))])
+async def delete_user(
+    user_id: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete a user account permanently."""
+    if str(user.id) == user_id:
+        raise AppError("SELF_DELETE", "You cannot delete yourself", 400)
+
+    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target_user = target.scalar_one_or_none()
+    if not target_user:
+        raise AppError("USER_NOT_FOUND", "User not found", 404)
+
+    username = target_user.username
+    await _audit(session, request, user, "delete_user", "user", user_id, {"username": username, "email": target_user.email})
+    await session.delete(target_user)
+    await session.commit()
+    return {"message": f"User '{username}' deleted permanently."}
 
 
 # --- All Publishers listing ---
@@ -802,6 +1061,24 @@ async def list_all_publishers(
     }
 
 
+# --- Publisher Admin Actions ---
+
+
+@router.delete("/publishers/{slug}", dependencies=[Depends(rate_limit(3, 60))])
+async def delete_publisher(
+    slug: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete a publisher and all associated packages permanently."""
+    pub = await _get_publisher(session, slug)
+    await _audit(session, request, user, "delete_publisher", "publisher", slug, {"display_name": pub.display_name})
+    await session.delete(pub)
+    await session.commit()
+    return {"message": f"Publisher '{slug}' deleted permanently."}
+
+
 # --- All Packages listing ---
 
 
@@ -854,6 +1131,120 @@ async def list_all_packages(
     }
 
 
+# --- Package Admin Actions ---
+
+
+class EditPackageRequest(BaseModel):
+    name: str | None = None
+    summary: str | None = None
+
+
+@router.post("/packages/{slug}/deprecate", dependencies=[Depends(rate_limit(10, 60))])
+async def deprecate_package(
+    slug: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Mark a package as deprecated."""
+    result = await session.execute(select(Package).where(Package.slug == slug))
+    pkg = result.scalar_one_or_none()
+    if not pkg:
+        raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
+    if pkg.is_deprecated:
+        raise AppError("ALREADY_DEPRECATED", "Package is already deprecated", 409)
+    pkg.is_deprecated = True
+    await _audit(session, request, user, "deprecate_package", "package", slug)
+    await session.commit()
+    return {"message": f"Package '{slug}' deprecated."}
+
+
+@router.post("/packages/{slug}/undeprecate", dependencies=[Depends(rate_limit(10, 60))])
+async def undeprecate_package(
+    slug: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Remove deprecation from a package."""
+    result = await session.execute(select(Package).where(Package.slug == slug))
+    pkg = result.scalar_one_or_none()
+    if not pkg:
+        raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
+    if not pkg.is_deprecated:
+        raise AppError("NOT_DEPRECATED", "Package is not deprecated", 409)
+    pkg.is_deprecated = False
+    await _audit(session, request, user, "undeprecate_package", "package", slug)
+    await session.commit()
+    return {"message": f"Package '{slug}' undeprecated."}
+
+
+@router.put("/packages/{slug}", dependencies=[Depends(rate_limit(10, 60))])
+async def edit_package(
+    slug: str,
+    body: EditPackageRequest,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Edit package metadata."""
+    result = await session.execute(select(Package).where(Package.slug == slug))
+    pkg = result.scalar_one_or_none()
+    if not pkg:
+        raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
+
+    changes = {}
+    if body.name and body.name != pkg.name:
+        changes["name"] = {"old": pkg.name, "new": body.name}
+        pkg.name = body.name
+    if body.summary and body.summary != pkg.summary:
+        changes["summary"] = {"old": pkg.summary, "new": body.summary}
+        pkg.summary = body.summary
+
+    if not changes:
+        return {"message": "No changes made."}
+
+    await _audit(session, request, user, "edit_package", "package", slug, changes)
+    await session.commit()
+    return {"message": f"Package '{slug}' updated.", "changes": changes}
+
+
+@router.delete("/packages/{slug}/versions/{version}", dependencies=[Depends(rate_limit(5, 60))])
+async def delete_version(
+    slug: str,
+    version: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete a specific package version."""
+    pkg, pv = await _get_package_version(session, slug, version)
+    await _audit(session, request, user, "delete_version", "package", slug, {"version": version})
+    await session.delete(pv)
+    await recalculate_latest_version_id(session, pkg.id)
+    await session.commit()
+    return {"message": f"Version {slug}@{version} deleted."}
+
+
+@router.delete("/packages/{slug}", dependencies=[Depends(rate_limit(3, 60))])
+async def delete_package(
+    slug: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete a package and all its versions permanently."""
+    result = await session.execute(select(Package).where(Package.slug == slug))
+    pkg = result.scalar_one_or_none()
+    if not pkg:
+        raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
+
+    await _audit(session, request, user, "delete_package", "package", slug, {"name": pkg.name})
+    await session.delete(pkg)
+    await session.commit()
+    return {"message": f"Package '{slug}' deleted permanently."}
+
+
 # --- Installations listing ---
 
 
@@ -865,15 +1256,24 @@ async def list_audit_logs(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
     action: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    admin_username: str | None = None,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    """List admin audit logs with admin username, paginated."""
+    """List admin audit logs with filters and pagination."""
     admin_user = User.__table__.alias("admin_user")
 
     base_filters = []
     if action:
         base_filters.append(AdminAuditLog.action == action)
+    if date_from:
+        base_filters.append(AdminAuditLog.created_at >= date_from)
+    if date_to:
+        base_filters.append(AdminAuditLog.created_at <= date_to)
+    if admin_username:
+        base_filters.append(AdminAuditLog.admin_user_id.in_(select(User.id).where(User.username.ilike(f"%{admin_username}%"))))
 
     count_query = select(func.count(AdminAuditLog.id))
     for f in base_filters:
@@ -915,6 +1315,57 @@ async def list_audit_logs(
         "total": total,
         "page": page,
         "per_page": per_page,
+    }
+
+
+@router.get("/audit/export")
+async def export_audit_logs(
+    action: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Export audit logs as JSON (up to 1000 entries)."""
+    admin_user_alias = User.__table__.alias("admin_user")
+
+    base_filters = []
+    if action:
+        base_filters.append(AdminAuditLog.action == action)
+    if date_from:
+        base_filters.append(AdminAuditLog.created_at >= date_from)
+    if date_to:
+        base_filters.append(AdminAuditLog.created_at <= date_to)
+
+    query = (
+        select(
+            AdminAuditLog,
+            admin_user_alias.c.username.label("admin_username"),
+        )
+        .outerjoin(admin_user_alias, AdminAuditLog.admin_user_id == admin_user_alias.c.id)
+        .order_by(AdminAuditLog.created_at.desc())
+        .limit(1000)
+    )
+    for f in base_filters:
+        query = query.where(f)
+
+    result = await session.execute(query)
+    rows = result.all()
+
+    return {
+        "export": [
+            {
+                "timestamp": r.AdminAuditLog.created_at.isoformat() if r.AdminAuditLog.created_at else None,
+                "admin": r.admin_username,
+                "action": r.AdminAuditLog.action,
+                "target_type": r.AdminAuditLog.target_type,
+                "target_id": r.AdminAuditLog.target_id,
+                "metadata": r.AdminAuditLog.metadata_,
+                "ip_address": r.AdminAuditLog.ip_address,
+            }
+            for r in rows
+        ],
+        "total": len(rows),
     }
 
 
@@ -1120,3 +1571,21 @@ async def list_installations(
         "page": page,
         "per_page": per_page,
     }
+
+
+@router.delete("/installations/{installation_id}", dependencies=[Depends(rate_limit(10, 60))])
+async def delete_installation(
+    installation_id: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete an installation record."""
+    result = await session.execute(select(Installation).where(Installation.id == UUID(installation_id)))
+    inst = result.scalar_one_or_none()
+    if not inst:
+        raise AppError("INSTALLATION_NOT_FOUND", "Installation not found", 404)
+    await _audit(session, request, user, "delete_installation", "installation", installation_id)
+    await session.delete(inst)
+    await session.commit()
+    return {"message": "Installation deleted."}
