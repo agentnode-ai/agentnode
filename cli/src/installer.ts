@@ -20,6 +20,12 @@ export interface InstallResult {
   previousVersion?: string;
 }
 
+interface ToolMeta {
+  name: string;
+  entrypoint: string;
+  capability_id: string;
+}
+
 interface ArtifactMeta {
   artifact_url: string;
   artifact_hash: string;
@@ -27,6 +33,7 @@ interface ArtifactMeta {
   post_install_code: string;
   package_type: string;
   capability_ids: string[];
+  tools: ToolMeta[];
   deprecated: boolean;
 }
 
@@ -115,6 +122,7 @@ export async function installPackage(
       package_type: meta.package_type,
       entrypoint: meta.entrypoint,
       capability_ids: meta.capability_ids || [],
+      tools: meta.tools || [],
       artifact_hash: `sha256:${localHash}`,
       installed_at: new Date().toISOString(),
       source: "cli",
@@ -227,9 +235,11 @@ function checkPathTraversal(dir: string): void {
 }
 
 function verifyEntrypoint(extractDir: string, entrypoint: string): void {
-  // entrypoint is like "pdf_reader_pack.tool"
+  // entrypoint is like "pdf_reader_pack.tool" or "csv_analyzer_pack.tool:describe" (v0.2)
+  // Strip :function suffix for v0.2 format
+  const modulePath = entrypoint.includes(":") ? entrypoint.split(":")[0] : entrypoint;
   // Convert to file path: pdf_reader_pack/tool.py
-  const parts = entrypoint.split(".");
+  const parts = modulePath.split(".");
   const relPath = parts.join(sep) + ".py";
 
   // Check in extract dir and any single subdirectory

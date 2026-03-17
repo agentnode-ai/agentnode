@@ -21,6 +21,7 @@ class CapabilityInfo(BaseModel):
     name: str
     capability_id: str
     capability_type: str
+    entrypoint: str | None = None
 
 
 class PermissionsInfo(BaseModel):
@@ -62,6 +63,12 @@ class InstallRequest(BaseModel):
     installation_context: dict = {}
 
 
+class ToolInfo(BaseModel):
+    name: str
+    entrypoint: str
+    capability_id: str
+
+
 class InstallResponse(BaseModel):
     package_slug: str
     version: str
@@ -72,3 +79,4 @@ class InstallResponse(BaseModel):
     post_install_code: str | None
     installation_id: str
     deprecated: bool
+    tools: list[ToolInfo] = []

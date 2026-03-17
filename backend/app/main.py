@@ -24,8 +24,15 @@ from app.webhooks.router import router as webhooks_router
 async def lifespan(app: FastAPI):
     # Startup: create Redis connection pool
     app.state.redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+    # Start background cron tasks
+    from app.tasks.cron import start_cron_tasks, stop_cron_tasks
+    start_cron_tasks()
+
     yield
+
     # Shutdown
+    stop_cron_tasks()
     await app.state.redis.close()
     await engine.dispose()
 
@@ -66,6 +73,7 @@ app.include_router(trust_router)
 app.include_router(webhooks_router)
 
 
+@app.get("/health")
 @app.get("/healthz")
 @app.get("/v1/healthz")
 async def healthz():

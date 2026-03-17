@@ -109,7 +109,7 @@ export default function ImportPage() {
   };
 
   return (
-    <main className="mx-auto max-w-5xl px-6 py-16">
+    <main className="mx-auto max-w-6xl px-6 py-16">
       <h1 className="mb-2 text-3xl font-bold tracking-tight">
         <span className="text-primary">Import Tools</span>
       </h1>
@@ -214,6 +214,42 @@ export default function ImportPage() {
           </code>
         </span>
       </div>
+
+      {/* CTA after successful conversion */}
+      {result && !result.startsWith("# No tools") && (
+        <div className="mt-8 rounded-lg border border-primary/30 bg-gradient-to-r from-primary/5 to-primary/10 p-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-lg font-semibold text-foreground">
+                Your tool is ready to publish
+              </h3>
+              <p className="mt-1 text-sm text-muted">
+                Make it discoverable and installable across LangChain, CrewAI, MCP, and every agent framework.
+              </p>
+            </div>
+            <Link
+              href={`/publish?manifest=${encodeURIComponent(result)}`}
+              className="shrink-0 rounded-md bg-primary px-6 py-3 text-center text-sm font-semibold text-white transition-colors hover:bg-primary/90"
+            >
+              Publish on AgentNode
+            </Link>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-muted sm:grid-cols-4">
+            <div className="flex items-center gap-1.5">
+              <span className="text-success">&#10003;</span> Auto-discovery
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-success">&#10003;</span> Version management
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-success">&#10003;</span> Download stats
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-success">&#10003;</span> Trust badges
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* How it works */}
       <div className="mt-16 rounded-lg border border-border bg-card p-6">

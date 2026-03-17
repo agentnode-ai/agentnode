@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { fetchWithAuth } from "@/lib/api";
 
 interface ApiKeyInfo {
   id: string;
@@ -31,6 +32,7 @@ export default function DashboardPage() {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
   // 2FA setup
   const [showSetup2FA, setShowSetup2FA] = useState(false);
@@ -51,21 +53,38 @@ export default function DashboardPage() {
   const [createdKey, setCreatedKey] = useState("");
   const [creatingKey, setCreatingKey] = useState(false);
 
+  // Profile editing
+  const [showEditProfile, setShowEditProfile] = useState(false);
+  const [editUsername, setEditUsername] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [savingProfile, setSavingProfile] = useState(false);
+
+  // Password change
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [changingPassword, setChangingPassword] = useState(false);
+
+  // Email preferences
+  const [emailPrefs, setEmailPrefs] = useState<Record<string, boolean>>({});
+  const [loadingPrefs, setLoadingPrefs] = useState(false);
+  const [savingPrefs, setSavingPrefs] = useState(false);
+
   useEffect(() => {
     loadUser();
+    loadApiKeys();
+    loadEmailPrefs();
   }, []);
 
-  function getAuthHeaders(): Record<string, string> {
-    const token = localStorage.getItem("access_token");
-    if (!token) return {};
-    return { Authorization: `Bearer ${token}` };
+  function clearMessages() {
+    setError("");
+    setSuccess("");
   }
 
   async function loadUser() {
     try {
-      const res = await fetch("/api/v1/auth/me", {
-        headers: getAuthHeaders(),
-      });
+      const res = await fetchWithAuth("/auth/me");
       if (!res.ok) {
         router.push("/auth/login");
         return;
@@ -81,13 +100,13 @@ export default function DashboardPage() {
 
   async function setup2FA() {
     setShowSetup2FA(true);
-    const res = await fetch("/api/v1/auth/2fa/setup", {
+    const res = await fetchWithAuth("/auth/2fa/setup", {
       method: "POST",
-      headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
     });
     if (res.ok) {
       const data = await res.json();
-      setQrUri(data.provisioning_uri || "");
+      setQrUri(data.provisioning_uri || data.qr_uri || "");
       setSecret(data.secret || "");
     }
   }
@@ -95,9 +114,9 @@ export default function DashboardPage() {
   async function verify2FA() {
     setVerifying2FA(true);
     try {
-      const res = await fetch("/api/v1/auth/2fa/verify", {
+      const res = await fetchWithAuth("/auth/2fa/verify", {
         method: "POST",
-        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: totpCode }),
       });
       if (res.ok) {
@@ -114,11 +133,11 @@ export default function DashboardPage() {
 
   async function createPublisher() {
     setCreatingPublisher(true);
-    setError("");
+    clearMessages();
     try {
-      const res = await fetch("/api/v1/publishers", {
+      const res = await fetchWithAuth("/publishers", {
         method: "POST",
-        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           display_name: pubDisplayName,
           slug: pubSlug,
@@ -138,9 +157,7 @@ export default function DashboardPage() {
 
   async function loadApiKeys() {
     try {
-      const res = await fetch("/api/v1/auth/api-keys", {
-        headers: getAuthHeaders(),
-      });
+      const res = await fetchWithAuth("/auth/api-keys");
       if (res.ok) {
         const data = await res.json();
         setApiKeys(data.keys || []);
@@ -154,9 +171,9 @@ export default function DashboardPage() {
     setCreatingKey(true);
     setCreatedKey("");
     try {
-      const res = await fetch("/api/v1/auth/api-keys", {
+      const res = await fetchWithAuth("/auth/api-keys", {
         method: "POST",
-        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ label: newKeyLabel || undefined }),
       });
       if (res.ok) {
@@ -175,9 +192,8 @@ export default function DashboardPage() {
 
   async function revokeApiKey(keyId: string) {
     try {
-      await fetch(`/api/v1/auth/api-keys/${keyId}`, {
+      await fetchWithAuth(`/auth/api-keys/${keyId}`, {
         method: "DELETE",
-        headers: getAuthHeaders(),
       });
       await loadApiKeys();
     } catch {
@@ -185,9 +201,110 @@ export default function DashboardPage() {
     }
   }
 
+  async function saveProfile() {
+    setSavingProfile(true);
+    clearMessages();
+    try {
+      const body: Record<string, string> = {};
+      if (editUsername && editUsername !== user?.username) body.username = editUsername;
+      if (editEmail && editEmail !== user?.email) body.email = editEmail;
+
+      if (Object.keys(body).length === 0) {
+        setShowEditProfile(false);
+        return;
+      }
+
+      const res = await fetchWithAuth("/auth/profile", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        setShowEditProfile(false);
+        setSuccess("Profile updated.");
+        await loadUser();
+      } else {
+        const data = await res.json();
+        setError(data.error?.message || "Failed to update profile");
+      }
+    } finally {
+      setSavingProfile(false);
+    }
+  }
+
+  async function changePassword() {
+    if (newPassword !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+    setChangingPassword(true);
+    clearMessages();
+    try {
+      const res = await fetchWithAuth("/auth/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          current_password: currentPassword,
+          new_password: newPassword,
+        }),
+      });
+      if (res.ok) {
+        setShowChangePassword(false);
+        setCurrentPassword("");
+        setNewPassword("");
+        setConfirmPassword("");
+        setSuccess("Password changed successfully.");
+      } else {
+        const data = await res.json();
+        setError(data.error?.message || "Failed to change password");
+      }
+    } finally {
+      setChangingPassword(false);
+    }
+  }
+
+  async function loadEmailPrefs() {
+    setLoadingPrefs(true);
+    try {
+      const res = await fetchWithAuth("/auth/email-preferences");
+      if (res.ok) {
+        const data = await res.json();
+        setEmailPrefs(data.preferences || {});
+      }
+    } catch {
+      // non-critical
+    } finally {
+      setLoadingPrefs(false);
+    }
+  }
+
+  async function toggleEmailPref(key: string, value: boolean) {
+    setSavingPrefs(true);
+    try {
+      const res = await fetchWithAuth("/auth/email-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [key]: value }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEmailPrefs(data.preferences || {});
+      }
+    } catch {
+      setError("Failed to update email preferences");
+    } finally {
+      setSavingPrefs(false);
+    }
+  }
+
+  async function handleLogout() {
+    await fetch("/api/v1/auth/logout", { method: "POST", credentials: "include" });
+    router.push("/auth/login");
+  }
+
   if (loading) {
     return (
-      <div className="mx-auto max-w-4xl px-6 py-24 text-center text-muted">
+      <div className="mx-auto max-w-6xl px-6 py-24 text-center text-muted">
         Loading...
       </div>
     );
@@ -196,44 +313,173 @@ export default function DashboardPage() {
   if (!user) return null;
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-12">
-      <h1 className="mb-8 text-2xl font-bold text-foreground">Dashboard</h1>
+    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
+      <div className="mb-8 flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
+        <button
+          onClick={handleLogout}
+          className="rounded border border-border px-4 py-2 text-sm text-muted transition-colors hover:bg-card hover:text-foreground"
+        >
+          Log out
+        </button>
+      </div>
 
       {error && (
         <div className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
           {error}
+          <button onClick={() => setError("")} className="ml-2 underline">dismiss</button>
+        </div>
+      )}
+
+      {success && (
+        <div className="mb-4 rounded-md border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
+          {success}
+          <button onClick={() => setSuccess("")} className="ml-2 underline">dismiss</button>
         </div>
       )}
 
       {/* Account Info */}
       <section className="mb-8 rounded-lg border border-border bg-card p-6">
-        <h2 className="mb-4 text-lg font-semibold text-foreground">Account</h2>
-        <div className="space-y-2 text-sm">
-          <div className="flex justify-between">
-            <span className="text-muted">Username</span>
-            <span className="text-foreground">{user.username}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-muted">Email</span>
-            <span className="text-foreground">{user.email}</span>
-          </div>
-          <div className="flex justify-between items-center">
-            <span className="text-muted">2FA</span>
-            {user.two_factor_enabled ? (
-              <span className="text-success text-xs font-medium">Enabled</span>
-            ) : (
-              <button
-                onClick={setup2FA}
-                className="rounded bg-primary px-3 py-1 text-xs text-white hover:bg-primary/90"
-              >
-                Enable 2FA
-              </button>
-            )}
-          </div>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-foreground">Account</h2>
+          <button
+            onClick={() => {
+              setEditUsername(user.username);
+              setEditEmail(user.email);
+              setShowEditProfile(!showEditProfile);
+              setShowChangePassword(false);
+            }}
+            className="text-xs text-primary hover:underline"
+          >
+            {showEditProfile ? "Cancel" : "Edit profile"}
+          </button>
         </div>
+
+        {!showEditProfile ? (
+          <div className="space-y-2 text-sm">
+            <div className="flex justify-between">
+              <span className="text-muted">Username</span>
+              <span className="text-foreground">{user.username}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted">Email</span>
+              <span className="text-foreground">{user.email}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-muted">2FA</span>
+              {user.two_factor_enabled ? (
+                <span className="text-success text-xs font-medium">Enabled</span>
+              ) : (
+                <button
+                  onClick={setup2FA}
+                  className="rounded bg-primary px-3 py-1 text-xs text-white hover:bg-primary/90"
+                >
+                  Enable 2FA
+                </button>
+              )}
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-muted">Password</span>
+              <button
+                onClick={() => {
+                  setShowChangePassword(!showChangePassword);
+                  setShowEditProfile(false);
+                }}
+                className="text-xs text-primary hover:underline"
+              >
+                Change password
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div>
+              <label className="mb-1 block text-sm text-muted">Username</label>
+              <input
+                type="text"
+                value={editUsername}
+                onChange={(e) => setEditUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-muted">Email</label>
+              <input
+                type="email"
+                value={editEmail}
+                onChange={(e) => setEditEmail(e.target.value)}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+              />
+            </div>
+            <button
+              onClick={saveProfile}
+              disabled={savingProfile}
+              className="rounded bg-primary px-4 py-2 text-sm text-white hover:bg-primary/90 disabled:opacity-50"
+            >
+              {savingProfile ? "Saving..." : "Save changes"}
+            </button>
+          </div>
+        )}
       </section>
 
-      {/* 2FA Setup Modal */}
+      {/* Change Password */}
+      {showChangePassword && (
+        <section className="mb-8 rounded-lg border border-border bg-card p-6">
+          <h2 className="mb-4 text-lg font-semibold text-foreground">Change password</h2>
+          <div className="space-y-3">
+            <div>
+              <label className="mb-1 block text-sm text-muted">Current password</label>
+              <input
+                type="password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-muted">New password</label>
+              <input
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                placeholder="Min. 8 characters"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-muted">Confirm new password</label>
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={changePassword}
+                disabled={changingPassword || newPassword.length < 8 || !currentPassword}
+                className="rounded bg-primary px-4 py-2 text-sm text-white hover:bg-primary/90 disabled:opacity-50"
+              >
+                {changingPassword ? "Changing..." : "Change password"}
+              </button>
+              <button
+                onClick={() => {
+                  setShowChangePassword(false);
+                  setCurrentPassword("");
+                  setNewPassword("");
+                  setConfirmPassword("");
+                }}
+                className="rounded border border-border px-4 py-2 text-sm text-muted hover:bg-card"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* 2FA Setup */}
       {showSetup2FA && (
         <section className="mb-8 rounded-lg border border-primary/30 bg-card p-6">
           <h2 className="mb-4 text-lg font-semibold text-foreground">Set up 2FA</h2>
@@ -405,15 +651,86 @@ export default function DashboardPage() {
             {creatingKey ? "Creating..." : "Create API key"}
           </button>
         </div>
-        {apiKeys.length === 0 && (
-          <button
-            onClick={loadApiKeys}
-            className="mt-2 text-xs text-primary hover:underline"
-          >
-            Load existing keys
-          </button>
+        {apiKeys.length === 0 && !createdKey && (
+          <p className="mt-2 text-xs text-muted">No API keys yet.</p>
         )}
       </section>
+
+      {/* Email Notification Preferences */}
+      <section className="mb-8 rounded-lg border border-border bg-card p-6">
+        <h2 className="mb-4 text-lg font-semibold text-foreground">Email Notifications</h2>
+        <p className="mb-4 text-sm text-muted">
+          Choose which email notifications you want to receive.
+        </p>
+
+        {loadingPrefs ? (
+          <p className="text-sm text-muted">Loading preferences...</p>
+        ) : (
+          <div className="space-y-6">
+            {/* Recurring / potentially noisy notifications */}
+            <div>
+              <h3 className="mb-2 text-sm font-medium text-foreground">Recurring</h3>
+              <div className="space-y-2">
+                <PrefToggle k="security_login" label="Login alerts" desc="Email on every new sign-in to your account" prefs={emailPrefs} saving={savingPrefs} toggle={toggleEmailPref} />
+                <PrefToggle k="package_published" label="Publish confirmations" desc="Confirmation email every time you publish a version" prefs={emailPrefs} saving={savingPrefs} toggle={toggleEmailPref} />
+                <PrefToggle k="milestone" label="Download milestones" desc="When your packages reach download milestones" prefs={emailPrefs} saving={savingPrefs} toggle={toggleEmailPref} />
+                <PrefToggle k="deprecated" label="Deprecation notices" desc="When packages you use are deprecated" prefs={emailPrefs} saving={savingPrefs} toggle={toggleEmailPref} />
+                <PrefToggle k="weekly_digest" label="Weekly publisher digest" desc="Weekly summary of your package stats" prefs={emailPrefs} saving={savingPrefs} toggle={toggleEmailPref} />
+              </div>
+            </div>
+
+            {/* Admin-only */}
+            {user.is_admin && (
+              <div>
+                <h3 className="mb-2 text-sm font-medium text-foreground">Admin</h3>
+                <div className="space-y-2">
+                  <PrefToggle k="admin_report_notify" label="Report notifications" desc="Email on every new package report from users" prefs={emailPrefs} saving={savingPrefs} toggle={toggleEmailPref} />
+                  <PrefToggle k="admin_daily_digest" label="Daily admin digest" desc="Daily platform stats summary" prefs={emailPrefs} saving={savingPrefs} toggle={toggleEmailPref} />
+                </div>
+              </div>
+            )}
+
+            <p className="text-xs text-muted">
+              Security alerts (password changes, 2FA, API keys) and important account notifications are always sent and cannot be disabled.
+            </p>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+
+function PrefToggle({
+  k, label, desc, prefs, saving, toggle
+}: {
+  k: string;
+  label: string;
+  desc: string;
+  prefs: Record<string, boolean>;
+  saving: boolean;
+  toggle: (key: string, value: boolean) => void;
+}) {
+  const enabled = prefs[k] !== false; // default true
+  return (
+    <div className="flex items-center justify-between rounded bg-background px-3 py-2">
+      <div>
+        <div className="text-sm text-foreground">{label}</div>
+        <div className="text-xs text-muted">{desc}</div>
+      </div>
+      <button
+        onClick={() => toggle(k, !enabled)}
+        disabled={saving}
+        className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ${
+          enabled ? "bg-primary" : "bg-border"
+        } ${saving ? "opacity-50" : ""}`}
+      >
+        <span
+          className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
+            enabled ? "translate-x-4" : "translate-x-0"
+          }`}
+        />
+      </button>
     </div>
   );
 }

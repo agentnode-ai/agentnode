@@ -1,5 +1,5 @@
 from sqlalchemy import Boolean, Column, ForeignKey, Text
-from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
+from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import relationship
 
 from app.shared.models import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -15,6 +15,7 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     is_admin = Column(Boolean, nullable=False, default=False)
     two_factor_secret = Column(Text, nullable=True)
     two_factor_enabled = Column(Boolean, nullable=False, default=False)
+    email_preferences = Column(JSONB, nullable=False, server_default='{}')
 
     api_keys = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")
     publisher = relationship("Publisher", back_populates="user", uselist=False)

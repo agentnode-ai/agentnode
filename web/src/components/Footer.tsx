@@ -8,11 +8,14 @@ export default function Footer() {
           <span className="font-mono text-primary">&gt;_</span>
           <span>AgentNode</span>
           <span className="text-border">|</span>
-          <span>Where agents find upgrades</span>
+          <span>Where agents find upgrades — powered by ANP</span>
         </div>
-        <div className="flex items-center gap-6 text-sm text-muted">
+        <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-muted">
           <Link href="/search" className="transition-colors hover:text-foreground">
             Search
+          </Link>
+          <Link href="/capabilities" className="transition-colors hover:text-foreground">
+            Capabilities
           </Link>
           <Link href="/for-developers" className="transition-colors hover:text-foreground">
             For Developers

@@ -37,6 +37,25 @@ class Settings(BaseSettings):
     # API Keys
     API_KEY_PREFIX: str = "ank_"
 
+    # Cookies
+    COOKIE_DOMAIN: str = ""
+    COOKIE_SECURE: bool = False  # Set to True in production via env var
+    COOKIE_SAMESITE: str = "lax"
+
+    # Login security
+    LOGIN_MAX_ATTEMPTS: int = 5
+    LOGIN_LOCKOUT_SECONDS: int = 900  # 15 minutes
+
+    # Email / SMTP
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_USE_TLS: bool = True
+    EMAIL_FROM: str = "noreply@agentnode.net"
+    EMAIL_FROM_NAME: str = "AgentNode"
+    FRONTEND_URL: str = "https://agentnode.net"
+
     # Environment
     ENVIRONMENT: str = "development"
 
@@ -55,6 +74,8 @@ class Settings(BaseSettings):
             insecure.append("S3_SECRET_KEY")
         if self.MEILISEARCH_KEY == "masterKey":
             insecure.append("MEILISEARCH_KEY")
+        if not self.COOKIE_SECURE:
+            insecure.append("COOKIE_SECURE")
         if insecure:
             print(
                 f"FATAL: Production environment detected but these settings "

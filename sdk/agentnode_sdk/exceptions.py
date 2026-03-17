@@ -28,3 +28,16 @@ class ValidationError(AgentNodeError):
 class RateLimitError(AgentNodeError):
     """Rate limit exceeded (429)."""
     pass
+
+
+class AgentNodeToolError(Exception):
+    """Base error for tool execution failures.
+
+    Pack authors should raise this instead of returning {"error": ...} dicts.
+    Adapters (LangChain, MCP) catch this to propagate structured errors.
+    """
+
+    def __init__(self, message: str, tool_name: str | None = None, details: dict | None = None):
+        self.tool_name = tool_name
+        self.details = details or {}
+        super().__init__(message)

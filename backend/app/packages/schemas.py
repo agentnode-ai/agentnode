@@ -31,6 +31,9 @@ class CapabilityBlock(BaseModel):
     capability_id: str
     capability_type: str
     description: str | None
+    entrypoint: str | None = None
+    input_schema: dict | None = None
+    output_schema: dict | None = None
 
 
 class RecommendedForBlock(BaseModel):

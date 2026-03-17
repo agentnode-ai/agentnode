@@ -203,13 +203,32 @@ async def run_security_scan(version_id: UUID) -> None:
                 ))
 
             # Auto-quarantine on high-severity findings
+            high_count = sum(1 for f in filtered if f["severity"] == "high")
             if has_high and pv.quarantine_status == "none":
                 pv.quarantine_status = "quarantined"
                 pv.quarantined_at = datetime.now(timezone.utc)
-                pv.quarantine_reason = f"Auto-quarantined: {sum(1 for f in filtered if f['severity'] == 'high')} high-severity finding(s)"
+                pv.quarantine_reason = f"Auto-quarantined: {high_count} high-severity finding(s)"
 
             await session.commit()
             logger.info(f"Security scan for {version_id}: {len(filtered)} finding(s)")
+
+            # Send scan/quarantine emails
+            if filtered:
+                from app.packages.models import Package
+                pkg_result = await session.execute(
+                    select(Package).where(Package.id == pv.package_id)
+                )
+                pkg = pkg_result.scalar_one_or_none()
+                if pkg:
+                    from app.shared.email import get_publisher_email
+                    pub_email = await get_publisher_email(pkg.publisher_id)
+                    if pub_email:
+                        if has_high:
+                            from app.shared.email import send_auto_quarantine_email
+                            await send_auto_quarantine_email(pub_email, pkg.slug, pv.version_number, high_count)
+                        else:
+                            from app.shared.email import send_security_scan_report_email
+                            await send_security_scan_report_email(pub_email, pkg.slug, pv.version_number, len(filtered), high_count)
 
     except Exception:
         logger.exception(f"Security scan failed for version {version_id}")

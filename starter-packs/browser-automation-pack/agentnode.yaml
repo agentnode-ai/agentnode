@@ -1,33 +1,73 @@
-manifest_version: "0.1"
+manifest_version: "0.2"
 package_id: "browser-automation-pack"
 package_type: "toolpack"
 name: "Browser Automation Pack"
 publisher: "agentnode"
-version: "1.0.0"
+version: "1.1.0"
 summary: "Automate browser interactions: screenshots, text extraction, clicks, and form filling."
 description: "Automate browser interactions: screenshots, text extraction, clicks, and form filling."
-runtime: "python"
-install_mode: "package"
-hosting_type: "agentnode_hosted"
 entrypoint: "browser_automation_pack.tool"
 
 capabilities:
   tools:
-    - name: "browser_navigation"
+    - name: "screenshot"
       capability_id: "browser_navigation"
-      description: "Automate browser interactions with Playwright."
+      entrypoint: "browser_automation_pack.tool:screenshot"
+      description: "Capture a screenshot of a web page."
       input_schema:
         type: "object"
         properties:
-          url: {type: "string"}
-          action: {type: "string", default: "screenshot"}
-          selector: {type: "string", default: ""}
-          output_path: {type: "string", default: ""}
-        required: ['url']
-  resources: []
-  prompts: []
+          url: {type: "string", description: "URL to navigate to"}
+          output_path: {type: "string", description: "File path for screenshot output"}
+          full_page: {type: "boolean", description: "Capture full scrollable page"}
+        required: ["url"]
 
-tags: ["browser", "automation"]
+    - name: "extract_text"
+      capability_id: "web_scraping"
+      entrypoint: "browser_automation_pack.tool:extract_text"
+      description: "Extract text content from a web page."
+      input_schema:
+        type: "object"
+        properties:
+          url: {type: "string", description: "URL to navigate to"}
+          selector: {type: "string", description: "CSS selector for targeted extraction"}
+        required: ["url"]
+
+    - name: "click"
+      capability_id: "browser_navigation"
+      entrypoint: "browser_automation_pack.tool:click"
+      description: "Click an element on a web page."
+      input_schema:
+        type: "object"
+        properties:
+          url: {type: "string", description: "URL to navigate to"}
+          selector: {type: "string", description: "CSS selector of element to click"}
+        required: ["url", "selector"]
+
+    - name: "fill"
+      capability_id: "browser_navigation"
+      entrypoint: "browser_automation_pack.tool:fill"
+      description: "Fill a form field on a web page."
+      input_schema:
+        type: "object"
+        properties:
+          url: {type: "string", description: "URL to navigate to"}
+          selector: {type: "string", description: "CSS selector of input field"}
+          value: {type: "string", description: "Value to type"}
+        required: ["url", "selector"]
+
+    - name: "get_links"
+      capability_id: "web_scraping"
+      entrypoint: "browser_automation_pack.tool:get_links"
+      description: "Extract all links from a web page."
+      input_schema:
+        type: "object"
+        properties:
+          url: {type: "string", description: "URL to navigate to"}
+          selector: {type: "string", description: "CSS selector to scope the search"}
+        required: ["url"]
+
+tags: ["browser", "automation", "playwright", "web"]
 categories: ["web-and-browsing"]
 
 compatibility:
@@ -42,27 +82,3 @@ permissions:
   code_execution: {level: "none"}
   data_access: {level: "input_only"}
   user_approval: {required: "never"}
-
-upgrade_roles: ["browser_navigation"]
-recommended_for:
-  - agent_type: "general-assistant"
-    missing_capability: "browser_navigation"
-
-install_strategy: "local"
-fallback_behavior: "skip"
-policy_requirements:
-  min_trust_level: "unverified"
-  requires_approval: false
-
-security:
-  signature: null
-  provenance:
-    source_repo: null
-    commit: null
-    build_system: null
-
-support:
-  homepage: "https://agentnode.net/packages/browser-automation-pack"
-  issues: "https://github.com/agentnode-ai/agentnode/issues"
-
-deprecation_policy: "6-months-notice"

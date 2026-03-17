@@ -59,7 +59,7 @@ On March 16, 2030 the license automatically converts to Apache 2.0, making the c
 
 export default function LicensePage() {
   return (
-    <main className="mx-auto max-w-4xl px-6 py-16">
+    <main className="mx-auto max-w-6xl px-6 py-16">
       <h1 className="mb-2 text-3xl font-bold tracking-tight">
         <span className="text-primary">License</span>
       </h1>

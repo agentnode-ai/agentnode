@@ -112,6 +112,7 @@ class Capability(Base, UUIDPrimaryKeyMixin):
     description = Column(Text, nullable=True)
     input_schema = Column(JSONB, nullable=True)
     output_schema = Column(JSONB, nullable=True)
+    entrypoint = Column(Text, nullable=True)  # v0.2: per-tool entrypoint (module.path:function)
 
     package_version = relationship("PackageVersion", back_populates="capabilities")
 

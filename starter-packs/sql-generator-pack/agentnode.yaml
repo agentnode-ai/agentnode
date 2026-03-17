@@ -1,32 +1,39 @@
-manifest_version: "0.1"
+manifest_version: "0.2"
 package_id: "sql-generator-pack"
 package_type: "toolpack"
-name: "Sql Generator Pack"
+name: "SQL Generator Pack"
 publisher: "agentnode"
-version: "1.0.0"
+version: "1.1.0"
 summary: "Generate and format SQL queries from natural language descriptions."
 description: "Generate and format SQL queries from natural language descriptions."
-runtime: "python"
-install_mode: "package"
-hosting_type: "agentnode_hosted"
 entrypoint: "sql_generator_pack.tool"
 
 capabilities:
   tools:
-    - name: "sql_generation"
+    - name: "generate_sql"
       capability_id: "sql_generation"
+      entrypoint: "sql_generator_pack.tool:generate"
       description: "Generate SQL from a natural language description."
       input_schema:
         type: "object"
         properties:
-          description: {type: "string"}
-          schema: {type: "string", default: ""}
-          dialect: {type: "string", default: "postgresql"}
-        required: ['description']
-  resources: []
-  prompts: []
+          description: {type: "string", description: "Natural language description"}
+          schema: {type: "string", description: "Optional database schema"}
+          dialect: {type: "string", description: "SQL dialect (postgresql, mysql, sqlite, mssql)"}
+        required: ["description"]
 
-tags: ["sql", "generator"]
+    - name: "format_sql"
+      capability_id: "sql_generation"
+      entrypoint: "sql_generator_pack.tool:format_sql"
+      description: "Format and validate an existing SQL query."
+      input_schema:
+        type: "object"
+        properties:
+          sql: {type: "string", description: "Raw SQL query to format"}
+          dialect: {type: "string", description: "SQL dialect for formatting hints"}
+        required: ["sql"]
+
+tags: ["sql", "generator", "database"]
 categories: ["data-analysis"]
 
 compatibility:
@@ -41,27 +48,3 @@ permissions:
   code_execution: {level: "none"}
   data_access: {level: "input_only"}
   user_approval: {required: "never"}
-
-upgrade_roles: ["sql_generation"]
-recommended_for:
-  - agent_type: "general-assistant"
-    missing_capability: "sql_generation"
-
-install_strategy: "local"
-fallback_behavior: "skip"
-policy_requirements:
-  min_trust_level: "unverified"
-  requires_approval: false
-
-security:
-  signature: null
-  provenance:
-    source_repo: null
-    commit: null
-    build_system: null
-
-support:
-  homepage: "https://agentnode.net/packages/sql-generator-pack"
-  issues: "https://github.com/agentnode-ai/agentnode/issues"
-
-deprecation_policy: "6-months-notice"

@@ -67,10 +67,10 @@ const differentiators = [
   },
   {
     number: "06",
-    title: "76+ Ready-to-Use Packs",
-    subtitle: "Document processing, web, communication, data, DevOps, AI/ML, and more.",
+    title: "Fully Open Source",
+    subtitle: "MIT-licensed tools. Open format. No vendor lock-in.",
     description:
-      "The registry ships with a curated library covering the most common agent capability gaps: PDF extraction, web search, browser automation, email, Slack, Discord, CSV analysis, data visualization, database connectors, Docker management, Kubernetes, code execution, linting, test generation, OCR, speech-to-text, and dozens more. All tested. All verified. All following the same interface.",
+      "The CLI, SDK, and ANP pack format are MIT-licensed and developed in the open on GitHub. Every pack is inspectable — you see the manifest, permissions, and source before you install. The registry is community-driven: anyone can publish, the best tools earn trust through usage and review. You are never locked into AgentNode — packs are standard Python that works anywhere.",
   },
 ];
 
@@ -138,15 +138,37 @@ const comparisonData: Record<string, Record<string, string>> = {
   },
 };
 
-const categories = [
-  { name: "Document Processing", examples: "PDF, OCR, Word, PowerPoint, Excel, Markdown" },
-  { name: "Web & Browsing", examples: "Search, extraction, browser automation, screenshots" },
-  { name: "Communication", examples: "Email, Slack, Discord, Telegram, WhatsApp" },
-  { name: "Data Analysis", examples: "CSV, visualization, database, JSON, SQL" },
-  { name: "Developer Tools", examples: "Code execution, linting, test generation, regex, Git" },
-  { name: "Cloud & DevOps", examples: "Docker, Kubernetes, AWS, Azure, CI/CD" },
-  { name: "AI & ML", examples: "Embeddings, semantic search, image generation, speech" },
-  { name: "Content", examples: "Copywriting, SEO, translation, summarization, humanizer" },
+const openSourcePoints = [
+  {
+    title: "MIT-licensed SDK & CLI",
+    detail:
+      "The tools you build with are fully open source under MIT. No vendor lock-in, no proprietary dependencies. Fork it, extend it, self-host it — your choice.",
+  },
+  {
+    title: "Open ANP format",
+    detail:
+      "The AgentNode Package format is an open specification. Every manifest is human-readable YAML. You can inspect exactly what a pack does, what it accesses, and how it works — before you install it.",
+  },
+  {
+    title: "Transparent by default",
+    detail:
+      "Every pack links to its source repository. Read the code, audit the dependencies, verify the build. No black boxes, no hidden network calls, no surprises in production.",
+  },
+  {
+    title: "Community-driven registry",
+    detail:
+      "Anyone can publish packs. The registry grows because developers contribute what they build — not because a company decides what gets listed. The best tools rise through trust levels and community usage.",
+  },
+  {
+    title: "No walled garden",
+    detail:
+      "Packs work outside AgentNode too. The code is standard Python with a standard interface. If you ever leave the platform, your tools still work. We earn your usage, not lock it in.",
+  },
+  {
+    title: "Public roadmap & governance",
+    detail:
+      "Feature development happens in the open on GitHub. File issues, propose changes, contribute code. The platform belongs to the community that builds on it.",
+  },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -202,7 +224,7 @@ export default function WhyAgentNodePage() {
       <section className="relative overflow-hidden border-b border-border">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-primary/10 via-transparent to-transparent" />
 
-        <div className="relative mx-auto max-w-4xl px-6 pb-20 pt-24 sm:pt-32 text-center">
+        <div className="relative mx-auto max-w-6xl px-6 pb-20 pt-24 sm:pt-32 text-center">
           <p className="mb-4 text-sm font-medium uppercase tracking-widest text-primary">
             Why AgentNode
           </p>
@@ -236,7 +258,7 @@ export default function WhyAgentNodePage() {
 
       {/* ───────────────── The Problem ───────────────── */}
       <section className="border-b border-border">
-        <div className="mx-auto max-w-5xl px-6 py-20">
+        <div className="mx-auto max-w-6xl px-6 py-20">
           <h2 className="mb-2 text-center text-2xl font-bold text-foreground sm:text-3xl">
             The Problem with the Status Quo
           </h2>
@@ -265,7 +287,7 @@ export default function WhyAgentNodePage() {
 
       {/* ───────────────── How AgentNode Is Different ───────────────── */}
       <section className="border-b border-border bg-card/30">
-        <div className="mx-auto max-w-5xl px-6 py-20">
+        <div className="mx-auto max-w-6xl px-6 py-20">
           <h2 className="mb-2 text-center text-2xl font-bold text-foreground sm:text-3xl">
             How AgentNode Is Different
           </h2>
@@ -412,7 +434,7 @@ export default function WhyAgentNodePage() {
 
       {/* ───────────────── How It Works (Code) ───────────────── */}
       <section className="border-b border-border bg-card/30">
-        <div className="mx-auto max-w-4xl px-6 py-20">
+        <div className="mx-auto max-w-6xl px-6 py-20">
           <h2 className="mb-2 text-center text-2xl font-bold text-foreground sm:text-3xl">
             The Developer Experience
           </h2>
@@ -492,53 +514,55 @@ print(text["pages"])`}</code>
         </div>
       </section>
 
-      {/* ───────────────── Capability Categories ───────────────── */}
+      {/* ───────────────── Open Source ───────────────── */}
       <section className="border-b border-border">
-        <div className="mx-auto max-w-5xl px-6 py-20">
+        <div className="mx-auto max-w-6xl px-6 py-20">
           <h2 className="mb-2 text-center text-2xl font-bold text-foreground sm:text-3xl">
-            76+ Packs Across 8 Categories
+            Open Source. Open Format. Open Registry.
           </h2>
           <p className="mb-12 text-center text-muted">
-            Whatever your agent needs, there is probably a pack for it already.
+            AgentNode is built in the open. The SDK, CLI, and pack format are MIT-licensed.
+            The registry is community-driven. You are never locked in.
           </p>
 
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {categories.map((cat) => (
+          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {openSourcePoints.map((point) => (
               <div
-                key={cat.name}
-                className="group rounded-lg border border-border bg-card p-4 transition-all hover:border-primary/30"
+                key={point.title}
+                className="group rounded-lg border border-border bg-card p-6 transition-all hover:border-primary/30"
               >
-                <h3 className="mb-1 text-sm font-semibold text-foreground">
-                  {cat.name}
+                <h3 className="mb-2 text-sm font-semibold text-foreground">
+                  {point.title}
                 </h3>
-                <p className="text-xs leading-relaxed text-muted">
-                  {cat.examples}
+                <p className="text-sm leading-relaxed text-muted">
+                  {point.detail}
                 </p>
               </div>
             ))}
           </div>
 
-          <p className="mt-8 text-center text-sm text-muted">
-            <Link
-              href="/search"
-              className="text-primary underline hover:text-foreground"
+          <div className="mt-10 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
+            <a
+              href="https://github.com/agentnode-ai/agentnode"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex h-10 items-center justify-center rounded-lg border border-border px-6 text-sm font-medium text-foreground transition-colors hover:bg-card"
             >
-              Browse the full registry
-            </Link>{" "}
-            or{" "}
+              View on GitHub <span className="ml-1.5 text-xs">&#8599;</span>
+            </a>
             <Link
-              href="/capabilities"
-              className="text-primary underline hover:text-foreground"
+              href="/license"
+              className="text-sm text-primary underline transition-colors hover:text-foreground"
             >
-              explore capability taxonomy
+              Read the license details
             </Link>
-          </p>
+          </div>
         </div>
       </section>
 
       {/* ───────────────── For Teams ───────────────── */}
       <section className="border-b border-border bg-card/30">
-        <div className="mx-auto max-w-5xl px-6 py-20">
+        <div className="mx-auto max-w-6xl px-6 py-20">
           <h2 className="mb-2 text-center text-2xl font-bold text-foreground sm:text-3xl">
             Built for Teams and Production
           </h2>
@@ -626,7 +650,7 @@ print(text["pages"])`}</code>
 
       {/* ───────────────── Trust Levels Visual ───────────────── */}
       <section className="border-b border-border">
-        <div className="mx-auto max-w-4xl px-6 py-20">
+        <div className="mx-auto max-w-6xl px-6 py-20">
           <h2 className="mb-2 text-center text-2xl font-bold text-foreground sm:text-3xl">
             Trust You Can Verify
           </h2>
@@ -677,7 +701,7 @@ print(text["pages"])`}</code>
 
       {/* ───────────────── Bottom CTA ───────────────── */}
       <section>
-        <div className="mx-auto max-w-4xl px-6 py-24">
+        <div className="mx-auto max-w-6xl px-6 py-24">
           <div className="flex flex-col items-center text-center">
             <h2 className="text-2xl font-bold text-foreground sm:text-3xl">
               Ready to stop searching and start{" "}

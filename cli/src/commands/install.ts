@@ -46,6 +46,15 @@ export const installCommand = new Command("install")
       }
 
       // 3. Run the full install flow
+      // Build tools array from capabilities with entrypoints (v0.2)
+      const tools = (meta.capabilities || [])
+        .filter((c: any) => c.entrypoint)
+        .map((c: any) => ({
+          name: c.name,
+          entrypoint: c.entrypoint,
+          capability_id: c.capability_id,
+        }));
+
       const result = await installPackage(
         {
           artifact_url: meta.artifact.url,
@@ -54,6 +63,7 @@ export const installCommand = new Command("install")
           post_install_code: `from ${(meta.entrypoint || "").split(".")[0]} import tool`,
           package_type: meta.package_type || "toolpack",
           capability_ids: (meta.capabilities || []).map((c: any) => c.capability_id),
+          tools,
           deprecated: false,
         },
         slug,

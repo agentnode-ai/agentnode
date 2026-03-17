@@ -1,5 +1,7 @@
 """MCP server that exposes installed AgentNode packs as MCP tools.
 
+Supports ANP v0.1 (single run() per pack) and v0.2 (per-tool entrypoints).
+
 This allows any MCP-compatible client (OpenClaw, Claude Code, Cursor, etc.)
 to use AgentNode packs as tools.
 
@@ -40,14 +42,26 @@ logger = logging.getLogger(__name__)
 LOCKFILE = "agentnode.lock"
 
 
+def _resolve_entrypoint(entrypoint: str) -> tuple[str, str]:
+    """Parse entrypoint into (module_path, function_name).
+
+    "my_pack.tool"           → ("my_pack.tool", "run")
+    "my_pack.tool:describe"  → ("my_pack.tool", "describe")
+    """
+    if ":" in entrypoint:
+        module_path, func_name = entrypoint.rsplit(":", 1)
+        return module_path, func_name
+    return entrypoint, "run"
+
+
 def _load_module(pack_slug: str) -> Any:
-    """Import a pack's tool module."""
+    """Import a pack's tool module (v0.1 fallback)."""
     module_name = pack_slug.replace("-", "_") + ".tool"
     return importlib.import_module(module_name)
 
 
 def _get_run_params(func) -> dict:
-    """Extract parameter info from a run() function for MCP tool schema."""
+    """Extract parameter info from a function for MCP tool schema."""
     sig = inspect.signature(func)
     properties = {}
     required = []
@@ -106,9 +120,21 @@ def _get_packs_from_lock() -> list[str]:
     try:
         with open(LOCKFILE) as f:
             lock = json.load(f)
-        return [entry["slug"] for entry in lock.get("packages", [])]
+        return list(lock.get("packages", {}).keys())
     except (json.JSONDecodeError, KeyError):
         return []
+
+
+def _read_lock_entry(slug: str) -> dict:
+    """Read a single package entry from the lockfile."""
+    if not os.path.exists(LOCKFILE):
+        return {}
+    try:
+        with open(LOCKFILE) as f:
+            lock = json.load(f)
+        return lock.get("packages", {}).get(slug, {})
+    except (json.JSONDecodeError, KeyError):
+        return {}
 
 
 def _coerce_value(value: Any, target_type: str) -> Any:
@@ -122,52 +148,120 @@ def _coerce_value(value: Any, target_type: str) -> Any:
     return value
 
 
+def _load_pack_tools(slug: str) -> list[dict[str, Any]]:
+    """Load all tools from a pack, supporting both v0.1 and v0.2.
+
+    Returns a list of dicts with keys: tool_name, func, schema, description
+    Each dict represents one MCP tool to expose.
+    """
+    lock_entry = _read_lock_entry(slug)
+    tools_list = lock_entry.get("tools", [])
+    results = []
+
+    if tools_list:
+        # v0.2: per-tool entrypoints from lockfile
+        for tool_info in tools_list:
+            ep = tool_info.get("entrypoint", "")
+            name = tool_info.get("name", slug)
+            if not ep:
+                continue
+            module_path, func_name = _resolve_entrypoint(ep)
+            try:
+                module = importlib.import_module(module_path)
+                func = getattr(module, func_name, None)
+                if func is None:
+                    logger.warning(f"Function '{func_name}' not found in '{module_path}' for {slug}/{name}")
+                    continue
+                doc = getattr(func, "__doc__", "") or f"Tool '{name}' from AgentNode pack: {slug}"
+                description = doc.strip().split("\n")[0]
+                # MCP tool name: slug/tool_name for multi-tool packs
+                mcp_name = f"{slug}/{name}" if len(tools_list) > 1 else slug
+                results.append({
+                    "tool_name": mcp_name,
+                    "func": func,
+                    "schema": _get_run_params(func),
+                    "description": description,
+                })
+            except ImportError as e:
+                logger.warning(f"Could not import {module_path} for {slug}/{name}: {e}")
+    else:
+        # v0.1 fallback: single run() function
+        pkg_entrypoint = lock_entry.get("entrypoint", "")
+        if pkg_entrypoint:
+            module_path, func_name = _resolve_entrypoint(pkg_entrypoint)
+            try:
+                module = importlib.import_module(module_path)
+                func = getattr(module, func_name, None)
+                if func is None:
+                    logger.warning(f"Function '{func_name}' not found in '{module_path}' for {slug}")
+                    return results
+            except ImportError as e:
+                logger.warning(f"Could not import {module_path} for {slug}: {e}")
+                return results
+        else:
+            # No lockfile entry — try convention-based import
+            try:
+                module = _load_module(slug)
+                if not hasattr(module, "run"):
+                    logger.warning(f"Pack {slug} has no run() function, skipping")
+                    return results
+                func = module.run
+            except ImportError as e:
+                logger.warning(f"Could not import {slug}: {e}")
+                return results
+
+        doc = getattr(func, "__doc__", "") or f"Tool from AgentNode pack: {slug}"
+        description = doc.strip().split("\n")[0]
+        results.append({
+            "tool_name": slug,
+            "func": func,
+            "schema": _get_run_params(func),
+            "description": description,
+        })
+
+    return results
+
+
 def create_server(pack_slugs: list[str]) -> Server:
     """Create an MCP server with tools from the specified packs."""
     app = Server("agentnode")
 
-    # Load all pack modules
-    loaded_packs: dict[str, Any] = {}
-    tool_schemas: dict[str, dict] = {}
+    # Load all pack tools (v0.1 and v0.2)
+    loaded_tools: dict[str, Any] = {}  # tool_name → func
+    tool_schemas: dict[str, dict] = {}  # tool_name → schema
+    tool_descriptions: dict[str, str] = {}  # tool_name → description
 
     for slug in pack_slugs:
         try:
-            module = _load_module(slug)
-            if not hasattr(module, "run"):
-                logger.warning(f"Pack {slug} has no run() function, skipping")
-                continue
-            loaded_packs[slug] = module
-            tool_schemas[slug] = _get_run_params(module.run)
-            logger.info(f"Loaded pack: {slug}")
-        except ImportError as e:
-            logger.warning(f"Could not import {slug}: {e}")
+            pack_tools = _load_pack_tools(slug)
+            for t in pack_tools:
+                loaded_tools[t["tool_name"]] = t["func"]
+                tool_schemas[t["tool_name"]] = t["schema"]
+                tool_descriptions[t["tool_name"]] = t["description"]
+                logger.info(f"Loaded tool: {t['tool_name']}")
         except Exception as e:
             logger.error(f"Error loading {slug}: {e}")
 
     @app.list_tools()
     async def list_tools() -> list[Tool]:
         tools = []
-        for slug, module in loaded_packs.items():
-            doc = getattr(module.run, "__doc__", "") or f"Tool from AgentNode pack: {slug}"
-            # Use first line of docstring
-            description = doc.strip().split("\n")[0]
-
+        for tool_name in loaded_tools:
             tools.append(Tool(
-                name=slug,
-                description=description,
-                inputSchema=tool_schemas.get(slug, {"type": "object", "properties": {}}),
+                name=tool_name,
+                description=tool_descriptions.get(tool_name, f"AgentNode tool: {tool_name}"),
+                inputSchema=tool_schemas.get(tool_name, {"type": "object", "properties": {}}),
             ))
         return tools
 
     @app.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        if name not in loaded_packs:
+        if name not in loaded_tools:
             return [TextContent(
                 type="text",
-                text=json.dumps({"error": f"Unknown tool: {name}. Available: {list(loaded_packs.keys())}"}),
+                text=json.dumps({"error": f"Unknown tool: {name}. Available: {list(loaded_tools.keys())}"}),
             )]
 
-        module = loaded_packs[name]
+        func = loaded_tools[name]
         schema = tool_schemas.get(name, {})
 
         # Coerce argument types based on schema
@@ -180,7 +274,7 @@ def create_server(pack_slugs: list[str]) -> Server:
                 coerced_args[key] = value
 
         try:
-            result = module.run(**coerced_args)
+            result = func(**coerced_args)
             return [TextContent(
                 type="text",
                 text=json.dumps(result, default=str, ensure_ascii=False),

@@ -26,6 +26,13 @@ export const metadata: Metadata = {
     "agent tools",
     "capability resolution",
   ],
+  icons: {
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico", sizes: "any" },
+    ],
+    apple: "/favicon.svg",
+  },
 };
 
 export default function RootLayout({

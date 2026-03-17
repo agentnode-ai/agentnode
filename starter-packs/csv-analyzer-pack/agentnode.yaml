@@ -1,31 +1,60 @@
-manifest_version: "0.1"
+manifest_version: "0.2"
 package_id: "csv-analyzer-pack"
 package_type: "toolpack"
-name: "Csv Analyzer Pack"
+name: "CSV Analyzer Pack"
 publisher: "agentnode"
-version: "1.0.0"
+version: "1.1.0"
 summary: "Analyze CSV files with pandas: statistics, filtering, and column inspection."
 description: "Analyze CSV files with pandas: statistics, filtering, and column inspection."
-runtime: "python"
-install_mode: "package"
-hosting_type: "agentnode_hosted"
 entrypoint: "csv_analyzer_pack.tool"
 
 capabilities:
   tools:
-    - name: "csv_analysis"
+    - name: "describe_csv"
       capability_id: "csv_analysis"
-      description: "Analyze a CSV file."
+      entrypoint: "csv_analyzer_pack.tool:describe"
+      description: "Return summary statistics for a CSV file."
       input_schema:
         type: "object"
         properties:
-          file_path: {type: "string"}
-          operation: {type: "string", default: "describe"}
-        required: ['file_path']
-  resources: []
-  prompts: []
+          file_path: {type: "string", description: "Path to CSV file"}
+        required: ["file_path"]
 
-tags: ["csv", "analyzer"]
+    - name: "head_csv"
+      capability_id: "csv_analysis"
+      entrypoint: "csv_analyzer_pack.tool:head"
+      description: "Return the first N rows of a CSV file."
+      input_schema:
+        type: "object"
+        properties:
+          file_path: {type: "string", description: "Path to CSV file"}
+          n: {type: "integer", description: "Number of rows to return"}
+        required: ["file_path"]
+
+    - name: "columns_csv"
+      capability_id: "csv_analysis"
+      entrypoint: "csv_analyzer_pack.tool:columns"
+      description: "Return detailed column information for a CSV file."
+      input_schema:
+        type: "object"
+        properties:
+          file_path: {type: "string", description: "Path to CSV file"}
+        required: ["file_path"]
+
+    - name: "filter_csv"
+      capability_id: "data_cleaning"
+      entrypoint: "csv_analyzer_pack.tool:filter_rows"
+      description: "Filter rows by a column condition."
+      input_schema:
+        type: "object"
+        properties:
+          file_path: {type: "string", description: "Path to CSV file"}
+          column: {type: "string", description: "Column name to filter on"}
+          value: {type: "string", description: "Value to compare against"}
+          operator: {type: "string", description: "Comparison operator (==, !=, >, <, >=, <=)"}
+        required: ["file_path", "column", "value"]
+
+tags: ["csv", "analyzer", "pandas", "data"]
 categories: ["data-analysis"]
 
 compatibility:
@@ -33,34 +62,3 @@ compatibility:
   python: ">=3.10"
   dependencies:
     - "pandas>=2.0"
-
-permissions:
-  network: {level: "none"}
-  filesystem: {level: "none"}
-  code_execution: {level: "none"}
-  data_access: {level: "input_only"}
-  user_approval: {required: "never"}
-
-upgrade_roles: ["csv_analysis"]
-recommended_for:
-  - agent_type: "general-assistant"
-    missing_capability: "csv_analysis"
-
-install_strategy: "local"
-fallback_behavior: "skip"
-policy_requirements:
-  min_trust_level: "unverified"
-  requires_approval: false
-
-security:
-  signature: null
-  provenance:
-    source_repo: null
-    commit: null
-    build_system: null
-
-support:
-  homepage: "https://agentnode.net/packages/csv-analyzer-pack"
-  issues: "https://github.com/agentnode-ai/agentnode/issues"
-
-deprecation_policy: "6-months-notice"

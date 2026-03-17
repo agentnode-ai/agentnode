@@ -19,7 +19,7 @@ from app.packages.models import (
     UpgradeMetadata,
 )
 from app.packages.typosquatting import check_typosquatting
-from app.packages.validator import validate_manifest, validate_artifact_quality
+from app.packages.validator import normalize_manifest, validate_manifest, validate_artifact_quality
 from app.packages.version_queries import recalculate_latest_version_id
 from app.shared.exceptions import AppError
 from app.shared.meili import sync_package_to_meilisearch
@@ -68,6 +68,9 @@ async def publish_package(
     artifact_bytes: bytes | None = None,
 ) -> tuple[Package, PackageVersion]:
     """Full publish flow: validate, check typosquatting, create/update package, create version."""
+
+    # 0. Normalize manifest (v0.2 only — applies defaults to compact manifests)
+    manifest = normalize_manifest(manifest)
 
     # 1. Validate manifest
     valid, errors, warnings = await validate_manifest(manifest, session)
@@ -221,6 +224,7 @@ async def publish_package(
             description=tool.get("description"),
             input_schema=tool.get("input_schema"),
             output_schema=tool.get("output_schema"),
+            entrypoint=tool.get("entrypoint"),
         ))
     for resource in capabilities.get("resources", []):
         session.add(Capability(
@@ -317,6 +321,15 @@ async def publish_package(
         publish_warnings.append(
             "First-time publisher: version has been quarantined for review. "
             "Once approved, future packages will publish directly."
+        )
+
+    # Send publish confirmation email
+    from app.shared.email import send_package_published_email, get_publisher_email
+    pub_email = await get_publisher_email(publisher_id)
+    if pub_email:
+        await send_package_published_email(
+            pub_email, slug, version_str,
+            quarantined=(quarantine_for_typosquatting or quarantine_for_new_publisher),
         )
 
     return pkg, pv, publish_warnings

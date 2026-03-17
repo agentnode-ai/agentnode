@@ -10,11 +10,14 @@ from agentnode_sdk.exceptions import (
     RateLimitError,
     ValidationError,
 )
+from agentnode_sdk.installer import install_package, load_tool as _load_tool
 from agentnode_sdk.models import (
     ArtifactInfo,
+    CanInstallResult,
     CapabilityInfo,
     DependencyInfo,
     InstallMetadata,
+    InstallResult,
     PackageDetail,
     PermissionsInfo,
     ResolvedPackage,
@@ -371,3 +374,201 @@ class AgentNodeClient:
             params["version"] = version
         data = self._request("POST", f"/packages/{slug}/download", params=params)
         return data.get("download_url")
+
+    # --- Install (full local install) ---
+
+    def install(
+        self,
+        slug: str,
+        version: str | None = None,
+        require_trusted: bool = False,
+        verbose: bool = False,
+    ) -> InstallResult:
+        """Find, download, verify, and install a package locally.
+
+        This is the key method for autonomous agent upgrades:
+        the agent calls resolve() to find what it needs, then install()
+        to add the capability — no human intervention required.
+
+        Steps: API metadata → download artifact → verify hash →
+        extract → pip install → update lockfile.
+        """
+        # 1. Get install metadata (read-only, no side effects)
+        meta = self.get_install_metadata(slug, version)
+
+        # 2. Trust check
+        if require_trusted:
+            pkg = self.get_package(slug)
+            if pkg.is_deprecated:
+                return InstallResult(
+                    slug=slug,
+                    version=meta.version,
+                    installed=False,
+                    already_installed=False,
+                    message=f"{slug} is deprecated and cannot be installed.",
+                )
+
+        # 3. Track download
+        try:
+            self.download(slug, version)
+        except Exception:
+            pass  # Non-fatal, continue with install
+
+        # 4. Run local install flow
+        artifact_url = meta.artifact.url if meta.artifact else None
+        artifact_hash = meta.artifact.hash_sha256 if meta.artifact else None
+        cap_ids = [c.capability_id for c in meta.capabilities]
+
+        result = install_package(
+            slug=slug,
+            version=meta.version,
+            artifact_url=artifact_url,
+            artifact_hash=artifact_hash,
+            entrypoint=meta.entrypoint,
+            package_type=meta.package_type,
+            capability_ids=cap_ids,
+            verbose=verbose,
+        )
+
+        return InstallResult(
+            slug=result["slug"],
+            version=result["version"],
+            installed=result["installed"],
+            already_installed=result.get("already_installed", False),
+            message=result["message"],
+            hash_verified=result.get("hash_verified", False),
+            entrypoint=result.get("entrypoint"),
+            lockfile_updated=result.get("lockfile_updated", False),
+            previous_version=result.get("previous_version"),
+        )
+
+    def can_install(
+        self,
+        slug: str,
+        version: str | None = None,
+        require_trusted: bool = False,
+        allowed_permissions: list[str] | None = None,
+        denied_permissions: list[str] | None = None,
+    ) -> CanInstallResult:
+        """Check whether a package can be installed under given constraints.
+
+        Evaluates trust level, permissions, and deprecation status
+        without performing any installation.
+        """
+        meta = self.get_install_metadata(slug, version)
+        pkg = self.get_package(slug)
+
+        # Check deprecation
+        if pkg.is_deprecated:
+            return CanInstallResult(
+                allowed=False,
+                slug=slug,
+                version=meta.version,
+                trust_level="unknown",
+                reason="Package is deprecated.",
+                permissions=meta.permissions,
+            )
+
+        # Check artifact availability
+        if not meta.artifact or not meta.artifact.url:
+            return CanInstallResult(
+                allowed=False,
+                slug=slug,
+                version=meta.version,
+                trust_level="unknown",
+                reason="No artifact available for download.",
+                permissions=meta.permissions,
+            )
+
+        # Check trust
+        trust_level = "unknown"
+        try:
+            detail = self._request("GET", f"/packages/{slug}")
+            trust_level = detail.get("publisher", {}).get("trust_level", "unverified")
+        except Exception:
+            pass
+
+        if require_trusted and trust_level not in ("trusted", "curated"):
+            return CanInstallResult(
+                allowed=False,
+                slug=slug,
+                version=meta.version,
+                trust_level=trust_level,
+                reason=f"Package trust level is '{trust_level}', but 'trusted' or higher is required.",
+                permissions=meta.permissions,
+            )
+
+        # Check permissions
+        if meta.permissions and denied_permissions:
+            perm_map = {
+                "network": meta.permissions.network_level,
+                "filesystem": meta.permissions.filesystem_level,
+                "code_execution": meta.permissions.code_execution_level,
+                "data_access": meta.permissions.data_access_level,
+            }
+            for perm_name in denied_permissions:
+                level = perm_map.get(perm_name, "none")
+                if level != "none":
+                    return CanInstallResult(
+                        allowed=False,
+                        slug=slug,
+                        version=meta.version,
+                        trust_level=trust_level,
+                        reason=f"Package requires '{perm_name}' ({level}), which is denied by policy.",
+                        permissions=meta.permissions,
+                    )
+
+        return CanInstallResult(
+            allowed=True,
+            slug=slug,
+            version=meta.version,
+            trust_level=trust_level,
+            reason="Package meets all requirements.",
+            permissions=meta.permissions,
+        )
+
+    def load_tool(self, slug: str):
+        """Load an installed package's tool module.
+
+        Returns the module which should have a ``run()`` function.
+        The package must have been installed via ``install()`` first.
+        """
+        return _load_tool(slug)
+
+    def resolve_and_install(
+        self,
+        capabilities: list[str],
+        framework: str | None = None,
+        require_trusted: bool = True,
+        verbose: bool = False,
+    ) -> InstallResult:
+        """Resolve a capability gap and install the best match.
+
+        This is the single-call autonomous upgrade method:
+        describe what your agent needs, and it finds and installs
+        the best trusted package automatically.
+        """
+        result = self.resolve(capabilities, framework=framework)
+        if not result.results:
+            return InstallResult(
+                slug="",
+                version="",
+                installed=False,
+                already_installed=False,
+                message=f"No packages found for capabilities: {capabilities}",
+            )
+
+        # Pick the highest-scored result
+        best = result.results[0]
+
+        # Trust filter
+        if require_trusted and best.trust_level not in ("trusted", "curated"):
+            return InstallResult(
+                slug=best.slug,
+                version=best.version,
+                installed=False,
+                already_installed=False,
+                message=f"Best match '{best.slug}' has trust level '{best.trust_level}', but 'trusted' required.",
+            )
+
+        return self.install(best.slug, verbose=verbose)

@@ -18,7 +18,7 @@ async def get_current_user(
     x_api_key: str | None = Header(None, alias="X-API-Key"),
     session: AsyncSession = Depends(get_session),
 ) -> User:
-    """Authenticate via Bearer JWT or X-API-Key header."""
+    """Authenticate via X-API-Key header, Bearer JWT, or httpOnly cookie."""
     user = None
 
     if x_api_key:
@@ -26,6 +26,11 @@ async def get_current_user(
     elif authorization and authorization.startswith("Bearer "):
         token = authorization[7:]
         user = await _authenticate_jwt(session, token, expected_type="access")
+    else:
+        # Fallback: try httpOnly cookie
+        cookie_token = request.cookies.get("access_token")
+        if cookie_token:
+            user = await _authenticate_jwt(session, cookie_token, expected_type="access")
 
     if not user:
         raise AppError("AUTH_INVALID_CREDENTIALS", "Missing or invalid authentication", 401)

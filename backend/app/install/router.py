@@ -22,6 +22,7 @@ from app.install.schemas import (
     InstallRequest,
     InstallResponse,
     PermissionsInfo,
+    ToolInfo,
 )
 from app.install.service import build_artifact_info, get_install_version, track_download, create_installation
 
@@ -89,6 +90,7 @@ async def get_install_metadata(
             name=c.name,
             capability_id=c.capability_id,
             capability_type=c.capability_type,
+            entrypoint=c.entrypoint,
         )
         for c in pv.capabilities
     ]
@@ -166,6 +168,13 @@ async def install_package(
     entrypoint = pv.entrypoint
     post_install_code = f"from {entrypoint.rsplit('.', 1)[0]} import tool" if entrypoint else None
 
+    # Build tools list from capabilities with per-tool entrypoints (v0.2)
+    tools = [
+        ToolInfo(name=c.name, entrypoint=c.entrypoint, capability_id=c.capability_id)
+        for c in pv.capabilities
+        if c.entrypoint and c.capability_type == "tool"
+    ]
+
     return InstallResponse(
         package_slug=pkg.slug,
         version=pv.version_number,
@@ -175,6 +184,7 @@ async def install_package(
         post_install_code=post_install_code,
         installation_id=str(installation_id),
         deprecated=pkg.is_deprecated,
+        tools=tools,
     )
 
 

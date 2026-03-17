@@ -55,6 +55,9 @@ def assemble_package_detail(pkg: Package, version: PackageVersion | None) -> Pac
                 capability_id=cap.capability_id,
                 capability_type=cap.capability_type,
                 description=cap.description,
+                entrypoint=cap.entrypoint,
+                input_schema=cap.input_schema,
+                output_schema=cap.output_schema,
             ))
 
         # Recommended for block

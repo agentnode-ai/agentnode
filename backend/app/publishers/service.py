@@ -32,6 +32,15 @@ async def create_publisher(
     session.add(publisher)
     await session.commit()
     await session.refresh(publisher)
+
+    # Send confirmation email
+    from app.auth.models import User
+    user_result = await session.execute(select(User).where(User.id == user_id))
+    user_obj = user_result.scalar_one_or_none()
+    if user_obj:
+        from app.shared.email import send_publisher_created_email
+        await send_publisher_created_email(user_obj.email, slug)
+
     return publisher
 
 

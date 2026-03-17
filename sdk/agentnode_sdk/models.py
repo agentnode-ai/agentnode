@@ -66,6 +66,7 @@ class CapabilityInfo:
     name: str
     capability_id: str
     capability_type: str
+    entrypoint: str | None = None
 
 
 @dataclass
@@ -110,3 +111,26 @@ class PackageDetail:
     download_count: int
     is_deprecated: bool
     latest_version: str | None = None
+
+
+@dataclass
+class InstallResult:
+    slug: str
+    version: str
+    installed: bool
+    already_installed: bool
+    message: str
+    hash_verified: bool = False
+    entrypoint: str | None = None
+    lockfile_updated: bool = False
+    previous_version: str | None = None
+
+
+@dataclass
+class CanInstallResult:
+    allowed: bool
+    slug: str
+    version: str
+    trust_level: str
+    reason: str
+    permissions: PermissionsInfo | None = None

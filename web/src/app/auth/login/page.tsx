@@ -1,11 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
-export default function LoginPage() {
+function LoginContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const returnTo = searchParams.get("returnTo") || "/dashboard";
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [totpCode, setTotpCode] = useState("");
@@ -25,6 +28,7 @@ export default function LoginPage() {
       const res = await fetch("/api/v1/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(body),
       });
 
@@ -40,10 +44,8 @@ export default function LoginPage() {
         throw new Error(err.message || "Login failed");
       }
 
-      // Store tokens
-      localStorage.setItem("access_token", data.access_token);
-      localStorage.setItem("refresh_token", data.refresh_token);
-      router.push("/dashboard");
+      // Redirect to returnTo or dashboard
+      router.push(returnTo);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -51,15 +53,25 @@ export default function LoginPage() {
     }
   }
 
+  const registerHref = returnTo !== "/dashboard"
+    ? `/auth/register?returnTo=${encodeURIComponent(returnTo)}`
+    : "/auth/register";
+
   return (
     <div className="mx-auto max-w-md px-6 py-24">
       <h1 className="mb-2 text-2xl font-bold text-foreground">Sign in</h1>
       <p className="mb-8 text-sm text-muted">
         Don&apos;t have an account?{" "}
-        <Link href="/auth/register" className="text-primary hover:underline">
+        <Link href={registerHref} className="text-primary hover:underline">
           Create one
         </Link>
       </p>
+
+      {returnTo !== "/dashboard" && (
+        <div className="mb-6 rounded-md border border-primary/30 bg-primary/5 px-4 py-3 text-sm text-muted">
+          Sign in to continue to publishing.
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
@@ -116,6 +128,20 @@ export default function LoginPage() {
           {loading ? "Signing in..." : "Sign in"}
         </button>
       </form>
+
+      <p className="mt-4 text-center text-sm text-muted">
+        <Link href="/auth/forgot-password" className="text-primary hover:underline">
+          Forgot your password?
+        </Link>
+      </p>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="py-24 text-center text-muted">Loading...</div>}>
+      <LoginContent />
+    </Suspense>
   );
 }

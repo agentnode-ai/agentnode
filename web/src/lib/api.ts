@@ -62,6 +62,34 @@ async function fetchAPI<T>(
   return res.json() as Promise<T>;
 }
 
+/**
+ * Fetch with auto token refresh. If a 401 is returned, attempts to refresh
+ * the access token via the refresh endpoint, then retries once.
+ */
+export async function fetchWithAuth(endpoint: string, options?: RequestInit): Promise<Response> {
+  const url = `${API_BASE}${endpoint}`;
+  const opts: RequestInit = { ...options, credentials: "include" };
+
+  let res = await fetch(url, opts);
+
+  if (res.status === 401) {
+    // Try refreshing the access token
+    const refreshRes = await fetch(`${API_BASE}/auth/refresh`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    if (refreshRes.ok) {
+      // Retry original request with new cookie
+      res = await fetch(url, opts);
+    }
+  }
+
+  return res;
+}
+
 export async function search(params: SearchParams): Promise<SearchResponse> {
   const body: Record<string, unknown> = {};
   if (params.q) body.q = params.q;

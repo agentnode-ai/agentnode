@@ -1,4 +1,4 @@
-"""SQL generation tool with template-based approach and sqlparse formatting."""
+"""SQL generation tool with template-based approach and sqlparse formatting. ANP v0.2."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import re
 from typing import Any
 
 import sqlparse
+
+from agentnode_sdk.exceptions import AgentNodeToolError
 
 
 def _extract_table_columns(schema: str) -> dict[str, list[str]]:
@@ -260,11 +262,7 @@ def _build_create_table(
     return f"CREATE TABLE {table_name} (\n{cols_str}\n)"
 
 
-def run(
-    description: str,
-    schema: str = "",
-    dialect: str = "postgresql",
-) -> dict:
+def generate(description: str, schema: str = "", dialect: str = "postgresql") -> dict:
     """Generate SQL from a natural language description.
 
     Args:
@@ -275,6 +273,9 @@ def run(
     Returns:
         A dict with the generated SQL and metadata.
     """
+    if not description or not description.strip():
+        raise AgentNodeToolError("description is required", tool_name="generate_sql")
+
     tables = _extract_table_columns(schema) if schema else {}
     words = _extract_mentioned_words(description)
     intent = _detect_intent(description)
@@ -311,3 +312,46 @@ def run(
         "statement_types": statement_types,
         "description": description,
     }
+
+
+def format_sql(sql: str, dialect: str = "postgresql") -> dict:
+    """Format and validate an existing SQL query.
+
+    Args:
+        sql: Raw SQL query to format.
+        dialect: SQL dialect for formatting hints.
+
+    Returns:
+        A dict with the formatted SQL and parse info.
+    """
+    if not sql or not sql.strip():
+        raise AgentNodeToolError("sql is required", tool_name="format_sql")
+
+    formatted = sqlparse.format(
+        sql,
+        reindent=True,
+        keyword_case="upper",
+        identifier_case=None,
+        strip_comments=False,
+    )
+
+    parsed = sqlparse.parse(formatted)
+    statement_types = [str(stmt.get_type()) for stmt in parsed if stmt.get_type()]
+
+    return {
+        "sql": formatted,
+        "original": sql,
+        "dialect": dialect,
+        "statement_types": statement_types,
+        "statement_count": len(parsed),
+    }
+
+
+# Backward-compatible v0.1 entrypoint
+def run(
+    description: str,
+    schema: str = "",
+    dialect: str = "postgresql",
+) -> dict:
+    """Generate SQL from a natural language description (v0.1 compatibility wrapper)."""
+    return generate(description, schema=schema, dialect=dialect)

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 
 // Each line has a type that determines rendering style, and the raw text content.
 // "command" lines are typed character by character; all others appear instantly.
@@ -17,29 +17,25 @@ interface TerminalLine {
 }
 
 const TERMINAL_LINES: TerminalLine[] = [
-  { type: "command", text: '$ agentnode search "pdf extraction"' },
+  { type: "label", text: "# Agent needs to process a PDF" },
+  { type: "command", text: '$ agentnode resolve "pdf extraction"' },
   { type: "blank", text: "" },
-  { type: "output", text: "Found 1 package(s):" },
-  { type: "result", text: "  pdf-reader-pack [trusted]" },
-  {
-    type: "output",
-    text: "    Extract text, tables, and metadata from PDF files.",
-  },
+  { type: "output", text: "Searching trusted packages..." },
+  { type: "result", text: "  pdf-reader-pack [trusted]  score: 0.95" },
+  { type: "output", text: "    Permissions: filesystem (temp), no network" },
   { type: "blank", text: "" },
+  { type: "label", text: "# Agent installs the capability" },
   { type: "command", text: "$ agentnode install pdf-reader-pack" },
-  { type: "output", text: "Resolving pdf-reader-pack..." },
+  { type: "output", text: "Verifying signature... ok" },
   { type: "output", text: "Installing pdf-reader-pack@1.0.0..." },
   { type: "blank", text: "" },
-  { type: "success", text: "\u2713 Installed pdf-reader-pack@1.0.0" },
-  { type: "blank", text: "" },
-  { type: "label", text: "Next step:" },
-  { type: "hint", text: "  from pdf_reader_pack import tool" },
+  { type: "success", text: "\u2713 Capability installed. Ready to use." },
 ];
 
 const TYPE_SPEED = 32; // ms per character for commands
 const LINE_DELAY = 400; // pause after finishing a command before showing output
 const OUTPUT_DELAY = 90; // ms between output lines appearing
-const RESTART_DELAY = 4000; // pause at end before looping
+// Animation plays once, no restart
 
 interface VisibleLine {
   text: string;
@@ -64,20 +60,7 @@ export default function TerminalAnimation() {
     return () => clearTimeout(timeout);
   }, []);
 
-  // Restart animation after it completes
-  const restart = useCallback(() => {
-    setVisibleLines([]);
-    setLineIndex(0);
-    setCharIndex(0);
-    setAnimationDone(false);
-    setIsTyping(true);
-  }, []);
-
-  useEffect(() => {
-    if (!animationDone) return;
-    const timer = setTimeout(restart, RESTART_DELAY);
-    return () => clearTimeout(timer);
-  }, [animationDone, restart]);
+  // Animation plays only once — no restart
 
   // Main animation loop
   useEffect(() => {

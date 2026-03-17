@@ -1,4 +1,4 @@
-"""ANP manifest validation — all rules from spec section 6."""
+"""ANP manifest validation — all rules from spec section 6. Supports v0.1 and v0.2."""
 import re
 
 from sqlalchemy import select
@@ -19,11 +19,69 @@ VALID_APPROVAL_LEVELS = {"always", "high_risk_only", "once", "never"}
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9-]{3,60}$")
 SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$")
-ENTRYPOINT_PATTERN = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)+$")
+
+# v0.1: module.path (e.g. pdf_reader_pack.tool)
+ENTRYPOINT_PATTERN_V1 = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)+$")
+# v0.2 tool-level: module.path:function (e.g. csv_analyzer_pack.tool:describe)
+ENTRYPOINT_PATTERN_V2 = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)+:[a-z_][a-z0-9_]*$")
+
+VALID_MANIFEST_VERSIONS = {"0.1", "0.2"}
 
 # Valid JSON Schema types
 VALID_JSON_SCHEMA_TYPES = {"string", "integer", "number", "boolean", "array", "object", "null"}
 
+# --- v0.2 Manifest Normalization ---
+
+MANIFEST_DEFAULTS = {
+    "runtime": "python",
+    "install_mode": "package",
+    "hosting_type": "agentnode_hosted",
+    "dependencies": [],
+    "tags": [],
+    "categories": [],
+    "permissions": {
+        "network": {"level": "none", "allowed_domains": []},
+        "filesystem": {"level": "none"},
+        "code_execution": {"level": "none"},
+        "data_access": {"level": "input_only"},
+        "user_approval": {"required": "never"},
+        "external_integrations": [],
+    },
+    "security": {
+        "signature": "",
+        "provenance": {"source_repo": "", "commit": "", "build_system": "manual"},
+    },
+    "support": {"homepage": "", "issues": ""},
+    "deprecation_policy": "6-months-notice",
+}
+
+
+def normalize_manifest(manifest: dict) -> dict:
+    """Apply v0.2 defaults to compact manifests. Only for manifest_version 0.2.
+
+    v0.1 manifests pass through unchanged.
+    """
+    if manifest.get("manifest_version") != "0.2":
+        return manifest
+
+    m = {**manifest}
+    for key, default in MANIFEST_DEFAULTS.items():
+        if key not in m:
+            m[key] = default
+        elif isinstance(default, dict) and isinstance(m[key], dict):
+            merged = {**default, **m[key]}
+            m[key] = merged
+
+    # Ensure capabilities has resources/prompts arrays
+    caps = m.get("capabilities", {})
+    caps.setdefault("resources", [])
+    caps.setdefault("prompts", [])
+    m["capabilities"] = caps
+
+    return m
+
+
+# --- JSON Schema Validation ---
 
 def _validate_json_schema(schema: dict, path: str, errors: list[str]) -> None:
     """Validate that a dict is a valid JSON Schema structure (basic checks)."""
@@ -65,8 +123,10 @@ def _validate_json_schema(schema: dict, path: str, errors: list[str]) -> None:
                     errors.append(f"{path}.required field '{req_field}' not in properties")
 
 
+# --- Main Validation ---
+
 async def validate_manifest(manifest: dict, session: AsyncSession | None = None) -> tuple[bool, list[str], list[str]]:
-    """Validate an ANP manifest dict.
+    """Validate an ANP manifest dict. Supports v0.1 and v0.2.
 
     Returns (valid, errors, warnings).
     """
@@ -74,8 +134,9 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     warnings: list[str] = []
 
     # manifest_version
-    if manifest.get("manifest_version") != "0.1":
-        errors.append("manifest_version MUST be '0.1'")
+    manifest_version = manifest.get("manifest_version")
+    if manifest_version not in VALID_MANIFEST_VERSIONS:
+        errors.append("manifest_version MUST be '0.1' or '0.2'")
 
     # package_id
     pkg_id = manifest.get("package_id", "")
@@ -126,12 +187,8 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     if hosting_type not in VALID_HOSTING_TYPES:
         errors.append(f"hosting_type must be 'agentnode_hosted' in MVP (got '{hosting_type}')")
 
-    # entrypoint — required, must be a valid Python module path
-    entrypoint = manifest.get("entrypoint", "")
-    if not entrypoint:
-        errors.append("entrypoint is required (e.g. 'my_pack.tool')")
-    elif not ENTRYPOINT_PATTERN.match(entrypoint):
-        errors.append(f"entrypoint must be a valid Python module path (got '{entrypoint}')")
+    # --- Entrypoint validation (version-dependent) ---
+    _validate_entrypoints(manifest, manifest_version, errors)
 
     # capabilities.tools — must have at least 1
     capabilities = manifest.get("capabilities", {})
@@ -225,6 +282,58 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
             warnings.append("recommended_for is recommended for upgrade packages")
 
     return len(errors) == 0, errors, warnings
+
+
+def _validate_entrypoints(manifest: dict, manifest_version: str | None, errors: list[str]) -> None:
+    """Validate entrypoints based on manifest version.
+
+    v0.1: package-level entrypoint required, must be module.path format.
+    v0.2: per-tool entrypoints supported. Multi-tool packs MUST have tool-level entrypoints.
+    """
+    pkg_entrypoint = manifest.get("entrypoint", "")
+    tools = manifest.get("capabilities", {}).get("tools", [])
+
+    if manifest_version == "0.2":
+        # v0.2 entrypoint rules
+        if pkg_entrypoint:
+            # Package-level entrypoint uses v1 format (module.path, no :function)
+            if not ENTRYPOINT_PATTERN_V1.match(pkg_entrypoint):
+                errors.append(
+                    f"entrypoint must be a valid Python module path (got '{pkg_entrypoint}')"
+                )
+
+        if len(tools) > 1:
+            # Multi-tool: every tool MUST have its own entrypoint
+            for i, tool in enumerate(tools):
+                tool_ep = tool.get("entrypoint", "")
+                if not tool_ep:
+                    errors.append(
+                        f"tools[{i}].entrypoint is required when pack has multiple tools"
+                    )
+                elif not ENTRYPOINT_PATTERN_V2.match(tool_ep):
+                    errors.append(
+                        f"tools[{i}].entrypoint must be module.path:function (got '{tool_ep}')"
+                    )
+        elif len(tools) == 1:
+            # Single tool: package-level entrypoint OR tool-level entrypoint
+            tool_ep = tools[0].get("entrypoint", "")
+            if tool_ep and not ENTRYPOINT_PATTERN_V2.match(tool_ep):
+                errors.append(
+                    f"tools[0].entrypoint must be module.path:function (got '{tool_ep}')"
+                )
+            if not tool_ep and not pkg_entrypoint:
+                errors.append("Either package-level or tool-level entrypoint is required")
+        else:
+            # 0 tools — package-level entrypoint required (will be caught by tools validation)
+            if not pkg_entrypoint:
+                errors.append("Package-level entrypoint required when no tools define their own")
+
+    else:
+        # v0.1: package-level entrypoint required, old format
+        if not pkg_entrypoint:
+            errors.append("entrypoint is required (e.g. 'my_pack.tool')")
+        elif not ENTRYPOINT_PATTERN_V1.match(pkg_entrypoint):
+            errors.append(f"entrypoint must be a valid Python module path (got '{pkg_entrypoint}')")
 
 
 def validate_artifact_quality(artifact_bytes: bytes, slug: str) -> tuple[list[str], list[str]]:

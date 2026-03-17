@@ -1,11 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
-export default function RegisterPage() {
+function RegisterContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const returnTo = searchParams.get("returnTo") || "/dashboard";
+
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -32,19 +35,14 @@ export default function RegisterPage() {
       }
 
       // Auto-login after registration
-      const loginRes = await fetch("/api/v1/auth/login", {
+      await fetch("/api/v1/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ email, password }),
       });
 
-      if (loginRes.ok) {
-        const loginData = await loginRes.json();
-        localStorage.setItem("access_token", loginData.access_token);
-        localStorage.setItem("refresh_token", loginData.refresh_token);
-      }
-
-      router.push("/dashboard");
+      router.push(returnTo);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -52,15 +50,25 @@ export default function RegisterPage() {
     }
   }
 
+  const loginHref = returnTo !== "/dashboard"
+    ? `/auth/login?returnTo=${encodeURIComponent(returnTo)}`
+    : "/auth/login";
+
   return (
     <div className="mx-auto max-w-md px-6 py-24">
       <h1 className="mb-2 text-2xl font-bold text-foreground">Create account</h1>
       <p className="mb-8 text-sm text-muted">
         Already have an account?{" "}
-        <Link href="/auth/login" className="text-primary hover:underline">
+        <Link href={loginHref} className="text-primary hover:underline">
           Sign in
         </Link>
       </p>
+
+      {returnTo !== "/dashboard" && (
+        <div className="mb-6 rounded-md border border-primary/30 bg-primary/5 px-4 py-3 text-sm text-muted">
+          Create an account to publish your capability on AgentNode.
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
@@ -117,5 +125,13 @@ export default function RegisterPage() {
         </button>
       </form>
     </div>
+  );
+}
+
+export default function RegisterPage() {
+  return (
+    <Suspense fallback={<div className="py-24 text-center text-muted">Loading...</div>}>
+      <RegisterContent />
+    </Suspense>
   );
 }

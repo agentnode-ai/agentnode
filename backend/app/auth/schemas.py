@@ -44,11 +44,16 @@ class TokenResponse(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str | None = None  # Optional: can come from httpOnly cookie
 
 
 class RefreshResponse(BaseModel):
     access_token: str
+    refresh_token: str | None = None  # Returned for CLI clients
+
+
+class LogoutResponse(BaseModel):
+    message: str
 
 
 class CreateApiKeyRequest(BaseModel):
@@ -68,16 +73,106 @@ class MeResponse(BaseModel):
     username: str
     publisher: dict | None
     two_factor_enabled: bool
+    is_admin: bool = False
 
 
 class Setup2FAResponse(BaseModel):
     secret: str
-    qr_uri: str
+    provisioning_uri: str
 
 
 class Verify2FARequest(BaseModel):
-    totp_code: str
+    code: str
 
 
 class Verify2FAResponse(BaseModel):
     two_factor_enabled: bool
+
+
+class ApiKeyListItem(BaseModel):
+    id: UUID
+    key_prefix: str
+    label: str | None
+    created_at: str
+    last_used_at: str | None
+
+
+class ApiKeyListResponse(BaseModel):
+    keys: list[ApiKeyListItem]
+
+
+# --- Sprint 2: Account management ---
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
+
+
+class ChangePasswordResponse(BaseModel):
+    message: str
+
+
+class RequestPasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class RequestPasswordResetResponse(BaseModel):
+    message: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
+
+
+class ResetPasswordResponse(BaseModel):
+    message: str
+
+
+class RequestEmailVerificationResponse(BaseModel):
+    message: str
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str
+
+
+class VerifyEmailResponse(BaseModel):
+    email_verified: bool
+
+
+class UpdateProfileRequest(BaseModel):
+    username: str | None = None
+    email: EmailStr | None = None
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        v = v.lower()
+        if not re.match(r"^[a-z0-9_-]{3,30}$", v):
+            raise ValueError("Username must be 3-30 chars, only lowercase letters, digits, hyphens, underscores")
+        return v
+
+
+class UpdateProfileResponse(BaseModel):
+    id: UUID
+    email: str
+    username: str
+    email_verified: bool

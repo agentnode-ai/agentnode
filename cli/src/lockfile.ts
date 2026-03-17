@@ -6,11 +6,18 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
+export interface ToolEntry {
+  name: string;
+  entrypoint: string;
+  capability_id: string;
+}
+
 export interface LockEntry {
   version: string;
   package_type: string;
   entrypoint: string;
   capability_ids: string[];
+  tools: ToolEntry[];
   artifact_hash: string;
   installed_at: string;
   source: string;
