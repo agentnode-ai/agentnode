@@ -5,11 +5,10 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
 const navLinks = [
+  { href: "/import", label: "Import Tool", highlight: true },
   { href: "/search", label: "Search" },
-  { href: "/capabilities", label: "Capabilities" },
   { href: "/for-developers", label: "For Developers" },
   { href: "/publish", label: "Publish" },
-  { href: "/import", label: "Import" },
   { href: "/docs", label: "Docs" },
   { href: "https://github.com/agentnode-ai/agentnode", label: "GitHub", external: true },
 ];
@@ -73,9 +72,11 @@ export default function Navbar() {
                 key={link.href}
                 href={link.href}
                 className={`rounded-md px-3 py-2 text-sm transition-colors ${
-                  isActive
-                    ? "text-foreground bg-card"
-                    : "text-muted hover:text-foreground"
+                  (link as any).highlight && !isActive
+                    ? "text-primary font-medium hover:text-primary/80"
+                    : isActive
+                      ? "text-foreground bg-card"
+                      : "text-muted hover:text-foreground"
                 }`}
               >
                 {link.label}
