@@ -71,9 +71,10 @@ Add to `.cursor/mcp.json`:
 ## How It Works
 
 1. You install AgentNode packs via `agentnode install <pack>`
-2. `agentnode-mcp` wraps each pack's `run()` function as an MCP tool
-3. Any MCP client can discover and call these tools
-4. Parameters are automatically extracted from function signatures
+2. `agentnode-mcp` reads the lockfile and exposes each tool as an MCP tool
+3. v0.2 multi-tool packs expose individual tools (e.g., `csv-analyzer-pack/describe`, `csv-analyzer-pack/filter`)
+4. v0.1 packs expose a single tool using the pack's `run()` function
+5. Any MCP client can discover and call these tools
 
 ## License
 

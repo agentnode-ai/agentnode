@@ -41,20 +41,21 @@ const publishSteps = [
     title: "Define your tool",
     description:
       "Describe what your tool does, what it needs, and how agents can use it.",
-    code: `manifest_version: "0.1"
+    code: `manifest_version: "0.2"
 package_id: "github-integration-pack"
 name: "GitHub Integration Pack"
+entrypoint: "github_integration_pack.tool"
 
 capabilities:
   tools:
-    - capability_id: "github_integration"
-      description: "Create issues, review PRs, manage repos"
-      input_schema:
-        type: "object"
-        properties:
-          token: { type: "string" }
-          operation: { type: "string" }
-        required: ["token", "operation"]
+    - name: "create_issue"
+      capability_id: "github_integration"
+      description: "Create a new GitHub issue"
+      entrypoint: "github_integration_pack.tool:create_issue"
+    - name: "list_repos"
+      capability_id: "github_integration"
+      description: "List user repositories"
+      entrypoint: "github_integration_pack.tool:list_repos"
 
 permissions:
   network: { level: "unrestricted" }

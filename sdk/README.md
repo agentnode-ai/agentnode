@@ -12,6 +12,7 @@ pip install agentnode-sdk
 
 ```python
 from agentnode_sdk import AgentNodeClient
+from agentnode_sdk.installer import load_tool
 
 client = AgentNodeClient(api_key="ank_...")
 
@@ -25,16 +26,14 @@ resolved = client.resolve(
     capabilities=["pdf_extraction"],
     framework="langchain",
 )
-for pkg in resolved.results:
-    print(f"{pkg.slug} v{pkg.version} (score: {pkg.score})")
 
-# Get package details
-detail = client.get_package("pdf-reader-pack")
-print(f"{detail.name} — downloads: {detail.download_count}")
+# v0.2: Load specific tools from multi-tool packs
+describe = load_tool("csv-analyzer-pack", tool_name="describe")
+result = describe({"file_path": "data.csv"})
 
-# Get install metadata
-meta = client.get_install_metadata("pdf-reader-pack")
-print(f"Runtime: {meta.runtime}, Entrypoint: {meta.entrypoint}")
+# Single-tool packs — no tool_name needed
+extract = load_tool("pdf-reader-pack")
+pdf = extract({"file_path": "report.pdf"})
 ```
 
 ## API Reference
@@ -50,6 +49,7 @@ The main client with typed return models.
 | `get_package(slug)` | Get package details |
 | `get_install_metadata(slug)` | Get install info (artifact, permissions, deps) |
 | `download(slug)` | Track download and get artifact URL |
+| `load_tool(slug, tool_name=)` | Load a tool function from an installed pack (v0.2) |
 
 ### `AgentNode`
 

@@ -16,10 +16,10 @@ $ agentnode search "pdf extraction"
   Capabilities: pdf_extraction, document_summary
   Frameworks: langchain, crewai, generic
 
-$ agentnode install pdf-reader-pack
+$ agentnode install csv-analyzer-pack
 
-  Installed: pdf-reader-pack@1.2.0
-  Entrypoint: from pdf_reader_pack import tool
+  Installed: csv-analyzer-pack@1.1.0
+  Tools: describe, head, columns, filter_rows
 ```
 
 ## What AgentNode Does
@@ -52,11 +52,14 @@ pip install agentnode-sdk
 
 ```python
 from agentnode_sdk import AgentNodeClient
+from agentnode_sdk.installer import load_tool
 
 client = AgentNodeClient(api_key="ank_...")
 results = client.search("pdf extraction")
-resolved = client.resolve(["pdf_extraction"], framework="langchain")
-policy = client.check_policy("pdf-reader-pack")
+
+# v0.2: Load specific tools from multi-tool packs
+describe = load_tool("csv-analyzer-pack", tool_name="describe")
+result = describe({"file_path": "data.csv"})
 ```
 
 ### MCP Integration
@@ -102,7 +105,7 @@ agentnode/
 
 ### ANP Format
 
-Every package has an `agentnode.yaml` manifest declaring identity, capabilities, permissions, framework compatibility, and trust metadata. This is the native package format for the registry.
+Every package has an `agentnode.yaml` manifest declaring identity, capabilities, permissions, framework compatibility, and trust metadata. ANP v0.2 supports multi-tool packs where each tool has its own entrypoint (`module.path:function`) and typed input/output schemas.
 
 ### Resolution Engine
 

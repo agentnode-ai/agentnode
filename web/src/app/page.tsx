@@ -113,9 +113,9 @@ export default function HomePage() {
                 Same interface everywhere
               </h3>
               <p className="text-sm leading-relaxed text-muted">
-                Every ANP package exposes the same{" "}
-                <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">run()</code>{" "}
-                interface. Same contract, consistent behavior, no surprises.
+                Every ANP package exposes typed tool functions via{" "}
+                <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">load_tool()</code>{" "}
+                — one pack can provide multiple tools, each individually addressable.
               </p>
             </div>
             <div className="rounded-xl border border-border bg-card p-6 text-center">
@@ -340,22 +340,26 @@ export default function HomePage() {
             </div>
             <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-gray-300">
               <code>{`from agentnode_sdk import AgentNodeClient
+from agentnode_sdk.installer import load_tool
 
 client = AgentNodeClient(api_key="ank_...")
 
 # Agent finds and installs what it needs
-result = client.resolve_and_install(["pdf_extraction"])
+client.resolve_and_install(["pdf_extraction", "csv_analysis"])
 
-# Same interface across all packages
-tool = client.load_tool("pdf-reader-pack")
-data = tool.run("report.pdf")
-print(data["text"])`}</code>
+# v0.2: Load specific tools from multi-tool packs
+describe = load_tool("csv-analyzer-pack", tool_name="describe")
+result = describe({"file_path": "data.csv"})
+
+# Single-tool packs work the same way
+extract = load_tool("pdf-reader-pack")
+pdf = extract({"file_path": "report.pdf"})`}</code>
             </pre>
           </div>
           <p className="mt-4 text-center text-sm text-muted">
             Every package follows the{" "}
-            <span className="text-foreground font-medium">ANP contract</span>.
-            No custom adapters, no framework-specific code.
+            <span className="text-foreground font-medium">ANP v0.2 format</span>.
+            Multi-tool packs, typed schemas, no framework-specific code.
           </p>
         </div>
       </section>

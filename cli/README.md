@@ -48,6 +48,18 @@ agentnode validate agentnode.yaml
 | `doctor` | Diagnose environment problems |
 | `login` | Authenticate with the registry |
 
+## ANP v0.2 Support
+
+The CLI fully supports ANP v0.2 multi-tool packs. When installing a v0.2 pack, the lockfile records individual tool entrypoints:
+
+```bash
+$ agentnode install csv-analyzer-pack
+
+Installing csv-analyzer-pack@1.1.0...
+  Tools: describe, head, columns, filter_rows
+  Lockfile updated with per-tool entrypoints
+```
+
 ## Configuration
 
 The CLI stores configuration in `~/.agentnode/config.json`:
