@@ -611,9 +611,9 @@ capabilities:
 # === DISCOVERY ===
 tags: ["pdf", "extraction", "documents"]
 categories: ["document-processing"]
-# === COMPATIBILITY (Pflicht, min 1 framework) ===
+# === COMPATIBILITY (auto-defaults to ["generic"]) ===
 compatibility:
-  frameworks: ["langchain", "crewai", "mcp", "generic"]
+  frameworks: ["generic"]
   python: ">=3.10"
 # === DEPENDENCIES (optional) ===
 dependencies: []
@@ -1637,7 +1637,7 @@ Each package is stored as a single document. This is the exact JSON structure wr
   "tags": ["pdf", "extraction", "documents"],
   "publisher_name": "dev-marco",
   "package_type": "toolpack",
-  "frameworks": ["langchain", "crewai", "generic"],
+  "frameworks": ["generic"],
   "runtime": "python",
   "trust_level": "verified",
   "is_deprecated": false,

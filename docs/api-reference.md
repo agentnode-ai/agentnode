@@ -179,7 +179,7 @@ Fields: `manifest` (JSON string), `artifact` (.tar.gz file, max 50MB).
     "capabilities": [{ "name": "extract_pdf_text", "capability_id": "pdf_extraction", "description": "..." }],
     "recommended_for": [{ "agent_type": "legal-assistant", "missing_capability": "pdf_extraction" }],
     "install": { "cli_command": "agentnode install pdf-reader-pack", "entrypoint": "pdf_reader_pack.tool" },
-    "compatibility": { "frameworks": ["langchain", "crewai", "generic"], "python": ">=3.10" },
+    "compatibility": { "frameworks": ["generic"], "python": ">=3.10" },
     "permissions": { "network_level": "none", "filesystem_level": "temp", "code_execution_level": "none" },
     "performance": { "download_count": 42, "review_count": 5, "avg_rating": 4.2 },
     "trust": { "publisher_trust_level": "unverified", "signature_present": false, "security_findings_count": 0 }

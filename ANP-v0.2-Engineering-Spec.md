@@ -910,7 +910,7 @@ capabilities:
 
 tags: ["csv", "analysis", "data"]
 compatibility:
-  frameworks: ["generic", "langchain"]
+  frameworks: ["generic"]
 ```
 
 Everything else gets defaults: runtime=python, permissions=all none, etc.

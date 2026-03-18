@@ -33,7 +33,7 @@ VALID_MANIFEST = {
         "prompts": [],
     },
     "compatibility": {
-        "frameworks": ["langchain", "crewai"],
+        "frameworks": ["generic"],
         "python": ">=3.10",
     },
     "permissions": {

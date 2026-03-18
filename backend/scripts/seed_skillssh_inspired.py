@@ -365,7 +365,7 @@ async def seed():
             })
 
             # Compatibility rules
-            for fw in ["langchain", "crewai", "generic"]:
+            for fw in ["generic"]:
                 await conn.execute(text(
                     "INSERT INTO compatibility_rules "
                     "(package_version_id, framework, runtime_version) "
@@ -387,7 +387,7 @@ async def seed():
                 "runtime": runtime,
                 "capability_ids": cap_ids,
                 "tags": [],
-                "frameworks": ["langchain", "crewai", "generic"],
+                "frameworks": ["generic"],
                 "download_count": 0,
                 "is_deprecated": False,
             }

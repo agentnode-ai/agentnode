@@ -27,7 +27,7 @@ PACKS = [
         "capabilities": [
             {"name": "extract_pdf_text", "capability_id": "pdf_extraction", "type": "tool"}
         ],
-        "frameworks": ["langchain", "crewai", "generic"],
+        "frameworks": ["generic"],
         "permissions": {
             "network": "none", "filesystem": "temp",
             "code_execution": "none", "data_access": "input_only",
@@ -47,7 +47,7 @@ PACKS = [
         "capabilities": [
             {"name": "search_web", "capability_id": "web_search", "type": "tool"}
         ],
-        "frameworks": ["langchain", "crewai", "generic"],
+        "frameworks": ["generic"],
         "permissions": {
             "network": "restricted", "filesystem": "none",
             "code_execution": "none", "data_access": "input_only",
@@ -67,7 +67,7 @@ PACKS = [
         "capabilities": [
             {"name": "extract_webpage", "capability_id": "webpage_extraction", "type": "tool"}
         ],
-        "frameworks": ["langchain", "crewai", "generic"],
+        "frameworks": ["generic"],
         "permissions": {
             "network": "unrestricted", "filesystem": "none",
             "code_execution": "none", "data_access": "input_only",

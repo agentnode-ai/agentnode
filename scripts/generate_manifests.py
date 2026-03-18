@@ -358,7 +358,7 @@ def generate_manifest(pack_dir: str, pack_slug: str) -> str:
 
     # Compatibility
     lines.append("compatibility:")
-    lines.append('  frameworks: ["langchain", "crewai", "generic"]')
+    lines.append('  frameworks: ["generic"]')
     lines.append('  python: ">=3.10"')
     if deps:
         lines.append("  dependencies:")

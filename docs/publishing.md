@@ -66,7 +66,7 @@ tags: ["my-tag", "another-tag"]
 categories: ["document-processing"]
 
 compatibility:
-  frameworks: ["langchain", "crewai", "generic"]
+  frameworks: ["generic"]
   python: ">=3.10"
 
 dependencies: []

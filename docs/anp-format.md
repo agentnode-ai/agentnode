@@ -28,7 +28,7 @@ An ANP package consists of:
 | `hosting_type` | enum | `agentnode_hosted` (MVP only) |
 | `entrypoint` | string | Python import path (e.g., `my_pack.tool`) |
 | `capabilities.tools` | array | At least 1 tool required |
-| `compatibility.frameworks` | array | At least 1 framework |
+| `compatibility.frameworks` | array | Auto-defaults to `["generic"]` |
 | `permissions` | object | All sub-fields required |
 
 ### Capabilities
@@ -79,7 +79,7 @@ permissions:
 
 ```yaml
 compatibility:
-  frameworks: ["langchain", "crewai", "generic"]
+  frameworks: ["generic"]
   python: ">=3.10"
 ```
 
@@ -128,7 +128,7 @@ security:
 - `hosting_type` must be `"agentnode_hosted"` (MVP)
 - Each tool's `capability_id` must exist in the capability taxonomy
 - Each tool's `input_schema` must be valid JSON Schema
-- `compatibility.frameworks` must have at least 1 entry
+- `compatibility.frameworks` defaults to `["generic"]` if omitted (auto-set by backend)
 - `pyproject.toml` version must match manifest version
 
 ## Slug vs. Entrypoint
