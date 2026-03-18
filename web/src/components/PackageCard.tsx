@@ -1,5 +1,6 @@
 import Link from "next/link";
 import TrustBadge from "./TrustBadge";
+import VerificationBadge from "./VerificationBadge";
 
 interface PackageCardProps {
   slug: string;
@@ -9,6 +10,7 @@ interface PackageCardProps {
   frameworks: string[];
   version?: string;
   download_count?: number;
+  verification_status?: string | null;
 }
 
 function formatDownloads(count: number): string {
@@ -25,6 +27,7 @@ export default function PackageCard({
   frameworks,
   version,
   download_count,
+  verification_status,
 }: PackageCardProps) {
   return (
     <Link
@@ -40,7 +43,10 @@ export default function PackageCard({
             <span className="text-xs text-muted">v{version}</span>
           )}
         </div>
-        <TrustBadge level={trust_level} />
+        <div className="flex items-center gap-1.5 shrink-0">
+          <VerificationBadge status={verification_status} />
+          <TrustBadge level={trust_level} />
+        </div>
       </div>
 
       <p className="text-sm leading-relaxed text-muted line-clamp-2">

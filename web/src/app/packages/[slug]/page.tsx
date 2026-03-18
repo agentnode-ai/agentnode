@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import TrustBadge from "@/components/TrustBadge";
+import VerificationBadge from "@/components/VerificationBadge";
+import VerificationPanel from "@/components/VerificationPanel";
 import CodeBlockWrapper from "./CodeBlockWrapper";
 
 interface PageProps {
@@ -98,6 +100,7 @@ export default async function PackageDetailPage({ params }: PageProps) {
                 {pkg.name}
               </h1>
               <TrustBadge level={publisher.trust_level ?? "unverified"} size="md" />
+              <VerificationBadge status={trust.verification_status} />
               <span className="rounded-md bg-card px-2.5 py-1 text-xs font-mono text-muted border border-border">
                 v{version}
               </span>
@@ -387,6 +390,9 @@ export default async function PackageDetailPage({ params }: PageProps) {
               )}
             </div>
           </section>
+
+          {/* Verification */}
+          <VerificationPanel slug={pkg.slug} />
 
           {/* Trust */}
           <section className="rounded-xl border border-border bg-card p-4 sm:p-6">

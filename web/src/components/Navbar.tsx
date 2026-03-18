@@ -5,7 +5,8 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
 const navLinks = [
-  { href: "/import", label: "Import Tool", highlight: true },
+  { href: "/import", label: "Import" },
+  { href: "/builder", label: "Builder" },
   { href: "/search", label: "Search" },
   { href: "/for-developers", label: "For Developers" },
   { href: "/publish", label: "Publish" },

@@ -9,7 +9,7 @@ const starterPacks = [
     name: "pdf-reader-pack",
     summary: "Extract text, tables, and metadata from PDF documents with high fidelity.",
     trust_level: "trusted" as const,
-    frameworks: ["langchain", "crewai"],
+    frameworks: ["generic"],
     version: "1.2.0",
   },
   {
@@ -25,7 +25,7 @@ const starterPacks = [
     name: "webpage-extractor-pack",
     summary: "Extract clean text and metadata from any webpage for your AI agent.",
     trust_level: "trusted" as const,
-    frameworks: ["langchain", "crewai", "generic"],
+    frameworks: ["generic"],
     version: "1.0.0",
   },
 ];
@@ -56,14 +56,22 @@ export default function HomePage() {
                 (AgentNode Package)
               </p>
 
-              <div className="animate-fade-in-delay-2 mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
+              <div className="animate-fade-in-delay-2 mt-8 flex flex-col gap-3">
                 <CopyInstallButton />
-                <Link
-                  href="/search"
-                  className="inline-flex h-11 items-center justify-center rounded-lg border border-border px-6 text-sm font-medium text-foreground transition-colors hover:bg-card"
-                >
-                  Browse Capabilities
-                </Link>
+                <div className="flex flex-wrap gap-3">
+                  <Link
+                    href="/docs#installation"
+                    className="inline-flex h-11 items-center justify-center rounded-lg bg-primary px-6 text-sm font-medium text-white transition-colors hover:bg-primary/90"
+                  >
+                    Get Started
+                  </Link>
+                  <Link
+                    href="/search"
+                    className="inline-flex h-11 items-center justify-center rounded-lg border border-border px-6 text-sm font-medium text-foreground transition-colors hover:bg-card"
+                  >
+                    Browse Capabilities
+                  </Link>
+                </div>
               </div>
             </div>
 
@@ -240,7 +248,7 @@ export default function HomePage() {
             From missing capability to working tool
           </h2>
           <p className="mx-auto mb-14 max-w-2xl text-center text-muted">
-            Install the SDK once. Your agent handles the rest.
+            Set up once. Your agent handles the rest.
           </p>
 
           <div className="mx-auto max-w-3xl space-y-10">
@@ -389,12 +397,12 @@ pdf = extract({"file_path": "report.pdf"})`}</code>
             </div>
             <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
               <h3 className="mb-2 text-base font-semibold text-foreground">
-                Trust-first security
+                Verified on publish
               </h3>
               <p className="text-sm leading-relaxed text-muted">
-                Every package declares permissions, gets security-scanned, and
-                earns trust tiers. Agents enforce policies before any
-                install happens.
+                Every package is installed, imported, and smoke-tested
+                before it reaches your agent. Broken tools are quarantined
+                automatically.
               </p>
             </div>
             <div className="rounded-xl border border-primary/30 bg-primary/5 p-6">
@@ -436,6 +444,79 @@ pdf = extract({"file_path": "report.pdf"})`}</code>
               </p>
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* ============================================================ */}
+      {/*  VERIFICATION — Tools that actually work                     */}
+      {/* ============================================================ */}
+      <section className="border-b border-border">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
+          <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
+            Tools that actually work
+          </h2>
+          <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
+            Every package is verified on publish. We don&apos;t just list tools &mdash; we install them,
+            load them, and run them. Broken packages never reach your agent.
+          </p>
+
+          {/* 4-step visual */}
+          <div className="mx-auto max-w-3xl grid grid-cols-4 gap-3 mb-10">
+            {[
+              { icon: "\u2714", label: "Install", desc: "Clean environment" },
+              { icon: "\u2714", label: "Import", desc: "Entrypoints valid" },
+              { icon: "\u2714", label: "Smoke", desc: "Tools callable" },
+              { icon: "\u2714", label: "Tests", desc: "Suite passes" },
+            ].map((step) => (
+              <div key={step.label} className="flex flex-col items-center gap-2 rounded-xl border border-green-500/20 bg-green-500/5 p-4">
+                <span className="text-lg text-green-400">{step.icon}</span>
+                <span className="text-sm font-medium text-foreground">{step.label}</span>
+                <span className="text-[11px] text-muted text-center">{step.desc}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="mx-auto max-w-3xl grid gap-6 sm:grid-cols-2">
+            <div className="rounded-xl border border-border bg-card p-6">
+              <h3 className="mb-3 text-base font-semibold text-foreground">
+                What happens if something breaks
+              </h3>
+              <ul className="space-y-2">
+                <li className="flex items-start gap-2 text-sm text-muted">
+                  <span className="text-red-400 mt-0.5 shrink-0">&bull;</span>
+                  <span>Install or import fails &rarr; package is <span className="text-red-400 font-medium">automatically quarantined</span></span>
+                </li>
+                <li className="flex items-start gap-2 text-sm text-muted">
+                  <span className="text-yellow-400 mt-0.5 shrink-0">&bull;</span>
+                  <span>Smoke or test issues &rarr; shown transparently as <span className="text-yellow-400 font-medium">warning</span></span>
+                </li>
+              </ul>
+            </div>
+            <div className="rounded-xl border border-border bg-card p-6">
+              <h3 className="mb-3 text-base font-semibold text-foreground">
+                Why it matters
+              </h3>
+              <ul className="space-y-2">
+                <li className="flex items-start gap-2 text-sm text-muted">
+                  <span className="text-green-400 mt-0.5 shrink-0">&#10004;</span>
+                  You only install tools that actually load
+                </li>
+                <li className="flex items-start gap-2 text-sm text-muted">
+                  <span className="text-green-400 mt-0.5 shrink-0">&#10004;</span>
+                  You see issues before they hit your agent
+                </li>
+                <li className="flex items-start gap-2 text-sm text-muted">
+                  <span className="text-green-400 mt-0.5 shrink-0">&#10004;</span>
+                  No more debugging broken integrations
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <p className="mt-8 text-center text-sm text-muted">
+            A registry is only useful if the tools inside it work.{" "}
+            <span className="text-foreground font-medium">AgentNode makes sure they do.</span>
+          </p>
         </div>
       </section>
 
@@ -499,15 +580,14 @@ pdf = extract({"file_path": "report.pdf"})`}</code>
               Start upgrading your agents
             </h2>
             <p className="mt-4 max-w-xl text-muted">
-              Install the SDK, resolve your first capability gap, and let your
-              agents handle the rest.
+              Resolve your first capability gap and let your agents handle the rest.
             </p>
             <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row">
               <Link
-                href="/docs"
+                href="/docs#installation"
                 className="inline-flex h-12 items-center justify-center rounded-lg bg-primary px-8 text-sm font-medium text-white transition-colors hover:bg-primary/90"
               >
-                Install SDK
+                Get Started
               </Link>
               <Link
                 href="/search"
@@ -516,22 +596,22 @@ pdf = extract({"file_path": "report.pdf"})`}</code>
                 Explore Capabilities
               </Link>
             </div>
-            <div className="mt-8 flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-sm text-muted">
-              <code className="rounded border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground">
-                pip install agentnode-sdk
-              </code>
-              <span>·</span>
-              <code className="rounded border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground">
-                npm install -g agentnode-cli
-              </code>
-              <span>·</span>
-              <code className="rounded border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground">
-                pip install agentnode-langchain
-              </code>
-              <span>·</span>
-              <code className="rounded border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground">
-                pip install agentnode-mcp
-              </code>
+            <div className="mt-10 mx-auto grid max-w-4xl gap-3 sm:grid-cols-3">
+              <div className="rounded-lg border border-border bg-card px-5 py-3 text-center">
+                <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">Python &middot; for agents &amp; apps</div>
+                <code className="whitespace-nowrap font-mono text-xs text-foreground">pip install agentnode-sdk</code>
+              </div>
+              <div className="rounded-lg border border-border bg-card px-5 py-3 text-center">
+                <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">Terminal &middot; install &amp; publish</div>
+                <code className="whitespace-nowrap font-mono text-xs text-foreground">npm install -g agentnode-cli</code>
+              </div>
+              <div className="rounded-lg border border-border bg-card px-5 py-3 text-center">
+                <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">Frameworks &middot; LangChain, MCP</div>
+                <code className="whitespace-nowrap font-mono text-xs text-foreground">pip install agentnode-langchain</code>
+                <div className="mt-0.5">
+                  <code className="whitespace-nowrap font-mono text-xs text-foreground">pip install agentnode-mcp</code>
+                </div>
+              </div>
             </div>
           </div>
         </div>

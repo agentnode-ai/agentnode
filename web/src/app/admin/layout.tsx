@@ -26,6 +26,7 @@ const navItems = [
   { href: "/admin/capabilities", label: "Capabilities", icon: "⚙" },
   { href: "/admin/installations", label: "Installations", icon: "↓" },
   { href: "/admin/email", label: "Email / SMTP", icon: "✉" },
+  { href: "/admin/api-keys", label: "API Keys", icon: "🔑" },
   { href: "/admin/audit", label: "Audit Log", icon: "☰" },
 ];
 

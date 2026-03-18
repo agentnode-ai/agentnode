@@ -509,8 +509,8 @@ export default function ImportPage() {
                   <div className="mt-1 text-sm text-muted">Capability IDs</div>
                 </div>
                 <div className="rounded-xl border border-border bg-card p-6 text-center">
-                  <div className="text-3xl font-bold text-foreground">4</div>
-                  <div className="mt-1 text-sm text-muted">Supported frameworks</div>
+                  <div className="text-3xl font-bold text-foreground">All</div>
+                  <div className="mt-1 text-sm text-muted">Frameworks supported</div>
                 </div>
               </div>
               <div className="mt-8 flex flex-wrap items-center justify-center gap-4 text-sm text-muted">
@@ -619,10 +619,11 @@ function convertClientSide(platform: string, content: string): string {
   } else {
     // Python-based: extract def/class patterns
     const defRegex = /def\s+(\w+)\s*\([^)]*\)(?:\s*->[^:]+)?:\s*\n\s*"""([^"]*?)"""/g;
-    let m;
+    let m: RegExpExecArray | null;
     while ((m = defRegex.exec(content)) !== null) {
-      if (!["run", "__init__", "setUp", "test_"].some((skip) => m[1].startsWith(skip))) {
-        tools.push({ name: m[1], description: m[2].trim().split("\n")[0] });
+      const match = m;
+      if (!["run", "__init__", "setUp", "test_"].some((skip) => match[1].startsWith(skip))) {
+        tools.push({ name: match[1], description: match[2].trim().split("\n")[0] });
       }
     }
     const classRegex = /class\s+(\w+)\s*\([^)]*Tool[^)]*\)[\s\S]*?name\s*[:=]\s*["']([^"']+)["'][\s\S]*?description\s*[:=]\s*["']([^"']+)["']/g;
@@ -666,8 +667,6 @@ capabilities:
 ${capTools}
 compatibility:
   frameworks:
-    - langchain
-    - crewai
     - generic
 tags: [${tools.map((t) => `"${t.name}"`).join(", ")}]`;
 }

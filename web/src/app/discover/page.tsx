@@ -81,6 +81,7 @@ export default async function DiscoverPage() {
                 frameworks={pkg.frameworks}
                 version={pkg.latest_version ?? undefined}
                 download_count={pkg.download_count}
+                verification_status={pkg.verification_status}
               />
             ))}
           </div>
@@ -110,6 +111,7 @@ export default async function DiscoverPage() {
                 frameworks={pkg.frameworks}
                 version={pkg.latest_version ?? undefined}
                 download_count={pkg.download_count}
+                verification_status={pkg.verification_status}
               />
             ))}
           </div>

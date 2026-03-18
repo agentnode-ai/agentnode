@@ -15,6 +15,7 @@ export interface SearchHit {
   frameworks: string[];
   download_count: number;
   is_deprecated: boolean;
+  verification_status: string | null;
 }
 
 export interface SearchResponse {

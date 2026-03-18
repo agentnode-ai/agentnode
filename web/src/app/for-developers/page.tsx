@@ -62,7 +62,7 @@ permissions:
   filesystem: { level: "none" }
 
 compatibility:
-  frameworks: ["langchain", "crewai", "generic"]`,
+  frameworks: ["generic"]`,
   },
   {
     step: 3,
@@ -418,9 +418,9 @@ export default function ForDevelopersPage() {
               </p>
             </div>
             <div className="rounded-lg border border-border bg-card p-5">
-              <h3 className="mb-1 text-sm font-semibold text-foreground">Compatibility</h3>
+              <h3 className="mb-1 text-sm font-semibold text-foreground">Cross-framework</h3>
               <p className="text-sm leading-relaxed text-muted">
-                Declare which frameworks your package supports for targeted discovery.
+                Every ANP package works across all frameworks automatically — LangChain, CrewAI, MCP, and more.
               </p>
             </div>
             <div className="rounded-lg border border-border bg-card p-5">
@@ -520,22 +520,22 @@ export default function ForDevelopersPage() {
                 Read the Docs
               </Link>
             </div>
-            <div className="mt-8 flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-sm text-muted">
-              <code className="rounded border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground">
-                pip install agentnode-sdk
-              </code>
-              <span>&middot;</span>
-              <code className="rounded border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground">
-                npm install -g agentnode-cli
-              </code>
-              <span>&middot;</span>
-              <code className="rounded border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground">
-                pip install agentnode-langchain
-              </code>
-              <span>&middot;</span>
-              <code className="rounded border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground">
-                pip install agentnode-mcp
-              </code>
+            <div className="mt-10 mx-auto grid max-w-4xl gap-3 sm:grid-cols-3">
+              <div className="rounded-lg border border-border bg-card px-5 py-3 text-center">
+                <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">Python &middot; for agents &amp; apps</div>
+                <code className="whitespace-nowrap font-mono text-xs text-foreground">pip install agentnode-sdk</code>
+              </div>
+              <div className="rounded-lg border border-border bg-card px-5 py-3 text-center">
+                <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">Terminal &middot; install &amp; publish</div>
+                <code className="whitespace-nowrap font-mono text-xs text-foreground">npm install -g agentnode-cli</code>
+              </div>
+              <div className="rounded-lg border border-border bg-card px-5 py-3 text-center">
+                <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">Frameworks &middot; LangChain, MCP</div>
+                <code className="whitespace-nowrap font-mono text-xs text-foreground">pip install agentnode-langchain</code>
+                <div className="mt-0.5">
+                  <code className="whitespace-nowrap font-mono text-xs text-foreground">pip install agentnode-mcp</code>
+                </div>
+              </div>
             </div>
           </div>
         </div>
