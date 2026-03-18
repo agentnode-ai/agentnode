@@ -207,7 +207,7 @@ agentnode/
 ├── adapter-mcp/       # MCP server integration
 ├── web/               # Next.js frontend (agentnode.net)
 ├── action/            # GitHub Action for CI/CD publishing
-├── starter-packs/     # 76+ verified reference packages
+├── starter-packs/     # 89+ verified reference packages
 ├── docs/              # Documentation
 └── scripts/           # Tooling and seed scripts
 ```

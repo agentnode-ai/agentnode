@@ -501,11 +501,11 @@ export default function ImportPage() {
             <div className="mx-auto max-w-5xl px-4 sm:px-6 py-14">
               <div className="grid gap-6 sm:grid-cols-3">
                 <div className="rounded-xl border border-border bg-card p-6 text-center">
-                  <div className="text-3xl font-bold text-foreground">76+</div>
+                  <div className="text-3xl font-bold text-foreground">89+</div>
                   <div className="mt-1 text-sm text-muted">Published packages</div>
                 </div>
                 <div className="rounded-xl border border-border bg-card p-6 text-center">
-                  <div className="text-3xl font-bold text-foreground">97</div>
+                  <div className="text-3xl font-bold text-foreground">80+</div>
                   <div className="mt-1 text-sm text-muted">Capability IDs</div>
                 </div>
                 <div className="rounded-xl border border-border bg-card p-6 text-center">
