@@ -393,7 +393,7 @@ function generateManifest(
     },
     permissions: perms,
     compatibility: {
-      frameworks: ["langchain", "crewai", "generic"],
+      frameworks: ["generic"],
     },
     tags: [
       ...new Set(
