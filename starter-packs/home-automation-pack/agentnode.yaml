@@ -31,7 +31,7 @@ tags: ["home", "automation"]
 categories: ["productivity"]
 
 compatibility:
-  frameworks: ["langchain", "crewai", "generic"]
+  frameworks: ["generic"]
   python: ">=3.10"
   dependencies:
     - "httpx>=0.25"

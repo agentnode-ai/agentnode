@@ -32,7 +32,7 @@ tags: ["email", "drafter"]
 categories: ["communication"]
 
 compatibility:
-  frameworks: ["langchain", "crewai", "generic"]
+  frameworks: ["generic"]
   python: ">=3.10"
 
 permissions:

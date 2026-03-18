@@ -29,7 +29,7 @@ tags: ["text", "humanizer"]
 categories: ["language"]
 
 compatibility:
-  frameworks: ["langchain", "crewai", "generic"]
+  frameworks: ["generic"]
   python: ">=3.10"
 
 permissions:

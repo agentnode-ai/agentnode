@@ -29,7 +29,7 @@ tags: ["code", "refactor"]
 categories: ["development"]
 
 compatibility:
-  frameworks: ["langchain", "crewai", "generic"]
+  frameworks: ["generic"]
   python: ">=3.10"
   dependencies:
     - "rope>=1.10"

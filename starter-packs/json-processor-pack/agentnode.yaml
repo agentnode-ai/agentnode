@@ -30,7 +30,7 @@ tags: ["json", "processor"]
 categories: ["data-analysis"]
 
 compatibility:
-  frameworks: ["langchain", "crewai", "generic"]
+  frameworks: ["generic"]
   python: ">=3.10"
   dependencies:
     - "jmespath>=1.0"

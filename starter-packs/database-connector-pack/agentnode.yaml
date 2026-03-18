@@ -29,7 +29,7 @@ tags: ["database", "connector"]
 categories: ["data-analysis"]
 
 compatibility:
-  frameworks: ["langchain", "crewai", "generic"]
+  frameworks: ["generic"]
   python: ">=3.10"
   dependencies:
     - "sqlalchemy>=2.0"
