@@ -63,8 +63,10 @@ async def publish(
         artifact_bytes=artifact_bytes,
     )
 
-    # Schedule async security scan (does NOT block publish response)
+    # Schedule async security scan + verification (do NOT block publish response)
     background_tasks.add_task(run_security_scan, pv.id)
+    from app.verification.pipeline import run_verification
+    background_tasks.add_task(run_verification, pv.id)
 
     # Fire webhook event (after commit in publish_package)
     await fire_event(session, user.publisher.id, "version.published", {

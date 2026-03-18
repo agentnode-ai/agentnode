@@ -313,12 +313,19 @@ async def _get_package_version(session: AsyncSession, slug: str, version: str) -
     if not pkg:
         raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
 
-    ver_result = await session.execute(
-        select(PackageVersion).where(
-            PackageVersion.package_id == pkg.id,
-            PackageVersion.version_number == version,
+    if version == "latest":
+        if not pkg.latest_version_id:
+            raise AppError("VERSION_NOT_FOUND", "No latest version found", 404)
+        ver_result = await session.execute(
+            select(PackageVersion).where(PackageVersion.id == pkg.latest_version_id)
         )
-    )
+    else:
+        ver_result = await session.execute(
+            select(PackageVersion).where(
+                PackageVersion.package_id == pkg.id,
+                PackageVersion.version_number == version,
+            )
+        )
     pv = ver_result.scalar_one_or_none()
     if not pv:
         raise AppError("VERSION_NOT_FOUND", f"Version '{version}' not found", 404)
@@ -1514,6 +1521,86 @@ async def test_smtp_settings(
         raise AppError("SMTP_TEST_FAILED", "Failed to send test email. Check your SMTP settings and server logs.", 400)
 
 
+# --- API Keys Settings ---
+
+
+class ApiKeysRequest(BaseModel):
+    anthropic_api_key: str = ""
+
+
+@router.get("/settings/api-keys")
+async def get_api_keys(
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get current API key configuration (keys masked)."""
+    result = await session.execute(
+        select(SystemSetting).where(SystemSetting.key == "api_keys")
+    )
+    row = result.scalar_one_or_none()
+
+    def _mask(key: str) -> dict:
+        if not key:
+            return {"masked": "", "is_set": False}
+        if len(key) > 8:
+            return {"masked": key[:4] + "*" * (len(key) - 8) + key[-4:], "is_set": True}
+        return {"masked": "****", "is_set": True}
+
+    if row and row.value:
+        data = dict(row.value)
+        return {
+            "anthropic_api_key": _mask(data.get("anthropic_api_key", "")),
+            "source": "database",
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
+    # Fallback: show env var settings
+    from app.config import settings as app_settings
+    return {
+        "anthropic_api_key": _mask(app_settings.ANTHROPIC_API_KEY),
+        "source": "environment",
+        "updated_at": None,
+    }
+
+
+@router.put("/settings/api-keys", dependencies=[Depends(rate_limit(5, 60))])
+async def update_api_keys(
+    body: ApiKeysRequest,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Update API keys in the database."""
+    result = await session.execute(
+        select(SystemSetting).where(SystemSetting.key == "api_keys")
+    )
+    row = result.scalar_one_or_none()
+
+    value = {}
+
+    # If key is empty, keep old value
+    old_value = (row.value if row and row.value else {})
+
+    value["anthropic_api_key"] = body.anthropic_api_key if body.anthropic_api_key else old_value.get("anthropic_api_key", "")
+
+    if row:
+        row.value = value
+        row.updated_at = datetime.now(timezone.utc)
+    else:
+        row = SystemSetting(key="api_keys", value=value, updated_at=datetime.now(timezone.utc))
+        session.add(row)
+
+    await _audit(session, request, user, "update_api_keys", "system", "api_keys")
+    await session.commit()
+
+    # Reload settings into the running process
+    from app.config import settings as app_settings
+    if value.get("anthropic_api_key"):
+        app_settings.ANTHROPIC_API_KEY = value["anthropic_api_key"]
+
+    return {"message": "API keys updated", "source": "database"}
+
+
 @router.get("/installations")
 async def list_installations(
     page: int = Query(1, ge=1),
@@ -1589,3 +1676,29 @@ async def delete_installation(
     await session.delete(inst)
     await session.commit()
     return {"message": "Installation deleted."}
+
+
+# --- Verification re-trigger ---
+
+@router.post("/packages/{slug}/versions/{version}/reverify", dependencies=[Depends(rate_limit(10, 60))])
+async def reverify_version(
+    slug: str,
+    version: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Re-trigger verification pipeline for a specific version."""
+    pkg, pv = await _get_package_version(session, slug, version)
+
+    if not pv.artifact_object_key:
+        raise AppError("NO_ARTIFACT", "Version has no artifact to verify", 400)
+
+    await _audit(session, request, user, "reverify_version", "package", slug, {"version": version})
+    await session.commit()
+
+    from app.verification.pipeline import run_verification
+    import asyncio
+    asyncio.get_event_loop().create_task(run_verification(pv.id, triggered_by="admin_reverify"))
+
+    return {"message": f"Verification re-triggered for {slug}@{version}"}

@@ -16,6 +16,7 @@ from app.packages.models import (  # noqa: F401
     CompatibilityRule, Dependency, Permission, UpgradeMetadata,
     SecurityFinding, CapabilityTaxonomy,
 )
+from app.verification.models import VerificationResult  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)

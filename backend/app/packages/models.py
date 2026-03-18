@@ -84,6 +84,22 @@ class PackageVersion(Base, UUIDPrimaryKeyMixin):
     quarantined_at = Column(TIMESTAMP(timezone=True), nullable=True)
     quarantine_reason = Column(Text, nullable=True)
 
+    # Verification
+    verification_status = Column(
+        Enum("pending", "running", "passed", "failed", "error", "skipped",
+             name="verification_status", create_type=False),
+        nullable=False,
+        default="pending",
+        server_default="pending",
+    )
+    latest_verification_result_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("verification_results.id", ondelete="SET NULL", use_alter=True, name="fk_latest_verification_result"),
+        nullable=True,
+    )
+    verification_run_count = Column(Integer, nullable=False, default=0, server_default="0")
+    last_verified_at = Column(TIMESTAMP(timezone=True), nullable=True)
+
     # Lifecycle
     is_yanked = Column(Boolean, nullable=False, default=False)
     published_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default="now()")
@@ -97,6 +113,8 @@ class PackageVersion(Base, UUIDPrimaryKeyMixin):
     permissions = relationship("Permission", uselist=False, cascade="all, delete-orphan")
     upgrade_metadata = relationship("UpgradeMetadata", uselist=False, cascade="all, delete-orphan")
     security_findings = relationship("SecurityFinding", cascade="all, delete-orphan")
+    verification_results = relationship("VerificationResult", cascade="all, delete-orphan", foreign_keys="VerificationResult.package_version_id")
+    latest_verification_result = relationship("VerificationResult", foreign_keys=[latest_verification_result_id], post_update=True, uselist=False)
 
 
 class Capability(Base, UUIDPrimaryKeyMixin):

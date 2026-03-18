@@ -102,6 +102,7 @@ def assemble_package_detail(pkg: Package, version: PackageVersion | None) -> Pac
             signature_present=bool(version.signature),
             provenance_present=bool(version.source_repo_url),
             security_findings_count=len([f for f in version.security_findings if not f.is_resolved]),
+            verification_status=version.verification_status,
             last_updated=version.published_at,
         )
 

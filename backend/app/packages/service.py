@@ -57,6 +57,7 @@ def build_meili_document(pkg: Package, version: PackageVersion, manifest: dict) 
         "frameworks": frameworks,
         "download_count": pkg.download_count,
         "is_deprecated": pkg.is_deprecated,
+        "verification_status": version.verification_status,
         "published_at": version.published_at.isoformat() if version.published_at else None,
     }
 

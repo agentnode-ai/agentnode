@@ -1,11 +1,15 @@
-"""Background cron tasks for periodic email notifications.
+"""Background cron tasks for periodic email notifications and cleanup.
 
 Runs as asyncio tasks within the FastAPI process.
 No external scheduler needed.
 """
 
 import asyncio
+import glob
 import logging
+import os
+import shutil
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
@@ -178,6 +182,31 @@ async def send_weekly_publisher_digests():
         logger.exception("send_weekly_publisher_digests failed")
 
 
+# --- Task: Cleanup stale verification dirs (every hour) ---
+
+async def cleanup_stale_verification_dirs():
+    """Remove /tmp/agentnode_verify_* directories older than 30 minutes."""
+    try:
+        import tempfile
+        tmp_base = tempfile.gettempdir()
+        pattern = os.path.join(tmp_base, "agentnode_verify_*")
+        cutoff = time.time() - 1800  # 30 minutes ago
+        cleaned = 0
+
+        for path in glob.glob(pattern):
+            try:
+                if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+                    shutil.rmtree(path, ignore_errors=True)
+                    cleaned += 1
+            except Exception:
+                pass
+
+        if cleaned:
+            logger.info(f"Cleaned up {cleaned} stale verification dir(s)")
+    except Exception:
+        logger.exception("cleanup_stale_verification_dirs failed")
+
+
 # --- Scheduler loop ---
 
 async def _run_periodic(interval_seconds: int, func, name: str):
@@ -198,6 +227,19 @@ _tasks: list[asyncio.Task] = []
 
 def start_cron_tasks():
     """Start all background cron tasks. Call from the app lifespan."""
+    # Cleanup stale verification dirs from previous process (crash recovery)
+    try:
+        import tempfile
+        tmp_base = tempfile.gettempdir()
+        pattern = os.path.join(tmp_base, "agentnode_verify_*")
+        stale = [p for p in glob.glob(pattern) if os.path.isdir(p)]
+        for path in stale:
+            shutil.rmtree(path, ignore_errors=True)
+        if stale:
+            logger.info(f"Startup: cleaned up {len(stale)} stale verification dir(s)")
+    except Exception:
+        logger.warning("Startup: failed to cleanup stale verification dirs")
+
     loop = asyncio.get_event_loop()
 
     _tasks.append(loop.create_task(
@@ -208,6 +250,10 @@ def start_cron_tasks():
     ))
     _tasks.append(loop.create_task(
         _run_periodic(604800, send_weekly_publisher_digests, "weekly_publisher_digest")
+    ))
+
+    _tasks.append(loop.create_task(
+        _run_periodic(3600, cleanup_stale_verification_dirs, "verification_cleanup")
     ))
 
     logger.info(f"Started {len(_tasks)} cron tasks")

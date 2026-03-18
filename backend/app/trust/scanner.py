@@ -44,6 +44,11 @@ NETWORK_PATTERNS = [
     r'httpx\.', r'urllib\.request', r'socket\.',
 ]
 
+ENV_ACCESS_PATTERNS = [
+    r'os\.environ',              # os.environ["KEY"] or os.environ.get()
+    r'os\.getenv\(',             # os.getenv("KEY")
+]
+
 # Bandit severity mapping
 BANDIT_SEVERITY_MAP = {
     "HIGH": "high",
@@ -79,6 +84,14 @@ def _scan_content(content: str, file_path: str) -> list[dict]:
                     "finding_type": "undeclared_network_access",
                     "description": f"Network access pattern in {file_path}:{line_no}",
                     "category": "network",
+                })
+        for pattern in ENV_ACCESS_PATTERNS:
+            if re.search(pattern, line):
+                findings.append({
+                    "severity": "high",
+                    "finding_type": "env_harvesting",
+                    "description": f"Environment variable access in {file_path}:{line_no} — potential data exfiltration risk",
+                    "category": "env_access",
                 })
     return findings
 
@@ -148,10 +161,17 @@ def _extract_and_scan(artifact_bytes: bytes) -> list[dict]:
 
 async def run_security_scan(version_id: UUID) -> None:
     """Run security scan on a published package version.
-    Called as a background task after publish."""
+    Called as a background task after publish.
+
+    Scan layers:
+      1. Heuristic regex patterns (secrets, dangerous calls, network access)
+      2. Bandit AST analysis (if installed)
+      3. AI semantic analysis (for unverified/verified publishers, if API key set)
+    """
     try:
         async with async_session_factory() as session:
-            from app.packages.models import PackageVersion, Permission, SecurityFinding
+            from app.packages.models import Package, PackageVersion, Permission, SecurityFinding
+            from app.publishers.models import Publisher
 
             result = await session.execute(
                 select(PackageVersion).where(PackageVersion.id == version_id)
@@ -166,12 +186,16 @@ async def run_security_scan(version_id: UUID) -> None:
             perm = perm_result.scalar_one_or_none()
 
             raw_findings: list[dict] = []
+            artifact_code_files: dict[str, str] = {}  # for AI scan
 
-            # Scan artifact .py files
+            # --- Layer 1+2: Regex + Bandit scan ---
             if pv.artifact_object_key:
                 try:
                     from app.shared.storage import download_artifact
-                    raw_findings.extend(_extract_and_scan(download_artifact(pv.artifact_object_key)))
+                    artifact_bytes = download_artifact(pv.artifact_object_key)
+                    raw_findings.extend(_extract_and_scan(artifact_bytes))
+                    # Also extract code files for AI scan
+                    artifact_code_files = _extract_code_files(artifact_bytes)
                 except Exception:
                     logger.exception(f"Failed to download/scan artifact for {version_id}")
 
@@ -179,51 +203,89 @@ async def run_security_scan(version_id: UUID) -> None:
             if pv.manifest_raw:
                 raw_findings.extend(_scan_content(str(pv.manifest_raw), "<manifest>"))
 
-            # Filter based on declared permissions
+            # --- Layer 3: AI semantic scan ---
+            # Only for unverified/verified publishers (cost control)
+            ai_findings: list[dict] = []
+            if artifact_code_files and pv.manifest_raw:
+                try:
+                    pkg_result = await session.execute(
+                        select(Package).where(Package.id == pv.package_id)
+                    )
+                    pkg = pkg_result.scalar_one_or_none()
+                    if pkg:
+                        pub_result = await session.execute(
+                            select(Publisher).where(Publisher.id == pkg.publisher_id)
+                        )
+                        publisher = pub_result.scalar_one_or_none()
+                        # Run AI scan for unverified and verified publishers
+                        if publisher and publisher.trust_level in ("unverified", "verified"):
+                            from app.trust.ai_scanner import ai_security_scan
+                            manifest_dict = pv.manifest_raw if isinstance(pv.manifest_raw, dict) else {}
+                            ai_findings = await ai_security_scan(manifest_dict, artifact_code_files)
+                            logger.info(
+                                "AI scan for %s: %d finding(s) (publisher: %s, trust: %s)",
+                                version_id, len(ai_findings),
+                                publisher.slug, publisher.trust_level,
+                            )
+                except Exception:
+                    logger.exception(f"AI security scan failed for {version_id}")
+
+            # Filter heuristic findings based on declared permissions
             filtered: list[dict] = []
             for finding in raw_findings:
                 cat = finding.pop("category")
                 if cat == "secret":
+                    filtered.append(finding)
+                elif cat == "env_access":
                     filtered.append(finding)
                 elif cat == "dangerous" and (not perm or perm.code_execution_level == "none"):
                     filtered.append(finding)
                 elif cat == "network" and (not perm or perm.network_level == "none"):
                     filtered.append(finding)
 
+            # Add AI findings (already filtered by the AI scanner)
+            for ai_f in ai_findings:
+                ai_f.pop("category", None)
+                filtered.append(ai_f)
+
             has_high = False
+            has_critical = False
             for f in filtered:
                 if f["severity"] == "high":
                     has_high = True
+                if f["severity"] == "critical":
+                    has_critical = True
+                scanner_name = "agentnode-ai-v1" if f.get("finding_type", "").startswith("ai_") else "agentnode-static-v1"
                 session.add(SecurityFinding(
                     package_version_id=version_id,
                     severity=f["severity"],
                     finding_type=f["finding_type"],
                     description=f["description"],
-                    scanner="agentnode-static-v1",
+                    scanner=scanner_name,
                 ))
 
-            # Auto-quarantine on high-severity findings
-            high_count = sum(1 for f in filtered if f["severity"] == "high")
-            if has_high and pv.quarantine_status == "none":
+            # Auto-quarantine on high/critical findings
+            high_count = sum(1 for f in filtered if f["severity"] in ("high", "critical"))
+            if (has_high or has_critical) and pv.quarantine_status == "none":
                 pv.quarantine_status = "quarantined"
                 pv.quarantined_at = datetime.now(timezone.utc)
                 pv.quarantine_reason = f"Auto-quarantined: {high_count} high-severity finding(s)"
 
             await session.commit()
-            logger.info(f"Security scan for {version_id}: {len(filtered)} finding(s)")
+            logger.info(f"Security scan for {version_id}: {len(filtered)} finding(s) (static: {len(filtered) - len(ai_findings)}, ai: {len(ai_findings)})")
 
             # Send scan/quarantine emails
             if filtered:
-                from app.packages.models import Package
-                pkg_result = await session.execute(
-                    select(Package).where(Package.id == pv.package_id)
-                )
-                pkg = pkg_result.scalar_one_or_none()
+                if not pkg:
+                    pkg_result = await session.execute(
+                        select(Package).where(Package.id == pv.package_id)
+                    )
+                    pkg = pkg_result.scalar_one_or_none()
                 if pkg:
                     from app.shared.email import get_publisher_email
                     pub_email = await get_publisher_email(pkg.publisher_id)
                     if pub_email:
-                        if has_high:
+                        if has_high or has_critical:
                             from app.shared.email import send_auto_quarantine_email
                             await send_auto_quarantine_email(pub_email, pkg.slug, pv.version_number, high_count)
                         else:
@@ -232,3 +294,24 @@ async def run_security_scan(version_id: UUID) -> None:
 
     except Exception:
         logger.exception(f"Security scan failed for version {version_id}")
+
+
+def _extract_code_files(artifact_bytes: bytes) -> dict[str, str]:
+    """Extract all .py files from a tar.gz artifact as {path: content} dict."""
+    code_files: dict[str, str] = {}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if not member.name.endswith(".py") or not member.isfile():
+                    continue
+                if os.path.normpath(member.name).startswith("..") or os.path.isabs(member.name):
+                    continue
+                f = tar.extractfile(member)
+                if f:
+                    try:
+                        code_files[member.name] = f.read().decode("utf-8", errors="replace")
+                    except Exception:
+                        pass
+    except Exception:
+        logger.warning("Failed to extract code files from artifact")
+    return code_files

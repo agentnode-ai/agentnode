@@ -4,8 +4,10 @@ import redis.asyncio as aioredis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.router import router as admin_router
+from app.builder.router import router as builder_router
 from app.auth.router import router as auth_router
 from app.config import settings
 from app.database import engine
@@ -17,6 +19,7 @@ from app.search.router import router as search_router
 from app.shared.exceptions import AppError, app_error_handler
 from app.shared.logging_middleware import RequestLoggingMiddleware
 from app.trust.router import router as trust_router
+from app.verification.router import router as verification_router
 from app.webhooks.router import router as webhooks_router
 
 
@@ -28,6 +31,21 @@ async def lifespan(app: FastAPI):
     # Start background cron tasks
     from app.tasks.cron import start_cron_tasks, stop_cron_tasks
     start_cron_tasks()
+
+    # Load API keys from database into settings
+    try:
+        from sqlalchemy import select as sa_select
+        from app.admin.models import SystemSetting
+        async with AsyncSession(engine) as session:
+            result = await session.execute(
+                sa_select(SystemSetting).where(SystemSetting.key == "api_keys")
+            )
+            row = result.scalar_one_or_none()
+            if row and row.value:
+                if row.value.get("anthropic_api_key"):
+                    settings.ANTHROPIC_API_KEY = row.value["anthropic_api_key"]
+    except Exception:
+        pass  # DB may not have the table yet
 
     yield
 
@@ -70,6 +88,8 @@ app.include_router(resolution_router)
 app.include_router(search_router)
 app.include_router(admin_router)
 app.include_router(trust_router)
+app.include_router(verification_router)
+app.include_router(builder_router)
 app.include_router(webhooks_router)
 
 

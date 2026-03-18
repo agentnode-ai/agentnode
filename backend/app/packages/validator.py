@@ -52,6 +52,7 @@ MANIFEST_DEFAULTS = {
         "provenance": {"source_repo": "", "commit": "", "build_system": "manual"},
     },
     "support": {"homepage": "", "issues": ""},
+    "compatibility": {"frameworks": ["generic"]},
     "deprecation_policy": "6-months-notice",
 }
 
@@ -261,11 +262,11 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     else:
         errors.append("permissions section is required")
 
-    # compatibility.frameworks — must have at least 1
+    # compatibility.frameworks — default to ["generic"] if missing
     compat = manifest.get("compatibility", {})
     frameworks = compat.get("frameworks", [])
     if not frameworks:
-        errors.append("compatibility.frameworks must have at least 1 entry")
+        manifest.setdefault("compatibility", {})["frameworks"] = ["generic"]
 
     # Optional but valuable fields — generate warnings
     if not manifest.get("tags"):

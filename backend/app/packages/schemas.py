@@ -73,6 +73,7 @@ class TrustBlock(BaseModel):
     signature_present: bool
     provenance_present: bool
     security_findings_count: int
+    verification_status: str | None = None
     last_updated: datetime | None
 
 

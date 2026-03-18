@@ -56,6 +56,18 @@ class Settings(BaseSettings):
     EMAIL_FROM_NAME: str = "AgentNode"
     FRONTEND_URL: str = "https://agentnode.net"
 
+    # AI / Builder
+    ANTHROPIC_API_KEY: str = ""
+
+    # Verification pipeline
+    VERIFICATION_ENABLED: bool = True
+    VERIFICATION_TIMEOUT: int = 240
+    VERIFICATION_PIP_TIMEOUT: int = 90
+    VERIFICATION_MAX_ARTIFACT_MB: int = 50
+    VERIFICATION_MAX_CONCURRENT: int = 2
+    VERIFICATION_SMOKE_MAX_TOOLS: int = 5
+    VERIFICATION_SMOKE_BUDGET_SECONDS: int = 60
+
     # Environment
     ENVIRONMENT: str = "development"
 

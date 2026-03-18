@@ -29,6 +29,7 @@ class SearchHit(BaseModel):
     frameworks: list[str] = []
     download_count: int = 0
     is_deprecated: bool = False
+    verification_status: str | None = None
 
 
 class SearchResponse(BaseModel):
