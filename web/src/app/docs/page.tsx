@@ -20,6 +20,7 @@ const sections = [
   { id: "rest-api", label: "REST API" },
   { id: "mcp-integration", label: "MCP Integration" },
   { id: "github-action", label: "GitHub Action" },
+  { id: "verification", label: "Package Verification" },
   { id: "trust-security", label: "Trust & Security" },
   { id: "import-tools", label: "Import Tools" },
 ];
@@ -251,7 +252,7 @@ export default function DocsPage() {
             </p>
 
             <SubHeading>1. Install the CLI</SubHeading>
-            <CodeBlock title="terminal">{`$ npm install -g agentnode
+            <CodeBlock title="terminal">{`$ npm install -g agentnode-cli
 
 added 1 package in 2.1s`}</CodeBlock>
 
@@ -332,13 +333,24 @@ print(pdf["text"])`}</CodeBlock>
               ]}
             />
 
+            <SubHeading>Choose your install</SubHeading>
+            <DocTable
+              headers={["Use case", "Package", "Install"]}
+              rows={[
+                ["Build agents & apps in Python", "agentnode-sdk", "pip install agentnode-sdk"],
+                ["Install & publish from terminal", "agentnode-cli", "npm install -g agentnode-cli"],
+                ["Use with LangChain / LangGraph", "agentnode-langchain", "pip install agentnode-langchain"],
+                ["Use with MCP (Claude, Cursor)", "agentnode-mcp", "pip install agentnode-mcp"],
+              ]}
+            />
+
             <SubHeading>Install the CLI</SubHeading>
             <p className="mb-3 text-sm text-muted">
               The AgentNode CLI is distributed as a global npm package. It
               provides all commands for searching, installing, publishing, and
               managing packs.
             </p>
-            <CodeBlock title="terminal">{`$ npm install -g agentnode`}</CodeBlock>
+            <CodeBlock title="terminal">{`$ npm install -g agentnode-cli`}</CodeBlock>
 
             <p className="mt-4 mb-3 text-sm text-muted">
               Verify the installation:
@@ -823,7 +835,7 @@ permissions:
     level: "input_only"
 
 compatibility:
-  frameworks: ["langchain", "crewai", "generic"]
+  frameworks: ["generic"]
   python: ">=3.10"
 
 tags: ["github", "integration", "devtools", "automation"]`}</CodeBlock>
@@ -851,6 +863,7 @@ def list_repos(inputs: dict) -> dict:
     return {"repos": [{"name": r["name"], "url": r["html_url"]} for r in repos]}
 
 # Optional: backward-compatible run() wrapper for v0.1 callers
+# Not required for v0.2 — per-tool entrypoints (tool:create_issue, tool:list_repos) are used instead
 def run(inputs: dict) -> dict:
     operation = inputs.get("operation", "list_repos")
     dispatch = {"create_issue": create_issue, "list_repos": list_repos}
@@ -974,7 +987,7 @@ Published! https://agentnode.net/packages/github-integration-pack`}</CodeBlock>
             <DocTable
               headers={["Field", "Type", "Required", "Description"]}
               rows={[
-                ["compatibility.frameworks", "array", "No", "Supported frameworks: \"langchain\", \"crewai\", \"generic\". Default: [\"generic\"]."],
+                ["compatibility.frameworks", "array", "No", "Auto-defaults to [\"generic\"]. ANP packages work across all frameworks automatically."],
                 ["compatibility.python", "string", "No", "Python version constraint. Example: \">=3.10\""],
               ]}
             />
@@ -1460,7 +1473,7 @@ curl "https://api.agentnode.net/v1/packages/search?q=pdf+extraction&framework=la
       "summary": "Extract text, tables, and metadata from PDF documents",
       "trust_level": "trusted",
       "publisher": "agentnode-official",
-      "frameworks": ["langchain", "crewai", "generic"],
+      "frameworks": ["generic"],
       "capabilities": ["pdf_extraction"]
     }
   ],
@@ -1494,7 +1507,7 @@ curl "https://api.agentnode.net/v1/packages/pdf-reader-pack"
     "data_access": "input_only"
   },
   "compatibility": {
-    "frameworks": ["langchain", "crewai", "generic"],
+    "frameworks": ["generic"],
     "python": ">=3.10"
   }
 }`}</CodeBlock>
@@ -1838,6 +1851,135 @@ jobs:
           </section>
 
           {/* ============================================================ */}
+          {/*  PACKAGE VERIFICATION                                         */}
+          {/* ============================================================ */}
+          <section>
+            <SectionHeading id="verification">
+              Package Verification
+            </SectionHeading>
+            <p className="mb-4 text-sm leading-relaxed text-muted">
+              AgentNode verifies every package on publish to ensure it can be
+              installed, loaded, and executed. This verification runs
+              automatically and produces a transparent status visible to all
+              users.
+            </p>
+
+            <SubHeading>Verification steps</SubHeading>
+            <p className="mb-4 text-sm leading-relaxed text-muted">
+              Each package goes through four checks:
+            </p>
+            <div className="mb-6 space-y-3">
+              <div className="rounded-lg border border-border bg-card p-4">
+                <p className="mb-1 font-mono text-sm font-bold text-green-400">
+                  1. Install
+                </p>
+                <p className="text-sm text-muted">
+                  The package is installed in a clean virtual environment. If
+                  installation fails (missing dependencies, build errors), the
+                  package is automatically quarantined.
+                </p>
+              </div>
+              <div className="rounded-lg border border-border bg-card p-4">
+                <p className="mb-1 font-mono text-sm font-bold text-green-400">
+                  2. Import
+                </p>
+                <p className="text-sm text-muted">
+                  All declared tool entrypoints are imported and checked for
+                  existence and callability. If any entrypoint is missing or
+                  not callable, the package is quarantined.
+                </p>
+              </div>
+              <div className="rounded-lg border border-border bg-card p-4">
+                <p className="mb-1 font-mono text-sm font-bold text-yellow-400">
+                  3. Smoke test
+                </p>
+                <p className="text-sm text-muted">
+                  Tools are executed with minimal test input generated from
+                  their JSON schema. Results are classified as{" "}
+                  <span className="text-green-400">passed</span>,{" "}
+                  <span className="text-yellow-400">inconclusive</span> (e.g.
+                  missing real data), or{" "}
+                  <span className="text-red-400">failed</span> (runtime crash).
+                  Smoke failures do not block the package.
+                </p>
+              </div>
+              <div className="rounded-lg border border-border bg-card p-4">
+                <p className="mb-1 font-mono text-sm font-bold text-yellow-400">
+                  4. Tests (optional)
+                </p>
+                <p className="text-sm text-muted">
+                  If the package includes a test suite, it is executed with
+                  pytest. Integration tests marked with{" "}
+                  <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">
+                    @pytest.mark.integration
+                  </code>{" "}
+                  are skipped. Test failures are reported but do not block the
+                  package.
+                </p>
+              </div>
+            </div>
+
+            <SubHeading>Status model</SubHeading>
+            <div className="mb-6 overflow-hidden rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-card">
+                    <th className="px-4 py-2 text-left font-medium text-foreground">Status</th>
+                    <th className="px-4 py-2 text-left font-medium text-foreground">Meaning</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  <tr><td className="px-4 py-2 font-mono text-green-400">passed</td><td className="px-4 py-2 text-muted">Install and import succeeded</td></tr>
+                  <tr><td className="px-4 py-2 font-mono text-red-400">failed</td><td className="px-4 py-2 text-muted">Install or import failed &mdash; quarantined</td></tr>
+                  <tr><td className="px-4 py-2 font-mono text-yellow-400">pending</td><td className="px-4 py-2 text-muted">Verification still running</td></tr>
+                  <tr><td className="px-4 py-2 font-mono text-zinc-400">skipped</td><td className="px-4 py-2 text-muted">No artifact to verify (remote package)</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <SubHeading>Quarantine behavior</SubHeading>
+            <p className="mb-4 text-sm leading-relaxed text-muted">
+              Packages are automatically quarantined if installation or import
+              fails. Quarantined packages are hidden from search results and
+              cannot be installed. Other issues (smoke test, unit tests) are
+              displayed transparently but do not block usage.
+            </p>
+
+            <SubHeading>Re-verification</SubHeading>
+            <p className="mb-4 text-sm leading-relaxed text-muted">
+              Packages can be re-verified by admins after runner upgrades or
+              to confirm fixes. Each run is stored with full history &mdash;
+              run count, trigger source, and timestamps are visible to package
+              owners.
+            </p>
+
+            <SubHeading>What verification guarantees</SubHeading>
+            <div className="mb-6 grid gap-4 sm:grid-cols-2">
+              <div className="rounded-lg border border-green-500/20 bg-green-500/5 p-4">
+                <p className="mb-2 text-sm font-semibold text-green-400">Guaranteed</p>
+                <ul className="space-y-1 text-sm text-muted">
+                  <li>Can be installed in a clean environment</li>
+                  <li>All declared entrypoints exist and are callable</li>
+                  <li>Package structure is valid</li>
+                </ul>
+              </div>
+              <div className="rounded-lg border border-border bg-card p-4">
+                <p className="mb-2 text-sm font-semibold text-muted">Not guaranteed</p>
+                <ul className="space-y-1 text-sm text-muted">
+                  <li>Correct behavior with real-world data</li>
+                  <li>Availability of external services</li>
+                  <li>Full test coverage</li>
+                </ul>
+              </div>
+            </div>
+            <p className="mb-4 text-sm leading-relaxed text-muted">
+              Verification is a baseline check to ensure packages are usable,
+              not a guarantee of correctness. It filters out broken packages
+              so agents only install tools that actually load and run.
+            </p>
+          </section>
+
+          {/* ============================================================ */}
           {/*  TRUST & SECURITY                                             */}
           {/* ============================================================ */}
           <section>
@@ -2070,7 +2212,7 @@ Generated agentnode.yaml with 2 tools.`}</CodeBlock>
               <li>Set the appropriate permission levels (the importer defaults to conservative values)</li>
               <li>Add your publisher namespace</li>
               <li>
-                Write or confirm the <C>run()</C> function in your tool module
+                Verify the per-tool entrypoints are correct (e.g. <C>tool:create_issue</C> for multi-tool packs)
               </li>
               <li>
                 Run <C>agentnode validate .</C> to confirm everything is correct
