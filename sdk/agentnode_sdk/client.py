@@ -328,6 +328,7 @@ class AgentNodeClient:
                 name=c["name"],
                 capability_id=c["capability_id"],
                 capability_type=c["capability_type"],
+                entrypoint=c.get("entrypoint"),
             )
             for c in data.get("capabilities", [])
         ]
@@ -418,6 +419,11 @@ class AgentNodeClient:
         artifact_url = meta.artifact.url if meta.artifact else None
         artifact_hash = meta.artifact.hash_sha256 if meta.artifact else None
         cap_ids = [c.capability_id for c in meta.capabilities]
+        tools = [
+            {"name": c.name, "entrypoint": c.entrypoint}
+            for c in meta.capabilities
+            if c.capability_type == "tool" and c.entrypoint
+        ]
 
         result = install_package(
             slug=slug,
@@ -427,6 +433,7 @@ class AgentNodeClient:
             entrypoint=meta.entrypoint,
             package_type=meta.package_type,
             capability_ids=cap_ids,
+            tools=tools,
             verbose=verbose,
         )
 
@@ -527,13 +534,17 @@ class AgentNodeClient:
             permissions=meta.permissions,
         )
 
-    def load_tool(self, slug: str):
-        """Load an installed package's tool module.
+    def load_tool(self, slug: str, tool_name: str | None = None):
+        """Load an installed package's tool function.
 
-        Returns the module which should have a ``run()`` function.
+        Args:
+            slug: Package slug (e.g. "word-counter-pack").
+            tool_name: Optional tool name for multi-tool v0.2 packs.
+                If None, uses the package-level entrypoint.
+
         The package must have been installed via ``install()`` first.
         """
-        return _load_tool(slug)
+        return _load_tool(slug, tool_name=tool_name)
 
     def resolve_and_install(
         self,
