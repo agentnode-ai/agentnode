@@ -755,40 +755,54 @@ print(result["pages"])`}</code>
               <span className="text-primary">resolving</span>?
             </h2>
             <p className="mt-4 max-w-xl text-muted">
-              Browse the registry, install your first pack, or read the docs.
-              Your agents will thank you.
+              Verified packages. Per-tool entrypoints. AI-powered builder.
+              One-click import from any framework. Install your first pack or
+              build your own — your agents will thank you.
             </p>
 
-            <div className="mt-10 flex flex-col items-center gap-4">
-              <div className="flex flex-wrap items-center justify-center gap-3">
-                <code className="rounded-lg border border-border bg-card px-5 py-2.5 font-mono text-sm text-foreground">
-                  pip install agentnode-sdk
-                </code>
-                <code className="rounded-lg border border-border bg-card px-5 py-2.5 font-mono text-sm text-foreground">
-                  npm install -g agentnode-cli
-                </code>
+            <div className="mt-10 mx-auto grid max-w-4xl gap-3 sm:grid-cols-3">
+              <div className="rounded-lg border border-border bg-card px-5 py-3 text-center">
+                <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">Python &middot; for agents &amp; apps</div>
+                <code className="whitespace-nowrap font-mono text-xs text-foreground">pip install agentnode-sdk</code>
               </div>
+              <div className="rounded-lg border border-border bg-card px-5 py-3 text-center">
+                <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">Terminal &middot; install &amp; publish</div>
+                <code className="whitespace-nowrap font-mono text-xs text-foreground">npm install -g agentnode-cli</code>
+              </div>
+              <div className="rounded-lg border border-border bg-card px-5 py-3 text-center">
+                <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">Frameworks &middot; LangChain, MCP</div>
+                <code className="whitespace-nowrap font-mono text-xs text-foreground">pip install agentnode-langchain</code>
+                <div className="mt-0.5">
+                  <code className="whitespace-nowrap font-mono text-xs text-foreground">pip install agentnode-mcp</code>
+                </div>
+              </div>
+            </div>
 
-              <div className="flex flex-wrap items-center justify-center gap-4 text-sm">
-                <Link
-                  href="/search"
-                  className="inline-flex h-10 items-center justify-center rounded-lg bg-primary px-6 font-medium text-white transition-colors hover:bg-primary/90"
-                >
-                  Browse Packages
-                </Link>
-                <Link
-                  href="/docs"
-                  className="inline-flex h-10 items-center justify-center rounded-lg border border-border px-6 font-medium text-foreground transition-colors hover:bg-card"
-                >
-                  Read the Docs
-                </Link>
-                <Link
-                  href="/capabilities"
-                  className="text-primary underline transition-colors hover:text-foreground"
-                >
-                  Explore Capabilities
-                </Link>
-              </div>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-4 text-sm">
+              <Link
+                href="/search"
+                className="inline-flex h-10 items-center justify-center rounded-lg bg-primary px-6 font-medium text-white transition-colors hover:bg-primary/90"
+              >
+                Browse Packages
+              </Link>
+              <Link
+                href="/builder"
+                className="inline-flex h-10 items-center justify-center rounded-lg border border-border px-6 font-medium text-foreground transition-colors hover:bg-card"
+              >
+                Build a Pack
+              </Link>
+              <Link
+                href="/import"
+                className="inline-flex h-10 items-center justify-center rounded-lg border border-border px-6 font-medium text-foreground transition-colors hover:bg-card"
+              >
+                Import Existing Tools
+              </Link>
+              <Link
+                href="/docs"
+                className="text-primary underline transition-colors hover:text-foreground"
+              >
+                Read the Docs
+              </Link>
             </div>
           </div>
         </div>
