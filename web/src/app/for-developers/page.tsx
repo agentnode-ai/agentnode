@@ -1,9 +1,9 @@
 import Link from "next/link";
 
 export const metadata = {
-  title: "For Developers — AgentNode",
+  title: "Publish AI Agent Skills — Get Your Tools Discovered by Agents",
   description:
-    "Get your AI tools discovered and installed by real agents. AgentNode makes them discoverable, trusted, and installable by AI agents.",
+    "Publish your AI tools as verified agent skills on AgentNode. One publish reaches LangChain, CrewAI, MCP, and OpenAI agents. 4-step verification, trust badges, and cross-framework discovery included.",
 };
 
 /* ------------------------------------------------------------------ */

@@ -1,8 +1,8 @@
 import Link from "next/link";
 
 export const metadata = {
-  title: "License — AgentNode",
-  description: "AgentNode dual licensing: BSL 1.1 for the backend, MIT for CLI, SDK, and packs.",
+  title: "Open Source License — AgentNode Dual Licensing",
+  description: "AgentNode open source licensing: MIT for CLI, SDK, and agent skill packs. BSL 1.1 for the backend registry. Free to use, modify, and redistribute.",
 };
 
 const sections = [

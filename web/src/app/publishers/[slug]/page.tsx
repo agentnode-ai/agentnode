@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { Metadata } from "next";
 import TrustBadge from "@/components/TrustBadge";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8001";
@@ -21,6 +22,27 @@ async function getPublisherPackages(slug: string) {
   if (!res.ok) return [];
   const data = await res.json();
   return data.hits || [];
+}
+
+export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
+  const { slug } = await params;
+  const publisher = await getPublisher(slug);
+  if (!publisher) return { title: "Publisher Not Found" };
+
+  const title = `${publisher.display_name} — Agent Skill Publisher`;
+  const description = publisher.bio || `${publisher.display_name} publishes verified agent skills on AgentNode. Browse their tools and capabilities.`;
+
+  return {
+    title,
+    description,
+    openGraph: {
+      title: `${publisher.display_name} | AgentNode Publisher`,
+      description,
+      type: "profile",
+      url: `https://agentnode.net/publishers/${slug}`,
+      siteName: "AgentNode",
+    },
+  };
 }
 
 export default async function PublisherPage({

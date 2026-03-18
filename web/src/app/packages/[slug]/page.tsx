@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import TrustBadge from "@/components/TrustBadge";
 import VerificationBadge from "@/components/VerificationBadge";
@@ -36,6 +37,27 @@ function timeAgo(dateStr: string): string {
   if (months < 12) return `${months} month${months > 1 ? "s" : ""} ago`;
   const years = Math.floor(months / 12);
   return `${years} year${years > 1 ? "s" : ""} ago`;
+}
+
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const { slug } = await params;
+  const pkg = await fetchPackage(slug);
+  if (!pkg) return { title: "Package Not Found" };
+
+  const title = `${pkg.name} — Agent Skill for AI Agents`;
+  const description = pkg.summary || `${pkg.name} is a verified agent skill on AgentNode. Install it in any AI agent framework.`;
+
+  return {
+    title,
+    description,
+    openGraph: {
+      title: `${pkg.name} | AgentNode`,
+      description,
+      type: "website",
+      url: `https://agentnode.net/packages/${slug}`,
+      siteName: "AgentNode",
+    },
+  };
 }
 
 function PermissionLevel({ value }: { value: string }) {

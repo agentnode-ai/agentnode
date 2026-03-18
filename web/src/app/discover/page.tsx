@@ -1,5 +1,20 @@
+import type { Metadata } from "next";
 import PackageCard from "@/components/PackageCard";
 import type { SearchResponse } from "@/lib/api";
+
+export const metadata: Metadata = {
+  title: "Discover Agent Skills — Trending AI Agent Tools & Packs",
+  description:
+    "Explore trending and newly published agent skills on AgentNode. Browse verified AI tools, starter packs, and capabilities trusted by developers worldwide.",
+  openGraph: {
+    title: "Discover Agent Skills — Trending AI Agent Tools",
+    description:
+      "Explore trending agent skills and newly published AI tools on AgentNode. Verified, trusted, and ready to install.",
+    type: "website",
+    url: "https://agentnode.net/discover",
+    siteName: "AgentNode",
+  },
+};
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

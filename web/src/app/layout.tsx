@@ -15,16 +15,23 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AgentNode — where agents find upgrades",
+  title: {
+    template: "%s | AgentNode",
+    default: "AgentNode — Verified Agent Skills & Tools for AI Agents",
+  },
   description:
-    "AgentNode helps developers and AI hosts resolve capability gaps with trust-aware, framework-compatible upgrade recommendations.",
+    "The verified registry for AI agent skills and tools. Discover, install, and publish agent skills that work across LangChain, CrewAI, MCP, and any framework.",
   keywords: [
-    "AI agents",
-    "agent packages",
-    "LangChain",
-    "CrewAI",
+    "agent skills",
     "agent tools",
-    "capability resolution",
+    "AI agent skills",
+    "MCP tools",
+    "AI agent tools",
+    "agent skill registry",
+    "AI agent marketplace",
+    "LangChain tools",
+    "CrewAI tools",
+    "model context protocol",
   ],
   icons: {
     icon: [

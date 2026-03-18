@@ -1,9 +1,9 @@
 import Link from "next/link";
 
 export const metadata = {
-  title: "Why AgentNode — Stop Searching. Start Resolving.",
+  title: "Why AgentNode — The Verified Agent Skills Registry",
   description:
-    "AgentNode is the capability registry for AI agents. Discover, verify, and install agent tools with trust-aware resolution, security scanning, and framework compatibility — instead of searching 500K PyPI packages.",
+    "Why developers choose AgentNode over PyPI for AI agent tools. 4-step verification, trust-aware resolution, security scanning, and cross-framework agent skills — not 500K unverified packages.",
 };
 
 /* ------------------------------------------------------------------ */

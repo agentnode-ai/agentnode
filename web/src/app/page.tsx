@@ -1,7 +1,26 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import TerminalAnimation from "@/components/TerminalAnimation";
 import PackageCard from "@/components/PackageCard";
 import CopyInstallButton from "./CopyInstallButton";
+
+export const metadata: Metadata = {
+  title: "Agent Skills for AI Agents | Portable & Verified with AgentNode",
+  description:
+    "Build agent skills that work across any AI agent. Discover, verify and run portable capabilities automatically with AgentNode and ANP.",
+  openGraph: {
+    title: "Agent Skills for AI Agents | Portable & Verified with AgentNode",
+    description:
+      "Build agent skills that work across any AI agent. Discover, verify and run portable capabilities automatically with AgentNode and ANP.",
+    type: "website",
+    url: "https://agentnode.net",
+    siteName: "AgentNode",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@AgentNodenet",
+  },
+};
 
 const starterPacks = [
   {
@@ -44,11 +63,10 @@ export default function HomePage() {
             {/* Left: copy */}
             <div className="flex max-w-xl flex-col items-center text-center lg:items-start lg:text-left">
               <h1 className="animate-fade-in text-4xl font-bold leading-tight tracking-tight text-foreground sm:text-5xl">
-                Your AI agent upgrades itself
+                Build Agent Skills That Work Everywhere
               </h1>
               <p className="animate-fade-in-delay-1 mt-6 text-lg leading-relaxed text-muted">
-                Agents find, verify and install capabilities automatically.
-                One package. Any agent.
+                Agents automatically discover, verify and run capabilities across any framework.
               </p>
               <p className="animate-fade-in-delay-1 mt-3 text-sm text-muted/70">
                 Powered by{" "}
