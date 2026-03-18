@@ -195,12 +195,13 @@ function StatusDot({ level }: { level: "full" | "partial" | "none" }) {
       : level === "partial"
         ? "bg-yellow-500"
         : "bg-red-500/60";
-  return <span className={`inline-block h-2 w-2 rounded-full ${color}`} />;
+  return <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${color}`} />;
 }
 
 function getLevel(value: string): "full" | "partial" | "none" {
   const lower = value.toLowerCase();
   if (
+    lower === "no" ||
     lower.includes("none") ||
     lower.includes("not required") ||
     lower.includes("not tracked") ||
