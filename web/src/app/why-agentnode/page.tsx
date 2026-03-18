@@ -39,17 +39,17 @@ const differentiators = [
   },
   {
     number: "02",
-    title: "Trust & Security Built In",
-    subtitle: "Four trust levels. Zero guesswork.",
+    title: "Verified on Publish",
+    subtitle: "Every package is tested before it reaches your agent.",
     description:
-      "Every pack progresses through four trust levels: Unverified, Verified, Trusted, and Curated. Each level requires more evidence — from basic metadata validation up to manual review by the AgentNode team. Every published pack gets Bandit security scanning, Ed25519 signature verification, and typosquatting detection. You see the full permission manifest before install: does this pack need network access? File system writes? Code execution? You decide before it runs.",
+      "Every pack goes through a 4-step verification pipeline on publish: Install (can it be pip-installed?), Import (does the module load?), Smoke Test (does the entry point execute?), and Unit Tests (do the author's tests pass?). If install or import fails, the pack is auto-quarantined and never reaches the registry. Smoke or test issues get transparent warning badges so you can make an informed decision. No other registry does this. PyPI lists packages that fail to install. npm has abandoned packages with zero warning. AgentNode guarantees: if it is in the registry, it works.",
   },
   {
     number: "03",
     title: "One Format, Every Framework",
-    subtitle: "No framework lock-in. One interface everywhere.",
+    subtitle: "Per-tool entrypoints. Typed schemas. No framework lock-in.",
     description:
-      "Every AgentNode pack exports a single run() function. It works with LangChain, CrewAI, AutoGPT, or vanilla Python. Write your agent in whatever framework you prefer — the packs adapt to you, not the other way around. The ANP (AgentNode Package) format is an open specification with a standardized manifest, so you always know what you are getting.",
+      "ANP v0.2 introduces per-tool entrypoints: a single pack can export multiple tools, each individually addressable via load_tool(). Every tool has typed JSON Schema input and output, so your agent knows exactly what to pass and what to expect. It works with LangChain, CrewAI, AutoGPT, or vanilla Python. Write your agent in whatever framework you prefer — the packs adapt to you, not the other way around.",
   },
   {
     number: "04",
@@ -72,11 +72,19 @@ const differentiators = [
     description:
       "The CLI, SDK, and ANP pack format are MIT-licensed and developed in the open on GitHub. Every pack is inspectable — you see the manifest, permissions, and source before you install. The registry is community-driven: anyone can publish, the best tools earn trust through usage and review. You are never locked into AgentNode — packs are standard Python that works anywhere.",
   },
+  {
+    number: "07",
+    title: "Build or Import — Zero Friction",
+    subtitle: "Go from idea to published package in minutes, not days.",
+    description:
+      "Two paths to publishing, both frictionless. The AI Builder lets you describe what your agent should do in plain language — it generates a complete ANP package with manifest, code scaffold, and typed schemas, ready to publish. The Import tool takes existing LangChain, MCP, OpenAI, or CrewAI tool code and automatically converts it to ANP v0.2. No rewrite required. Paste your code, get a publish-ready package back.",
+  },
 ];
 
 const comparisonFeatures = [
   "AI-specific search",
   "Trust verification",
+  "Automated verification",
   "Permission model",
   "Framework compatibility",
   "Standardized interface",
@@ -89,16 +97,18 @@ const comparisonData: Record<string, Record<string, string>> = {
   AgentNode: {
     "AI-specific search": "Capability-based resolution with weighted scoring",
     "Trust verification": "4-level trust: unverified to curated",
+    "Automated verification": "4-step: install, import, smoke test, unit tests",
     "Permission model": "Full manifest: network, filesystem, code execution",
     "Framework compatibility": "LangChain, CrewAI, AutoGPT, generic Python",
-    "Standardized interface": "Every pack exports run() — one interface",
+    "Standardized interface": "Per-tool entrypoints via load_tool() — typed schemas",
     "Programmatic resolution": "SDK + CLI + MCP integration",
     "Security scanning": "Bandit, Ed25519 signatures, typosquatting detection",
-    "Quality gate (tests)": "Required for trusted+ level",
+    "Quality gate (tests)": "Automated on every publish",
   },
   PyPI: {
     "AI-specific search": "Keyword search only",
     "Trust verification": "None",
+    "Automated verification": "None",
     "Permission model": "None",
     "Framework compatibility": "Not tracked",
     "Standardized interface": "Every package is different",
@@ -109,6 +119,7 @@ const comparisonData: Record<string, Record<string, string>> = {
   npm: {
     "AI-specific search": "Keyword search only",
     "Trust verification": "None",
+    "Automated verification": "None",
     "Permission model": "None",
     "Framework compatibility": "Not tracked",
     "Standardized interface": "Every package is different",
@@ -119,6 +130,7 @@ const comparisonData: Record<string, Record<string, string>> = {
   ClawhHub: {
     "AI-specific search": "Category browsing",
     "Trust verification": "Manual review",
+    "Automated verification": "Not documented",
     "Permission model": "Limited",
     "Framework compatibility": "Platform-specific",
     "Standardized interface": "Platform-specific format",
@@ -129,6 +141,7 @@ const comparisonData: Record<string, Record<string, string>> = {
   "Skills.sh": {
     "AI-specific search": "Curated list",
     "Trust verification": "Manual curation",
+    "Automated verification": "Not documented",
     "Permission model": "None",
     "Framework compatibility": "Single framework",
     "Standardized interface": "Framework-specific",
@@ -157,7 +170,7 @@ const openSourcePoints = [
   {
     title: "Community-driven registry",
     detail:
-      "Anyone can publish packs. The registry grows because developers contribute what they build — not because a company decides what gets listed. The best tools rise through trust levels and community usage.",
+      "Anyone can publish packs. The AI Builder and Import tool make publishing even easier — describe a capability or paste existing code and get a publish-ready package. The registry grows because developers contribute what they build — not because a company decides what gets listed. The best tools rise through trust levels and community usage.",
   },
   {
     title: "No walled garden",
@@ -236,8 +249,9 @@ export default function WhyAgentNodePage() {
             When your agent needs PDF extraction, web search, or email
             capabilities, you should not be browsing through 500,000 PyPI
             packages hoping to find something that works with your framework.
-            AgentNode is the capability registry built specifically for AI agent
-            developers.
+            AgentNode is the verified, buildable, importable capability registry
+            built specifically for AI agent developers. Every package is
+            automatically verified on publish — if it is in the registry, it works.
           </p>
           <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
             <Link
@@ -292,7 +306,7 @@ export default function WhyAgentNodePage() {
             How AgentNode Is Different
           </h2>
           <p className="mb-14 text-center text-muted">
-            Six design decisions that make AgentNode the right choice for AI
+            Seven design decisions that make AgentNode the right choice for AI
             agent developers.
           </p>
 
@@ -467,27 +481,17 @@ export default function WhyAgentNodePage() {
             </div>
             <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-gray-300">
               <code>{`from agentnode_sdk import AgentNodeClient
+from agentnode_sdk.installer import load_tool
 
 client = AgentNodeClient()
 
-# Find the best PDF tool for your framework
-result = client.resolve(
-    ["pdf_extraction"],
-    framework="langchain"
-)
+# Resolve and install
+client.resolve_and_install(["pdf_extraction"])
 
-# Check permissions and trust before installing
-policy = client.check_policy(result[0].slug)
-print(f"Trust level: {policy.trust_level}")
-print(f"Permissions: {policy.permissions}")
-
-# If it passes your policy, install it
-# $ agentnode install pdf-reader-pack
-
-# Use it — every pack has the same interface
-from pdf_reader_pack.tool import run
-text = run("quarterly-report.pdf")
-print(text["pages"])`}</code>
+# Load and use — typed input/output
+extract = load_tool("pdf-reader-pack")
+result = extract({"file_path": "quarterly-report.pdf"})
+print(result["pages"])`}</code>
             </pre>
           </div>
 
@@ -609,7 +613,7 @@ print(text["pages"])`}</code>
             <div className="rounded-lg border border-border bg-card p-6">
               <div className="mb-3 flex items-center gap-3">
                 <h3 className="text-lg font-semibold text-foreground">
-                  Python SDK
+                  Python — for agents &amp; apps
                 </h3>
                 <span className="rounded bg-primary/10 px-2 py-0.5 font-mono text-xs text-primary">
                   Available now
@@ -642,6 +646,37 @@ print(text["pages"])`}</code>
                 </code>
                 . Validates manifests, runs security scanning, and publishes on
                 release. Supports dry-run mode for validation-only workflows.
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-border bg-card p-6">
+              <div className="mb-3 flex items-center gap-3">
+                <h3 className="text-lg font-semibold text-foreground">
+                  AI Builder
+                </h3>
+                <span className="rounded bg-primary/10 px-2 py-0.5 font-mono text-xs text-primary">
+                  Available now
+                </span>
+              </div>
+              <p className="text-sm leading-relaxed text-muted">
+                Describe a capability in plain language and get a
+                production-ready ANP package — manifest, code scaffold, and
+                typed schemas. No boilerplate.
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-border bg-card p-6">
+              <div className="mb-3 flex items-center gap-3">
+                <h3 className="text-lg font-semibold text-foreground">
+                  Import from Any Framework
+                </h3>
+                <span className="rounded bg-primary/10 px-2 py-0.5 font-mono text-xs text-primary">
+                  Available now
+                </span>
+              </div>
+              <p className="text-sm leading-relaxed text-muted">
+                Paste existing LangChain, MCP, OpenAI, or CrewAI tool code and
+                get an ANP package back. Zero rewrite required.
               </p>
             </div>
           </div>
@@ -696,6 +731,18 @@ print(text["pages"])`}</code>
               </div>
             ))}
           </div>
+
+          <div className="mt-8 rounded-lg border border-border bg-card/50 p-5 text-center">
+            <p className="text-sm leading-relaxed text-muted">
+              <span className="font-semibold text-foreground">
+                Two independent quality signals:
+              </span>{" "}
+              Every pack has both a <span className="font-medium text-foreground">Trust Level</span> (who
+              built it?) and a <span className="font-medium text-foreground">Verification Badge</span>{" "}
+              (passed / failed / pending — does it actually work?). Trust tells you about the publisher.
+              Verification tells you about the code.
+            </p>
+          </div>
         </div>
       </section>
 
@@ -708,14 +755,19 @@ print(text["pages"])`}</code>
               <span className="text-primary">resolving</span>?
             </h2>
             <p className="mt-4 max-w-xl text-muted">
-              Install the CLI, browse the registry, or read the docs. Your
-              agents will thank you.
+              Browse the registry, install your first pack, or read the docs.
+              Your agents will thank you.
             </p>
 
             <div className="mt-10 flex flex-col items-center gap-4">
-              <code className="rounded-lg border border-border bg-card px-6 py-3 font-mono text-sm text-foreground">
-                npm install -g agentnode
-              </code>
+              <div className="flex flex-wrap items-center justify-center gap-3">
+                <code className="rounded-lg border border-border bg-card px-5 py-2.5 font-mono text-sm text-foreground">
+                  pip install agentnode-sdk
+                </code>
+                <code className="rounded-lg border border-border bg-card px-5 py-2.5 font-mono text-sm text-foreground">
+                  npm install -g agentnode-cli
+                </code>
+              </div>
 
               <div className="flex flex-wrap items-center justify-center gap-4 text-sm">
                 <Link
