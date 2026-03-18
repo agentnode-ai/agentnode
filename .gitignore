@@ -56,3 +56,6 @@ events.json
 
 # Claude Code
 .claude/
+
+# Internal growth / marketing content
+growth/
