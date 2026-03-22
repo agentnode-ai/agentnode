@@ -46,6 +46,8 @@ class InstallBlock(BaseModel):
     sdk_code: str
     entrypoint: str | None
     post_install_code: str
+    installable_version: str | None = None
+    install_resolution: str | None = None
 
 
 class CompatibilityBlock(BaseModel):
@@ -77,6 +79,66 @@ class TrustBlock(BaseModel):
     last_updated: datetime | None
 
 
+# --- Enrichment schemas ---
+
+class FileListItem(BaseModel):
+    path: str
+    size: int
+
+
+class EnvRequirement(BaseModel):
+    name: str
+    required: bool = True
+    description: str | None = None
+
+
+class Example(BaseModel):
+    title: str
+    language: str = "python"
+    code: str
+
+
+class VerificationStepInfo(BaseModel):
+    name: str          # "install", "import", "smoke", "tests"
+    status: str        # "passed", "failed", "skipped", "not_present"
+    duration_ms: int | None = None
+
+
+class ScoreBreakdownItem(BaseModel):
+    points: int
+    max: int
+    reason: str
+
+
+class ScoreExplanation(BaseModel):
+    score: int
+    tier: str
+    confidence: str                    # high/medium/low
+    breakdown: dict[str, ScoreBreakdownItem] = {}
+    explanation: str = ""
+
+
+class EnvironmentInfo(BaseModel):
+    python_version: str | None = None
+    system_capabilities: dict[str, bool] = {}
+    sandbox_mode: str | None = None
+    installer: str | None = None
+
+
+class VerificationInfo(BaseModel):
+    status: str        # "verified", "failed", "running", "pending", "error", "skipped"
+    last_verified_at: datetime | None = None
+    runner_version: str | None = None
+    steps: list[VerificationStepInfo] = []
+    score: int | None = None           # 0-100 verification score
+    tier: str | None = None            # "gold", "verified", "partial", "unverified"
+    confidence: str | None = None      # "high", "medium", "low"
+    score_breakdown: dict | None = None  # Full ScoreResult dict
+    smoke_reason: str | None = None
+    verification_mode: str | None = None  # "real", "mock", "limited"
+    environment: EnvironmentInfo | None = None
+
+
 class PackageBlocks(BaseModel):
     capabilities: list[CapabilityBlock]
     recommended_for: list[RecommendedForBlock]
@@ -97,7 +159,20 @@ class PackageDetailResponse(BaseModel):
     latest_version: VersionInfo | None
     download_count: int
     is_deprecated: bool
+    quarantine_status: str | None = None
     blocks: PackageBlocks
+    # Enrichment fields
+    license_model: str | None = None
+    readme_md: str | None = None
+    file_list: list[FileListItem] | None = None
+    env_requirements: list[EnvRequirement] | None = None
+    use_cases: list[str] | None = None
+    examples: list[Example] | None = None
+    tags: list[str] | None = None
+    homepage_url: str | None = None
+    docs_url: str | None = None
+    source_url: str | None = None
+    verification: VerificationInfo | None = None
 
 
 class VersionListItem(BaseModel):
@@ -107,6 +182,7 @@ class VersionListItem(BaseModel):
     published_at: datetime
     quarantine_status: str | None = None
     is_yanked: bool | None = None
+    verification_status: str | None = None
 
 
 class VersionsResponse(BaseModel):
@@ -118,3 +194,12 @@ class PublishResponse(BaseModel):
     version: str
     package_type: str
     message: str
+
+
+class UpdatePackageRequest(BaseModel):
+    name: str | None = None          # Package-level
+    summary: str | None = None       # Package-level
+    description: str | None = None   # Package-level
+    tags: list[str] | None = None    # Version-level (latest owner-visible)
+    # URLs are set at publish time and immutable for owners.
+    # Admin can override via PUT /admin/packages/{slug}.

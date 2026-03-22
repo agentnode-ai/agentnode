@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.packages.models import Installation, Package, PackageVersion
-from app.packages.version_queries import get_latest_public_version
+from app.packages.version_queries import InstallResolution, get_latest_installable_version
 from app.shared.exceptions import AppError
 from app.shared.storage import generate_presigned_url
 
@@ -17,8 +17,11 @@ logger = logging.getLogger(__name__)
 
 async def get_install_version(
     session: AsyncSession, slug: str, version: str | None = None,
-) -> tuple[Package, PackageVersion]:
-    """Load a package and its target version for install."""
+) -> tuple[Package, PackageVersion, str]:
+    """Load a package and its target version for install.
+
+    Returns (package, version, install_resolution).
+    """
     result = await session.execute(
         select(Package).where(Package.slug == slug)
     )
@@ -44,25 +47,16 @@ async def get_install_version(
         pv = ver_result.scalar_one_or_none()
         if not pv:
             raise AppError("VERSION_NOT_FOUND", f"Version '{version}' not found", 404)
+        reason = InstallResolution.PINNED
     else:
-        # Use latest public version
-        pv_result = await session.execute(
-            select(PackageVersion)
-            .options(
+        pv, reason = await get_latest_installable_version(
+            session, pkg.id,
+            options=[
                 selectinload(PackageVersion.capabilities),
                 selectinload(PackageVersion.dependencies),
                 selectinload(PackageVersion.permissions),
-            )
-            .where(
-                PackageVersion.package_id == pkg.id,
-                PackageVersion.channel == "stable",
-                PackageVersion.quarantine_status.in_(("none", "cleared")),
-                PackageVersion.is_yanked == False,  # noqa: E712
-            )
-            .order_by(PackageVersion.published_at.desc())
-            .limit(1)
+            ],
         )
-        pv = pv_result.scalar_one_or_none()
         if not pv:
             raise AppError("NO_VERSION_AVAILABLE", "No installable version available", 404)
 
@@ -71,7 +65,7 @@ async def get_install_version(
     if pv.quarantine_status not in ("none", "cleared"):
         raise AppError("VERSION_QUARANTINED", "This version is under quarantine", 403)
 
-    return pkg, pv
+    return pkg, pv, reason
 
 
 def build_artifact_info(pv: PackageVersion) -> dict | None:
@@ -113,7 +107,10 @@ async def create_installation(
 
 
 async def track_download(session: AsyncSession, package_id, version_id) -> int:
-    """Increment download counter and return new count."""
+    """Increment download counter and return new count.
+
+    Does NOT commit — the caller controls the transaction boundary.
+    """
     result = await session.execute(
         update(Package)
         .where(Package.id == package_id)
@@ -121,5 +118,4 @@ async def track_download(session: AsyncSession, package_id, version_id) -> int:
         .returning(Package.download_count)
     )
     new_count = result.scalar_one()
-    await session.commit()
     return new_count

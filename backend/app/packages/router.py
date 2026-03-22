@@ -1,7 +1,8 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,7 @@ from app.packages.models import Installation, Package, PackageReport, PackageVer
 from app.packages.schemas import (
     PackageDetailResponse,
     PublishResponse,
+    UpdatePackageRequest,
     ValidateRequest,
     ValidateResponse,
     VersionListItem,
@@ -23,8 +25,9 @@ from app.packages.schemas import (
 )
 from app.packages.service import publish_package
 from app.packages.validator import validate_manifest
-from app.packages.version_queries import get_owner_visible_versions, get_public_versions
+from app.packages.version_queries import get_latest_installable_version, get_latest_owner_visible_version, get_owner_visible_versions, get_public_versions
 from app.shared.exceptions import AppError
+from app.shared.storage import download_preview_file, PREVIEW_EXTENSIONS
 from app.trust.scanner import run_security_scan
 from app.webhooks.service import fire_event
 
@@ -85,24 +88,32 @@ async def publish(
     )
 
 
+def _version_eager_loads():
+    """Common selectinload options for PackageVersion relationships."""
+    from app.verification.models import VerificationResult
+    return [
+        selectinload(PackageVersion.capabilities),
+        selectinload(PackageVersion.compatibility_rules),
+        selectinload(PackageVersion.dependencies),
+        selectinload(PackageVersion.permissions),
+        selectinload(PackageVersion.upgrade_metadata),
+        selectinload(PackageVersion.security_findings),
+        selectinload(PackageVersion.latest_verification_result),
+        selectinload(PackageVersion.tags),
+    ]
+
+
 @router.get("/{slug}", response_model=PackageDetailResponse)
-async def get_package(slug: str, session: AsyncSession = Depends(get_session)):
+async def get_package(
+    slug: str,
+    v: str | None = Query(None, description="Specific version number to load"),
+    session: AsyncSession = Depends(get_session),
+):
     result = await session.execute(
         select(Package)
         .options(
             selectinload(Package.publisher),
-            selectinload(Package.latest_version)
-            .selectinload(PackageVersion.capabilities),
-            selectinload(Package.latest_version)
-            .selectinload(PackageVersion.compatibility_rules),
-            selectinload(Package.latest_version)
-            .selectinload(PackageVersion.dependencies),
-            selectinload(Package.latest_version)
-            .selectinload(PackageVersion.permissions),
-            selectinload(Package.latest_version)
-            .selectinload(PackageVersion.upgrade_metadata),
-            selectinload(Package.latest_version)
-            .selectinload(PackageVersion.security_findings),
+            selectinload(Package.latest_version).options(*_version_eager_loads()),
         )
         .where(Package.slug == slug)
     )
@@ -110,7 +121,53 @@ async def get_package(slug: str, session: AsyncSession = Depends(get_session)):
     if not pkg:
         raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
 
-    return assemble_package_detail(pkg, pkg.latest_version)
+    version = None
+    quarantine_status = None
+
+    # If specific version requested via ?v=
+    if v:
+        ver_result = await session.execute(
+            select(PackageVersion)
+            .options(*_version_eager_loads())
+            .where(
+                PackageVersion.package_id == pkg.id,
+                PackageVersion.version_number == v,
+            )
+        )
+        version = ver_result.scalar_one_or_none()
+        if not version:
+            raise AppError("PACKAGE_VERSION_NOT_FOUND", f"Version '{v}' not found", 404)
+        if version.quarantine_status == "quarantined":
+            quarantine_status = "quarantined"
+    else:
+        version = pkg.latest_version
+
+    # Fallback: if no public latest_version, show the newest quarantined version
+    if not version:
+        fallback_result = await session.execute(
+            select(PackageVersion)
+            .options(*_version_eager_loads())
+            .where(
+                PackageVersion.package_id == pkg.id,
+                PackageVersion.quarantine_status == "quarantined",
+            )
+            .order_by(PackageVersion.published_at.desc())
+            .limit(1)
+        )
+        version = fallback_result.scalar_one_or_none()
+        if version:
+            quarantine_status = "quarantined"
+
+    # Resolve installable version for install context
+    installable_pv, install_reason = await get_latest_installable_version(session, pkg.id)
+    installable_version = installable_pv.version_number if installable_pv else None
+
+    return assemble_package_detail(
+        pkg, version,
+        quarantine_status=quarantine_status,
+        installable_version=installable_version,
+        install_resolution=install_reason,
+    )
 
 
 @router.get("/{slug}/versions", response_model=VersionsResponse)
@@ -134,6 +191,7 @@ async def get_versions(
                 channel=v.channel,
                 changelog=v.changelog,
                 published_at=v.published_at,
+                verification_status=v.verification_status,
             )
             for v in versions
         ]
@@ -167,10 +225,192 @@ async def get_all_versions(
                 published_at=v.published_at,
                 quarantine_status=v.quarantine_status,
                 is_yanked=v.is_yanked,
+                verification_status=v.verification_status,
             )
             for v in versions
         ]
     )
+
+
+@router.get("/{slug}/versions/{version}/files/{file_path:path}")
+async def get_file_preview(
+    slug: str,
+    version: str,
+    file_path: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Get a preview of a file from a package version. Served from S3 preview store."""
+    import os
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext not in PREVIEW_EXTENSIONS:
+        raise AppError("UNSUPPORTED_TYPE", f"File type '{ext}' not previewable", 415)
+
+    # Look up version to get its ID
+    result = await session.execute(
+        select(Package).where(Package.slug == slug)
+    )
+    pkg = result.scalar_one_or_none()
+    if not pkg:
+        raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
+
+    ver_result = await session.execute(
+        select(PackageVersion.id).where(
+            PackageVersion.package_id == pkg.id,
+            PackageVersion.version_number == version,
+        )
+    )
+    version_id = ver_result.scalar_one_or_none()
+    if not version_id:
+        raise AppError("PACKAGE_VERSION_NOT_FOUND", f"Version '{version}' not found", 404)
+
+    content = download_preview_file(str(version_id), file_path)
+    if content is None:
+        raise AppError("FILE_NOT_FOUND", f"File '{file_path}' not found in preview store", 404)
+
+    content_type_map = {
+        ".md": "text/markdown", ".py": "text/x-python", ".ts": "text/typescript",
+        ".js": "text/javascript", ".json": "application/json", ".yaml": "text/yaml",
+        ".yml": "text/yaml", ".toml": "text/toml", ".txt": "text/plain",
+        ".cfg": "text/plain", ".ini": "text/plain",
+    }
+    ct = content_type_map.get(ext, "text/plain")
+
+    return PlainTextResponse(
+        content=content,
+        media_type=ct,
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "ETag": f'"{version_id}:{file_path}"',
+        },
+    )
+
+
+@router.patch("/{slug}", dependencies=[Depends(rate_limit(20, 60))])
+async def update_package(
+    slug: str,
+    body: UpdatePackageRequest,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Edit package metadata. Owner-only."""
+    result = await session.execute(
+        select(Package).options(selectinload(Package.publisher)).where(Package.slug == slug)
+    )
+    pkg = result.scalar_one_or_none()
+    if not pkg:
+        raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
+    if pkg.publisher.user_id != user.id:
+        raise AppError("PACKAGE_NOT_OWNED", "You do not own this package", 403)
+
+    # Validate package-level fields
+    if body.name is not None:
+        if not body.name.strip():
+            raise AppError("INVALID_NAME", "Name must not be empty", 400)
+        if len(body.name) > 100:
+            raise AppError("INVALID_NAME", "Name must be 100 characters or less", 400)
+    if body.summary is not None:
+        if not body.summary.strip():
+            raise AppError("INVALID_SUMMARY", "Summary must not be empty", 400)
+        if len(body.summary) > 200:
+            raise AppError("INVALID_SUMMARY", "Summary must be 200 characters or less", 400)
+    if body.description is not None and len(body.description) > 5000:
+        raise AppError("INVALID_DESCRIPTION", "Description must be 5000 characters or less", 400)
+    if body.tags is not None and len(body.tags) > 20:
+        raise AppError("INVALID_TAGS", "Maximum 20 tags allowed", 400)
+
+    # Apply package-level updates
+    search_fields_changed = False
+    if body.name is not None:
+        pkg.name = body.name.strip()
+        search_fields_changed = True
+    if body.summary is not None:
+        pkg.summary = body.summary.strip()
+        search_fields_changed = True
+    if body.description is not None:
+        pkg.description = body.description.strip() or None
+        search_fields_changed = True
+
+    # Apply version-level updates (tags only — URLs are immutable after publish)
+    pv = None
+    if body.tags is not None:
+        pv = await get_latest_owner_visible_version(session, pkg.id)
+        if not pv:
+            raise AppError("NO_EDITABLE_VERSION", "No editable version found. All versions are yanked.", 409)
+
+        search_fields_changed = True
+        # Normalize: strip, lowercase, deduplicate, drop empties
+        normalized_tags = list(dict.fromkeys(
+            t.strip().lower() for t in body.tags if t.strip()
+        ))
+        from app.packages.models import PackageTag
+        from sqlalchemy import delete
+        await session.execute(
+            delete(PackageTag).where(PackageTag.package_version_id == pv.id)
+        )
+        for tag in normalized_tags:
+            session.add(PackageTag(package_version_id=pv.id, tag=tag))
+
+    await session.commit()
+
+    # Sync to Meilisearch if search-relevant fields changed
+    if search_fields_changed:
+        if not pv:
+            pv = await get_latest_owner_visible_version(session, pkg.id)
+        if pv:
+            await session.refresh(pkg, ["publisher"])
+            from app.packages.service import build_meili_document
+            from app.shared.meili import sync_package_to_meilisearch
+            await sync_package_to_meilisearch(build_meili_document(pkg, pv, pv.manifest_raw or {}))
+
+    return {"ok": True}
+
+
+@router.post("/{slug}/request-reverify", dependencies=[Depends(rate_limit(10, 60))])
+async def request_reverify(
+    slug: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Owner-initiated re-verification of the latest owner-visible version."""
+    result = await session.execute(
+        select(Package).options(selectinload(Package.publisher)).where(Package.slug == slug)
+    )
+    pkg = result.scalar_one_or_none()
+    if not pkg:
+        raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
+    if pkg.publisher.user_id != user.id:
+        raise AppError("PACKAGE_NOT_OWNED", "You do not own this package", 403)
+
+    pv = await get_latest_owner_visible_version(session, pkg.id)
+    if not pv:
+        raise AppError("NO_VERSION", "No version available to verify. All versions are yanked.", 409)
+
+    # Guard: already pending/running
+    if pv.verification_status in ("pending", "running"):
+        raise AppError("VERIFICATION_IN_PROGRESS", "Verification is already in progress for this version.", 409)
+
+    # Guard: cooldown — 1h since last verification
+    if pv.last_verified_at:
+        cooldown = timedelta(hours=1)
+        elapsed = datetime.now(timezone.utc) - pv.last_verified_at.replace(tzinfo=timezone.utc) if pv.last_verified_at.tzinfo is None else datetime.now(timezone.utc) - pv.last_verified_at
+        if elapsed < cooldown:
+            remaining_mins = int((cooldown - elapsed).total_seconds() / 60)
+            raise AppError(
+                "COOLDOWN",
+                f"Please wait at least 1 hour between verification requests. Try again in ~{remaining_mins} minutes.",
+                429,
+            )
+
+    # Set status to pending and fire verification
+    pv.verification_status = "pending"
+    await session.commit()
+
+    from app.verification.pipeline import run_verification
+    background_tasks.add_task(run_verification, pv.id, "owner_request")
+
+    return {"message": "Verification requested", "version": pv.version_number}
 
 
 @router.post("/{slug}/deprecate")
