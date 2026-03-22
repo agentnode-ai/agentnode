@@ -7,6 +7,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.router import router as admin_router
+from app.blog.router import admin_router as blog_admin_router, public_router as blog_public_router
+from app.sitemap.router import router as sitemap_router, admin_router as sitemap_admin_router
 from app.builder.router import router as builder_router
 from app.auth.router import router as auth_router
 from app.config import settings
@@ -91,6 +93,10 @@ app.include_router(trust_router)
 app.include_router(verification_router)
 app.include_router(builder_router)
 app.include_router(webhooks_router)
+app.include_router(blog_admin_router)
+app.include_router(blog_public_router)
+app.include_router(sitemap_router)
+app.include_router(sitemap_admin_router)
 
 
 @app.get("/health")

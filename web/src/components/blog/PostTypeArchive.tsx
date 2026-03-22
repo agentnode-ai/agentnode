@@ -1,23 +1,18 @@
-export const dynamic = "force-dynamic";
-
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 
-export const metadata: Metadata = {
-  title: "Blog — AI Agent Skills, MCP Tools & Agentic AI Insights",
-  description: "Expert articles on AI agent skills, MCP servers, agent tools, and agentic AI. Tutorials, guides, and insights for developers building with AI agents.",
-  openGraph: {
-    title: "AgentNode Blog — AI Agent Skills & Tools Insights",
-    description: "Expert articles on AI agent skills, MCP servers, agent tools, and agentic AI for developers.",
-    type: "website",
-    url: "https://agentnode.net/blog",
-    siteName: "AgentNode",
-  },
-  twitter: {
-    card: "summary",
-    site: "@AgentNodenet",
-  },
-};
+const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8001";
+
+interface PostType {
+  id: string;
+  name: string;
+  slug: string;
+  url_prefix: string;
+  has_archive: boolean;
+  archive_title: string | null;
+  archive_description: string | null;
+}
 
 interface Post {
   id: string;
@@ -26,80 +21,85 @@ interface Post {
   excerpt: string | null;
   cover_image_url: string | null;
   category: { id: string; name: string; slug: string } | null;
+  post_type: { id: string; name: string; slug: string; url_prefix: string } | null;
   author: { id: string; username: string };
   published_at: string | null;
   reading_time_min: number | null;
   is_featured: boolean;
 }
 
-interface Category {
-  id: string;
-  name: string;
-  slug: string;
-  post_count: number;
+async function getPostType(slug: string): Promise<PostType | null> {
+  const res = await fetch(`${BACKEND_URL}/v1/blog/post-types`, { next: { revalidate: 60 } });
+  if (!res.ok) return null;
+  const types: PostType[] = await res.json();
+  return types.find((t) => t.slug === slug) || null;
 }
 
-async function getPosts(page = 1) {
-  const url = `${process.env.BACKEND_URL || "http://localhost:8001"}/v1/blog/posts?page=${page}&per_page=20`;
+async function getPosts(postTypeSlug: string, page = 1) {
+  const url = `${BACKEND_URL}/v1/blog/posts?post_type=${postTypeSlug}&page=${page}&per_page=50`;
   const res = await fetch(url, { next: { revalidate: 60 } });
-  if (!res.ok) return { posts: [], total: 0, page: 1, per_page: 20 };
+  if (!res.ok) return { posts: [], total: 0, page: 1, per_page: 50 };
   return res.json();
 }
 
-async function getCategories() {
-  const url = `${process.env.BACKEND_URL || "http://localhost:8001"}/v1/blog/categories`;
-  const res = await fetch(url, { next: { revalidate: 60 } });
-  if (!res.ok) return [];
-  return res.json();
+export async function generateArchiveMetadata(postTypeSlug: string): Promise<Metadata> {
+  const pt = await getPostType(postTypeSlug);
+  if (!pt || !pt.has_archive) return { title: "Not Found — AgentNode" };
+
+  const title = pt.archive_title || pt.name;
+  const description = pt.archive_description || `${pt.name} from the AgentNode team.`;
+
+  return {
+    title: `${title} — AgentNode`,
+    description,
+    openGraph: {
+      title: `${title} — AgentNode`,
+      description,
+      type: "website",
+      url: `https://agentnode.net/${pt.url_prefix}`,
+      siteName: "AgentNode",
+    },
+    twitter: {
+      card: "summary",
+      site: "@AgentNodenet",
+    },
+    alternates: {
+      canonical: `https://agentnode.net/${pt.url_prefix}`,
+    },
+  };
 }
 
-export default async function BlogPage() {
-  const [postsData, categories] = await Promise.all([getPosts(), getCategories()]);
+export default async function PostTypeArchive({ postTypeSlug }: { postTypeSlug: string }) {
+  const pt = await getPostType(postTypeSlug);
+  if (!pt || !pt.has_archive) notFound();
+
+  const postsData = await getPosts(postTypeSlug);
   const posts: Post[] = postsData.posts || [];
-  const cats: Category[] = categories || [];
 
   const featured = posts.filter((p) => p.is_featured);
   const regular = posts.filter((p) => !p.is_featured);
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-16">
-      {/* Hero */}
       <div className="mb-12 text-center">
-        <h1 className="mb-3 text-4xl font-bold tracking-tight sm:text-5xl">Blog</h1>
-        <p className="text-lg text-muted">
-          Tutorials, product updates, and engineering insights from the AgentNode team.
-        </p>
+        <h1 className="mb-3 text-4xl font-bold tracking-tight sm:text-5xl">
+          {pt.archive_title || pt.name}
+        </h1>
+        {pt.archive_description && (
+          <p className="text-lg text-muted">{pt.archive_description}</p>
+        )}
       </div>
-
-      {/* Categories */}
-      {cats.length > 0 && (
-        <div className="mb-10 flex flex-wrap justify-center gap-2">
-          <Link href="/blog" className="rounded-full bg-primary/10 px-4 py-1.5 text-sm font-medium text-primary">
-            All
-          </Link>
-          {cats.filter((c) => c.post_count > 0).map((cat) => (
-            <Link
-              key={cat.id}
-              href={`/blog/category/${cat.slug}`}
-              className="rounded-full bg-card px-4 py-1.5 text-sm text-muted transition-colors hover:bg-primary/10 hover:text-primary"
-            >
-              {cat.name} ({cat.post_count})
-            </Link>
-          ))}
-        </div>
-      )}
 
       {posts.length === 0 ? (
         <div className="py-20 text-center text-muted">
-          <p className="text-lg">No posts yet. Check back soon!</p>
+          <p className="text-lg">No {pt.name.toLowerCase()} posts yet. Check back soon!</p>
         </div>
       ) : (
         <>
-          {/* Featured posts */}
           {featured.length > 0 && (
             <div className="mb-12 space-y-6">
               {featured.map((post) => (
-                <Link key={post.id} href={`/blog/${post.slug}`} className="group block">
+                <Link key={post.id} href={`/${pt.url_prefix}/${post.slug}`} className="group block">
                   <article className="overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-primary/30">
                     {post.cover_image_url && (
                       <img src={post.cover_image_url} alt={post.title} className="h-64 w-full object-cover" />
@@ -121,10 +121,9 @@ export default async function BlogPage() {
             </div>
           )}
 
-          {/* Regular posts grid */}
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {regular.map((post) => (
-              <Link key={post.id} href={`/blog/${post.slug}`} className="group block">
+              <Link key={post.id} href={`/${pt.url_prefix}/${post.slug}`} className="group block">
                 <article className="h-full overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-primary/30">
                   {post.cover_image_url && (
                     <img src={post.cover_image_url} alt={post.title} className="h-40 w-full object-cover" />
