@@ -3,7 +3,9 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { fetchWithAuth } from "@/lib/api";
+import QRCode from "qrcode";
+import { fetchWithAuth, search, type SearchHit } from "@/lib/api";
+import VerificationBadge from "@/components/VerificationBadge";
 
 interface ApiKeyInfo {
   id: string;
@@ -71,6 +73,21 @@ export default function DashboardPage() {
   const [loadingPrefs, setLoadingPrefs] = useState(false);
   const [savingPrefs, setSavingPrefs] = useState(false);
 
+  // Publisher editing (Fix 4)
+  const [editingPublisher, setEditingPublisher] = useState(false);
+  const [pubEditFields, setPubEditFields] = useState({ display_name: "", bio: "", website_url: "", github_url: "" });
+  const [savingPublisher, setSavingPublisher] = useState(false);
+
+  // My Packages (Fix 6)
+  const [myPackages, setMyPackages] = useState<SearchHit[]>([]);
+  const [loadingPackages, setLoadingPackages] = useState(false);
+
+  // API Key copy (Fix 8)
+  const [copiedKey, setCopiedKey] = useState(false);
+
+  // QR code (Fix 9)
+  const [qrDataUrl, setQrDataUrl] = useState("");
+
   useEffect(() => {
     loadUser();
     loadApiKeys();
@@ -91,6 +108,7 @@ export default function DashboardPage() {
       }
       const data = await res.json();
       setUser(data);
+      if (data.publisher?.slug) loadMyPackages(data.publisher.slug);
     } catch {
       router.push("/auth/login");
     } finally {
@@ -100,14 +118,19 @@ export default function DashboardPage() {
 
   async function setup2FA() {
     setShowSetup2FA(true);
+    setQrDataUrl("");
     const res = await fetchWithAuth("/auth/2fa/setup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });
     if (res.ok) {
       const data = await res.json();
-      setQrUri(data.provisioning_uri || data.qr_uri || "");
+      const uri = data.provisioning_uri || data.qr_uri || "";
+      setQrUri(uri);
       setSecret(data.secret || "");
+      if (uri) {
+        try { const url = await QRCode.toDataURL(uri, { width: 200, margin: 2 }); setQrDataUrl(url); } catch { /* fallback to text */ }
+      }
     }
   }
 
@@ -302,6 +325,38 @@ export default function DashboardPage() {
     router.push("/auth/login");
   }
 
+  async function loadMyPackages(publisherSlug: string) {
+    setLoadingPackages(true);
+    try {
+      const res = await search({ publisher_slug: publisherSlug, per_page: 10 });
+      setMyPackages(res.hits || []);
+    } catch { /* non-critical */ }
+    finally { setLoadingPackages(false); }
+  }
+
+  async function savePublisher() {
+    if (!user?.publisher) return;
+    setSavingPublisher(true);
+    setError("");
+    try {
+      const res = await fetchWithAuth(`/publishers/${user.publisher.slug}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pubEditFields),
+      });
+      if (res.ok) {
+        setEditingPublisher(false);
+        setSuccess("Publisher profile updated.");
+        await loadUser();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error?.message || data.detail || "Failed to update publisher");
+      }
+    } finally {
+      setSavingPublisher(false);
+    }
+  }
+
   if (loading) {
     return (
       <div className="mx-auto max-w-6xl px-6 py-24 text-center text-muted">
@@ -368,7 +423,10 @@ export default function DashboardPage() {
             <div className="flex justify-between items-center">
               <span className="text-muted">2FA</span>
               {user.two_factor_enabled ? (
-                <span className="text-success text-xs font-medium">Enabled</span>
+                <div className="text-right">
+                  <span className="text-success text-xs font-medium">Enabled</span>
+                  <p className="text-[10px] text-muted mt-0.5">Cannot be disabled for security. Contact support if needed.</p>
+                </div>
               ) : (
                 <button
                   onClick={setup2FA}
@@ -486,14 +544,17 @@ export default function DashboardPage() {
           <p className="mb-4 text-sm text-muted">
             Scan the QR code with your authenticator app, or enter the secret manually.
           </p>
-          {secret && (
-            <div className="mb-4 rounded bg-background p-3 font-mono text-xs text-foreground break-all">
-              {secret}
+          {qrDataUrl && (
+            <div className="mb-4 flex justify-center">
+              <img src={qrDataUrl} alt="2FA QR Code" width={200} height={200} className="rounded-lg" />
             </div>
           )}
-          {qrUri && (
-            <div className="mb-4 text-xs text-muted break-all">
-              URI: {qrUri}
+          {secret && (
+            <div className="mb-4">
+              <p className="mb-1 text-xs text-muted">Or enter this secret manually:</p>
+              <div className="rounded bg-background p-3 font-mono text-xs text-foreground break-all select-all">
+                {secret}
+              </div>
             </div>
           )}
           <div className="flex gap-2">
@@ -519,8 +580,95 @@ export default function DashboardPage() {
 
       {/* Publisher Section */}
       <section className="mb-8 rounded-lg border border-border bg-card p-6">
-        <h2 className="mb-4 text-lg font-semibold text-foreground">Publisher</h2>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-foreground">Publisher</h2>
+          {user.publisher && !editingPublisher && (
+            <button
+              onClick={() => {
+                setPubEditFields({
+                  display_name: user.publisher!.display_name || "",
+                  bio: "",
+                  website_url: "",
+                  github_url: "",
+                });
+                setEditingPublisher(true);
+                // Also load packages on first view
+                if (myPackages.length === 0) loadMyPackages(user.publisher!.slug);
+              }}
+              className="text-xs text-primary hover:underline"
+            >
+              Edit
+            </button>
+          )}
+        </div>
         {user.publisher ? (
+          editingPublisher ? (
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-sm text-muted">Slug</label>
+                <input
+                  type="text"
+                  value={user.publisher.slug}
+                  disabled
+                  className="w-full rounded-md border border-border bg-background/50 px-3 py-2 text-sm text-muted cursor-not-allowed"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm text-muted">Display name</label>
+                <input
+                  type="text"
+                  value={pubEditFields.display_name}
+                  onChange={(e) => setPubEditFields(f => ({ ...f, display_name: e.target.value }))}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm text-muted">Bio</label>
+                <textarea
+                  value={pubEditFields.bio}
+                  onChange={(e) => setPubEditFields(f => ({ ...f, bio: e.target.value }))}
+                  rows={2}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none resize-none"
+                  placeholder="A short bio about you or your organization"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm text-muted">Website URL</label>
+                <input
+                  type="url"
+                  value={pubEditFields.website_url}
+                  onChange={(e) => setPubEditFields(f => ({ ...f, website_url: e.target.value }))}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                  placeholder="https://example.com"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm text-muted">GitHub URL</label>
+                <input
+                  type="url"
+                  value={pubEditFields.github_url}
+                  onChange={(e) => setPubEditFields(f => ({ ...f, github_url: e.target.value }))}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                  placeholder="https://github.com/your-org"
+                />
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={savePublisher}
+                  disabled={savingPublisher}
+                  className="rounded bg-primary px-4 py-2 text-sm text-white hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {savingPublisher ? "Saving..." : "Save changes"}
+                </button>
+                <button
+                  onClick={() => setEditingPublisher(false)}
+                  className="rounded border border-border px-4 py-2 text-sm text-muted hover:bg-card"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-muted">Name</span>
@@ -548,6 +696,7 @@ export default function DashboardPage() {
               </Link>
             </div>
           </div>
+          )
         ) : (
           <div>
             {!showCreatePublisher ? (
@@ -600,6 +749,71 @@ export default function DashboardPage() {
         )}
       </section>
 
+      {/* My Packages (Fix 6) */}
+      {user.publisher && (
+        <section className="mb-8 rounded-lg border border-border bg-card p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-foreground">My Packages</h2>
+            <Link href={`/publishers/${user.publisher.slug}`} className="text-xs text-primary hover:underline">
+              View all
+            </Link>
+          </div>
+          {loadingPackages ? (
+            <p className="text-sm text-muted">Loading...</p>
+          ) : myPackages.length > 0 ? (
+            <div className="space-y-2">
+              {myPackages.map((pkg) => (
+                <div
+                  key={pkg.slug}
+                  className="flex items-center justify-between rounded-lg border border-border bg-background px-4 py-2.5 transition-colors hover:border-primary/30"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <Link href={`/packages/${pkg.slug}`} className="text-sm font-medium text-foreground truncate hover:text-primary transition-colors">
+                      {pkg.name}
+                    </Link>
+                    {pkg.latest_version && (
+                      <span className="font-mono text-xs text-muted">v{pkg.latest_version}</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <VerificationBadge
+                      tier={pkg.verification_tier}
+                      status={pkg.verification_status}
+                      score={pkg.verification_score}
+                    />
+                    {pkg.verification_score != null && (
+                      <span className="font-mono text-[11px] text-muted">{pkg.verification_score}/100</span>
+                    )}
+                    {pkg.is_deprecated && (
+                      <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-medium text-red-400">deprecated</span>
+                    )}
+                    <div className="flex items-center gap-1 ml-1">
+                      <Link
+                        href={`/packages/${pkg.slug}`}
+                        className="rounded border border-border px-2 py-0.5 text-[10px] text-muted hover:text-foreground hover:bg-card transition-colors"
+                      >
+                        View
+                      </Link>
+                      <Link
+                        href={`/packages/${pkg.slug}`}
+                        className="rounded border border-border px-2 py-0.5 text-[10px] text-muted hover:text-foreground hover:bg-card transition-colors"
+                      >
+                        Edit
+                      </Link>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-muted">
+              No packages yet.{" "}
+              <Link href="/publish" className="text-primary hover:underline">Publish your first package</Link>
+            </div>
+          )}
+        </section>
+      )}
+
       {/* API Keys Section */}
       <section className="mb-8 rounded-lg border border-border bg-card p-6">
         <h2 className="mb-4 text-lg font-semibold text-foreground">API Keys</h2>
@@ -610,9 +824,17 @@ export default function DashboardPage() {
         {createdKey && (
           <div className="mb-4 rounded-md border border-success/30 bg-success/10 px-4 py-3 text-sm">
             <p className="mb-1 font-medium text-success">Key created! Copy it now — it won&apos;t be shown again.</p>
-            <code className="block break-all rounded bg-background px-2 py-1 font-mono text-xs text-foreground">
-              {createdKey}
-            </code>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 break-all rounded bg-background px-2 py-1 font-mono text-xs text-foreground">
+                {createdKey}
+              </code>
+              <button
+                onClick={() => { navigator.clipboard.writeText(createdKey); setCopiedKey(true); setTimeout(() => setCopiedKey(false), 2000); }}
+                className="shrink-0 rounded border border-border px-3 py-1 text-xs text-muted transition-colors hover:text-foreground"
+              >
+                {copiedKey ? "Copied!" : "Copy"}
+              </button>
+            </div>
           </div>
         )}
 
@@ -695,6 +917,18 @@ export default function DashboardPage() {
             </p>
           </div>
         )}
+      </section>
+
+      {/* Account Deletion (Fix 14) */}
+      <section className="mb-8 rounded-lg border border-border bg-card p-6">
+        <h2 className="mb-2 text-lg font-semibold text-foreground">Delete Account</h2>
+        <p className="text-sm text-muted">
+          Need to delete your account? Contact{" "}
+          <a href="mailto:support@agentnode.net" className="text-primary hover:underline">
+            support@agentnode.net
+          </a>{" "}
+          and we&apos;ll process your request.
+        </p>
       </section>
     </div>
   );

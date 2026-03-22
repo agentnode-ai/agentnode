@@ -63,7 +63,7 @@ export default function HomePage() {
             {/* Left: copy */}
             <div className="flex max-w-xl flex-col items-center text-center lg:items-start lg:text-left">
               <h1 className="animate-fade-in text-4xl font-bold leading-tight tracking-tight text-foreground sm:text-5xl">
-                Build Agent Skills That Work Everywhere
+                Build <span className="text-primary">Agent Skills</span> That Work Everywhere
               </h1>
               <p className="animate-fade-in-delay-1 mt-6 text-lg leading-relaxed text-muted">
                 Agents automatically discover, verify and run capabilities across any framework.
@@ -415,12 +415,12 @@ pdf = extract({"file_path": "report.pdf"})`}</code>
             </div>
             <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
               <h3 className="mb-2 text-base font-semibold text-foreground">
-                Verified on publish
+                Scored on publish
               </h3>
               <p className="text-sm leading-relaxed text-muted">
-                Every package is installed, imported, and smoke-tested
-                before it reaches your agent. Broken tools are quarantined
-                automatically.
+                Every package is installed, smoke-tested, and scored 0&ndash;100
+                in a real sandbox. Broken tools are quarantined. Working tools
+                earn a verification tier.
               </p>
             </div>
             <div className="rounded-xl border border-primary/30 bg-primary/5 p-6">
@@ -466,25 +466,26 @@ pdf = extract({"file_path": "report.pdf"})`}</code>
       </section>
 
       {/* ============================================================ */}
-      {/*  VERIFICATION — Tools that actually work                     */}
+      {/*  VERIFICATION — Every tool verified, every score earned      */}
       {/* ============================================================ */}
       <section className="border-b border-border">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
-            Tools that actually work
+            Every tool verified. Every score earned.
           </h2>
           <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
-            Every package is verified on publish. We don&apos;t just list tools &mdash; we install them,
-            load them, and run them. Broken packages never reach your agent.
+            We don&apos;t just list tools &mdash; we install them in a sandbox, run them, and
+            score them 0&ndash;100. Broken packages are quarantined. Working packages earn
+            their verification tier.
           </p>
 
           {/* 4-step visual */}
           <div className="mx-auto max-w-3xl grid grid-cols-4 gap-3 mb-10">
             {[
-              { icon: "\u2714", label: "Install", desc: "Clean environment" },
-              { icon: "\u2714", label: "Import", desc: "Entrypoints valid" },
-              { icon: "\u2714", label: "Smoke", desc: "Tools callable" },
-              { icon: "\u2714", label: "Tests", desc: "Suite passes" },
+              { icon: "\u2714", label: "Install", desc: "Clean sandbox" },
+              { icon: "\u2714", label: "Import", desc: "Entrypoints load" },
+              { icon: "\u2714", label: "Smoke Test", desc: "Tools called" },
+              { icon: "\u2714", label: "Score", desc: "Reliability proven" },
             ].map((step) => (
               <div key={step.label} className="flex flex-col items-center gap-2 rounded-xl border border-green-500/20 bg-green-500/5 p-4">
                 <span className="text-lg text-green-400">{step.icon}</span>
@@ -494,38 +495,74 @@ pdf = extract({"file_path": "report.pdf"})`}</code>
             ))}
           </div>
 
+          {/* Tier cards */}
+          <div className="mx-auto max-w-3xl grid grid-cols-2 sm:grid-cols-4 gap-3 mb-10">
+            <div className="rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-4 text-center">
+              <div className="text-lg text-yellow-400 mb-1">{"\u2605"}</div>
+              <div className="text-sm font-semibold text-foreground">Gold</div>
+              <div className="text-[11px] text-muted">Score 90+</div>
+            </div>
+            <div className="rounded-xl border border-green-500/20 bg-green-500/5 p-4 text-center">
+              <div className="text-lg text-green-400 mb-1">{"\u2714"}</div>
+              <div className="text-sm font-semibold text-foreground">Verified</div>
+              <div className="text-[11px] text-muted">Score 70&ndash;89</div>
+            </div>
+            <div className="rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-4 text-center">
+              <div className="text-lg text-yellow-400 mb-1">{"\u25CB"}</div>
+              <div className="text-sm font-semibold text-foreground">Partial</div>
+              <div className="text-[11px] text-muted">Score 50&ndash;69</div>
+            </div>
+            <div className="rounded-xl border border-zinc-500/20 bg-zinc-500/5 p-4 text-center">
+              <div className="text-lg text-zinc-500 mb-1">&mdash;</div>
+              <div className="text-sm font-semibold text-foreground">Unverified</div>
+              <div className="text-[11px] text-muted">Score &lt;50</div>
+            </div>
+          </div>
+
           <div className="mx-auto max-w-3xl grid gap-6 sm:grid-cols-2">
             <div className="rounded-xl border border-border bg-card p-6">
               <h3 className="mb-3 text-base font-semibold text-foreground">
-                What happens if something breaks
+                What we test
               </h3>
               <ul className="space-y-2">
                 <li className="flex items-start gap-2 text-sm text-muted">
-                  <span className="text-red-400 mt-0.5 shrink-0">&bull;</span>
-                  <span>Install or import fails &rarr; package is <span className="text-red-400 font-medium">automatically quarantined</span></span>
+                  <span className="text-green-400 mt-0.5 shrink-0">&#10004;</span>
+                  Real pip install in isolated environment
                 </li>
                 <li className="flex items-start gap-2 text-sm text-muted">
-                  <span className="text-yellow-400 mt-0.5 shrink-0">&bull;</span>
-                  <span>Smoke or test issues &rarr; shown transparently as <span className="text-yellow-400 font-medium">warning</span></span>
+                  <span className="text-green-400 mt-0.5 shrink-0">&#10004;</span>
+                  Every declared entrypoint imports
+                </li>
+                <li className="flex items-start gap-2 text-sm text-muted">
+                  <span className="text-green-400 mt-0.5 shrink-0">&#10004;</span>
+                  Tools called with schema-generated inputs
+                </li>
+                <li className="flex items-start gap-2 text-sm text-muted">
+                  <span className="text-green-400 mt-0.5 shrink-0">&#10004;</span>
+                  Multi-run reliability and determinism
                 </li>
               </ul>
             </div>
             <div className="rounded-xl border border-border bg-card p-6">
               <h3 className="mb-3 text-base font-semibold text-foreground">
-                Why it matters
+                What we don&apos;t fake
               </h3>
               <ul className="space-y-2">
                 <li className="flex items-start gap-2 text-sm text-muted">
-                  <span className="text-green-400 mt-0.5 shrink-0">&#10004;</span>
-                  You only install tools that actually load
+                  <span className="text-primary mt-0.5 shrink-0">&bull;</span>
+                  No mocking &mdash; real sandbox execution
                 </li>
                 <li className="flex items-start gap-2 text-sm text-muted">
-                  <span className="text-green-400 mt-0.5 shrink-0">&#10004;</span>
-                  You see issues before they hit your agent
+                  <span className="text-primary mt-0.5 shrink-0">&bull;</span>
+                  No self-reported badges &mdash; scores from evidence
                 </li>
                 <li className="flex items-start gap-2 text-sm text-muted">
-                  <span className="text-green-400 mt-0.5 shrink-0">&#10004;</span>
-                  No more debugging broken integrations
+                  <span className="text-primary mt-0.5 shrink-0">&bull;</span>
+                  No pass/fail binary &mdash; nuanced tiers
+                </li>
+                <li className="flex items-start gap-2 text-sm text-muted">
+                  <span className="text-primary mt-0.5 shrink-0">&bull;</span>
+                  No stale results &mdash; re-verified every 30 days
                 </li>
               </ul>
             </div>
@@ -533,7 +570,7 @@ pdf = extract({"file_path": "report.pdf"})`}</code>
 
           <p className="mt-8 text-center text-sm text-muted">
             A registry is only useful if the tools inside it work.{" "}
-            <span className="text-foreground font-medium">AgentNode makes sure they do.</span>
+            <span className="text-foreground font-medium">AgentNode doesn&apos;t just check &mdash; it proves it, scores it, and keeps checking.</span>
           </p>
         </div>
       </section>

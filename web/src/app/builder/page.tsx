@@ -1,50 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { fetchWithAuth } from "@/lib/api";
-
-/* ------------------------------------------------------------------ */
-/*  Types                                                              */
-/* ------------------------------------------------------------------ */
-
-interface CodeFile {
-  path: string;
-  content: string;
-}
-
-interface BuilderMetadata {
-  package_id: string;
-  package_name: string;
-  tool_count: number;
-  detected_capability_ids: string[];
-  detected_framework: string;
-  publish_ready: boolean;
-  warnings: string[];
-}
-
-interface BuilderResult {
-  manifest_yaml: string;
-  manifest_json: Record<string, unknown>;
-  code_files: CodeFile[];
-  metadata: BuilderMetadata;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Example prompts                                                    */
-/* ------------------------------------------------------------------ */
-
-const EXAMPLES = [
-  "A tool that extracts text from PDF files and returns structured content",
-  "A tool that summarizes webpages given a URL",
-  "A tool that converts CSV files to JSON format",
-  "A tool that finds email addresses in text",
-  "A tool that translates text between languages",
-  "A tool that generates SQL queries from natural language",
-  "A tool that analyzes log files for errors and warnings",
-  "A tool that searches the web for a given query",
-];
+import {
+  type BuilderResult,
+  BUILDER_EXAMPLES as EXAMPLES,
+  generateSkill,
+  buildArtifact,
+} from "@/lib/builder-utils";
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -61,6 +25,14 @@ export default function BuilderPage() {
   );
   const [copied, setCopied] = useState<string | null>(null);
 
+  /* ---- Warn before leaving with unsaved result ---- */
+  useEffect(() => {
+    if (!result) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [result]);
+
   /* ---- Generate ---- */
   async function handleGenerate() {
     if (description.trim().length < 10) {
@@ -73,31 +45,14 @@ export default function BuilderPage() {
     setError("");
     setResult(null);
 
-    try {
-      const res = await fetchWithAuth("/builder/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description: description.trim() }),
-      });
-      if (res.ok) {
-        const data: BuilderResult = await res.json();
-        setResult(data);
-        setActiveTab("manifest");
-      } else if (res.status === 401) {
-        setError("Please log in to use the Capability Builder.");
-      } else {
-        const data = await res.json().catch(() => ({}));
-        setError(
-          data?.error?.message ||
-            data?.detail ||
-            "Generation failed. Please try again."
-        );
-      }
-    } catch {
-      setError("Network error. Please check your connection.");
-    } finally {
-      setLoading(false);
+    const res = await generateSkill(description);
+    if (res.ok && res.data) {
+      setResult(res.data);
+      setActiveTab("manifest");
+    } else {
+      setError(res.error || "Generation failed.");
     }
+    setLoading(false);
   }
 
   /* ---- Copy helper ---- */
@@ -130,40 +85,32 @@ export default function BuilderPage() {
     if (!result) return;
     setPublishing(true);
     try {
-      // Build .tar.gz artifact on server
-      const res = await fetchWithAuth("/builder/artifact", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          package_id: result.metadata.package_id,
-          manifest_json: result.manifest_json,
-          code_files: result.code_files,
-        }),
-      });
-      if (!res.ok) throw new Error("Failed to build artifact");
-
-      const artifactBlob = await res.blob();
-
-      // Store manifest JSON in sessionStorage
-      sessionStorage.setItem(
-        "builder_manifest",
-        JSON.stringify(result.manifest_json, null, 2)
+      const artifactBlob = await buildArtifact(
+        result.metadata.package_id,
+        result.manifest_json,
+        result.code_files,
       );
 
-      // Store artifact blob as base64 in sessionStorage
+      // Store manifest + artifact in sessionStorage, then navigate
       const reader = new FileReader();
       reader.onload = () => {
-        sessionStorage.setItem("builder_artifact", reader.result as string);
-        sessionStorage.setItem("builder_artifact_name", `${result.metadata.package_id}.tar.gz`);
+        sessionStorage.setItem("publish_prefill", JSON.stringify({
+          source: "builder",
+          manifestText: JSON.stringify(result.manifest_json, null, 2),
+        }));
+        sessionStorage.setItem("publish_prefill_artifact", JSON.stringify({
+          artifactFiles: reader.result as string,
+          artifactName: `${result.metadata.package_id}.tar.gz`,
+        }));
         router.push("/publish?from=builder");
       };
       reader.readAsDataURL(artifactBlob);
     } catch {
       // Fallback: navigate with just the manifest
-      sessionStorage.setItem(
-        "builder_manifest",
-        JSON.stringify(result.manifest_json, null, 2)
-      );
+      sessionStorage.setItem("publish_prefill", JSON.stringify({
+        source: "builder",
+        manifestText: JSON.stringify(result.manifest_json, null, 2),
+      }));
       router.push("/publish?from=builder");
     } finally {
       setPublishing(false);
@@ -189,16 +136,16 @@ export default function BuilderPage() {
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-primary/10 via-transparent to-transparent" />
         <div className="relative mx-auto max-w-4xl px-4 sm:px-6 pt-16 pb-6 text-center">
           <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/5 px-4 py-1.5 text-xs font-medium text-primary">
-            <span className="font-mono">&gt;_</span> Capability Builder
+            <span className="font-mono">&gt;_</span> Agent Skill Generator
           </div>
           <h1 className="text-4xl font-bold leading-tight tracking-tight text-foreground sm:text-5xl">
-            Generate a real agent capability
+            <span className="text-primary">Agent Skill Generator</span>
             <br />
-            <span className="text-primary">from a simple description</span>
+            Build Skills for Any Agent
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-lg text-muted">
-            Describe what your agent should do — get a working ANP v0.2 package
-            with code, schema, and entrypoints. Ready to edit and publish.
+            Describe what your agent should do — get a fully working ANP package
+            with code, schema and entrypoints. Ready to edit, run and publish.
           </p>
         </div>
       </section>

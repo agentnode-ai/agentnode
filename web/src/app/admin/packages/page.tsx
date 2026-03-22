@@ -9,6 +9,7 @@ interface PackageItem {
   slug: string;
   name: string;
   summary?: string;
+  description?: string | null;
   package_type: string;
   publisher_slug: string | null;
   download_count: number;
@@ -167,6 +168,146 @@ function DeleteVersionDialog({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Versions Management Modal                                          */
+/* ------------------------------------------------------------------ */
+
+interface VersionDetail {
+  version_number: string;
+  channel: string;
+  is_yanked?: boolean;
+  quarantine_status?: string;
+  verification_status?: string;
+  published_at: string;
+}
+
+function VersionsModal({
+  slug,
+  onClose,
+  onAction,
+}: {
+  slug: string;
+  onClose: () => void;
+  onAction: () => void;
+}) {
+  const [versions, setVersions] = useState<VersionDetail[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [actionMsg, setActionMsg] = useState("");
+
+  useEffect(() => {
+    loadVersions();
+  }, [slug]);
+
+  async function loadVersions() {
+    setLoading(true);
+    try {
+      const res = await fetchWithAuth(`/admin/packages/${slug}/versions`);
+      if (res.ok) {
+        const data = await res.json();
+        setVersions(data.versions ?? []);
+      }
+    } catch { /* ignore */ }
+    setLoading(false);
+  }
+
+  async function handleYank(version: string) {
+    setActionMsg("");
+    const res = await fetchWithAuth(`/admin/packages/${slug}/versions/${version}/yank`, { method: "POST" });
+    if (res.ok) {
+      setActionMsg(`Yanked ${version}`);
+      await loadVersions();
+      onAction();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      setActionMsg(d.error?.message || "Yank failed");
+    }
+  }
+
+  async function handleUnyank(version: string) {
+    setActionMsg("");
+    const res = await fetchWithAuth(`/admin/packages/${slug}/versions/${version}/unyank`, { method: "POST" });
+    if (res.ok) {
+      setActionMsg(`Unyanked ${version}`);
+      await loadVersions();
+      onAction();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      setActionMsg(d.error?.message || "Unyank failed");
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="w-full max-w-lg rounded-lg border border-border bg-card p-6 shadow-xl max-h-[80vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-foreground">
+            Versions &mdash; <span className="font-mono text-primary">{slug}</span>
+          </h3>
+          <button onClick={onClose} className="text-muted hover:text-foreground text-lg">&times;</button>
+        </div>
+        {actionMsg && (
+          <p className="mb-3 text-xs text-primary">{actionMsg}</p>
+        )}
+        {loading ? (
+          <p className="text-sm text-muted">Loading...</p>
+        ) : versions.length === 0 ? (
+          <p className="text-sm text-muted">No versions found.</p>
+        ) : (
+          <div className="space-y-2">
+            {versions.map((v) => (
+              <div
+                key={v.version_number}
+                className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`font-mono text-sm ${v.is_yanked ? "line-through text-muted" : "text-foreground"}`}>
+                    v{v.version_number}
+                  </span>
+                  <span className="text-[10px] text-muted">{v.channel}</span>
+                  {v.is_yanked && (
+                    <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-medium text-red-400">yanked</span>
+                  )}
+                  {v.quarantine_status === "quarantined" && (
+                    <span className="rounded-full bg-yellow-500/10 px-2 py-0.5 text-[10px] font-medium text-yellow-400">quarantined</span>
+                  )}
+                  {v.verification_status && (
+                    <span className="text-[10px] text-muted">{v.verification_status}</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-[10px] text-muted">
+                    {new Date(v.published_at).toLocaleDateString()}
+                  </span>
+                  {v.is_yanked ? (
+                    <button
+                      onClick={() => handleUnyank(v.version_number)}
+                      className="rounded bg-green-500/20 px-2.5 py-1 text-[11px] font-medium text-green-400 hover:bg-green-500/30"
+                    >
+                      Unyank
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => handleYank(v.version_number)}
+                      className="rounded bg-red-500/20 px-2.5 py-1 text-[11px] font-medium text-red-400 hover:bg-red-500/30"
+                    >
+                      Yank
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="rounded border border-border px-4 py-1.5 text-sm text-muted hover:bg-card">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Inline Edit Row                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -176,11 +317,12 @@ function InlineEditRow({
   onCancel,
 }: {
   pkg: PackageItem;
-  onSave: (name: string, summary: string) => void;
+  onSave: (name: string, summary: string, description: string) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(pkg.name);
   const [summary, setSummary] = useState(pkg.summary ?? "");
+  const [description, setDescription] = useState(pkg.description ?? "");
   return (
     <tr className="border-b border-border/50 bg-primary/5">
       <td className="px-4 py-2.5" colSpan={2}>
@@ -196,11 +338,18 @@ function InlineEditRow({
           onChange={(e) => setSummary(e.target.value)}
           className="w-full rounded border border-border bg-background px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none"
         />
+        <label className="mt-2 block text-xs text-muted mb-1">Description</label>
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={3}
+          className="w-full rounded border border-border bg-background px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none resize-y"
+        />
       </td>
       <td className="px-4 py-2.5" colSpan={5}>
         <div className="flex items-end gap-2 h-full">
           <button
-            onClick={() => onSave(name.trim(), summary.trim())}
+            onClick={() => onSave(name.trim(), summary.trim(), description.trim())}
             disabled={!name.trim()}
             className="rounded bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary/90 disabled:opacity-40"
           >
@@ -229,6 +378,7 @@ function ActionsDropdown({
   onUndeprecate,
   onEdit,
   onQuarantine,
+  onManageVersions,
 }: {
   pkg: PackageItem;
   onDelete: () => void;
@@ -236,6 +386,7 @@ function ActionsDropdown({
   onUndeprecate: () => void;
   onEdit: () => void;
   onQuarantine: () => void;
+  onManageVersions: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -263,6 +414,12 @@ function ActionsDropdown({
             className="block w-full px-4 py-2 text-left text-sm text-foreground hover:bg-primary/10"
           >
             Edit
+          </button>
+          <button
+            onClick={() => { setOpen(false); onManageVersions(); }}
+            className="block w-full px-4 py-2 text-left text-sm text-foreground hover:bg-primary/10"
+          >
+            Versions
           </button>
           {pkg.is_deprecated ? (
             <button
@@ -331,6 +488,9 @@ export default function AdminPackagesPage() {
     slug: string;
     version: string;
   } | null>(null);
+
+  // Versions modal
+  const [versionsTarget, setVersionsTarget] = useState<string | null>(null);
 
   // Inline editing
   const [editingSlug, setEditingSlug] = useState<string | null>(null);
@@ -449,13 +609,13 @@ export default function AdminPackagesPage() {
 
   /* ---- Edit package ---- */
 
-  async function handleEditSave(slug: string, name: string, summary: string) {
+  async function handleEditSave(slug: string, name: string, summary: string, description: string) {
     setError("");
     setSuccess("");
     const res = await fetchWithAuth(`/admin/packages/${slug}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, summary }),
+      body: JSON.stringify({ name, summary, description: description || null }),
     });
     if (res.ok) {
       setSuccess(`Updated: ${slug}`);
@@ -536,6 +696,13 @@ export default function AdminPackagesPage() {
           version={deleteVersionTarget.version}
           onConfirm={handleDeleteVersion}
           onCancel={() => setDeleteVersionTarget(null)}
+        />
+      )}
+      {versionsTarget && (
+        <VersionsModal
+          slug={versionsTarget}
+          onClose={() => setVersionsTarget(null)}
+          onAction={loadData}
         />
       )}
 
@@ -687,7 +854,7 @@ export default function AdminPackagesPage() {
                       <InlineEditRow
                         key={p.id}
                         pkg={p}
-                        onSave={(name, summary) => handleEditSave(p.slug, name, summary)}
+                        onSave={(name, summary, description) => handleEditSave(p.slug, name, summary, description)}
                         onCancel={() => setEditingSlug(null)}
                       />
                     ) : (
@@ -738,6 +905,7 @@ export default function AdminPackagesPage() {
                           <ActionsDropdown
                             pkg={p}
                             onEdit={() => setEditingSlug(p.slug)}
+                            onManageVersions={() => setVersionsTarget(p.slug)}
                             onDelete={() => setDeleteTarget(p.slug)}
                             onDeprecate={() => handleDeprecate(p.slug)}
                             onUndeprecate={() => handleUndeprecate(p.slug)}

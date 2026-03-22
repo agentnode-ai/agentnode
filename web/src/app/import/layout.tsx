@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Import Agent Skills — Convert LangChain, MCP & CrewAI Tools",
+  title: "Agent Skill Import — Turn Any Tool Into an AgentNode Package",
   description:
-    "Convert your existing AI tools into portable agent skills. Paste LangChain, MCP, CrewAI, or OpenAI code and get a verified ANP package — zero rewrites needed.",
+    "Paste code from LangChain, MCP, OpenAI or CrewAI — get a verified, publishable ANP package in seconds. Ready to run on any agent.",
   openGraph: {
-    title: "Import Agent Skills — Convert LangChain, MCP & CrewAI Tools",
+    title: "Agent Skill Import — Turn Any Tool Into an AgentNode Package",
     description:
-      "Convert existing AI tools into portable agent skills. Paste your code and get a verified ANP package — zero rewrites.",
+      "Paste code from LangChain, MCP, OpenAI or CrewAI — get a verified, publishable ANP package in seconds. Ready to run on any agent.",
     type: "website",
     url: "https://agentnode.net/import",
     siteName: "AgentNode",

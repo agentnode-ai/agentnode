@@ -11,6 +11,8 @@ interface PackageCardProps {
   version?: string;
   download_count?: number;
   verification_status?: string | null;
+  verification_tier?: string | null;
+  verification_score?: number | null;
 }
 
 function formatDownloads(count: number): string {
@@ -28,6 +30,8 @@ export default function PackageCard({
   version,
   download_count,
   verification_status,
+  verification_tier,
+  verification_score,
 }: PackageCardProps) {
   return (
     <Link
@@ -44,7 +48,11 @@ export default function PackageCard({
           )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <VerificationBadge status={verification_status} />
+          <VerificationBadge
+            tier={verification_tier}
+            score={verification_score}
+            status={!verification_tier ? verification_status : undefined}
+          />
           <TrustBadge level={trust_level} />
         </div>
       </div>

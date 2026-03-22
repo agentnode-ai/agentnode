@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "AI Agent Skill Builder — Create Agent Skills in Minutes",
+  title: "Agent Skill Generator — Build Skills for Any AI Agent",
   description:
-    "Build verified agent skills with AI. Describe what your tool does and get a complete ANP package — manifest, code, schemas — ready to publish on AgentNode.",
+    "Describe what your agent should do — get a fully working ANP package with code, schema and entrypoints. Ready to edit, run and publish on AgentNode.",
   openGraph: {
     title: "AI Agent Skill Builder — Create Agent Skills in Minutes",
     description:

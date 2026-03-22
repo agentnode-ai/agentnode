@@ -28,6 +28,9 @@ const navItems = [
   { href: "/admin/email", label: "Email / SMTP", icon: "✉" },
   { href: "/admin/api-keys", label: "API Keys", icon: "🔑" },
   { href: "/admin/audit", label: "Audit Log", icon: "☰" },
+  { href: "/admin/blog", label: "Blog", icon: "✎" },
+  { href: "/admin/media", label: "Media", icon: "▣" },
+  { href: "/admin/sitemap", label: "Sitemap", icon: "◎" },
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {

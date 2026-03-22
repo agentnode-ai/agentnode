@@ -1,122 +1,21 @@
 "use client";
 
 import { useState, useRef } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
-
-/* ------------------------------------------------------------------ */
-/*  Platform definitions                                               */
-/* ------------------------------------------------------------------ */
-
-const PLATFORMS = [
-  {
-    id: "langchain",
-    name: "LangChain",
-    icon: "🦜",
-    example: `from langchain.tools import BaseTool
-from pydantic import BaseModel, Field
-
-class SearchInput(BaseModel):
-    query: str = Field(description="Search query")
-    max_results: int = Field(default=5, description="Max results")
-
-class WebSearchTool(BaseTool):
-    name = "web_search"
-    description = "Search the web and return structured results"
-    args_schema = SearchInput
-
-    def _run(self, query: str, max_results: int = 5) -> dict:
-        """Execute web search."""
-        results = perform_search(query, max_results)
-        return {"results": results, "count": len(results)}`,
-  },
-  {
-    id: "mcp",
-    name: "MCP",
-    icon: "⚡",
-    example: `from mcp.server import Server
-from mcp.types import Tool
-
-server = Server("my-tools")
-
-@server.tool()
-async def analyze_csv(file_path: str, operation: str = "describe") -> str:
-    """Analyze a CSV file — describe columns, show head, or compute stats."""
-    import pandas as pd
-    df = pd.read_csv(file_path)
-    if operation == "describe":
-        return df.describe().to_string()
-    elif operation == "head":
-        return df.head(10).to_string()
-    return f"Columns: {list(df.columns)}"`,
-  },
-  {
-    id: "openai",
-    name: "OpenAI Functions",
-    icon: "🤖",
-    example: `[
-  {
-    "name": "create_github_issue",
-    "description": "Create a new issue in a GitHub repository",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "repo": {"type": "string", "description": "Repository (owner/name)"},
-        "title": {"type": "string", "description": "Issue title"},
-        "body": {"type": "string", "description": "Issue body"}
-      },
-      "required": ["repo", "title"]
-    }
-  },
-  {
-    "name": "list_repos",
-    "description": "List repositories for the authenticated user",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "sort": {"type": "string", "enum": ["created", "updated", "pushed"]}
-      }
-    }
-  }
-]`,
-  },
-  {
-    id: "crewai",
-    name: "CrewAI",
-    icon: "🚀",
-    example: `from crewai_tools import tool
-
-@tool("Summarize Document")
-def summarize_document(file_path: str, max_length: int = 500) -> str:
-    """Read a document and return a concise summary."""
-    with open(file_path) as f:
-        content = f.read()
-    return generate_summary(content, max_length)`,
-  },
-];
-
-/* ------------------------------------------------------------------ */
-/*  Parsed result type                                                 */
-/* ------------------------------------------------------------------ */
-
-interface ParsedTool {
-  name: string;
-  description: string;
-  capability_id: string;
-}
-
-interface ConversionResult {
-  manifest: string;
-  tools: ParsedTool[];
-  detectedFramework: string;
-  packageId: string;
-  toolCount: number;
-}
+import {
+  PLATFORMS,
+  type ConversionResult,
+  convertClientSide,
+  parseResult,
+} from "@/lib/import-utils";
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
 export default function ImportPage() {
+  const router = useRouter();
   const [platform, setPlatform] = useState("langchain");
   const [code, setCode] = useState("");
   const [result, setResult] = useState<ConversionResult | null>(null);
@@ -147,8 +46,13 @@ export default function ImportPage() {
         const manifest = data.manifest_yaml || data.manifest || "";
         setResult(parseResult(manifest, platform));
       } else {
-        const data = await res.json().catch(() => ({}));
-        setError(data.error || data.detail || "Conversion failed");
+        // API not available — fall back to client-side conversion
+        const manifest = convertClientSide(platform, code);
+        if (manifest.startsWith("# No tools")) {
+          setError("No tools detected. Check your input format and try again.");
+        } else {
+          setResult(parseResult(manifest, platform));
+        }
       }
     } catch {
       const manifest = convertClientSide(platform, code);
@@ -190,13 +94,12 @@ export default function ImportPage() {
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-primary/10 via-transparent to-transparent" />
         <div className="relative mx-auto max-w-4xl px-4 sm:px-6 pt-16 pb-6 text-center">
           <h1 className="text-4xl font-bold leading-tight tracking-tight text-foreground sm:text-5xl">
-            Turn any AI tool into an
+            <span className="text-primary">Agent Skill Import</span>
             <br />
-            <span className="text-primary">AgentNode package</span>
+            Turn Any Tool Into an AgentNode Package
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-lg text-muted">
-            Paste code from LangChain, MCP, OpenAI, or CrewAI.
-            Get a publishable ANP package in seconds.
+            Paste code from LangChain, MCP, OpenAI or CrewAI — get a verified, publishable ANP package in seconds. Ready to run on any agent.
           </p>
         </div>
       </section>
@@ -366,12 +269,18 @@ export default function ImportPage() {
                     Make it discoverable and installable by any AI agent — across LangChain, CrewAI, MCP, and more.
                   </p>
                 </div>
-                <Link
-                  href={`/publish?manifest=${encodeURIComponent(result.manifest)}`}
+                <button
+                  onClick={() => {
+                    sessionStorage.setItem("publish_prefill", JSON.stringify({
+                      source: "import",
+                      manifestText: result.manifest,
+                    }));
+                    router.push("/publish?from=import");
+                  }}
                   className="shrink-0 rounded-xl bg-primary px-8 py-3 text-center text-sm font-bold text-white transition-colors hover:bg-primary/90"
                 >
                   Publish on AgentNode
-                </Link>
+                </button>
               </div>
 
               <div className="mt-5 flex flex-wrap gap-4">
@@ -553,120 +462,3 @@ export default function ImportPage() {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Parse result into structured data                                  */
-/* ------------------------------------------------------------------ */
-
-function parseResult(manifest: string, platform: string): ConversionResult {
-  const tools: ParsedTool[] = [];
-  let packageId = "";
-
-  // Extract tools
-  const toolRegex = /- name:\s*(\S+)\n\s*capability_id:\s*(\S+)/g;
-  let m;
-  while ((m = toolRegex.exec(manifest)) !== null) {
-    tools.push({ name: m[1], description: "", capability_id: m[2] });
-  }
-
-  // Extract package_id
-  const pkgMatch = manifest.match(/package_id:\s*(\S+)/);
-  if (pkgMatch) packageId = pkgMatch[1];
-
-  return {
-    manifest,
-    tools,
-    detectedFramework: platform,
-    packageId,
-    toolCount: tools.length,
-  };
-}
-
-/* ------------------------------------------------------------------ */
-/*  Client-side conversion (fallback when API not available)           */
-/* ------------------------------------------------------------------ */
-
-function convertClientSide(platform: string, content: string): string {
-  const KEYWORDS: Record<string, string> = {
-    pdf: "pdf_extraction", search: "web_search", web: "web_search",
-    email: "email_sending", slack: "slack_integration", sql: "sql_generation",
-    database: "database_access", csv: "csv_analysis", image: "image_analysis",
-    translate: "text_translation", summarize: "document_summary",
-    code: "code_execution", file: "file_conversion", api: "api_integration",
-    github: "github_integration", docker: "docker_management",
-    browser: "browser_automation", screenshot: "screenshot_capture",
-    analyze: "data_analysis", extract: "pdf_extraction",
-  };
-
-  function guessCapId(name: string, desc: string): string {
-    const text = `${name} ${desc}`.toLowerCase();
-    for (const [kw, cap] of Object.entries(KEYWORDS)) {
-      if (text.includes(kw)) return cap;
-    }
-    return name.replace(/([A-Z])/g, "_$1").toLowerCase().replace(/^_/, "").replace(/[^a-z0-9_]/g, "_");
-  }
-
-  const tools: { name: string; description: string }[] = [];
-
-  if (platform === "openai") {
-    try {
-      const data = JSON.parse(content);
-      const fns = Array.isArray(data) ? data : data.functions || data.tools || [data];
-      for (const fn of fns) {
-        const f = fn.function || fn;
-        if (f.name) tools.push({ name: f.name, description: f.description || "" });
-      }
-    } catch { /* skip */ }
-  } else {
-    // Python-based: extract def/class patterns
-    const defRegex = /def\s+(\w+)\s*\([^)]*\)(?:\s*->[^:]+)?:\s*\n\s*"""([^"]*?)"""/g;
-    let m: RegExpExecArray | null;
-    while ((m = defRegex.exec(content)) !== null) {
-      const match = m;
-      if (!["run", "__init__", "setUp", "test_"].some((skip) => match[1].startsWith(skip))) {
-        tools.push({ name: match[1], description: match[2].trim().split("\n")[0] });
-      }
-    }
-    const classRegex = /class\s+(\w+)\s*\([^)]*Tool[^)]*\)[\s\S]*?name\s*[:=]\s*["']([^"']+)["'][\s\S]*?description\s*[:=]\s*["']([^"']+)["']/g;
-    while ((m = classRegex.exec(content)) !== null) {
-      tools.push({ name: m[2], description: m[3] });
-    }
-    // @tool decorator
-    const decoratorRegex = /@(?:server\.)?tool\((?:["']([^"']+)["'])?\)\s*\n(?:async\s+)?def\s+(\w+)\s*\([^)]*\)(?:\s*->[^:]+)?:\s*\n\s*"""([^"]*?)"""/g;
-    while ((m = decoratorRegex.exec(content)) !== null) {
-      const name = m[1] || m[2];
-      tools.push({ name: name.toLowerCase().replace(/\s+/g, "_"), description: m[3].trim().split("\n")[0] });
-    }
-  }
-
-  if (tools.length === 0) return "# No tools detected. Check your input format.";
-
-  const slug = tools[0].name.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-") + "-pack";
-  const moduleName = slug.replace(/-/g, "_");
-
-  const capTools = tools
-    .map(
-      (t) =>
-        `    - name: "${t.name}"\n      capability_id: "${guessCapId(t.name, t.description)}"\n      description: "${t.description}"\n      entrypoint: "${moduleName}.tool:${t.name}"`
-    )
-    .join("\n");
-
-  return `manifest_version: "0.2"
-package_id: "${slug}"
-package_type: toolpack
-name: "${slug
-    .split("-")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ")}"
-publisher: "your-publisher-name"
-version: "1.0.0"
-summary: "${tools[0].description.slice(0, 200)}"
-runtime: python
-entrypoint: "${moduleName}.tool"
-capabilities:
-  tools:
-${capTools}
-compatibility:
-  frameworks:
-    - generic
-tags: [${tools.map((t) => `"${t.name}"`).join(", ")}]`;
-}

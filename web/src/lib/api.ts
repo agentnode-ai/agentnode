@@ -16,6 +16,8 @@ export interface SearchHit {
   download_count: number;
   is_deprecated: boolean;
   verification_status: string | null;
+  verification_score?: number | null;
+  verification_tier?: string | null;
 }
 
 export interface SearchResponse {
@@ -91,7 +93,7 @@ export async function fetchWithAuth(endpoint: string, options?: RequestInit): Pr
   return res;
 }
 
-export async function search(params: SearchParams): Promise<SearchResponse> {
+export async function search(params: SearchParams & { publisher_slug?: string }): Promise<SearchResponse> {
   const body: Record<string, unknown> = {};
   if (params.q) body.q = params.q;
   if (params.package_type) body.package_type = params.package_type;
@@ -102,9 +104,14 @@ export async function search(params: SearchParams): Promise<SearchResponse> {
   if (params.sort_by) body.sort_by = params.sort_by;
   if (params.page) body.page = params.page;
   if (params.per_page) body.per_page = params.per_page;
+  if (params.publisher_slug) body.publisher_slug = params.publisher_slug;
 
   return fetchAPI<SearchResponse>("/search", {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export async function fetchAllVersions(slug: string): Promise<Response> {
+  return fetchWithAuth(`/packages/${encodeURIComponent(slug)}/versions/all`);
 }
