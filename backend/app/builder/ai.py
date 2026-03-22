@@ -45,6 +45,16 @@ RULES:
 - compatibility.frameworks MUST be ["generic"]
 - manifest_version MUST be "0.2"
 
+ADDITIONAL FIELDS TO GENERATE:
+- "readme_code": A full Markdown README with: Quick Start, Usage examples, API Reference, License section
+- "use_cases": Array of 3-5 strings, each "verb + concrete object" (e.g. "Extract tables from PDF files")
+- "examples": Array of structured code examples: [{"title": "...", "language": "python", "code": "..."}]
+
+The manifest should also include:
+- "use_cases": same as above
+- "examples": same as above
+- "env_requirements": array of {"name": "ENV_VAR", "required": true/false, "description": "..."} if any API keys needed
+
 RESPONSE FORMAT — respond with ONLY a JSON object, no markdown, no explanation:
 {
   "package_id": "...",
@@ -57,6 +67,9 @@ RESPONSE FORMAT — respond with ONLY a JSON object, no markdown, no explanation
   "init_code": "... __init__.py content ...",
   "pyproject": "... pyproject.toml content ...",
   "test_code": "... test file content ...",
+  "readme_code": "... full Markdown README ...",
+  "use_cases": ["...", "..."],
+  "examples": [{"title": "...", "language": "python", "code": "..."}],
   "dependencies": ["requests", ...],
   "warnings": []
 }"""
@@ -101,10 +114,7 @@ async def generate_with_ai(description: str) -> BuilderGenerateResponse:
     package_id = data["package_id"]
     module_name = data["module_name"]
     tool_name = data["tool_name"]
-    manifest = data["manifest"]
-
-    # Build manifest YAML from the JSON for display
-    manifest_yaml = _json_to_yaml(manifest)
+    ai_manifest = data["manifest"]
 
     code_files = [
         CodeFile(path=f"src/{module_name}/tool.py", content=data["tool_code"]),
@@ -113,23 +123,28 @@ async def generate_with_ai(description: str) -> BuilderGenerateResponse:
         CodeFile(path=f"tests/test_{tool_name}.py", content=data.get("test_code", "")),
     ]
 
-    # Extract capability IDs — handle both dict and list formats from AI
-    cap_ids = data.get("capability_ids", [])
-    if not cap_ids:
-        capabilities = manifest.get("capabilities") if isinstance(manifest, dict) else None
-        if isinstance(capabilities, dict):
-            tools = capabilities.get("tools", [])
-            if isinstance(tools, list):
-                cap_ids = [t["capability_id"] for t in tools if isinstance(t, dict) and "capability_id" in t]
+    # Add README if generated
+    readme_code = data.get("readme_code")
+    if readme_code:
+        code_files.append(CodeFile(path="README.md", content=readme_code))
 
-    # Count tools robustly
-    tool_count = 1
-    if isinstance(manifest, dict):
-        capabilities = manifest.get("capabilities")
-        if isinstance(capabilities, dict):
-            tools = capabilities.get("tools", [])
-            if isinstance(tools, list):
-                tool_count = len(tools) or 1
+    # --- Normalize AI manifest into publish-compatible format ---
+    manifest = _normalize_manifest(ai_manifest, data, package_id, module_name, tool_name)
+
+    # Extract capability IDs from normalized manifest
+    cap_ids: list[str] = []
+    for t in manifest.get("capabilities", {}).get("tools", []):
+        if isinstance(t, dict) and t.get("capability_id"):
+            cap_ids.append(t["capability_id"])
+    if not cap_ids:
+        cap_ids = data.get("capability_ids", [])
+
+    tool_count = len(manifest.get("capabilities", {}).get("tools", []))
+    if tool_count == 0:
+        tool_count = 1
+
+    # Build manifest YAML from the normalized JSON for display
+    manifest_yaml = _json_to_yaml(manifest)
 
     metadata = BuilderMetadata(
         package_id=package_id,
@@ -147,6 +162,121 @@ async def generate_with_ai(description: str) -> BuilderGenerateResponse:
         code_files=code_files,
         metadata=metadata,
     )
+
+
+def _normalize_manifest(ai: dict, data: dict, package_id: str, module_name: str, tool_name: str) -> dict:
+    """Normalize an AI-generated manifest into publish-compatible format.
+
+    The AI generates inconsistent manifest formats. This function ensures the
+    manifest always has the fields the Publish UI expects:
+    - name (not display_name or package_name)
+    - summary
+    - capabilities.tools[] with name, description, capability_id, entrypoint
+    - permissions with nested level keys
+    """
+    # --- Basic fields ---
+    name = ai.get("name") or ai.get("display_name") or ai.get("package_name") or data.get("package_name", "")
+    summary = ai.get("summary") or ai.get("description") or ""
+    description = ai.get("description") or summary
+    version = ai.get("version") or "1.0.0"
+
+    # --- Tools ---
+    tools: list[dict] = []
+    ai_caps = ai.get("capabilities")
+    ai_tools = ai.get("tools")
+
+    # Case 1: capabilities.tools[] (correct format)
+    if isinstance(ai_caps, dict) and isinstance(ai_caps.get("tools"), list):
+        for t in ai_caps["tools"]:
+            if isinstance(t, dict):
+                tools.append(_normalize_tool(t, module_name))
+    # Case 2: tools[] at top level (some AI outputs)
+    elif isinstance(ai_tools, list) and ai_tools and isinstance(ai_tools[0], dict):
+        for t in ai_tools:
+            tools.append(_normalize_tool(t, module_name))
+
+    # Case 3: no tools array — build from top-level entrypoint + capability_ids
+    if not tools:
+        cap_ids = data.get("capability_ids", [])
+        if isinstance(ai_caps, list):
+            cap_ids = ai_caps  # capabilities: ["web_search", ...] format
+        entrypoint = ai.get("entrypoint") or f"{module_name}.tool:{tool_name}"
+        tools.append({
+            "name": tool_name,
+            "description": description,
+            "capability_id": cap_ids[0] if cap_ids else "",
+            "entrypoint": entrypoint,
+        })
+
+    # --- Permissions ---
+    perms = ai.get("permissions", {})
+    normalized_perms = {}
+    for key in ("network", "filesystem", "code_execution", "data_access", "user_approval"):
+        val = perms.get(key, {})
+        if isinstance(val, dict) and "level" in val:
+            normalized_perms[key] = val
+        elif isinstance(val, str):
+            normalized_perms[key] = {"level": val}
+        else:
+            normalized_perms[key] = {"level": "none"}
+
+    # --- Frameworks ---
+    compat = ai.get("compatibility", {})
+    if isinstance(compat, dict) and isinstance(compat.get("frameworks"), list):
+        frameworks = compat["frameworks"]
+    else:
+        frameworks = ["generic"]
+
+    result = {
+        "manifest_version": "0.2",
+        "package_id": package_id,
+        "package_type": ai.get("package_type", "toolpack"),
+        "name": name,
+        "publisher": ai.get("publisher", ""),
+        "version": version,
+        "summary": summary,
+        "description": description,
+        "runtime": "python",
+        "install_mode": "package",
+        "hosting_type": "agentnode_hosted",
+        "capabilities": {"tools": tools},
+        "compatibility": {"frameworks": frameworks},
+        "permissions": normalized_perms,
+    }
+
+    # Enrichment fields
+    if ai.get("use_cases"):
+        result["use_cases"] = ai["use_cases"]
+    if ai.get("examples"):
+        result["examples"] = ai["examples"]
+    if ai.get("env_requirements"):
+        result["env_requirements"] = ai["env_requirements"]
+
+    return result
+
+
+def _normalize_tool(t: dict, module_name: str) -> dict:
+    """Normalize a single tool entry from AI output."""
+    name = t.get("name") or t.get("id") or t.get("display_name") or ""
+    # capability_id: string or first from array
+    cap_id = t.get("capability_id") or ""
+    if not cap_id and isinstance(t.get("capability_ids"), list) and t["capability_ids"]:
+        cap_id = t["capability_ids"][0]
+    entrypoint = t.get("entrypoint") or ""
+    if not entrypoint and name:
+        entrypoint = f"{module_name}.tool:{name}"
+
+    tool: dict = {
+        "name": name,
+        "description": t.get("description") or "",
+        "capability_id": cap_id,
+        "entrypoint": entrypoint,
+    }
+    if t.get("input_schema") or t.get("parameters"):
+        tool["input_schema"] = t.get("input_schema") or t.get("parameters")
+    if t.get("output_schema") or t.get("returns"):
+        tool["output_schema"] = t.get("output_schema") or t.get("returns")
+    return tool
 
 
 def _json_to_yaml(obj: dict | list | str | int | float | bool | None, indent: int = 0) -> str:

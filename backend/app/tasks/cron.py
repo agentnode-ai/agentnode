@@ -207,6 +207,51 @@ async def cleanup_stale_verification_dirs():
         logger.exception("cleanup_stale_verification_dirs failed")
 
 
+# --- Task: Scheduled reverification (Phase 4C, every 6h) ---
+
+async def scheduled_reverification():
+    """Re-verify packages > N days old. Max batch_size per run."""
+    try:
+        from app.config import settings
+
+        if not settings.VERIFICATION_REVERIFY_ENABLED:
+            return
+
+        from app.packages.models import PackageVersion
+        from app.verification.pipeline import run_verification
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=settings.VERIFICATION_REVERIFY_DAYS)
+        batch_size = settings.VERIFICATION_REVERIFY_BATCH
+
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(PackageVersion)
+                .where(
+                    PackageVersion.artifact_object_key.isnot(None),
+                    PackageVersion.verification_status != "running",
+                    PackageVersion.last_verified_at < cutoff,
+                )
+                .order_by(PackageVersion.last_verified_at.asc().nullsfirst())
+                .limit(batch_size)
+            )
+            versions = result.scalars().all()
+
+            if not versions:
+                return
+
+            logger.info(f"Scheduled reverification: {len(versions)} package(s) due")
+
+            for pv in versions:
+                try:
+                    await run_verification(pv.id, triggered_by="scheduled")
+                    await asyncio.sleep(5)  # Spacing between runs
+                except Exception:
+                    logger.exception(f"Scheduled reverification failed for {pv.id}")
+
+    except Exception:
+        logger.exception("scheduled_reverification task failed")
+
+
 # --- Scheduler loop ---
 
 async def _run_periodic(interval_seconds: int, func, name: str):
@@ -254,6 +299,11 @@ def start_cron_tasks():
 
     _tasks.append(loop.create_task(
         _run_periodic(3600, cleanup_stale_verification_dirs, "verification_cleanup")
+    ))
+
+    # Phase 4C: Scheduled reverification every 6 hours
+    _tasks.append(loop.create_task(
+        _run_periodic(21600, scheduled_reverification, "scheduled_reverification")
     ))
 
     logger.info(f"Started {len(_tasks)} cron tasks")

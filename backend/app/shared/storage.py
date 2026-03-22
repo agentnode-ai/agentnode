@@ -54,6 +54,12 @@ def download_artifact(object_key: str) -> bytes:
     return response["Body"].read()
 
 
+def delete_artifact(object_key: str) -> None:
+    """Delete an object from S3."""
+    client = get_s3_client()
+    client.delete_object(Bucket=settings.S3_BUCKET, Key=object_key)
+
+
 def generate_presigned_url(object_key: str, expires_in: int = 900) -> str:
     """Generate a presigned download URL. Default expiry: 15 minutes."""
     client = _get_public_s3_client()
@@ -62,3 +68,51 @@ def generate_presigned_url(object_key: str, expires_in: int = 900) -> str:
         Params={"Bucket": settings.S3_BUCKET, "Key": object_key},
         ExpiresIn=expires_in,
     )
+
+
+# --- Preview file storage for file browser ---
+
+PREVIEW_EXTENSIONS = {".md", ".py", ".ts", ".js", ".json", ".yaml", ".yml", ".toml", ".txt", ".cfg", ".ini"}
+PREVIEW_MAX_BYTES = 500 * 1024  # 500KB
+PREVIEW_MAX_LINES = 2000
+
+_CONTENT_TYPE_MAP = {
+    ".md": "text/markdown", ".py": "text/x-python", ".ts": "text/typescript",
+    ".js": "text/javascript", ".json": "application/json", ".yaml": "text/yaml",
+    ".yml": "text/yaml", ".toml": "text/toml", ".txt": "text/plain",
+    ".cfg": "text/plain", ".ini": "text/plain",
+}
+
+
+def _preview_key(version_id: str, file_path: str) -> str:
+    return f"previews/{version_id}/{file_path}"
+
+
+def upload_preview_file(version_id: str, file_path: str, content: str) -> str:
+    """Upload a preview file to S3. Returns the object key."""
+    import os
+    ext = os.path.splitext(file_path)[1].lower()
+    content_type = _CONTENT_TYPE_MAP.get(ext, "text/plain")
+    key = _preview_key(version_id, file_path)
+    client = get_s3_client()
+    client.put_object(
+        Bucket=settings.S3_BUCKET,
+        Key=key,
+        Body=content.encode("utf-8"),
+        ContentType=content_type,
+        CacheControl="public, max-age=31536000, immutable",
+    )
+    return key
+
+
+def download_preview_file(version_id: str, file_path: str) -> str | None:
+    """Download a preview file from S3. Returns content string or None."""
+    key = _preview_key(version_id, file_path)
+    try:
+        client = get_s3_client()
+        response = client.get_object(Bucket=settings.S3_BUCKET, Key=key)
+        return response["Body"].read().decode("utf-8")
+    except client.exceptions.NoSuchKey:
+        return None
+    except Exception:
+        return None

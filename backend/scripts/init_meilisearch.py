@@ -10,11 +10,13 @@ INDEX_SETTINGS = {
         "name", "summary", "description", "capability_ids", "tags", "publisher_name",
     ],
     "filterableAttributes": [
-        "package_type", "capability_ids", "frameworks", "runtime", "trust_level", "is_deprecated", "publisher_slug",
+        "package_type", "capability_ids", "frameworks", "runtime", "trust_level",
+        "is_deprecated", "publisher_slug", "verification_tier",
     ],
-    "sortableAttributes": ["download_count", "published_at"],
+    "sortableAttributes": ["download_count", "published_at", "verification_score"],
     "rankingRules": [
-        "words", "typo", "proximity", "attribute", "sort", "exactness", "download_count:desc",
+        "words", "typo", "proximity", "attribute", "sort", "exactness",
+        "verification_score:desc", "download_count:desc",
     ],
 }
 
