@@ -1,6 +1,9 @@
 """Publish service — creates packages and versions from validated manifests."""
 import hashlib
+import io
 import logging
+import os
+import tarfile
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -23,7 +26,13 @@ from app.packages.validator import normalize_manifest, validate_manifest, valida
 from app.packages.version_queries import recalculate_latest_version_id
 from app.shared.exceptions import AppError
 from app.shared.meili import sync_package_to_meilisearch
-from app.shared.storage import upload_artifact
+from app.shared.storage import (
+    upload_artifact,
+    upload_preview_file,
+    PREVIEW_EXTENSIONS,
+    PREVIEW_MAX_BYTES,
+    PREVIEW_MAX_LINES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +67,72 @@ def build_meili_document(pkg: Package, version: PackageVersion, manifest: dict) 
         "download_count": pkg.download_count,
         "is_deprecated": pkg.is_deprecated,
         "verification_status": version.verification_status,
+        "verification_score": version.verification_score or 0,
+        "verification_tier": version.verification_tier or "unverified",
         "published_at": version.published_at.isoformat() if version.published_at else None,
     }
+
+
+def extract_artifact_metadata(artifact_bytes: bytes, version_id: str | None = None) -> dict:
+    """Extract file_list and readme_md from a tar.gz artifact.
+
+    Also uploads preview files to S3 if version_id is provided.
+    Returns {"file_list": [...], "readme_md": str | None, "preview_keys": [...]}.
+    """
+    result: dict = {"file_list": [], "readme_md": None, "preview_keys": []}
+
+    try:
+        with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if member.isdir():
+                    continue
+
+                # Normalize path (strip leading prefix dir)
+                path = member.name
+                parts = path.split("/", 1)
+                normalized = parts[1] if len(parts) > 1 else parts[0]
+
+                result["file_list"].append({
+                    "path": normalized,
+                    "size": member.size,
+                })
+
+                # Extract README.md (case-insensitive)
+                basename = os.path.basename(normalized).lower()
+                if basename == "readme.md" and "/" not in normalized:
+                    f = tar.extractfile(member)
+                    if f:
+                        raw = f.read()
+                        # Safety cut at 1MB
+                        if len(raw) <= 1_000_000:
+                            try:
+                                result["readme_md"] = raw.decode("utf-8")
+                            except UnicodeDecodeError:
+                                pass
+
+                # Upload preview files
+                if version_id:
+                    ext = os.path.splitext(normalized)[1].lower()
+                    if ext in PREVIEW_EXTENSIONS and member.size <= PREVIEW_MAX_BYTES:
+                        f = tar.extractfile(member)
+                        if f:
+                            raw = f.read()
+                            # Binary detection via null byte
+                            if b"\x00" not in raw:
+                                try:
+                                    content = raw.decode("utf-8")
+                                    # Limit lines
+                                    lines = content.splitlines(True)
+                                    if len(lines) > PREVIEW_MAX_LINES:
+                                        content = "".join(lines[:PREVIEW_MAX_LINES])
+                                    key = upload_preview_file(version_id, normalized, content)
+                                    result["preview_keys"].append(key)
+                                except UnicodeDecodeError:
+                                    pass
+    except (tarfile.TarError, EOFError):
+        logger.warning("Failed to extract artifact metadata")
+
+    return result
 
 
 async def publish_package(
@@ -102,14 +175,20 @@ async def publish_package(
     quarantine_for_typosquatting = bool(similar)
 
     # 2b. Check if this is a new publisher's first package — auto-quarantine
+    # Skip quarantine for trusted/curated publishers
     from app.publishers.models import Publisher
     pub_result = await session.execute(
         select(Publisher).where(Publisher.id == publisher_id)
     )
     publisher_obj = pub_result.scalar_one_or_none()
     quarantine_for_new_publisher = False
-    if publisher_obj and publisher_obj.packages_cleared_count == 0:
+    is_trusted_publisher = publisher_obj and publisher_obj.trust_level in ("trusted", "curated")
+    if publisher_obj and publisher_obj.packages_cleared_count == 0 and not is_trusted_publisher:
         quarantine_for_new_publisher = True
+
+    # Trusted/curated publishers also skip typosquatting quarantine
+    if is_trusted_publisher:
+        quarantine_for_typosquatting = False
 
     # 3. Check if package exists
     result = await session.execute(select(Package).where(Package.slug == slug))
@@ -211,8 +290,22 @@ async def publish_package(
         ),
         quarantined_at=datetime.now(timezone.utc) if (quarantine_for_typosquatting or quarantine_for_new_publisher) else None,
     )
+    # 6b. Enrichment fields from manifest
+    pv.env_requirements = manifest.get("env_requirements") or None
+    pv.use_cases = manifest.get("use_cases") or None
+    pv.examples = manifest.get("examples") or None
+    pv.homepage_url = manifest.get("homepage_url") or None
+    pv.docs_url = manifest.get("docs_url") or None
+    pv.source_url = manifest.get("source_url") or None
+
     session.add(pv)
     await session.flush()  # Get pv.id
+
+    # 6c. Extract artifact metadata (file_list, readme_md, preview files)
+    if artifact_bytes:
+        metadata = extract_artifact_metadata(artifact_bytes, str(pv.id))
+        pv.file_list = metadata.get("file_list") or None
+        pv.readme_md = metadata.get("readme_md")
 
     # 7. Create capabilities
     capabilities = manifest.get("capabilities", {})

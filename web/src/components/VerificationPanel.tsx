@@ -205,6 +205,9 @@ export default function VerificationPanel({ slug }: { slug: string }) {
   const isTerminal = ["passed", "failed", "error", "skipped"].includes(data.status);
   const hasWarnings = data.warnings_count > 0;
 
+  // Hide pending/running verification from public users — looks unfinished
+  if (!isOwner && (data.status === "pending" || data.status === "running")) return null;
+
   const overallColor =
     data.status === "passed"
       ? "border-green-500/20"

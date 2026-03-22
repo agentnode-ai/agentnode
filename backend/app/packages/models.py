@@ -100,6 +100,22 @@ class PackageVersion(Base, UUIDPrimaryKeyMixin):
     verification_run_count = Column(Integer, nullable=False, default=0, server_default="0")
     last_verified_at = Column(TIMESTAMP(timezone=True), nullable=True)
 
+    # Enrichment (v0.2 — per-version docs + metadata)
+    readme_md = Column(Text, nullable=True)
+    file_list = Column(JSONB, nullable=True)  # [{"path": "src/tool.py", "size": 1234}]
+    env_requirements = Column(JSONB, nullable=True)  # [{"name": "API_KEY", "required": true, "description": "..."}]
+    use_cases = Column(JSONB, nullable=True)  # ["Read Excel", "Update ranges"]
+    examples = Column(JSONB, nullable=True)  # [{"title": "...", "language": "python", "code": "..."}]
+    homepage_url = Column(Text, nullable=True)
+    docs_url = Column(Text, nullable=True)
+    source_url = Column(Text, nullable=True)
+    execution_count = Column(Integer, nullable=False, default=0, server_default="0")
+    execution_success_count = Column(Integer, nullable=False, default=0, server_default="0")
+
+    # Phase 4A: Denormalized score/tier for search + display
+    verification_score = Column(Integer, nullable=True)
+    verification_tier = Column(Text, nullable=True)
+
     # Lifecycle
     is_yanked = Column(Boolean, nullable=False, default=False)
     published_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default="now()")
