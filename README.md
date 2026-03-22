@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://agentnode.net/logo.svg" width="60" alt="AgentNode" />
+  <img src="web/public/logo.svg" width="60" alt="AgentNode" />
 </p>
 
 <h1 align="center">AgentNode</h1>
