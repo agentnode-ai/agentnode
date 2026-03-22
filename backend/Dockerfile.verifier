@@ -1,0 +1,18 @@
+# Minimal verification runner image for enforced sandbox isolation.
+# Used by the verification pipeline with --network=none for import/smoke steps.
+#
+# Build: docker build -f Dockerfile.verifier -t agentnode-verifier:latest .
+# Or:    podman build -f Dockerfile.verifier -t agentnode-verifier:latest .
+
+FROM python:3.12-slim
+
+# Create non-root user for sandbox execution
+RUN groupadd -g 1000 verifier && useradd -u 1000 -g verifier -m verifier
+
+# No shell entrypoint — only Python execution
+WORKDIR /workspace
+
+USER verifier
+
+# Default command runs the mounted code file
+CMD ["python", "/run_code.py"]

@@ -1,4 +1,5 @@
 import secrets
+import shutil
 import sys
 
 from pydantic_settings import BaseSettings
@@ -7,6 +8,45 @@ from pydantic_settings import BaseSettings
 def _dev_only_default(name: str, fallback: str) -> str:
     """Return fallback for local dev; in production, the env var MUST be set."""
     return fallback
+
+
+def _detect_system_capabilities() -> dict[str, bool]:
+    """Detect available system binaries for verification context."""
+    return {
+        "ffmpeg": shutil.which("ffmpeg") is not None,
+        "tesseract": shutil.which("tesseract") is not None,
+        "chromium": (
+            shutil.which("chromium") is not None
+            or shutil.which("chromium-browser") is not None
+        ),
+        "poppler": shutil.which("pdftotext") is not None,
+        "wkhtmltopdf": shutil.which("wkhtmltopdf") is not None,
+        "libreoffice": shutil.which("libreoffice") is not None,
+    }
+
+
+def _detect_container_runtime() -> str | None:
+    """Detect available container runtime (podman preferred, docker fallback).
+
+    Returns the binary name if a working runtime is found, None otherwise.
+    """
+    import subprocess
+    for runtime in ("podman", "docker"):
+        if shutil.which(runtime):
+            try:
+                result = subprocess.run(
+                    [runtime, "info"],
+                    capture_output=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    return runtime
+            except Exception:
+                continue
+    return None
+
+
+SYSTEM_CAPABILITIES = _detect_system_capabilities()
+CONTAINER_RUNTIME: str | None = _detect_container_runtime()
 
 
 class Settings(BaseSettings):
@@ -67,6 +107,21 @@ class Settings(BaseSettings):
     VERIFICATION_MAX_CONCURRENT: int = 2
     VERIFICATION_SMOKE_MAX_TOOLS: int = 5
     VERIFICATION_SMOKE_BUDGET_SECONDS: int = 60
+    VERIFICATION_SMOKE_MULTI_RUNS: int = 3
+
+    # Phase 5A: uv installer support (8-85x faster than pip)
+    VERIFICATION_USE_UV: bool = True
+    VERIFICATION_INSTALL_TIMEOUT: int = 60    # Separate from smoke timeout
+    VERIFICATION_SMOKE_TIMEOUT: int = 30      # Shorter smoke timeout
+
+    # Continuous verification (Phase 4C)
+    VERIFICATION_REVERIFY_DAYS: int = 30
+    VERIFICATION_REVERIFY_BATCH: int = 3
+    VERIFICATION_REVERIFY_ENABLED: bool = True
+
+    # Sandbox mode (for environment_info tracking)
+    VERIFICATION_SANDBOX_MODE: str = "subprocess"   # "subprocess" or "container"
+    VERIFICATION_CONTAINER_IMAGE: str = "agentnode-verifier:latest"
 
     # Environment
     ENVIRONMENT: str = "development"

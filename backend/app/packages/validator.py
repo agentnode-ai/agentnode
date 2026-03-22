@@ -54,6 +54,10 @@ MANIFEST_DEFAULTS = {
     "support": {"homepage": "", "issues": ""},
     "compatibility": {"frameworks": ["generic"]},
     "deprecation_policy": "6-months-notice",
+    # v0.2 enrichment defaults
+    "env_requirements": [],
+    "use_cases": [],
+    "examples": [],
 }
 
 
@@ -282,6 +286,9 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
         if not manifest.get("recommended_for"):
             warnings.append("recommended_for is recommended for upgrade packages")
 
+    # --- v0.2 enrichment field validation (optional) ---
+    _validate_enrichment_fields(manifest, errors, warnings)
+
     return len(errors) == 0, errors, warnings
 
 
@@ -335,6 +342,58 @@ def _validate_entrypoints(manifest: dict, manifest_version: str | None, errors: 
             errors.append("entrypoint is required (e.g. 'my_pack.tool')")
         elif not ENTRYPOINT_PATTERN_V1.match(pkg_entrypoint):
             errors.append(f"entrypoint must be a valid Python module path (got '{pkg_entrypoint}')")
+
+
+def _validate_enrichment_fields(manifest: dict, errors: list[str], warnings: list[str]) -> None:
+    """Validate optional v0.2 enrichment fields."""
+    # env_requirements
+    env_reqs = manifest.get("env_requirements")
+    if env_reqs is not None:
+        if not isinstance(env_reqs, list):
+            errors.append("env_requirements must be an array")
+        else:
+            for i, req in enumerate(env_reqs):
+                if not isinstance(req, dict):
+                    errors.append(f"env_requirements[{i}] must be an object")
+                elif not req.get("name"):
+                    errors.append(f"env_requirements[{i}].name is required")
+
+    # use_cases
+    use_cases = manifest.get("use_cases")
+    if use_cases is not None:
+        if not isinstance(use_cases, list):
+            errors.append("use_cases must be an array")
+        else:
+            for i, uc in enumerate(use_cases):
+                if not isinstance(uc, str):
+                    errors.append(f"use_cases[{i}] must be a string")
+                elif len(uc.split()) < 2:
+                    warnings.append(f"use_cases[{i}]: use 'verb + object' format (e.g. 'Read Excel files')")
+
+    # examples
+    examples = manifest.get("examples")
+    if examples is not None:
+        if not isinstance(examples, list):
+            errors.append("examples must be an array")
+        else:
+            for i, ex in enumerate(examples):
+                if not isinstance(ex, dict):
+                    errors.append(f"examples[{i}] must be an object")
+                else:
+                    if not ex.get("title"):
+                        errors.append(f"examples[{i}].title is required")
+                    if not ex.get("code"):
+                        errors.append(f"examples[{i}].code is required")
+
+    # URL fields — must be http(s) to prevent javascript: XSS
+    from app.shared.validators import is_safe_url
+    for url_field in ("homepage_url", "docs_url", "source_url"):
+        val = manifest.get(url_field)
+        if val is not None:
+            if not isinstance(val, str):
+                errors.append(f"{url_field} must be a string")
+            elif val and not is_safe_url(val):
+                errors.append(f"{url_field} must start with https:// or http://")
 
 
 def validate_artifact_quality(artifact_bytes: bytes, slug: str) -> tuple[list[str], list[str]]:

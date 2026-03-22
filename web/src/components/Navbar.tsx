@@ -10,6 +10,7 @@ const navLinks = [
   { href: "/search", label: "Search" },
   { href: "/for-developers", label: "For Developers" },
   { href: "/publish", label: "Publish" },
+  { href: "/blog", label: "Blog" },
   { href: "/docs", label: "Docs" },
   { href: "https://github.com/agentnode-ai/agentnode", label: "GitHub", external: true },
 ];
@@ -24,8 +25,17 @@ export default function Navbar() {
   useEffect(() => {
     // Check the non-httpOnly `logged_in` cookie set by the server
     const cookies = document.cookie.split("; ");
-    setIsLoggedIn(cookies.some((c) => c.startsWith("logged_in=")));
-    setIsAdmin(cookies.some((c) => c.startsWith("is_admin=")));
+    const loggedIn = cookies.some((c) => c.startsWith("logged_in="));
+    setIsLoggedIn(loggedIn);
+    // Derive admin status from /auth/me instead of a client cookie
+    if (loggedIn) {
+      fetch("/api/v1/auth/me", { credentials: "include" })
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => setIsAdmin(data?.is_admin === true))
+        .catch(() => setIsAdmin(false));
+    } else {
+      setIsAdmin(false);
+    }
   }, [pathname]);
 
   // Close mobile menu on route change

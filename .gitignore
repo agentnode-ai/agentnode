@@ -59,3 +59,9 @@ events.json
 
 # Internal growth / marketing content
 growth/
+backend/.next/
+kwfinder-*.md
+packages_dump.json
+snapshot_nonowner.txt
+seo/
+backend/scripts/enrichment_*.json

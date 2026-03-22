@@ -47,6 +47,10 @@ class InstallMetadataResponse(BaseModel):
     dependencies: list[DependencyInfo]
     permissions: PermissionsInfo | None
     published_at: datetime
+    verification_status: str | None = None
+    verification_tier: str | None = None
+    verification_score: int | None = None
+    install_resolution: str | None = None
 
 
 class DownloadResponse(BaseModel):
@@ -54,6 +58,10 @@ class DownloadResponse(BaseModel):
     version: str
     download_url: str | None
     download_count: int
+    artifact_hash_sha256: str | None = None
+    artifact_size_bytes: int | None = None
+    verification_tier: str | None = None
+    install_resolution: str | None = None
 
 
 class InstallRequest(BaseModel):
@@ -80,3 +88,7 @@ class InstallResponse(BaseModel):
     installation_id: str
     deprecated: bool
     tools: list[ToolInfo] = []
+    verification_status: str | None = None
+    verification_tier: str | None = None
+    verification_score: int | None = None
+    install_resolution: str | None = None

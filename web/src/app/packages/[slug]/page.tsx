@@ -2,26 +2,49 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import TrustBadge from "@/components/TrustBadge";
-import VerificationBadge from "@/components/VerificationBadge";
-import VerificationPanel from "@/components/VerificationPanel";
+import VerificationBadgeShared from "@/components/VerificationBadge";
 import CodeBlockWrapper from "./CodeBlockWrapper";
+import QuickStartWrapper from "./QuickStartWrapper";
+import ReadmeSection from "./ReadmeSection";
+import VerificationMainPanel from "./VerificationMainPanel";
+import FileBrowserWrapper from "./FileBrowserWrapper";
+import VersionHistory from "./VersionHistory";
+import VersionSelector from "./VersionSelector";
+import OwnerActions from "./OwnerActions";
 
 interface PageProps {
   params: Promise<{ slug: string }>;
+  searchParams: Promise<{ v?: string }>;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-async function fetchPackage(slug: string): Promise<any | null> {
+async function fetchPackage(slug: string, version?: string): Promise<any | null> {
   try {
     const baseUrl = process.env.BACKEND_URL ?? "http://localhost:8001";
+    const vParam = version ? `?v=${encodeURIComponent(version)}` : "";
     const res = await fetch(
-      `${baseUrl}/v1/packages/${encodeURIComponent(slug)}`,
+      `${baseUrl}/v1/packages/${encodeURIComponent(slug)}${vParam}`,
       { next: { revalidate: 60 } }
     );
     if (!res.ok) return null;
     return res.json();
   } catch {
     return null;
+  }
+}
+
+async function fetchVersions(slug: string): Promise<any[]> {
+  try {
+    const baseUrl = process.env.BACKEND_URL ?? "http://localhost:8001";
+    const res = await fetch(
+      `${baseUrl}/v1/packages/${encodeURIComponent(slug)}/versions`,
+      { next: { revalidate: 120 } }
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.versions ?? [];
+  } catch {
+    return [];
   }
 }
 
@@ -39,9 +62,10 @@ function timeAgo(dateStr: string): string {
   return `${years} year${years > 1 ? "s" : ""} ago`;
 }
 
-export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+export async function generateMetadata({ params, searchParams }: PageProps): Promise<Metadata> {
   const { slug } = await params;
-  const pkg = await fetchPackage(slug);
+  const { v } = await searchParams;
+  const pkg = await fetchPackage(slug, v);
   if (!pkg) return { title: "Package Not Found" };
 
   const title = `${pkg.name} — Agent Skill for AI Agents`;
@@ -74,9 +98,72 @@ function PermissionLevel({ value }: { value: string }) {
   );
 }
 
-export default async function PackageDetailPage({ params }: PageProps) {
+function FrameworkBadge({ name, tested }: { name: string; tested?: boolean }) {
+  return (
+    <span
+      className={`rounded-md px-2.5 py-1 text-xs font-medium border ${
+        tested
+          ? "bg-green-500/10 border-green-500/20 text-green-400"
+          : "bg-card border-border text-muted"
+      }`}
+    >
+      {name}
+      {tested && (
+        <span className="ml-1 text-[9px] text-green-500">tested</span>
+      )}
+    </span>
+  );
+}
+
+function VerificationBadge({ verification }: { verification: any }) {
+  if (!verification) return null;
+
+  // Use tier-based display when tier is available
+  if (verification.tier) {
+    return (
+      <VerificationBadgeShared
+        tier={verification.tier}
+        score={verification.score}
+        smoke_reason={verification.smoke_reason}
+        size="md"
+      />
+    );
+  }
+
+  // Legacy fallback: status-based display
+  const status = verification.status;
+  if (status === "verified" || status === "passed") {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-green-500/10 border border-green-500/20 px-3 py-1 text-xs font-medium text-green-400">
+        <span>&#10004;</span> Verified
+      </span>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-red-500/10 border border-red-500/20 px-3 py-1 text-xs font-medium text-red-400">
+        <span>&#10006;</span> Failed
+      </span>
+    );
+  }
+  if (status === "running" || status === "pending") {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-yellow-500/10 border border-yellow-500/20 px-3 py-1 text-xs font-medium text-yellow-400">
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-yellow-400 animate-pulse" />
+        Verifying
+      </span>
+    );
+  }
+  return null;
+}
+
+export default async function PackageDetailPage({ params, searchParams }: PageProps) {
   const { slug } = await params;
-  const pkg = await fetchPackage(slug);
+  const { v } = await searchParams;
+  const [pkg, versions] = await Promise.all([
+    fetchPackage(slug, v),
+    fetchVersions(slug),
+  ]);
 
   if (!pkg) {
     notFound();
@@ -93,7 +180,7 @@ export default async function PackageDetailPage({ params }: PageProps) {
   const compat = blocks.compatibility ?? {};
   const perms = blocks.permissions;
   const trust = blocks.trust ?? {};
-  const performance = blocks.performance ?? {};
+  const verification = pkg.verification;
 
   return (
     <div className="mx-auto max-w-6xl px-4 sm:px-6 py-10">
@@ -104,7 +191,24 @@ export default async function PackageDetailPage({ params }: PageProps) {
         </Link>
         <span className="mx-2">/</span>
         <span className="text-foreground">{pkg.slug}</span>
+        {v && (
+          <>
+            <span className="mx-2">/</span>
+            <span className="text-foreground">v{v}</span>
+          </>
+        )}
       </nav>
+
+      {/* Quarantine / Under Review banner */}
+      {pkg.quarantine_status === "quarantined" && (
+        <div className="mb-6 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3">
+          <p className="text-sm font-medium text-yellow-400">Under Review</p>
+          <p className="text-xs text-yellow-400/80 mt-1">
+            This package is being reviewed before it becomes publicly available.
+            This usually happens automatically after verification passes.
+          </p>
+        </div>
+      )}
 
       {/* Deprecation warning */}
       {pkg.is_deprecated && (
@@ -122,10 +226,23 @@ export default async function PackageDetailPage({ params }: PageProps) {
                 {pkg.name}
               </h1>
               <TrustBadge level={publisher.trust_level ?? "unverified"} size="md" />
-              <VerificationBadge status={trust.verification_status} />
-              <span className="rounded-md bg-card px-2.5 py-1 text-xs font-mono text-muted border border-border">
-                v{version}
-              </span>
+              {versions.length > 1 ? (
+                <VersionSelector
+                  slug={pkg.slug}
+                  currentVersion={version}
+                  versions={versions}
+                />
+              ) : (
+                <span className="rounded-md bg-card px-2.5 py-1 text-xs font-mono text-muted border border-border">
+                  v{version}
+                </span>
+              )}
+              {pkg.license_model && (
+                <span className="rounded-md bg-card px-2.5 py-1 text-xs font-mono text-muted border border-border">
+                  {pkg.license_model}
+                </span>
+              )}
+              <VerificationBadge verification={verification} />
             </div>
             <p className="mt-2 text-sm text-muted">
               by{" "}
@@ -145,66 +262,92 @@ export default async function PackageDetailPage({ params }: PageProps) {
             <p className="mt-3 max-w-2xl text-base leading-relaxed text-muted">
               {pkg.summary}
             </p>
-            {pkg.description && pkg.description !== pkg.summary && (
-              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted/80">
-                {pkg.description}
-              </p>
+
+            {/* Compatibility badges */}
+            {(compat.frameworks ?? []).length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {(compat.frameworks as string[]).map((fw: string) => (
+                  <FrameworkBadge key={fw} name={fw} />
+                ))}
+              </div>
             )}
           </div>
         </div>
       </header>
 
+      <OwnerActions
+        slug={slug}
+        publisherSlug={publisher.slug}
+        isDeprecated={!!pkg.is_deprecated}
+        currentMetadata={{
+          name: pkg.name,
+          summary: pkg.summary,
+          description: pkg.description ?? "",
+          tags: pkg.tags ?? [],
+        }}
+      />
+
       <div className="grid gap-8 lg:grid-cols-3">
         {/* Main column */}
         <div className="space-y-8 lg:col-span-2 min-w-0">
-          {/* Install */}
-          <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
-            <h2 className="mb-4 text-lg font-semibold text-foreground">
-              Install
-            </h2>
-            <div className="space-y-4">
-              {install.cli_command && (
-                <div>
-                  <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted">
-                    CLI
-                  </p>
-                  <CodeBlockWrapper
-                    code={install.cli_command}
-                    language="bash"
-                  />
-                </div>
-              )}
-              {install.post_install_code && (
-                <div>
-                  <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted">
-                    Import in Python
-                  </p>
-                  <CodeBlockWrapper
-                    code={install.post_install_code}
-                    language="python"
-                  />
-                </div>
-              )}
-              {install.sdk_code && (
-                <div>
-                  <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted">
-                    SDK
-                  </p>
-                  <CodeBlockWrapper
-                    code={install.sdk_code}
-                    language="python"
-                  />
-                </div>
-              )}
-            </div>
-          </section>
+          {/* 1. Quick Start */}
+          <QuickStartWrapper
+            slug={pkg.slug}
+            entrypoint={install.entrypoint}
+            examples={pkg.examples}
+            envRequirements={pkg.env_requirements}
+            readmeMd={pkg.readme_md}
+            installResolution={install.install_resolution}
+            installableVersion={install.installable_version}
+            latestVersion={latestVersion?.version_number}
+          />
 
-          {/* Capabilities */}
+          {/* 2. Verification (prominent, main column) */}
+          <VerificationMainPanel slug={pkg.slug} verification={verification} publisherSlug={publisher.slug} />
+
+          {/* 3. Use Cases */}
+          {pkg.use_cases && pkg.use_cases.length > 0 && (
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+              <h2 className="mb-4 text-lg font-semibold text-foreground">
+                Use this when you need to...
+              </h2>
+              <ul className="space-y-2">
+                {(pkg.use_cases as string[]).map((uc: string, i: number) => (
+                  <li key={i} className="flex items-start gap-3 text-sm text-muted">
+                    <span className="text-primary mt-0.5 shrink-0">&#8250;</span>
+                    {uc}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {/* 4. README */}
+          {pkg.readme_md && (
+            <ReadmeSection content={pkg.readme_md} />
+          )}
+
+          {/* 5. Version History */}
+          {versions.length > 0 && (
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+              <h2 className="mb-4 text-lg font-semibold text-foreground">
+                Version History
+              </h2>
+              <VersionHistory
+                versions={versions}
+                currentVersion={version}
+                slug={pkg.slug}
+                installableVersion={install.installable_version}
+              />
+            </section>
+          )}
+
+          {/* 6. Capabilities */}
           <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
             <h2 className="mb-4 text-lg font-semibold text-foreground">
               Capabilities
             </h2>
-            {capabilities.length > 0 && (
+            {capabilities.length > 0 ? (
               <div className="space-y-3">
                 {capabilities.map((cap: any) => (
                   <div
@@ -235,11 +378,39 @@ export default async function PackageDetailPage({ params }: PageProps) {
                   </div>
                 ))}
               </div>
-            )}
-            {capabilities.length === 0 && (
+            ) : (
               <p className="text-sm text-muted">No capabilities declared.</p>
             )}
           </section>
+
+          {/* 7. Permissions */}
+          {perms && (
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+              <h2 className="mb-4 text-lg font-semibold text-foreground">
+                Permissions
+              </h2>
+              <p className="mb-4 text-xs text-muted">
+                This package declares the following access levels. Review before installing.
+              </p>
+              <div className="space-y-2">
+                {[
+                  { label: "Network", value: perms.network_level },
+                  { label: "Filesystem", value: perms.filesystem_level },
+                  { label: "Code Execution", value: perms.code_execution_level },
+                  { label: "Data Access", value: perms.data_access_level },
+                  { label: "User Approval", value: perms.user_approval_level },
+                ].map((p) => (
+                  <div
+                    key={p.label}
+                    className="flex items-center justify-between rounded-lg border border-border bg-background px-4 py-2.5"
+                  >
+                    <span className="text-sm text-muted">{p.label}</span>
+                    <PermissionLevel value={p.value} />
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Recommended For */}
           {recommendedFor.length > 0 && (
@@ -268,35 +439,6 @@ export default async function PackageDetailPage({ params }: PageProps) {
               </div>
             </section>
           )}
-
-          {/* Permissions */}
-          {perms && (
-            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
-              <h2 className="mb-4 text-lg font-semibold text-foreground">
-                Permissions
-              </h2>
-              <p className="mb-4 text-xs text-muted">
-                This package declares the following access levels. Review before installing.
-              </p>
-              <div className="space-y-2">
-                {[
-                  { label: "Network", value: perms.network_level, icon: "globe" },
-                  { label: "Filesystem", value: perms.filesystem_level, icon: "folder" },
-                  { label: "Code Execution", value: perms.code_execution_level, icon: "terminal" },
-                  { label: "Data Access", value: perms.data_access_level, icon: "database" },
-                  { label: "User Approval", value: perms.user_approval_level, icon: "shield" },
-                ].map((p) => (
-                  <div
-                    key={p.label}
-                    className="flex items-center justify-between rounded-lg border border-border bg-background px-4 py-2.5"
-                  >
-                    <span className="text-sm text-muted">{p.label}</span>
-                    <PermissionLevel value={p.value} />
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
         </div>
 
         {/* Sidebar */}
@@ -309,9 +451,57 @@ export default async function PackageDetailPage({ params }: PageProps) {
             />
           </section>
 
+          {/* Env Requirements (sidebar compact) */}
+          {pkg.env_requirements && pkg.env_requirements.length > 0 && (
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+              <h2 className="mb-3 text-sm font-semibold text-foreground">
+                Environment Variables
+              </h2>
+              <div className="space-y-1.5">
+                {(pkg.env_requirements as any[]).map((env: any) => (
+                  <div key={env.name} className="flex items-center justify-between text-xs">
+                    <code className="font-mono text-primary">{env.name}</code>
+                    {env.required && (
+                      <span className="text-red-400 text-[10px]">required</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* File Browser */}
+          {pkg.file_list && pkg.file_list.length > 0 && (
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+              <h2 className="mb-3 text-sm font-semibold text-foreground">
+                Files ({pkg.file_list.length})
+              </h2>
+              <FileBrowserWrapper
+                files={pkg.file_list}
+                slug={pkg.slug}
+                version={version}
+              />
+            </section>
+          )}
+
+          {/* License */}
+          {pkg.license_model && (
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+              <h2 className="mb-3 text-sm font-semibold text-foreground">License</h2>
+              <a
+                href={`https://spdx.org/licenses/${pkg.license_model}.html`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm text-primary hover:underline"
+              >
+                {pkg.license_model}
+              </a>
+            </section>
+          )}
+
           {/* Stats */}
           <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
-            <h2 className="mb-4 text-lg font-semibold text-foreground">
+            <h2 className="mb-4 text-sm font-semibold text-foreground">
               Stats
             </h2>
             <div className="space-y-3">
@@ -356,7 +546,7 @@ export default async function PackageDetailPage({ params }: PageProps) {
 
           {/* Compatibility */}
           <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
-            <h2 className="mb-4 text-lg font-semibold text-foreground">
+            <h2 className="mb-4 text-sm font-semibold text-foreground">
               Compatibility
             </h2>
             <div className="space-y-4">
@@ -366,16 +556,10 @@ export default async function PackageDetailPage({ params }: PageProps) {
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {(compat.frameworks ?? []).map((fw: string) => (
-                    <span
-                      key={fw}
-                      className="rounded-md bg-background px-2.5 py-1 text-xs text-foreground border border-border"
-                    >
-                      {fw}
-                    </span>
+                    <FrameworkBadge key={fw} name={fw} />
                   ))}
                 </div>
               </div>
-
               <div>
                 <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted">
                   Runtime
@@ -384,7 +568,6 @@ export default async function PackageDetailPage({ params }: PageProps) {
                   Python
                 </span>
               </div>
-
               {compat.python && (
                 <div>
                   <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted">
@@ -395,7 +578,6 @@ export default async function PackageDetailPage({ params }: PageProps) {
                   </span>
                 </div>
               )}
-
               {(compat.dependencies ?? []).length > 0 && (
                 <div>
                   <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted">
@@ -413,12 +595,9 @@ export default async function PackageDetailPage({ params }: PageProps) {
             </div>
           </section>
 
-          {/* Verification */}
-          <VerificationPanel slug={pkg.slug} />
-
           {/* Trust */}
           <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
-            <h2 className="mb-4 text-lg font-semibold text-foreground">
+            <h2 className="mb-4 text-sm font-semibold text-foreground">
               Trust & Security
             </h2>
             <div className="space-y-3">
@@ -444,20 +623,36 @@ export default async function PackageDetailPage({ params }: PageProps) {
                   {trust.security_findings_count ?? 0}
                 </span>
               </div>
-              {trust.last_updated && (
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted">Last Updated</span>
-                  <span className="text-xs text-foreground">
-                    {new Date(trust.last_updated).toLocaleDateString()}
-                  </span>
-                </div>
-              )}
             </div>
           </section>
 
+          {/* Links */}
+          {(pkg.homepage_url || pkg.docs_url || pkg.source_url) && (
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+              <h2 className="mb-3 text-sm font-semibold text-foreground">Links</h2>
+              <div className="space-y-2">
+                {pkg.homepage_url && /^https?:\/\//i.test(pkg.homepage_url) && (
+                  <a href={pkg.homepage_url} target="_blank" rel="noopener noreferrer" className="block text-sm text-primary hover:underline truncate">
+                    Homepage
+                  </a>
+                )}
+                {pkg.docs_url && /^https?:\/\//i.test(pkg.docs_url) && (
+                  <a href={pkg.docs_url} target="_blank" rel="noopener noreferrer" className="block text-sm text-primary hover:underline truncate">
+                    Documentation
+                  </a>
+                )}
+                {pkg.source_url && /^https?:\/\//i.test(pkg.source_url) && (
+                  <a href={pkg.source_url} target="_blank" rel="noopener noreferrer" className="block text-sm text-primary hover:underline truncate">
+                    Source Code
+                  </a>
+                )}
+              </div>
+            </section>
+          )}
+
           {/* Publisher card */}
           <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
-            <h2 className="mb-4 text-lg font-semibold text-foreground">
+            <h2 className="mb-4 text-sm font-semibold text-foreground">
               Publisher
             </h2>
             <Link

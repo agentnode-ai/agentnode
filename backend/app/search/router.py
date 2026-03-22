@@ -39,6 +39,8 @@ async def search_packages(body: SearchRequest):
         filters.append(f'trust_level = "{body.trust_level}"')
     if body.publisher_slug:
         filters.append(f'publisher_slug = "{body.publisher_slug}"')
+    if body.verification_tier:
+        filters.append(f'verification_tier = "{body.verification_tier}"')
     filters.append("is_deprecated = false")
 
     meili_body: dict = {
@@ -91,6 +93,8 @@ async def search_packages(body: SearchRequest):
             download_count=doc.get("download_count", 0),
             is_deprecated=doc.get("is_deprecated", False),
             verification_status=doc.get("verification_status"),
+            verification_score=doc.get("verification_score"),
+            verification_tier=doc.get("verification_tier"),
         ))
 
     total = data.get("estimatedTotalHits", data.get("totalHits", len(hits)))

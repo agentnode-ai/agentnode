@@ -1,3 +1,12 @@
+"""Auth router — login, register, token management, 2FA, password reset.
+
+CSRF decision (2026-03-21): NOT required under current auth model.
+Auth uses httpOnly cookies with SameSite=lax. All state-changing operations
+are POST/PUT/DELETE. SameSite=lax blocks cross-origin form submissions for
+these methods. If the auth model changes to SameSite=none or cookie-based
+GET mutations, this decision must be revisited.
+"""
+
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -63,7 +72,7 @@ from app.shared.exceptions import AppError
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
 
-@router.post("/register", response_model=RegisterResponse, status_code=201, dependencies=[Depends(rate_limit(10, 60))])
+@router.post("/register", response_model=RegisterResponse, status_code=201, dependencies=[Depends(rate_limit(5, 60))])
 async def register(body: RegisterRequest, session: AsyncSession = Depends(get_session)):
     user = await register_user(session, body.email, body.username, body.password)
     return RegisterResponse(id=user.id, email=user.email, username=user.username)
@@ -76,15 +85,6 @@ async def login(body: LoginRequest, request: Request, response: Response, sessio
     result = await login_user(session, body.email, body.password, body.totp_code, redis=redis)
     # Set httpOnly cookies for web clients
     set_auth_cookies(response, result["access_token"], result["refresh_token"])
-    # Set non-httpOnly admin flag for frontend Navbar
-    if result.get("is_admin"):
-        from app.config import settings
-        response.set_cookie(
-            key="is_admin", value="1", httponly=False,
-            secure=settings.COOKIE_SECURE, samesite=settings.COOKIE_SAMESITE,
-            domain=settings.COOKIE_DOMAIN or None,
-            max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS * 86400, path="/",
-        )
 
     # New login alert (fire-and-forget)
     forwarded = request.headers.get("x-forwarded-for")
@@ -96,7 +96,7 @@ async def login(body: LoginRequest, request: Request, response: Response, sessio
     return TokenResponse(**result)
 
 
-@router.post("/refresh", response_model=RefreshResponse)
+@router.post("/refresh", response_model=RefreshResponse, dependencies=[Depends(rate_limit(20, 60))])
 async def refresh(body: RefreshRequest, request: Request, response: Response, session: AsyncSession = Depends(get_session)):
     # Accept refresh token from body (CLI) or cookie (web)
     token = body.refresh_token or request.cookies.get("refresh_token")
@@ -207,7 +207,7 @@ async def me(user: User = Depends(get_current_user), session: AsyncSession = Dep
     )
 
 
-@router.post("/2fa/setup", response_model=Setup2FAResponse)
+@router.post("/2fa/setup", response_model=Setup2FAResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def setup_2fa_route(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -216,7 +216,7 @@ async def setup_2fa_route(
     return Setup2FAResponse(**result)
 
 
-@router.post("/2fa/verify", response_model=Verify2FAResponse)
+@router.post("/2fa/verify", response_model=Verify2FAResponse, dependencies=[Depends(rate_limit(10, 60))])
 async def verify_2fa_route(
     body: Verify2FARequest,
     user: User = Depends(get_current_user),
@@ -229,7 +229,7 @@ async def verify_2fa_route(
 # --- Sprint 2: Account management ---
 
 
-@router.post("/change-password", response_model=ChangePasswordResponse)
+@router.post("/change-password", response_model=ChangePasswordResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def change_password_route(
     body: ChangePasswordRequest,
     user: User = Depends(get_current_user),
@@ -239,7 +239,7 @@ async def change_password_route(
     return ChangePasswordResponse(**result)
 
 
-@router.post("/request-password-reset", response_model=RequestPasswordResetResponse)
+@router.post("/request-password-reset", response_model=RequestPasswordResetResponse, dependencies=[Depends(rate_limit(3, 60))])
 async def request_password_reset_route(
     body: RequestPasswordResetRequest,
     session: AsyncSession = Depends(get_session),
@@ -248,7 +248,7 @@ async def request_password_reset_route(
     return RequestPasswordResetResponse(**result)
 
 
-@router.post("/reset-password", response_model=ResetPasswordResponse)
+@router.post("/reset-password", response_model=ResetPasswordResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def reset_password_route(
     body: ResetPasswordRequest,
     session: AsyncSession = Depends(get_session),
@@ -257,7 +257,7 @@ async def reset_password_route(
     return ResetPasswordResponse(**result)
 
 
-@router.post("/email/request-verification", response_model=RequestEmailVerificationResponse)
+@router.post("/email/request-verification", response_model=RequestEmailVerificationResponse, dependencies=[Depends(rate_limit(3, 60))])
 async def request_email_verification_route(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -266,7 +266,7 @@ async def request_email_verification_route(
     return RequestEmailVerificationResponse(**result)
 
 
-@router.post("/email/verify", response_model=VerifyEmailResponse)
+@router.post("/email/verify", response_model=VerifyEmailResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def verify_email_route(
     body: VerifyEmailRequest,
     session: AsyncSession = Depends(get_session),

@@ -108,6 +108,22 @@ async def clear_quarantine(
     pv.quarantine_reason = None
 
     await recalculate_latest_version_id(session, pkg.id)
+
+    # Increment publisher's cleared count so future publishes skip quarantine
+    from app.publishers.models import Publisher
+    pub_result = await session.execute(
+        select(Publisher).where(Publisher.id == pkg.publisher_id)
+    )
+    publisher_obj = pub_result.scalar_one_or_none()
+    if publisher_obj:
+        publisher_obj.packages_cleared_count = (publisher_obj.packages_cleared_count or 0) + 1
+
+    # Sync to Meilisearch now that version is public
+    from app.packages.service import build_meili_document
+    from app.shared.meili import sync_package_to_meilisearch
+    await session.refresh(pkg, ["publisher"])
+    await sync_package_to_meilisearch(build_meili_document(pkg, pv, pv.manifest_raw or {}))
+
     await _audit(session, request, user, "clear_quarantine", "package", slug, {"version": version})
     await session.commit()
 
@@ -947,7 +963,7 @@ async def reset_user_password(
     except Exception:
         pass
 
-    return {"message": f"Password reset for '{target_user.username}'.", "temp_password": temp_password}
+    return {"message": f"Password reset for '{target_user.username}'. Temporary password sent via email."}
 
 
 @router.put("/users/{user_id}", dependencies=[Depends(rate_limit(5, 60))])
@@ -1124,6 +1140,8 @@ async def list_all_packages(
                 "id": str(p.id),
                 "slug": p.slug,
                 "name": p.name,
+                "summary": p.summary,
+                "description": p.description,
                 "package_type": p.package_type,
                 "publisher_slug": p.publisher.slug if p.publisher else None,
                 "download_count": p.download_count,
@@ -1141,9 +1159,45 @@ async def list_all_packages(
 # --- Package Admin Actions ---
 
 
+@router.get("/packages/{slug}/versions")
+async def list_package_versions(
+    slug: str,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Admin: list all versions of a package including yanked/quarantined."""
+    result = await session.execute(select(Package).where(Package.slug == slug))
+    pkg = result.scalar_one_or_none()
+    if not pkg:
+        raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
+
+    from app.packages.version_queries import get_owner_visible_versions
+    versions = await get_owner_visible_versions(session, pkg.id)
+
+    return {
+        "versions": [
+            {
+                "version_number": v.version_number,
+                "channel": v.channel,
+                "changelog": v.changelog,
+                "published_at": v.published_at.isoformat() if v.published_at else None,
+                "quarantine_status": v.quarantine_status,
+                "is_yanked": v.is_yanked,
+                "verification_status": v.verification_status,
+            }
+            for v in versions
+        ]
+    }
+
+
 class EditPackageRequest(BaseModel):
     name: str | None = None
     summary: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+    homepage_url: str | None = None
+    docs_url: str | None = None
+    source_url: str | None = None
 
 
 @router.post("/packages/{slug}/deprecate", dependencies=[Depends(rate_limit(10, 60))])
@@ -1194,19 +1248,65 @@ async def edit_package(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    """Edit package metadata."""
+    """Edit package metadata. Admins can edit all fields that owners can."""
     result = await session.execute(select(Package).where(Package.slug == slug))
     pkg = result.scalar_one_or_none()
     if not pkg:
         raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
 
     changes = {}
-    if body.name and body.name != pkg.name:
+
+    # Package-level fields
+    if body.name is not None and body.name != pkg.name:
         changes["name"] = {"old": pkg.name, "new": body.name}
         pkg.name = body.name
-    if body.summary and body.summary != pkg.summary:
+    if body.summary is not None and body.summary != pkg.summary:
         changes["summary"] = {"old": pkg.summary, "new": body.summary}
         pkg.summary = body.summary
+    if body.description is not None and body.description != pkg.description:
+        changes["description"] = {"old": pkg.description, "new": body.description}
+        pkg.description = body.description or None
+
+    # Version-level fields — apply to latest non-yanked version
+    version_fields = {k: v for k, v in {
+        "tags": body.tags,
+        "homepage_url": body.homepage_url,
+        "docs_url": body.docs_url,
+        "source_url": body.source_url,
+    }.items() if v is not None}
+
+    if version_fields:
+        from app.packages.version_queries import get_latest_owner_visible_version
+        pv = await get_latest_owner_visible_version(session, pkg.id)
+        if not pv:
+            raise AppError("NO_EDITABLE_VERSION", "No editable version found", 409)
+
+        if "tags" in version_fields:
+            from app.packages.models import PackageTag
+            from sqlalchemy import delete
+            old_tags_result = await session.execute(
+                select(PackageTag.tag).where(PackageTag.package_version_id == pv.id)
+            )
+            old_tags = [r[0] for r in old_tags_result.all()]
+            normalized_tags = list(dict.fromkeys(
+                t.strip().lower() for t in version_fields["tags"] if t.strip()
+            ))
+            changes["tags"] = {"old": old_tags, "new": normalized_tags}
+            await session.execute(
+                delete(PackageTag).where(PackageTag.package_version_id == pv.id)
+            )
+            for tag in normalized_tags:
+                session.add(PackageTag(package_version_id=pv.id, tag=tag))
+
+        if "homepage_url" in version_fields:
+            changes["homepage_url"] = {"old": pv.homepage_url, "new": version_fields["homepage_url"]}
+            pv.homepage_url = version_fields["homepage_url"] or None
+        if "docs_url" in version_fields:
+            changes["docs_url"] = {"old": pv.docs_url, "new": version_fields["docs_url"]}
+            pv.docs_url = version_fields["docs_url"] or None
+        if "source_url" in version_fields:
+            changes["source_url"] = {"old": pv.source_url, "new": version_fields["source_url"]}
+            pv.source_url = version_fields["source_url"] or None
 
     if not changes:
         return {"message": "No changes made."}
@@ -1250,6 +1350,44 @@ async def delete_package(
     await session.delete(pkg)
     await session.commit()
     return {"message": f"Package '{slug}' deleted permanently."}
+
+
+@router.post("/packages/{slug}/versions/{version}/yank", dependencies=[Depends(rate_limit(10, 60))])
+async def yank_version(
+    slug: str,
+    version: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Yank a specific version. Same as owner yank but without ownership check."""
+    pkg, pv = await _get_package_version(session, slug, version)
+    if pv.is_yanked:
+        raise AppError("ALREADY_YANKED", f"Version '{version}' is already yanked", 409)
+    pv.is_yanked = True
+    await recalculate_latest_version_id(session, pkg.id)
+    await _audit(session, request, user, "yank_version", "package", slug, {"version": version})
+    await session.commit()
+    return {"message": f"Version {slug}@{version} yanked."}
+
+
+@router.post("/packages/{slug}/versions/{version}/unyank", dependencies=[Depends(rate_limit(10, 60))])
+async def unyank_version(
+    slug: str,
+    version: str,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Restore a yanked version. Admin-only — owners cannot unyank."""
+    pkg, pv = await _get_package_version(session, slug, version)
+    if not pv.is_yanked:
+        raise AppError("NOT_YANKED", f"Version '{version}' is not yanked", 409)
+    pv.is_yanked = False
+    await recalculate_latest_version_id(session, pkg.id)
+    await _audit(session, request, user, "unyank_version", "package", slug, {"version": version})
+    await session.commit()
+    return {"message": f"Version {slug}@{version} unyanked."}
 
 
 # --- Installations listing ---
@@ -1702,3 +1840,180 @@ async def reverify_version(
     asyncio.get_event_loop().create_task(run_verification(pv.id, triggered_by="admin_reverify"))
 
     return {"message": f"Verification re-triggered for {slug}@{version}"}
+
+
+# --- Phase 3B: Verification stats + batch reverify + regressions ---
+
+@router.get("/verification-stats", dependencies=[Depends(rate_limit(30, 60))])
+async def verification_stats(
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Distribution by smoke_status, smoke_reason, overall_status. Latest result per package only."""
+    from app.verification.models import VerificationResult
+
+    # Only latest results per package (via latest_verification_result_id FK)
+    latest_ids_q = (
+        select(PackageVersion.latest_verification_result_id)
+        .where(PackageVersion.latest_verification_result_id.isnot(None))
+    )
+    latest_results = await session.execute(
+        select(VerificationResult).where(VerificationResult.id.in_(latest_ids_q))
+    )
+    rows = latest_results.scalars().all()
+
+    by_smoke_status: dict[str, int] = {}
+    by_smoke_reason: dict[str, int] = {}
+    by_overall_status: dict[str, int] = {}
+    total_verified = 0
+
+    for vr in rows:
+        total_verified += 1
+        ss = vr.smoke_status or "null"
+        by_smoke_status[ss] = by_smoke_status.get(ss, 0) + 1
+
+        sr = vr.smoke_reason or "null"
+        by_smoke_reason[sr] = by_smoke_reason.get(sr, 0) + 1
+
+        os_ = vr.status or "null"
+        by_overall_status[os_] = by_overall_status.get(os_, 0) + 1
+
+    total_packages_result = await session.execute(select(func.count(Package.id)))
+    total_packages = total_packages_result.scalar() or 0
+
+    return {
+        "by_smoke_status": by_smoke_status,
+        "by_smoke_reason": by_smoke_reason,
+        "by_overall_status": by_overall_status,
+        "total_packages": total_packages,
+        "total_verified": total_verified,
+    }
+
+
+class ReverifyBatchRequest(BaseModel):
+    smoke_reason: str | None = None
+    smoke_status: str | None = None
+    slugs: list[str] | None = None
+    limit: int = Field(10, ge=1, le=50)
+
+
+@router.post("/packages/reverify-batch", dependencies=[Depends(rate_limit(5, 60))])
+async def reverify_batch(
+    body: ReverifyBatchRequest,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Targeted batch re-verification by reason, status, or slugs."""
+    from app.verification.models import VerificationResult
+    from app.verification.pipeline import run_verification
+    import asyncio
+
+    query = (
+        select(PackageVersion)
+        .join(Package, Package.id == PackageVersion.package_id)
+        .where(
+            PackageVersion.artifact_object_key.isnot(None),
+            PackageVersion.verification_status != "running",
+        )
+    )
+
+    if body.slugs:
+        query = query.where(Package.slug.in_(body.slugs))
+
+    if body.smoke_reason or body.smoke_status:
+        query = query.where(PackageVersion.latest_verification_result_id.isnot(None))
+        # Need subquery to filter by VR fields
+        vr_filter = select(VerificationResult.id)
+        if body.smoke_reason:
+            vr_filter = vr_filter.where(VerificationResult.smoke_reason == body.smoke_reason)
+        if body.smoke_status:
+            vr_filter = vr_filter.where(VerificationResult.smoke_status == body.smoke_status)
+        query = query.where(PackageVersion.latest_verification_result_id.in_(vr_filter))
+
+    query = query.limit(body.limit)
+    result = await session.execute(query.options(selectinload(PackageVersion.package)))
+    versions = result.scalars().all()
+
+    triggered = []
+    for pv in versions:
+        asyncio.get_event_loop().create_task(run_verification(pv.id, triggered_by="admin_reverify"))
+        triggered.append({"slug": pv.package.slug, "version": pv.version_number})
+
+    await _audit(session, request, user, "reverify_batch", "verification", "batch", {
+        "count": len(triggered),
+        "smoke_reason": body.smoke_reason,
+        "smoke_status": body.smoke_status,
+        "slugs": body.slugs,
+    })
+    await session.commit()
+
+    return {"triggered": triggered, "count": len(triggered)}
+
+
+@router.get("/verification-regressions", dependencies=[Depends(rate_limit(30, 60))])
+async def verification_regressions(
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Packages where verification status changed between last two runs."""
+    from app.verification.models import VerificationResult
+    from sqlalchemy import text
+
+    # Window function: last 2 results per package_version, compare statuses
+    sql = text("""
+        WITH ranked AS (
+            SELECT
+                vr.package_version_id,
+                vr.status,
+                vr.smoke_status,
+                vr.smoke_reason,
+                vr.completed_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY vr.package_version_id
+                    ORDER BY vr.created_at DESC
+                ) AS rn
+            FROM verification_results vr
+            WHERE vr.status IN ('passed', 'failed', 'error')
+        )
+        SELECT
+            pv.id AS version_id,
+            p.slug,
+            pv.version_number,
+            curr.status AS current_status,
+            curr.smoke_status AS current_smoke_status,
+            curr.smoke_reason AS current_smoke_reason,
+            prev.status AS previous_status,
+            prev.smoke_status AS previous_smoke_status,
+            prev.smoke_reason AS previous_smoke_reason,
+            curr.completed_at
+        FROM ranked curr
+        JOIN ranked prev ON curr.package_version_id = prev.package_version_id AND prev.rn = 2
+        JOIN package_versions pv ON pv.id = curr.package_version_id
+        JOIN packages p ON p.id = pv.package_id
+        WHERE curr.rn = 1
+          AND (curr.status != prev.status OR curr.smoke_status != prev.smoke_status)
+        ORDER BY curr.completed_at DESC
+        LIMIT 50
+    """)
+
+    result = await session.execute(sql)
+    rows = result.mappings().all()
+
+    return {
+        "regressions": [
+            {
+                "slug": r["slug"],
+                "version": r["version_number"],
+                "current_status": r["current_status"],
+                "current_smoke_status": r["current_smoke_status"],
+                "current_smoke_reason": r["current_smoke_reason"],
+                "previous_status": r["previous_status"],
+                "previous_smoke_status": r["previous_smoke_status"],
+                "previous_smoke_reason": r["previous_smoke_reason"],
+                "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }

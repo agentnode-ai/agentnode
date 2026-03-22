@@ -25,6 +25,7 @@ from app.install.schemas import (
     ToolInfo,
 )
 from app.install.service import build_artifact_info, get_install_version, track_download, create_installation
+from app.packages.version_queries import InstallResolution, get_latest_installable_version
 
 router = APIRouter(prefix="/v1/packages", tags=["install"])
 installations_router = APIRouter(prefix="/v1/installations", tags=["install"])
@@ -78,7 +79,7 @@ async def get_install_metadata(
     session: AsyncSession = Depends(get_session),
 ):
     """Get install metadata for a package. Defaults to latest stable version."""
-    pkg, pv = await get_install_version(session, slug, version)
+    pkg, pv, reason = await get_install_version(session, slug, version)
 
     artifact = None
     if pv.artifact_object_key:
@@ -131,6 +132,10 @@ async def get_install_metadata(
         dependencies=dependencies,
         permissions=permissions,
         published_at=pv.published_at,
+        verification_status=pv.verification_status,
+        verification_tier=pv.verification_tier,
+        verification_score=pv.verification_score,
+        install_resolution=reason,
     )
 
 
@@ -142,7 +147,7 @@ async def install_package(
     session: AsyncSession = Depends(get_session),
 ):
     """Create installation record and return artifact URL. Spec §8.6."""
-    pkg, pv = await get_install_version(session, slug, body.version)
+    pkg, pv, reason = await get_install_version(session, slug, body.version)
 
     artifact_url = None
     artifact_hash = None
@@ -165,6 +170,8 @@ async def install_package(
     if body.event_type in ("install", "update"):
         await track_download(session, pkg.id, pv.id)
 
+    await session.commit()
+
     entrypoint = pv.entrypoint
     post_install_code = f"from {entrypoint.rsplit('.', 1)[0]} import tool" if entrypoint else None
 
@@ -185,6 +192,10 @@ async def install_package(
         installation_id=str(installation_id),
         deprecated=pkg.is_deprecated,
         tools=tools,
+        verification_status=pv.verification_status,
+        verification_tier=pv.verification_tier,
+        verification_score=pv.verification_score,
+        install_resolution=reason,
     )
 
 
@@ -195,7 +206,7 @@ async def download_package(
     session: AsyncSession = Depends(get_session),
 ):
     """Track download and return presigned artifact URL."""
-    pkg, pv = await get_install_version(session, slug, version)
+    pkg, pv, reason = await get_install_version(session, slug, version)
 
     download_url = None
     if pv.artifact_object_key:
@@ -203,12 +214,17 @@ async def download_package(
         download_url = artifact_data["url"] if artifact_data else None
 
     new_count = await track_download(session, pkg.id, pv.id)
+    await session.commit()
 
     return DownloadResponse(
         slug=pkg.slug,
         version=pv.version_number,
         download_url=download_url,
         download_count=new_count,
+        artifact_hash_sha256=pv.artifact_hash_sha256,
+        artifact_size_bytes=pv.artifact_size_bytes,
+        verification_tier=pv.verification_tier,
+        install_resolution=reason,
     )
 
 
@@ -240,21 +256,34 @@ async def check_updates(
             .where(Package.slug == pkg_check.slug)
         )
         pkg = result.scalar_one_or_none()
-        if not pkg or not pkg.latest_version:
+        if not pkg:
             updates.append({
                 "slug": pkg_check.slug,
                 "current_version": pkg_check.version,
                 "latest_version": None,
+                "latest_published_version": None,
                 "has_update": False,
+                "verification_tier": None,
+                "install_resolution": None,
             })
             continue
 
-        latest = pkg.latest_version.version_number
+        # Use installable version (prefers verified) for update target
+        installable, reason = await get_latest_installable_version(session, pkg.id)
+        installable_ver = installable.version_number if installable else None
+        installable_tier = installable.verification_tier if installable else None
+
+        # Keep latest published for context
+        latest_published = pkg.latest_version.version_number if pkg.latest_version else None
+
         updates.append({
             "slug": pkg_check.slug,
             "current_version": pkg_check.version,
-            "latest_version": latest,
-            "has_update": latest != pkg_check.version,
+            "latest_version": installable_ver,
+            "latest_published_version": latest_published,
+            "has_update": bool(installable_ver and installable_ver != pkg_check.version),
+            "verification_tier": installable_tier,
+            "install_resolution": reason if installable else None,
         })
 
     return {"updates": updates}
@@ -277,6 +306,9 @@ async def activate_installation(
         raise AppError("INSTALLATION_NOT_FOUND", "Installation not found", 404)
     if inst.user_id != user.id:
         raise AppError("INSTALLATION_NOT_OWNED", "You do not own this installation", 403)
+
+    if inst.status not in ("installed", "inactive"):
+        raise AppError("INVALID_STATE", f"Cannot activate installation in '{inst.status}' state", 409)
 
     inst.status = "active"
     inst.activated_at = datetime.now(timezone.utc)

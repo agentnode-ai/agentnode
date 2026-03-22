@@ -1,4 +1,13 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.shared.validators import is_safe_filter_value
+
+# Allowed sort fields to prevent sort injection
+_ALLOWED_SORTS = {
+    "download_count:asc", "download_count:desc",
+    "published_at:asc", "published_at:desc",
+    "name:asc", "name:desc",
+}
 
 
 class SearchRequest(BaseModel):
@@ -8,10 +17,33 @@ class SearchRequest(BaseModel):
     framework: str | None = None
     runtime: str | None = None
     trust_level: str | None = None
+    verification_tier: str | None = None
     publisher_slug: str | None = None
     sort_by: str | None = None
     page: int = Field(1, ge=1)
     per_page: int = Field(20, ge=1, le=100)
+
+    @field_validator(
+        "package_type", "capability_id", "framework", "runtime",
+        "trust_level", "verification_tier", "publisher_slug",
+        mode="before",
+    )
+    @classmethod
+    def sanitize_filter_value(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not is_safe_filter_value(v):
+            raise ValueError("Invalid filter value")
+        return v
+
+    @field_validator("sort_by", mode="before")
+    @classmethod
+    def sanitize_sort_by(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if v not in _ALLOWED_SORTS:
+            raise ValueError("Invalid sort_by value")
+        return v
 
 
 class SearchHit(BaseModel):
@@ -30,6 +62,8 @@ class SearchHit(BaseModel):
     download_count: int = 0
     is_deprecated: bool = False
     verification_status: str | None = None
+    verification_score: int | None = None
+    verification_tier: str | None = None
 
 
 class SearchResponse(BaseModel):
