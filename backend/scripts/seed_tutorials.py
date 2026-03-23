@@ -170,15 +170,11 @@ async def seed(session: AsyncSession):
 
 
 async def main():
-    from app.database import async_engine
-    from sqlalchemy.ext.asyncio import AsyncSession as AS
-    from sqlalchemy.orm import sessionmaker
-
     # Import models to register them
     import app.main  # noqa: F401
+    from app.database import async_session_factory
 
-    async_session = sessionmaker(async_engine, class_=AS, expire_on_commit=False)
-    async with async_session() as session:
+    async with async_session_factory() as session:
         print("Seeding tutorial articles...")
         await seed(session)
 
