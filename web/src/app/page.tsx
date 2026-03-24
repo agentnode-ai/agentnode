@@ -5,13 +5,13 @@ import PackageCard from "@/components/PackageCard";
 import CopyInstallButton from "./CopyInstallButton";
 
 export const metadata: Metadata = {
-  title: "Self-Extending AI Agents | Detect, Install & Run Skills with AgentNode",
+  title: "Verified Agent Skills for AI Agents | Auto-Detect & Install | AgentNode",
   description:
-    "Agents detect missing capabilities and safely acquire verified skills on demand. Discover, verify and run portable capabilities automatically with AgentNode and ANP.",
+    "AI agents detect missing capabilities and install verified skills on demand. Trust-gated auto-upgrades with confidence scoring. Portable ANP format for any framework.",
   openGraph: {
-    title: "Self-Extending AI Agents | Detect, Install & Run Skills with AgentNode",
+    title: "Verified Agent Skills for AI Agents | Auto-Detect & Install | AgentNode",
     description:
-      "Agents detect missing capabilities and safely acquire verified skills on demand. Discover, verify and run portable capabilities automatically with AgentNode and ANP.",
+      "AI agents detect missing capabilities and install verified skills on demand. Trust-gated auto-upgrades with confidence scoring. Portable ANP format for any framework.",
     type: "website",
     url: "https://agentnode.net",
     siteName: "AgentNode",
@@ -63,13 +63,13 @@ export default function HomePage() {
             {/* Left: copy */}
             <div className="flex max-w-xl flex-col items-center text-center lg:items-start lg:text-left">
               <h1 className="animate-fade-in text-4xl font-bold leading-tight tracking-tight text-foreground sm:text-5xl">
-                Agents That <span className="text-primary">Extend Themselves</span> — Safely
+                Verified <span className="text-primary">Agent Skills</span> for Every AI Agent
               </h1>
               <p className="animate-fade-in-delay-1 mt-6 text-lg leading-relaxed text-foreground/80">
-                Your agent fails. It installs what it needs. It keeps going.
+                Your agent detects what&apos;s missing, installs verified skills, and keeps going. On any framework.
               </p>
               <p className="animate-fade-in-delay-1 mt-3 text-sm text-muted">
-                Detect missing capabilities. Acquire verified skills on demand. No human in the loop.
+                Powered by ANP. One portable package format for all AI agents.
               </p>
 
               <div className="animate-fade-in-delay-2 mt-8 flex flex-col gap-3">
