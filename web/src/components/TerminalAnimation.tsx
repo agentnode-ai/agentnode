@@ -17,19 +17,18 @@ interface TerminalLine {
 }
 
 const TERMINAL_LINES: TerminalLine[] = [
-  { type: "label", text: "# Agent runs logic — PDF library missing" },
   { type: "command", text: "$ python agent.py" },
   { type: "blank", text: "" },
-  { type: "output", text: "Running smart_run(process_pdf, policy=\"safe\")..." },
-  { type: "output", text: "  ImportError: No module named 'pdfplumber'" },
+  { type: "output", text: "smart_run(process_pdf, policy=\"safe\")" },
+  { type: "output", text: "\u2718 ImportError: No module named 'pdfplumber'" },
   { type: "blank", text: "" },
-  { type: "hint", text: "  Gap detected: pdf_extraction (high confidence)" },
-  { type: "output", text: "  Resolving best match..." },
+  { type: "hint", text: "\u2192 Detected: pdf_extraction (high)" },
+  { type: "output", text: "\u2192 Resolving..." },
   { type: "result", text: "  pdf-reader-pack [trusted]  score: 0.95" },
-  { type: "output", text: "  Installing pdf-reader-pack@1.2.0..." },
-  { type: "output", text: "  Retrying..." },
+  { type: "output", text: "\u2192 Installing pdf-reader-pack@1.2.0..." },
+  { type: "output", text: "\u2192 Retrying..." },
   { type: "blank", text: "" },
-  { type: "success", text: "\u2713 Success. PDF extracted. Upgraded automatically." },
+  { type: "success", text: "\u2713 Done. PDF extracted. Capability added." },
 ];
 
 const TYPE_SPEED = 32; // ms per character for commands

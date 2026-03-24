@@ -65,13 +65,11 @@ export default function HomePage() {
               <h1 className="animate-fade-in text-4xl font-bold leading-tight tracking-tight text-foreground sm:text-5xl">
                 Agents That <span className="text-primary">Extend Themselves</span> — Safely
               </h1>
-              <p className="animate-fade-in-delay-1 mt-6 text-lg leading-relaxed text-muted">
-                Detect missing capabilities. Acquire verified skills on demand. No human intervention.
+              <p className="animate-fade-in-delay-1 mt-6 text-lg leading-relaxed text-foreground/80">
+                Your agent fails. It installs what it needs. It keeps going.
               </p>
-              <p className="animate-fade-in-delay-1 mt-3 text-sm text-muted/70">
-                Powered by{" "}
-                <span className="text-foreground/80 font-medium">ANP</span>{" "}
-                (AgentNode Package)
+              <p className="animate-fade-in-delay-1 mt-3 text-sm text-muted">
+                Detect missing capabilities. Acquire verified skills on demand. No human in the loop.
               </p>
 
               <div className="animate-fade-in-delay-2 mt-8 flex flex-col gap-3">
@@ -169,56 +167,55 @@ export default function HomePage() {
             Agents don&apos;t wait for developers
           </h2>
           <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
-            Your agent detects what it&apos;s missing, finds the best matching
-            capability, verifies it, installs it, and retries — automatically.
+            One loop. Fully automatic.
           </p>
-          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
-              <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-lg font-bold text-primary">
-                1
+
+          {/* Visual flow — scannable at a glance */}
+          <div className="mx-auto max-w-4xl flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-0 mb-12">
+            {[
+              { icon: "\u2718", label: "Fails", desc: "Missing capability", color: "border-red-500/30 bg-red-500/5", iconColor: "text-red-400" },
+              { icon: "\uD83D\uDD0D", label: "Detect", desc: "Analyze error", color: "border-primary/30 bg-primary/5", iconColor: "text-primary" },
+              { icon: "\uD83D\uDCE6", label: "Install", desc: "Verified skill", color: "border-primary/30 bg-primary/5", iconColor: "text-primary" },
+              { icon: "\uD83D\uDD01", label: "Retry", desc: "Exactly once", color: "border-primary/30 bg-primary/5", iconColor: "text-primary" },
+              { icon: "\u2714", label: "Works", desc: "Capability added", color: "border-green-500/30 bg-green-500/5", iconColor: "text-green-400" },
+            ].map((step, i) => (
+              <div key={step.label} className="flex items-center gap-3 sm:gap-0">
+                <div className={`flex flex-col items-center gap-1.5 rounded-xl border ${step.color} px-5 py-4 min-w-[100px]`}>
+                  <span className={`text-xl ${step.iconColor}`}>{step.icon}</span>
+                  <span className="text-sm font-semibold text-foreground">{step.label}</span>
+                  <span className="text-[11px] text-muted">{step.desc}</span>
+                </div>
+                {i < 4 && (
+                  <span className="hidden sm:block text-muted/50 text-lg px-2">{"\u2192"}</span>
+                )}
               </div>
-              <h3 className="mb-2 text-lg font-semibold text-foreground">
-                Detects the gap
-              </h3>
-              <p className="text-sm leading-relaxed text-muted">
-                When your agent fails, AgentNode analyzes the error and
-                identifies the missing capability — with confidence levels.
+            ))}
+          </div>
+
+          {/* Detail cards below */}
+          <div className="mx-auto max-w-4xl grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-xl border border-border bg-card p-5">
+              <h3 className="mb-1 text-sm font-semibold text-foreground">Gap Detection</h3>
+              <p className="text-xs leading-relaxed text-muted">
+                Analyzes ImportErrors, error messages, and context hints. Three confidence levels: high, medium, low.
               </p>
             </div>
-            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
-              <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-lg font-bold text-primary">
-                2
-              </div>
-              <h3 className="mb-2 text-lg font-semibold text-foreground">
-                Resolves the best match
-              </h3>
-              <p className="text-sm leading-relaxed text-muted">
-                Search by capability, not keywords. Your agent gets ranked,
-                trust-verified results automatically.
+            <div className="rounded-xl border border-border bg-card p-5">
+              <h3 className="mb-1 text-sm font-semibold text-foreground">Smart Resolution</h3>
+              <p className="text-xs leading-relaxed text-muted">
+                Finds the best package by capability match, trust level, and compatibility score.
               </p>
             </div>
-            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
-              <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-lg font-bold text-primary">
-                3
-              </div>
-              <h3 className="mb-2 text-lg font-semibold text-foreground">
-                Installs with trust
-              </h3>
-              <p className="text-sm leading-relaxed text-muted">
-                Auto-upgrade policies control what gets installed.
-                Only verified or trusted packages — your rules.
+            <div className="rounded-xl border border-border bg-card p-5">
+              <h3 className="mb-1 text-sm font-semibold text-foreground">Trust-Gated Install</h3>
+              <p className="text-xs leading-relaxed text-muted">
+                Policies control what gets installed. <code className="font-mono text-[10px]">off</code> / <code className="font-mono text-[10px]">safe</code> / <code className="font-mono text-[10px]">strict</code> — your rules.
               </p>
             </div>
-            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
-              <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-lg font-bold text-primary">
-                4
-              </div>
-              <h3 className="mb-2 text-lg font-semibold text-foreground">
-                Retries once
-              </h3>
-              <p className="text-sm leading-relaxed text-muted">
-                After installing the missing skill, your agent retries
-                exactly once. No loops, no surprises.
+            <div className="rounded-xl border border-border bg-card p-5">
+              <h3 className="mb-1 text-sm font-semibold text-foreground">Single Retry</h3>
+              <p className="text-xs leading-relaxed text-muted">
+                After installing, your function is retried exactly once. No loops, no runaway installs.
               </p>
             </div>
           </div>
@@ -364,11 +361,10 @@ export default function HomePage() {
       <section className="border-b border-border">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
-            Three lines to self-extending agents
+            Three lines. That&apos;s it.
           </h2>
           <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
-            Your agent detects, installs, and retries — without
-            human intervention.
+            Wrap your logic. AgentNode handles the rest.
           </p>
           <div className="mx-auto max-w-2xl overflow-hidden rounded-lg border border-border bg-[#0d1117]">
             <div className="flex items-center gap-2 border-b border-border/50 px-4 py-2">
@@ -382,32 +378,21 @@ export default function HomePage() {
 
 client = AgentNodeClient(api_key="ank_...")
 
-# Agent runs logic — if a capability is missing, AgentNode
-# detects the gap, installs the skill, and retries once
 result = client.smart_run(
     lambda: process_pdf("report.pdf"),
-    auto_upgrade_policy="safe",  # only verified+ skills
+    auto_upgrade_policy="safe",
 )
 
-print(result.success)             # True
-print(result.detected_capability) # "pdf_extraction"
-print(result.installed_slug)      # "pdf-reader-pack"
-
-# Or use detect_and_install() for fine-grained control
-try:
-    data = analyze_csv("data.csv")
-except Exception as exc:
-    upgrade = client.detect_and_install(exc, auto_upgrade_policy="safe")
-    if upgrade.installed:
-        data = analyze_csv("data.csv")`}</code>
+# If pdfplumber was missing → detected, installed, retried
+print(result.success)        # True
+print(result.installed_slug) # "pdf-reader-pack"`}</code>
             </pre>
           </div>
-          <p className="mt-4 text-center text-sm text-muted">
-            Policies control what gets installed:{" "}
-            <code className="rounded bg-background/50 px-1 py-0.5 font-mono text-xs">&quot;off&quot;</code>{" "}
-            <code className="rounded bg-background/50 px-1 py-0.5 font-mono text-xs">&quot;safe&quot;</code>{" "}
-            <code className="rounded bg-background/50 px-1 py-0.5 font-mono text-xs">&quot;strict&quot;</code>
-            . No hidden behavior.
+          <p className="mt-6 text-center text-sm text-muted">
+            Want more control?{" "}
+            Use <code className="rounded bg-background/50 px-1 py-0.5 font-mono text-xs">detect_and_install()</code> to
+            handle detection and installation separately.{" "}
+            <Link href="/docs#python-sdk" className="text-primary hover:text-foreground transition-colors">See docs</Link>
           </p>
         </div>
       </section>
@@ -418,21 +403,20 @@ except Exception as exc:
       <section className="border-b border-border bg-card/30">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
-            Everything your agent needs to evolve
+            Not a registry. A self-extending runtime.
           </h2>
           <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
-            Not just a package registry. A trust and capability layer built
-            for autonomous agents.
+            Everything your agent needs to grow — safely and autonomously.
           </p>
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {/* Row 1: Core — Self-extension */}
             <div className="rounded-xl border border-primary/30 bg-primary/5 p-6">
               <h3 className="mb-2 text-base font-semibold text-foreground">
                 Capability gap detection
               </h3>
               <p className="text-sm leading-relaxed text-muted">
-                Agents analyze runtime errors to detect missing capabilities
-                — with high, medium, and low confidence levels. No LLM, fully
-                deterministic.
+                Analyzes runtime errors to identify missing capabilities.
+                Three confidence levels. No LLM — fully deterministic.
               </p>
             </div>
             <div className="rounded-xl border border-primary/30 bg-primary/5 p-6">
@@ -440,40 +424,20 @@ except Exception as exc:
                 Auto-upgrade policies
               </h3>
               <p className="text-sm leading-relaxed text-muted">
-                Three named policies control what gets installed:{" "}
                 <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">off</code>{" "}
                 <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">safe</code>{" "}
-                <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">strict</code>.
-                Your rules, enforced at runtime.
+                <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">strict</code>
+                {" "}&mdash; you decide what gets installed, not the agent.
               </p>
             </div>
-            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
+            {/* Row 2: Trust & Safety */}
+            <div className="rounded-xl border border-primary/30 bg-primary/5 p-6">
               <h3 className="mb-2 text-base font-semibold text-foreground">
-                Capability-first discovery
+                Scored and verified
               </h3>
               <p className="text-sm leading-relaxed text-muted">
-                Agents search by what they need, not by package name. The
-                resolution engine matches capabilities to the best trusted
-                packages automatically.
-              </p>
-            </div>
-            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
-              <h3 className="mb-2 text-base font-semibold text-foreground">
-                Scored on publish
-              </h3>
-              <p className="text-sm leading-relaxed text-muted">
-                Every package is installed, smoke-tested, and scored 0&ndash;100
-                in a real sandbox. Broken tools are quarantined. Working tools
-                earn a verification tier.
-              </p>
-            </div>
-            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
-              <h3 className="mb-2 text-base font-semibold text-foreground">
-                Portable package format (ANP)
-              </h3>
-              <p className="text-sm leading-relaxed text-muted">
-                Build once, run on any agent. Every ANP package follows the
-                same interface across LangChain, CrewAI, and custom agents.
+                Every package is sandbox-tested and scored 0&ndash;100 on publish.
+                Broken tools are quarantined. Only proven tools get installed.
               </p>
             </div>
             <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
@@ -481,8 +445,27 @@ except Exception as exc:
                 Permission declarations
               </h3>
               <p className="text-sm leading-relaxed text-muted">
-                Every package explicitly declares network, filesystem, code
-                execution, and data access levels. No hidden behavior.
+                Every package declares network, filesystem, code execution,
+                and data access levels. No hidden behavior.
+              </p>
+            </div>
+            {/* Row 3: Platform */}
+            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
+              <h3 className="mb-2 text-base font-semibold text-foreground">
+                Cross-framework (ANP)
+              </h3>
+              <p className="text-sm leading-relaxed text-muted">
+                Build once, run on any agent. LangChain, CrewAI, or custom.
+                One package format, no adapters.
+              </p>
+            </div>
+            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
+              <h3 className="mb-2 text-base font-semibold text-foreground">
+                Capability-first resolution
+              </h3>
+              <p className="text-sm leading-relaxed text-muted">
+                Agents search by what they need, not by name. The engine
+                scores and ranks matches automatically.
               </p>
             </div>
           </div>
