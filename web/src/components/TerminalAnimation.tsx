@@ -17,19 +17,19 @@ interface TerminalLine {
 }
 
 const TERMINAL_LINES: TerminalLine[] = [
-  { type: "label", text: "# Agent needs to process a PDF" },
-  { type: "command", text: '$ agentnode resolve "pdf extraction"' },
+  { type: "label", text: "# Agent runs logic — PDF library missing" },
+  { type: "command", text: "$ python agent.py" },
   { type: "blank", text: "" },
-  { type: "output", text: "Searching trusted packages..." },
+  { type: "output", text: "Running smart_run(process_pdf, policy=\"safe\")..." },
+  { type: "output", text: "  ImportError: No module named 'pdfplumber'" },
+  { type: "blank", text: "" },
+  { type: "hint", text: "  Gap detected: pdf_extraction (high confidence)" },
+  { type: "output", text: "  Resolving best match..." },
   { type: "result", text: "  pdf-reader-pack [trusted]  score: 0.95" },
-  { type: "output", text: "    Permissions: filesystem (temp), no network" },
+  { type: "output", text: "  Installing pdf-reader-pack@1.2.0..." },
+  { type: "output", text: "  Retrying..." },
   { type: "blank", text: "" },
-  { type: "label", text: "# Agent installs the capability" },
-  { type: "command", text: "$ agentnode install pdf-reader-pack" },
-  { type: "output", text: "Verifying signature... ok" },
-  { type: "output", text: "Installing pdf-reader-pack@1.0.0..." },
-  { type: "blank", text: "" },
-  { type: "success", text: "\u2713 Capability installed. Ready to use." },
+  { type: "success", text: "\u2713 Success. PDF extracted. Upgraded automatically." },
 ];
 
 const TYPE_SPEED = 32; // ms per character for commands

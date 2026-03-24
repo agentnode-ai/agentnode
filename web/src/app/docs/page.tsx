@@ -360,6 +360,26 @@ print(result.result["text"])`}</CodeBlock>
               </p>
             </div>
 
+            <SubHeading>The smart_run() pattern (v0.4.0)</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              Even simpler: wrap your logic and let AgentNode detect, install,
+              and retry automatically when a capability is missing.
+            </p>
+            <CodeBlock title="smart_agent.py" language="python">{`from agentnode_sdk import AgentNodeClient
+
+client = AgentNodeClient(api_key="ank_live_...")
+
+# If process_pdf fails because pdfplumber is missing,
+# AgentNode detects the gap, installs a PDF skill, and retries
+result = client.smart_run(
+    lambda: process_pdf("report.pdf"),
+    auto_upgrade_policy="safe",  # only verified+ skills
+)
+
+print(result.success)        # True
+print(result.upgraded)       # True (skill was installed)
+print(result.installed_slug) # "pdf-reader-pack"`}</CodeBlock>
+
             <SubHeading>Step-by-step for more control</SubHeading>
             <p className="mb-3 text-sm text-muted">
               When you need to inspect candidates, check policies, or control
@@ -394,10 +414,12 @@ print(f"Ran in {data.mode_used} mode ({data.duration_ms}ms)")`}</CodeBlock>
             <DocTable
               headers={["Step", "What it does"]}
               rows={[
+                ["detect_gap()", "Analyzes error to identify missing capability — 3 layers: ImportError (high), keywords (medium), context (low)"],
                 ["resolve()", "Scores packages by capability match (40%), framework fit (20%), runtime compatibility (15%), trust level (15%), permissions (10%)"],
                 ["can_install()", "Pre-flight check — verifies trust level, permissions, deprecation status without downloading anything"],
                 ["install()", "Downloads artifact, verifies SHA-256 hash, extracts to ~/.agentnode/packages/, runs pip install for dependencies, writes agentnode.lock with trust metadata"],
                 ["run_tool()", "Reads trust level from lockfile → routes to direct (in-process) or subprocess (isolated) execution → returns RunToolResult with output, timing, and mode used"],
+                ["smart_run()", "Full loop: run → detect gap → resolve → install → retry once. Returns SmartRunResult with complete transparency"],
               ]}
             />
 
@@ -1426,8 +1448,9 @@ Checking for upgrades...
             <p className="mb-4 text-sm leading-relaxed text-muted">
               The Python SDK provides programmatic access to the AgentNode
               registry for search, resolution, trust checking, installation,
-              and tool loading. Use it to build agents that autonomously
-              discover and install capabilities at runtime.
+              tool loading, and capability gap detection. Use it to build
+              agents that detect missing capabilities and safely acquire
+              verified skills on demand.
             </p>
 
             <SubHeading>Installation</SubHeading>
@@ -1530,6 +1553,102 @@ if result.installed:
     data = tool({"file_path": "report.pdf"})
 else:
     print(f"Could not install: {result.message}")`}</CodeBlock>
+
+            <SubHeading>Capability gap detection (v0.4.0)</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              AgentNode can analyze runtime errors to detect missing capabilities
+              — without any LLM. Three detection layers with confidence levels:
+            </p>
+            <ul className="mb-4 list-disc pl-5 text-sm text-muted space-y-1">
+              <li><strong>High</strong> — <C>ImportError</C> for a known module (e.g. pdfplumber, pandas, selenium)</li>
+              <li><strong>Medium</strong> — Error message contains technical keywords (e.g. &quot;chromedriver&quot;, &quot;csv parser&quot;)</li>
+              <li><strong>Low</strong> — Context hints like file extensions or URLs</li>
+            </ul>
+            <CodeBlock title="detect.py" language="python">{`from agentnode_sdk import detect_gap
+
+gap = detect_gap(ImportError("No module named 'pdfplumber'"))
+print(gap.capability)   # "pdf_extraction"
+print(gap.confidence)   # "high"
+print(gap.source)       # "import_error"
+
+# Context helps when the error itself isn't specific
+gap = detect_gap(RuntimeError("failed"), context={"file": "report.pdf"})
+print(gap.capability)   # "pdf_extraction"
+print(gap.confidence)   # "low"`}</CodeBlock>
+
+            <SubHeading>detect_and_install() (v0.4.0)</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              The product-level API for self-upgrading agents. Detects the gap,
+              resolves the best match, and installs it — all in one call.
+            </p>
+            <CodeBlock title="detect_install.py" language="python">{`try:
+    result = my_agent_logic()
+except Exception as exc:
+    upgrade = client.detect_and_install(
+        exc,
+        auto_upgrade_policy="safe",  # only verified+ skills
+        on_detect=lambda cap, conf, err: print(f"Detected: {cap} ({conf})"),
+        on_install=lambda slug: print(f"Installed: {slug}"),
+    )
+
+    if upgrade.installed:
+        result = my_agent_logic()  # retry manually
+    else:
+        print(f"Detection: {upgrade.capability} ({upgrade.confidence})")
+        print(f"Error: {upgrade.error}")`}</CodeBlock>
+
+            <SubHeading>smart_run() (v0.4.0)</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              Convenience wrapper: wrap your logic and let AgentNode handle
+              detection, installation, and exactly one retry automatically.
+            </p>
+            <CodeBlock title="smart.py" language="python">{`result = client.smart_run(
+    lambda: process_pdf("report.pdf"),
+    auto_upgrade_policy="safe",
+)
+
+if result.success:
+    print(result.result)          # your function's return value
+    print(result.upgraded)        # True if a skill was installed
+    print(result.installed_slug)  # e.g. "pdf-reader-pack"
+    print(result.duration_ms)     # total time including retry
+else:
+    print(result.error)
+    print(result.original_error)  # the first error, always available`}</CodeBlock>
+
+            <SubHeading>Auto-upgrade policies (v0.4.0)</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              Named policies control what gets auto-installed. When set, the policy
+              overrides individual parameters like <C>require_verified</C>.
+            </p>
+            <div className="mb-4 overflow-hidden rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-card">
+                    <th className="px-4 py-2 text-left font-medium text-foreground">Policy</th>
+                    <th className="px-4 py-2 text-left font-medium text-foreground">Behavior</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-b border-border">
+                    <td className="px-4 py-2 font-mono text-xs text-foreground">&quot;off&quot;</td>
+                    <td className="px-4 py-2 text-muted">Detect only, never install</td>
+                  </tr>
+                  <tr className="border-b border-border">
+                    <td className="px-4 py-2 font-mono text-xs text-primary">&quot;safe&quot;</td>
+                    <td className="px-4 py-2 text-muted">Auto-install verified+ skills (recommended)</td>
+                  </tr>
+                  <tr>
+                    <td className="px-4 py-2 font-mono text-xs text-foreground">&quot;strict&quot;</td>
+                    <td className="px-4 py-2 text-muted">Auto-install trusted+ skills only</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p className="mb-3 text-sm text-muted">
+              Low-confidence detections are blocked from auto-install by default.
+              Use <C>allow_low_confidence=True</C> to override.
+            </p>
 
             <SubHeading>Package metadata</SubHeading>
             <CodeBlock title="metadata.py" language="python">{`# Package details

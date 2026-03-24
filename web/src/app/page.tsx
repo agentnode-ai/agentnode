@@ -5,13 +5,13 @@ import PackageCard from "@/components/PackageCard";
 import CopyInstallButton from "./CopyInstallButton";
 
 export const metadata: Metadata = {
-  title: "Agent Skills for AI Agents | Portable & Verified with AgentNode",
+  title: "Self-Extending AI Agents | Detect, Install & Run Skills with AgentNode",
   description:
-    "Build agent skills that work across any AI agent. Discover, verify and run portable capabilities automatically with AgentNode and ANP.",
+    "Agents detect missing capabilities and safely acquire verified skills on demand. Discover, verify and run portable capabilities automatically with AgentNode and ANP.",
   openGraph: {
-    title: "Agent Skills for AI Agents | Portable & Verified with AgentNode",
+    title: "Self-Extending AI Agents | Detect, Install & Run Skills with AgentNode",
     description:
-      "Build agent skills that work across any AI agent. Discover, verify and run portable capabilities automatically with AgentNode and ANP.",
+      "Agents detect missing capabilities and safely acquire verified skills on demand. Discover, verify and run portable capabilities automatically with AgentNode and ANP.",
     type: "website",
     url: "https://agentnode.net",
     siteName: "AgentNode",
@@ -63,10 +63,10 @@ export default function HomePage() {
             {/* Left: copy */}
             <div className="flex max-w-xl flex-col items-center text-center lg:items-start lg:text-left">
               <h1 className="animate-fade-in text-4xl font-bold leading-tight tracking-tight text-foreground sm:text-5xl">
-                Build <span className="text-primary">Agent Skills</span> That Work Everywhere
+                Agents That <span className="text-primary">Extend Themselves</span> — Safely
               </h1>
               <p className="animate-fade-in-delay-1 mt-6 text-lg leading-relaxed text-muted">
-                Agents automatically discover, verify and run capabilities across any framework.
+                Detect missing capabilities. Acquire verified skills on demand. No human intervention.
               </p>
               <p className="animate-fade-in-delay-1 mt-3 text-sm text-muted/70">
                 Powered by{" "}
@@ -170,19 +170,19 @@ export default function HomePage() {
           </h2>
           <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
             Your agent detects what it&apos;s missing, finds the best matching
-            capability, verifies it, and installs it securely.
+            capability, verifies it, installs it, and retries — automatically.
           </p>
-          <div className="grid gap-6 sm:grid-cols-3">
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
             <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
               <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-lg font-bold text-primary">
                 1
               </div>
               <h3 className="mb-2 text-lg font-semibold text-foreground">
-                Finds the right skill
+                Detects the gap
               </h3>
               <p className="text-sm leading-relaxed text-muted">
-                Search by capability, not keywords. Your agent describes what
-                it needs and gets ranked, trust-verified results.
+                When your agent fails, AgentNode analyzes the error and
+                identifies the missing capability — with confidence levels.
               </p>
             </div>
             <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
@@ -190,11 +190,11 @@ export default function HomePage() {
                 2
               </div>
               <h3 className="mb-2 text-lg font-semibold text-foreground">
-                Verifies before installing
+                Resolves the best match
               </h3>
               <p className="text-sm leading-relaxed text-muted">
-                Every package declares permissions, trust level, and
-                compatibility. Your agent checks all of it before install.
+                Search by capability, not keywords. Your agent gets ranked,
+                trust-verified results automatically.
               </p>
             </div>
             <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
@@ -202,11 +202,23 @@ export default function HomePage() {
                 3
               </div>
               <h3 className="mb-2 text-lg font-semibold text-foreground">
-                Installs instantly
+                Installs with trust
               </h3>
               <p className="text-sm leading-relaxed text-muted">
-                One call. Hash-verified download, dependency resolution, and
-                lockfile — the capability is ready to use immediately.
+                Auto-upgrade policies control what gets installed.
+                Only verified or trusted packages — your rules.
+              </p>
+            </div>
+            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
+              <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-lg font-bold text-primary">
+                4
+              </div>
+              <h3 className="mb-2 text-lg font-semibold text-foreground">
+                Retries once
+              </h3>
+              <p className="text-sm leading-relaxed text-muted">
+                After installing the missing skill, your agent retries
+                exactly once. No loops, no surprises.
               </p>
             </div>
           </div>
@@ -231,7 +243,7 @@ export default function HomePage() {
                 Before
               </div>
               <ul className="space-y-3">
-                {["No PDF support", "No web access", "No data analysis", "Limited, static capabilities"].map((item) => (
+                {["Fails on missing libraries", "No idea what's missing", "Manual installs for every gap", "Limited, static capabilities"].map((item) => (
                   <li key={item} className="flex items-center gap-3 text-sm text-muted">
                     <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-red-500/10 text-xs text-red-400">✕</span>
                     {item}
@@ -245,7 +257,7 @@ export default function HomePage() {
                 After AgentNode
               </div>
               <ul className="space-y-3">
-                {["Reads and extracts PDFs", "Searches the web", "Analyzes structured data", "Adds new skills on demand"].map((item) => (
+                {["Detects missing capabilities", "Installs verified skills automatically", "Retries with the new capability", "Extends itself under your control"].map((item) => (
                   <li key={item} className="flex items-center gap-3 text-sm text-foreground">
                     <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-green-500/10 text-xs text-green-400">✓</span>
                     {item}
@@ -263,10 +275,10 @@ export default function HomePage() {
       <section className="border-b border-border bg-card/30">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
-            From missing capability to working tool
+            From runtime failure to working capability
           </h2>
           <p className="mx-auto mb-14 max-w-2xl text-center text-muted">
-            Set up once. Your agent handles the rest.
+            Wrap your logic once. AgentNode handles detection, installation, and retry.
           </p>
 
           <div className="mx-auto max-w-3xl space-y-10">
@@ -280,15 +292,15 @@ export default function HomePage() {
               </div>
               <div className="flex-1 min-w-0 pb-4">
                 <h3 className="mb-1 text-lg font-semibold text-foreground">
-                  Resolve the gap
+                  Wrap your agent logic
                 </h3>
                 <p className="mb-3 text-sm leading-relaxed text-muted">
-                  Your agent describes what it needs — PDF extraction, web
-                  search, data analysis — and gets ranked, trust-verified
-                  results.
+                  Use <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">smart_run()</code> to
+                  wrap any callable. If it fails due to a missing capability,
+                  AgentNode takes over.
                 </p>
                 <code className="block overflow-x-auto rounded-lg border border-border bg-[#0d1117] px-4 py-3 font-mono text-sm text-gray-300">
-                  matches = client.resolve([&quot;pdf_extraction&quot;])
+                  result = client.smart_run(fn, auto_upgrade_policy=&quot;safe&quot;)
                 </code>
               </div>
             </div>
@@ -303,14 +315,14 @@ export default function HomePage() {
               </div>
               <div className="flex-1 min-w-0 pb-4">
                 <h3 className="mb-1 text-lg font-semibold text-foreground">
-                  Evaluate trust and permissions
+                  Detect and install automatically
                 </h3>
                 <p className="mb-3 text-sm leading-relaxed text-muted">
-                  Review trust level, security permissions, and framework
-                  compatibility — then pick the best match.
+                  AgentNode analyzes the error, detects the missing capability
+                  with confidence scoring, and installs the best verified match.
                 </p>
                 <code className="block overflow-x-auto rounded-lg border border-border bg-[#0d1117] px-4 py-3 font-mono text-sm text-gray-300">
-                  client.can_install(matches[0].slug, require_trusted=True)
+                  # Automatic: detect → resolve → trust check → install
                 </code>
               </div>
             </div>
@@ -324,23 +336,24 @@ export default function HomePage() {
               </div>
               <div className="flex-1 min-w-0 pb-4">
                 <h3 className="mb-1 text-lg font-semibold text-foreground">
-                  Install and use
+                  Retry and succeed
                 </h3>
                 <p className="mb-3 text-sm leading-relaxed text-muted">
-                  Install the package and call it through the ANP
-                  interface. Every package works the same way.
+                  After installing the missing skill, your function is retried
+                  exactly once. The result includes full transparency: what was
+                  detected, what was installed, and timing.
                 </p>
                 <code className="block overflow-x-auto rounded-lg border border-border bg-[#0d1117] px-4 py-3 font-mono text-sm text-gray-300">
-                  client.install(&quot;pdf-reader-pack&quot;)
+                  print(result.success, result.installed_slug, result.duration_ms)
                 </code>
               </div>
             </div>
           </div>
 
           <p className="mt-8 text-center text-sm text-muted">
-            Every capability follows the{" "}
-            <span className="text-foreground font-medium">ANP interface</span>,
-            ensuring consistent behavior across agents and frameworks.
+            Or use{" "}
+            <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">detect_and_install()</code>{" "}
+            for fine-grained control over detection and installation separately.
           </p>
         </div>
       </section>
@@ -351,10 +364,10 @@ export default function HomePage() {
       <section className="border-b border-border">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
-            Four lines to autonomous upgrades
+            Three lines to self-extending agents
           </h2>
           <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
-            Your agent resolves, installs, and uses new capabilities without
+            Your agent detects, installs, and retries — without
             human intervention.
           </p>
           <div className="mx-auto max-w-2xl overflow-hidden rounded-lg border border-border bg-[#0d1117]">
@@ -366,26 +379,35 @@ export default function HomePage() {
             </div>
             <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-gray-300">
               <code>{`from agentnode_sdk import AgentNodeClient
-from agentnode_sdk.installer import load_tool
 
 client = AgentNodeClient(api_key="ank_...")
 
-# Agent finds and installs what it needs
-client.resolve_and_install(["pdf_extraction", "csv_analysis"])
+# Agent runs logic — if a capability is missing, AgentNode
+# detects the gap, installs the skill, and retries once
+result = client.smart_run(
+    lambda: process_pdf("report.pdf"),
+    auto_upgrade_policy="safe",  # only verified+ skills
+)
 
-# v0.2: Load specific tools from multi-tool packs
-describe = load_tool("csv-analyzer-pack", tool_name="describe")
-result = describe({"file_path": "data.csv"})
+print(result.success)             # True
+print(result.detected_capability) # "pdf_extraction"
+print(result.installed_slug)      # "pdf-reader-pack"
 
-# Single-tool packs work the same way
-extract = load_tool("pdf-reader-pack")
-pdf = extract({"file_path": "report.pdf"})`}</code>
+# Or use detect_and_install() for fine-grained control
+try:
+    data = analyze_csv("data.csv")
+except Exception as exc:
+    upgrade = client.detect_and_install(exc, auto_upgrade_policy="safe")
+    if upgrade.installed:
+        data = analyze_csv("data.csv")`}</code>
             </pre>
           </div>
           <p className="mt-4 text-center text-sm text-muted">
-            Every package follows the{" "}
-            <span className="text-foreground font-medium">ANP v0.2 format</span>.
-            Multi-tool packs, typed schemas, no framework-specific code.
+            Policies control what gets installed:{" "}
+            <code className="rounded bg-background/50 px-1 py-0.5 font-mono text-xs">&quot;off&quot;</code>{" "}
+            <code className="rounded bg-background/50 px-1 py-0.5 font-mono text-xs">&quot;safe&quot;</code>{" "}
+            <code className="rounded bg-background/50 px-1 py-0.5 font-mono text-xs">&quot;strict&quot;</code>
+            . No hidden behavior.
           </p>
         </div>
       </section>
@@ -403,6 +425,28 @@ pdf = extract({"file_path": "report.pdf"})`}</code>
             for autonomous agents.
           </p>
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="rounded-xl border border-primary/30 bg-primary/5 p-6">
+              <h3 className="mb-2 text-base font-semibold text-foreground">
+                Capability gap detection
+              </h3>
+              <p className="text-sm leading-relaxed text-muted">
+                Agents analyze runtime errors to detect missing capabilities
+                — with high, medium, and low confidence levels. No LLM, fully
+                deterministic.
+              </p>
+            </div>
+            <div className="rounded-xl border border-primary/30 bg-primary/5 p-6">
+              <h3 className="mb-2 text-base font-semibold text-foreground">
+                Auto-upgrade policies
+              </h3>
+              <p className="text-sm leading-relaxed text-muted">
+                Three named policies control what gets installed:{" "}
+                <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">off</code>{" "}
+                <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">safe</code>{" "}
+                <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">strict</code>.
+                Your rules, enforced at runtime.
+              </p>
+            </div>
             <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
               <h3 className="mb-2 text-base font-semibold text-foreground">
                 Capability-first discovery
@@ -423,33 +467,13 @@ pdf = extract({"file_path": "report.pdf"})`}</code>
                 earn a verification tier.
               </p>
             </div>
-            <div className="rounded-xl border border-primary/30 bg-primary/5 p-6">
+            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
               <h3 className="mb-2 text-base font-semibold text-foreground">
                 Portable package format (ANP)
               </h3>
               <p className="text-sm leading-relaxed text-muted">
                 Build once, run on any agent. Every ANP package follows the
                 same interface across LangChain, CrewAI, and custom agents.
-              </p>
-            </div>
-            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
-              <h3 className="mb-2 text-base font-semibold text-foreground">
-                Install in one call
-              </h3>
-              <p className="text-sm leading-relaxed text-muted">
-                <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">client.install()</code> handles
-                download, hash verification, pip install, and lockfile — in a
-                single function call.
-              </p>
-            </div>
-            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
-              <h3 className="mb-2 text-base font-semibold text-foreground">
-                Works with any framework
-              </h3>
-              <p className="text-sm leading-relaxed text-muted">
-                LangChain, CrewAI, or your own stack. One package format,
-                one consistent interface. No lock-in, no boilerplate
-                rewrites.
               </p>
             </div>
             <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
@@ -609,17 +633,17 @@ pdf = extract({"file_path": "report.pdf"})`}</code>
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <div className="mx-auto max-w-2xl text-center">
             <h2 className="text-2xl font-bold text-foreground sm:text-3xl">
-              Agents that evolve on a shared package format
+              A runtime that extends itself
             </h2>
             <p className="mt-6 text-lg leading-relaxed text-muted">
-              Today, agents resolve and install capabilities on demand.
-              With ANP, those capabilities are portable, reusable, and
-              designed to work across agent systems.
+              Today, agents detect missing capabilities and safely acquire
+              verified skills on demand. With ANP, those capabilities are
+              portable, reusable, and designed to work across agent systems.
             </p>
             <p className="mt-4 text-base leading-relaxed text-muted">
-              Tomorrow, agents won&apos;t just upgrade themselves. They&apos;ll
-              build on a shared ecosystem of interoperable capabilities.
-              AgentNode is the infrastructure that makes that possible.
+              AgentNode is no longer just a tool registry. It&apos;s a runtime
+              that can extend itself — safely, predictably, and under your
+              control.
             </p>
           </div>
         </div>
@@ -632,10 +656,10 @@ pdf = extract({"file_path": "report.pdf"})`}</code>
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-24">
           <div className="flex flex-col items-center text-center">
             <h2 className="text-2xl font-bold text-foreground sm:text-3xl">
-              Start upgrading your agents
+              Start building self-extending agents
             </h2>
             <p className="mt-4 max-w-xl text-muted">
-              Resolve your first capability gap and let your agents handle the rest.
+              Detect your first capability gap and let your agents handle the rest.
             </p>
             <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row">
               <Link
