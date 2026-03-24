@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter, useParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { fetchWithAuth } from "@/lib/api";
+import MediaLibraryModal from "@/components/blog/MediaLibraryModal";
 
 const TipTapEditor = dynamic(() => import("@/components/blog/TipTapEditor"), { ssr: false });
 
@@ -48,6 +49,9 @@ export default function EditPostPage() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [editorReady, setEditorReady] = useState(false);
+  const [mediaOpen, setMediaOpen] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const dragCounter = useRef(0);
 
   useEffect(() => {
     loadCategories();
@@ -104,6 +108,19 @@ export default function EditPostPage() {
   const currentPostType = postTypes.find((pt) => pt.id === postTypeId);
   const urlPrefix = currentPostType?.url_prefix || "blog";
 
+  /** Bust Next.js data cache for blog pages after mutations */
+  async function revalidateCache() {
+    const paths = [`/blog`, `/${urlPrefix}`, `/${urlPrefix}/${slug}`];
+    if (urlPrefix !== "blog") paths.push(`/blog/${slug}`);
+    try {
+      await fetch("/api/revalidate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths }),
+      });
+    } catch { /* best effort */ }
+  }
+
   async function handleSave() {
     setSaving(true);
     setMessage("");
@@ -142,6 +159,7 @@ export default function EditPostPage() {
         setOriginalPostTypeId(data.post_type?.id || "");
         setMessage("Saved!");
         setTimeout(() => setMessage(""), 2000);
+        revalidateCache();
       }
     } catch {
       setMessage("Save failed");
@@ -167,12 +185,11 @@ export default function EditPostPage() {
       setStatus("draft");
       setMessage("Unpublished");
       setTimeout(() => setMessage(""), 2000);
+      revalidateCache();
     }
   }
 
-  async function handleCoverUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  async function uploadCoverFile(file: File) {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("post_id", postId);
@@ -186,6 +203,44 @@ export default function EditPostPage() {
     } catch {
       alert("Upload failed");
     }
+  }
+
+  function handleCoverUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) uploadCoverFile(file);
+  }
+
+  function handleCoverDrop(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragging(false);
+    dragCounter.current = 0;
+    const file = e.dataTransfer.files?.[0];
+    if (file && file.type.startsWith("image/")) uploadCoverFile(file);
+  }
+
+  function handleDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current++;
+    setDragging(true);
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current--;
+    if (dragCounter.current === 0) setDragging(false);
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function handleMediaSelect(url: string, alt: string) {
+    setCoverImageUrl(url);
+    if (alt && !coverImageAlt) setCoverImageAlt(alt);
   }
 
   if (loading) {
@@ -244,7 +299,7 @@ export default function EditPostPage() {
           <div>
             {coverImageUrl ? (
               <div className="relative">
-                <img src={coverImageUrl} alt={coverImageAlt} className="max-h-64 w-full rounded-lg object-cover" />
+                <img src={coverImageUrl} alt={coverImageAlt} className="max-h-64 w-full rounded-lg object-cover" onError={() => setCoverImageUrl("")} />
                 <button
                   onClick={() => setCoverImageUrl("")}
                   className="absolute right-2 top-2 rounded-full bg-background/80 px-2 py-0.5 text-xs text-muted hover:text-foreground"
@@ -253,12 +308,31 @@ export default function EditPostPage() {
                 </button>
               </div>
             ) : (
-              <label className="flex cursor-pointer items-center justify-center rounded-lg border-2 border-dashed border-border py-8 text-sm text-muted hover:border-primary hover:text-foreground">
-                <span>Drop or click to upload cover image</span>
-                <input type="file" accept="image/*" onChange={handleCoverUpload} className="hidden" />
-              </label>
+              <div
+                onDragEnter={handleDragEnter}
+                onDragLeave={handleDragLeave}
+                onDragOver={handleDragOver}
+                onDrop={handleCoverDrop}
+                className={`flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed py-8 transition-colors ${
+                  dragging ? "border-primary bg-primary/5 text-foreground" : "border-border text-muted hover:border-primary hover:text-foreground"
+                }`}
+              >
+                <label className="cursor-pointer text-sm">
+                  {dragging ? "Drop image here" : "Drop or click to upload cover image"}
+                  <input type="file" accept="image/*" onChange={handleCoverUpload} className="hidden" />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setMediaOpen(true)}
+                  className="text-xs text-primary hover:underline"
+                >
+                  or choose from media library
+                </button>
+              </div>
             )}
           </div>
+
+          <MediaLibraryModal open={mediaOpen} onClose={() => setMediaOpen(false)} onSelect={handleMediaSelect} />
 
           {/* Editor */}
           {editorReady && (

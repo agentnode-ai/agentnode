@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import type { Metadata } from "next";
+import SafeImage from "@/components/blog/SafeImage";
 
 export const metadata: Metadata = {
   title: "Blog — AI Agent Skills, MCP Tools & Agentic AI Insights",
@@ -40,7 +41,7 @@ interface Category {
 }
 
 async function getPosts(page = 1) {
-  const url = `${process.env.BACKEND_URL || "http://localhost:8001"}/v1/blog/posts?page=${page}&per_page=20`;
+  const url = `${process.env.BACKEND_URL || "http://localhost:8001"}/v1/blog/posts?page=${page}&per_page=50&post_type=post`;
   const res = await fetch(url, { next: { revalidate: 60 } });
   if (!res.ok) return { posts: [], total: 0, page: 1, per_page: 20 };
   return res.json();
@@ -102,7 +103,7 @@ export default async function BlogPage() {
                 <Link key={post.id} href={`/blog/${post.slug}`} className="group block">
                   <article className="overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-primary/30">
                     {post.cover_image_url && (
-                      <img src={post.cover_image_url} alt={post.title} className="h-64 w-full object-cover" />
+                      <SafeImage src={post.cover_image_url} alt={post.title} className="h-64 w-full object-cover" />
                     )}
                     <div className="p-6">
                       <div className="mb-2 flex items-center gap-3 text-xs text-muted">
@@ -127,7 +128,7 @@ export default async function BlogPage() {
               <Link key={post.id} href={`/blog/${post.slug}`} className="group block">
                 <article className="h-full overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-primary/30">
                   {post.cover_image_url && (
-                    <img src={post.cover_image_url} alt={post.title} className="h-40 w-full object-cover" />
+                    <SafeImage src={post.cover_image_url} alt={post.title} className="h-40 w-full object-cover" />
                   )}
                   <div className="p-5">
                     <div className="mb-2 flex items-center gap-2 text-xs text-muted">

@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 import Link from "next/link";
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
+import SafeImage from "@/components/blog/SafeImage";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8001";
 
@@ -123,9 +124,39 @@ export default async function BlogPostPage({ params }: { params: Promise<{ slug:
     ...(post.tags?.length ? { keywords: post.tags.join(", ") } : {}),
   };
 
+  const breadcrumbLd = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "Blog",
+        item: "https://agentnode.net/blog",
+      },
+      ...(post.category
+        ? [
+            {
+              "@type": "ListItem",
+              position: 2,
+              name: post.category.name,
+              item: `https://agentnode.net/blog/category/${post.category.slug}`,
+            },
+          ]
+        : []),
+      {
+        "@type": "ListItem",
+        position: post.category ? 3 : 2,
+        name: post.title,
+        item: `https://agentnode.net/blog/${post.slug}`,
+      },
+    ],
+  };
+
   return (
     <>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }} />
 
       <article className="mx-auto max-w-3xl px-6 py-16">
         {/* Breadcrumb */}
@@ -164,7 +195,7 @@ export default async function BlogPostPage({ params }: { params: Promise<{ slug:
           {/* Cover image — between title and excerpt */}
           {post.cover_image_url && (
             <figure className="my-6">
-              <img
+              <SafeImage
                 src={post.cover_image_url}
                 alt={post.cover_image_alt || post.title}
                 className="w-full rounded-xl"

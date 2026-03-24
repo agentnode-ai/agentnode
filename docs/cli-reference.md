@@ -3,7 +3,7 @@
 ## Installation
 
 ```bash
-npm install -g agentnode
+npm install -g agentnode-cli
 ```
 
 ## Configuration

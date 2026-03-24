@@ -6,7 +6,7 @@ This guide walks you through creating and publishing an ANP (AgentNode Package) 
 
 1. An AgentNode account with a publisher profile
 2. 2FA enabled on your account
-3. The AgentNode CLI installed (`npm install -g agentnode`)
+3. The AgentNode CLI installed (`npm install -g agentnode-cli`)
 
 ## Step 1: Create Your Package
 

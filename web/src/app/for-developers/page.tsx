@@ -438,6 +438,74 @@ export default function ForDevelopersPage() {
       </section>
 
       {/* ============================================================ */}
+      {/*  HOW AGENTS USE YOUR TOOLS                                   */}
+      {/* ============================================================ */}
+      <section className="border-b border-border">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20 overflow-hidden">
+          <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
+            How agents use your tools at runtime
+          </h2>
+          <p className="mx-auto mb-10 max-w-2xl text-center text-muted">
+            After you publish, any agent can discover and install your tool
+            programmatically — no manual setup, no hardcoded dependencies.
+          </p>
+
+          <div className="mx-auto max-w-2xl overflow-hidden rounded-lg border border-border bg-[#0d1117]">
+            <div className="flex items-center gap-2 border-b border-border/50 px-4 py-2">
+              <div className="h-3 w-3 rounded-full bg-red-500/60" />
+              <div className="h-3 w-3 rounded-full bg-yellow-500/60" />
+              <div className="h-3 w-3 rounded-full bg-green-500/60" />
+              <span className="ml-2 font-mono text-xs text-muted">
+                agent.py
+              </span>
+              <span className="ml-auto font-mono text-xs text-muted/50">python</span>
+            </div>
+            <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-gray-300">
+              <code>{`from agentnode_sdk import AgentNodeClient
+from agentnode_sdk.installer import load_tool
+
+client = AgentNodeClient(api_key="ank_live_...")
+
+# Agent needs PDF extraction → resolves your published tool
+client.resolve_and_install(["pdf_extraction"])
+
+# Loads and calls your tool — typed input/output
+extract = load_tool("pdf-reader-pack")
+result = extract({"file_path": "quarterly-report.pdf"})
+print(result["text"])`}</code>
+            </pre>
+          </div>
+
+          <div className="mt-8 mx-auto grid max-w-3xl gap-4 sm:grid-cols-4">
+            <div className="rounded-lg border border-border bg-card p-4 text-center">
+              <p className="text-2xl font-bold text-primary">1</p>
+              <p className="mt-1 text-xs text-muted">Resolve — finds your tool by capability</p>
+            </div>
+            <div className="rounded-lg border border-border bg-card p-4 text-center">
+              <p className="text-2xl font-bold text-primary">2</p>
+              <p className="mt-1 text-xs text-muted">Verify — checks trust level and permissions</p>
+            </div>
+            <div className="rounded-lg border border-border bg-card p-4 text-center">
+              <p className="text-2xl font-bold text-primary">3</p>
+              <p className="mt-1 text-xs text-muted">Install — downloads, hash-checks, extracts</p>
+            </div>
+            <div className="rounded-lg border border-border bg-card p-4 text-center">
+              <p className="text-2xl font-bold text-primary">4</p>
+              <p className="mt-1 text-xs text-muted">Load — imports entrypoint, returns callable</p>
+            </div>
+          </div>
+
+          <p className="mt-8 text-center text-sm text-muted">
+            Higher verification scores rank your tool above competitors. See{" "}
+            <Link href="/docs#runtime-quickstart" className="text-primary hover:underline">
+              Runtime QuickStart
+            </Link>{" "}
+            for the full SDK reference.
+          </p>
+        </div>
+      </section>
+
+      {/* ============================================================ */}
       {/*  COMPARISON                                                  */}
       {/* ============================================================ */}
       <section className="border-b border-border bg-card/30">

@@ -7,7 +7,7 @@ AgentNode is the open upgrade and discovery infrastructure for AI agents. It hel
 ### 1. Install the CLI
 
 ```bash
-npm install -g agentnode
+npm install -g agentnode-cli
 ```
 
 ### 2. Search for a capability
@@ -61,7 +61,7 @@ pip install agentnode-sdk
 ```
 
 ```python
-from agentnode import AgentNode
+from agentnode_sdk import AgentNode
 
 an = AgentNode(api_key="ank_your_key_here")
 

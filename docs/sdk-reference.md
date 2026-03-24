@@ -9,7 +9,7 @@ pip install agentnode-sdk
 ## Quick Start
 
 ```python
-from agentnode import AgentNode
+from agentnode_sdk import AgentNode
 
 an = AgentNode(api_key="ank_your_key_here")
 
@@ -24,7 +24,7 @@ print(results)
 Returns raw API response dicts. Recommended for simple use cases.
 
 ```python
-from agentnode import AgentNode
+from agentnode_sdk import AgentNode
 
 an = AgentNode(api_key="ank_...", base_url="https://api.agentnode.net/v1")
 ```
@@ -94,7 +94,7 @@ result = an.validate({"package_id": "my-pack", "version": "1.0.0", ...})
 Returns typed dataclass models. Recommended for larger applications.
 
 ```python
-from agentnode import AgentNodeClient
+from agentnode_sdk import AgentNodeClient
 
 client = AgentNodeClient(api_key="ank_...", base_url="https://api.agentnode.net/v1")
 ```
@@ -253,7 +253,7 @@ All models are Python dataclasses in `agentnode_sdk.models`.
 All exceptions inherit from `AgentNodeError`.
 
 ```python
-from agentnode import AgentNodeError, NotFoundError, AuthError, ValidationError
+from agentnode_sdk import AgentNodeError, NotFoundError, AuthError, ValidationError
 
 try:
     pkg = an.get_package("nonexistent")

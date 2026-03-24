@@ -11,6 +11,7 @@ const navLinks = [
   { href: "/for-developers", label: "For Developers" },
   { href: "/publish", label: "Publish" },
   { href: "/blog", label: "Blog" },
+  { href: "/tutorials", label: "Tutorials" },
   { href: "/docs", label: "Docs" },
   { href: "https://github.com/agentnode-ai/agentnode", label: "GitHub", external: true },
 ];

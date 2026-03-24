@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { fetchWithAuth } from "@/lib/api";
 
 interface MediaImage {
@@ -10,12 +10,20 @@ interface MediaImage {
   file_size: number | null;
   width: number | null;
   height: number | null;
+  title: string | null;
+  original_filename: string | null;
+  caption: string | null;
   post_id: string | null;
   created_at: string | null;
 }
 
+interface MonthOption {
+  value: string;
+  label: string;
+}
+
 function formatBytes(bytes: number | null): string {
-  if (!bytes) return "—";
+  if (!bytes) return "\u2014";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -30,8 +38,21 @@ export default function MediaPage() {
   const [uploading, setUploading] = useState(false);
   const [selected, setSelected] = useState<MediaImage | null>(null);
   const [editAlt, setEditAlt] = useState("");
+  const [editTitle, setEditTitle] = useState("");
+  const [editCaption, setEditCaption] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+
+  // Filter state
+  const [sortBy, setSortBy] = useState<string>("newest");
+  const [monthFilter, setMonthFilter] = useState("");
+  const [attachmentFilter, setAttachmentFilter] = useState("");
+  const [months, setMonths] = useState<MonthOption[]>([]);
+
+  // Drag-and-drop state
+  const [dragging, setDragging] = useState(false);
+  const dragCounter = useRef(0);
+
   const perPage = 40;
 
   const loadImages = useCallback(async () => {
@@ -39,51 +60,85 @@ export default function MediaPage() {
     try {
       const params = new URLSearchParams({ page: String(page), per_page: String(perPage) });
       if (search) params.set("search", search);
+      if (sortBy === "oldest") {
+        params.set("sort_by", "created_at");
+        params.set("sort_order", "asc");
+      } else if (sortBy === "largest") {
+        params.set("sort_by", "file_size");
+        params.set("sort_order", "desc");
+      }
+      if (monthFilter) params.set("month", monthFilter);
+      if (attachmentFilter) params.set("attachment", attachmentFilter);
       const res = await fetchWithAuth(`/admin/blog/images?${params}`);
       const data = await res.json();
       setImages(data.images || []);
       setTotal(data.total || 0);
     } catch { /* ignore */ }
     setLoading(false);
-  }, [page, search]);
+  }, [page, search, sortBy, monthFilter, attachmentFilter]);
 
   useEffect(() => { loadImages(); }, [loadImages]);
 
-  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = e.target.files;
-    if (!files?.length) return;
+  // Load months on mount
+  useEffect(() => {
+    fetchWithAuth("/admin/blog/images/months")
+      .then(res => res.json())
+      .then(setMonths)
+      .catch(() => {});
+  }, []);
+
+  async function uploadFiles(files: FileList | File[]) {
     setUploading(true);
+    let uploaded = 0;
+    let skipped = 0;
     for (const file of Array.from(files)) {
+      if (!file.type.startsWith("image/")) { skipped++; continue; }
       const formData = new FormData();
       formData.append("file", file);
       try {
         await fetchWithAuth("/admin/blog/images/upload", { method: "POST", body: formData });
-      } catch { /* ignore */ }
+        uploaded++;
+      } catch { skipped++; }
     }
     setUploading(false);
-    e.target.value = "";
     loadImages();
+    if (uploaded > 0 || skipped > 0) {
+      const parts: string[] = [];
+      if (uploaded > 0) parts.push(`${uploaded} image${uploaded !== 1 ? "s" : ""} uploaded`);
+      if (skipped > 0) parts.push(`${skipped} file${skipped !== 1 ? "s" : ""} skipped`);
+      setMessage(parts.join(", "));
+      setTimeout(() => setMessage(""), 3000);
+    }
+  }
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files?.length) return;
+    await uploadFiles(files);
+    e.target.value = "";
   }
 
   function selectImage(img: MediaImage) {
     setSelected(img);
     setEditAlt(img.alt_text || "");
+    setEditTitle(img.title || "");
+    setEditCaption(img.caption || "");
     setMessage("");
   }
 
-  async function handleSaveAlt() {
+  async function handleSaveMetadata() {
     if (!selected) return;
     setSaving(true);
     try {
       const res = await fetchWithAuth(`/admin/blog/images/${selected.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ alt_text: editAlt }),
+        body: JSON.stringify({ alt_text: editAlt, title: editTitle, caption: editCaption }),
       });
       if (res.ok) {
         const updated = await res.json();
-        setImages((prev) => prev.map((img) => (img.id === updated.id ? { ...img, alt_text: updated.alt_text } : img)));
-        setSelected((prev) => (prev ? { ...prev, alt_text: updated.alt_text } : null));
+        setImages((prev) => prev.map((img) => (img.id === updated.id ? { ...img, alt_text: updated.alt_text, title: updated.title, caption: updated.caption } : img)));
+        setSelected((prev) => (prev ? { ...prev, alt_text: updated.alt_text, title: updated.title, caption: updated.caption } : null));
         setMessage("Saved");
         setTimeout(() => setMessage(""), 2000);
       }
@@ -110,6 +165,39 @@ export default function MediaPage() {
     setTimeout(() => setMessage(""), 2000);
   }
 
+  function clearFilters() {
+    setSearch("");
+    setSortBy("newest");
+    setMonthFilter("");
+    setAttachmentFilter("");
+    setPage(1);
+    setSelected(null);
+  }
+
+  // Drag-and-drop handlers
+  function handleDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    dragCounter.current++;
+    setDragging(true);
+  }
+  function handleDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    dragCounter.current--;
+    if (dragCounter.current === 0) setDragging(false);
+  }
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault();
+  }
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    dragCounter.current = 0;
+    setDragging(false);
+    if (e.dataTransfer.files.length > 0) {
+      uploadFiles(e.dataTransfer.files);
+    }
+  }
+
+  const hasActiveFilters = search || monthFilter || attachmentFilter || sortBy !== "newest";
   const totalPages = Math.ceil(total / perPage);
 
   return (
@@ -126,24 +214,76 @@ export default function MediaPage() {
         </label>
       </div>
 
-      {/* Search */}
-      <div className="mb-4">
+      {/* Filter Toolbar */}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <input
           value={search}
-          onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-          placeholder="Search by alt text..."
+          onChange={(e) => { setSearch(e.target.value); setPage(1); setSelected(null); }}
+          placeholder="Search by title, alt text, filename..."
           className="w-full max-w-sm rounded-md border border-border bg-background px-3 py-2 text-sm placeholder:text-muted/50"
         />
+        <select
+          value={sortBy}
+          onChange={(e) => { setSortBy(e.target.value); setPage(1); setSelected(null); }}
+          className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+        >
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+          <option value="largest">Largest</option>
+        </select>
+        {months.length > 0 && (
+          <select
+            value={monthFilter}
+            onChange={(e) => { setMonthFilter(e.target.value); setPage(1); setSelected(null); }}
+            className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+          >
+            <option value="">All dates</option>
+            {months.map((m) => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
+          </select>
+        )}
+        <select
+          value={attachmentFilter}
+          onChange={(e) => { setAttachmentFilter(e.target.value); setPage(1); setSelected(null); }}
+          className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+        >
+          <option value="">All</option>
+          <option value="attached">Attached</option>
+          <option value="unattached">Unattached</option>
+        </select>
       </div>
 
+      {message && <div className="mb-4 text-center text-sm text-green-400">{message}</div>}
+
       <div className="flex gap-6">
-        {/* Grid */}
-        <div className="min-w-0 flex-1">
+        {/* Grid with drag-and-drop */}
+        <div
+          className="relative min-w-0 flex-1"
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+        >
+          {/* Drag overlay */}
+          {dragging && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-primary bg-primary/5">
+              <p className="text-lg font-medium text-primary">Drop images to upload</p>
+            </div>
+          )}
+
           {loading ? (
             <div className="py-16 text-center text-muted">Loading...</div>
           ) : images.length === 0 ? (
             <div className="py-16 text-center text-muted">
-              {search ? "No images match your search." : "No images uploaded yet."}
+              {hasActiveFilters ? (
+                <div className="space-y-2">
+                  <p>{search ? `No images match '${search}'.` : "No images found for the selected filters."}</p>
+                  <button onClick={clearFilters} className="text-sm text-primary hover:underline">Clear filters</button>
+                </div>
+              ) : (
+                "No images uploaded yet. Upload your first image."
+              )}
             </div>
           ) : (
             <>
@@ -191,6 +331,16 @@ export default function MediaPage() {
 
             <div className="space-y-3">
               <div>
+                <label className="mb-1 block text-xs font-medium text-muted">Title</label>
+                <input
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  placeholder="Image title"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                />
+              </div>
+
+              <div>
                 <label className="mb-1 block text-xs font-medium text-muted">Alt Text</label>
                 <input
                   value={editAlt}
@@ -200,8 +350,19 @@ export default function MediaPage() {
                 />
               </div>
 
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted">Caption</label>
+                <textarea
+                  value={editCaption}
+                  onChange={(e) => setEditCaption(e.target.value)}
+                  placeholder="Optional caption"
+                  rows={2}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm resize-none"
+                />
+              </div>
+
               <div className="flex gap-2">
-                <button onClick={handleSaveAlt} disabled={saving} className="flex-1 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-background hover:bg-primary/90 disabled:opacity-50">
+                <button onClick={handleSaveMetadata} disabled={saving} className="flex-1 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-background hover:bg-primary/90 disabled:opacity-50">
                   {saving ? "..." : "Save"}
                 </button>
                 <button onClick={copyUrl} className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-card">
@@ -209,15 +370,19 @@ export default function MediaPage() {
                 </button>
               </div>
 
-              {message && <div className="text-center text-sm text-green-400">{message}</div>}
-
               <div className="space-y-1 text-xs text-muted">
+                {selected.original_filename && (
+                  <div className="truncate" title={selected.original_filename}>File: {selected.original_filename}</div>
+                )}
                 <div>Size: {formatBytes(selected.file_size)}</div>
                 {selected.width && selected.height && (
                   <div>Dimensions: {selected.width} x {selected.height}</div>
                 )}
                 {selected.created_at && (
                   <div>Uploaded: {new Date(selected.created_at).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })}</div>
+                )}
+                {selected.post_id && (
+                  <div className="text-yellow-400">Attached to a post</div>
                 )}
               </div>
 

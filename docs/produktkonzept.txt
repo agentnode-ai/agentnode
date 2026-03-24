@@ -220,7 +220,7 @@ POST /v1/packages/validate, POST /v1/packages/publish, Deprecate.
 22.1 Architekturregel
 Python SDK ist der primäre Integrationspfad. LangChain-Adapter ist nur ein dünner Wrapper darüber. Alle Kernfeatures müssen ohne LangChain vollständig benutzbar sein.
 22.2 Python SDK
-from agentnode import AgentNode
+from agentnode_sdk import AgentNode
 an = AgentNode(api_key="...")
 # Suchen
 results = an.search("pdf extraction")
@@ -328,7 +328,7 @@ Ein Entwickler soll in 5 Minuten das Aha-Erlebnis haben.
 30.2 Day-1-Flow
 Entwickler sieht Launch-Post (Hacker News, Reddit, X, GitHub)
 Klickt Landing Page
-Sieht klaren CTA: pip install agentnode
+Sieht klaren CTA: pip install agentnode-sdk
 Führt agentnode search pdf aus
 Sieht 3 Ergebnisse mit Trust und Kompatibilität
 Führt agentnode install pdf-reader-pack aus
@@ -341,7 +341,7 @@ Subline: "AgentNode helps developers and AI hosts resolve capability gaps with t
 Hero: Terminal-Animation mit agentnode search pdf → Ergebnis → agentnode install pdf-reader-pack
 3 Beispiel-Packs: Web Search, PDF Reader, Document Summary
 Trust-Blöcke: Compatibility, Policy-aware, Structured install
-CTA: pip install agentnode + Links zu Docs und GitHub
+CTA: pip install agentnode-sdk + Links zu Docs und GitHub
 31. Competitive Response
 31.1 Bedrohung
 Wenn Frameworks oder Plattformen eigene Registries bauen (z.B. LangChain install, MCP Official Registry), könnte AgentNode optional werden.

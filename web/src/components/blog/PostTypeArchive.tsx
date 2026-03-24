@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
+import SafeImage from "@/components/blog/SafeImage";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8001";
 
@@ -102,7 +103,7 @@ export default async function PostTypeArchive({ postTypeSlug }: { postTypeSlug: 
                 <Link key={post.id} href={`/${pt.url_prefix}/${post.slug}`} className="group block">
                   <article className="overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-primary/30">
                     {post.cover_image_url && (
-                      <img src={post.cover_image_url} alt={post.title} className="h-64 w-full object-cover" />
+                      <SafeImage src={post.cover_image_url} alt={post.title} className="h-64 w-full object-cover" />
                     )}
                     <div className="p-6">
                       <div className="mb-2 flex items-center gap-3 text-xs text-muted">
@@ -126,7 +127,7 @@ export default async function PostTypeArchive({ postTypeSlug }: { postTypeSlug: 
               <Link key={post.id} href={`/${pt.url_prefix}/${post.slug}`} className="group block">
                 <article className="h-full overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-primary/30">
                   {post.cover_image_url && (
-                    <img src={post.cover_image_url} alt={post.title} className="h-40 w-full object-cover" />
+                    <SafeImage src={post.cover_image_url} alt={post.title} className="h-40 w-full object-cover" />
                   )}
                   <div className="p-5">
                     <div className="mb-2 flex items-center gap-2 text-xs text-muted">

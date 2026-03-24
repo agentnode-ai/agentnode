@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import type { Metadata } from "next";
+import SafeImage from "@/components/blog/SafeImage";
 
 interface Post {
   id: string;
@@ -54,7 +55,7 @@ export default async function CategoryPage({ params }: { params: Promise<{ slug:
             <Link key={post.id} href={`/blog/${post.slug}`} className="group block">
               <article className="h-full overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-primary/30">
                 {post.cover_image_url && (
-                  <img src={post.cover_image_url} alt={post.title} className="h-40 w-full object-cover" />
+                  <SafeImage src={post.cover_image_url} alt={post.title} className="h-40 w-full object-cover" />
                 )}
                 <div className="p-5">
                   <div className="mb-2 flex items-center gap-2 text-xs text-muted">

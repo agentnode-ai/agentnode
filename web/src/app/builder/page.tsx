@@ -531,15 +531,15 @@ export default function BuilderPage() {
                 {[
                   {
                     label: "AgentNode SDK",
-                    code: `from agentnode import load_tool\n\n${result.metadata.detected_capability_ids[0]} = load_tool("${result.metadata.package_id}")`,
+                    code: `from agentnode_sdk import AgentNodeClient\nfrom agentnode_sdk.installer import load_tool\n\nclient = AgentNodeClient()\nclient.install("${result.metadata.package_id}")\n\ntool = load_tool("${result.metadata.package_id}")\nresult = tool({"input": "...  "})`,
                   },
                   {
                     label: "LangChain",
-                    code: `from agentnode.adapters.langchain import as_langchain_tool\n\ntool = as_langchain_tool("${result.metadata.package_id}")`,
+                    code: `from agentnode_langchain import as_langchain_tool\n\ntool = as_langchain_tool("${result.metadata.package_id}")`,
                   },
                   {
                     label: "MCP",
-                    code: `from agentnode.adapters.mcp import as_mcp_tool\n\ntool = as_mcp_tool("${result.metadata.package_id}")`,
+                    code: `from agentnode_mcp import as_mcp_tool\n\ntool = as_mcp_tool("${result.metadata.package_id}")`,
                   },
                   {
                     label: "CLI",

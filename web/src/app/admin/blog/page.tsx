@@ -105,10 +105,23 @@ export default function AdminBlogPage() {
     }
   }
 
+  async function revalidateCache(paths: string[]) {
+    try {
+      await fetch("/api/revalidate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths }),
+      });
+    } catch { /* best effort */ }
+  }
+
   async function deletePost(id: string, title: string) {
     if (!confirm(`Delete "${title}"?`)) return;
+    const post = posts.find((p) => p.id === id);
     await fetchWithAuth(`/admin/blog/posts/${id}`, { method: "DELETE" });
     loadPosts();
+    const prefix = post?.post_type?.url_prefix || "blog";
+    revalidateCache(["/blog", `/${prefix}/${post?.slug}`]);
   }
 
   async function createCategory() {

@@ -8,6 +8,9 @@ interface MediaImage {
   url: string;
   alt_text: string | null;
   file_size: number | null;
+  title: string | null;
+  original_filename: string | null;
+  caption: string | null;
   created_at: string | null;
 }
 
@@ -157,7 +160,7 @@ export default function MediaLibraryModal({ open, onClose, onSelect }: MediaLibr
         <div className="flex items-center justify-between border-t border-border px-5 py-3">
           <div className="text-sm text-muted">
             {selected ? (
-              <span>Selected: <span className="text-foreground">{selected.alt_text || "Untitled"}</span></span>
+              <span>Selected: <span className="text-foreground">{selected.title || selected.alt_text || selected.original_filename || "Untitled"}</span></span>
             ) : (
               "Select an image to insert"
             )}

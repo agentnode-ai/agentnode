@@ -9,6 +9,7 @@ import Link from "next/link";
 
 const sections = [
   { id: "quick-start", label: "Quick Start" },
+  { id: "runtime-quickstart", label: "Runtime QuickStart" },
   { id: "installation", label: "Installation" },
   { id: "search-discovery", label: "Searching & Discovery" },
   { id: "resolution-engine", label: "Resolution Engine" },
@@ -314,6 +315,109 @@ print(pdf["text"])`}</CodeBlock>
                 Read on for the full reference.
               </p>
             </div>
+          </section>
+
+          {/* ============================================================ */}
+          {/*  RUNTIME QUICKSTART                                            */}
+          {/* ============================================================ */}
+          <section>
+            <SectionHeading id="runtime-quickstart">
+              Runtime QuickStart
+            </SectionHeading>
+            <p className="mb-4 text-sm leading-relaxed text-muted">
+              Build agents that discover and install capabilities at runtime —
+              no hardcoded dependencies. Five lines from{" "}
+              <C>pip install</C> to a working tool.
+            </p>
+
+            <SubHeading>Install the SDK</SubHeading>
+            <CodeBlock title="terminal">{`$ pip install agentnode-sdk`}</CodeBlock>
+
+            <SubHeading>The 5-line agent pattern</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              Describe what your agent needs. AgentNode resolves it to the
+              best-scored, trust-verified package — downloads, verifies, and
+              installs it locally. Then load the tool and call it.
+            </p>
+            <CodeBlock title="agent.py" language="python">{`from agentnode_sdk import AgentNodeClient
+from agentnode_sdk.installer import load_tool
+
+client = AgentNodeClient(api_key="ank_live_...")
+
+# Resolve capability → install best match (trust-verified)
+client.resolve_and_install(["pdf_extraction"])
+
+# Load the installed tool and run it
+extract = load_tool("pdf-reader-pack")
+result = extract({"file_path": "report.pdf"})
+print(result["text"])`}</CodeBlock>
+
+            <div className="mt-4 rounded-lg border border-primary/20 bg-primary/5 p-4">
+              <p className="text-sm font-medium text-foreground">
+                That is the complete runtime flow.{" "}
+                <C>resolve_and_install()</C> handles resolution, trust
+                verification, download, hash check, extraction, dependency
+                install, and lockfile update — in a single call.
+              </p>
+            </div>
+
+            <SubHeading>Step-by-step for more control</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              When you need to inspect candidates, check policies, or control
+              trust requirements before installing:
+            </p>
+            <CodeBlock title="agent_detailed.py" language="python">{`from agentnode_sdk import AgentNodeClient
+from agentnode_sdk.installer import load_tool
+
+client = AgentNodeClient(api_key="ank_live_...")
+
+# 1. Resolve: find the best package for a capability
+result = client.resolve(capabilities=["pdf_extraction"])
+best = result.results[0]
+print(f"Best match: {best.slug} v{best.version}")
+print(f"  Trust: {best.trust_level}  Score: {best.score}")
+
+# 2. Pre-flight check (optional): verify trust + permissions
+check = client.can_install(best.slug, require_trusted=True)
+if not check.allowed:
+    print(f"Blocked: {check.reason}")
+    exit(1)
+
+# 3. Install locally (download → verify hash → extract → pip install → lockfile)
+installed = client.install(best.slug)
+print(installed.message)  # "Installed pdf-reader-pack@1.2.0"
+
+# 4. Load and run
+extract = client.load_tool(best.slug)
+data = extract({"file_path": "report.pdf"})
+print(data["text"])`}</CodeBlock>
+
+            <SubHeading>What happens under the hood</SubHeading>
+            <DocTable
+              headers={["Step", "What it does"]}
+              rows={[
+                ["resolve()", "Scores packages by capability match (40%), framework fit (20%), runtime compatibility (15%), trust level (15%), permissions (10%)"],
+                ["can_install()", "Pre-flight check — verifies trust level, permissions, deprecation status without downloading anything"],
+                ["install()", "Downloads artifact, verifies SHA-256 hash, extracts to ~/.agentnode/packages/, runs pip install for dependencies, writes agentnode.lock"],
+                ["load_tool()", "Reads lockfile → resolves entrypoint (v0.1 module.path or v0.2 module.path:function) → returns a callable Python function"],
+              ]}
+            />
+
+            <SubHeading>Lockfile</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              Every install writes to <C>agentnode.lock</C> in your project
+              root. This pins exact versions and hashes for reproducible builds
+              across environments.
+            </p>
+            <CodeBlock title="agentnode.lock" language="json">{`{
+  "pdf-reader-pack": {
+    "version": "1.2.0",
+    "hash": "sha256:a1b2c3d4...",
+    "entrypoint": "pdf_reader.extract:run",
+    "tools": ["extract_pdf", "extract_tables"],
+    "installed_at": "2026-03-24T10:30:00Z"
+  }
+}`}</CodeBlock>
           </section>
 
           {/* ============================================================ */}
@@ -1323,9 +1427,9 @@ Checking for upgrades...
             <SectionHeading id="python-sdk">Python SDK</SectionHeading>
             <p className="mb-4 text-sm leading-relaxed text-muted">
               The Python SDK provides programmatic access to the AgentNode
-              registry for search, resolution, policy checking, and package
-              management. Use it to build agents that autonomously discover and
-              install capabilities.
+              registry for search, resolution, trust checking, installation,
+              and tool loading. Use it to build agents that autonomously
+              discover and install capabilities at runtime.
             </p>
 
             <SubHeading>Installation</SubHeading>
@@ -1334,109 +1438,117 @@ Checking for upgrades...
             <SubHeading>Initialization</SubHeading>
             <CodeBlock title="app.py" language="python">{`from agentnode_sdk import AgentNodeClient
 
-# Option 1: API key (recommended for production and CI/CD)
+# API key authentication (recommended)
 client = AgentNodeClient(api_key="ank_live_abc123def456")
 
-# Option 2: Environment variable
-# Set AGENTNODE_API_KEY=ank_live_abc123def456
-client = AgentNodeClient()
+# Or use a bearer token
+client = AgentNodeClient(token="your_bearer_token")
 
-# Option 3: Custom base URL (for self-hosted registries)
+# Custom base URL (for self-hosted registries)
 client = AgentNodeClient(
     api_key="ank_live_abc123def456",
-    base_url="https://api.your-registry.com"
+    base_url="https://api.your-registry.com/v1"
 )`}</CodeBlock>
 
             <SubHeading>Search</SubHeading>
-            <CodeBlock title="search.py" language="python">{`results = client.search(
+            <CodeBlock title="search.py" language="python">{`result = client.search(
     query="pdf extraction",
     framework="langchain",
-    trust="verified"
+    per_page=10
 )
 
-for pkg in results:
-    print(f"{pkg.slug}  v{pkg.version}  {pkg.trust_level}")
-    print(f"  {pkg.summary}")
-    print()`}</CodeBlock>
+print(f"Found {result.total} packages")
+for hit in result.hits:
+    print(f"  {hit.slug}  {hit.trust_level}  {hit.summary}")`}</CodeBlock>
 
             <SubHeading>Resolve</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              Resolve finds the best package for a set of capability IDs,
+              scoring each candidate on capability match, framework fit,
+              runtime compatibility, trust level, and permissions.
+            </p>
             <CodeBlock title="resolve.py" language="python">{`result = client.resolve(
     capabilities=["pdf_extraction", "web_search"],
-    framework="langchain",
-    policy={
-        "min_trust": "verified",
-        "max_permissions": {
-            "network": "restricted",
-            "code_execution": "none"
-        }
-    }
+    framework="langchain"
 )
 
 for match in result.results:
-    print(f"{match.capability_id}: {match.slug}")
-    print(f"  Score: {match.score}")
-    print(f"  Trust: {match.trust_level}")
-    print()`}</CodeBlock>
+    print(f"{match.slug} v{match.version}")
+    print(f"  Score: {match.score}  Trust: {match.trust_level}")
+    print(f"  Breakdown: cap={match.breakdown.capability_match} "
+          f"fw={match.breakdown.framework_fit} "
+          f"trust={match.breakdown.trust_level}")`}</CodeBlock>
 
-            <SubHeading>Policy checking</SubHeading>
-            <CodeBlock title="policy.py" language="python">{`policy = client.check_policy(
-    slug="pdf-reader-pack",
-    constraints={
-        "min_trust": "trusted",
-        "max_permissions": {
-            "network": "none",
-            "filesystem": "read",
-            "code_execution": "none"
-        }
-    }
+            <SubHeading>Pre-flight check</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              Check whether a package can be installed under given trust and
+              permission constraints — without downloading anything.
+            </p>
+            <CodeBlock title="check.py" language="python">{`check = client.can_install(
+    "pdf-reader-pack",
+    require_trusted=True,
+    denied_permissions=["network", "code_execution"]
 )
 
-print(f"Passes policy: {policy.passes}")
-for check in policy.checks:
-    status = "PASS" if check.passed else "FAIL"
-    print(f"  {check.name}: {status}")`}</CodeBlock>
+if check.allowed:
+    print(f"OK — trust: {check.trust_level}")
+else:
+    print(f"Blocked: {check.reason}")`}</CodeBlock>
 
-            <SubHeading>Package info and explanation</SubHeading>
-            <CodeBlock title="info.py" language="python">{`# Detailed package metadata
-info = client.info("pdf-reader-pack")
-print(f"Name: {info.name}")
-print(f"Version: {info.version}")
-print(f"Trust: {info.trust_level}")
-print(f"Publisher: {info.publisher}")
-print(f"Capabilities: {info.capabilities}")
-
-# Human-readable explanation
-explanation = client.explain("pdf-reader-pack")
-print(explanation.text)`}</CodeBlock>
-
-            <SubHeading>List capabilities</SubHeading>
-            <CodeBlock title="capabilities.py" language="python">{`# List all capability IDs in the taxonomy
-capabilities = client.list_capabilities()
-
-for cap in capabilities:
-    print(f"{cap.id}: {cap.description}")
-    print(f"  Category: {cap.category}")
-    print()`}</CodeBlock>
-
-            <SubHeading>Async usage</SubHeading>
+            <SubHeading>Install</SubHeading>
             <p className="mb-3 text-sm text-muted">
-              The SDK provides async variants of all methods for use in
-              asynchronous applications and agent frameworks.
+              Downloads the artifact, verifies the SHA-256 hash, extracts to{" "}
+              <C>~/.agentnode/packages/</C>, installs pip dependencies, and
+              writes <C>agentnode.lock</C>.
             </p>
-            <CodeBlock title="async_agent.py" language="python">{`from agentnode_sdk import AsyncAgentNodeClient
+            <CodeBlock title="install.py" language="python">{`result = client.install("pdf-reader-pack", require_trusted=True)
 
-client = AsyncAgentNodeClient(api_key="ank_live_abc123def456")
+print(result.message)       # "Installed pdf-reader-pack@1.2.0"
+print(result.installed)     # True
+print(result.hash_verified) # True`}</CodeBlock>
 
-async def resolve_capabilities():
-    result = await client.resolve(
-        capabilities=["pdf_extraction", "web_search"],
-        framework="langchain"
-    )
-    return result
+            <SubHeading>Load and run tools</SubHeading>
+            <CodeBlock title="run.py" language="python">{`# Load a tool from an installed package
+extract = client.load_tool("pdf-reader-pack")
+result = extract({"file_path": "report.pdf"})
 
-async def search_packages():
-    results = await client.search("email automation")
-    return results`}</CodeBlock>
+# Multi-tool packs: load a specific tool by name
+describe = client.load_tool("csv-analyzer-pack", tool_name="describe")
+summary = describe({"file_path": "data.csv"})`}</CodeBlock>
+
+            <SubHeading>One-call autonomous install</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              For agents that need to self-upgrade: describe what you need and
+              let AgentNode handle the rest.
+            </p>
+            <CodeBlock title="autonomous.py" language="python">{`# Resolve + trust check + install in one call
+result = client.resolve_and_install(
+    capabilities=["pdf_extraction"],
+    require_trusted=True  # only install trusted/curated packages
+)
+
+if result.installed:
+    tool = client.load_tool(result.slug)
+    data = tool({"file_path": "report.pdf"})
+else:
+    print(f"Could not install: {result.message}")`}</CodeBlock>
+
+            <SubHeading>Package metadata</SubHeading>
+            <CodeBlock title="metadata.py" language="python">{`# Package details
+pkg = client.get_package("pdf-reader-pack")
+print(f"{pkg.name} v{pkg.latest_version}")
+print(f"Downloads: {pkg.download_count}")
+print(f"Deprecated: {pkg.is_deprecated}")
+
+# Install metadata (capabilities, permissions, artifact info)
+meta = client.get_install_metadata("pdf-reader-pack")
+print(f"Runtime: {meta.runtime}")
+print(f"Entrypoint: {meta.entrypoint}")
+for cap in meta.capabilities:
+    print(f"  {cap.name} ({cap.capability_id})")
+if meta.permissions:
+    print(f"  Network: {meta.permissions.network_level}")
+    print(f"  Filesystem: {meta.permissions.filesystem_level}")`}</CodeBlock>
           </section>
 
           {/* ============================================================ */}
