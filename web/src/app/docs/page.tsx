@@ -296,17 +296,16 @@ Installing pdf-reader-pack@1.2.0...
 
 Installed pdf-reader-pack@1.2.0`}</CodeBlock>
 
-            <SubHeading>5. Use it in your code</SubHeading>
-            <CodeBlock title="agent.py" language="python">{`from agentnode_sdk.installer import load_tool
+            <SubHeading>5. Run it in your code</SubHeading>
+            <CodeBlock title="agent.py" language="python">{`from agentnode_sdk import run_tool
 
-# v0.2: Load a specific tool from a multi-tool pack
-describe = load_tool("csv-analyzer-pack", tool_name="describe")
-result = describe({"file_path": "data.csv"})
+# v0.3: Run with trust-aware isolation (auto = safe default)
+result = run_tool("pdf-reader-pack", file_path="quarterly-report.pdf")
+print(result.result["text"])
+print(result.mode_used)  # "direct" for trusted, "subprocess" for others
 
-# v0.1: Single-tool packs still work the same way
-extract = load_tool("pdf-reader-pack")
-pdf = extract({"file_path": "quarterly-report.pdf"})
-print(pdf["text"])`}</CodeBlock>
+# Multi-tool packs: specify the tool name
+result = run_tool("csv-analyzer-pack", tool_name="describe", file_path="data.csv")`}</CodeBlock>
 
             <div className="mt-6 rounded-lg border border-primary/20 bg-primary/5 p-4">
               <p className="text-sm font-medium text-foreground">
@@ -337,27 +336,27 @@ print(pdf["text"])`}</CodeBlock>
             <p className="mb-3 text-sm text-muted">
               Describe what your agent needs. AgentNode resolves it to the
               best-scored, trust-verified package — downloads, verifies, and
-              installs it locally. Then load the tool and call it.
+              installs it locally. Then run it with automatic isolation.
             </p>
-            <CodeBlock title="agent.py" language="python">{`from agentnode_sdk import AgentNodeClient
-from agentnode_sdk.installer import load_tool
+            <CodeBlock title="agent.py" language="python">{`from agentnode_sdk import AgentNodeClient, run_tool
 
 client = AgentNodeClient(api_key="ank_live_...")
 
 # Resolve capability → install best match (trust-verified)
 client.resolve_and_install(["pdf_extraction"])
 
-# Load the installed tool and run it
-extract = load_tool("pdf-reader-pack")
-result = extract({"file_path": "report.pdf"})
-print(result["text"])`}</CodeBlock>
+# Run with trust-aware isolation (auto = safe default)
+result = run_tool("pdf-reader-pack", file_path="report.pdf")
+print(result.result["text"])`}</CodeBlock>
 
             <div className="mt-4 rounded-lg border border-primary/20 bg-primary/5 p-4">
               <p className="text-sm font-medium text-foreground">
                 That is the complete runtime flow.{" "}
                 <C>resolve_and_install()</C> handles resolution, trust
                 verification, download, hash check, extraction, dependency
-                install, and lockfile update — in a single call.
+                install, and lockfile update.{" "}
+                <C>run_tool()</C> then executes with automatic isolation —
+                trusted tools run direct, others in a subprocess.
               </p>
             </div>
 
@@ -366,8 +365,7 @@ print(result["text"])`}</CodeBlock>
               When you need to inspect candidates, check policies, or control
               trust requirements before installing:
             </p>
-            <CodeBlock title="agent_detailed.py" language="python">{`from agentnode_sdk import AgentNodeClient
-from agentnode_sdk.installer import load_tool
+            <CodeBlock title="agent_detailed.py" language="python">{`from agentnode_sdk import AgentNodeClient, run_tool
 
 client = AgentNodeClient(api_key="ank_live_...")
 
@@ -387,10 +385,10 @@ if not check.allowed:
 installed = client.install(best.slug)
 print(installed.message)  # "Installed pdf-reader-pack@1.2.0"
 
-# 4. Load and run
-extract = client.load_tool(best.slug)
-data = extract({"file_path": "report.pdf"})
-print(data["text"])`}</CodeBlock>
+# 4. Run with isolation (auto-mode routes by trust level)
+data = run_tool(best.slug, file_path="report.pdf")
+print(data.result["text"])
+print(f"Ran in {data.mode_used} mode ({data.duration_ms}ms)")`}</CodeBlock>
 
             <SubHeading>What happens under the hood</SubHeading>
             <DocTable
@@ -398,8 +396,8 @@ print(data["text"])`}</CodeBlock>
               rows={[
                 ["resolve()", "Scores packages by capability match (40%), framework fit (20%), runtime compatibility (15%), trust level (15%), permissions (10%)"],
                 ["can_install()", "Pre-flight check — verifies trust level, permissions, deprecation status without downloading anything"],
-                ["install()", "Downloads artifact, verifies SHA-256 hash, extracts to ~/.agentnode/packages/, runs pip install for dependencies, writes agentnode.lock"],
-                ["load_tool()", "Reads lockfile → resolves entrypoint (v0.1 module.path or v0.2 module.path:function) → returns a callable Python function"],
+                ["install()", "Downloads artifact, verifies SHA-256 hash, extracts to ~/.agentnode/packages/, runs pip install for dependencies, writes agentnode.lock with trust metadata"],
+                ["run_tool()", "Reads trust level from lockfile → routes to direct (in-process) or subprocess (isolated) execution → returns RunToolResult with output, timing, and mode used"],
               ]}
             />
 

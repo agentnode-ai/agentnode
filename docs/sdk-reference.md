@@ -152,6 +152,64 @@ url = client.download("pdf-reader-pack")
 
 ---
 
+## Tool Execution
+
+### `run_tool(slug, tool_name, *, mode, timeout, lockfile_path, **kwargs) -> RunToolResult`
+
+Run an installed tool with optional subprocess isolation. This is the recommended way to execute tools — it automatically chooses direct or subprocess mode based on the tool's trust level.
+
+```python
+from agentnode_sdk import run_tool
+
+# Auto-mode (default): trusted/curated → direct, verified/unverified → subprocess
+result = run_tool("pdf-reader-pack", file_path="report.pdf")
+
+# Force subprocess isolation
+result = run_tool("untrusted-pack", mode="subprocess", timeout=15.0, data="input")
+
+# Force direct (in-process) execution
+result = run_tool("my-trusted-pack", mode="direct", query="test")
+```
+
+**Parameters:**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `slug` | str | required | Package slug (e.g. `"pdf-reader-pack"`) |
+| `tool_name` | str \| None | None | Tool name for multi-tool packs |
+| `mode` | str | `"auto"` | `"direct"`, `"subprocess"`, or `"auto"` |
+| `timeout` | float | 30.0 | Maximum seconds for subprocess execution |
+| `lockfile_path` | Path \| None | None | Override path to `agentnode.lock` |
+| `**kwargs` | Any | — | Arguments forwarded to the tool function |
+
+**Auto-mode trust routing:**
+| Trust Level | Execution Mode |
+|-------------|---------------|
+| `curated` | direct (in-process) |
+| `trusted` | direct (in-process) |
+| `verified` | subprocess (isolated) |
+| `unverified` | subprocess (isolated) |
+| None (old lockfile) | subprocess (isolated) |
+
+**Subprocess safety features:**
+- Environment variable filtering — API keys and tokens are stripped
+- Working directory isolation — tool runs in a temporary directory
+- Timeout enforcement — hung tools are killed after the configured limit
+- stdout isolation — tool print() calls don't corrupt the result
+- Safe serialization — non-JSON outputs return a fallback representation
+
+### `load_tool(slug, tool_name) -> Callable`
+
+Load a tool function from an installed pack. Returns a raw Python callable. Use `run_tool()` for trust-aware execution with isolation.
+
+```python
+from agentnode_sdk import load_tool
+
+extract = load_tool("pdf-reader-pack")
+result = extract(file_path="report.pdf")
+```
+
+---
+
 ## Data Models
 
 All models are Python dataclasses in `agentnode_sdk.models`.
@@ -229,6 +287,16 @@ All models are Python dataclasses in `agentnode_sdk.models`.
 | `capabilities` | list[CapabilityInfo] |
 | `dependencies` | list[DependencyInfo] |
 | `permissions` | PermissionsInfo \| None |
+
+### `RunToolResult`
+| Field | Type |
+|-------|------|
+| `success` | bool |
+| `result` | Any |
+| `error` | str \| None |
+| `mode_used` | str |
+| `duration_ms` | float |
+| `timed_out` | bool |
 
 ### `ArtifactInfo`
 | Field | Type |

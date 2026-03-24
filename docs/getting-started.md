@@ -43,13 +43,14 @@ This will:
 - Install it into your local Python environment
 - Write an entry to `agentnode.lock`
 
-### 5. Use the package
+### 5. Run the package
 
 ```python
-from pdf_reader_pack import tool
+from agentnode_sdk import run_tool
 
-result = tool.run(file_path="report.pdf")
-print(result["text"])
+# Auto-mode: trusted tools run direct, others in an isolated subprocess
+result = run_tool("pdf-reader-pack", file_path="report.pdf")
+print(result.result["text"])
 ```
 
 ## Using the Python SDK
@@ -61,7 +62,7 @@ pip install agentnode-sdk
 ```
 
 ```python
-from agentnode_sdk import AgentNode
+from agentnode_sdk import AgentNode, run_tool
 
 an = AgentNode(api_key="ank_your_key_here")
 
@@ -76,11 +77,10 @@ result = an.resolve_upgrade(
     policy={"min_trust": "verified", "allow_shell": False}
 )
 
-# Check policy before installing
-policy = an.check_policy("pdf-reader-pack", framework="langchain")
-
-# Get install metadata
-meta = an.get_install_metadata("pdf-reader-pack")
+# Run an installed tool with trust-aware isolation
+result = run_tool("pdf-reader-pack", file_path="report.pdf")
+print(result.result)   # tool output
+print(result.mode_used)  # "direct" or "subprocess"
 ```
 
 ## Using the LangChain Adapter

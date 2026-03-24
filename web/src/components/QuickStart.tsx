@@ -113,7 +113,7 @@ export default function QuickStart({
   const cliCommand = `agentnode install ${slug}`;
   const pythonImport = entrypoint
     ? `from ${entrypoint.split(":")[0]} import ${entrypoint.split(":")[1] || "run"}`
-    : `from agentnode_sdk.installer import load_tool\ntool = load_tool("${slug}")`;
+    : `from agentnode_sdk import run_tool\nresult = run_tool("${slug}", mode="auto")`;
 
   // Determine usage example with fallback logic + source tracking
   let usageCode: string | null = null;

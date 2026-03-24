@@ -11,8 +11,7 @@ pip install agentnode-sdk
 ## Quick Start
 
 ```python
-from agentnode_sdk import AgentNodeClient
-from agentnode_sdk.installer import load_tool
+from agentnode_sdk import AgentNodeClient, run_tool
 
 client = AgentNodeClient(api_key="ank_...")
 
@@ -27,13 +26,14 @@ resolved = client.resolve(
     framework="langchain",
 )
 
-# v0.2: Load specific tools from multi-tool packs
-describe = load_tool("csv-analyzer-pack", tool_name="describe")
-result = describe({"file_path": "data.csv"})
+# v0.3: Run tools with trust-aware isolation
+# trusted/curated → direct (in-process), verified/unverified → subprocess
+result = run_tool("pdf-reader-pack", file_path="report.pdf")
+print(result.result)  # tool output
+print(result.mode_used)  # "direct" or "subprocess"
 
-# Single-tool packs — no tool_name needed
-extract = load_tool("pdf-reader-pack")
-pdf = extract({"file_path": "report.pdf"})
+# Multi-tool packs — specify tool_name
+result = run_tool("csv-analyzer-pack", tool_name="describe", file_path="data.csv")
 ```
 
 ## API Reference
@@ -49,7 +49,27 @@ The main client with typed return models.
 | `get_package(slug)` | Get package details |
 | `get_install_metadata(slug)` | Get install info (artifact, permissions, deps) |
 | `download(slug)` | Track download and get artifact URL |
+| `run_tool(slug, tool_name=, mode=, timeout=, **kwargs)` | Run a tool with optional subprocess isolation (v0.3) |
 | `load_tool(slug, tool_name=)` | Load a tool function from an installed pack (v0.2) |
+
+### `run_tool()` (standalone)
+
+Top-level function for running tools with trust-aware execution mode.
+
+```python
+from agentnode_sdk import run_tool
+
+result = run_tool("pdf-reader-pack", mode="auto", file_path="report.pdf")
+# result.success, result.result, result.error, result.mode_used, result.duration_ms
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `slug` | str | required | Package slug |
+| `tool_name` | str \| None | None | Tool name for multi-tool packs |
+| `mode` | str | `"auto"` | `"direct"`, `"subprocess"`, or `"auto"` |
+| `timeout` | float | 30.0 | Subprocess timeout in seconds |
+| `**kwargs` | Any | — | Arguments forwarded to the tool function |
 
 ### `AgentNode`
 

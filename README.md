@@ -65,18 +65,16 @@ pip install agentnode-sdk
 ```
 
 ```python
-from agentnode_sdk import AgentNodeClient
-from agentnode_sdk.installer import load_tool
+from agentnode_sdk import AgentNodeClient, run_tool
 
 client = AgentNodeClient()
 
 # Find and install the best PDF tool
 client.resolve_and_install(["pdf_extraction"])
 
-# Load and use — typed input/output
-extract = load_tool("pdf-reader-pack")
-result = extract({"file_path": "report.pdf"})
-print(result["pages"])
+# Run with automatic isolation — trusted tools run direct, others in subprocess
+result = run_tool("pdf-reader-pack", file_path="report.pdf")
+print(result.result["pages"])
 ```
 
 That's it. No framework glue. No dependency hell. No "does this even work?"
@@ -135,9 +133,9 @@ Agents shouldn't start from scratch every time. With AgentNode, they **resolve t
 # and autonomously finds, verifies, and installs the right tool
 client.resolve_and_install(["pdf_extraction", "web_search"])
 
-# Load specific tools from multi-tool packs
-extract = load_tool("pdf-reader-pack")
-search = load_tool("web-search-pack", tool_name="search")
+# Run tools with trust-aware isolation
+pdf = run_tool("pdf-reader-pack", file_path="report.pdf")
+web = run_tool("web-search-pack", tool_name="search", query="latest news")
 ```
 
 The more capabilities in the registry, the more powerful every agent becomes.
@@ -195,6 +193,7 @@ Automate publishing from CI/CD:
 | **Bandit scanning** | Static analysis for security vulnerabilities |
 | **Typosquatting detection** | Prevents name confusion attacks |
 | **Permission manifests** | See network, filesystem, code execution access before install |
+| **Subprocess isolation** | Unverified tools run in isolated child processes with env filtering |
 | **Auto-quarantine** | Failed packages never reach the registry |
 
 ## Architecture

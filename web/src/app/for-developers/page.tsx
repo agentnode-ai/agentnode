@@ -461,18 +461,17 @@ export default function ForDevelopersPage() {
               <span className="ml-auto font-mono text-xs text-muted/50">python</span>
             </div>
             <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-gray-300">
-              <code>{`from agentnode_sdk import AgentNodeClient
-from agentnode_sdk.installer import load_tool
+              <code>{`from agentnode_sdk import AgentNodeClient, run_tool
 
 client = AgentNodeClient(api_key="ank_live_...")
 
 # Agent needs PDF extraction → resolves your published tool
 client.resolve_and_install(["pdf_extraction"])
 
-# Loads and calls your tool — typed input/output
-extract = load_tool("pdf-reader-pack")
-result = extract({"file_path": "quarterly-report.pdf"})
-print(result["text"])`}</code>
+# Runs your tool with trust-aware isolation
+result = run_tool("pdf-reader-pack", file_path="quarterly-report.pdf")
+print(result.result["text"])
+print(result.mode_used)  # "direct" for trusted tools`}</code>
             </pre>
           </div>
 
@@ -491,7 +490,7 @@ print(result["text"])`}</code>
             </div>
             <div className="rounded-lg border border-border bg-card p-4 text-center">
               <p className="text-2xl font-bold text-primary">4</p>
-              <p className="mt-1 text-xs text-muted">Load — imports entrypoint, returns callable</p>
+              <p className="mt-1 text-xs text-muted">Run — executes with trust-aware isolation</p>
             </div>
           </div>
 
