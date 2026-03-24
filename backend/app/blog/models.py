@@ -79,6 +79,9 @@ class BlogImage(Base, UUIDPrimaryKeyMixin):
     file_size = Column(Integer, nullable=True)
     width = Column(Integer, nullable=True)
     height = Column(Integer, nullable=True)
+    title = Column(VARCHAR(255), nullable=True)
+    original_filename = Column(VARCHAR(255), nullable=True)
+    caption = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default="now()")
 
     post = relationship("BlogPost", back_populates="images")

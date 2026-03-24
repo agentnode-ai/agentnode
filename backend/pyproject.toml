@@ -24,6 +24,7 @@ dependencies = [
     "PyNaCl>=1.5",
     "aiosmtplib>=3.0",
     "anthropic>=0.40",
+    "Pillow>=10.0",
 ]
 
 [project.optional-dependencies]

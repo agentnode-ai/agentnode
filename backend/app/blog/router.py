@@ -3,8 +3,11 @@ import re
 import uuid
 from datetime import datetime, timezone
 
+from io import BytesIO
+
 from fastapi import APIRouter, Depends, Query, Request, UploadFile, File
-from sqlalchemy import func, select
+from PIL import Image as PILImage
+from sqlalchemy import extract, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -13,11 +16,14 @@ from app.auth.dependencies import require_admin
 from app.auth.models import User
 from app.blog.models import BlogCategory, BlogImage, BlogPost, BlogPostType
 from app.blog.schemas import (
+    AttachmentFilter,
+    BulkDeleteRequest,
     CategoryCreate,
     CategoryResponse,
     CategoryUpdate,
     ImageListResponse,
     ImageResponse,
+    ImageSortBy,
     ImageUpdate,
     PostCreate,
     PostDetail,
@@ -28,6 +34,7 @@ from app.blog.schemas import (
     PostTypeUpdate,
     PostUpdate,
     RedirectResponse,
+    SortOrder,
 )
 from app.database import get_session
 from app.shared.constants import RESERVED_URL_PREFIXES
@@ -550,6 +557,17 @@ async def upload_image(
     if len(data) > 10 * 1024 * 1024:  # 10 MB
         raise AppError("BLOG_FILE_TOO_LARGE", "Image must be under 10 MB", 400)
 
+    # Extract dimensions via Pillow (non-fatal for SVG/ICO etc.)
+    width, height = None, None
+    try:
+        pil_img = PILImage.open(BytesIO(data))
+        width, height = pil_img.size
+        pil_img.close()
+    except Exception:
+        pass
+
+    original_filename = file.filename
+
     image_id = uuid.uuid4()
     ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else "jpg"
     object_key = f"blog/{image_id}.{ext}"
@@ -567,6 +585,9 @@ async def upload_image(
         url=url,
         alt_text=alt_text,
         file_size=len(data),
+        width=width,
+        height=height,
+        original_filename=original_filename,
     )
     session.add(image)
     await session.commit()
@@ -575,7 +596,8 @@ async def upload_image(
     return ImageResponse(
         id=image.id, url=image.url, alt_text=image.alt_text,
         file_size=image.file_size, width=image.width, height=image.height,
-        post_id=image.post_id, created_at=image.created_at,
+        title=image.title, original_filename=image.original_filename,
+        caption=image.caption, post_id=image.post_id, created_at=image.created_at,
     )
 
 
@@ -584,6 +606,10 @@ async def upload_image(
 @admin_router.get("/images", response_model=ImageListResponse, dependencies=[Depends(rate_limit(30, 60))])
 async def list_images(
     search: str | None = Query(None),
+    sort_by: ImageSortBy | None = Query(None),
+    sort_order: SortOrder | None = Query(None),
+    month: str | None = Query(None),
+    attachment: AttachmentFilter | None = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(40, ge=1, le=100),
     user: User = Depends(require_admin),
@@ -592,12 +618,51 @@ async def list_images(
     q = select(BlogImage)
     count_q = select(func.count(BlogImage.id))
 
+    # Search across alt_text, title, original_filename
     if search:
-        q = q.where(BlogImage.alt_text.ilike(f"%{search}%"))
-        count_q = count_q.where(BlogImage.alt_text.ilike(f"%{search}%"))
+        like = f"%{search}%"
+        flt = or_(
+            BlogImage.alt_text.ilike(like),
+            BlogImage.title.ilike(like),
+            BlogImage.original_filename.ilike(like),
+        )
+        q = q.where(flt)
+        count_q = count_q.where(flt)
+
+    # Month filter (YYYY-MM)
+    if month:
+        try:
+            parts = month.split("-")
+            y, m = int(parts[0]), int(parts[1])
+            if not (1 <= m <= 12 and 2000 <= y <= 2100):
+                raise ValueError
+        except (ValueError, IndexError):
+            raise AppError("INVALID_MONTH", "Month must be YYYY-MM (e.g. 2026-03)", 422)
+        q = q.where(
+            extract("year", BlogImage.created_at) == y,
+            extract("month", BlogImage.created_at) == m,
+        )
+        count_q = count_q.where(
+            extract("year", BlogImage.created_at) == y,
+            extract("month", BlogImage.created_at) == m,
+        )
+
+    # Attachment filter
+    if attachment == AttachmentFilter.attached:
+        q = q.where(BlogImage.post_id.isnot(None))
+        count_q = count_q.where(BlogImage.post_id.isnot(None))
+    elif attachment == AttachmentFilter.unattached:
+        q = q.where(BlogImage.post_id.is_(None))
+        count_q = count_q.where(BlogImage.post_id.is_(None))
 
     total = (await session.execute(count_q)).scalar() or 0
-    q = q.order_by(BlogImage.created_at.desc()).offset((page - 1) * per_page).limit(per_page)
+
+    # Sort
+    col = BlogImage.file_size if sort_by == ImageSortBy.file_size else BlogImage.created_at
+    order = col.asc() if sort_order == SortOrder.asc else col.desc()
+    q = q.order_by(order)
+
+    q = q.offset((page - 1) * per_page).limit(per_page)
     result = await session.execute(q)
     images = result.scalars().all()
 
@@ -606,12 +671,38 @@ async def list_images(
             ImageResponse(
                 id=img.id, url=img.url, alt_text=img.alt_text,
                 file_size=img.file_size, width=img.width, height=img.height,
-                post_id=img.post_id, created_at=img.created_at,
+                title=img.title, original_filename=img.original_filename,
+                caption=img.caption, post_id=img.post_id, created_at=img.created_at,
             )
             for img in images
         ],
         total=total, page=page, per_page=per_page,
     )
+
+
+@admin_router.get("/images/months", dependencies=[Depends(rate_limit(30, 60))])
+async def list_image_months(
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    result = await session.execute(
+        select(
+            extract("year", BlogImage.created_at).label("y"),
+            extract("month", BlogImage.created_at).label("m"),
+        )
+        .group_by("y", "m")
+        .order_by(extract("year", BlogImage.created_at).desc(), extract("month", BlogImage.created_at).desc())
+    )
+    rows = result.all()
+
+    month_names = [
+        "", "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    ]
+    return [
+        {"value": f"{int(r.y)}-{int(r.m):02d}", "label": f"{month_names[int(r.m)]} {int(r.y)}"}
+        for r in rows
+    ]
 
 
 @admin_router.put("/images/{image_id}", response_model=ImageResponse, dependencies=[Depends(rate_limit(20, 60))])
@@ -626,15 +717,17 @@ async def update_image(
     if not image:
         raise AppError("BLOG_IMAGE_NOT_FOUND", "Image not found", 404)
 
-    if body.alt_text is not None:
-        image.alt_text = body.alt_text
+    update_data = body.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(image, key, value)
 
     await session.commit()
     await session.refresh(image)
     return ImageResponse(
         id=image.id, url=image.url, alt_text=image.alt_text,
         file_size=image.file_size, width=image.width, height=image.height,
-        post_id=image.post_id, created_at=image.created_at,
+        title=image.title, original_filename=image.original_filename,
+        caption=image.caption, post_id=image.post_id, created_at=image.created_at,
     )
 
 
@@ -658,6 +751,39 @@ async def delete_image(
     await session.delete(image)
     await session.commit()
     return {"ok": True}
+
+
+@admin_router.post("/images/bulk-delete", dependencies=[Depends(rate_limit(5, 60))])
+async def bulk_delete_images(
+    body: BulkDeleteRequest,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    result = await session.execute(
+        select(BlogImage).where(BlogImage.id.in_(body.ids))
+    )
+    found = list(result.scalars().all())
+    found_ids = {img.id for img in found}
+    not_found = len(body.ids) - len(found_ids)
+
+    deletable = [img for img in found if img.post_id is None]
+    skipped_attached = len(found) - len(deletable)
+
+    for img in deletable:
+        try:
+            delete_artifact(img.object_key)
+        except Exception:
+            pass
+        await session.delete(img)
+
+    await session.commit()
+
+    return {
+        "ok": True,
+        "deleted": len(deletable),
+        "skipped_attached": skipped_attached,
+        "not_found": not_found,
+    }
 
 
 # ─── Public Router ───

@@ -2,6 +2,8 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
+from enum import Enum as PyEnum
+
 from pydantic import BaseModel, Field
 
 
@@ -173,6 +175,21 @@ class PostListResponse(BaseModel):
 
 # --- Images ---
 
+class ImageSortBy(str, PyEnum):
+    created_at = "created_at"
+    file_size = "file_size"
+
+
+class SortOrder(str, PyEnum):
+    asc = "asc"
+    desc = "desc"
+
+
+class AttachmentFilter(str, PyEnum):
+    attached = "attached"
+    unattached = "unattached"
+
+
 class ImageResponse(BaseModel):
     id: UUID
     url: str
@@ -180,12 +197,21 @@ class ImageResponse(BaseModel):
     file_size: int | None
     width: int | None
     height: int | None
+    title: str | None = None
+    original_filename: str | None = None
+    caption: str | None = None
     post_id: UUID | None = None
     created_at: datetime | None = None
 
 
 class ImageUpdate(BaseModel):
     alt_text: str | None = Field(None, max_length=255)
+    title: str | None = Field(None, max_length=255)
+    caption: str | None = None
+
+
+class BulkDeleteRequest(BaseModel):
+    ids: list[UUID] = Field(..., min_length=1, max_length=50)
 
 
 class ImageListResponse(BaseModel):
