@@ -22,6 +22,7 @@ from agentnode_sdk.models import (
     PermissionsInfo,
     ResolvedPackage,
     ResolveResult,
+    RunToolResult,
     ScoreBreakdown,
     SearchHit,
     SearchResult,
@@ -39,6 +40,19 @@ ERROR_CLASS_MAP = {
     422: ValidationError,
     429: RateLimitError,
 }
+
+
+def _permissions_to_dict(perms: PermissionsInfo | None) -> dict | None:
+    """Convert PermissionsInfo to a plain dict for lockfile storage."""
+    if perms is None:
+        return None
+    return {
+        "network_level": perms.network_level,
+        "filesystem_level": perms.filesystem_level,
+        "code_execution_level": perms.code_execution_level,
+        "data_access_level": perms.data_access_level,
+        "user_approval_level": perms.user_approval_level,
+    }
 
 
 class AgentNode:
@@ -479,6 +493,8 @@ class AgentNodeClient:
             capability_ids=cap_ids,
             tools=tools,
             verbose=verbose,
+            trust_level=trust_level,
+            permissions=_permissions_to_dict(meta.permissions),
         )
 
         return InstallResult(
@@ -607,6 +623,28 @@ class AgentNodeClient:
         The package must have been installed via ``install()`` first.
         """
         return _load_tool(slug, tool_name=tool_name)
+
+    def run_tool(
+        self,
+        slug: str,
+        tool_name: str | None = None,
+        *,
+        mode: str = "auto",
+        timeout: float = 30.0,
+        **kwargs,
+    ) -> RunToolResult:
+        """Run an installed tool with optional process isolation.
+
+        Args:
+            slug: Package slug.
+            tool_name: Tool name for multi-tool packs.
+            mode: ``"direct"``, ``"subprocess"``, or ``"auto"``.
+            timeout: Timeout in seconds (subprocess mode only).
+            **kwargs: Arguments forwarded to the tool function.
+        """
+        from agentnode_sdk.runner import run_tool as _run_tool
+
+        return _run_tool(slug, tool_name, mode=mode, timeout=timeout, **kwargs)
 
     def resolve_and_install(
         self,

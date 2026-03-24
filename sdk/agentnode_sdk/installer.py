@@ -219,6 +219,9 @@ def pip_install(python: str, package_dir: Path, verbose: bool = False) -> None:
 # ---------------------------------------------------------------------------
 
 def _lockfile_path() -> Path:
+    override = os.environ.get("AGENTNODE_LOCKFILE")
+    if override:
+        return Path(override)
     return Path.cwd() / LOCKFILE_NAME
 
 
@@ -265,6 +268,8 @@ def install_package(
     capability_ids: list[str] | None = None,
     tools: list[dict[str, str]] | None = None,
     verbose: bool = False,
+    trust_level: str | None = None,
+    permissions: dict | None = None,
 ) -> dict[str, Any]:
     """Execute the full local install flow (mirrors CLI §13.4).
 
@@ -336,6 +341,8 @@ def install_package(
             "artifact_hash": f"sha256:{local_hash}",
             "installed_at": datetime.now(timezone.utc).isoformat(),
             "source": "sdk",
+            "trust_level": trust_level,
+            "permissions": permissions,
         }
         update_lockfile(slug, lock_entry)
 

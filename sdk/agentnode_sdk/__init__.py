@@ -18,21 +18,24 @@ from agentnode_sdk.models import (
     PackageDetail,
     ResolvedPackage,
     ResolveResult,
+    RunToolResult,
     SearchHit,
     SearchResult,
 )
+from agentnode_sdk.runner import run_tool
 
 # Convenience aliases
 Client = AgentNodeClient
 ToolError = AgentNodeToolError
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "AgentNode",
     "AsyncAgentNode",
     "AgentNodeClient",
     "Client",
     "load_tool",
+    "run_tool",
     "AgentNodeError",
     "AgentNodeToolError",
     "ToolError",
@@ -48,4 +51,5 @@ __all__ = [
     "InstallMetadata",
     "InstallResult",
     "CanInstallResult",
+    "RunToolResult",
 ]

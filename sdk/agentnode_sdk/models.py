@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -136,3 +137,15 @@ class CanInstallResult:
     trust_level: str
     reason: str
     permissions: PermissionsInfo | None = None
+
+
+@dataclass
+class RunToolResult:
+    """Result of ``run_tool()`` execution."""
+
+    success: bool
+    result: Any = None
+    error: str | None = None
+    mode_used: str = "direct"
+    duration_ms: float = 0.0
+    timed_out: bool = False
