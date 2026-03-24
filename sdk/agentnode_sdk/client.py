@@ -29,6 +29,9 @@ from agentnode_sdk.models import (
 
 DEFAULT_BASE_URL = "https://api.agentnode.net/v1"
 
+TRUST_LEVELS_VERIFIED = ("verified", "trusted", "curated")
+TRUST_LEVELS_TRUSTED = ("trusted", "curated")
+
 ERROR_CLASS_MAP = {
     401: AuthError,
     403: AuthError,
@@ -383,6 +386,7 @@ class AgentNodeClient:
         slug: str,
         version: str | None = None,
         require_trusted: bool = False,
+        require_verified: bool = False,
         verbose: bool = False,
     ) -> InstallResult:
         """Find, download, verify, and install a package locally.
@@ -391,14 +395,32 @@ class AgentNodeClient:
         the agent calls resolve() to find what it needs, then install()
         to add the capability — no human intervention required.
 
+        Args:
+            require_trusted: Only install packages with trust level
+                'trusted' or 'curated'.
+            require_verified: Only install packages with trust level
+                'verified', 'trusted', or 'curated'. Lower bar than
+                require_trusted.
+
         Steps: API metadata → download artifact → verify hash →
         extract → pip install → update lockfile.
         """
         # 1. Get install metadata (read-only, no side effects)
         meta = self.get_install_metadata(slug, version)
 
-        # 2. Trust check
-        if require_trusted:
+        # 2. Fetch trust/verification info
+        trust_level = None
+        verification_tier = None
+        try:
+            detail = self._request("GET", f"/packages/{slug}")
+            trust_level = detail.get("trust_level", "unverified")
+            lv = detail.get("latest_version") or {}
+            verification_tier = lv.get("verification_tier")
+        except Exception:
+            pass
+
+        # 3. Trust check
+        if require_trusted or require_verified:
             pkg = self.get_package(slug)
             if pkg.is_deprecated:
                 return InstallResult(
@@ -407,15 +429,37 @@ class AgentNodeClient:
                     installed=False,
                     already_installed=False,
                     message=f"{slug} is deprecated and cannot be installed.",
+                    trust_level=trust_level,
+                    verification_tier=verification_tier,
+                )
+            if require_trusted and (trust_level or "unverified") not in TRUST_LEVELS_TRUSTED:
+                return InstallResult(
+                    slug=slug,
+                    version=meta.version,
+                    installed=False,
+                    already_installed=False,
+                    message=f"Trust level '{trust_level}' does not meet 'trusted' requirement.",
+                    trust_level=trust_level,
+                    verification_tier=verification_tier,
+                )
+            if require_verified and (trust_level or "unverified") not in TRUST_LEVELS_VERIFIED:
+                return InstallResult(
+                    slug=slug,
+                    version=meta.version,
+                    installed=False,
+                    already_installed=False,
+                    message=f"Trust level '{trust_level}' does not meet 'verified' requirement.",
+                    trust_level=trust_level,
+                    verification_tier=verification_tier,
                 )
 
-        # 3. Track download
+        # 4. Track download
         try:
             self.download(slug, version)
         except Exception:
             pass  # Non-fatal, continue with install
 
-        # 4. Run local install flow
+        # 5. Run local install flow
         artifact_url = meta.artifact.url if meta.artifact else None
         artifact_hash = meta.artifact.hash_sha256 if meta.artifact else None
         cap_ids = [c.capability_id for c in meta.capabilities]
@@ -447,6 +491,8 @@ class AgentNodeClient:
             entrypoint=result.get("entrypoint"),
             lockfile_updated=result.get("lockfile_updated", False),
             previous_version=result.get("previous_version"),
+            trust_level=trust_level,
+            verification_tier=verification_tier,
         )
 
     def can_install(
@@ -454,6 +500,7 @@ class AgentNodeClient:
         slug: str,
         version: str | None = None,
         require_trusted: bool = False,
+        require_verified: bool = False,
         allowed_permissions: list[str] | None = None,
         denied_permissions: list[str] | None = None,
     ) -> CanInstallResult:
@@ -461,6 +508,11 @@ class AgentNodeClient:
 
         Evaluates trust level, permissions, and deprecation status
         without performing any installation.
+
+        Args:
+            require_trusted: Require 'trusted' or 'curated' trust level.
+            require_verified: Require 'verified', 'trusted', or 'curated'.
+                Lower bar than require_trusted.
         """
         meta = self.get_install_metadata(slug, version)
         pkg = self.get_package(slug)
@@ -495,13 +547,23 @@ class AgentNodeClient:
         except Exception:
             pass
 
-        if require_trusted and trust_level not in ("trusted", "curated"):
+        if require_trusted and trust_level not in TRUST_LEVELS_TRUSTED:
             return CanInstallResult(
                 allowed=False,
                 slug=slug,
                 version=meta.version,
                 trust_level=trust_level,
                 reason=f"Package trust level is '{trust_level}', but 'trusted' or higher is required.",
+                permissions=meta.permissions,
+            )
+
+        if require_verified and trust_level not in TRUST_LEVELS_VERIFIED:
+            return CanInstallResult(
+                allowed=False,
+                slug=slug,
+                version=meta.version,
+                trust_level=trust_level,
+                reason=f"Package trust level is '{trust_level}', but 'verified' or higher is required.",
                 permissions=meta.permissions,
             )
 
@@ -551,6 +613,7 @@ class AgentNodeClient:
         capabilities: list[str],
         framework: str | None = None,
         require_trusted: bool = True,
+        require_verified: bool = False,
         verbose: bool = False,
     ) -> InstallResult:
         """Resolve a capability gap and install the best match.
@@ -558,6 +621,13 @@ class AgentNodeClient:
         This is the single-call autonomous upgrade method:
         describe what your agent needs, and it finds and installs
         the best trusted package automatically.
+
+        Args:
+            require_trusted: Only install 'trusted' or 'curated' packages.
+                Enabled by default for safety.
+            require_verified: Only install 'verified' or higher packages.
+                Lower bar than require_trusted. Ignored if require_trusted
+                is True.
         """
         result = self.resolve(capabilities, framework=framework)
         if not result.results:
@@ -573,13 +643,26 @@ class AgentNodeClient:
         best = result.results[0]
 
         # Trust filter
-        if require_trusted and best.trust_level not in ("trusted", "curated"):
+        if require_trusted and best.trust_level not in TRUST_LEVELS_TRUSTED:
             return InstallResult(
                 slug=best.slug,
                 version=best.version,
                 installed=False,
                 already_installed=False,
                 message=f"Best match '{best.slug}' has trust level '{best.trust_level}', but 'trusted' required.",
+            )
+
+        if (
+            not require_trusted
+            and require_verified
+            and best.trust_level not in TRUST_LEVELS_VERIFIED
+        ):
+            return InstallResult(
+                slug=best.slug,
+                version=best.version,
+                installed=False,
+                already_installed=False,
+                message=f"Best match '{best.slug}' has trust level '{best.trust_level}', but 'verified' required.",
             )
 
         return self.install(best.slug, verbose=verbose)

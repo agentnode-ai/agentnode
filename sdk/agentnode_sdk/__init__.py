@@ -10,6 +10,7 @@ from agentnode_sdk.exceptions import (
     RateLimitError,
     ValidationError,
 )
+from agentnode_sdk.installer import load_tool
 from agentnode_sdk.models import (
     CanInstallResult,
     InstallMetadata,
@@ -21,13 +22,20 @@ from agentnode_sdk.models import (
     SearchResult,
 )
 
+# Convenience aliases
+Client = AgentNodeClient
+ToolError = AgentNodeToolError
+
 __version__ = "0.2.0"
 __all__ = [
     "AgentNode",
     "AsyncAgentNode",
     "AgentNodeClient",
+    "Client",
+    "load_tool",
     "AgentNodeError",
     "AgentNodeToolError",
+    "ToolError",
     "NotFoundError",
     "AuthError",
     "RateLimitError",

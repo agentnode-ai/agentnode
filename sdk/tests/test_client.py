@@ -12,7 +12,7 @@ BASE = "https://api.agentnode.net"
 
 @respx.mock
 def test_search():
-    respx.get(f"{BASE}/v1/search").mock(return_value=httpx.Response(200, json={
+    respx.post(f"{BASE}/v1/search").mock(return_value=httpx.Response(200, json={
         "query": "pdf",
         "hits": [{
             "slug": "pdf-reader",
@@ -93,7 +93,7 @@ def test_get_package():
 
 @respx.mock
 def test_get_install_metadata():
-    respx.get(f"{BASE}/v1/packages/pdf-reader/install").mock(return_value=httpx.Response(200, json={
+    respx.get(f"{BASE}/v1/packages/pdf-reader/install-info").mock(return_value=httpx.Response(200, json={
         "slug": "pdf-reader",
         "version": "1.0.0",
         "package_type": "toolpack",

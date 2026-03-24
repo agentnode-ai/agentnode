@@ -124,6 +124,8 @@ class InstallResult:
     entrypoint: str | None = None
     lockfile_updated: bool = False
     previous_version: str | None = None
+    trust_level: str | None = None
+    verification_tier: str | None = None
 
 
 @dataclass
