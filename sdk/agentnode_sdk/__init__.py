@@ -2,6 +2,7 @@
 
 from agentnode_sdk.async_client import AsyncAgentNode
 from agentnode_sdk.client import AgentNode, AgentNodeClient
+from agentnode_sdk.detect import detect_gap
 from agentnode_sdk.exceptions import (
     AgentNodeError,
     AgentNodeToolError,
@@ -13,6 +14,8 @@ from agentnode_sdk.exceptions import (
 from agentnode_sdk.installer import load_tool
 from agentnode_sdk.models import (
     CanInstallResult,
+    DetectAndInstallResult,
+    DetectedGap,
     InstallMetadata,
     InstallResult,
     PackageDetail,
@@ -21,6 +24,7 @@ from agentnode_sdk.models import (
     RunToolResult,
     SearchHit,
     SearchResult,
+    SmartRunResult,
 )
 from agentnode_sdk.runner import run_tool
 
@@ -28,12 +32,13 @@ from agentnode_sdk.runner import run_tool
 Client = AgentNodeClient
 ToolError = AgentNodeToolError
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "AgentNode",
     "AsyncAgentNode",
     "AgentNodeClient",
     "Client",
+    "detect_gap",
     "load_tool",
     "run_tool",
     "AgentNodeError",
@@ -52,4 +57,7 @@ __all__ = [
     "InstallResult",
     "CanInstallResult",
     "RunToolResult",
+    "DetectedGap",
+    "DetectAndInstallResult",
+    "SmartRunResult",
 ]

@@ -1,6 +1,10 @@
 """AgentNode API client. Spec §14."""
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+from typing import Any
+
 import httpx
 
 from agentnode_sdk.exceptions import (
@@ -11,10 +15,12 @@ from agentnode_sdk.exceptions import (
     ValidationError,
 )
 from agentnode_sdk.installer import install_package, load_tool as _load_tool
+from agentnode_sdk.detect import detect_gap
 from agentnode_sdk.models import (
     ArtifactInfo,
     CanInstallResult,
     CapabilityInfo,
+    DetectAndInstallResult,
     DependencyInfo,
     InstallMetadata,
     InstallResult,
@@ -26,6 +32,7 @@ from agentnode_sdk.models import (
     ScoreBreakdown,
     SearchHit,
     SearchResult,
+    SmartRunResult,
 )
 
 DEFAULT_BASE_URL = "https://api.agentnode.net/v1"
@@ -40,6 +47,27 @@ ERROR_CLASS_MAP = {
     422: ValidationError,
     429: RateLimitError,
 }
+
+
+def _resolve_auto_upgrade_policy(
+    policy: str | None,
+    *,
+    auto_install: bool,
+    require_verified: bool,
+    require_trusted: bool,
+    allow_low_confidence: bool,
+) -> tuple[bool, bool, bool, bool]:
+    """Resolve named policy to concrete parameters. Policy overrides individual params."""
+    if policy is None:
+        return (auto_install, require_verified, require_trusted, allow_low_confidence)
+    p = policy.lower()
+    if p == "off":
+        return (False, True, False, False)
+    if p == "safe":
+        return (True, True, False, False)
+    if p == "strict":
+        return (True, False, True, False)
+    raise ValueError("auto_upgrade_policy must be 'off', 'safe', or 'strict'")
 
 
 def _permissions_to_dict(perms: PermissionsInfo | None) -> dict | None:
@@ -704,3 +732,209 @@ class AgentNodeClient:
             )
 
         return self.install(best.slug, verbose=verbose)
+
+    def detect_and_install(
+        self,
+        error: BaseException,
+        *,
+        auto_upgrade_policy: str | None = None,
+        context: dict[str, str] | None = None,
+        auto_install: bool = True,
+        require_verified: bool = True,
+        require_trusted: bool = False,
+        allow_low_confidence: bool = False,
+        on_detect: Callable[[str, str, str], None] | None = None,
+        on_install: Callable[[str], None] | None = None,
+    ) -> DetectAndInstallResult:
+        """Detect a capability gap from an error and optionally install.
+
+        This is the product-level API: your agent failed? AgentNode knows
+        what's missing and can acquire it.
+
+        Args:
+            error: The exception that triggered gap detection.
+            auto_upgrade_policy: Named policy ('off', 'safe', 'strict').
+                Overrides individual params when set.
+            context: Optional context hints (e.g. ``{"file": "report.pdf"}``).
+            auto_install: Whether to install on detection. Default True.
+            require_verified: Only install verified+ packages. Default True.
+            require_trusted: Only install trusted+ packages. Default False.
+            allow_low_confidence: Allow install on low-confidence detections.
+            on_detect: Callback(capability, confidence, error_msg) on detection.
+            on_install: Callback(slug) on successful install.
+        """
+        resolved = _resolve_auto_upgrade_policy(
+            auto_upgrade_policy,
+            auto_install=auto_install,
+            require_verified=require_verified,
+            require_trusted=require_trusted,
+            allow_low_confidence=allow_low_confidence,
+        )
+        r_auto_install, r_require_verified, r_require_trusted, r_allow_low = resolved
+
+        gap = detect_gap(error, context)
+        if gap is None:
+            return DetectAndInstallResult(
+                detected=False,
+                auto_upgrade_policy=auto_upgrade_policy,
+                error="No capability gap detected",
+            )
+
+        if on_detect is not None:
+            on_detect(gap.capability, gap.confidence, str(error))
+
+        if gap.confidence == "low" and not r_allow_low:
+            return DetectAndInstallResult(
+                detected=True,
+                capability=gap.capability,
+                confidence=gap.confidence,
+                installed=False,
+                auto_upgrade_policy=auto_upgrade_policy,
+                error="Low-confidence detection blocked",
+            )
+
+        if not r_auto_install:
+            return DetectAndInstallResult(
+                detected=True,
+                capability=gap.capability,
+                confidence=gap.confidence,
+                installed=False,
+                auto_upgrade_policy=auto_upgrade_policy,
+            )
+
+        install_result = self.resolve_and_install(
+            [gap.capability],
+            require_trusted=r_require_trusted,
+            require_verified=r_require_verified,
+        )
+
+        if install_result.installed and on_install is not None:
+            on_install(install_result.slug)
+
+        return DetectAndInstallResult(
+            detected=True,
+            capability=gap.capability,
+            confidence=gap.confidence,
+            installed=install_result.installed,
+            install_result=install_result,
+            auto_upgrade_policy=auto_upgrade_policy,
+        )
+
+    def smart_run(
+        self,
+        fn: Callable[[], Any],
+        *,
+        auto_upgrade_policy: str | None = None,
+        auto_install: bool = True,
+        require_verified: bool = True,
+        require_trusted: bool = False,
+        allow_low_confidence: bool = False,
+        context: dict[str, str] | None = None,
+        on_detect: Callable[[str, str, str], None] | None = None,
+        on_install: Callable[[str], None] | None = None,
+    ) -> SmartRunResult:
+        """Run a callable with automatic gap detection and retry.
+
+        Wraps your logic: if it fails due to a missing capability,
+        AgentNode detects the gap, installs the skill, and retries once.
+
+        Args:
+            fn: Zero-argument callable to execute.
+            auto_upgrade_policy: Named policy ('off', 'safe', 'strict').
+            auto_install: Whether to auto-install on detection.
+            require_verified: Only install verified+ packages.
+            require_trusted: Only install trusted+ packages.
+            allow_low_confidence: Allow install on low-confidence detections.
+            context: Optional context hints for detection.
+            on_detect: Callback(capability, confidence, error_msg) on detection.
+            on_install: Callback(slug) on successful install.
+        """
+        start = time.monotonic()
+
+        # Attempt 1
+        caught: Exception | None = None
+        try:
+            result = fn()
+            elapsed = (time.monotonic() - start) * 1000
+            return SmartRunResult(
+                success=True,
+                result=result,
+                duration_ms=elapsed,
+                auto_upgrade_policy=auto_upgrade_policy,
+            )
+        except Exception as exc:
+            caught = exc
+            original_error = str(exc)
+
+        # Detect and install
+        detect_result = self.detect_and_install(
+            caught,
+            auto_upgrade_policy=auto_upgrade_policy,
+            context=context,
+            auto_install=auto_install,
+            require_verified=require_verified,
+            require_trusted=require_trusted,
+            allow_low_confidence=allow_low_confidence,
+            on_detect=on_detect,
+            on_install=on_install,
+        )
+
+        if not detect_result.detected:
+            elapsed = (time.monotonic() - start) * 1000
+            return SmartRunResult(
+                success=False,
+                error=original_error,
+                original_error=original_error,
+                duration_ms=elapsed,
+                auto_upgrade_policy=auto_upgrade_policy,
+            )
+
+        if not detect_result.installed:
+            elapsed = (time.monotonic() - start) * 1000
+            return SmartRunResult(
+                success=False,
+                error=detect_result.error or original_error,
+                detected_capability=detect_result.capability,
+                detection_confidence=detect_result.confidence,
+                original_error=original_error,
+                duration_ms=elapsed,
+                auto_upgrade_policy=auto_upgrade_policy,
+            )
+
+        # Attempt 2 (exactly once)
+        installed_slug = (
+            detect_result.install_result.slug if detect_result.install_result else None
+        )
+        installed_version = (
+            detect_result.install_result.version if detect_result.install_result else None
+        )
+
+        try:
+            result = fn()
+            elapsed = (time.monotonic() - start) * 1000
+            return SmartRunResult(
+                success=True,
+                result=result,
+                upgraded=True,
+                installed_slug=installed_slug,
+                installed_version=installed_version,
+                detected_capability=detect_result.capability,
+                detection_confidence=detect_result.confidence,
+                duration_ms=elapsed,
+                original_error=original_error,
+                auto_upgrade_policy=auto_upgrade_policy,
+            )
+        except Exception as retry_exc:
+            elapsed = (time.monotonic() - start) * 1000
+            return SmartRunResult(
+                success=False,
+                error=str(retry_exc),
+                upgraded=True,
+                installed_slug=installed_slug,
+                installed_version=installed_version,
+                detected_capability=detect_result.capability,
+                detection_confidence=detect_result.confidence,
+                duration_ms=elapsed,
+                original_error=original_error,
+                auto_upgrade_policy=auto_upgrade_policy,
+            )

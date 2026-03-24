@@ -149,3 +149,42 @@ class RunToolResult:
     mode_used: str = "direct"
     duration_ms: float = 0.0
     timed_out: bool = False
+
+
+@dataclass
+class DetectedGap:
+    """Result of capability gap detection."""
+
+    capability: str  # e.g. "pdf_extraction"
+    confidence: str  # "high" | "medium" | "low"
+    source: str  # "import_error" | "error_message" | "context"
+
+
+@dataclass
+class DetectAndInstallResult:
+    """Result of detect_and_install() — detection + optional install."""
+
+    detected: bool
+    capability: str | None = None
+    confidence: str | None = None  # "high" | "medium" | "low"
+    installed: bool = False
+    install_result: InstallResult | None = None
+    auto_upgrade_policy: str | None = None  # "off" | "safe" | "strict"
+    error: str | None = None
+
+
+@dataclass
+class SmartRunResult:
+    """Result of smart_run() — detection, install, and retry."""
+
+    success: bool
+    result: Any = None
+    error: str | None = None
+    upgraded: bool = False
+    installed_slug: str | None = None
+    installed_version: str | None = None
+    detected_capability: str | None = None
+    detection_confidence: str | None = None  # "high" | "medium" | "low"
+    auto_upgrade_policy: str | None = None  # "off" | "safe" | "strict"
+    duration_ms: float = 0.0
+    original_error: str | None = None
