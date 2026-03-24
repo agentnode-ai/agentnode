@@ -82,7 +82,9 @@ async def sitemap_packages(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(Package.slug, Package.updated_at).order_by(Package.updated_at.desc())
+        select(Package.slug, Package.updated_at)
+        .where(Package.is_deprecated == False)
+        .order_by(Package.updated_at.desc())
     )
     rows = result.all()
 
@@ -99,7 +101,9 @@ async def sitemap_publishers(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(Publisher.slug, Publisher.updated_at).order_by(Publisher.updated_at.desc())
+        select(Publisher.slug, Publisher.updated_at)
+        .where(Publisher.is_suspended == False)
+        .order_by(Publisher.updated_at.desc())
     )
     rows = result.all()
 

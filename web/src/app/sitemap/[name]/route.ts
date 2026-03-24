@@ -32,7 +32,7 @@ export async function GET(
 
   try {
     if (sitemapName === "pages") {
-      const res = await fetch(`${BACKEND_URL}/v1/sitemap/pages`, { next: { revalidate: 3600 } });
+      const res = await fetch(`${BACKEND_URL}/v1/sitemap/pages`, { next: { revalidate: 300 } });
       if (res.ok) {
         const data = await res.json();
         urls = (data.items as SitemapItem[]).map((item) =>
@@ -40,7 +40,7 @@ export async function GET(
         );
       }
     } else if (sitemapName === "packages") {
-      const res = await fetch(`${BACKEND_URL}/v1/sitemap/packages`, { next: { revalidate: 3600 } });
+      const res = await fetch(`${BACKEND_URL}/v1/sitemap/packages`, { next: { revalidate: 300 } });
       if (res.ok) {
         const data = await res.json();
         urls = (data.items as SitemapItem[]).map((item) =>
@@ -48,7 +48,7 @@ export async function GET(
         );
       }
     } else if (sitemapName === "publishers") {
-      const res = await fetch(`${BACKEND_URL}/v1/sitemap/publishers`, { next: { revalidate: 3600 } });
+      const res = await fetch(`${BACKEND_URL}/v1/sitemap/publishers`, { next: { revalidate: 300 } });
       if (res.ok) {
         const data = await res.json();
         urls = (data.items as SitemapItem[]).map((item) =>
@@ -57,7 +57,7 @@ export async function GET(
       }
     } else {
       // Post type slug (e.g., "post", "tutorial", "changelog", "case-study")
-      const res = await fetch(`${BACKEND_URL}/v1/sitemap/posts/${sitemapName}`, { next: { revalidate: 3600 } });
+      const res = await fetch(`${BACKEND_URL}/v1/sitemap/posts/${sitemapName}`, { next: { revalidate: 300 } });
       if (res.ok) {
         const data = await res.json();
         urls = (data.items as SitemapItem[]).map((item) =>
@@ -77,7 +77,7 @@ ${urls.join("\n")}
   return new Response(xml, {
     headers: {
       "Content-Type": "application/xml",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": "public, max-age=300",
     },
   });
 }

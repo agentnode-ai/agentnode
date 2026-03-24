@@ -10,7 +10,7 @@ export async function GET() {
 
   try {
     const res = await fetch(`${BACKEND_URL}/v1/blog/post-types`, {
-      next: { revalidate: 3600 },
+      next: { revalidate: 300 },
     });
     if (res.ok) {
       postTypes = await res.json();
@@ -36,7 +36,7 @@ ${sitemaps.join("\n")}
   return new Response(xml, {
     headers: {
       "Content-Type": "application/xml",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": "public, max-age=300",
     },
   });
 }
