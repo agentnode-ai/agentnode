@@ -75,7 +75,7 @@ function CodeWithCopy({
 function extractQuickStartFromReadme(readme: string): string | null {
   const lines = readme.split("\n");
   let capturing = false;
-  let content: string[] = [];
+  const content: string[] = [];
 
   for (const line of lines) {
     if (/^##\s+(quick\s*start|getting\s*started)/i.test(line)) {

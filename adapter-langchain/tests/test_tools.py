@@ -1,20 +1,39 @@
 """Tests for the LangChain adapter."""
 from unittest.mock import MagicMock, patch
 
-from agentnode_langchain.tools import AgentNodeTool, _json_schema_to_pydantic
+import pytest
+from langchain_core.tools.base import ToolException
+
+from agentnode_langchain.loader import AgentNodeTool, _json_schema_to_pydantic
 
 
-def test_agentnode_tool_run():
+def test_agentnode_tool_run_no_entrypoint():
+    """Tool without entrypoint raises ToolException."""
     tool = AgentNodeTool(
         name="extract_pdf",
         description="Extract text from PDF",
         capability_id="pdf_extraction",
         package_slug="pdf-reader",
     )
-    result = tool._run(input="test.pdf")
-    assert "pdf-reader" in result
-    assert "extract_pdf" in result
-    assert "pdf_extraction" in result
+    with pytest.raises(ToolException, match="No entrypoint configured"):
+        tool._run(input="test.pdf")
+
+
+def test_agentnode_tool_run_with_entrypoint():
+    """Tool with entrypoint imports module and calls function."""
+    tool = AgentNodeTool(
+        name="extract_pdf",
+        description="Extract text from PDF",
+        capability_id="pdf_extraction",
+        package_slug="pdf-reader",
+        entrypoint="pdf_reader.tool:extract",
+    )
+    mock_module = MagicMock()
+    mock_module.extract.return_value = "extracted text"
+    with patch("importlib.import_module", return_value=mock_module):
+        result = tool._run(input="test.pdf")
+    assert result == "extracted text"
+    mock_module.extract.assert_called_once_with(input="test.pdf")
 
 
 def test_json_schema_to_pydantic():

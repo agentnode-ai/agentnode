@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import { fetchWithAuth } from "@/lib/api";
 
@@ -193,11 +193,7 @@ function VersionsModal({
   const [loading, setLoading] = useState(true);
   const [actionMsg, setActionMsg] = useState("");
 
-  useEffect(() => {
-    loadVersions();
-  }, [slug]);
-
-  async function loadVersions() {
+  const loadVersions = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetchWithAuth(`/admin/packages/${slug}/versions`);
@@ -207,7 +203,12 @@ function VersionsModal({
       }
     } catch { /* ignore */ }
     setLoading(false);
-  }
+  }, [slug]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Load versions for package
+    loadVersions();
+  }, [loadVersions]);
 
   async function handleYank(version: string) {
     setActionMsg("");

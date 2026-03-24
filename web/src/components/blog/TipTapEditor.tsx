@@ -34,19 +34,21 @@ interface TipTapEditorProps {
 }
 
 function MenuBar({ editor, onOpenMedia }: { editor: ReturnType<typeof useEditor> | null; onOpenMedia: () => void }) {
-  if (!editor) return null;
-
-  const isImageSelected = editor.isActive("image");
-
   const addLink = useCallback(() => {
+    if (!editor) return;
     const url = prompt("URL:");
     if (!url) return;
-    editor?.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
+    editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
   }, [editor]);
 
   const setImageAlign = useCallback((align: string | null) => {
-    editor?.chain().focus().updateAttributes("image", { "data-align": align }).run();
+    if (!editor) return;
+    editor.chain().focus().updateAttributes("image", { "data-align": align }).run();
   }, [editor]);
+
+  if (!editor) return null;
+
+  const isImageSelected = editor.isActive("image");
 
   const btn = (active: boolean, onClick: () => void, label: string) => (
     <button

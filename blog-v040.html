@@ -1,0 +1,123 @@
+<p>Until now, agents stopped cold when they hit a missing capability. A PDF extraction call with no PDF library installed? The agent throws an error and waits for a human to intervene. That cycle &mdash; fail, debug, install, retry &mdash; happens dozens of times in a typical agent project.</p>
+
+<p>AgentNode SDK v0.4.0 closes that loop. Agents can now detect missing capabilities at runtime, find the right skill in the registry, install it, and retry &mdash; all in a single function call.</p>
+
+<h2>The Problem: Agents Can&rsquo;t Self-Heal</h2>
+
+<p>Every agent framework today assumes tools are pre-installed. When an agent encounters a task it can&rsquo;t handle &mdash; extracting text from a PDF, parsing a spreadsheet, calling an unfamiliar API &mdash; it fails with an ImportError or a missing-tool exception. The developer then manually searches for the right package, installs it, and re-runs the agent.</p>
+
+<p>This works for small projects. It doesn&rsquo;t scale. Production agents need to handle novel tasks without human intervention.</p>
+
+<h2>The Solution: Detect &rarr; Resolve &rarr; Install &rarr; Retry</h2>
+
+<p><code>smart_run()</code> wraps your callable and catches capability gaps automatically. When the function fails because a dependency is missing, AgentNode detects the gap, finds a matching skill in the registry, installs it according to your policy, and retries your code:</p>
+
+<pre><code>from agentnode_sdk import AgentNodeClient
+
+client = AgentNodeClient(api_key="ank_live_...")
+
+result = client.smart_run(
+    lambda: process_pdf("quarterly-report.pdf"),
+    auto_upgrade_policy="safe",
+)
+print(result.result)     # extracted text
+print(result.upgraded)   # True &mdash; skill was auto-installed
+</code></pre>
+
+<p>One call. No manual intervention. The agent keeps working.</p>
+
+<h2>Safety First: Auto-Upgrade Policies</h2>
+
+<p>Automatic installation without guardrails would be reckless. That&rsquo;s why every <code>smart_run()</code> call requires an explicit <code>auto_upgrade_policy</code>:</p>
+
+<ul>
+  <li><strong><code>&quot;off&quot;</code></strong> &mdash; Never auto-install. Detect and report the gap, but require manual action.</li>
+  <li><strong><code>&quot;safe&quot;</code></strong> &mdash; Auto-install <em>verified</em> and <em>trusted</em> skills only. Unverified packages are blocked.</li>
+  <li><strong><code>&quot;strict&quot;</code></strong> &mdash; Auto-install <em>trusted</em> skills only. Even verified packages require manual approval.</li>
+</ul>
+
+<p>The policy interacts directly with the publisher&rsquo;s trust level:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Trust Level</th>
+      <th>&quot;safe&quot;</th>
+      <th>&quot;strict&quot;</th>
+      <th>&quot;off&quot;</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>trusted</strong></td>
+      <td>Auto-install</td>
+      <td>Auto-install</td>
+      <td>Manual only</td>
+    </tr>
+    <tr>
+      <td><strong>verified</strong></td>
+      <td>Auto-install</td>
+      <td>Manual only</td>
+      <td>Manual only</td>
+    </tr>
+    <tr>
+      <td><strong>unverified</strong></td>
+      <td>Manual only</td>
+      <td>Manual only</td>
+      <td>Manual only</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>The API</h2>
+
+<h3><code>smart_run()</code> &mdash; Primary</h3>
+<p>Run a callable. If it fails due to a missing capability, detect the gap, install the skill, and retry. Returns the result plus metadata about what was installed.</p>
+
+<pre><code>result = client.smart_run(callable, auto_upgrade_policy="safe")
+result.result      # return value of your callable
+result.upgraded    # bool &mdash; was a skill installed?
+result.installed   # list of installed packages
+</code></pre>
+
+<h3><code>detect_and_install()</code> &mdash; Fine-Grained Control</h3>
+<p>Detect and install without retrying. Useful when you want to control the retry logic yourself.</p>
+
+<pre><code>installed = client.detect_and_install(
+    callable,
+    auto_upgrade_policy="strict",
+)
+# Returns list of installed package slugs
+</code></pre>
+
+<h3><code>detect_gap()</code> &mdash; Standalone Detection</h3>
+<p>Just detect what&rsquo;s missing without installing anything. Useful for reporting, dry-runs, or building custom install flows.</p>
+
+<pre><code>gaps = client.detect_gap(callable)
+# Returns list of capability IDs that are missing
+</code></pre>
+
+<h2>Why This Matters for Publishers</h2>
+
+<p>If you publish skills on AgentNode, v0.4.0 changes the game. Your skills are no longer passive packages that developers find by searching &mdash; they&rsquo;re now <strong>actively acquired by agents at runtime</strong>.</p>
+
+<p>When an agent runs <code>smart_run()</code> and hits a capability gap, AgentNode resolves the best matching skill from the registry. If your skill is verified or trusted, it gets installed automatically &mdash; no human in the loop.</p>
+
+<p>This creates a direct incentive: <strong>get verified, and agents install your skill without asking</strong>. The higher your trust level, the more policies allow auto-installation, and the more agents use your tool.</p>
+
+<h2>Get Started</h2>
+
+<pre><code>pip install agentnode-sdk==0.4.0</code></pre>
+
+<pre><code>from agentnode_sdk import AgentNodeClient
+
+client = AgentNodeClient(api_key="ank_live_...")
+
+# Your agent now self-extends when it hits missing capabilities
+result = client.smart_run(
+    lambda: your_task_here(),
+    auto_upgrade_policy="safe",
+)
+</code></pre>
+
+<p>Full API reference in the <a href="/docs#runtime-quickstart">SDK documentation</a>. Release notes on <a href="https://github.com/agentnode-ai/agentnode/releases/tag/v0.4.0">GitHub</a>.</p>

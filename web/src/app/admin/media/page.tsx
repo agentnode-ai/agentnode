@@ -77,6 +77,7 @@ export default function MediaPage() {
     setLoading(false);
   }, [page, search, sortBy, monthFilter, attachmentFilter]);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- Load images on mount/filter change
   useEffect(() => { loadImages(); }, [loadImages]);
 
   // Load months on mount

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { fetchWithAuth } from "@/lib/api";
 
 interface SitemapPage {
@@ -32,18 +32,19 @@ export default function AdminSitemapPage() {
   const [editIndexable, setEditIndexable] = useState(true);
   const [editSaving, setEditSaving] = useState(false);
 
-  useEffect(() => {
-    loadPages();
-  }, []);
-
-  async function loadPages() {
+  const loadPages = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetchWithAuth("/admin/sitemap/pages");
       if (res.ok) setPages(await res.json());
     } catch { /* ignore */ }
     setLoading(false);
-  }
+  }, []);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Load pages on mount
+    loadPages();
+  }, [loadPages]);
 
   async function createPage() {
     if (!newPath) return;

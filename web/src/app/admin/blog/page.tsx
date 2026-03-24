@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { fetchWithAuth } from "@/lib/api";
 
@@ -66,13 +66,7 @@ export default function AdminBlogPage() {
   const [ptDesc, setPtDesc] = useState("");
   const [ptSaving, setPtSaving] = useState(false);
 
-  useEffect(() => {
-    loadPosts();
-    loadCategories();
-    loadPostTypes();
-  }, [page, statusFilter]);
-
-  async function loadPosts() {
+  const loadPosts = useCallback(async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams({ page: String(page), per_page: "20" });
@@ -85,25 +79,32 @@ export default function AdminBlogPage() {
       /* ignore */
     }
     setLoading(false);
-  }
+  }, [page, statusFilter]);
 
-  async function loadCategories() {
+  const loadCategories = useCallback(async () => {
     try {
       const res = await fetchWithAuth("/admin/blog/categories");
       setCategories(await res.json());
     } catch {
       /* ignore */
     }
-  }
+  }, []);
 
-  async function loadPostTypes() {
+  const loadPostTypes = useCallback(async () => {
     try {
       const res = await fetchWithAuth("/admin/blog/post-types");
       setPostTypes(await res.json());
     } catch {
       /* ignore */
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Load blog data on mount/filter change
+    loadPosts();
+    loadCategories();
+    loadPostTypes();
+  }, [loadPosts, loadCategories, loadPostTypes]);
 
   async function revalidateCache(paths: string[]) {
     try {

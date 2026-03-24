@@ -43,6 +43,7 @@ export default function MediaLibraryModal({ open, onClose, onSelect }: MediaLibr
 
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Load images when modal opens
       loadImages();
       setSelected(null);
     }

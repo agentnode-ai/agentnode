@@ -27,6 +27,7 @@ export default function Navbar() {
     // Check the non-httpOnly `logged_in` cookie set by the server
     const cookies = document.cookie.split("; ");
     const loggedIn = cookies.some((c) => c.startsWith("logged_in="));
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Sync login state from cookie on route change
     setIsLoggedIn(loggedIn);
     // Derive admin status from /auth/me instead of a client cookie
     if (loggedIn) {
@@ -39,8 +40,9 @@ export default function Navbar() {
     }
   }, [pathname]);
 
-  // Close mobile menu on route change
+  // Close mobile menu on navigation
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Close mobile menu on navigation
     setMobileOpen(false);
   }, [pathname]);
 
@@ -84,7 +86,7 @@ export default function Navbar() {
                 key={link.href}
                 href={link.href}
                 className={`rounded-md px-3 py-2 text-sm transition-colors ${
-                  (link as any).highlight && !isActive
+                  (link as { highlight?: boolean }).highlight && !isActive
                     ? "text-primary font-medium hover:text-primary/80"
                     : isActive
                       ? "text-foreground bg-card"

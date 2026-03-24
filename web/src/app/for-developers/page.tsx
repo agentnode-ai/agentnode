@@ -1,9 +1,9 @@
 import Link from "next/link";
 
 export const metadata = {
-  title: "Publish AI Agent Skills — Get Your Tools Discovered by Agents",
+  title: "Publish AI Agent Skills — Get Auto-Installed by Agents at Runtime",
   description:
-    "Publish your AI tools as verified agent skills on AgentNode. One publish reaches LangChain, CrewAI, MCP, and OpenAI agents. 4-step verification, trust badges, and cross-framework discovery included.",
+    "Publish your AI tools as verified agent skills on AgentNode. Agents detect missing capabilities, auto-install your skill, and retry — one line of code. Trust tiers control what gets installed automatically.",
 };
 
 /* ------------------------------------------------------------------ */
@@ -181,11 +181,11 @@ export default function ForDevelopersPage() {
             For Tool Developers
           </span>
           <h1 className="mx-auto max-w-3xl text-4xl font-bold leading-tight tracking-tight text-foreground sm:text-5xl">
-            Get your AI tools discovered and installed by real agents
+            Published skills get auto-installed by agents at runtime
           </h1>
           <p className="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-muted">
-            Your tools are buried in general-purpose registries — invisible to AI agents.
-            AgentNode makes them discoverable, trusted, and installable.
+            Agents detect missing capabilities, find your skill, install it, and retry — automatically.
+            The higher your trust level, the more agents use your tool without human approval.
           </p>
           <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
             <Link
@@ -240,12 +240,12 @@ export default function ForDevelopersPage() {
       <section className="border-b border-border">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20 overflow-hidden">
           <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
-            Publish once. Get discovered everywhere.
+            Publish once. Agents acquire on demand.
           </h2>
           <p className="mx-auto max-w-2xl text-center text-lg leading-relaxed text-muted">
             AgentNode is a registry built specifically for AI agent tools.
-            Agents find your tool by what it does — not by guessing package names.
-            They verify it, trust it, and install it automatically.
+            When an agent hits a missing capability at runtime, it detects the gap,
+            resolves your published skill, installs it, and retries — all in one call.
           </p>
         </div>
       </section>
@@ -443,14 +443,15 @@ export default function ForDevelopersPage() {
       <section className="border-b border-border">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20 overflow-hidden">
           <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
-            How agents use your tools at runtime
+            How agents acquire your skills at runtime
           </h2>
           <p className="mx-auto mb-10 max-w-2xl text-center text-muted">
-            After you publish, any agent can discover and install your tool
-            programmatically — no manual setup, no hardcoded dependencies.
+            Agents detect missing capabilities, resolve your published skill,
+            install it, and retry — all in one line of code. No manual setup, no hardcoded dependencies.
           </p>
 
-          <div className="mx-auto max-w-2xl overflow-hidden rounded-lg border border-border bg-[#0d1117]">
+          {/* Primary example: smart_run */}
+          <div className="mx-auto max-w-2xl overflow-hidden rounded-lg border border-primary/30 bg-[#0d1117]">
             <div className="flex items-center gap-2 border-b border-border/50 px-4 py-2">
               <div className="h-3 w-3 rounded-full bg-red-500/60" />
               <div className="h-3 w-3 rounded-full bg-yellow-500/60" />
@@ -458,48 +459,128 @@ export default function ForDevelopersPage() {
               <span className="ml-2 font-mono text-xs text-muted">
                 agent.py
               </span>
-              <span className="ml-auto font-mono text-xs text-muted/50">python</span>
+              <span className="ml-auto font-mono text-xs text-primary/70">smart_run</span>
             </div>
             <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-gray-300">
-              <code>{`from agentnode_sdk import AgentNodeClient, run_tool
+              <code>{`from agentnode_sdk import AgentNodeClient
 
 client = AgentNodeClient(api_key="ank_live_...")
 
-# Agent needs PDF extraction → resolves your published tool
-client.resolve_and_install(["pdf_extraction"])
-
-# Runs your tool with trust-aware isolation
-result = run_tool("pdf-reader-pack", file_path="quarterly-report.pdf")
-print(result.result["text"])
-print(result.mode_used)  # "direct" for trusted tools`}</code>
+result = client.smart_run(
+    lambda: process_pdf("quarterly-report.pdf"),
+    auto_upgrade_policy="safe",
+)
+print(result.result)     # extracted text
+print(result.upgraded)   # True — skill was auto-installed`}</code>
             </pre>
           </div>
 
-          <div className="mt-8 mx-auto grid max-w-3xl gap-4 sm:grid-cols-4">
+          {/* Secondary: detect_and_install */}
+          <div className="mx-auto mt-6 max-w-2xl">
+            <p className="mb-3 text-center text-xs font-medium uppercase tracking-wider text-muted">Want more control?</p>
+            <div className="overflow-hidden rounded-lg border border-border bg-[#0d1117]">
+              <div className="flex items-center gap-2 border-b border-border/50 px-4 py-2">
+                <div className="h-3 w-3 rounded-full bg-red-500/60" />
+                <div className="h-3 w-3 rounded-full bg-yellow-500/60" />
+                <div className="h-3 w-3 rounded-full bg-green-500/60" />
+                <span className="ml-2 font-mono text-xs text-muted">agent.py</span>
+                <span className="ml-auto font-mono text-xs text-muted/50">detect_and_install</span>
+              </div>
+              <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-gray-300">
+                <code>{`# Detect → resolve → install, then run yourself
+installed = client.detect_and_install(
+    lambda: process_pdf("report.pdf"),
+    auto_upgrade_policy="strict",
+)
+print(installed)  # ["pdf-reader-pack@1.2.0"]`}</code>
+              </pre>
+            </div>
+          </div>
+
+          <div className="mt-10 mx-auto grid max-w-3xl gap-4 sm:grid-cols-4">
             <div className="rounded-lg border border-border bg-card p-4 text-center">
               <p className="text-2xl font-bold text-primary">1</p>
-              <p className="mt-1 text-xs text-muted">Resolve — finds your tool by capability</p>
+              <p className="mt-1 text-xs text-muted">Detect — agent hits a missing capability</p>
             </div>
             <div className="rounded-lg border border-border bg-card p-4 text-center">
               <p className="text-2xl font-bold text-primary">2</p>
-              <p className="mt-1 text-xs text-muted">Verify — checks trust level and permissions</p>
+              <p className="mt-1 text-xs text-muted">Resolve — finds your skill by capability ID</p>
             </div>
             <div className="rounded-lg border border-border bg-card p-4 text-center">
               <p className="text-2xl font-bold text-primary">3</p>
-              <p className="mt-1 text-xs text-muted">Install — downloads, hash-checks, extracts</p>
+              <p className="mt-1 text-xs text-muted">Install — downloads, verifies, extracts</p>
             </div>
             <div className="rounded-lg border border-border bg-card p-4 text-center">
               <p className="text-2xl font-bold text-primary">4</p>
-              <p className="mt-1 text-xs text-muted">Run — executes with trust-aware isolation</p>
+              <p className="mt-1 text-xs text-muted">Retry — re-runs with the new skill active</p>
             </div>
           </div>
 
           <p className="mt-8 text-center text-sm text-muted">
-            Higher verification scores rank your tool above competitors. See{" "}
+            Higher trust levels mean automatic installation. See{" "}
             <Link href="/docs#runtime-quickstart" className="text-primary hover:underline">
               Runtime QuickStart
             </Link>{" "}
             for the full SDK reference.
+          </p>
+        </div>
+      </section>
+
+      {/* ============================================================ */}
+      {/*  PUBLISHER MOTIVATION — TRUST TABLE                          */}
+      {/* ============================================================ */}
+      <section className="border-b border-border bg-card/30">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20 overflow-hidden">
+          <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
+            Get verified. Get auto-installed.
+          </h2>
+          <p className="mx-auto mb-10 max-w-2xl text-center text-muted">
+            Your verification status directly controls whether agents can auto-install
+            your skill. The better your trust level, the wider your reach.
+          </p>
+
+          <div className="mx-auto max-w-2xl overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-left">
+                  <th className="py-3 pr-6 font-semibold text-foreground">Trust Level</th>
+                  <th className="py-3 pr-4 font-semibold text-muted text-center">&quot;safe&quot; policy</th>
+                  <th className="py-3 pr-4 font-semibold text-muted text-center">&quot;strict&quot; policy</th>
+                  <th className="py-3 font-semibold text-muted text-center">&quot;off&quot; policy</th>
+                </tr>
+              </thead>
+              <tbody className="text-muted">
+                <tr className="border-b border-border/50">
+                  <td className="py-3 pr-6">
+                    <span className="font-medium text-green-400">trusted</span>
+                  </td>
+                  <td className="py-3 pr-4 text-center text-foreground">&#x2714; auto</td>
+                  <td className="py-3 pr-4 text-center text-foreground">&#x2714; auto</td>
+                  <td className="py-3 text-center">&#x2718; manual</td>
+                </tr>
+                <tr className="border-b border-border/50">
+                  <td className="py-3 pr-6">
+                    <span className="font-medium text-primary">verified</span>
+                  </td>
+                  <td className="py-3 pr-4 text-center text-foreground">&#x2714; auto</td>
+                  <td className="py-3 pr-4 text-center">&#x2718; manual</td>
+                  <td className="py-3 text-center">&#x2718; manual</td>
+                </tr>
+                <tr>
+                  <td className="py-3 pr-6">
+                    <span className="font-medium text-zinc-400">unverified</span>
+                  </td>
+                  <td className="py-3 pr-4 text-center">&#x2718; manual</td>
+                  <td className="py-3 pr-4 text-center">&#x2718; manual</td>
+                  <td className="py-3 text-center">&#x2718; manual</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p className="mt-8 text-center text-sm text-muted">
+            <span className="text-foreground font-medium">Publish &rarr; get verified &rarr; agents auto-install your skill.</span>{" "}
+            No marketing needed — agents find you by capability.
           </p>
         </div>
       </section>
@@ -543,8 +624,13 @@ print(result.mode_used)  # "direct" for trusted tools`}</code>
                   <td className="py-3 pr-6">&#x2718;</td>
                   <td className="py-3 text-foreground">&#x2714;</td>
                 </tr>
-                <tr>
+                <tr className="border-b border-border/50">
                   <td className="py-3 pr-6 text-foreground/80">Agent-native installation</td>
+                  <td className="py-3 pr-6">&#x2718;</td>
+                  <td className="py-3 text-foreground">&#x2714;</td>
+                </tr>
+                <tr>
+                  <td className="py-3 pr-6 text-foreground/80">Runtime gap detection + auto-install</td>
                   <td className="py-3 pr-6">&#x2718;</td>
                   <td className="py-3 text-foreground">&#x2714;</td>
                 </tr>

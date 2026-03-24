@@ -106,7 +106,7 @@ export default async function PublisherPage({
         <p className="text-muted">No packages published yet.</p>
       ) : (
         <div className="space-y-3">
-          {packages.map((pkg: any) => (
+          {packages.map((pkg: { slug: string; name: string; latest_version?: string; download_count?: number; summary?: string }) => (
             <Link
               key={pkg.slug}
               href={`/packages/${pkg.slug}`}

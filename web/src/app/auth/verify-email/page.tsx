@@ -13,6 +13,7 @@ function VerifyEmailContent() {
 
   useEffect(() => {
     if (!token) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Set error state when no token
       setStatus("error");
       setError("No verification token provided.");
       return;

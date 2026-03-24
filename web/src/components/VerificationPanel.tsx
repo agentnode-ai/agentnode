@@ -167,6 +167,7 @@ export default function VerificationPanel({ slug }: { slug: string }) {
   }, [slug]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Fetch verification data on mount
     fetchData();
   }, [fetchData]);
 

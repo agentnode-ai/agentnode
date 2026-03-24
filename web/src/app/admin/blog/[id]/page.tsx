@@ -53,27 +53,21 @@ export default function EditPostPage() {
   const [dragging, setDragging] = useState(false);
   const dragCounter = useRef(0);
 
-  useEffect(() => {
-    loadCategories();
-    loadPostTypes();
-    loadPost();
-  }, [postId]);
-
-  async function loadCategories() {
+  const loadCategories = useCallback(async () => {
     try {
       const res = await fetchWithAuth("/admin/blog/categories");
       setCategories(await res.json());
     } catch { /* ignore */ }
-  }
+  }, []);
 
-  async function loadPostTypes() {
+  const loadPostTypes = useCallback(async () => {
     try {
       const res = await fetchWithAuth("/admin/blog/post-types");
       setPostTypes(await res.json());
     } catch { /* ignore */ }
-  }
+  }, []);
 
-  async function loadPost() {
+  const loadPost = useCallback(async () => {
     try {
       const res = await fetchWithAuth(`/admin/blog/posts/${postId}`);
       if (!res.ok) { router.push("/admin/blog"); return; }
@@ -97,7 +91,14 @@ export default function EditPostPage() {
     } catch { /* ignore */ }
     setLoading(false);
     setEditorReady(true);
-  }
+  }, [postId, router]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Load post data on mount
+    loadCategories();
+    loadPostTypes();
+    loadPost();
+  }, [loadCategories, loadPostTypes, loadPost]);
 
   const handleEditorChange = useCallback((json: object, html: string) => {
     setContentJson(json);

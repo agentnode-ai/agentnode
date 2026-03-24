@@ -65,6 +65,7 @@ export default function TerminalAnimation() {
   useEffect(() => {
     if (!isTyping || lineIndex >= TERMINAL_LINES.length) {
       if (isTyping && lineIndex >= TERMINAL_LINES.length) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- Animation state machine: mark typing complete
         setIsTyping(false);
         setAnimationDone(true);
       }

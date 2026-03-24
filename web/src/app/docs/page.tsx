@@ -816,7 +816,7 @@ packages:
 
             <SubHeading>Using packs in code</SubHeading>
             <p className="mb-3 text-sm text-muted">
-              Every pack is loaded through the SDK's <C>load_tool()</C> function.
+              Every pack is loaded through the SDK&apos;s <C>load_tool()</C> function.
               v0.2 packs support multiple tools with individual entrypoints.
               v0.1 packs work the same way with a single default entrypoint.
             </p>
@@ -2417,7 +2417,7 @@ jobs:
                 <span className="font-medium text-foreground/80">
                   Ed25519 signatures
                 </span>{" "}
-                -- every published pack is signed with the publisher's key.
+                -- every published pack is signed with the publisher&apos;s key.
                 Install-time verification ensures the pack has not been tampered
                 with after publication.
               </li>
