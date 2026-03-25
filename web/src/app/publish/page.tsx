@@ -1183,6 +1183,19 @@ function PublishContent() {
 
       clearDraft();
       setSuccess(`Published ${data.slug}@${data.version}`);
+
+      // Post-publish invite callback: mark candidate as published in funnel
+      try {
+        const inviteCode = typeof window !== "undefined" ? sessionStorage.getItem("invite_code") : null;
+        if (inviteCode) {
+          sessionStorage.removeItem("invite_code");
+          await fetchWithAuth(`/invites/${encodeURIComponent(inviteCode)}/published`, { method: "POST" })
+            .catch(() => {}); // Don't break publish on callback failure
+        }
+      } catch {
+        // Silently ignore — publish succeeded, callback is best-effort
+      }
+
       setTimeout(() => router.push(`/packages/${data.slug}`), 1500);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Unknown error");

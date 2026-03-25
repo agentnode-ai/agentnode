@@ -8,6 +8,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     username: str
     password: str
+    invite_code: str | None = None
 
     @field_validator("username")
     @classmethod

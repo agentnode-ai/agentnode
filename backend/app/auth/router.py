@@ -75,6 +75,26 @@ router = APIRouter(prefix="/v1/auth", tags=["auth"])
 @router.post("/register", response_model=RegisterResponse, status_code=201, dependencies=[Depends(rate_limit(5, 60))])
 async def register(body: RegisterRequest, session: AsyncSession = Depends(get_session)):
     user = await register_user(session, body.email, body.username, body.password)
+
+    # Track invite funnel: account_registered event
+    if body.invite_code:
+        try:
+            from app.invites.models import InviteCode
+            from app.invites.service import log_event
+            from sqlalchemy import select
+            result = await session.execute(
+                select(InviteCode).where(InviteCode.code == body.invite_code)
+            )
+            invite = result.scalar_one_or_none()
+            if invite and invite.candidate_id:
+                await log_event(session, invite.candidate_id, "account_registered", {
+                    "invite_code": body.invite_code,
+                    "user_id": str(user.id),
+                }, actor_user_id=user.id)
+                await session.commit()
+        except Exception:
+            pass  # Never break registration for tracking
+
     return RegisterResponse(id=user.id, email=user.email, username=user.username)
 
 

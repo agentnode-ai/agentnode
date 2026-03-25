@@ -8,6 +8,7 @@ function RegisterContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const returnTo = searchParams.get("returnTo") || "/dashboard";
+  const inviteCode = searchParams.get("invite") || null;
 
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
@@ -24,7 +25,7 @@ function RegisterContent() {
       const res = await fetch("/api/v1/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, username, password }),
+        body: JSON.stringify({ email, username, password, ...(inviteCode ? { invite_code: inviteCode } : {}) }),
       });
 
       const data = await res.json();

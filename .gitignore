@@ -65,3 +65,9 @@ packages_dump.json
 snapshot_nonowner.txt
 seo/
 backend/scripts/enrichment_*.json
+
+# Internal ops scripts (crawl, enrichment, import)
+scripts/crawl_*.py
+scripts/enrich_*.py
+scripts/import_candidates.py
+candidates*.json
