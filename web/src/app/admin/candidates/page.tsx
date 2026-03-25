@@ -181,6 +181,8 @@ function DetailPanel({
   events,
   onClose,
   onGenerateInvite,
+  onGenerateAndSend,
+  onFollowup,
   onEmailSent,
   onUpdateNotes,
 }: {
@@ -188,12 +190,15 @@ function DetailPanel({
   events: CandidateEvent[];
   onClose: () => void;
   onGenerateInvite: () => void;
+  onGenerateAndSend: () => void;
+  onFollowup: () => void;
   onEmailSent: () => void;
   onUpdateNotes: (notes: string) => void;
 }) {
   const [notes, setNotes] = useState(candidate.admin_notes || "");
   const [editingNotes, setEditingNotes] = useState(false);
   const [showPrefill, setShowPrefill] = useState(false);
+  const [showEmailPreview, setShowEmailPreview] = useState(false);
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-end bg-black/50" onClick={onClose}>
@@ -296,13 +301,29 @@ function DetailPanel({
           ) : (
             <p className="text-xs text-muted">No invite generated yet.</p>
           )}
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             <button
               onClick={onGenerateInvite}
               className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-primary/90"
             >
               {candidate.invite_code ? "Regenerate Invite" : "Generate Invite"}
             </button>
+            {candidate.contact_email && (
+              <button
+                onClick={onGenerateAndSend}
+                className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500"
+              >
+                {candidate.invite_code ? "Regenerate & Send Email" : "Generate & Send Email"}
+              </button>
+            )}
+            {candidate.invite_code && candidate.contact_email && (
+              <button
+                onClick={onFollowup}
+                className="rounded-md bg-yellow-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-yellow-500"
+              >
+                Send Follow-up
+              </button>
+            )}
             <button
               onClick={onEmailSent}
               className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-card"
@@ -310,6 +331,47 @@ function DetailPanel({
               Mark email sent
             </button>
           </div>
+          {!candidate.contact_email && (
+            <p className="mt-2 text-xs text-yellow-500">No contact email — cannot send automatically.</p>
+          )}
+        </div>
+
+        {/* Email preview */}
+        <div className="mb-6">
+          <button
+            onClick={() => setShowEmailPreview(!showEmailPreview)}
+            className="text-sm font-medium text-muted hover:text-foreground"
+          >
+            {showEmailPreview ? "\u25BC" : "\u25B6"} Email Preview
+          </button>
+          {showEmailPreview && (
+            <div className="mt-2 rounded-lg border border-border bg-card p-4 text-sm">
+              <div className="mb-2 text-xs text-muted">
+                <span className="font-medium">To:</span> {candidate.contact_email || "(no email)"}
+              </div>
+              <div className="mb-3 text-xs text-muted">
+                <span className="font-medium">Subject:</span> Publish {candidate.display_name || candidate.repo_name || "your tool"} on AgentNode
+              </div>
+              <div className="rounded-md border border-border bg-background p-3 text-xs text-foreground space-y-2">
+                <p className="font-bold text-white">Your tool on AgentNode</p>
+                <p>Hi {candidate.contact_name || "(name)"},</p>
+                <p>
+                  We discovered <strong className="text-white">{candidate.display_name || candidate.repo_name || "your tool"}</strong> and think it would be a great addition to AgentNode — the open registry where AI agents discover and install capabilities across every framework.
+                </p>
+                {candidate.description && <p className="text-zinc-300">{candidate.description}</p>}
+                {candidate.source_url && (
+                  <p className="text-zinc-500">Source: {candidate.source_url}</p>
+                )}
+                <p>We&apos;ve pre-filled your tool&apos;s metadata so publishing takes just a few clicks. Review it, adjust anything you like, and publish under your own name.</p>
+                <div className="text-center py-2">
+                  <span className="inline-block rounded-lg bg-indigo-500/20 px-4 py-2 text-xs font-medium text-indigo-400">
+                    [Publish {candidate.display_name || candidate.repo_name} on AgentNode →]
+                  </span>
+                </div>
+                <p className="text-zinc-500 text-[11px]">Nothing is published automatically. You have full control over the listing.</p>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Published package link */}
@@ -425,6 +487,16 @@ export default function CandidatesPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [createUrl, setCreateUrl] = useState("");
   const [createSource, setCreateSource] = useState("manual");
+
+  // Bulk send
+  const [showBulk, setShowBulk] = useState(false);
+  const [bulkMinStars, setBulkMinStars] = useState(100);
+  const [bulkSource, setBulkSource] = useState("");
+  const [bulkFormat, setBulkFormat] = useState("");
+  const [bulkLimit, setBulkLimit] = useState(50);
+  const [bulkSendEmail, setBulkSendEmail] = useState(false);
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkResult, setBulkResult] = useState<{ invites_created: number; emails_sent: number; emails_failed: number; candidates: Array<{ display_name: string; contact_email: string; stars: number; status: string }> } | null>(null);
   const [creating, setCreating] = useState(false);
 
   const perPage = 50;
@@ -470,17 +542,42 @@ export default function CandidatesPage() {
       .catch(() => setSelectedEvents([]));
   }, [selectedId, candidates]);
 
-  const handleGenerateInvite = async () => {
+  const handleGenerateInvite = async (sendEmail = false) => {
     if (!selectedId) return;
-    const res = await fetchWithAuth(`/admin/candidates/${selectedId}/invite`, { method: "POST" });
+    const res = await fetchWithAuth(`/admin/candidates/${selectedId}/invite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ send_email: sendEmail }),
+    });
     if (res.ok) {
       const data = await res.json();
       navigator.clipboard.writeText(data.tracking_url);
+      if (sendEmail && data.email_sent) {
+        alert("Invite generated and email sent!");
+      } else if (sendEmail && !data.email_sent) {
+        alert("Invite generated but email could not be sent (check SMTP config).");
+      }
       loadCandidates();
       // Reload events
       const evRes = await fetchWithAuth(`/admin/candidates/${selectedId}/events`);
       if (evRes.ok) { const d = await evRes.json(); setSelectedEvents(d.items || []); }
     }
+  };
+
+  const handleFollowup = async () => {
+    if (!selectedId) return;
+    if (!confirm("Send follow-up email to this candidate?")) return;
+    const res = await fetchWithAuth(`/admin/candidates/${selectedId}/followup`, { method: "POST" });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.email_sent) alert("Follow-up email sent!");
+      else alert("Follow-up could not be sent (check SMTP).");
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert(err.detail || "Failed to send follow-up.");
+    }
+    const evRes = await fetchWithAuth(`/admin/candidates/${selectedId}/events`);
+    if (evRes.ok) { const d = await evRes.json(); setSelectedEvents(d.items || []); }
   };
 
   const handleEmailSent = async () => {
@@ -503,6 +600,34 @@ export default function CandidatesPage() {
       body: JSON.stringify({ admin_notes: notes }),
     });
     loadCandidates();
+  };
+
+  const handleBulkSend = async () => {
+    if (bulkSendEmail && !confirm(`This will send real emails to up to ${bulkLimit} creators. Continue?`)) return;
+    setBulkRunning(true);
+    setBulkResult(null);
+    try {
+      const body: Record<string, unknown> = {
+        min_stars: bulkMinStars,
+        limit: bulkLimit,
+        send_email: bulkSendEmail,
+      };
+      if (bulkSource) body.source = bulkSource;
+      if (bulkFormat) body.detected_format = bulkFormat;
+
+      const res = await fetchWithAuth("/admin/candidates/bulk-send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setBulkResult(data);
+        loadCandidates();
+        loadFunnel();
+      }
+    } catch { /* ignore */ }
+    setBulkRunning(false);
   };
 
   const handleCreate = async () => {
@@ -541,16 +666,93 @@ export default function CandidatesPage() {
     <div>
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-bold text-foreground">Creator Acquisition</h1>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/90"
-        >
-          + Add Candidate
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowBulk(!showBulk)}
+            className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-card"
+          >
+            Bulk Send
+          </button>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/90"
+          >
+            + Add Candidate
+          </button>
+        </div>
       </div>
 
       {/* Funnel */}
       {funnel && <FunnelOverview data={funnel} />}
+
+      {/* Bulk Send Panel */}
+      {showBulk && (
+        <div className="mb-6 rounded-xl border border-border bg-card p-4">
+          <h3 className="mb-3 text-sm font-bold text-foreground">Bulk Invite & Email</h3>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            <div>
+              <label className="block text-xs text-muted mb-1">Min Stars</label>
+              <input type="number" value={bulkMinStars} onChange={(e) => setBulkMinStars(Number(e.target.value))} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+            </div>
+            <div>
+              <label className="block text-xs text-muted mb-1">Source</label>
+              <select value={bulkSource} onChange={(e) => setBulkSource(e.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground">
+                <option value="">All</option>
+                <option value="awesome-mcp-servers">awesome-mcp-servers</option>
+                <option value="awesome-langchain">awesome-langchain</option>
+                <option value="awesome-crewai">awesome-crewai</option>
+                <option value="github-topic">github-topic</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-muted mb-1">Format</label>
+              <select value={bulkFormat} onChange={(e) => setBulkFormat(e.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground">
+                <option value="">All</option>
+                <option value="mcp">MCP</option>
+                <option value="langchain">LangChain</option>
+                <option value="crewai">CrewAI</option>
+                <option value="openai">OpenAI</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-muted mb-1">Limit</label>
+              <input type="number" value={bulkLimit} onChange={(e) => setBulkLimit(Number(e.target.value))} min={1} max={500} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+            </div>
+            <div className="flex items-end gap-2">
+              <button onClick={() => { setBulkSendEmail(false); handleBulkSend(); }} disabled={bulkRunning} className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-white disabled:opacity-50">
+                {bulkRunning ? "Running..." : "Dry Run"}
+              </button>
+              <button onClick={() => { setBulkSendEmail(true); handleBulkSend(); }} disabled={bulkRunning} className="rounded-md bg-green-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50 hover:bg-green-500">
+                {bulkRunning ? "Sending..." : "Send Emails"}
+              </button>
+            </div>
+          </div>
+          {bulkResult && (
+            <div className="mt-3">
+              <div className="flex gap-4 text-xs text-muted mb-2">
+                <span>Invites: <strong className="text-foreground">{bulkResult.invites_created}</strong></span>
+                <span>Emails sent: <strong className="text-green-400">{bulkResult.emails_sent}</strong></span>
+                {bulkResult.emails_failed > 0 && <span>Failed: <strong className="text-red-400">{bulkResult.emails_failed}</strong></span>}
+              </div>
+              <div className="max-h-40 overflow-y-auto rounded-md border border-border bg-background">
+                <table className="w-full text-xs">
+                  <thead><tr className="text-left text-muted border-b border-border"><th className="px-2 py-1">Tool</th><th className="px-2 py-1">Email</th><th className="px-2 py-1">Stars</th><th className="px-2 py-1">Status</th></tr></thead>
+                  <tbody>
+                    {bulkResult.candidates.map((c, i) => (
+                      <tr key={i} className="border-b border-border/50">
+                        <td className="px-2 py-1 text-foreground">{c.display_name}</td>
+                        <td className="px-2 py-1 text-muted">{c.contact_email}</td>
+                        <td className="px-2 py-1 text-muted">{c.stars}</td>
+                        <td className="px-2 py-1"><span className={c.status === "email_sent" ? "text-green-400" : c.status === "email_failed" ? "text-red-400" : "text-blue-400"}>{c.status}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="mb-4 flex flex-wrap gap-3">
@@ -735,7 +937,9 @@ export default function CandidatesPage() {
           candidate={selectedCandidate}
           events={selectedEvents}
           onClose={() => { setSelectedId(null); setSelectedCandidate(null); }}
-          onGenerateInvite={handleGenerateInvite}
+          onGenerateInvite={() => handleGenerateInvite(false)}
+          onGenerateAndSend={() => handleGenerateInvite(true)}
+          onFollowup={handleFollowup}
           onEmailSent={handleEmailSent}
           onUpdateNotes={handleUpdateNotes}
         />

@@ -594,3 +594,95 @@ async def send_admin_daily_digest(to: str, stats: dict) -> bool:
       </p>
     """)
     return await send_email(to, "Daily digest - AgentNode Admin", html)
+
+
+# =========================================================================
+#  PHASE 4 — Creator Outreach
+# =========================================================================
+
+
+# 27. Invite outreach email (sent to tool creators)
+async def send_invite_outreach_email(
+    to: str,
+    contact_name: str | None,
+    display_name: str,
+    description: str | None,
+    source_url: str | None,
+    tracking_url: str,
+) -> bool:
+    greeting = f"Hi {contact_name}," if contact_name else "Hi,"
+    desc_html = f'<p style="color:#d4d4d4;">{description}</p>' if description else ""
+    source_html = (
+        f'<p style="font-size:13px;">Source: <a href="{source_url}" style="color:#818cf8;">{source_url}</a></p>'
+        if source_url else ""
+    )
+
+    html = _wrap(f"""
+      <h1>Your tool on AgentNode</h1>
+      <p>{greeting}</p>
+      <p>We discovered <strong style="color:#ffffff;">{display_name}</strong> and think it would be a great addition to AgentNode &mdash; the open registry where AI agents discover and install capabilities across every framework.</p>
+      {desc_html}
+      {source_html}
+      <p>We&rsquo;ve pre-filled your tool&rsquo;s metadata so publishing takes just a few clicks. Review it, adjust anything you like, and publish under your own name.</p>
+      <p style="text-align:center; margin: 28px 0;">
+        <a href="{tracking_url}" class="btn">Publish {display_name} on AgentNode &rarr;</a>
+      </p>
+      <p style="font-size:13px; color:#737373;">Nothing is published automatically. You have full control over the listing.</p>
+      <div class="footer">
+        <p>You received this because you maintain an open-source tool that fits AgentNode&rsquo;s registry.<br>
+        If you&rsquo;re not interested, simply ignore this email &mdash; we won&rsquo;t follow up.</p>
+      </div>
+    """)
+
+    text = (
+        f"{greeting}\n\n"
+        f"We discovered {display_name} and think it would be a great addition to AgentNode.\n\n"
+        f"Publish it here: {tracking_url}\n\n"
+        f"Nothing is published automatically. You have full control.\n"
+    )
+
+    return await send_email(
+        to,
+        f"Publish {display_name} on AgentNode",
+        html,
+        text,
+    )
+
+
+# 28. Follow-up email (for creators who clicked but didn't sign up)
+async def send_invite_followup_email(
+    to: str,
+    contact_name: str | None,
+    display_name: str,
+    tracking_url: str,
+) -> bool:
+    greeting = f"Hi {contact_name}," if contact_name else "Hi,"
+
+    html = _wrap(f"""
+      <h1>Quick follow-up</h1>
+      <p>{greeting}</p>
+      <p>A few days ago we reached out about publishing <strong style="color:#ffffff;">{display_name}</strong> on AgentNode.</p>
+      <p>We noticed you checked it out &mdash; if you had any questions or ran into issues, just reply to this email. We&rsquo;re happy to help.</p>
+      <p>If you&rsquo;re ready, the pre-filled listing is still waiting for you:</p>
+      <p style="text-align:center; margin: 28px 0;">
+        <a href="{tracking_url}" class="btn">Continue publishing &rarr;</a>
+      </p>
+      <p style="font-size:13px; color:#737373;">You still have full control. Nothing is published without your review.</p>
+      <div class="footer">
+        <p>Not interested? No worries &mdash; this is our last follow-up.</p>
+      </div>
+    """)
+
+    text = (
+        f"{greeting}\n\n"
+        f"A few days ago we reached out about publishing {display_name} on AgentNode.\n\n"
+        f"If you're ready: {tracking_url}\n\n"
+        f"Not interested? No worries — this is our last follow-up.\n"
+    )
+
+    return await send_email(
+        to,
+        f"Quick follow-up: {display_name} on AgentNode",
+        html,
+        text,
+    )

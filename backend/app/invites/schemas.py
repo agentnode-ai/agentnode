@@ -84,9 +84,33 @@ class CandidateListResponse(BaseModel):
     total: int
 
 
+# ── Admin: Invite generation ──
+
+class InviteGenerateRequest(BaseModel):
+    send_email: bool = False
+
+
+class BulkSendRequest(BaseModel):
+    """Bulk invite + email generation."""
+    min_stars: int = 0
+    source: str | None = None
+    detected_format: str | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+    send_email: bool = False  # False = dry run (generate invites only)
+
+
+class BulkSendResponse(BaseModel):
+    invites_created: int = 0
+    emails_sent: int = 0
+    emails_failed: int = 0
+    skipped_no_email: int = 0
+    candidates: list[dict] = []  # [{display_name, contact_email, status}]
+
+
 # ── Admin: Invites ──
 
 class InviteGenerateResponse(BaseModel):
+    email_sent: bool = False
     id: UUID
     code: str
     invite_url: str

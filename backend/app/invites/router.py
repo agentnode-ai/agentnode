@@ -14,6 +14,8 @@ from app.config import settings
 from app.database import get_session
 from app.invites.models import CandidateEvent, ImportCandidate, InviteCode
 from app.invites.schemas import (
+    BulkSendRequest,
+    BulkSendResponse,
     CandidateCreateRequest,
     CandidateListResponse,
     CandidateResponse,
@@ -24,6 +26,7 @@ from app.invites.schemas import (
     FunnelResponse,
     InviteAdminResponse,
     InviteClaimResponse,
+    InviteGenerateRequest,
     InviteGenerateResponse,
     InviteListResponse,
     InvitePublicResponse,
@@ -408,23 +411,51 @@ async def update_candidate(
 async def generate_invite(
     candidate_id: UUID,
     request: Request,
+    body: InviteGenerateRequest | None = None,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    """Generate invite code for a candidate. Revokes existing active invite."""
-    base_url = str(request.base_url).rstrip("/")
-    # Use frontend URL for invite links
+    """Generate invite code for a candidate. Optionally send outreach email."""
     frontend_url = getattr(settings, "FRONTEND_URL", "https://agentnode.net")
 
     invite = await create_invite_for_candidate(session, candidate_id, user.id, frontend_url)
+
+    tracking_url = f"{frontend_url}/i/{invite.code}"
+    email_sent = False
+
+    # Auto-send outreach email if requested
+    if body and body.send_email and invite.candidate_id:
+        result = await session.execute(
+            select(ImportCandidate).where(ImportCandidate.id == invite.candidate_id)
+        )
+        candidate = result.scalar_one_or_none()
+        if candidate and candidate.contact_email:
+            from app.shared.email import send_invite_outreach_email
+            email_sent = await send_invite_outreach_email(
+                to=candidate.contact_email,
+                contact_name=candidate.contact_name,
+                display_name=candidate.display_name or candidate.repo_name or "your tool",
+                description=candidate.description,
+                source_url=candidate.source_url,
+                tracking_url=tracking_url,
+            )
+            if email_sent:
+                await log_event(session, candidate_id, "email_sent", {
+                    "subject": f"Publish {candidate.display_name or candidate.repo_name} on AgentNode",
+                    "channel": "email",
+                    "to": candidate.contact_email,
+                    "auto": True,
+                }, actor_user_id=user.id)
+
     await session.commit()
 
     return InviteGenerateResponse(
         id=invite.id,
         code=invite.code,
         invite_url=f"{frontend_url}/invite/{invite.code}",
-        tracking_url=f"{frontend_url}/i/{invite.code}",
+        tracking_url=tracking_url,
         expires_at=invite.expires_at,
+        email_sent=email_sent,
     )
 
 
@@ -543,3 +574,158 @@ async def revoke_invite(
 
     await session.commit()
     return {"ok": True}
+
+
+@admin_router.post("/candidates/bulk-send", response_model=BulkSendResponse)
+async def bulk_send_invites(
+    body: BulkSendRequest,
+    request: Request,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Bulk-generate invites and optionally send outreach emails.
+
+    Only targets candidates that are 'discovered' (never contacted),
+    have a contact_email, and have no active invite.
+    """
+    frontend_url = getattr(settings, "FRONTEND_URL", "https://agentnode.net")
+
+    # Build query for eligible candidates
+    conditions = [
+        ImportCandidate.outreach_status == "discovered",
+        ImportCandidate.contact_email.isnot(None),
+        ImportCandidate.contact_email != "",
+    ]
+    if body.min_stars > 0:
+        conditions.append(ImportCandidate.stars >= body.min_stars)
+    if body.source:
+        conditions.append(ImportCandidate.source == body.source)
+    if body.detected_format:
+        conditions.append(ImportCandidate.detected_format == body.detected_format)
+
+    # Exclude candidates that already have an active invite
+    active_invite_ids = select(InviteCode.candidate_id).where(InviteCode.status == "active").distinct()
+    conditions.append(ImportCandidate.id.notin_(active_invite_ids))
+
+    query = (
+        select(ImportCandidate)
+        .where(and_(*conditions))
+        .order_by(ImportCandidate.stars.desc().nulls_last())
+        .limit(body.limit)
+    )
+
+    result = await session.execute(query)
+    candidates = result.scalars().all()
+
+    invites_created = 0
+    emails_sent = 0
+    emails_failed = 0
+    skipped_no_email = 0
+    report: list[dict] = []
+
+    for candidate in candidates:
+        if not candidate.contact_email:
+            skipped_no_email += 1
+            continue
+
+        # Generate invite
+        invite = await create_invite_for_candidate(session, candidate.id, user.id, frontend_url)
+        invites_created += 1
+        tracking_url = f"{frontend_url}/i/{invite.code}"
+
+        entry = {
+            "display_name": candidate.display_name or candidate.repo_name,
+            "contact_email": candidate.contact_email,
+            "stars": candidate.stars,
+            "tracking_url": tracking_url,
+            "status": "invite_created",
+        }
+
+        # Send email if requested
+        if body.send_email:
+            from app.shared.email import send_invite_outreach_email
+            sent = await send_invite_outreach_email(
+                to=candidate.contact_email,
+                contact_name=candidate.contact_name,
+                display_name=candidate.display_name or candidate.repo_name or "your tool",
+                description=candidate.description,
+                source_url=candidate.source_url,
+                tracking_url=tracking_url,
+            )
+            if sent:
+                emails_sent += 1
+                entry["status"] = "email_sent"
+                await log_event(session, candidate.id, "email_sent", {
+                    "subject": f"Publish {candidate.display_name or candidate.repo_name} on AgentNode",
+                    "channel": "email",
+                    "to": candidate.contact_email,
+                    "auto": True,
+                    "bulk": True,
+                }, actor_user_id=user.id)
+            else:
+                emails_failed += 1
+                entry["status"] = "email_failed"
+
+        report.append(entry)
+
+    await session.commit()
+
+    return BulkSendResponse(
+        invites_created=invites_created,
+        emails_sent=emails_sent,
+        emails_failed=emails_failed,
+        skipped_no_email=skipped_no_email,
+        candidates=report,
+    )
+
+
+@admin_router.post("/candidates/{candidate_id}/followup")
+async def send_followup(
+    candidate_id: UUID,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Send a follow-up email to a candidate who clicked but didn't sign up."""
+    frontend_url = getattr(settings, "FRONTEND_URL", "https://agentnode.net")
+
+    result = await session.execute(
+        select(ImportCandidate).where(ImportCandidate.id == candidate_id)
+    )
+    candidate = result.scalar_one_or_none()
+    if not candidate:
+        raise AppError("CANDIDATE_NOT_FOUND", "Candidate not found", 404)
+
+    if not candidate.contact_email:
+        raise AppError("NO_EMAIL", "Candidate has no contact email", 400)
+
+    # Get active invite for tracking URL
+    invite_result = await session.execute(
+        select(InviteCode).where(
+            and_(
+                InviteCode.candidate_id == candidate_id,
+                InviteCode.status == "active",
+            )
+        )
+    )
+    invite = invite_result.scalar_one_or_none()
+    if not invite:
+        raise AppError("NO_ACTIVE_INVITE", "No active invite for this candidate. Generate one first.", 400)
+
+    tracking_url = f"{frontend_url}/i/{invite.code}"
+
+    from app.shared.email import send_invite_followup_email
+    sent = await send_invite_followup_email(
+        to=candidate.contact_email,
+        contact_name=candidate.contact_name,
+        display_name=candidate.display_name or candidate.repo_name or "your tool",
+        tracking_url=tracking_url,
+    )
+
+    if sent:
+        await log_event(session, candidate_id, "followup_sent", {
+            "to": candidate.contact_email,
+            "auto": True,
+        }, actor_user_id=user.id)
+        await session.commit()
+
+    return {"ok": True, "email_sent": sent}
