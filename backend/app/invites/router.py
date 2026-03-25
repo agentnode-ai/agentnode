@@ -729,3 +729,119 @@ async def send_followup(
         await session.commit()
 
     return {"ok": True, "email_sent": sent}
+
+
+@admin_router.post("/candidates/auto-followup")
+async def auto_followup(
+    days: int = Query(default=5, ge=1, le=30),
+    limit: int = Query(default=50, ge=1, le=200),
+    dry_run: bool = Query(default=True),
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Auto-send follow-up emails to candidates contacted X days ago who haven't clicked.
+
+    Only targets candidates that:
+    - Have outreach_status 'contacted' (email sent, but no click)
+    - Were contacted at least `days` days ago
+    - Have a contact_email
+    - Have an active invite
+    - Have NOT already received a followup_sent event
+    """
+    from datetime import timedelta
+
+    frontend_url = getattr(settings, "FRONTEND_URL", "https://agentnode.net")
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Find candidates who were contacted but didn't click, and haven't received a follow-up
+    followup_already = (
+        select(CandidateEvent.candidate_id)
+        .where(CandidateEvent.event_type == "followup_sent")
+        .distinct()
+    )
+    clicked_already = (
+        select(CandidateEvent.candidate_id)
+        .where(CandidateEvent.event_type == "invite_link_clicked")
+        .distinct()
+    )
+
+    query = (
+        select(ImportCandidate)
+        .where(and_(
+            ImportCandidate.outreach_status == "contacted",
+            ImportCandidate.contacted_at.isnot(None),
+            ImportCandidate.contacted_at <= cutoff,
+            ImportCandidate.contact_email.isnot(None),
+            ImportCandidate.contact_email != "",
+            ImportCandidate.id.notin_(followup_already),
+            ImportCandidate.id.notin_(clicked_already),
+        ))
+        .order_by(ImportCandidate.stars.desc().nulls_last())
+        .limit(limit)
+    )
+
+    result = await session.execute(query)
+    candidates = result.scalars().all()
+
+    sent_count = 0
+    failed_count = 0
+    skipped_count = 0
+    report: list[dict] = []
+
+    for candidate in candidates:
+        # Get active invite
+        invite_result = await session.execute(
+            select(InviteCode).where(and_(
+                InviteCode.candidate_id == candidate.id,
+                InviteCode.status == "active",
+            ))
+        )
+        invite = invite_result.scalar_one_or_none()
+        if not invite:
+            skipped_count += 1
+            report.append({"display_name": candidate.display_name, "status": "skipped_no_invite"})
+            continue
+
+        tracking_url = f"{frontend_url}/i/{invite.code}"
+
+        if dry_run:
+            report.append({
+                "display_name": candidate.display_name or candidate.repo_name,
+                "contact_email": candidate.contact_email,
+                "stars": candidate.stars,
+                "contacted_at": str(candidate.contacted_at),
+                "status": "would_send",
+            })
+            continue
+
+        from app.shared.email import send_invite_followup_email
+        ok = await send_invite_followup_email(
+            to=candidate.contact_email,
+            contact_name=candidate.contact_name,
+            display_name=candidate.display_name or candidate.repo_name or "your tool",
+            tracking_url=tracking_url,
+        )
+
+        if ok:
+            sent_count += 1
+            await log_event(session, candidate.id, "followup_sent", {
+                "to": candidate.contact_email,
+                "auto": True,
+                "days_since_contact": days,
+            }, actor_user_id=user.id)
+            report.append({"display_name": candidate.display_name, "status": "sent"})
+        else:
+            failed_count += 1
+            report.append({"display_name": candidate.display_name, "status": "failed"})
+
+    if not dry_run:
+        await session.commit()
+
+    return {
+        "dry_run": dry_run,
+        "eligible": len(candidates),
+        "sent": sent_count,
+        "failed": failed_count,
+        "skipped": skipped_count,
+        "candidates": report,
+    }

@@ -19,6 +19,28 @@ interface AuthUser {
   username: string;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Value Prop Components                                              */
+/* ------------------------------------------------------------------ */
+
+function ValueProp({ icon, title, desc }: { icon: string; title: string; desc: string }) {
+  return (
+    <div className="flex gap-3">
+      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-sm text-primary">
+        {icon}
+      </div>
+      <div>
+        <div className="text-sm font-semibold text-foreground">{title}</div>
+        <div className="text-xs text-muted leading-relaxed">{desc}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main Page                                                          */
+/* ------------------------------------------------------------------ */
+
 export default function InviteLandingPage() {
   const params = useParams();
   const router = useRouter();
@@ -135,9 +157,10 @@ export default function InviteLandingPage() {
   }
 
   const returnTo = `/invite/${encodeURIComponent(code)}?authed=1`;
+  const toolName = invite?.display_name || "your tool";
 
   return (
-    <div className="mx-auto max-w-lg px-4 py-16">
+    <div className="mx-auto max-w-xl px-4 py-12">
       <div className="rounded-xl border border-border bg-card p-8">
         {/* Header */}
         <div className="mb-6 text-center">
@@ -145,8 +168,11 @@ export default function InviteLandingPage() {
             Invitation
           </div>
           <h1 className="text-2xl font-bold text-foreground">
-            You&apos;ve been invited to publish on AgentNode
+            Get {toolName} auto-installed by AI agents
           </h1>
+          <p className="mt-2 text-sm text-muted">
+            Publish on AgentNode and agents will discover, install, and use your tool automatically.
+          </p>
         </div>
 
         {/* Tool info card */}
@@ -171,14 +197,50 @@ export default function InviteLandingPage() {
           </div>
         )}
 
-        {/* Explanation */}
-        <div className="mb-6 space-y-2 text-sm text-muted">
-          <p>
-            We discovered your tool and pre-filled the metadata. Review it, adjust anything,
-            and publish under your own name.
-          </p>
-          <p className="font-medium text-foreground">
-            You will publish under your own name. Nothing is published automatically.
+        {/* Value propositions */}
+        <div className="mb-6 space-y-4">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Why publish on AgentNode?</h3>
+          <ValueProp
+            icon="&#x1F50D;"
+            title="Agents find you automatically"
+            desc="AI agents search by capability, not package name. When they need what your tool does, they find it and install it at runtime — no marketing required."
+          />
+          <ValueProp
+            icon="&#x1F517;"
+            title="Works across every framework"
+            desc="One listing works with LangChain, CrewAI, MCP, AutoGPT, and plain Python. No separate integrations to maintain."
+          />
+          <ValueProp
+            icon="&#x2713;"
+            title="Verified trust badge"
+            desc="Every package is sandbox-tested on publish. Import checks, smoke tests, security scan. Agents trust verified tools by default."
+          />
+          <ValueProp
+            icon="&#x1F4CA;"
+            title="Real usage analytics"
+            desc="See exactly how many agents install and use your tool, across which frameworks and use cases."
+          />
+        </div>
+
+        {/* How it works */}
+        <div className="mb-6 rounded-lg border border-border bg-background p-4">
+          <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted">How it works</h3>
+          <div className="space-y-2 text-sm text-muted">
+            <div className="flex gap-2">
+              <span className="shrink-0 font-mono text-xs text-primary">1.</span>
+              <span>Review the pre-filled metadata we generated from your repo</span>
+            </div>
+            <div className="flex gap-2">
+              <span className="shrink-0 font-mono text-xs text-primary">2.</span>
+              <span>Adjust anything you like &mdash; name, description, capabilities</span>
+            </div>
+            <div className="flex gap-2">
+              <span className="shrink-0 font-mono text-xs text-primary">3.</span>
+              <span>Hit publish &mdash; takes about 2 minutes</span>
+            </div>
+          </div>
+          <p className="mt-3 text-xs font-medium text-foreground">
+            You publish under your own name. Nothing is published automatically.
           </p>
         </div>
 
@@ -197,7 +259,7 @@ export default function InviteLandingPage() {
               disabled={claiming}
               className="w-full rounded-xl bg-primary px-6 py-3 text-sm font-bold text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
             >
-              {claiming ? "Preparing your draft..." : "Continue to publish \u2192"}
+              {claiming ? "Preparing your draft..." : `Publish ${toolName} \u2192`}
             </button>
           ) : (
             <>
@@ -205,13 +267,13 @@ export default function InviteLandingPage() {
                 href={`/auth/register?returnTo=${encodeURIComponent(returnTo)}&invite=${encodeURIComponent(code)}`}
                 className="block w-full rounded-xl bg-primary px-6 py-3 text-center text-sm font-bold text-white transition-colors hover:bg-primary/90"
               >
-                Create account
+                Create account &amp; publish
               </Link>
               <Link
                 href={`/auth/login?returnTo=${encodeURIComponent(returnTo)}`}
                 className="block w-full rounded-xl border border-border px-6 py-3 text-center text-sm font-medium text-foreground transition-colors hover:bg-card"
               >
-                Sign in
+                Already have an account? Sign in
               </Link>
             </>
           )}

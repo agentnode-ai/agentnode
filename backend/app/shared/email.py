@@ -611,45 +611,69 @@ async def send_invite_outreach_email(
     tracking_url: str,
 ) -> bool:
     greeting = f"Hi {contact_name}," if contact_name else "Hi,"
-    desc_html = f'<p style="color:#d4d4d4;">{description}</p>' if description else ""
-    source_html = (
-        f'<p style="font-size:13px;">Source: <a href="{source_url}" style="color:#818cf8;">{source_url}</a></p>'
-        if source_url else ""
-    )
 
     html = _wrap(f"""
-      <h1>Your tool on AgentNode</h1>
+      <h1>Get {display_name} in front of every AI agent</h1>
       <p>{greeting}</p>
-      <p>We discovered <strong style="color:#ffffff;">{display_name}</strong> and think it would be a great addition to AgentNode &mdash; the open registry where AI agents discover and install capabilities across every framework.</p>
-      {desc_html}
-      {source_html}
-      <p>We&rsquo;ve pre-filled your tool&rsquo;s metadata so publishing takes just a few clicks. Review it, adjust anything you like, and publish under your own name.</p>
+      <p>I&rsquo;m reaching out because <strong style="color:#ffffff;">{display_name}</strong> looks like a great fit for
+      <a href="https://agentnode.net" style="color:#818cf8;">AgentNode</a> &mdash; the verified registry where AI agents
+      automatically discover, install, and use tools at runtime.</p>
+
+      <p style="font-size:14px; font-weight:600; color:#ffffff; margin-top:20px;">What that means for you:</p>
+      <table style="width:100%; font-size:13px; color:#a3a3a3; border-collapse:collapse;">
+        <tr>
+          <td style="padding:8px 0; vertical-align:top; width:24px; color:#6366f1;">&bull;</td>
+          <td style="padding:8px 0;"><strong style="color:#e5e5e5;">Auto-discovery by agents</strong> &mdash; When an agent needs a capability your tool provides, it finds and installs it automatically. No marketing required.</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 0; vertical-align:top; color:#6366f1;">&bull;</td>
+          <td style="padding:8px 0;"><strong style="color:#e5e5e5;">Works across every framework</strong> &mdash; One listing works with LangChain, CrewAI, MCP, AutoGPT, and plain Python. No separate integrations.</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 0; vertical-align:top; color:#6366f1;">&bull;</td>
+          <td style="padding:8px 0;"><strong style="color:#e5e5e5;">Verified trust badge</strong> &mdash; Every package is sandbox-tested on publish. Your quality is proven, not self-reported. Agents trust verified tools by default.</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 0; vertical-align:top; color:#6366f1;">&bull;</td>
+          <td style="padding:8px 0;"><strong style="color:#e5e5e5;">Real usage analytics</strong> &mdash; See exactly how many agents install and use your tool, across which frameworks.</td>
+        </tr>
+      </table>
+
+      <p style="margin-top:16px;">We&rsquo;ve already pre-filled your tool&rsquo;s metadata from the repo. Publishing takes about 2 minutes &mdash; just review, adjust anything you like, and publish under your own name.</p>
+
       <p style="text-align:center; margin: 28px 0;">
-        <a href="{tracking_url}" class="btn">Publish {display_name} on AgentNode &rarr;</a>
+        <a href="{tracking_url}" class="btn">Publish {display_name} &rarr;</a>
       </p>
       <p style="font-size:13px; color:#737373;">Nothing is published automatically. You have full control over the listing.</p>
       <div class="footer">
         <p>You received this because you maintain an open-source tool that fits AgentNode&rsquo;s registry.<br>
-        If you&rsquo;re not interested, simply ignore this email &mdash; we won&rsquo;t follow up.</p>
+        Not interested? Simply ignore this email.</p>
       </div>
     """)
 
     text = (
         f"{greeting}\n\n"
-        f"We discovered {display_name} and think it would be a great addition to AgentNode.\n\n"
-        f"Publish it here: {tracking_url}\n\n"
+        f"I'm reaching out because {display_name} looks like a great fit for AgentNode — "
+        f"the verified registry where AI agents automatically discover, install, and use tools at runtime.\n\n"
+        f"What that means for you:\n"
+        f"- Auto-discovery: agents find and install your tool when they need it\n"
+        f"- Cross-framework: one listing works with LangChain, CrewAI, MCP, AutoGPT\n"
+        f"- Verified badge: sandbox-tested, agents trust you by default\n"
+        f"- Usage analytics: see how many agents use your tool\n\n"
+        f"We pre-filled your metadata. Publishing takes ~2 minutes:\n"
+        f"{tracking_url}\n\n"
         f"Nothing is published automatically. You have full control.\n"
     )
 
     return await send_email(
         to,
-        f"Publish {display_name} on AgentNode",
+        f"{display_name}: get auto-installed by AI agents",
         html,
         text,
     )
 
 
-# 28. Follow-up email (for creators who clicked but didn't sign up)
+# 28. Follow-up email (for creators who were contacted but didn't click)
 async def send_invite_followup_email(
     to: str,
     contact_name: str | None,
@@ -659,25 +683,24 @@ async def send_invite_followup_email(
     greeting = f"Hi {contact_name}," if contact_name else "Hi,"
 
     html = _wrap(f"""
-      <h1>Quick follow-up</h1>
+      <h1>Quick follow-up on {display_name}</h1>
       <p>{greeting}</p>
-      <p>A few days ago we reached out about publishing <strong style="color:#ffffff;">{display_name}</strong> on AgentNode.</p>
-      <p>We noticed you checked it out &mdash; if you had any questions or ran into issues, just reply to this email. We&rsquo;re happy to help.</p>
-      <p>If you&rsquo;re ready, the pre-filled listing is still waiting for you:</p>
+      <p>Last week I reached out about listing <strong style="color:#ffffff;">{display_name}</strong> on AgentNode.</p>
+      <p>The short version: AI agents are increasingly searching for tools at runtime &mdash; not on PyPI or npm, but through capability registries like AgentNode. When they need what your tool does, they find it, install it, and use it automatically.</p>
+      <p>We&rsquo;ve already pre-filled your listing from the repo. It takes about 2 minutes to review and publish:</p>
       <p style="text-align:center; margin: 28px 0;">
-        <a href="{tracking_url}" class="btn">Continue publishing &rarr;</a>
+        <a href="{tracking_url}" class="btn">Review your listing &rarr;</a>
       </p>
-      <p style="font-size:13px; color:#737373;">You still have full control. Nothing is published without your review.</p>
-      <div class="footer">
-        <p>Not interested? No worries &mdash; this is our last follow-up.</p>
-      </div>
+      <p style="font-size:13px; color:#737373;">Questions? Just reply to this email. Not interested? No worries &mdash; this is the last follow-up.</p>
     """)
 
     text = (
         f"{greeting}\n\n"
-        f"A few days ago we reached out about publishing {display_name} on AgentNode.\n\n"
-        f"If you're ready: {tracking_url}\n\n"
-        f"Not interested? No worries — this is our last follow-up.\n"
+        f"Last week I reached out about listing {display_name} on AgentNode.\n\n"
+        f"AI agents search for tools at runtime through capability registries. "
+        f"When they need what your tool does, they find it, install it, and use it automatically.\n\n"
+        f"Review your pre-filled listing (~2 min): {tracking_url}\n\n"
+        f"Questions? Reply to this email. Not interested? This is the last follow-up.\n"
     )
 
     return await send_email(

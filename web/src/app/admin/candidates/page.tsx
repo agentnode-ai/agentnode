@@ -350,25 +350,28 @@ function DetailPanel({
                 <span className="font-medium">To:</span> {candidate.contact_email || "(no email)"}
               </div>
               <div className="mb-3 text-xs text-muted">
-                <span className="font-medium">Subject:</span> Publish {candidate.display_name || candidate.repo_name || "your tool"} on AgentNode
+                <span className="font-medium">Subject:</span> {candidate.display_name || candidate.repo_name || "your tool"}: get auto-installed by AI agents
               </div>
               <div className="rounded-md border border-border bg-background p-3 text-xs text-foreground space-y-2">
-                <p className="font-bold text-white">Your tool on AgentNode</p>
+                <p className="font-bold text-white">Get {candidate.display_name || candidate.repo_name} in front of every AI agent</p>
                 <p>Hi {candidate.contact_name || "(name)"},</p>
                 <p>
-                  We discovered <strong className="text-white">{candidate.display_name || candidate.repo_name || "your tool"}</strong> and think it would be a great addition to AgentNode — the open registry where AI agents discover and install capabilities across every framework.
+                  I&apos;m reaching out because <strong className="text-white">{candidate.display_name || candidate.repo_name || "your tool"}</strong> looks like a great fit for AgentNode — the verified registry where AI agents automatically discover, install, and use tools at runtime.
                 </p>
-                {candidate.description && <p className="text-zinc-300">{candidate.description}</p>}
-                {candidate.source_url && (
-                  <p className="text-zinc-500">Source: {candidate.source_url}</p>
-                )}
-                <p>We&apos;ve pre-filled your tool&apos;s metadata so publishing takes just a few clicks. Review it, adjust anything you like, and publish under your own name.</p>
+                <p className="font-semibold text-white mt-2">What that means for you:</p>
+                <ul className="space-y-1 text-zinc-400 list-none">
+                  <li><span className="text-indigo-400 mr-1">&bull;</span> <strong className="text-zinc-300">Auto-discovery</strong> — agents find and install your tool when they need it</li>
+                  <li><span className="text-indigo-400 mr-1">&bull;</span> <strong className="text-zinc-300">Cross-framework</strong> — one listing for LangChain, CrewAI, MCP, AutoGPT</li>
+                  <li><span className="text-indigo-400 mr-1">&bull;</span> <strong className="text-zinc-300">Verified badge</strong> — sandbox-tested, agents trust you by default</li>
+                  <li><span className="text-indigo-400 mr-1">&bull;</span> <strong className="text-zinc-300">Usage analytics</strong> — see how many agents use your tool</li>
+                </ul>
+                <p>We&apos;ve pre-filled your metadata. Publishing takes ~2 minutes.</p>
                 <div className="text-center py-2">
                   <span className="inline-block rounded-lg bg-indigo-500/20 px-4 py-2 text-xs font-medium text-indigo-400">
-                    [Publish {candidate.display_name || candidate.repo_name} on AgentNode →]
+                    [Publish {candidate.display_name || candidate.repo_name} →]
                   </span>
                 </div>
-                <p className="text-zinc-500 text-[11px]">Nothing is published automatically. You have full control over the listing.</p>
+                <p className="text-zinc-500 text-[11px]">Nothing is published automatically. You have full control.</p>
               </div>
             </div>
           )}
