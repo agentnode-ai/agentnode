@@ -47,7 +47,7 @@ AgentNode is a **standard for portable, verified AI agent capabilities**.
 Every capability is:
 
 - **Verified to work** — 4-step automated pipeline tests install, import, execution, and unit tests on every publish
-- **Built to run anywhere** — works with LangChain, CrewAI, AutoGPT, OpenAI, MCP, or vanilla Python
+- **Built to run anywhere** — works with LangChain, CrewAI, MCP, OpenAI Functions, or vanilla Python
 - **Secure by default** — Ed25519 signatures, Bandit scanning, typosquatting detection, permission manifests
 
 ```
@@ -119,7 +119,7 @@ runtime:
   language: python
   min_version: "3.10"
 
-frameworks: [langchain, crewai, autogpt, generic]
+frameworks: [langchain, crewai, mcp, generic]
 ```
 
 One pack. Multiple tools. Typed schemas. Works with any framework.

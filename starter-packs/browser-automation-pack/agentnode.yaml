@@ -5,6 +5,7 @@ name: "Browser Automation Pack"
 publisher: "agentnode"
 version: "1.1.0"
 summary: "Automate browser interactions: screenshots, text extraction, clicks, and form filling."
+runtime: python
 description: "Automate browser interactions: screenshots, text extraction, clicks, and form filling."
 entrypoint: "browser_automation_pack.tool"
 

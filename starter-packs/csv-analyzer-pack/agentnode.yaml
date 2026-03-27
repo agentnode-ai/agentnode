@@ -5,6 +5,7 @@ name: "CSV Analyzer Pack"
 publisher: "agentnode"
 version: "1.1.0"
 summary: "Analyze CSV files with pandas: statistics, filtering, and column inspection."
+runtime: python
 description: "Analyze CSV files with pandas: statistics, filtering, and column inspection."
 entrypoint: "csv_analyzer_pack.tool"
 
