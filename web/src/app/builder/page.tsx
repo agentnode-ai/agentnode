@@ -430,7 +430,7 @@ export default function BuilderPage() {
                         Standard
                       </div>
                       <div className="mt-1 text-foreground">
-                        ANP v0.2 &mdash; works with any framework
+                        ANP v0.2 &mdash; LangChain, CrewAI, MCP, Python
                       </div>
                     </div>
                     <div className="sm:col-span-2">

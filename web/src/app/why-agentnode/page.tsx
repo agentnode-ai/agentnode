@@ -42,14 +42,14 @@ const differentiators = [
     title: "Verified on Publish",
     subtitle: "Every package is tested before it reaches your agent.",
     description:
-      "Every pack goes through a 4-step verification pipeline on publish: Install (can it be pip-installed?), Import (does the module load?), Smoke Test (does the entry point execute?), and Unit Tests (do the author's tests pass?). If install or import fails, the pack is auto-quarantined and never reaches the registry. Smoke or test issues get transparent warning badges so you can make an informed decision. No other registry does this. PyPI lists packages that fail to install. npm has abandoned packages with zero warning. AgentNode guarantees: if it is in the registry, it works.",
+      "Every pack goes through a 4-step verification pipeline on publish: Install (can it be pip-installed?), Import (does the module load?), Smoke Test (does the entry point execute?), and Unit Tests (do the author's tests pass?). If install or import fails, the pack is auto-quarantined and never reaches the registry. Smoke or test issues get transparent warning badges so you can make an informed decision. No other registry does this. PyPI lists packages that fail to install. npm has abandoned packages with zero warning. AgentNode guarantees: packages are tested on publish and scored for quality.",
   },
   {
     number: "03",
     title: "One Format, Every Framework",
     subtitle: "Per-tool entrypoints. Typed schemas. No framework lock-in.",
     description:
-      "ANP v0.2 introduces per-tool entrypoints: a single pack can export multiple tools, each individually addressable via load_tool(). Every tool has typed JSON Schema input and output, so your agent knows exactly what to pass and what to expect. It works with LangChain, CrewAI, AutoGPT, or vanilla Python. Write your agent in whatever framework you prefer — the packs adapt to you, not the other way around.",
+      "ANP v0.2 introduces per-tool entrypoints: a single pack can export multiple tools, each individually addressable via load_tool(). Every tool has typed JSON Schema input and output, so your agent knows exactly what to pass and what to expect. It works with LangChain, CrewAI, or vanilla Python. Write your agent in whatever framework you prefer — the packs adapt to you, not the other way around.",
   },
   {
     number: "04",
@@ -99,7 +99,7 @@ const comparisonData: Record<string, Record<string, string>> = {
     "Trust verification": "4-level trust: unverified to curated",
     "Automated verification": "4-step: install, import, smoke test, unit tests",
     "Permission model": "Full manifest: network, filesystem, code execution",
-    "Framework compatibility": "LangChain, CrewAI, AutoGPT, generic Python",
+    "Framework compatibility": "LangChain, CrewAI, generic Python",
     "Standardized interface": "Per-tool entrypoints via load_tool() — typed schemas",
     "Programmatic resolution": "SDK + CLI + MCP integration",
     "Security scanning": "Bandit, Ed25519 signatures, typosquatting detection",
@@ -252,7 +252,7 @@ export default function WhyAgentNodePage() {
             packages hoping to find something that works with your framework.
             AgentNode is the verified, buildable, importable capability registry
             built specifically for AI agent developers. Every package is
-            automatically verified on publish — if it is in the registry, it works.
+            automatically verified on publish — packages are tested and scored for quality.
           </p>
           <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
             <Link
@@ -757,7 +757,7 @@ print(result["pages"])`}</code>
             </h2>
             <p className="mt-4 max-w-xl text-muted">
               Verified packages. Per-tool entrypoints. AI-powered builder.
-              One-click import from any framework. Install your first pack or
+              One-click import from LangChain, CrewAI, MCP, or OpenAI. Install your first pack or
               build your own — your agents will thank you.
             </p>
 

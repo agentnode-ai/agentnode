@@ -1,9 +1,9 @@
 import Link from "next/link";
 
 export const metadata = {
-  title: "Publish AI Agent Skills — Get Auto-Installed by Agents at Runtime",
+  title: "Publish AI Agent Skills — Discoverable and Installable at Runtime",
   description:
-    "Publish your AI tools as verified agent skills on AgentNode. Agents detect missing capabilities, auto-install your skill, and retry — one line of code. Trust tiers control what gets installed automatically.",
+    "Publish your AI tools as verified agent skills on AgentNode. Agents detect missing capabilities, find and install your skill when policies permit — one line of code. Trust tiers control what gets installed.",
 };
 
 /* ------------------------------------------------------------------ */
@@ -181,11 +181,11 @@ export default function ForDevelopersPage() {
             For Tool Developers
           </span>
           <h1 className="mx-auto max-w-3xl text-4xl font-bold leading-tight tracking-tight text-foreground sm:text-5xl">
-            Published skills get auto-installed by agents at runtime
+            Published skills can be installed by agents at runtime when policies permit
           </h1>
           <p className="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-muted">
-            Agents detect missing capabilities, find your skill, install it, and retry — automatically.
-            The higher your trust level, the more agents use your tool without human approval.
+            Agents detect missing capabilities, find your skill, and install it when policies permit.
+            The higher your trust level, the more agents can use your tool without human approval.
           </p>
           <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
             <Link
@@ -471,7 +471,7 @@ result = client.smart_run(
     auto_upgrade_policy="safe",
 )
 print(result.result)     # extracted text
-print(result.upgraded)   # True — skill was auto-installed`}</code>
+print(result.upgraded)   # True — skill was installed by policy`}</code>
             </pre>
           </div>
 
@@ -532,11 +532,11 @@ print(installed)  # ["pdf-reader-pack@1.2.0"]`}</code>
       <section className="border-b border-border bg-card/30">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20 overflow-hidden">
           <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
-            Get verified. Get auto-installed.
+            Get verified. Get discovered.
           </h2>
           <p className="mx-auto mb-10 max-w-2xl text-center text-muted">
-            Your verification status directly controls whether agents can auto-install
-            your skill. The better your trust level, the wider your reach.
+            Your verification status directly controls whether agents can install
+            your skill at runtime. The better your trust level, the wider your reach.
           </p>
 
           <div className="mx-auto max-w-2xl overflow-x-auto">
@@ -579,7 +579,7 @@ print(installed)  # ["pdf-reader-pack@1.2.0"]`}</code>
           </div>
 
           <p className="mt-8 text-center text-sm text-muted">
-            <span className="text-foreground font-medium">Publish &rarr; get verified &rarr; agents auto-install your skill.</span>{" "}
+            <span className="text-foreground font-medium">Publish &rarr; get verified &rarr; agents discover and install your skill.</span>{" "}
             No marketing needed — agents find you by capability.
           </p>
         </div>
@@ -630,7 +630,7 @@ print(installed)  # ["pdf-reader-pack@1.2.0"]`}</code>
                   <td className="py-3 text-foreground">&#x2714;</td>
                 </tr>
                 <tr>
-                  <td className="py-3 pr-6 text-foreground/80">Runtime gap detection + auto-install</td>
+                  <td className="py-3 pr-6 text-foreground/80">Runtime gap detection + policy-based install</td>
                   <td className="py-3 pr-6">&#x2718;</td>
                   <td className="py-3 text-foreground">&#x2714;</td>
                 </tr>

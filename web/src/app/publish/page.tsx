@@ -503,6 +503,11 @@ function ArtifactSection({
 
       {artifactMode === "code" && (
         <div className="space-y-3">
+          {codeFiles.some((f) => f.content.trim()) && codeFiles[0]?.path.includes("src/") && (
+            <div className="rounded-lg border border-green-500/30 bg-green-500/5 px-3 py-2 text-xs text-green-400">
+              Code imported from your original tool. Review and edit before publishing.
+            </div>
+          )}
           {codeFiles.map((file, i) => (
             <div key={i} className="rounded-lg border border-border bg-card overflow-hidden">
               <div className="flex items-center gap-2 border-b border-border px-3 py-2 bg-card">
@@ -732,6 +737,17 @@ function PublishContent() {
   const [authChecked, setAuthChecked] = useState(false);
 
   /* ---- Prefill from builder/import (backward compat) ---- */
+  const [_prefillFiles, set_prefillFiles] = useState<CodeFile[] | null>(null);
+  const [_prefillPlatform, set_prefillPlatform] = useState<string | null>(null);
+  const [importConfidence, setImportConfidence] = useState<{
+    level: string; reasons: string[];
+  } | null>(null);
+  const [importDraftReady, setImportDraftReady] = useState<boolean | null>(null);
+  const [importWarnings, setImportWarnings] = useState<string[]>([]);
+  const [importGroupedWarnings, setImportGroupedWarnings] = useState<
+    { message: string; category: "blocking" | "review" | "info" }[]
+  >([]);
+  const [importChanges, setImportChanges] = useState<string[]>([]);
   const [prefillText] = useState(() => {
     if (fromSource && typeof window !== "undefined") {
       const raw = sessionStorage.getItem("publish_prefill");
@@ -739,6 +755,33 @@ function PublishContent() {
         sessionStorage.removeItem("publish_prefill");
         try {
           const prefill = JSON.parse(raw);
+          // Extract code files from import flow (Phase 2 fix)
+          if (prefill.originalFiles?.length) {
+            set_prefillFiles(prefill.originalFiles);
+          } else if (prefill.originalCode) {
+            // Legacy single-file fallback
+            const moduleId = (prefill.manifestText?.match(/package_id:\s*(\S+)/)?.[1] || "my-tool").replace(/-/g, "_");
+            set_prefillFiles([{ path: `src/${moduleId}/tool.py`, content: prefill.originalCode }]);
+          }
+          if (prefill.importPlatform) {
+            set_prefillPlatform(prefill.importPlatform);
+          }
+          // Import conversion metadata
+          if (prefill.confidence) {
+            setImportConfidence(prefill.confidence);
+          }
+          if (typeof prefill.draftReady === "boolean") {
+            setImportDraftReady(prefill.draftReady);
+          }
+          if (Array.isArray(prefill.warnings)) {
+            setImportWarnings(prefill.warnings);
+          }
+          if (Array.isArray(prefill.groupedWarnings)) {
+            setImportGroupedWarnings(prefill.groupedWarnings);
+          }
+          if (Array.isArray(prefill.changes)) {
+            setImportChanges(prefill.changes);
+          }
           return prefill.manifestText || "";
         } catch { /* fall through */ }
       }
@@ -822,6 +865,15 @@ function PublishContent() {
   const [builderArtifactName, setBuilderArtifactName] = useState("");
   const [artifactMode, setArtifactMode] = useState<"code" | "upload">("code");
   const [codeFiles, setCodeFiles] = useState<CodeFile[]>([{ path: "my_tool/tool.py", content: "" }]);
+
+  // Phase 2: populate code files from import prefill once available
+  const prefillAppliedRef = useRef(false);
+  useEffect(() => {
+    if (_prefillFiles?.length && !prefillAppliedRef.current) {
+      prefillAppliedRef.current = true;
+      setCodeFiles(_prefillFiles);
+    }
+  }, [_prefillFiles]);
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
   const [tarGzFile, setTarGzFile] = useState<File | null>(null);
 
@@ -1173,6 +1225,15 @@ function PublishContent() {
       if (!parsed.publisher) parsed.publisher = user.publisher.slug;
 
       const artifactToSend = await resolveArtifact(parsed);
+      if (!artifactToSend && artifactMode === "code") {
+        const nonEmpty = codeFiles.filter((f) => f.content.trim());
+        if (nonEmpty.length === 0) {
+          const proceed = window.confirm(
+            "No code files provided. Publishing without code means the package won't be installable.\n\nContinue anyway?"
+          );
+          if (!proceed) { setLoading(false); return; }
+        }
+      }
       const formData = new FormData();
       formData.append("manifest", JSON.stringify(parsed));
       if (artifactToSend) formData.append("artifact", artifactToSend);
@@ -1520,6 +1581,102 @@ function PublishContent() {
           </div>
         )}
 
+        {/* Import conversion metadata */}
+        {source === "import" && importConfidence && (
+          <div className="mb-6 space-y-3">
+            {/* Confidence badge */}
+            <div className={`rounded-lg border px-4 py-3 ${
+              importConfidence.level === "high"
+                ? "border-green-500/30 bg-green-500/5"
+                : importConfidence.level === "medium"
+                ? "border-yellow-500/30 bg-yellow-500/5"
+                : "border-red-500/30 bg-red-500/5"
+            }`}>
+              <div className="flex items-center gap-2">
+                <span className={`text-xs font-semibold uppercase ${
+                  importConfidence.level === "high" ? "text-green-400"
+                    : importConfidence.level === "medium" ? "text-yellow-400"
+                    : "text-red-400"
+                }`}>
+                  {importConfidence.level === "high" ? "High" : importConfidence.level === "medium" ? "Medium" : "Low"} confidence
+                </span>
+                <span className="text-xs text-muted">
+                  {importDraftReady ? "— Draft generated, review all files before publishing" : "— Needs manual fixes before publishing"}
+                </span>
+              </div>
+              {importConfidence.reasons.length > 0 && importConfidence.level !== "high" && (
+                <ul className="mt-1.5 space-y-0.5">
+                  {importConfidence.reasons.map((r, i) => (
+                    <li key={i} className="text-xs text-muted">- {r}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {/* What changed */}
+            {importChanges.length > 0 && (
+              <div className="rounded-lg border border-border bg-card px-4 py-3">
+                <div className="text-xs font-medium uppercase tracking-wider text-muted mb-1.5">What changed</div>
+                <ul className="space-y-0.5">
+                  {importChanges.map((c, i) => (
+                    <li key={i} className="text-xs text-foreground/80">- {c}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Grouped warnings */}
+            {importGroupedWarnings.length > 0 ? (() => {
+              const blocking = importGroupedWarnings.filter(w => w.category === "blocking");
+              const review = importGroupedWarnings.filter(w => w.category === "review");
+              const info = importGroupedWarnings.filter(w => w.category === "info");
+              return (
+                <div className="space-y-2">
+                  {blocking.length > 0 && (
+                    <div className="rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3">
+                      <div className="text-xs font-semibold uppercase tracking-wider text-red-400 mb-1.5">Blocking issues</div>
+                      <ul className="space-y-0.5">
+                        {blocking.map((w, i) => (
+                          <li key={i} className="text-xs text-red-300/80">- {w.message}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {review.length > 0 && (
+                    <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3">
+                      <div className="text-xs font-semibold uppercase tracking-wider text-yellow-400 mb-1.5">Needs review</div>
+                      <ul className="space-y-0.5">
+                        {review.map((w, i) => (
+                          <li key={i} className="text-xs text-yellow-300/80">- {w.message}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {info.length > 0 && (
+                    <div className="rounded-lg border border-border bg-card px-4 py-3">
+                      <div className="text-xs font-medium uppercase tracking-wider text-muted mb-1.5">Informational</div>
+                      <ul className="space-y-0.5">
+                        {info.map((w, i) => (
+                          <li key={i} className="text-xs text-muted">- {w.message}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              );
+            })() : importWarnings.length > 0 && (
+              <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3">
+                <div className="text-xs font-semibold uppercase tracking-wider text-yellow-400 mb-1.5">Warnings</div>
+                <ul className="space-y-0.5">
+                  {importWarnings.map((w, i) => (
+                    <li key={i} className="text-xs text-yellow-300/80">- {w}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Alerts */}
         {error && (
           <div className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
@@ -1681,14 +1838,23 @@ function PublishContent() {
               </div>
             </div>
           ) : (
-            <button
-              type="button"
-              onClick={handlePublishFromDraft}
-              disabled={!canDoPublish || loading || buildingArtifact}
-              className="rounded-md bg-primary px-8 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
-            >
-              {buildingArtifact ? "Building artifact..." : loading ? "Publishing..." : "Publish now"}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={handlePublishFromDraft}
+                disabled={!canDoPublish || loading || buildingArtifact || (source === "import" && importDraftReady === false)}
+                className="rounded-md bg-primary px-8 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
+              >
+                {source === "import" && importDraftReady === false
+                  ? "Fix issues first"
+                  : buildingArtifact ? "Building artifact..." : loading ? "Publishing..." : "Publish now"}
+              </button>
+              {source === "import" && importDraftReady === false && (
+                <p className="mt-2 text-center text-xs text-danger">
+                  The import conversion has issues that must be resolved before publishing.
+                </p>
+              )}
+            </>
           )}
         </div>
 

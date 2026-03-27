@@ -350,18 +350,18 @@ function DetailPanel({
                 <span className="font-medium">To:</span> {candidate.contact_email || "(no email)"}
               </div>
               <div className="mb-3 text-xs text-muted">
-                <span className="font-medium">Subject:</span> {candidate.display_name || candidate.repo_name || "your tool"}: get auto-installed by AI agents
+                <span className="font-medium">Subject:</span> {candidate.display_name || candidate.repo_name || "your tool"}: get discovered by AI agents
               </div>
               <div className="rounded-md border border-border bg-background p-3 text-xs text-foreground space-y-2">
                 <p className="font-bold text-white">Get {candidate.display_name || candidate.repo_name} in front of every AI agent</p>
                 <p>Hi {candidate.contact_name || "(name)"},</p>
                 <p>
-                  I&apos;m reaching out because <strong className="text-white">{candidate.display_name || candidate.repo_name || "your tool"}</strong> looks like a great fit for AgentNode — the verified registry where AI agents automatically discover, install, and use tools at runtime.
+                  I&apos;m reaching out because <strong className="text-white">{candidate.display_name || candidate.repo_name || "your tool"}</strong> looks like a great fit for AgentNode — the verified registry where AI agents discover, install, and use tools at runtime when policies permit.
                 </p>
                 <p className="font-semibold text-white mt-2">What that means for you:</p>
                 <ul className="space-y-1 text-zinc-400 list-none">
                   <li><span className="text-indigo-400 mr-1">&bull;</span> <strong className="text-zinc-300">Auto-discovery</strong> — agents find and install your tool when they need it</li>
-                  <li><span className="text-indigo-400 mr-1">&bull;</span> <strong className="text-zinc-300">Cross-framework</strong> — one listing for LangChain, CrewAI, MCP, AutoGPT</li>
+                  <li><span className="text-indigo-400 mr-1">&bull;</span> <strong className="text-zinc-300">Cross-framework</strong> — one listing for LangChain, CrewAI, MCP, generic Python</li>
                   <li><span className="text-indigo-400 mr-1">&bull;</span> <strong className="text-zinc-300">Verified badge</strong> — sandbox-tested, agents trust you by default</li>
                   <li><span className="text-indigo-400 mr-1">&bull;</span> <strong className="text-zinc-300">Usage analytics</strong> — see how many agents use your tool</li>
                 </ul>
@@ -722,11 +722,11 @@ export default function CandidatesPage() {
               <input type="number" value={bulkLimit} onChange={(e) => setBulkLimit(Number(e.target.value))} min={1} max={500} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
             </div>
             <div className="flex items-end gap-2">
-              <button onClick={() => { setBulkSendEmail(false); handleBulkSend(); }} disabled={bulkRunning} className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-white disabled:opacity-50">
-                {bulkRunning ? "Running..." : "Dry Run"}
+              <button onClick={() => { setBulkSendEmail(false); handleBulkSend(); }} disabled={bulkRunning} className="rounded-md bg-zinc-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50 hover:bg-zinc-500">
+                {bulkRunning ? "Loading..." : "Preview"}
               </button>
               <button onClick={() => { setBulkSendEmail(true); handleBulkSend(); }} disabled={bulkRunning} className="rounded-md bg-green-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50 hover:bg-green-500">
-                {bulkRunning ? "Sending..." : "Send Emails"}
+                {bulkRunning ? "Sending..." : "Generate & Send"}
               </button>
             </div>
           </div>
@@ -746,7 +746,7 @@ export default function CandidatesPage() {
                         <td className="px-2 py-1 text-foreground">{c.display_name}</td>
                         <td className="px-2 py-1 text-muted">{c.contact_email}</td>
                         <td className="px-2 py-1 text-muted">{c.stars}</td>
-                        <td className="px-2 py-1"><span className={c.status === "email_sent" ? "text-green-400" : c.status === "email_failed" ? "text-red-400" : "text-blue-400"}>{c.status}</span></td>
+                        <td className="px-2 py-1"><span className={c.status === "email_sent" ? "text-green-400" : c.status === "email_failed" ? "text-red-400" : c.status === "preview" ? "text-zinc-400" : "text-blue-400"}>{c.status}</span></td>
                       </tr>
                     ))}
                   </tbody>

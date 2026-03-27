@@ -4,6 +4,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 import SafeImage from "@/components/blog/SafeImage";
+import FaqSection, { extractFaqFromHtml } from "@/components/blog/FaqSection";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8001";
 
@@ -98,6 +99,10 @@ export default async function BlogPostPage({ params }: { params: Promise<{ slug:
   if (post.post_type && post.post_type.url_prefix !== "blog") {
     redirect(`/${post.post_type.url_prefix}/${post.slug}`);
   }
+
+  const { cleanHtml, faqItems } = post.content_html
+    ? extractFaqFromHtml(post.content_html)
+    : { cleanHtml: null, faqItems: [] };
 
   const jsonLd = {
     "@context": "https://schema.org",
@@ -213,12 +218,14 @@ export default async function BlogPostPage({ params }: { params: Promise<{ slug:
         </header>
 
         {/* Content */}
-        {post.content_html && (
+        {cleanHtml && (
           <div
             className="prose prose-invert max-w-none prose-headings:font-bold prose-h2:text-2xl prose-h3:text-xl prose-a:text-primary prose-code:text-primary prose-pre:bg-card prose-pre:border prose-pre:border-border prose-img:rounded-lg"
-            dangerouslySetInnerHTML={{ __html: post.content_html }}
+            dangerouslySetInnerHTML={{ __html: cleanHtml }}
           />
         )}
+
+        <FaqSection items={faqItems} />
 
         {/* Tags */}
         {post.tags?.length > 0 && (

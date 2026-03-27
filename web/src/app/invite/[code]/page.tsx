@@ -168,10 +168,10 @@ export default function InviteLandingPage() {
             Invitation
           </div>
           <h1 className="text-2xl font-bold text-foreground">
-            Get {toolName} auto-installed by AI agents
+            Get {toolName} discovered by AI agents
           </h1>
           <p className="mt-2 text-sm text-muted">
-            Publish on AgentNode and agents will discover, install, and use your tool automatically.
+            Publish on AgentNode and agents will discover, install, and use your tool when policies permit.
           </p>
         </div>
 
@@ -208,7 +208,7 @@ export default function InviteLandingPage() {
           <ValueProp
             icon="&#x1F517;"
             title="Works across every framework"
-            desc="One listing works with LangChain, CrewAI, MCP, AutoGPT, and plain Python. No separate integrations to maintain."
+            desc="One listing works with LangChain, CrewAI, MCP, and plain Python. No separate integrations to maintain."
           />
           <ValueProp
             icon="&#x2713;"

@@ -2,16 +2,17 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import TerminalAnimation from "@/components/TerminalAnimation";
 import PackageCard from "@/components/PackageCard";
+import AiStackLogos from "@/components/AiStackLogos";
 import CopyInstallButton from "./CopyInstallButton";
 
 export const metadata: Metadata = {
   title: "Verified Agent Skills for AI Agents | Auto-Detect & Install | AgentNode",
   description:
-    "AI agents detect missing capabilities and install verified skills on demand. Trust-gated auto-upgrades with confidence scoring. Portable ANP format for any framework.",
+    "AI agents detect missing capabilities and install verified skills on demand. Trust-gated auto-upgrades with confidence scoring. Portable ANP format for LangChain, CrewAI, MCP, and Python.",
   openGraph: {
     title: "Verified Agent Skills for AI Agents | Auto-Detect & Install | AgentNode",
     description:
-      "AI agents detect missing capabilities and install verified skills on demand. Trust-gated auto-upgrades with confidence scoring. Portable ANP format for any framework.",
+      "AI agents detect missing capabilities and install verified skills on demand. Trust-gated auto-upgrades with confidence scoring. Portable ANP format for LangChain, CrewAI, MCP, and Python.",
     type: "website",
     url: "https://agentnode.net",
     siteName: "AgentNode",
@@ -66,7 +67,7 @@ export default function HomePage() {
                 Verified <span className="text-primary">Agent Skills</span> for Every AI Agent
               </h1>
               <p className="animate-fade-in-delay-1 mt-6 text-lg leading-relaxed text-foreground/80">
-                Your agent detects what&apos;s missing, installs verified skills, and keeps going. On any framework.
+                Your agent detects what&apos;s missing, installs verified skills, and keeps going. Works with LangChain, CrewAI, MCP, and plain Python.
               </p>
               <p className="animate-fade-in-delay-1 mt-3 text-sm text-muted">
                 Powered by ANP. One portable package format for all AI agents.
@@ -112,8 +113,7 @@ export default function HomePage() {
               AgentNode is built on{" "}
               <span className="text-foreground font-medium">ANP</span>{" "}
               (AgentNode Package), a portable package format for AI agent
-              capabilities. Build a capability once and use it across LangChain,
-              CrewAI, and custom agents.
+              capabilities. Build a capability once and use it with any Python agent framework.
             </p>
           </div>
           <div className="grid gap-6 sm:grid-cols-3">
@@ -159,9 +159,40 @@ export default function HomePage() {
       </section>
 
       {/* ============================================================ */}
-      {/*  AUTONOMY — Agents don't wait                                */}
+      {/*  WORKS WITH YOUR AI STACK                                    */}
       {/* ============================================================ */}
       <section className="border-b border-border bg-card/30">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
+          <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
+            Works with your AI stack
+          </h2>
+          <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
+            AgentNode tools are compatible with most modern AI systems.
+          </p>
+
+          <AiStackLogos />
+
+          <p className="mx-auto mt-12 max-w-2xl text-center text-sm text-muted/70">
+            AgentNode tools are standard Python packages.
+            They work with any system that supports Python execution, tool calling, or API integration.
+          </p>
+
+          <div className="mt-8 text-center">
+            <Link
+              href="/getting-started"
+              className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:text-primary-hover transition-colors"
+            >
+              See how to use AgentNode
+              <span aria-hidden="true">&rarr;</span>
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* ============================================================ */}
+      {/*  AUTONOMY — Agents don't wait                                */}
+      {/* ============================================================ */}
+      <section className="border-b border-border">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
             Agents don&apos;t wait for developers
@@ -403,7 +434,7 @@ print(result.installed_slug) # "pdf-reader-pack"`}</code>
       <section className="border-b border-border bg-card/30">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
-            Not a registry. A self-extending runtime.
+            Not just a registry. A policy-controlled runtime.
           </h2>
           <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
             Everything your agent needs to grow — safely and autonomously.
@@ -437,7 +468,7 @@ print(result.installed_slug) # "pdf-reader-pack"`}</code>
               </h3>
               <p className="text-sm leading-relaxed text-muted">
                 Every package is sandbox-tested and scored 0&ndash;100 on publish.
-                Broken tools are quarantined. Only proven tools get installed.
+                Broken tools are quarantined. Verified tools earn higher trust tiers.
               </p>
             </div>
             <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
@@ -482,8 +513,8 @@ print(result.installed_slug) # "pdf-reader-pack"`}</code>
           </h2>
           <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
             We don&apos;t just list tools &mdash; we install them in a sandbox, run them, and
-            score them 0&ndash;100. Broken packages are quarantined. Working packages earn
-            their verification tier.
+            score them 0&ndash;100. Broken packages are quarantined. Passing packages earn
+            trust tiers based on their score.
           </p>
 
           {/* 4-step visual */}
@@ -569,7 +600,7 @@ print(result.installed_slug) # "pdf-reader-pack"`}</code>
                 </li>
                 <li className="flex items-start gap-2 text-sm text-muted">
                   <span className="text-primary mt-0.5 shrink-0">&bull;</span>
-                  No stale results &mdash; re-verified every 30 days
+                  Verification runs on every publish
                 </li>
               </ul>
             </div>
@@ -616,7 +647,7 @@ print(result.installed_slug) # "pdf-reader-pack"`}</code>
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <div className="mx-auto max-w-2xl text-center">
             <h2 className="text-2xl font-bold text-foreground sm:text-3xl">
-              A runtime that extends itself
+              A policy-controlled runtime
             </h2>
             <p className="mt-6 text-lg leading-relaxed text-muted">
               Today, agents detect missing capabilities and safely acquire
@@ -625,8 +656,8 @@ print(result.installed_slug) # "pdf-reader-pack"`}</code>
             </p>
             <p className="mt-4 text-base leading-relaxed text-muted">
               AgentNode is no longer just a tool registry. It&apos;s a runtime
-              that can extend itself — safely, predictably, and under your
-              control.
+              that installs and executes capabilities — safely, predictably,
+              and governed by your policies.
             </p>
           </div>
         </div>
@@ -639,7 +670,7 @@ print(result.installed_slug) # "pdf-reader-pack"`}</code>
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-24">
           <div className="flex flex-col items-center text-center">
             <h2 className="text-2xl font-bold text-foreground sm:text-3xl">
-              Start building self-extending agents
+              Start building smarter agents
             </h2>
             <p className="mt-4 max-w-xl text-muted">
               Detect your first capability gap and let your agents handle the rest.

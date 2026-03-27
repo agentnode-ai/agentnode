@@ -2294,7 +2294,7 @@ jobs:
             <SubHeading>Continuous re-verification</SubHeading>
             <p className="mb-4 text-sm leading-relaxed text-muted">
               Scores are not static. Every package is automatically
-              re-verified every 30 days. If a dependency update breaks
+              re-verified on every publish. If a dependency update breaks
               something, the score drops and users see it before their agent
               does. Admins can also trigger targeted re-verification at any
               time.
