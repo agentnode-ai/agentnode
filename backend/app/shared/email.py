@@ -627,7 +627,7 @@ async def send_invite_outreach_email(
         </tr>
         <tr>
           <td style="padding:8px 0; vertical-align:top; color:#6366f1;">&bull;</td>
-          <td style="padding:8px 0;"><strong style="color:#e5e5e5;">Works across every framework</strong> &mdash; One listing works with LangChain, CrewAI, MCP, AutoGPT, and plain Python. No separate integrations.</td>
+          <td style="padding:8px 0;"><strong style="color:#e5e5e5;">Works across frameworks</strong> &mdash; One listing works with LangChain, CrewAI, MCP, and plain Python. No separate integrations.</td>
         </tr>
         <tr>
           <td style="padding:8px 0; vertical-align:top; color:#6366f1;">&bull;</td>
@@ -657,7 +657,7 @@ async def send_invite_outreach_email(
         f"the verified registry where AI agents automatically discover, install, and use tools at runtime.\n\n"
         f"What that means for you:\n"
         f"- Auto-discovery: agents find and install your tool when they need it\n"
-        f"- Cross-framework: one listing works with LangChain, CrewAI, MCP, AutoGPT\n"
+        f"- Cross-framework: one listing works with LangChain, CrewAI, MCP, and Python\n"
         f"- Verified badge: sandbox-tested, agents trust you by default\n"
         f"- Usage analytics: see how many agents use your tool\n\n"
         f"We pre-filled your metadata. Publishing takes ~2 minutes:\n"
@@ -667,7 +667,7 @@ async def send_invite_outreach_email(
 
     return await send_email(
         to,
-        f"{display_name}: get auto-installed by AI agents",
+        f"{display_name}: get discovered by AI agents",
         html,
         text,
     )

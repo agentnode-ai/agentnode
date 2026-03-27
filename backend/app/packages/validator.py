@@ -8,7 +8,7 @@ from app.packages.models import CapabilityTaxonomy
 
 # Valid enums
 VALID_PACKAGE_TYPES = {"agent", "toolpack", "upgrade"}
-VALID_RUNTIMES = {"python"}  # MVP restriction
+VALID_RUNTIMES = {"python", "mcp", "remote"}
 VALID_INSTALL_MODES = {"package"}  # MVP restriction
 VALID_HOSTING_TYPES = {"agentnode_hosted"}  # MVP restriction
 VALID_NETWORK_LEVELS = {"none", "restricted", "unrestricted"}
@@ -180,7 +180,7 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     # runtime (MVP: only python)
     runtime = manifest.get("runtime", "")
     if runtime not in VALID_RUNTIMES:
-        errors.append(f"runtime must be 'python' in MVP (got '{runtime}')")
+        errors.append(f"runtime must be one of {VALID_RUNTIMES} (got '{runtime}')")
 
     # install_mode (MVP: only package)
     install_mode = manifest.get("install_mode", "")

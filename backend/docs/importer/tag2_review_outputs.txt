@@ -1,0 +1,697 @@
+================================================================================
+FILE: lc_calculator.py  |  PLATFORM: langchain
+CONFIDENCE: high  |  DRAFT_READY: True  |  REVIEW: False
+TOOLS: ['calculate']  |  DEPS: []  |  UNKNOWN: []
+WARNINGS: ['Package ID `calculate-pack` was auto-suggested. Please review before publishing.']
+CHANGES: ['Decorator `@tool` removed from `calculate`', 'Framework imports removed: `langchain`', 'ANP manifest (v0.1) generated with entrypoint `calculate_pack.tool`', 'pyproject.toml generated (no external dependencies)', 'Test scaffold generated: `tests/test_tool.py`']
+MANIFEST_JSON capability_id: ?
+MANIFEST_JSON categories: ['code']
+CHECKS: parseable=YES | no_framework=True | has_def=True | has_return=True | has_dict_return=True
+--- tool.py (782 chars) ---
+def calculate(expression: str) -> dict:
+    """Evaluate a mathematical expression and return the result."""
+    allowed_chars = set("0123456789+-*/.() ")
+    cleaned = expression.strip()
+
+    for ch in cleaned:
+        if ch not in allowed_chars:
+            return {"error": f"Invalid character in expression: {ch!r}", "result": None}
+
+    try:
+        result = eval(cleaned)  # noqa: S307
+        return {
+            "expression": expression,
+            "result": result,
+            "result_type": type(result).__name__,
+            "error": None,
+        }
+    except ZeroDivisionError:
+        return {"error": "Division by zero", "expression": expression, "result": None}
+    except Exception as e:
+        return {"error": str(e), "expression": expression, "result": None}
+
+
+================================================================================
+FILE: lc_email_sender.py  |  PLATFORM: langchain
+CONFIDENCE: high  |  DRAFT_READY: True  |  REVIEW: False
+TOOLS: ['send_email']  |  DEPS: []  |  UNKNOWN: []
+WARNINGS: ['This tool uses environment variables (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `SMTP_PORT`). Ensure they are configured in the AgentNode runtime.', 'Package ID `send-email-pack` was auto-suggested. Please review before publishing.']
+CHANGES: ['Decorator `@tool` removed from `send_email`', 'Framework imports removed: `langchain`', 'ANP manifest (v0.1) generated with entrypoint `send_email_pack.tool`', 'pyproject.toml generated (no external dependencies)', 'Test scaffold generated: `tests/test_tool.py`']
+MANIFEST_JSON capability_id: ?
+MANIFEST_JSON categories: ['email']
+CHECKS: parseable=YES | no_framework=True | has_def=True | has_return=True | has_dict_return=True
+--- tool.py (1285 chars) ---
+import os
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+
+SMTP_USER = os.getenv("SMTP_USER", "")
+
+SMTP_PASS = os.getenv("SMTP_PASS", "")
+
+def send_email(to: str, subject: str, body: str) -> dict:
+    """Send an email via SMTP."""
+    if not SMTP_USER or not SMTP_PASS:
+        return {
+            "success": False,
+            "error": "SMTP credentials not configured",
+            "to": to,
+        }
+
+    msg = MIMEMultipart()
+    msg["From"] = SMTP_USER
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(SMTP_USER, to, msg.as_string())
+        return {
+            "success": True,
+            "to": to,
+            "subject": subject,
+            "error": None,
+        }
+    except smtplib.SMTPAuthenticationError:
+        return {"success": False, "error": "SMTP authentication failed", "to": to}
+    except Exception as e:
+        return {"success": False, "error": str(e), "to": to}
+
+
+================================================================================
+FILE: lc_mixed_patterns.py  |  PLATFORM: langchain
+CONFIDENCE: high  |  DRAFT_READY: True  |  REVIEW: False
+TOOLS: ['ping_url', 'http_request']  |  DEPS: ['requests', 'pydantic']  |  UNKNOWN: []
+WARNINGS: ['`args_schema = HTTPRequestInput` was ignored. Parameters extracted from `_run()` signature.', 'Package ID `ping-url-pack` was auto-suggested. Please review before publishing.']
+CHANGES: ['Decorator `@tool` removed from `ping_url`', '`self` parameter removed from `HTTPRequestTool._run()`', 'BaseTool class `HTTPRequestTool` extracted into standalone function `http_request()`', 'Framework imports removed: `langchain`', 'ANP manifest (v0.2) generated with entrypoints: `ping_url_pack.tool:ping_url`, `ping_url_pack.tool:http_request`', 'pyproject.toml generated with dependencies: `requests`, `pydantic`', 'Test scaffold generated: `tests/test_tool.py`']
+MANIFEST_JSON capability_id: ?
+MANIFEST_JSON categories: ['code']
+CHECKS: parseable=YES | no_framework=True | has_def=True | has_return=True | has_dict_return=True
+--- tool.py (1954 chars) ---
+from typing import Any, Optional, Type
+import requests
+from pydantic import BaseModel, Field
+
+class HTTPRequestInput(BaseModel):
+    url: str = Field(..., description="URL to send the request to")
+    method: str = Field(default="GET", description="HTTP method")
+    headers: Optional[dict] = Field(default=None, description="Optional request headers")
+    body: Optional[str] = Field(default=None, description="Optional request body (JSON string)")
+
+def ping_url(url: str) -> dict:
+    """Check whether a URL is reachable (HEAD request)."""
+    import time
+    try:
+        start = time.time()
+        resp = requests.head(url, timeout=5, allow_redirects=True)
+        latency_ms = round((time.time() - start) * 1000, 1)
+        return {
+            "url": url,
+            "reachable": True,
+            "status_code": resp.status_code,
+            "latency_ms": latency_ms,
+        }
+    except Exception as e:
+        return {"url": url, "reachable": False, "status_code": None, "error": str(e)}
+
+def http_request(url: str, method: str = 'GET', headers: Optional[dict] = None, body: Optional[str] = None) -> dict:
+    """Make an arbitrary HTTP request to a given URL. Supports custom headers and body. Returns response status and content."""
+    import json as _json
+    try:
+        parsed_body = _json.loads(body) if body else None
+        resp = requests.request(
+            method.upper(),
+            url,
+            headers=headers or {},
+            json=parsed_body,
+            timeout=15,
+        )
+        try:
+            response_data = resp.json()
+        except Exception:
+            response_data = resp.text
+
+        return {
+            "url": url,
+            "method": method,
+            "status_code": resp.status_code,
+            "response": response_data,
+            "error": None,
+        }
+    except Exception as e:
+        return {"url": url, "method": method, "status_code": None, "response": None, "error": str(e)}
+
+
+================================================================================
+FILE: lc_pdf_reader.py  |  PLATFORM: langchain
+CONFIDENCE: high  |  DRAFT_READY: True  |  REVIEW: False
+TOOLS: ['read_pdf']  |  DEPS: ['PyPDF2']  |  UNKNOWN: []
+WARNINGS: ['Package ID `read-pdf-pack` was auto-suggested. Please review before publishing.']
+CHANGES: ['Decorator `@tool` removed from `read_pdf`', 'Framework imports removed: `langchain`', 'ANP manifest (v0.1) generated with entrypoint `read_pdf_pack.tool`', 'pyproject.toml generated with dependencies: `PyPDF2`', 'Test scaffold generated: `tests/test_tool.py`']
+MANIFEST_JSON capability_id: ?
+MANIFEST_JSON categories: ['pdf']
+CHECKS: parseable=YES | no_framework=True | has_def=True | has_return=True | has_dict_return=True
+--- tool.py (1025 chars) ---
+import os
+import PyPDF2
+
+def read_pdf(file_path: str) -> dict:
+    """Read a PDF file and extract text from all pages."""
+    if not os.path.exists(file_path):
+        return {"error": f"File not found: {file_path}", "text": "", "page_count": 0}
+
+    try:
+        text_by_page = []
+        with open(file_path, "rb") as f:
+            reader = PyPDF2.PdfReader(f)
+            page_count = len(reader.pages)
+            for i, page in enumerate(reader.pages):
+                page_text = page.extract_text() or ""
+                text_by_page.append({"page": i + 1, "text": page_text.strip()})
+
+        full_text = "\n\n".join(p["text"] for p in text_by_page)
+        return {
+            "text": full_text,
+            "pages": text_by_page,
+            "page_count": page_count,
+            "file_path": file_path,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "text": "",
+            "page_count": 0,
+            "file_path": file_path,
+        }
+
+
+================================================================================
+FILE: lc_simple_search.py  |  PLATFORM: langchain
+CONFIDENCE: high  |  DRAFT_READY: True  |  REVIEW: False
+TOOLS: ['search_web']  |  DEPS: ['requests']  |  UNKNOWN: []
+WARNINGS: ['Package ID `search-web-pack` was auto-suggested. Please review before publishing.']
+CHANGES: ['Decorator `@tool` removed from `search_web`', 'Framework imports removed: `langchain`', 'ANP manifest (v0.1) generated with entrypoint `search_web_pack.tool`', 'pyproject.toml generated with dependencies: `requests`', 'Test scaffold generated: `tests/test_tool.py`']
+MANIFEST_JSON capability_id: ?
+MANIFEST_JSON categories: ['web']
+CHECKS: parseable=YES | no_framework=True | has_def=True | has_return=True | has_dict_return=True
+--- tool.py (891 chars) ---
+import requests
+
+SERP_API_KEY = "sk-..."  # users often hardcode this
+
+def search_web(query: str) -> dict:
+    """Search the web for a given query and return top results."""
+    url = "https://serpapi.com/search"
+    params = {
+        "q": query,
+        "api_key": SERP_API_KEY,
+        "num": 5,
+    }
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        results = []
+        for item in data.get("organic_results", []):
+            results.append({
+                "title": item.get("title", ""),
+                "link": item.get("link", ""),
+                "snippet": item.get("snippet", ""),
+            })
+        return {"results": results, "query": query, "count": len(results)}
+    except requests.RequestException as e:
+        return {"error": str(e), "query": query, "results": []}
+
+
+================================================================================
+FILE: lc_tool_env_vars.py  |  PLATFORM: langchain
+CONFIDENCE: high  |  DRAFT_READY: True  |  REVIEW: False
+TOOLS: ['query_notion_database']  |  DEPS: ['requests']  |  UNKNOWN: []
+WARNINGS: ['This tool uses environment variables (`OPENAI_API_KEY`, `NOTION_TOKEN`, `NOTION_DATABASE_ID`). Ensure they are configured in the AgentNode runtime.', 'Package ID `query-notion-database-pack` was auto-suggested. Please review before publishing.']
+CHANGES: ['Decorator `@tool` removed from `query_notion_database`', 'Framework imports removed: `langchain`', 'ANP manifest (v0.1) generated with entrypoint `query_notion_database_pack.tool`', 'pyproject.toml generated with dependencies: `requests`', 'Test scaffold generated: `tests/test_tool.py`']
+MANIFEST_JSON capability_id: ?
+MANIFEST_JSON categories: ['sql']
+CHECKS: parseable=YES | no_framework=True | has_def=True | has_return=True | has_dict_return=True
+--- tool.py (1790 chars) ---
+import os
+from typing import Optional
+import requests
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+
+NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID", "")
+
+NOTION_VERSION = "2022-06-28"
+
+def _notion_headers() -> dict:
+    token = os.getenv("NOTION_TOKEN") or NOTION_TOKEN
+    if not token:
+        raise ValueError("NOTION_TOKEN environment variable is not set")
+    return {
+        "Authorization": f"Bearer {token}",
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json",
+    }
+
+def query_notion_database(filter_property: Optional[str] = None, filter_value: Optional[str] = None) -> dict:
+    """Query a Notion database and return page entries."""
+    db_id = os.getenv("NOTION_DATABASE_ID") or NOTION_DATABASE_ID
+    if not db_id:
+        return {"error": "NOTION_DATABASE_ID environment variable is not set", "results": []}
+
+    try:
+        headers = _notion_headers()
+    except ValueError as e:
+        return {"error": str(e), "results": []}
+
+    payload = {}
+    if filter_property and filter_value:
+        payload["filter"] = {
+            "property": filter_property,
+            "rich_text": {"contains": filter_value},
+        }
+
+    try:
+        resp = requests.post(
+            f"https://api.notion.com/v1/databases/{db_id}/query",
+            headers=headers,
+            json=payload,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        return {
+            "results": results,
+            "total": len(results),
+            "has_more": data.get("has_more", False),
+            "error": None,
+        }
+    except requests.RequestException as e:
+        return {"error": str(e), "results": []}
+
+
+================================================================================
+FILE: lc_tool_with_class.py  |  PLATFORM: langchain
+CONFIDENCE: high  |  DRAFT_READY: True  |  REVIEW: False
+TOOLS: ['get_github_repo_info']  |  DEPS: ['requests']  |  UNKNOWN: []
+WARNINGS: ['Package ID `get-github-repo-info-pack` was auto-suggested. Please review before publishing.']
+CHANGES: ['Decorator `@tool` removed from `get_github_repo_info`', 'Framework imports removed: `langchain`', 'ANP manifest (v0.1) generated with entrypoint `get_github_repo_info_pack.tool`', 'pyproject.toml generated with dependencies: `requests`', 'Test scaffold generated: `tests/test_tool.py`']
+MANIFEST_JSON capability_id: ?
+MANIFEST_JSON categories: ['code']
+CHECKS: parseable=YES | no_framework=True | has_def=True | has_return=True | has_dict_return=True
+--- tool.py (2231 chars) ---
+import json
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+import requests
+
+class GitHubRepo:
+    """Lightweight wrapper around GitHub repo metadata."""
+    owner: str
+    name: str
+    stars: int = 0
+    forks: int = 0
+    open_issues: int = 0
+    language: Optional[str] = None
+    description: str = ""
+    topics: List[str] = field(default_factory=list)
+    url: str = ""
+
+    @classmethod
+    def from_api_response(cls, data: dict) -> "GitHubRepo":
+        return cls(
+            owner=data.get("owner", {}).get("login", ""),
+            name=data.get("name", ""),
+            stars=data.get("stargazers_count", 0),
+            forks=data.get("forks_count", 0),
+            open_issues=data.get("open_issues_count", 0),
+            language=data.get("language"),
+            description=data.get("description", "") or "",
+            topics=data.get("topics", []),
+            url=data.get("html_url", ""),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "owner": self.owner,
+            "name": self.name,
+            "full_name": f"{self.owner}/{self.name}",
+            "stars": self.stars,
+            "forks": self.forks,
+            "open_issues": self.open_issues,
+            "language": self.language,
+            "description": self.description,
+            "topics": self.topics,
+            "url": self.url,
+        }
+
+def get_github_repo_info(repo: str) -> dict:
+    """Fetch metadata about a GitHub repository."""
+    parts = repo.strip().split("/")
+    if len(parts) != 2:
+        return {"error": "repo must be in 'owner/name' format", "repo": repo}
+
+    owner, name = parts
+    url = f"https://api.github.com/repos/{owner}/{name}"
+    headers = {"Accept": "application/vnd.github+json"}
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 404:
+            return {"error": f"Repository not found: {repo}", "repo": repo}
+        resp.raise_for_status()
+
+        github_r
+
+================================================================================
+FILE: lc_two_tools.py  |  PLATFORM: langchain
+CONFIDENCE: high  |  DRAFT_READY: True  |  REVIEW: False
+TOOLS: ['get_weather', 'get_ip_info']  |  DEPS: ['requests']  |  UNKNOWN: []
+WARNINGS: ['Package ID `get-weather-pack` was auto-suggested. Please review before publishing.']
+CHANGES: ['Decorator `@tool` removed from `get_weather`', 'Decorator `@tool` removed from `get_ip_info`', 'Framework imports removed: `langchain`', 'ANP manifest (v0.2) generated with entrypoints: `get_weather_pack.tool:get_weather`, `get_weather_pack.tool:get_ip_info`', 'pyproject.toml generated with dependencies: `requests`', 'Test scaffold generated: `tests/test_tool.py`']
+MANIFEST_JSON capability_id: ?
+MANIFEST_JSON categories: ['code']
+CHECKS: parseable=YES | no_framework=True | has_def=True | has_return=True | has_dict_return=True
+--- tool.py (2092 chars) ---
+import time
+from typing import Optional
+import requests
+
+def _make_request(url: str, params: dict, timeout: int = 10) -> dict:
+    """Internal helper for making GET requests with retry logic."""
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as e:
+            if attempt == 2:
+                raise
+            time.sleep(1)
+    return {}
+
+def get_weather(city: str) -> dict:
+    """Get current weather for a city using Open-Meteo API (free, no key needed)."""
+    geo_data = _make_request(
+        "https://geocoding-api.open-meteo.com/v1/search",
+        {"name": city, "count": 1},
+    )
+    results = geo_data.get("results", [])
+    if not results:
+        return {"error": f"City not found: {city}", "city": city}
+
+    lat = results[0]["latitude"]
+    lon = results[0]["longitude"]
+
+    weather_data = _make_request(
+        "https://api.open-meteo.com/v1/forecast",
+        {
+            "latitude": lat,
+            "longitude": lon,
+            "current_weather": True,
+        },
+    )
+    current = weather_data.get("current_weather", {})
+    return {
+        "city": city,
+        "temperature_c": current.get("temperature"),
+        "wind_speed_kmh": current.get("windspeed"),
+        "weather_code": current.get("weathercode"),
+        "error": None,
+    }
+
+def get_ip_info(ip_address: Optional[str] = None) -> dict:
+    """Get geolocation info for an IP address."""
+    target = ip_address or ""
+    url = f"https://ipapi.co/{target}/json/" if target else "https://ipapi.co/json/"
+
+    try:
+        data = _make_request(url, {})
+        return {
+            "ip": data.get("ip"),
+            "city": data.get("city"),
+            "region": data.get("region"),
+            "country": data.get("country_name"),
+            "org": data.get("org"),
+            "timezone": data.get("timezone"),
+            "error": No
+
+================================================================================
+FILE: lc_web_scraper.py  |  PLATFORM: langchain
+CONFIDENCE: high  |  DRAFT_READY: True  |  REVIEW: False
+TOOLS: ['scrape_webpage']  |  DEPS: ['requests', 'bs4']  |  UNKNOWN: []
+WARNINGS: ['Package ID `scrape-webpage-pack` was auto-suggested. Please review before publishing.']
+CHANGES: ['Decorator `@tool` removed from `scrape_webpage`', 'Framework imports removed: `langchain`', 'ANP manifest (v0.1) generated with entrypoint `scrape_webpage_pack.tool`', 'pyproject.toml generated with dependencies: `requests`, `bs4`', 'Test scaffold generated: `tests/test_tool.py`']
+MANIFEST_JSON capability_id: ?
+MANIFEST_JSON categories: ['webpage']
+CHECKS: parseable=YES | no_framework=True | has_def=True | has_return=True | has_dict_return=True
+--- tool.py (1636 chars) ---
+import requests
+from bs4 import BeautifulSoup
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+}
+
+def scrape_webpage(url: str) -> dict:
+    """Scrape a webpage and return its title, headings, and main text content."""
+    if not url.startswith(("http://", "https://")):
+        return {"error": "URL must start with http:// or https://", "url": url}
+
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # remove scripts and style tags
+        for tag in soup(["script", "style", "nav", "footer"]):
+            tag.decompose()
+
+        title = soup.title.string.strip() if soup.title else ""
+        headings = [h.get_text(strip=True) for h in soup.find_all(["h1", "h2", "h3"])]
+        paragraphs = [p.get_text(strip=True) for p in soup.find_all("p") if p.get_text(strip=True)]
+        links = [
+            {"text": a.get_text(strip=True), "href": a.get("href", "")}
+            for a in soup.find_all("a", href=True)
+        ][:20]  # limit links
+
+        return {
+            "url": url,
+            "title": title,
+            "headings": headings[:10],
+            "paragraphs": paragraphs[:20],
+            "links": links,
+            "status_code": resp.status_code,
+            "error": None,
+        }
+    except requests.RequestException as e:
+        return {"error": str(e), "url": url}
+    except Exception as e:
+        return {"error": f"Parsing error: {e}", "url": url}
+
+
+================================================================================
+FILE: cr_api_tool.py  |  PLATFORM: crewai
+CONFIDENCE: high  |  DRAFT_READY: True  |  REVIEW: False
+TOOLS: ['weather_api']  |  DEPS: ['requests']  |  UNKNOWN: []
+WARNINGS: ['This tool uses environment variables (`OPENWEATHERMAP_API_KEY`). Ensure they are configured in the AgentNode runtime.', 'Package ID `weather-api-pack` was auto-suggested. Please review before publishing.']
+CHANGES: ['Decorator `@tool` removed from `get_weather_forecast`', 'Framework imports removed: `crewai_tools`', 'ANP manifest (v0.1) generated with entrypoint `weather_api_pack.tool`', 'pyproject.toml generated with dependencies: `requests`', 'Test scaffold generated: `tests/test_tool.py`']
+MANIFEST_JSON capability_id: ?
+MANIFEST_JSON categories: ['code']
+CHECKS: parseable=YES | no_framework=True | has_def=True | has_return=True | has_dict_return=True
+--- tool.py (2397 chars) ---
+import os
+from typing import Optional
+import requests
+
+WEATHER_API_KEY = os.getenv("OPENWEATHERMAP_API_KEY", "")
+
+WEATHER_BASE_URL = "https://api.openweathermap.org/data/2.5"
+
+def weather_api(city: str, days: int = 3, units: str = 'metric') -> dict:
+    """Get weather forecast for a city using OpenWeatherMap API."""
+    api_key = os.getenv("OPENWEATHERMAP_API_KEY") or WEATHER_API_KEY
+    if not api_key:
+        return {
+            "error": "OPENWEATHERMAP_API_KEY environment variable not set",
+            "city": city,
+        }
+
+    days = max(1, min(days, 5))
+
+    try:
+        # current weather
+        current_resp = requests.get(
+            f"{WEATHER_BASE_URL}/weather",
+            params={"q": city, "appid": api_key, "units": units},
+            timeout=10,
+        )
+        current_resp.raise_for_status()
+        current = current_resp.json()
+
+        # forecast
+        forecast_resp = requests.get(
+            f"{WEATHER_BASE_URL}/forecast",
+            params={"q": city, "appid": api_key, "units": units, "cnt": days * 8},
+            timeout=10,
+        )
+        forecast_resp.raise_for_status()
+        forecast_data = forecast_resp.json()
+
+        forecast_list = [
+            {
+                "datetime": item["dt_txt"],
+                "temp": item["main"]["temp"],
+                "feels_like": item["main"]["feels_like"],
+                "description": item["weather"][0]["description"],
+                "humidity": item["main"]["humidity"],
+            }
+            for item in forecast_data.get("list", [])
+        ]
+
+        return {
+            "city": city,
+            "country": current.get("sys", {}).get("country", ""),
+            "current": {
+                "temp": current["main"]["temp"],
+                "feels_like": current["main"]["feels_like"],
+                "description": current["weather"][0]["description"],
+                "humidity": current["main"]["humidity"],
+                "wind_speed": current["wind"]["speed"],
+            },
+   
+
+================================================================================
+FILE: cr_simple_tool.py  |  PLATFORM: crewai
+CONFIDENCE: high  |  DRAFT_READY: True  |  REVIEW: False
+TOOLS: ['duck_duck_go_search']  |  DEPS: ['requests']  |  UNKNOWN: []
+WARNINGS: ['Package ID `duck-duck-go-search-pack` was auto-suggested. Please review before publishing.']
+CHANGES: ['Decorator `@tool` removed from `search_duckduckgo`', 'Framework imports removed: `crewai_tools`', 'ANP manifest (v0.1) generated with entrypoint `duck_duck_go_search_pack.tool`', 'pyproject.toml generated with dependencies: `requests`', 'Test scaffold generated: `tests/test_tool.py`']
+MANIFEST_JSON capability_id: ?
+MANIFEST_JSON categories: ['web']
+CHECKS: parseable=YES | no_framework=True | has_def=True | has_return=True | has_dict_return=True
+--- tool.py (1073 chars) ---
+import requests
+
+def duck_duck_go_search(query: str) -> dict:
+    """Search the web using DuckDuckGo Instant Answer API."""
+    url = "https://api.duckduckgo.com/"
+    params = {
+        "q": query,
+        "format": "json",
+        "no_html": 1,
+        "skip_disambig": 1,
+    }
+
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        related = [
+            {"text": t.get("Text", ""), "url": t.get("FirstURL", "")}
+            for t in data.get("RelatedTopics", [])
+            if isinstance(t, dict) and t.get("Text")
+        ][:5]
+
+        return {
+            "query": query,
+            "abstract": data.get("AbstractText", ""),
+            "abstract_source": data.get("AbstractSource", ""),
+            "answer": data.get("Answer", ""),
+            "answer_type": data.get("AnswerType", ""),
+            "related_topics": related,
+            "error": None,
+        }
+    except Exception as e:
+        return {"query": query, "abstract": "", "related_topics": [], "error": str(e)}
+
+
+================================================================================
+FILE: cr_two_tools.py  |  PLATFORM: crewai
+CONFIDENCE: high  |  DRAFT_READY: True  |  REVIEW: False
+TOOLS: ['stock_price_lookup', 'stock_news_fetcher']  |  DEPS: ['requests']  |  UNKNOWN: []
+WARNINGS: ['This tool uses environment variables (`ALPHA_VANTAGE_API_KEY`). Ensure they are configured in the AgentNode runtime.', 'Package ID `stock-price-lookup-pack` was auto-suggested. Please review before publishing.']
+CHANGES: ['Decorator `@tool` removed from `get_stock_quote`', 'Decorator `@tool` removed from `get_stock_news`', 'Framework imports removed: `crewai_tools`', 'ANP manifest (v0.2) generated with entrypoints: `stock_price_lookup_pack.tool:stock_price_lookup`, `stock_price_lookup_pack.tool:stock_news_fetcher`', 'pyproject.toml generated with dependencies: `requests`', 'Test scaffold generated: `tests/test_tool.py`']
+MANIFEST_JSON capability_id: ?
+MANIFEST_JSON categories: ['code']
+CHECKS: parseable=YES | no_framework=True | has_def=True | has_return=True | has_dict_return=True
+--- tool.py (2709 chars) ---
+import os
+from typing import Optional
+import requests
+
+ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "demo")
+
+def stock_price_lookup(symbol: str) -> dict:
+    """Get the latest stock quote for a given ticker symbol using Alpha Vantage."""
+    api_key = os.getenv("ALPHA_VANTAGE_API_KEY") or ALPHA_VANTAGE_KEY
+    url = "https://www.alphavantage.co/query"
+    params = {
+        "function": "GLOBAL_QUOTE",
+        "symbol": symbol.upper(),
+        "apikey": api_key,
+    }
+
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        quote = data.get("Global Quote", {})
+        if not quote:
+            return {"error": f"No data found for symbol: {symbol}", "symbol": symbol}
+
+        return {
+            "symbol": quote.get("01. symbol", symbol),
+            "price": float(quote.get("05. price", 0)),
+            "change": float(quote.get("09. change", 0)),
+            "change_pct": quote.get("10. change percent", "0%"),
+            "volume": int(quote.get("06. volume", 0)),
+            "latest_trading_day": quote.get("07. latest trading day", ""),
+            "prev_close": float(quote.get("08. previous close", 0)),
+            "error": None,
+        }
+    except Exception as e:
+        return {"error": str(e), "symbol": symbol}
+
+def stock_news_fetcher(symbol: str, limit: int = 5) -> dict:
+    """Fetch recent news articles for a stock symbol using Alpha Vantage News Sentiment API."""
+    api_key = os.getenv("ALPHA_VANTAGE_API_KEY") or ALPHA_VANTAGE_KEY
+    limit = max(1, min(limit, 20))
+
+    url = "https://www.alphavantage.co/query"
+    params = {
+        "function": "NEWS_SENTIMENT",
+        "tickers": symbol.upper(),
+        "limit": limit,
+        "apikey": api_key,
+    }
+
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        feed = data.get("feed", [])
+        articles = [
+            {
+               

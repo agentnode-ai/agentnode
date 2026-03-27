@@ -104,7 +104,7 @@ async def login(body: LoginRequest, request: Request, response: Response, sessio
     redis = request.app.state.redis
     result = await login_user(session, body.email, body.password, body.totp_code, redis=redis)
     # Set httpOnly cookies for web clients
-    set_auth_cookies(response, result["access_token"], result["refresh_token"])
+    set_auth_cookies(response, result["access_token"], result["refresh_token"], is_admin=result.get("is_admin", False))
 
     # New login alert (fire-and-forget)
     forwarded = request.headers.get("x-forwarded-for")
@@ -153,8 +153,13 @@ async def refresh(body: RefreshRequest, request: Request, response: Response, se
     new_refresh, new_jti = create_refresh_token(user_id)
     await store_refresh_token(redis, user_id, new_jti)
 
+    # Check admin status for cookie
+    from app.auth.models import User
+    user_result = await session.execute(select(User.is_admin).where(User.id == user_id))
+    is_admin = user_result.scalar() or False
+
     # Set new cookies for web clients
-    set_auth_cookies(response, new_access, new_refresh)
+    set_auth_cookies(response, new_access, new_refresh, is_admin=is_admin)
 
     return RefreshResponse(access_token=new_access, refresh_token=new_refresh)
 

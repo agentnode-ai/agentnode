@@ -21,7 +21,7 @@ CLUSTER_1 = [
         "content_html": """
 <h2>The Problem: AI Agents Cannot Share Capabilities</h2>
 
-<p>AI agents are getting remarkably good at reasoning, planning, and breaking down complex tasks. But when it comes to actually <em>doing</em> things in the real world, every agent framework reinvents the wheel. A LangChain developer writes a web scraping tool. A CrewAI developer writes a nearly identical one. An AutoGPT plugin author writes yet another. None of them can use each other's work.</p>
+<p>AI agents are getting remarkably good at reasoning, planning, and breaking down complex tasks. But when it comes to actually <em>doing</em> things in the real world, every agent framework reinvents the wheel. A LangChain developer writes a web scraping tool. A CrewAI developer writes a nearly identical one. An MCP server author writes yet another. None of them can use each other's work.</p>
 
 <p>This is the tool fragmentation problem. It exists because there has never been a shared standard for packaging, distributing, and verifying AI agent capabilities. Python has PyPI. JavaScript has npm. But AI agents? Until now, they had nothing.</p>
 
@@ -44,7 +44,7 @@ CLUSTER_1 = [
 <p>AgentNode serves three overlapping audiences:</p>
 
 <h3>Agent Developers</h3>
-<p>If you are building an AI agent — whether with LangChain, CrewAI, AutoGPT, the Model Context Protocol (MCP), or vanilla Python — AgentNode gives you a catalog of pre-built, verified tools you can install in seconds. Instead of writing a PDF parser, a web scraper, or a sentiment analyzer from scratch, you search AgentNode, find a skill that matches your need, and install it with a single SDK call.</p>
+<p>If you are building an AI agent — whether with LangChain, CrewAI, the Model Context Protocol (MCP), or vanilla Python — AgentNode gives you a catalog of pre-built, verified tools you can install in seconds. Instead of writing a PDF parser, a web scraper, or a sentiment analyzer from scratch, you search AgentNode, find a skill that matches your need, and install it with a single SDK call.</p>
 
 <h3>Tool Authors</h3>
 <p>If you have built a useful capability — a tool that calls an API, processes data, or interacts with external systems — AgentNode lets you package it once and make it available to every agent framework. You publish using the ANP format, and AgentNode handles verification, discovery, and distribution.</p>
@@ -99,7 +99,7 @@ CLUSTER_1 = [
     "code_execution": "none"
   },
   "compatibility": {
-    "frameworks": ["langchain", "crewai", "autogpt", "mcp", "vanilla"],
+    "frameworks": ["langchain", "crewai", "mcp", "vanilla"],
     "python": ">=3.9"
   }
 }</code></pre>
@@ -141,7 +141,6 @@ CLUSTER_1 = [
 <ul>
 <li><strong>LangChain</strong> — tools become <code>BaseTool</code> instances</li>
 <li><strong>CrewAI</strong> — tools slot into crew task definitions</li>
-<li><strong>AutoGPT</strong> — tools register as plugin commands</li>
 <li><strong>MCP (Model Context Protocol)</strong> — tools expose as MCP-compliant tool definitions</li>
 <li><strong>Vanilla Python</strong> — tools are plain callable objects with schema attributes</li>
 </ul>
@@ -187,7 +186,7 @@ print(result["content"])</code></pre>
 
 <h2>Why This Matters</h2>
 
-<p>The AI agent ecosystem is growing fast. LangChain, CrewAI, AutoGPT, OpenAI's Assistants, Google's ADK, Anthropic's MCP — new frameworks launch regularly. Without a shared tool ecosystem, every framework becomes a silo. Developers duplicate effort. Quality is inconsistent. Trust is impossible to assess.</p>
+<p>The AI agent ecosystem is growing fast. LangChain, CrewAI, OpenAI's Assistants, Google's ADK, Anthropic's MCP — new frameworks launch regularly. Without a shared tool ecosystem, every framework becomes a silo. Developers duplicate effort. Quality is inconsistent. Trust is impossible to assess.</p>
 
 <p>AgentNode addresses all of these problems by providing a neutral, framework-agnostic registry with built-in verification. As the number of published agent skills grows, the value compounds: every new tool benefits every framework, and every framework's developers contribute back to the shared ecosystem.</p>
 
@@ -225,7 +224,7 @@ print(result["content"])</code></pre>
 <li><strong>Capability declarations</strong> — skills are tagged with what they do ("web-scraping", "text-analysis", "pdf-parsing"), so agents can find tools by function rather than by name.</li>
 <li><strong>Permission declarations</strong> — skills declare whether they need network access, filesystem access, code execution, or data access. This lets agents and platforms enforce security policies.</li>
 <li><strong>Verification scores</strong> — every skill is tested on publish, with a public score that tells you how thoroughly it has been validated.</li>
-<li><strong>Framework agnostic</strong> — a single skill works across LangChain, CrewAI, AutoGPT, MCP, and plain Python. No rewrites needed.</li>
+<li><strong>Framework agnostic</strong> — a single skill works across LangChain, CrewAI, MCP, and plain Python. No rewrites needed.</li>
 </ul>
 
 <p>Think of it this way: a Python package is a jar of ingredients. An agent skill is a complete recipe card with nutritional labels, allergen warnings, and a quality certification stamp.</p>
@@ -611,7 +610,7 @@ keywords = keyword_extractor.run({"text": long_document})</code></pre>
 
 <ul>
 <li><strong>Browse the full catalog</strong> at <a href="https://agentnode.net/search">agentnode.net/search</a> to discover more tools</li>
-<li><strong>Integrate with your agent framework</strong> — AgentNode tools work natively with LangChain, CrewAI, AutoGPT, and MCP</li>
+<li><strong>Integrate with your agent framework</strong> — AgentNode tools work natively with LangChain, CrewAI, MCP, and plain Python</li>
 <li><strong>Publish your own skill</strong> — if you have built a useful tool, package it as ANP and share it with the community at <a href="https://agentnode.net/publish">agentnode.net/publish</a></li>
 <li><strong>Use the Builder</strong> — describe a tool in plain language at <a href="https://agentnode.net/builder">agentnode.net/builder</a> and let AgentNode generate the code for you</li>
 <li><strong>Import existing tools</strong> — already have a LangChain tool or MCP server? <a href="https://agentnode.net/import">Import it</a> into the ANP format</li>
@@ -660,7 +659,7 @@ keywords = keyword_extractor.run({"text": long_document})</code></pre>
 
 <ul>
 <li><strong>Package Type</strong> — filter by "tool" (single tool), "pack" (multi-tool), or "connector" (external service integration)</li>
-<li><strong>Framework</strong> — show only skills compatible with a specific framework: LangChain, CrewAI, AutoGPT, MCP, or vanilla Python</li>
+<li><strong>Framework</strong> — show only skills compatible with a specific framework: LangChain, CrewAI, MCP, or vanilla Python</li>
 <li><strong>Verification Tier</strong> — Gold, Verified, Partial, or Unverified. Use this to filter by quality level</li>
 <li><strong>Trust Level</strong> — Curated, Trusted, Verified, or Unverified publisher trust. This reflects the publisher's track record, not the individual package score</li>
 <li><strong>Publisher</strong> — see all packages from a specific publisher</li>
@@ -734,7 +733,7 @@ results = client.search(
 <li><code>q</code> — search query string</li>
 <li><code>package_type</code> — "tool", "pack", or "connector"</li>
 <li><code>capability_id</code> — filter by specific capability ID</li>
-<li><code>framework</code> — "langchain", "crewai", "autogpt", "mcp", "vanilla"</li>
+<li><code>framework</code> — "langchain", "crewai", "mcp", "vanilla"</li>
 <li><code>verification_tier</code> — "gold", "verified", "partial", "unverified"</li>
 <li><code>trust_level</code> — "curated", "trusted", "verified", "unverified"</li>
 <li><code>publisher_slug</code> — filter by publisher</li>
@@ -916,9 +915,9 @@ agentnode search "data" --framework langchain --tier gold</code></pre>
 
 <h3>5. Cross-Framework Portability</h3>
 
-<p>A LangChain tool is not a CrewAI tool. An AutoGPT plugin is not an MCP server. Every framework has its own tool interface, its own way of defining inputs and outputs, and its own discovery mechanism. If you write a tool for LangChain, CrewAI users cannot use it without rewriting the interface.</p>
+<p>A LangChain tool is not a CrewAI tool. A custom Python script is not an MCP server. Every framework has its own tool interface, its own way of defining inputs and outputs, and its own discovery mechanism. If you write a tool for LangChain, CrewAI users cannot use it without rewriting the interface.</p>
 
-<p>AgentNode packages use a framework-agnostic standard. A single ANP package works with LangChain, CrewAI, AutoGPT, MCP, and vanilla Python. Write once, use everywhere. The AgentNode SDK handles the framework-specific adapter layer.</p>
+<p>AgentNode packages use a framework-agnostic standard. A single ANP package works with LangChain, CrewAI, MCP, and vanilla Python. Write once, use everywhere. The AgentNode SDK handles the framework-specific adapter layer.</p>
 
 <h3>6. Trust Signals Beyond Download Counts</h3>
 

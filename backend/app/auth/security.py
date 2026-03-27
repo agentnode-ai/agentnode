@@ -109,7 +109,7 @@ def decode_purpose_token(token: str, expected_purpose: str) -> str:
 
 # --- httpOnly Cookies ---
 
-def set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+def set_auth_cookies(response: Response, access_token: str, refresh_token: str, *, is_admin: bool = False) -> None:
     """Set httpOnly cookies for web clients."""
     response.set_cookie(
         key="access_token",
@@ -142,6 +142,24 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS * 86400,
         path="/",
     )
+    # Non-httpOnly admin flag so frontend can show admin nav instantly
+    if is_admin:
+        response.set_cookie(
+            key="is_admin",
+            value="1",
+            httponly=False,
+            secure=settings.COOKIE_SECURE,
+            samesite=settings.COOKIE_SAMESITE,
+            domain=settings.COOKIE_DOMAIN or None,
+            max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+            path="/",
+        )
+    else:
+        response.delete_cookie(
+            key="is_admin",
+            domain=settings.COOKIE_DOMAIN or None,
+            path="/",
+        )
 
 
 def clear_auth_cookies(response: Response) -> None:

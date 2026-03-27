@@ -11,6 +11,7 @@ from app.blog.router import admin_router as blog_admin_router, public_router as 
 from app.invites.router import router as invites_router, admin_router as invites_admin_router
 from app.sitemap.router import router as sitemap_router, admin_router as sitemap_admin_router
 from app.builder.router import router as builder_router
+from app.import_.router import router as import_router
 from app.auth.router import router as auth_router
 from app.config import settings
 from app.database import engine
@@ -93,6 +94,7 @@ app.include_router(admin_router)
 app.include_router(trust_router)
 app.include_router(verification_router)
 app.include_router(builder_router)
+app.include_router(import_router)
 app.include_router(webhooks_router)
 app.include_router(blog_admin_router)
 app.include_router(blog_public_router)

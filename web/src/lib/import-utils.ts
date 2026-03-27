@@ -229,7 +229,7 @@ name: "${slug
 publisher: "your-publisher-name"
 version: "1.0.0"
 summary: "${tools[0].description.slice(0, 200)}"
-runtime: python
+runtime: ${platform === "mcp" ? "mcp" : "python"}
 entrypoint: "${moduleName}.tool"
 capabilities:
   tools:

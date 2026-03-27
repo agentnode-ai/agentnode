@@ -617,6 +617,27 @@ async def bulk_send_invites(
     result = await session.execute(query)
     candidates = result.scalars().all()
 
+    # Dry run: just return preview, no DB changes
+    if not body.send_email:
+        report = [
+            {
+                "display_name": c.display_name or c.repo_name,
+                "contact_email": c.contact_email,
+                "stars": c.stars,
+                "tracking_url": None,
+                "status": "preview",
+            }
+            for c in candidates if c.contact_email
+        ]
+        return BulkSendResponse(
+            invites_created=0,
+            emails_sent=0,
+            emails_failed=0,
+            skipped_no_email=sum(1 for c in candidates if not c.contact_email),
+            candidates=report,
+        )
+
+    # Real send: generate invites + send emails
     invites_created = 0
     emails_sent = 0
     emails_failed = 0
@@ -633,38 +654,35 @@ async def bulk_send_invites(
         invites_created += 1
         tracking_url = f"{frontend_url}/i/{invite.code}"
 
+        from app.shared.email import send_invite_outreach_email
+        sent = await send_invite_outreach_email(
+            to=candidate.contact_email,
+            contact_name=candidate.contact_name,
+            display_name=candidate.display_name or candidate.repo_name or "your tool",
+            description=candidate.description,
+            source_url=candidate.source_url,
+            tracking_url=tracking_url,
+        )
+
         entry = {
             "display_name": candidate.display_name or candidate.repo_name,
             "contact_email": candidate.contact_email,
             "stars": candidate.stars,
             "tracking_url": tracking_url,
-            "status": "invite_created",
+            "status": "email_sent" if sent else "email_failed",
         }
 
-        # Send email if requested
-        if body.send_email:
-            from app.shared.email import send_invite_outreach_email
-            sent = await send_invite_outreach_email(
-                to=candidate.contact_email,
-                contact_name=candidate.contact_name,
-                display_name=candidate.display_name or candidate.repo_name or "your tool",
-                description=candidate.description,
-                source_url=candidate.source_url,
-                tracking_url=tracking_url,
-            )
-            if sent:
-                emails_sent += 1
-                entry["status"] = "email_sent"
-                await log_event(session, candidate.id, "email_sent", {
-                    "subject": f"Publish {candidate.display_name or candidate.repo_name} on AgentNode",
-                    "channel": "email",
-                    "to": candidate.contact_email,
-                    "auto": True,
-                    "bulk": True,
-                }, actor_user_id=user.id)
-            else:
-                emails_failed += 1
-                entry["status"] = "email_failed"
+        if sent:
+            emails_sent += 1
+            await log_event(session, candidate.id, "email_sent", {
+                "subject": f"Publish {candidate.display_name or candidate.repo_name} on AgentNode",
+                "channel": "email",
+                "to": candidate.contact_email,
+                "auto": True,
+                "bulk": True,
+            }, actor_user_id=user.id)
+        else:
+            emails_failed += 1
 
         report.append(entry)
 
