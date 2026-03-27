@@ -270,6 +270,9 @@ def install_package(
     verbose: bool = False,
     trust_level: str | None = None,
     permissions: dict | None = None,
+    runtime: str = "python",
+    mcp_command: list[str] | None = None,
+    remote_endpoint: str | None = None,
 ) -> dict[str, Any]:
     """Execute the full local install flow (mirrors CLI §13.4).
 
@@ -335,6 +338,7 @@ def install_package(
         lock_entry: dict[str, Any] = {
             "version": version,
             "package_type": package_type,
+            "runtime": runtime,
             "entrypoint": entrypoint or "",
             "capability_ids": capability_ids or [],
             "tools": tools or [],
@@ -344,6 +348,10 @@ def install_package(
             "trust_level": trust_level,
             "permissions": permissions,
         }
+        if mcp_command:
+            lock_entry["mcp_command"] = mcp_command
+        if remote_endpoint:
+            lock_entry["remote_endpoint"] = remote_endpoint
         update_lockfile(slug, lock_entry)
 
         result: dict[str, Any] = {

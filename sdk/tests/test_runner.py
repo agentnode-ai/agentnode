@@ -10,12 +10,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentnode_sdk.runner import (
+from agentnode_sdk.runner import run_tool
+from agentnode_sdk.runtimes.python_runner import (
     _filtered_env,
     _get_trust_level,
     _resolve_mode,
     _run_direct,
-    run_tool,
 )
 from agentnode_sdk.models import RunToolResult
 
@@ -120,7 +120,7 @@ class TestGetTrustLevel:
 # ---------------------------------------------------------------------------
 
 class TestRunToolDirect:
-    @patch("agentnode_sdk.runner.load_tool")
+    @patch("agentnode_sdk.runtimes.python_runner.load_tool")
     def test_success(self, mock_load, tmp_path):
         mock_fn = MagicMock(return_value={"answer": 42})
         mock_load.return_value = mock_fn
@@ -136,7 +136,7 @@ class TestRunToolDirect:
         assert result.duration_ms > 0
         mock_fn.assert_called_once_with(x=1)
 
-    @patch("agentnode_sdk.runner.load_tool", side_effect=ImportError("not installed"))
+    @patch("agentnode_sdk.runtimes.python_runner.load_tool", side_effect=ImportError("not installed"))
     def test_error_wraps_in_result(self, mock_load, tmp_path):
         lf = _write_lockfile(tmp_path, {})
         result = run_tool("missing-pack", mode="direct", lockfile_path=lf)
@@ -216,7 +216,7 @@ class TestRunToolSubprocess:
 # ---------------------------------------------------------------------------
 
 class TestRunToolAuto:
-    @patch("agentnode_sdk.runner.load_tool")
+    @patch("agentnode_sdk.runtimes.python_runner.load_tool")
     def test_curated_uses_direct(self, mock_load, tmp_path):
         mock_load.return_value = MagicMock(return_value="ok")
         lf = _write_lockfile(tmp_path, {
@@ -298,13 +298,13 @@ class TestSubprocessEdgeCases:
         """Non-serializable return values should produce fallback repr, not crash."""
         # We mock load_tool in direct mode to test the safe_serialize concept
         # Since subprocess uses the same wrapper, we verify the pattern works
-        from agentnode_sdk.runner import _run_direct
+        from agentnode_sdk.runtimes.python_runner import _run_direct
         from unittest.mock import patch
         import datetime
 
         mock_fn = MagicMock(return_value=datetime.datetime(2026, 1, 1))
 
-        with patch("agentnode_sdk.runner.load_tool", return_value=mock_fn):
+        with patch("agentnode_sdk.runtimes.python_runner.load_tool", return_value=mock_fn):
             lf = _write_lockfile(tmp_path, {
                 "dt-pack": {"version": "1.0", "entrypoint": "dt.tool", "trust_level": "trusted"},
             })

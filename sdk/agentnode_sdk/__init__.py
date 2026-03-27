@@ -2,6 +2,7 @@
 
 from agentnode_sdk.async_client import AsyncAgentNode
 from agentnode_sdk.client import AgentNode, AgentNodeClient
+from agentnode_sdk.config import load_config, config_path, installation_behavior_label
 from agentnode_sdk.detect import detect_gap
 from agentnode_sdk.exceptions import (
     AgentNodeError,
@@ -38,6 +39,9 @@ __all__ = [
     "AsyncAgentNode",
     "AgentNodeClient",
     "Client",
+    "load_config",
+    "config_path",
+    "installation_behavior_label",
     "detect_gap",
     "load_tool",
     "run_tool",

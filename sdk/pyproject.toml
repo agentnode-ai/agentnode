@@ -22,6 +22,9 @@ dependencies = [
     "httpx>=0.25",
 ]
 
+[project.scripts]
+agentnode = "agentnode_sdk.cli.main:cli"
+
 [project.urls]
 Homepage = "https://agentnode.net"
 Repository = "https://github.com/agentnode-ai/agentnode"

@@ -217,7 +217,12 @@ class AgentNode:
 
 
 class AgentNodeClient:
-    """Extended client returning typed dataclass models. Backward-compatible."""
+    """Extended client returning typed dataclass models. Backward-compatible.
+
+    When instantiated without explicit parameters, loads user config from
+    ``~/.agentnode/config.json`` (override via ``AGENTNODE_CONFIG`` env var)
+    and applies trust / permission defaults automatically.
+    """
 
     def __init__(
         self,
@@ -235,6 +240,17 @@ class AgentNodeClient:
         self._client = httpx.Client(
             base_url=self.base_url, headers=headers, timeout=timeout
         )
+
+        # Auto-load user config for trust/permission defaults
+        try:
+            from agentnode_sdk.config import config_exists, load_config
+
+            if config_exists():
+                self._user_config = load_config()
+            else:
+                self._user_config = {}
+        except Exception:
+            self._user_config = {}
 
     def close(self):
         self._client.close()
