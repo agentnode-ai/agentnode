@@ -12,6 +12,7 @@ INDEX_SETTINGS = {
     "filterableAttributes": [
         "package_type", "capability_ids", "frameworks", "runtime", "trust_level",
         "is_deprecated", "publisher_slug", "verification_tier",
+        "has_security_review", "has_compatibility_review", "has_manual_review",
     ],
     "sortableAttributes": ["download_count", "published_at", "verification_score"],
     "rankingRules": [

@@ -40,6 +40,9 @@ htmlcov/
 *.tar.gz
 *.whl
 
+# Test score artifacts
+.artifacts/
+
 # Spec documents
 *.docx
 
@@ -65,6 +68,9 @@ packages_dump.json
 snapshot_nonowner.txt
 seo/
 backend/scripts/enrichment_*.json
+
+# Internal documentation (not for GitHub)
+internal/
 
 # Internal ops scripts (crawl, enrichment, import)
 scripts/crawl_*.py

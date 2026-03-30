@@ -23,6 +23,7 @@ const navItems = [
   { href: "/admin/publishers", label: "Publishers", icon: "▲" },
   { href: "/admin/packages", label: "Packages", icon: "■" },
   { href: "/admin/reports", label: "Reports", icon: "!" },
+  { href: "/admin/reviews", label: "Reviews", icon: "\u2605" },
   { href: "/admin/capabilities", label: "Capabilities", icon: "⚙" },
   { href: "/admin/installations", label: "Installations", icon: "↓" },
   { href: "/admin/email", label: "Email / SMTP", icon: "✉" },

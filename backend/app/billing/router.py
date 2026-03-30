@@ -11,6 +11,8 @@ from app.admin.models import AdminAuditLog
 from app.auth.dependencies import get_current_user, require_admin, require_publisher
 from app.auth.models import User
 from app.billing.models import ReviewRequest
+from app.packages.service import build_meili_document
+from app.shared.meili import sync_package_to_meilisearch, delete_package_from_meilisearch
 from app.billing.schemas import (
     AdminQueueItem,
     AssignReviewerBody,
@@ -26,11 +28,17 @@ from app.billing.service import (
     create_review_request,
     process_refund,
     process_stripe_event,
+    _get_review_email_context,
 )
 from app.billing.stripe_client import verify_webhook_signature
 from app.database import get_session
 from app.packages.models import Package, PackageVersion
 from app.publishers.models import Publisher
+from app.shared.email import (
+    send_review_payment_received_email,
+    send_review_completed_email,
+    send_review_refund_email,
+)
 from app.shared.exceptions import AppError
 from app.shared.rate_limit import rate_limit
 
@@ -181,6 +189,25 @@ async def stripe_webhook(
 
     result = await process_stripe_event(session, event)
     await session.commit()
+
+    # Send payment received email after commit (fire-and-forget)
+    if result.get("status") == "processed" and event["type"] == "checkout.session.completed":
+        try:
+            order_id = event["data"]["object"].get("client_reference_id", "")
+            if order_id.startswith("rev_"):
+                rr = await session.execute(
+                    select(ReviewRequest).where(ReviewRequest.order_id == order_id)
+                )
+                review = rr.scalar_one_or_none()
+                if review and review.status == "paid":
+                    slug, ver, email = await _get_review_email_context(session, review.id)
+                    if email:
+                        await send_review_payment_received_email(
+                            email, slug, ver, review.tier, review.express, review.price_cents,
+                        )
+        except Exception:
+            logger.warning("Failed to send review payment email", exc_info=True)
+
     return result
 
 
@@ -272,6 +299,25 @@ async def admin_complete_review(
         "tier": review.tier,
     })
     await session.commit()
+
+    # Send completion email after commit (fire-and-forget)
+    try:
+        slug, ver, email = await _get_review_email_context(session, review.id)
+        if email:
+            await send_review_completed_email(
+                email, slug, ver, review.tier,
+                body.outcome, body.review_result, body.notes,
+            )
+    except Exception:
+        logger.warning("Failed to send review completion email", exc_info=True)
+
+    # Sync badge to Meilisearch after commit (fire-and-forget)
+    if body.outcome == "approved":
+        try:
+            await _sync_review_badge_to_search(session, review.package_id)
+        except Exception:
+            logger.warning("Failed to sync badge to Meilisearch", exc_info=True)
+
     return {
         "status": body.outcome,
         "review_id": str(review.id),
@@ -301,11 +347,70 @@ async def admin_refund_review(
         "reason": body.reason,
     })
     await session.commit()
+
+    # Send refund email after commit (fire-and-forget)
+    try:
+        slug, ver, email = await _get_review_email_context(session, review.id)
+        if email:
+            await send_review_refund_email(
+                email, slug, ver, review.refund_amount_cents, is_full,
+            )
+    except Exception:
+        logger.warning("Failed to send review refund email", exc_info=True)
+
+    # Sync badge removal to Meilisearch after full refund (fire-and-forget)
+    if is_full:
+        try:
+            await _sync_review_badge_to_search(session, review.package_id)
+        except Exception:
+            logger.warning("Failed to sync badge removal to Meilisearch", exc_info=True)
+
     return {
         "status": review.status,
         "refund_amount_cents": review.refund_amount_cents,
         "badge_removed": is_full,
     }
+
+
+# ---- Meilisearch sync ----
+
+
+async def _sync_review_badge_to_search(session: AsyncSession, package_id) -> None:
+    """Sync review badge changes to Meilisearch. Fire-and-forget, never raises."""
+    from sqlalchemy.orm import selectinload
+
+    pkg_result = await session.execute(
+        select(Package)
+        .options(selectinload(Package.publisher))
+        .where(Package.id == package_id)
+    )
+    pkg = pkg_result.scalar_one_or_none()
+    if not pkg:
+        return
+
+    # Find current public version (latest)
+    pv_result = await session.execute(
+        select(PackageVersion)
+        .where(
+            PackageVersion.package_id == package_id,
+            PackageVersion.is_yanked == False,  # noqa: E712
+        )
+        .order_by(PackageVersion.published_at.desc())
+        .limit(1)
+    )
+    pv = pv_result.scalar_one_or_none()
+    if not pv:
+        await delete_package_from_meilisearch(pkg.slug)
+        return
+
+    # Check if package is indexable
+    if pkg.is_deprecated and pkg.download_count == 0:
+        await delete_package_from_meilisearch(pkg.slug)
+        return
+
+    manifest = pv.manifest or {}
+    doc = build_meili_document(pkg, pv, manifest)
+    await sync_package_to_meilisearch(doc)
 
 
 # ---- Helpers ----

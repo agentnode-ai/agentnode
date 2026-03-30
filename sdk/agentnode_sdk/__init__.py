@@ -28,6 +28,7 @@ from agentnode_sdk.models import (
     SmartRunResult,
 )
 from agentnode_sdk.runner import run_tool
+from agentnode_sdk.runtime import AgentNodeRuntime
 
 # Convenience aliases
 Client = AgentNodeClient
@@ -64,4 +65,5 @@ __all__ = [
     "DetectedGap",
     "DetectAndInstallResult",
     "SmartRunResult",
+    "AgentNodeRuntime",
 ]

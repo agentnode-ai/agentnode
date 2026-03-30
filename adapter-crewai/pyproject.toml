@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentnode-crewai"
+version = "0.1.0"
+description = "AgentNode adapter for CrewAI — use AgentNode tools as CrewAI tools"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "agentnode-sdk>=0.4.0",
+    "crewai>=0.80.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["agentnode_crewai*"]

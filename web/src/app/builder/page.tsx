@@ -534,6 +534,10 @@ export default function BuilderPage() {
                     code: `from agentnode_sdk import AgentNodeClient\nfrom agentnode_sdk.installer import load_tool\n\nclient = AgentNodeClient()\nclient.install("${result.metadata.package_id}")\n\ntool = load_tool("${result.metadata.package_id}")\nresult = tool({"input": "...  "})`,
                   },
                   {
+                    label: "LLM Runtime",
+                    code: `from agentnode_sdk import AgentNodeRuntime\n\n# LLM discovers and uses your tool\nruntime = AgentNodeRuntime()\nresult = runtime.run(\n    provider="openai",\n    client=OpenAI(),\n    model="gpt-4o",\n    messages=[...],\n)`,
+                  },
+                  {
                     label: "LangChain",
                     code: `from agentnode_langchain import as_langchain_tool\n\ntool = as_langchain_tool("${result.metadata.package_id}")`,
                   },

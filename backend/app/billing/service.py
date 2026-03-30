@@ -82,6 +82,12 @@ async def create_review_request(
     if not pv:
         raise AppError("VERSION_NOT_FOUND", f"Version '{version}' not found", 404)
 
+    # Yanked and rejected versions cannot be reviewed
+    if pv.is_yanked:
+        raise AppError("VERSION_YANKED", "Cannot request review for a yanked version", 400)
+    if pv.quarantine_status == "rejected":
+        raise AppError("VERSION_REJECTED", "Cannot request review for a rejected version", 400)
+
     # Check for existing pending/active review for this version+tier
     existing_result = await session.execute(
         select(ReviewRequest).where(
@@ -249,6 +255,8 @@ async def complete_review(
     if review.status != "in_review":
         raise AppError("INVALID_STATUS", f"Cannot complete review in status '{review.status}' (must be in_review)", 400)
 
+    _validate_complete_fields(outcome, notes, review_result)
+
     now = datetime.now(timezone.utc)
     review.status = outcome
     review.review_notes = notes
@@ -318,6 +326,67 @@ async def process_refund(
         review.refund_amount_cents = amount_cents
 
     return review
+
+
+def _validate_complete_fields(outcome: str, notes: str | None, review_result: dict) -> None:
+    """Validate that required fields are present for each outcome type."""
+    if outcome == "approved":
+        if not review_result:
+            raise AppError("MISSING_REVIEW_RESULT", "review_result is required for approved outcome", 400)
+        if not review_result.get("reviewer_summary"):
+            raise AppError("MISSING_REVIEWER_SUMMARY", "reviewer_summary is required for approved outcome", 400)
+    elif outcome == "changes_requested":
+        if not review_result:
+            raise AppError("MISSING_REVIEW_RESULT", "review_result is required for changes_requested outcome", 400)
+        changes = review_result.get("required_changes", [])
+        if not changes or len(changes) == 0:
+            raise AppError("MISSING_REQUIRED_CHANGES", "At least one required_change is needed for changes_requested outcome", 400)
+    elif outcome == "rejected":
+        has_summary = review_result and review_result.get("reviewer_summary")
+        if not has_summary and not notes:
+            raise AppError("MISSING_REJECTION_REASON", "Either reviewer_summary or notes is required for rejected outcome", 400)
+
+
+async def _get_review_email_context(session: AsyncSession, review_id: uuid.UUID) -> tuple[str, str, str]:
+    """Return (package_slug, version_number, publisher_email) for a review — fresh from DB."""
+    result = await session.execute(
+        select(ReviewRequest).where(ReviewRequest.id == review_id)
+    )
+    review = result.scalar_one_or_none()
+    if not review:
+        raise AppError("REVIEW_NOT_FOUND", "Review not found", 404)
+
+    pkg_result = await session.execute(
+        select(Package.slug).where(Package.id == review.package_id)
+    )
+    pkg_row = pkg_result.one_or_none()
+
+    pv_result = await session.execute(
+        select(PackageVersion.version_number).where(PackageVersion.id == review.package_version_id)
+    )
+    pv_row = pv_result.one_or_none()
+
+    pub_result = await session.execute(
+        select(Publisher).where(Publisher.id == review.publisher_id)
+    )
+    pub = pub_result.scalar_one_or_none()
+
+    # Get publisher's user email
+    from app.auth.models import User
+    email = None
+    if pub:
+        user_result = await session.execute(
+            select(User.email).where(User.id == pub.user_id)
+        )
+        user_row = user_result.one_or_none()
+        if user_row:
+            email = user_row.email
+
+    return (
+        pkg_row.slug if pkg_row else "unknown",
+        pv_row.version_number if pv_row else "unknown",
+        email or "",
+    )
 
 
 async def _get_review(session: AsyncSession, review_id: uuid.UUID) -> ReviewRequest:

@@ -89,7 +89,7 @@ export default function DashboardPage() {
   const [requestingReview, setRequestingReview] = useState(false);
   const [showReviewForm, setShowReviewForm] = useState(false);
   // Package versions for review form
-  const [reviewVersions, setReviewVersions] = useState<string[]>([]);
+  const [reviewVersions, setReviewVersions] = useState<{ version_number: string; is_yanked?: boolean; quarantine_status?: string }[]>([]);
 
   // API Key copy (Fix 8)
   const [copiedKey, setCopiedKey] = useState(false);
@@ -98,6 +98,21 @@ export default function DashboardPage() {
   const [qrDataUrl, setQrDataUrl] = useState("");
 
   useEffect(() => {
+    // Handle review redirect params from Stripe
+    const params = new URLSearchParams(window.location.search);
+    const reviewParam = params.get("review");
+    if (reviewParam === "success") {
+      setSuccess("Payment successful! Your review request is in the queue.");
+      params.delete("review");
+      const newQuery = params.toString();
+      window.history.replaceState({}, '', '/dashboard' + (newQuery ? '?' + newQuery : ''));
+    } else if (reviewParam === "cancelled") {
+      setError("Payment was cancelled.");
+      params.delete("review");
+      const newQuery = params.toString();
+      window.history.replaceState({}, '', '/dashboard' + (newQuery ? '?' + newQuery : ''));
+    }
+
     loadUser();
     loadApiKeys();
     loadEmailPrefs();
@@ -386,9 +401,12 @@ export default function DashboardPage() {
       const res = await fetchWithAuth(`/packages/${encodeURIComponent(slug)}/versions/all`);
       if (res.ok) {
         const data = await res.json();
-        const vers = (data.versions || []).map((v: any) => v.version_number);
-        setReviewVersions(vers);
-        if (vers.length > 0) setReviewForm(f => ({ ...f, version: vers[0] }));
+        // Filter out yanked and rejected versions
+        const activeVersions = (data.versions || []).filter(
+          (v: any) => !v.is_yanked && v.quarantine_status !== "rejected"
+        );
+        setReviewVersions(activeVersions);
+        if (activeVersions.length > 0) setReviewForm(f => ({ ...f, version: activeVersions[0].version_number }));
       }
     } catch { /* non-critical */ }
   }
@@ -940,7 +958,9 @@ export default function DashboardPage() {
                   >
                     <option value="">Select a version</option>
                     {reviewVersions.map(v => (
-                      <option key={v} value={v}>v{v}</option>
+                      <option key={v.version_number} value={v.version_number}>
+                        v{v.version_number}{v.quarantine_status === "quarantined" ? " (quarantined)" : ""}
+                      </option>
                     ))}
                   </select>
                 </div>
@@ -1049,6 +1069,12 @@ export default function DashboardPage() {
                       {r.review_result.reviewer_summary && (
                         <p className="text-muted mt-1">{r.review_result.reviewer_summary}</p>
                       )}
+                    </div>
+                  )}
+                  {r.status === "changes_requested" && (
+                    <div className="mt-2 rounded border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-300">
+                      <strong>Next steps:</strong> Fix the issues above, publish a new version,
+                      then request another review for the new version.
                     </div>
                   )}
                   {r.review_notes && (

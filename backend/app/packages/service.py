@@ -70,6 +70,9 @@ def build_meili_document(pkg: Package, version: PackageVersion, manifest: dict) 
         "verification_score": version.verification_score or 0,
         "verification_tier": version.verification_tier or "unverified",
         "published_at": version.published_at.isoformat() if version.published_at else None,
+        "has_security_review": version.security_reviewed_at is not None,
+        "has_compatibility_review": version.compatibility_reviewed_at is not None,
+        "has_manual_review": version.manually_reviewed_at is not None,
     }
 
 

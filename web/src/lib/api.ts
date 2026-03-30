@@ -87,6 +87,11 @@ export async function fetchWithAuth(endpoint: string, options?: RequestInit): Pr
     if (refreshRes.ok) {
       // Retry original request with new cookie
       res = await fetch(url, opts);
+    } else {
+      // Refresh failed — session is truly expired. Clear stale signal cookies
+      // so the Navbar shows "Sign in" instead of "Dashboard / Logout".
+      document.cookie = "logged_in=; path=/; max-age=0";
+      document.cookie = "is_admin=; path=/; max-age=0";
     }
   }
 

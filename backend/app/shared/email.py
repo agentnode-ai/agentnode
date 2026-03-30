@@ -709,3 +709,121 @@ async def send_invite_followup_email(
         html,
         text,
     )
+
+
+# =========================================================================
+#  PHASE 5 — Review Notifications (transactional, always send)
+# =========================================================================
+
+
+# 29. Review payment received
+async def send_review_payment_received_email(
+    to: str, package_slug: str, version: str, tier: str, express: bool, price_cents: int,
+) -> bool:
+    tier_labels = {"security": "Security Review", "compatibility": "Compatibility Review", "full": "Full Review"}
+    tier_label = tier_labels.get(tier, tier.title())
+    turnaround = "48 hours (Express)" if express else "7 business days"
+    price_str = f"${price_cents / 100:.0f}"
+
+    html = _wrap(f"""
+      <h1>Payment received</h1>
+      <p class="success">Your review request has been confirmed.</p>
+      <table style="width:100%; font-size:14px; color:#a3a3a3; margin:16px 0;">
+        <tr><td>Package</td><td style="text-align:right; color:#fff; font-weight:600;">{package_slug}@{version}</td></tr>
+        <tr><td>Tier</td><td style="text-align:right; color:#fff; font-weight:600;">{tier_label}</td></tr>
+        <tr><td>Turnaround</td><td style="text-align:right; color:#fff; font-weight:600;">{turnaround}</td></tr>
+        <tr><td>Amount paid</td><td style="text-align:right; color:#fff; font-weight:600;">{price_str} USD</td></tr>
+      </table>
+      <p>We&rsquo;ll notify you when the review is complete. Track status in your dashboard:</p>
+      <p style="text-align:center; margin: 24px 0;">
+        <a href="{settings.FRONTEND_URL}/dashboard" class="btn">View Dashboard</a>
+      </p>
+    """)
+    return await send_email(to, f"Payment received: {package_slug} review - AgentNode", html,
+        f"Payment confirmed for {tier_label} of {package_slug}@{version}. {price_str} USD. Turnaround: {turnaround}.")
+
+
+# 30. Review completed
+async def send_review_completed_email(
+    to: str, package_slug: str, version: str, tier: str,
+    outcome: str, review_result: dict | None, notes: str | None,
+) -> bool:
+    outcome_labels = {
+        "approved": ('<span class="success">Approved</span>', "#22c55e"),
+        "changes_requested": ('<span style="color:#f59e0b; font-weight:600;">Changes Requested</span>', "#f59e0b"),
+        "rejected": ('<span style="color:#ef4444; font-weight:600;">Rejected</span>', "#ef4444"),
+    }
+    badge_html, _ = outcome_labels.get(outcome, (outcome, "#a3a3a3"))
+
+    checks_html = ""
+    if review_result:
+        checks = []
+        if "security_passed" in review_result:
+            icon = '<span style="color:#22c55e;">&#10003;</span>' if review_result["security_passed"] else '<span style="color:#ef4444;">&#10007;</span>'
+            checks.append(f"{icon} Security")
+        if "compatibility_passed" in review_result:
+            icon = '<span style="color:#22c55e;">&#10003;</span>' if review_result["compatibility_passed"] else '<span style="color:#ef4444;">&#10007;</span>'
+            checks.append(f"{icon} Compatibility")
+        if "docs_passed" in review_result:
+            icon = '<span style="color:#22c55e;">&#10003;</span>' if review_result["docs_passed"] else '<span style="color:#ef4444;">&#10007;</span>'
+            checks.append(f"{icon} Documentation")
+        if checks:
+            checks_html = '<p style="font-size:14px;">' + " &nbsp;&middot;&nbsp; ".join(checks) + '</p>'
+
+    changes_html = ""
+    required_changes = review_result.get("required_changes", []) if review_result else []
+    if required_changes:
+        items = "".join(f"<li style='margin:4px 0;'>{c}</li>" for c in required_changes)
+        changes_html = f'<div style="margin:12px 0;"><p style="color:#f59e0b; font-weight:600; font-size:14px;">Required changes:</p><ul style="color:#a3a3a3; font-size:13px; padding-left:20px;">{items}</ul></div>'
+
+    summary_html = ""
+    if review_result and review_result.get("reviewer_summary"):
+        summary_html = f'<p style="font-size:13px; color:#a3a3a3; margin:12px 0; padding:12px; background:#1e1e1e; border-radius:6px; border:1px solid #333;">{review_result["reviewer_summary"]}</p>'
+
+    notes_html = ""
+    if notes:
+        notes_html = f'<p style="font-size:13px; color:#a3a3a3; font-style:italic;">{notes}</p>'
+
+    next_steps_html = ""
+    if outcome == "changes_requested":
+        next_steps_html = '<p style="color:#f59e0b; font-size:13px; margin-top:16px;">Fix the issues listed above, publish a new version, then request another review for the new version.</p>'
+
+    html = _wrap(f"""
+      <h1>Review complete: {package_slug}@{version}</h1>
+      <p>Outcome: {badge_html}</p>
+      {checks_html}
+      {changes_html}
+      {summary_html}
+      {notes_html}
+      {next_steps_html}
+      <p style="text-align:center; margin: 24px 0;">
+        <a href="{settings.FRONTEND_URL}/dashboard" class="btn">View Details</a>
+      </p>
+    """)
+    return await send_email(to, f"Review {outcome}: {package_slug}@{version} - AgentNode", html,
+        f"Your {tier} review for {package_slug}@{version} is complete. Outcome: {outcome}.")
+
+
+# 31. Review refund
+async def send_review_refund_email(
+    to: str, package_slug: str, version: str, refund_amount_cents: int, is_full: bool,
+) -> bool:
+    refund_str = f"${refund_amount_cents / 100:.0f}"
+    refund_type = "Full refund" if is_full else "Partial refund"
+    badge_note = "<p class='warn'>The review badge has been removed from this version.</p>" if is_full else ""
+
+    html = _wrap(f"""
+      <h1>{refund_type} processed</h1>
+      <p>A refund has been issued for your review of <strong>{package_slug}@{version}</strong>.</p>
+      <table style="width:100%; font-size:14px; color:#a3a3a3; margin:16px 0;">
+        <tr><td>Refund amount</td><td style="text-align:right; color:#fff; font-weight:600;">{refund_str} USD</td></tr>
+        <tr><td>Type</td><td style="text-align:right; color:#fff; font-weight:600;">{refund_type}</td></tr>
+      </table>
+      {badge_note}
+      <p>The refund will appear on your statement within 5-10 business days.</p>
+      <p style="text-align:center; margin: 24px 0;">
+        <a href="{settings.FRONTEND_URL}/dashboard" class="btn">View Dashboard</a>
+      </p>
+    """)
+    return await send_email(to, f"Refund: {package_slug} review - AgentNode", html,
+        f"{refund_type} of {refund_str} USD for {package_slug}@{version} review.")

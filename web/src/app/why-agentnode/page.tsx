@@ -496,6 +496,29 @@ print(result["pages"])`}</code>
             </pre>
           </div>
 
+          {/* LLM Runtime alternative */}
+          <div className="mx-auto mt-6 max-w-2xl overflow-hidden rounded-lg border border-border bg-[#0d1117]">
+            <div className="flex items-center gap-2 border-b border-border/50 px-4 py-2">
+              <div className="h-3 w-3 rounded-full bg-red-500/60" />
+              <div className="h-3 w-3 rounded-full bg-yellow-500/60" />
+              <div className="h-3 w-3 rounded-full bg-green-500/60" />
+              <span className="ml-2 font-mono text-xs text-muted">llm_agent.py</span>
+              <span className="ml-auto font-mono text-xs text-muted/50">LLM Runtime</span>
+            </div>
+            <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-gray-300">
+              <code>{`from openai import OpenAI
+from agentnode_sdk import AgentNodeRuntime
+
+# Or let the LLM handle everything
+result = AgentNodeRuntime().run(
+    provider="openai",
+    client=OpenAI(),
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Extract text from report.pdf"}],
+)`}</code>
+            </pre>
+          </div>
+
           <div className="mt-8 grid gap-4 sm:grid-cols-3">
             <div className="rounded-lg border border-border bg-card p-4 text-center">
               <p className="text-2xl font-bold text-primary">1</p>

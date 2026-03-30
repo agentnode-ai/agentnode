@@ -8,49 +8,170 @@ Python SDK for [AgentNode](https://agentnode.net) — the open upgrade and disco
 pip install agentnode-sdk
 ```
 
-## Quick Start
+## Quick Start — LLM Agent Runtime
+
+Connect any LLM agent to AgentNode in three lines. The Runtime provides tool definitions, system prompt, and a tool-loop engine. Tested across 22 models — works with OpenAI, Anthropic, Gemini, Mistral, DeepSeek, Qwen, Llama, and more.
 
 ```python
-from agentnode_sdk import AgentNodeClient, run_tool
+from agentnode_sdk import AgentNodeRuntime
 
-client = AgentNodeClient(api_key="ank_...")
+runtime = AgentNodeRuntime()
 
-# Search for packages
-results = client.search("pdf extraction")
-for hit in results.hits:
-    print(f"{hit.slug} — {hit.summary}")
+# Get tools + system prompt for your provider
+bundle = runtime.tool_bundle()
+# → { "tools": [...], "system_prompt": "..." }
+```
 
-# Resolve capability gaps
-resolved = client.resolve(
-    capabilities=["pdf_extraction"],
-    framework="langchain",
+### OpenAI
+
+```python
+from openai import OpenAI
+from agentnode_sdk import AgentNodeRuntime
+
+runtime = AgentNodeRuntime()
+client = OpenAI()
+
+result = runtime.run(
+    provider="openai",
+    client=client,
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Count the words in 'Hello world'"}],
+)
+print(result.content)
+```
+
+### Anthropic
+
+```python
+from anthropic import Anthropic
+from agentnode_sdk import AgentNodeRuntime
+
+runtime = AgentNodeRuntime()
+client = Anthropic()
+
+result = runtime.run(
+    provider="anthropic",
+    client=client,
+    model="claude-sonnet-4-6",
+    messages=[{"role": "user", "content": "Search for PDF tools on AgentNode"}],
+)
+```
+
+### Gemini
+
+```python
+from google import genai
+from agentnode_sdk import AgentNodeRuntime
+
+runtime = AgentNodeRuntime()
+client = genai.Client()
+
+result = runtime.run(
+    provider="gemini",
+    client=client,
+    model="gemini-2.5-flash",
+    messages=[{"role": "user", "content": "What AgentNode tools are available?"}],
+)
+```
+
+### OpenRouter (Mistral, DeepSeek, Qwen, Llama, and more)
+
+Use any OpenAI-compatible provider by passing a custom `base_url`:
+
+```python
+from openai import OpenAI
+from agentnode_sdk import AgentNodeRuntime
+
+runtime = AgentNodeRuntime()
+client = OpenAI(
+    api_key="sk-or-...",
+    base_url="https://openrouter.ai/api/v1",
 )
 
-# v0.3: Run tools with trust-aware isolation
-# trusted/curated → direct (in-process), verified/unverified → subprocess
-result = run_tool("pdf-reader-pack", file_path="report.pdf")
-print(result.result)  # tool output
-print(result.mode_used)  # "direct" or "subprocess"
+result = runtime.run(
+    provider="openai",
+    client=client,
+    model="mistralai/mistral-large",  # or deepseek/deepseek-chat, qwen/qwen-plus, etc.
+    messages=[{"role": "user", "content": "Find and install a PDF reader tool"}],
+)
+```
 
-# Multi-tool packs — specify tool_name
-result = run_tool("csv-analyzer-pack", tool_name="describe", file_path="data.csv")
+### Generic / Manual Tool Calling
+
+For any provider that supports tool calling, use `handle()` to dispatch calls manually:
+
+```python
+runtime = AgentNodeRuntime()
+
+# Get tool definitions in your provider's format
+tools = runtime.as_openai_tools()   # OpenAI format
+tools = runtime.as_anthropic_tools() # Anthropic format
+tools = runtime.as_gemini_tools()    # Gemini format
+tools = runtime.as_generic_tools()   # Generic format
+
+# When the LLM makes a tool call, dispatch it:
+result = runtime.handle("agentnode_search", {"query": "pdf extraction"})
+# → {"success": true, "result": {"total": 5, "results": [...]}}
+```
+
+## Three Surfaces
+
+```
+CLI           → for humans (search, install, publish)
+SDK / Client  → for programmatic access (search, resolve, install, run)
+Runtime       → for LLM agents (tool registration, dispatch, auto-loop)
 ```
 
 ## API Reference
 
+### `AgentNodeRuntime`
+
+Zero-config LLM agent integration.
+
+| Method | Description |
+|--------|-------------|
+| `tool_specs()` | Internal typed tool definitions (`list[ToolSpec]`) |
+| `as_openai_tools()` | Tools in OpenAI function-calling format |
+| `as_anthropic_tools()` | Tools in Anthropic format |
+| `as_generic_tools()` | Tools in generic/baseline format |
+| `system_prompt()` | AgentNode system prompt block (append to yours) |
+| `tool_bundle()` | Combined `{"tools": [...], "system_prompt": "..."}` |
+| `handle(tool_name, arguments)` | Dispatch a tool call. Returns dict. Never throws. |
+| `run(provider, client, messages, model, ...)` | Auto-loop with tool dispatch. Never throws. |
+
+**Constructor:**
+
+```python
+AgentNodeRuntime(
+    client=None,                     # Optional AgentNodeClient
+    api_key=None,                    # Optional API key
+    minimum_trust_level="verified",  # "verified" | "trusted" | "curated"
+)
+```
+
+**5 Meta-Tools** (automatically registered):
+
+| Tool | Description |
+|------|-------------|
+| `agentnode_capabilities` | List installed packages (local, no API call) |
+| `agentnode_search` | Search the registry (max 5 results) |
+| `agentnode_install` | Install a package by slug |
+| `agentnode_run` | Execute an installed tool |
+| `agentnode_acquire` | Search + install in one step |
+
 ### `AgentNodeClient`
 
-The main client with typed return models.
+The programmatic client with typed return models.
 
 | Method | Description |
 |--------|-------------|
 | `search(query, ...)` | Search packages by keyword or capability |
 | `resolve(capabilities, ...)` | Resolve capability gaps to ranked packages |
-| `get_package(slug)` | Get package details |
-| `get_install_metadata(slug)` | Get install info (artifact, permissions, deps) |
-| `download(slug)` | Track download and get artifact URL |
-| `run_tool(slug, tool_name=, mode=, timeout=, **kwargs)` | Run a tool with optional subprocess isolation (v0.3) |
-| `load_tool(slug, tool_name=)` | Load a tool function from an installed pack (v0.2) |
+| `install(slug, ...)` | Download, verify, and install locally |
+| `resolve_and_install(capabilities, ...)` | Resolve + install in one call |
+| `run_tool(slug, tool_name=, ...)` | Run a tool with trust-aware isolation |
+| `smart_run(fn, ...)` | Wrap logic with auto-detect, install, retry |
+| `detect_and_install(error, ...)` | Detect capability gap and install |
 
 ### `run_tool()` (standalone)
 
@@ -62,28 +183,6 @@ from agentnode_sdk import run_tool
 result = run_tool("pdf-reader-pack", mode="auto", file_path="report.pdf")
 # result.success, result.result, result.error, result.mode_used, result.duration_ms
 ```
-
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `slug` | str | required | Package slug |
-| `tool_name` | str \| None | None | Tool name for multi-tool packs |
-| `mode` | str | `"auto"` | `"direct"`, `"subprocess"`, or `"auto"` |
-| `timeout` | float | 30.0 | Subprocess timeout in seconds |
-| `**kwargs` | Any | — | Arguments forwarded to the tool function |
-
-### `AgentNode`
-
-Lightweight client returning raw dicts.
-
-| Method | Description |
-|--------|-------------|
-| `search(query, ...)` | Search packages |
-| `resolve_upgrade(missing_capability, ...)` | Resolve a single capability gap |
-| `check_policy(package_slug, ...)` | Evaluate security policy |
-| `get_install_metadata(slug)` | Get install metadata |
-| `install(slug)` | Create installation record |
-| `recommend(missing_capabilities)` | Get recommendations |
-| `validate(manifest)` | Validate a package manifest |
 
 ## License
 

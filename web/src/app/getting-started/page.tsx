@@ -180,6 +180,70 @@ result = client.smart_run(
         </div>
       </section>
 
+      {/* LLM Runtime */}
+      <section className="border-b border-border bg-card/30">
+        <div className="mx-auto max-w-4xl px-4 sm:px-6 py-20">
+          <h2 className="mb-4 text-2xl font-bold text-foreground">
+            For LLM agents: the Runtime
+          </h2>
+          <p className="mb-12 max-w-2xl text-muted">
+            If your agent uses tool calling,{" "}
+            <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">AgentNodeRuntime</code>{" "}
+            handles everything &mdash; tool registration, system prompt, and the
+            tool loop. Tested across 22 models. Native support for OpenAI, Anthropic, and Gemini.
+            Any OpenAI-compatible provider (Mistral, DeepSeek, Qwen, Llama) works via OpenRouter.
+          </p>
+
+          <div className="grid gap-px sm:grid-cols-2 rounded-xl border border-border overflow-hidden mb-8">
+            <div className="bg-card p-6">
+              <h3 className="mb-2 text-sm font-bold uppercase tracking-wider text-primary">
+                smart_run()
+              </h3>
+              <p className="text-sm text-muted leading-relaxed">
+                For error-recovery agents. Wrap your logic, and AgentNode
+                detects failures, installs missing skills, and retries.
+              </p>
+            </div>
+            <div className="bg-card p-6">
+              <h3 className="mb-2 text-sm font-bold uppercase tracking-wider text-primary">
+                AgentNodeRuntime
+              </h3>
+              <p className="text-sm text-muted leading-relaxed">
+                For LLM tool-calling agents. The model decides what to search,
+                install, and run via 5 meta-tools.
+              </p>
+            </div>
+          </div>
+
+          <pre className="rounded-lg bg-[#0d1117] px-4 py-3 text-sm text-gray-300 overflow-x-auto">
+            <code>
+              {`from openai import OpenAI
+from agentnode_sdk import AgentNodeRuntime
+
+runtime = AgentNodeRuntime()
+
+result = runtime.run(
+    provider="openai",
+    client=OpenAI(),
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Extract text from report.pdf"}],
+)
+print(result.content)`}
+            </code>
+          </pre>
+          <p className="mt-4 text-sm text-muted">
+            Works with Anthropic, Gemini, and any OpenAI-compatible provider &mdash;{" "}
+            <Link
+              href="/docs#llm-runtime"
+              className="text-primary hover:text-foreground transition-colors"
+            >
+              see the full Runtime docs
+            </Link>
+            .
+          </p>
+        </div>
+      </section>
+
       {/* Policies */}
       <section className="border-b border-border bg-card/30">
         <div className="mx-auto max-w-4xl px-4 sm:px-6 py-20">
@@ -260,9 +324,9 @@ result = client.smart_run(
             Works with your stack
           </h2>
           <p className="mb-12 max-w-2xl text-muted">
-            AgentNode works with any AI system that supports Python or tool
-            integration — ChatGPT, Claude, Gemini, LangChain, CrewAI, Ollama,
-            and more.
+            Native runtime integration for OpenAI, Anthropic, and Gemini.
+            Framework adapters for LangChain, CrewAI, and MCP. Compatible with
+            Mistral, DeepSeek, Qwen, Ollama, and any OpenAI-compatible provider.
           </p>
           <AiStackLogos />
         </div>
