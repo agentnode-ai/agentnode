@@ -7,6 +7,9 @@ import yaml from "js-yaml";
 import { fetchWithAuth } from "@/lib/api";
 import { PLATFORMS, convertClientSide, parseResult } from "@/lib/import-utils";
 import { BUILDER_EXAMPLES, generateSkill, type BuilderResult } from "@/lib/builder-utils";
+import { StepIndicator } from "./components/StepIndicator";
+import { CollapsiblePanel, type PanelStatus } from "./components/CollapsiblePanel";
+import { ReadinessChecklist } from "./components/ReadinessChecklist";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -320,16 +323,16 @@ function computeReadiness(
   g: GuidedState,
   hasArtifact: boolean,
   source: string | null
-): { canPublish: boolean; items: ReadinessItem[] } {
+): { canPublish: boolean; items: (ReadinessItem & { target?: "name" | "artifact" | "tools" })[] } {
   const hasContent = hasArtifact || source === "builder" || (source != null && source.startsWith("import"));
 
-  const items: ReadinessItem[] = [
-    { label: "Package name", ok: !!g.name, required: true },
-    { label: "Package ID", ok: SLUG_PATTERN.test(g.package_id), required: true },
+  const items: (ReadinessItem & { target?: "name" | "artifact" | "tools" })[] = [
+    { label: "Package name", ok: !!g.name, required: true, target: "name" },
+    { label: "Package ID", ok: SLUG_PATTERN.test(g.package_id), required: true, target: "name" },
     { label: "Version", ok: isValidSemver(g.version), required: true },
-    { label: "At least one tool with capability", ok: g.tools.some(t => t.name && t.capability_id), required: true },
-    { label: "Code or artifact", ok: hasContent, required: true },
-    { label: "Summary", ok: !!g.summary, required: false },
+    { label: "At least one tool with capability", ok: g.tools.some(t => t.name && t.capability_id), required: true, target: "tools" },
+    { label: "Code or artifact", ok: hasContent, required: true, target: "artifact" },
+    { label: "Summary", ok: !!g.summary, required: false, target: "name" },
     { label: "Description", ok: !!g.description, required: false },
     { label: "Tags", ok: !!g.tags.trim(), required: false },
   ];
@@ -338,51 +341,28 @@ function computeReadiness(
   return { canPublish, items };
 }
 
-/* ------------------------------------------------------------------ */
-/*  Collapsible Panel                                                  */
-/* ------------------------------------------------------------------ */
+function computePanelStatuses(
+  g: GuidedState,
+  codeFiles: CodeFile[],
+  artifactFile: File | null,
+  builderArtifactName: string,
+  tarGzFile: File | null,
+  uploadedFiles: File[],
+  permissionsTouched: boolean,
+): Record<string, PanelStatus> {
+  const hasCode = codeFiles.some((f) => f.content.trim());
+  const hasArtifact = !!(builderArtifactName || artifactFile || tarGzFile || uploadedFiles.length > 0 || hasCode);
+  const basicsOk = !!g.name && SLUG_PATTERN.test(g.package_id) && isValidSemver(g.version) && !!g.summary;
+  const toolsOk = g.tools.some((t) => t.name && t.capability_id);
 
-function CollapsiblePanel({
-  title,
-  subtitle,
-  open,
-  onToggle,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  open: boolean;
-  onToggle: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-lg border border-border overflow-hidden">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center justify-between px-5 py-4 text-left hover:bg-card/50 transition-colors"
-      >
-        <div className="min-w-0 pr-4">
-          <div className="text-sm font-medium text-foreground">{title}</div>
-          {subtitle && !open && (
-            <div className="mt-0.5 text-xs text-muted truncate">{subtitle}</div>
-          )}
-        </div>
-        <svg
-          className={`h-4 w-4 shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-      {open && (
-        <div className="border-t border-border px-5 py-5 space-y-4">{children}</div>
-      )}
-    </div>
-  );
+  return {
+    basics: basicsOk ? "complete" : "incomplete",
+    artifact: hasArtifact ? "complete" : "incomplete",
+    tools: toolsOk ? "complete" : "incomplete",
+    permissions: permissionsTouched ? "complete" : "warning",
+  };
 }
+
 
 /* ------------------------------------------------------------------ */
 /*  Artifact Section                                                   */
@@ -908,6 +888,7 @@ function PublishContent() {
   const [showManifest, setShowManifest] = useState(false);
   const [showPermissions, setShowPermissions] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [permissionsTouched, setPermissionsTouched] = useState(false);
 
   /* ---- No-code inline warning (replaces window.confirm) ---- */
   const [showNoCodeConfirm, setShowNoCodeConfirm] = useState(false);
@@ -1031,6 +1012,18 @@ function PublishContent() {
   /* ================================================================ */
   /*  Handlers                                                         */
   /* ================================================================ */
+
+  function navigateToIssue(target: "name" | "artifact" | "tools") {
+    const panelMap: Record<string, string> = { name: "basics", artifact: "artifact", tools: "tools" };
+    const panel = panelMap[target];
+    setScreen("edit");
+    setOpenPanels((prev) => new Set([...prev, panel]));
+    // Scroll to panel after render
+    setTimeout(() => {
+      const el = document.querySelector(`[data-panel="${panel}"]`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 100);
+  }
 
   function togglePanel(panel: string) {
     setOpenPanels((prev) => {
@@ -1348,6 +1341,7 @@ function PublishContent() {
 
     return (
       <div className="mx-auto max-w-3xl px-4 sm:px-6 py-12">
+        <StepIndicator current={1} />
         {/* Header */}
         <div className="text-center mb-10">
           <h1 className="text-3xl font-bold tracking-tight text-foreground">
@@ -1583,6 +1577,7 @@ function PublishContent() {
 
     return (
       <div className="mx-auto max-w-3xl px-4 sm:px-6 py-12">
+        <StepIndicator current={2} />
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
           <div>
@@ -1754,24 +1749,55 @@ function PublishContent() {
           </div>
         </div>
 
-        {/* ---- Readiness Checklist ---- */}
-        <div className="mb-6 rounded-xl border border-border bg-card/50 p-5">
-          <div className="grid gap-2 sm:grid-cols-2">
-            {items.map((item) => (
-              <div key={item.label} className="flex items-center gap-2 text-sm">
-                {item.ok ? (
-                  <span className="text-green-400">&#10003;</span>
-                ) : item.required ? (
-                  <span className="text-danger">&#10007;</span>
-                ) : (
-                  <span className="text-yellow-500">&#9888;</span>
-                )}
-                <span className={item.ok ? "text-foreground" : item.required ? "text-danger" : "text-yellow-500"}>
-                  {item.label}
-                </span>
+        {/* ---- Readiness Checklist (interactive) ---- */}
+        <div className="mb-6">
+          <ReadinessChecklist items={items} onNavigate={navigateToIssue} />
+        </div>
+
+        {/* ---- Code Status ---- */}
+        <div className="mb-6">
+          {(() => {
+            const nonEmptyCode = codeFiles.filter((f) => f.content.trim());
+            const hasAnyCode = nonEmptyCode.length > 0 || !!builderArtifactName || !!tarGzFile || uploadedFiles.length > 0;
+            if (hasAnyCode) {
+              const fileNames = builderArtifactName
+                ? [builderArtifactName]
+                : tarGzFile
+                ? [tarGzFile.name]
+                : uploadedFiles.length > 0
+                ? uploadedFiles.map((f) => f.name)
+                : nonEmptyCode.map((f) => f.path);
+              return (
+                <div className="rounded-lg border border-border bg-card/50 px-4 py-3 flex items-center justify-between">
+                  <div className="text-sm text-foreground">
+                    <span className="text-success mr-1.5">&#10003;</span>
+                    {fileNames.length} file{fileNames.length !== 1 ? "s" : ""}: {fileNames.slice(0, 3).join(", ")}
+                    {fileNames.length > 3 && ` +${fileNames.length - 3} more`}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigateToIssue("artifact")}
+                    className="text-xs text-primary hover:underline"
+                  >
+                    Edit code
+                  </button>
+                </div>
+              );
+            }
+            return (
+              <div className="rounded-lg border border-primary/30 bg-primary/5 px-5 py-4 text-center">
+                <p className="text-sm font-medium text-foreground mb-1">Add your code</p>
+                <p className="text-xs text-muted mb-3">Upload files or write code to make your skill installable</p>
+                <button
+                  type="button"
+                  onClick={() => navigateToIssue("artifact")}
+                  className="rounded-md bg-primary px-5 py-2 text-sm font-medium text-white hover:bg-primary/90 transition-colors"
+                >
+                  Add code
+                </button>
               </div>
-            ))}
-          </div>
+            );
+          })()}
         </div>
 
         {/* ---- Quick Edits ---- */}
@@ -2023,8 +2049,11 @@ function PublishContent() {
     ? "Write code"
     : "Upload files";
 
+  const panelStatuses = computePanelStatuses(guided, codeFiles, artifact, builderArtifactName, tarGzFile, uploadedFiles, permissionsTouched);
+
   return (
     <div className="mx-auto max-w-3xl px-4 sm:px-6 py-12">
+      <StepIndicator current={3} />
       {/* Header */}
       <div className="mb-6 flex items-center justify-between">
         <div>
@@ -2113,410 +2142,427 @@ function PublishContent() {
       {/* ---- Collapsible edit panels ---- */}
       <div className="space-y-3 mb-6">
 
+        {/* === CODE / FILES (first — most important action) === */}
+        <div data-panel="artifact">
+          <CollapsiblePanel
+            title="Code / Files"
+            subtitle={artifactSummary}
+            open={openPanels.has("artifact")}
+            onToggle={() => togglePanel("artifact")}
+            status={panelStatuses.artifact}
+          >
+            <ArtifactSection
+              artifactMode={artifactMode}
+              onModeChange={setArtifactMode}
+              codeFiles={codeFiles}
+              onCodeFilesChange={setCodeFiles}
+              uploadedFiles={uploadedFiles}
+              onUploadedFilesChange={setUploadedFiles}
+              tarGzFile={tarGzFile}
+              onTarGzChange={setTarGzFile}
+              builderArtifactName={builderArtifactName}
+              onBuilderArtifactClear={() => { setArtifact(null); setBuilderArtifactName(""); }}
+              packageId={guided.package_id}
+            />
+          </CollapsiblePanel>
+        </div>
+
         {/* === BASICS === */}
-        <CollapsiblePanel
-          title="Basics"
-          subtitle={guided.name ? `${guided.name} · v${guided.version}` : "Name, version, and description"}
-          open={openPanels.has("basics")}
-          onToggle={() => togglePanel("basics")}
-        >
-          <div>
-            <label className="mb-1 block text-sm font-medium text-foreground">Name</label>
-            <input
-              type="text"
-              value={guided.name}
-              onChange={(e) => {
-                updateGuided("name", e.target.value);
-                const autoSlug = slugify(guided.name);
-                if (!guided.package_id || guided.package_id === autoSlug) {
-                  updateGuided("package_id", slugify(e.target.value));
-                }
-              }}
-              className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none"
-              placeholder="My PDF Extractor"
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-foreground">
-              Package ID
-              <span className="ml-2 text-xs text-muted font-normal">a-z, 0-9, dashes, 3-60 chars</span>
-            </label>
-            <input
-              type="text"
-              value={guided.package_id}
-              onChange={(e) => updateGuided("package_id", e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
-              className="w-full rounded-md border border-border bg-background px-3 py-2.5 font-mono text-foreground focus:border-primary focus:outline-none"
-              placeholder="my-pdf-extractor"
-            />
-            {guided.package_id && !SLUG_PATTERN.test(guided.package_id) && (
-              <p className="mt-1 text-xs text-danger">Must be 3-60 chars, lowercase letters, numbers, and dashes only</p>
-            )}
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
+        <div data-panel="basics">
+          <CollapsiblePanel
+            title="Basics"
+            subtitle={guided.name ? `${guided.name} · v${guided.version}` : "Name, version, and description"}
+            open={openPanels.has("basics")}
+            onToggle={() => togglePanel("basics")}
+            status={panelStatuses.basics}
+          >
             <div>
-              <label className="mb-1 block text-sm font-medium text-foreground">Type</label>
-              <select
-                value={guided.package_type}
-                onChange={(e) => updateGuided("package_type", e.target.value as GuidedState["package_type"])}
+              <label className="mb-1 block text-sm font-medium text-foreground">Name</label>
+              <input
+                type="text"
+                value={guided.name}
+                onChange={(e) => {
+                  updateGuided("name", e.target.value);
+                  const autoSlug = slugify(guided.name);
+                  if (!guided.package_id || guided.package_id === autoSlug) {
+                    updateGuided("package_id", slugify(e.target.value));
+                  }
+                }}
                 className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none"
-              >
-                <option value="toolpack">toolpack &mdash; collection of tools (most common)</option>
-                <option value="agent">agent &mdash; a full autonomous agent</option>
-                <option value="upgrade">upgrade &mdash; extends an existing package</option>
-              </select>
+                placeholder="My PDF Extractor"
+              />
             </div>
+
             <div>
               <label className="mb-1 block text-sm font-medium text-foreground">
-                Version <span className="text-xs text-muted font-normal">semver</span>
+                Package ID
+                <span className="ml-2 text-xs text-muted font-normal">a-z, 0-9, dashes, 3-60 chars</span>
               </label>
               <input
                 type="text"
-                value={guided.version}
-                onChange={(e) => updateGuided("version", e.target.value)}
+                value={guided.package_id}
+                onChange={(e) => updateGuided("package_id", e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
                 className="w-full rounded-md border border-border bg-background px-3 py-2.5 font-mono text-foreground focus:border-primary focus:outline-none"
-                placeholder="1.0.0"
+                placeholder="my-pdf-extractor"
               />
-              {guided.version && !isValidSemver(guided.version) && (
-                <p className="mt-1 text-xs text-danger">Must be valid semver (e.g. 1.0.0)</p>
+              {guided.package_id && !SLUG_PATTERN.test(guided.package_id) && (
+                <p className="mt-1 text-xs text-danger">Must be 3-60 chars, lowercase letters, numbers, and dashes only</p>
               )}
             </div>
-          </div>
 
-          <div>
-            <label className="mb-1 flex items-center justify-between text-sm font-medium text-foreground">
-              <span>Summary</span>
-              <span className={`text-xs font-normal ${guided.summary.length > 200 ? "text-danger" : "text-muted"}`}>
-                {guided.summary.length}/200
-              </span>
-            </label>
-            <textarea
-              rows={2}
-              value={guided.summary}
-              onChange={(e) => updateGuided("summary", e.target.value)}
-              className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none resize-none"
-              placeholder="Extract text and tables from PDF files"
-            />
-            <p className="mt-1 text-xs text-muted">One sentence &mdash; shown in search results and package cards.</p>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-foreground">
-              Description <span className="text-xs text-muted font-normal">(optional but recommended)</span>
-            </label>
-            <textarea
-              rows={3}
-              value={guided.description}
-              onChange={(e) => updateGuided("description", e.target.value)}
-              className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none resize-none"
-              placeholder="Detailed description of what this skill does, how it works, and what makes it useful..."
-            />
-            <p className="mt-1 text-xs text-muted">Longer explanation &mdash; shown on your package detail page.</p>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-foreground">
-              Tags <span className="text-xs text-muted font-normal">(comma-separated, optional)</span>
-            </label>
-            <input
-              type="text"
-              value={guided.tags}
-              onChange={(e) => updateGuided("tags", e.target.value)}
-              className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none"
-              placeholder="pdf, extraction, text"
-            />
-          </div>
-        </CollapsiblePanel>
-
-        {/* === TOOLS === */}
-        <CollapsiblePanel
-          title="Tools"
-          subtitle={toolSummary}
-          open={openPanels.has("tools")}
-          onToggle={() => togglePanel("tools")}
-        >
-          {guided.tools.map((tool, i) => (
-            <div key={i} className="rounded-lg border border-border bg-card/50 p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-foreground">Tool {i + 1}</span>
-                {guided.tools.length > 1 && (
-                  <button type="button" onClick={() => removeTool(i)} className="text-xs text-muted hover:text-danger transition-colors">
-                    Remove
-                  </button>
-                )}
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <label className="mb-1 block text-xs text-muted">Name</label>
-                  <input
-                    type="text"
-                    value={tool.name}
-                    onChange={(e) => updateTool(i, "name", e.target.value)}
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
-                    placeholder="extract_text"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs text-muted">What does this tool do?</label>
-                  <CapabilityDropdown
-                    value={tool.capability_id}
-                    onChange={(v) => updateTool(i, "capability_id", v)}
-                    capabilities={capabilities}
-                  />
-                </div>
-              </div>
-
+            <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label className="mb-1 block text-xs text-muted">Description</label>
-                <input
-                  type="text"
-                  value={tool.description}
-                  onChange={(e) => updateTool(i, "description", e.target.value)}
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
-                  placeholder="Extract text from PDF files"
-                />
+                <label className="mb-1 block text-sm font-medium text-foreground">Type</label>
+                <select
+                  value={guided.package_type}
+                  onChange={(e) => updateGuided("package_type", e.target.value as GuidedState["package_type"])}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none"
+                >
+                  <option value="toolpack">toolpack &mdash; collection of tools (most common)</option>
+                  <option value="agent">agent &mdash; a full autonomous agent</option>
+                  <option value="upgrade">upgrade &mdash; extends an existing package</option>
+                </select>
               </div>
-
               <div>
-                <label className="mb-1 block text-xs text-muted">
-                  Entrypoint
+                <label className="mb-1 block text-sm font-medium text-foreground">
+                  Version <span className="text-xs text-muted font-normal">semver</span>
                 </label>
                 <input
                   type="text"
-                  value={tool.entrypoint}
-                  onChange={(e) => updateTool(i, "entrypoint", e.target.value)}
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono text-foreground focus:border-primary focus:outline-none"
-                  placeholder="my_pack.tool:extract_text"
+                  value={guided.version}
+                  onChange={(e) => updateGuided("version", e.target.value)}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2.5 font-mono text-foreground focus:border-primary focus:outline-none"
+                  placeholder="1.0.0"
                 />
-                <p className="mt-1 text-xs text-muted">
-                  Where your function lives in the code.
-                  Format: <code className="text-primary/70">module.path:function_name</code>
-                  {" "}&mdash; e.g. <code className="text-primary/70">pdf_reader.tool:extract_text</code>
-                </p>
+                {guided.version && !isValidSemver(guided.version) && (
+                  <p className="mt-1 text-xs text-danger">Must be valid semver (e.g. 1.0.0)</p>
+                )}
               </div>
+            </div>
 
-              <button
-                type="button"
-                onClick={() =>
-                  setToolAdvanced((prev) => {
-                    const next = new Set(prev);
-                    next.has(i) ? next.delete(i) : next.add(i);
-                    return next;
-                  })
-                }
-                className="text-xs text-muted hover:text-foreground transition-colors"
-              >
-                {toolAdvanced.has(i) ? "Hide" : "Show"} schemas
-              </button>
+            <div>
+              <label className="mb-1 flex items-center justify-between text-sm font-medium text-foreground">
+                <span>Summary</span>
+                <span className={`text-xs font-normal ${guided.summary.length > 200 ? "text-danger" : "text-muted"}`}>
+                  {guided.summary.length}/200
+                </span>
+              </label>
+              <textarea
+                rows={2}
+                value={guided.summary}
+                onChange={(e) => updateGuided("summary", e.target.value)}
+                className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none resize-none"
+                placeholder="Extract text and tables from PDF files"
+              />
+              <p className="mt-1 text-xs text-muted">One sentence &mdash; shown in search results and package cards.</p>
+            </div>
 
-              {toolAdvanced.has(i) && (
+            <div>
+              <label className="mb-1 block text-sm font-medium text-foreground">
+                Description <span className="text-xs text-muted font-normal">(optional but recommended)</span>
+              </label>
+              <textarea
+                rows={3}
+                value={guided.description}
+                onChange={(e) => updateGuided("description", e.target.value)}
+                className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none resize-none"
+                placeholder="Detailed description of what this skill does, how it works, and what makes it useful..."
+              />
+              <p className="mt-1 text-xs text-muted">Longer explanation &mdash; shown on your package detail page.</p>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-foreground">
+                Tags <span className="text-xs text-muted font-normal">(comma-separated, optional)</span>
+              </label>
+              <input
+                type="text"
+                value={guided.tags}
+                onChange={(e) => updateGuided("tags", e.target.value)}
+                className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none"
+                placeholder="pdf, extraction, text"
+              />
+            </div>
+          </CollapsiblePanel>
+        </div>
+
+        {/* === TOOLS === */}
+        <div data-panel="tools">
+          <CollapsiblePanel
+            title="Tools"
+            subtitle={toolSummary}
+            open={openPanels.has("tools")}
+            onToggle={() => togglePanel("tools")}
+            status={panelStatuses.tools}
+          >
+            {guided.tools.map((tool, i) => (
+              <div key={i} className="rounded-lg border border-border bg-card/50 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-foreground">Tool {i + 1}</span>
+                  {guided.tools.length > 1 && (
+                    <button type="button" onClick={() => removeTool(i)} className="text-xs text-muted hover:text-danger transition-colors">
+                      Remove
+                    </button>
+                  )}
+                </div>
+
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div>
-                    <label className="mb-1 block text-xs text-muted">Input schema (JSON)</label>
-                    <textarea
-                      rows={4}
-                      value={tool.input_schema}
-                      onChange={(e) => updateTool(i, "input_schema", e.target.value)}
-                      className={`w-full rounded-md border bg-background px-3 py-2 font-mono text-xs text-foreground focus:border-primary focus:outline-none resize-none ${
-                        schemaWarnings[i]?.input ? "border-danger" : "border-border"
-                      }`}
-                      placeholder='{"type": "object", "properties": {...}}'
-                      spellCheck={false}
+                    <label className="mb-1 block text-xs text-muted">Name</label>
+                    <input
+                      type="text"
+                      value={tool.name}
+                      onChange={(e) => updateTool(i, "name", e.target.value)}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                      placeholder="extract_text"
                     />
-                    {schemaWarnings[i]?.input && (
-                      <p className="mt-1 text-xs text-danger">Invalid JSON &mdash; schema will be ignored</p>
-                    )}
                   </div>
                   <div>
-                    <label className="mb-1 block text-xs text-muted">Output schema (JSON)</label>
-                    <textarea
-                      rows={4}
-                      value={tool.output_schema}
-                      onChange={(e) => updateTool(i, "output_schema", e.target.value)}
-                      className={`w-full rounded-md border bg-background px-3 py-2 font-mono text-xs text-foreground focus:border-primary focus:outline-none resize-none ${
-                        schemaWarnings[i]?.output ? "border-danger" : "border-border"
-                      }`}
-                      placeholder='{"type": "object", "properties": {...}}'
-                      spellCheck={false}
+                    <label className="mb-1 block text-xs text-muted">What does this tool do?</label>
+                    <CapabilityDropdown
+                      value={tool.capability_id}
+                      onChange={(v) => updateTool(i, "capability_id", v)}
+                      capabilities={capabilities}
                     />
-                    {schemaWarnings[i]?.output && (
-                      <p className="mt-1 text-xs text-danger">Invalid JSON &mdash; schema will be ignored</p>
-                    )}
                   </div>
                 </div>
-              )}
-            </div>
-          ))}
 
-          <button
-            type="button"
-            onClick={addTool}
-            className="w-full rounded-md border border-dashed border-border py-3 text-sm text-muted hover:border-primary/30 hover:text-foreground transition-colors"
-          >
-            + Add tool
-          </button>
-        </CollapsiblePanel>
+                <div>
+                  <label className="mb-1 block text-xs text-muted">Description</label>
+                  <input
+                    type="text"
+                    value={tool.description}
+                    onChange={(e) => updateTool(i, "description", e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    placeholder="Extract text from PDF files"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs text-muted">
+                    Entrypoint
+                  </label>
+                  <input
+                    type="text"
+                    value={tool.entrypoint}
+                    onChange={(e) => updateTool(i, "entrypoint", e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono text-foreground focus:border-primary focus:outline-none"
+                    placeholder="my_pack.tool:extract_text"
+                  />
+                  <p className="mt-1 text-xs text-muted">
+                    Where your function lives in the code.
+                    Format: <code className="text-primary/70">module.path:function_name</code>
+                    {" "}&mdash; e.g. <code className="text-primary/70">pdf_reader.tool:extract_text</code>
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setToolAdvanced((prev) => {
+                      const next = new Set(prev);
+                      next.has(i) ? next.delete(i) : next.add(i);
+                      return next;
+                    })
+                  }
+                  className="text-xs text-muted hover:text-foreground transition-colors"
+                >
+                  {toolAdvanced.has(i) ? "Hide" : "Show"} schemas
+                </button>
+
+                {toolAdvanced.has(i) && (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-xs text-muted">Input schema (JSON)</label>
+                      <textarea
+                        rows={4}
+                        value={tool.input_schema}
+                        onChange={(e) => updateTool(i, "input_schema", e.target.value)}
+                        className={`w-full rounded-md border bg-background px-3 py-2 font-mono text-xs text-foreground focus:border-primary focus:outline-none resize-none ${
+                          schemaWarnings[i]?.input ? "border-danger" : "border-border"
+                        }`}
+                        placeholder='{"type": "object", "properties": {...}}'
+                        spellCheck={false}
+                      />
+                      {schemaWarnings[i]?.input && (
+                        <p className="mt-1 text-xs text-danger">Invalid JSON &mdash; schema will be ignored</p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs text-muted">Output schema (JSON)</label>
+                      <textarea
+                        rows={4}
+                        value={tool.output_schema}
+                        onChange={(e) => updateTool(i, "output_schema", e.target.value)}
+                        className={`w-full rounded-md border bg-background px-3 py-2 font-mono text-xs text-foreground focus:border-primary focus:outline-none resize-none ${
+                          schemaWarnings[i]?.output ? "border-danger" : "border-border"
+                        }`}
+                        placeholder='{"type": "object", "properties": {...}}'
+                        spellCheck={false}
+                      />
+                      {schemaWarnings[i]?.output && (
+                        <p className="mt-1 text-xs text-danger">Invalid JSON &mdash; schema will be ignored</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+
+            <button
+              type="button"
+              onClick={addTool}
+              className="w-full rounded-md border border-dashed border-border py-3 text-sm text-muted hover:border-primary/30 hover:text-foreground transition-colors"
+            >
+              + Add tool
+            </button>
+          </CollapsiblePanel>
+        </div>
 
         {/* === PERMISSIONS === */}
-        <CollapsiblePanel
-          title="Permissions"
-          subtitle={hasNonDefaultPerms ? "Custom permissions" : "All restricted (default)"}
-          open={openPanels.has("permissions")}
-          onToggle={() => togglePanel("permissions")}
-        >
-          {!showPermissions ? (
-            <div>
-              {hasNonDefaultPerms ? (
-                <div className="space-y-3">
-                  <div className="flex flex-wrap gap-2">
-                    {guided.network !== "none" && (
-                      <span className="rounded-full border border-yellow-500/20 bg-yellow-500/5 px-2.5 py-0.5 text-xs text-yellow-500">
-                        Network: {guided.network}
-                      </span>
-                    )}
-                    {guided.filesystem !== "none" && (
-                      <span className="rounded-full border border-yellow-500/20 bg-yellow-500/5 px-2.5 py-0.5 text-xs text-yellow-500">
-                        Filesystem: {guided.filesystem}
-                      </span>
-                    )}
-                    {guided.code_execution !== "none" && (
-                      <span className="rounded-full border border-yellow-500/20 bg-yellow-500/5 px-2.5 py-0.5 text-xs text-yellow-500">
-                        Code exec: {guided.code_execution}
-                      </span>
-                    )}
-                    {guided.data_access !== "input_only" && (
-                      <span className="rounded-full border border-yellow-500/20 bg-yellow-500/5 px-2.5 py-0.5 text-xs text-yellow-500">
-                        Data: {guided.data_access}
-                      </span>
-                    )}
+        <div data-panel="permissions">
+          <CollapsiblePanel
+            title="Permissions"
+            subtitle={hasNonDefaultPerms ? "Custom permissions" : "All restricted (default)"}
+            open={openPanels.has("permissions")}
+            onToggle={() => togglePanel("permissions")}
+            status={panelStatuses.permissions}
+          >
+            {!permissionsTouched && !hasNonDefaultPerms && (
+              <div className="rounded-md border border-yellow-500/20 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-400 mb-3">
+                Defaults active &mdash; review recommended
+              </div>
+            )}
+            {!showPermissions ? (
+              <div>
+                {hasNonDefaultPerms ? (
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap gap-2">
+                      {guided.network !== "none" && (
+                        <span className="rounded-full border border-yellow-500/20 bg-yellow-500/5 px-2.5 py-0.5 text-xs text-yellow-500">
+                          Network: {guided.network}
+                        </span>
+                      )}
+                      {guided.filesystem !== "none" && (
+                        <span className="rounded-full border border-yellow-500/20 bg-yellow-500/5 px-2.5 py-0.5 text-xs text-yellow-500">
+                          Filesystem: {guided.filesystem}
+                        </span>
+                      )}
+                      {guided.code_execution !== "none" && (
+                        <span className="rounded-full border border-yellow-500/20 bg-yellow-500/5 px-2.5 py-0.5 text-xs text-yellow-500">
+                          Code exec: {guided.code_execution}
+                        </span>
+                      )}
+                      {guided.data_access !== "input_only" && (
+                        <span className="rounded-full border border-yellow-500/20 bg-yellow-500/5 px-2.5 py-0.5 text-xs text-yellow-500">
+                          Data: {guided.data_access}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { setShowPermissions(true); setPermissionsTouched(true); }}
+                      className="text-xs text-primary hover:underline"
+                    >
+                      Edit permissions
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowPermissions(true)}
-                    className="text-xs text-primary hover:underline"
-                  >
-                    Edit permissions
-                  </button>
-                </div>
-              ) : (
-                <div className="flex items-center justify-between">
-                  <p className="text-sm text-muted">
-                    No network, filesystem, or code execution access. Safe defaults for most skills.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setShowPermissions(true)}
-                    className="shrink-0 text-xs text-primary hover:underline"
-                  >
-                    Customize
-                  </button>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-blue-400">
-                Permissions control what your tool is allowed to do. Start with defaults &mdash; only increase if needed.
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm text-muted">
+                      No network, filesystem, or code execution access. Safe defaults for most skills.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => { setShowPermissions(true); setPermissionsTouched(true); }}
+                      className="shrink-0 text-xs text-primary hover:underline"
+                    >
+                      Customize
+                    </button>
+                  </div>
+                )}
               </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <label className="mb-1 block text-xs text-muted">Network <span className="text-muted/50">&mdash; does your tool call external APIs?</span></label>
-                  <select
-                    value={guided.network}
-                    onChange={(e) => updateGuided("network", e.target.value)}
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
-                  >
-                    <option value="none">none &mdash; no internet access</option>
-                    <option value="restricted">restricted &mdash; specific domains only</option>
-                    <option value="unrestricted">unrestricted &mdash; any URL</option>
-                  </select>
+            ) : (
+              <div className="space-y-3">
+                <div className="rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-blue-400">
+                  Permissions control what your tool is allowed to do. Start with defaults &mdash; only increase if needed.
                 </div>
-                <div>
-                  <label className="mb-1 block text-xs text-muted">Filesystem <span className="text-muted/50">&mdash; does your tool read/write files?</span></label>
-                  <select
-                    value={guided.filesystem}
-                    onChange={(e) => updateGuided("filesystem", e.target.value)}
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
-                  >
-                    <option value="none">none &mdash; no file access</option>
-                    <option value="temp">temp &mdash; temporary files only</option>
-                    <option value="workspace_read">workspace_read &mdash; read project files</option>
-                    <option value="workspace_write">workspace_write &mdash; read &amp; write project files</option>
-                    <option value="any">any &mdash; full filesystem access</option>
-                  </select>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-xs text-muted">Network <span className="text-muted/50">&mdash; does your tool call external APIs?</span></label>
+                    <select
+                      value={guided.network}
+                      onChange={(e) => { updateGuided("network", e.target.value); setPermissionsTouched(true); }}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    >
+                      <option value="none">none &mdash; no internet access</option>
+                      <option value="restricted">restricted &mdash; specific domains only</option>
+                      <option value="unrestricted">unrestricted &mdash; any URL</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-muted">Filesystem <span className="text-muted/50">&mdash; does your tool read/write files?</span></label>
+                    <select
+                      value={guided.filesystem}
+                      onChange={(e) => { updateGuided("filesystem", e.target.value); setPermissionsTouched(true); }}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    >
+                      <option value="none">none &mdash; no file access</option>
+                      <option value="temp">temp &mdash; temporary files only</option>
+                      <option value="workspace_read">workspace_read &mdash; read project files</option>
+                      <option value="workspace_write">workspace_write &mdash; read &amp; write project files</option>
+                      <option value="any">any &mdash; full filesystem access</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-muted">Code execution <span className="text-muted/50">&mdash; does your tool run subprocesses?</span></label>
+                    <select
+                      value={guided.code_execution}
+                      onChange={(e) => { updateGuided("code_execution", e.target.value); setPermissionsTouched(true); }}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    >
+                      <option value="none">none &mdash; no subprocess execution</option>
+                      <option value="limited_subprocess">limited &mdash; sandboxed subprocesses</option>
+                      <option value="shell">shell &mdash; full shell access</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-muted">Data access <span className="text-muted/50">&mdash; what data can your tool see?</span></label>
+                    <select
+                      value={guided.data_access}
+                      onChange={(e) => { updateGuided("data_access", e.target.value); setPermissionsTouched(true); }}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    >
+                      <option value="input_only">input_only &mdash; only what is passed in</option>
+                      <option value="connected_accounts">connected_accounts &mdash; linked services</option>
+                      <option value="persistent">persistent &mdash; stored data across runs</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-muted">User approval <span className="text-muted/50">&mdash; when to ask before running?</span></label>
+                    <select
+                      value={guided.user_approval}
+                      onChange={(e) => { updateGuided("user_approval", e.target.value); setPermissionsTouched(true); }}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    >
+                      <option value="never">never &mdash; run without asking</option>
+                      <option value="high_risk_only">high_risk_only &mdash; ask for destructive actions</option>
+                      <option value="once">once &mdash; ask on first use</option>
+                      <option value="always">always &mdash; ask every time</option>
+                    </select>
+                  </div>
                 </div>
-                <div>
-                  <label className="mb-1 block text-xs text-muted">Code execution <span className="text-muted/50">&mdash; does your tool run subprocesses?</span></label>
-                  <select
-                    value={guided.code_execution}
-                    onChange={(e) => updateGuided("code_execution", e.target.value)}
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
-                  >
-                    <option value="none">none &mdash; no subprocess execution</option>
-                    <option value="limited_subprocess">limited &mdash; sandboxed subprocesses</option>
-                    <option value="shell">shell &mdash; full shell access</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs text-muted">Data access <span className="text-muted/50">&mdash; what data can your tool see?</span></label>
-                  <select
-                    value={guided.data_access}
-                    onChange={(e) => updateGuided("data_access", e.target.value)}
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
-                  >
-                    <option value="input_only">input_only &mdash; only what is passed in</option>
-                    <option value="connected_accounts">connected_accounts &mdash; linked services</option>
-                    <option value="persistent">persistent &mdash; stored data across runs</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs text-muted">User approval <span className="text-muted/50">&mdash; when to ask before running?</span></label>
-                  <select
-                    value={guided.user_approval}
-                    onChange={(e) => updateGuided("user_approval", e.target.value)}
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
-                  >
-                    <option value="never">never &mdash; run without asking</option>
-                    <option value="high_risk_only">high_risk_only &mdash; ask for destructive actions</option>
-                    <option value="once">once &mdash; ask on first use</option>
-                    <option value="always">always &mdash; ask every time</option>
-                  </select>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPermissions(false)}
+                  className="text-xs text-muted hover:text-foreground"
+                >
+                  Done
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowPermissions(false)}
-                className="text-xs text-muted hover:text-foreground"
-              >
-                Done
-              </button>
-            </div>
-          )}
-        </CollapsiblePanel>
-
-        {/* === CODE / FILES === */}
-        <CollapsiblePanel
-          title="Code / Files"
-          subtitle={artifactSummary}
-          open={openPanels.has("artifact")}
-          onToggle={() => togglePanel("artifact")}
-        >
-          <ArtifactSection
-            artifactMode={artifactMode}
-            onModeChange={setArtifactMode}
-            codeFiles={codeFiles}
-            onCodeFilesChange={setCodeFiles}
-            uploadedFiles={uploadedFiles}
-            onUploadedFilesChange={setUploadedFiles}
-            tarGzFile={tarGzFile}
-            onTarGzChange={setTarGzFile}
-            builderArtifactName={builderArtifactName}
-            onBuilderArtifactClear={() => { setArtifact(null); setBuilderArtifactName(""); }}
-            packageId={guided.package_id}
-          />
-        </CollapsiblePanel>
+            )}
+          </CollapsiblePanel>
+        </div>
       </div>
 
       {/* ---- Manifest preview ---- */}
