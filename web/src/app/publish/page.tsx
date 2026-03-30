@@ -79,6 +79,7 @@ interface PublishDraft {
   createdAt: number;
 }
 
+const MAX_UPLOAD_SIZE_MB = 10;
 const DRAFT_TTL = 45 * 60 * 1000;
 const DRAFT_KEY = "publish_draft";
 
@@ -543,6 +544,7 @@ function ArtifactSection({
           </button>
           <p className="text-xs text-muted">
             Your code will be automatically packaged. Include at least one .py file.
+            <span className="text-muted/50"> Max upload size: {MAX_UPLOAD_SIZE_MB} MB</span>
           </p>
         </div>
       )}
@@ -567,6 +569,9 @@ function ArtifactSection({
             </div>
             <p className="mt-2 text-xs text-muted/60">
               Individual files (.py, .toml, .yaml) or a single .tar.gz archive
+            </p>
+            <p className="mt-1 text-xs text-muted/50">
+              Max upload size: {MAX_UPLOAD_SIZE_MB} MB
             </p>
           </div>
 
@@ -673,7 +678,7 @@ function CapabilityDropdown({
         className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono text-foreground focus:border-primary focus:outline-none"
       />
       {value && !open && selectedCap && (
-        <p className="mt-1 text-[11px] text-primary/80">{selectedCap.name}</p>
+        <p className="mt-1 text-xs text-primary/80">{selectedCap.name}</p>
       )}
       {open && (
         <div className="absolute z-50 mt-1 max-h-64 w-full overflow-auto rounded-md border border-border bg-card shadow-lg">
@@ -715,7 +720,7 @@ function CapabilityDropdown({
         </div>
       )}
       {!value && !open && (
-        <p className="mt-1 text-[11px] text-muted">Describes what your tool does. Pick from the list or type a custom ID.</p>
+        <p className="mt-1 text-xs text-muted">Describes what your tool does. Pick from the list or type a custom ID.</p>
       )}
     </div>
   );
@@ -904,6 +909,12 @@ function PublishContent() {
   const [showPermissions, setShowPermissions] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  /* ---- No-code inline warning (replaces window.confirm) ---- */
+  const [showNoCodeConfirm, setShowNoCodeConfirm] = useState(false);
+
+  /* ---- JSON schema validation warnings per tool index ---- */
+  const [schemaWarnings, setSchemaWarnings] = useState<Record<number, { input?: boolean; output?: boolean }>>({});
+
   /* ================================================================ */
   /*  Effects                                                          */
   /* ================================================================ */
@@ -993,6 +1004,29 @@ function PublishContent() {
     }, delay);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [guided, screen, user, runValidation]);
+
+  // Reset no-code warning when code files become non-empty or screen changes
+  useEffect(() => {
+    const hasCode = codeFiles.some((f) => f.content.trim());
+    if (hasCode) setShowNoCodeConfirm(false);
+  }, [codeFiles]);
+  useEffect(() => { setShowNoCodeConfirm(false); }, [screen]);
+
+  // Validate JSON schemas per tool and track warnings
+  useEffect(() => {
+    const warnings: Record<number, { input?: boolean; output?: boolean }> = {};
+    guided.tools.forEach((tool, i) => {
+      const entry: { input?: boolean; output?: boolean } = {};
+      if (tool.input_schema.trim()) {
+        try { JSON.parse(tool.input_schema); } catch { entry.input = true; }
+      }
+      if (tool.output_schema.trim()) {
+        try { JSON.parse(tool.output_schema); } catch { entry.output = true; }
+      }
+      if (entry.input || entry.output) warnings[i] = entry;
+    });
+    setSchemaWarnings(warnings);
+  }, [guided.tools]);
 
   /* ================================================================ */
   /*  Handlers                                                         */
@@ -1227,11 +1261,10 @@ function PublishContent() {
       const artifactToSend = await resolveArtifact(parsed);
       if (!artifactToSend && artifactMode === "code") {
         const nonEmpty = codeFiles.filter((f) => f.content.trim());
-        if (nonEmpty.length === 0) {
-          const proceed = window.confirm(
-            "No code files provided. Publishing without code means the package won't be installable.\n\nContinue anyway?"
-          );
-          if (!proceed) { setLoading(false); return; }
+        if (nonEmpty.length === 0 && !showNoCodeConfirm) {
+          setShowNoCodeConfirm(true);
+          setLoading(false);
+          return;
         }
       }
       const formData = new FormData();
@@ -1474,7 +1507,7 @@ function PublishContent() {
                 disabled={!importCode.trim()}
                 className="rounded-xl bg-primary px-8 py-3 text-sm font-semibold text-white transition-all hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                Convert to ANP
+                Convert &amp; continue
               </button>
               <span className="text-xs text-muted">Free &mdash; no account required</span>
             </div>
@@ -1519,9 +1552,6 @@ function PublishContent() {
 
         {/* Footer links */}
         <div className="mt-12 border-t border-border pt-8 text-center space-y-2">
-          <p className="text-sm text-muted">
-            Or publish via CLI: <code className="rounded bg-card px-1.5 py-0.5 text-primary">agentnode publish</code>
-          </p>
         </div>
       </div>
     );
@@ -1782,12 +1812,12 @@ function PublishContent() {
           <button
             type="button"
             onClick={() => {
-              setOpenPanels(new Set());
+              setOpenPanels(new Set(["basics", "artifact"]));
               setScreen("edit");
             }}
             className="rounded-md border border-border px-5 py-2.5 text-sm text-muted hover:text-foreground transition-colors"
           >
-            Edit all details
+            Edit details &amp; add code
           </button>
 
           {!isAuthed ? (
@@ -2168,7 +2198,7 @@ function PublishContent() {
               className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none resize-none"
               placeholder="Extract text and tables from PDF files"
             />
-            <p className="mt-1 text-[11px] text-muted">One sentence &mdash; shown in search results and package cards.</p>
+            <p className="mt-1 text-xs text-muted">One sentence &mdash; shown in search results and package cards.</p>
           </div>
 
           <div>
@@ -2182,7 +2212,7 @@ function PublishContent() {
               className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none resize-none"
               placeholder="Detailed description of what this skill does, how it works, and what makes it useful..."
             />
-            <p className="mt-1 text-[11px] text-muted">Longer explanation &mdash; shown on your package detail page.</p>
+            <p className="mt-1 text-xs text-muted">Longer explanation &mdash; shown on your package detail page.</p>
           </div>
 
           <div>
@@ -2260,7 +2290,7 @@ function PublishContent() {
                   className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono text-foreground focus:border-primary focus:outline-none"
                   placeholder="my_pack.tool:extract_text"
                 />
-                <p className="mt-1 text-[11px] text-muted">
+                <p className="mt-1 text-xs text-muted">
                   Where your function lives in the code.
                   Format: <code className="text-primary/70">module.path:function_name</code>
                   {" "}&mdash; e.g. <code className="text-primary/70">pdf_reader.tool:extract_text</code>
@@ -2289,10 +2319,15 @@ function PublishContent() {
                       rows={4}
                       value={tool.input_schema}
                       onChange={(e) => updateTool(i, "input_schema", e.target.value)}
-                      className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs text-foreground focus:border-primary focus:outline-none resize-none"
+                      className={`w-full rounded-md border bg-background px-3 py-2 font-mono text-xs text-foreground focus:border-primary focus:outline-none resize-none ${
+                        schemaWarnings[i]?.input ? "border-danger" : "border-border"
+                      }`}
                       placeholder='{"type": "object", "properties": {...}}'
                       spellCheck={false}
                     />
+                    {schemaWarnings[i]?.input && (
+                      <p className="mt-1 text-xs text-danger">Invalid JSON &mdash; schema will be ignored</p>
+                    )}
                   </div>
                   <div>
                     <label className="mb-1 block text-xs text-muted">Output schema (JSON)</label>
@@ -2300,10 +2335,15 @@ function PublishContent() {
                       rows={4}
                       value={tool.output_schema}
                       onChange={(e) => updateTool(i, "output_schema", e.target.value)}
-                      className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs text-foreground focus:border-primary focus:outline-none resize-none"
+                      className={`w-full rounded-md border bg-background px-3 py-2 font-mono text-xs text-foreground focus:border-primary focus:outline-none resize-none ${
+                        schemaWarnings[i]?.output ? "border-danger" : "border-border"
+                      }`}
                       placeholder='{"type": "object", "properties": {...}}'
                       spellCheck={false}
                     />
+                    {schemaWarnings[i]?.output && (
+                      <p className="mt-1 text-xs text-danger">Invalid JSON &mdash; schema will be ignored</p>
+                    )}
                   </div>
                 </div>
               )}
@@ -2456,9 +2496,9 @@ function PublishContent() {
           )}
         </CollapsiblePanel>
 
-        {/* === ARTIFACT === */}
+        {/* === CODE / FILES === */}
         <CollapsiblePanel
-          title="Artifact"
+          title="Code / Files"
           subtitle={artifactSummary}
           open={openPanels.has("artifact")}
           onToggle={() => togglePanel("artifact")}
@@ -2533,6 +2573,32 @@ function PublishContent() {
         </div>
       )}
 
+      {/* ---- No-code inline warning ---- */}
+      {showNoCodeConfirm && (
+        <div className="mb-4 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-4">
+          <p className="text-sm font-medium text-yellow-400 mb-1">No code files provided</p>
+          <p className="text-xs text-yellow-400/80 mb-3">
+            Publishing without code means the package won&apos;t be installable. Are you sure?
+          </p>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handlePublish}
+              className="rounded-md bg-yellow-500/20 border border-yellow-500/30 px-4 py-2 text-xs font-medium text-yellow-400 hover:bg-yellow-500/30 transition-colors"
+            >
+              Publish without code
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowNoCodeConfirm(false)}
+              className="rounded-md border border-border px-4 py-2 text-xs text-muted hover:text-foreground transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ---- Publish bar ---- */}
       <div className="flex items-center justify-between pt-4 border-t border-border">
         <button
@@ -2552,9 +2618,6 @@ function PublishContent() {
         </button>
       </div>
 
-      <p className="mt-6 text-center text-xs text-muted">
-        Or publish via CLI: <code className="rounded bg-card px-1.5 py-0.5 text-primary">agentnode publish</code>
-      </p>
     </div>
   );
 }

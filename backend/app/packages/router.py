@@ -26,6 +26,7 @@ from app.packages.schemas import (
 from app.packages.service import publish_package
 from app.packages.validator import validate_manifest
 from app.packages.version_queries import get_latest_installable_version, get_latest_owner_visible_version, get_owner_visible_versions, get_public_versions
+from app.config import settings
 from app.shared.exceptions import AppError
 from app.shared.storage import download_preview_file, PREVIEW_EXTENSIONS
 from app.trust.scanner import run_security_scan
@@ -53,11 +54,20 @@ async def publish(
     session: AsyncSession = Depends(get_session),
 ):
     """Publish a new package or new version of an existing package."""
-    manifest_dict = json.loads(manifest)
+    if not manifest or not manifest.strip():
+        raise AppError("MANIFEST_INVALID", "Manifest must not be empty", 400)
+    try:
+        manifest_dict = json.loads(manifest)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise AppError("MANIFEST_INVALID", f"Manifest is not valid JSON: {exc}", 400)
 
     artifact_bytes = None
     if artifact:
-        artifact_bytes = await artifact.read()
+        limit = settings.MAX_ARTIFACT_SIZE_BYTES
+        artifact_bytes = await artifact.read(limit + 1)
+        if len(artifact_bytes) > limit:
+            limit_mb = limit / (1024 * 1024)
+            raise AppError("ARTIFACT_TOO_LARGE", f"Artifact must be under {limit_mb:.0f} MB", 413)
 
     pkg, pv, warnings = await publish_package(
         manifest=manifest_dict,
