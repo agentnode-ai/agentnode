@@ -909,6 +909,19 @@ function PublishContent() {
       .finally(() => setAuthChecked(true));
   }, []);
 
+  // Default tab: non-logged-in users land on "import" (free, no account required)
+  useEffect(() => {
+    if (!authChecked) return;
+    if (user) return; // logged-in users keep default
+    if (tabParam) return; // URL param has priority (Rule 6)
+    // Don't override if a draft was restored that was on "describe"
+    const draft = typeof window !== "undefined" ? restoreDraft() : null;
+    if (draft?.tab === "describe") return;
+    if (activeTab === "describe") {
+      setActiveTab("import");
+    }
+  }, [authChecked, user, tabParam]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Load capabilities
   useEffect(() => {
     fetch("/api/v1/resolution/capabilities")
@@ -1316,9 +1329,7 @@ function PublishContent() {
   }
 
   function copyManifest() {
-    const text = user?.publisher
-      ? JSON.stringify(buildManifestFromGuided(guided, user.publisher.slug), null, 2)
-      : "";
+    const text = JSON.stringify(buildManifestFromGuided(guided, user?.publisher?.slug || "your-publisher"), null, 2);
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -1936,97 +1947,9 @@ function PublishContent() {
   }
 
   /* ================================================================ */
-  /*  Render: Auth gate for edit screen                                */
+  /*  Auth gates removed from Screen 3 — auth is now inline at the     */
+  /*  Publish button only (Sprint 2B). Edit screen always accessible.  */
   /* ================================================================ */
-
-  if (!user) {
-    const returnTo = "/publish";
-    return (
-      <div className="mx-auto max-w-lg px-4 sm:px-6 py-24 text-center">
-        <h1 className="mb-3 text-2xl font-bold text-foreground">Sign in to publish</h1>
-        <p className="mb-8 text-muted">
-          Create an account or sign in to publish your skill on AgentNode.
-        </p>
-        <div className="flex flex-col gap-3">
-          <Link
-            href={`/auth/register?returnTo=${encodeURIComponent(returnTo)}`}
-            className="rounded-md bg-primary px-6 py-3 text-sm font-semibold text-white hover:bg-primary/90 transition-colors"
-          >
-            Create account
-          </Link>
-          <Link
-            href={`/auth/login?returnTo=${encodeURIComponent(returnTo)}`}
-            className="rounded-md border border-border px-6 py-3 text-sm text-muted hover:text-foreground hover:border-primary/30 transition-colors"
-          >
-            Already have an account? Sign in
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  /* ================================================================ */
-  /*  Render: Publisher creation gate (edit screen only)                */
-  /* ================================================================ */
-
-  if (!user.publisher) {
-    return (
-      <div className="mx-auto max-w-lg px-4 sm:px-6 py-16">
-        <h1 className="mb-2 text-2xl font-bold text-foreground">Almost there!</h1>
-        <p className="mb-6 text-muted text-sm">
-          Create a publisher profile to start publishing skills. This takes 10 seconds.
-        </p>
-
-        {error && (
-          <div className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">{error}</div>
-        )}
-
-        <div className="rounded-lg border border-border bg-card p-6">
-          <div className="mb-4 flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/20 text-sm font-bold text-primary">1</div>
-            <span className="text-sm font-medium text-foreground">Set up your publisher identity</span>
-          </div>
-          <div className="space-y-4">
-            <div>
-              <label className="mb-1 block text-sm text-muted">Display name</label>
-              <input
-                type="text"
-                value={pubDisplayName}
-                onChange={(e) => {
-                  setPubDisplayName(e.target.value);
-                  if (!pubSlug || pubSlug === pubDisplayName.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-")) {
-                    setPubSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-"));
-                  }
-                }}
-                className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none"
-                placeholder="My Company"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-muted">
-                Slug <span className="text-muted/50">(used in package URLs: @your-slug)</span>
-              </label>
-              <input
-                type="text"
-                value={pubSlug}
-                onChange={(e) => setPubSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
-                className="w-full rounded-md border border-border bg-background px-3 py-2.5 font-mono text-foreground focus:border-primary focus:outline-none"
-                placeholder="my-company"
-                pattern="[a-z0-9-]+"
-              />
-            </div>
-            <button
-              onClick={createPublisher}
-              disabled={creatingPublisher || !pubSlug || !pubDisplayName}
-              className="w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-white hover:bg-primary/90 disabled:opacity-50"
-            >
-              {creatingPublisher ? "Creating..." : "Create publisher & continue"}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   /* ================================================================ */
   /*  Render: SCREEN 3 — ADVANCED EDIT                                 */
@@ -2058,9 +1981,13 @@ function PublishContent() {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Edit &amp; Publish</h1>
-          <p className="text-sm text-muted">
-            Publishing as <span className="text-primary font-medium">@{user.publisher.slug}</span>
-          </p>
+          {user?.publisher ? (
+            <p className="text-sm text-muted">
+              Publishing as <span className="text-primary font-medium">@{user.publisher.slug}</span>
+            </p>
+          ) : (
+            <p className="text-sm text-muted">Review and edit your skill details</p>
+          )}
         </div>
         <button
           type="button"
@@ -2588,7 +2515,7 @@ function PublishContent() {
               </button>
             </div>
             <pre className="max-h-72 overflow-auto p-4 font-mono text-xs leading-relaxed text-gray-300">
-              {JSON.stringify(buildManifestFromGuided(guided, user.publisher.slug), null, 2)}
+              {JSON.stringify(buildManifestFromGuided(guided, user?.publisher?.slug || "your-publisher"), null, 2)}
             </pre>
           </div>
         )}
@@ -2645,7 +2572,7 @@ function PublishContent() {
         </div>
       )}
 
-      {/* ---- Publish bar ---- */}
+      {/* ---- Publish bar (with inline auth gates) ---- */}
       <div className="flex items-center justify-between pt-4 border-t border-border">
         <button
           type="button"
@@ -2654,14 +2581,61 @@ function PublishContent() {
         >
           &#8592; Back to review
         </button>
-        <button
-          type="button"
-          onClick={handlePublish}
-          disabled={loading || buildingArtifact || (validation !== null && !validation.valid)}
-          className="rounded-md bg-primary px-8 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
-        >
-          {buildingArtifact ? "Building artifact..." : loading ? "Publishing..." : "Publish"}
-        </button>
+
+        {!user ? (
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-muted">Sign in to publish</span>
+            <Link
+              href={`/auth/login?returnTo=${encodeURIComponent("/publish?tab=" + activeTab)}`}
+              onClick={() => {
+                saveDraft({
+                  tab: activeTab,
+                  description: descriptionText,
+                  importPlatform,
+                  importCode,
+                  manifestText: manifestInput,
+                  guided,
+                  source: source || undefined,
+                  createdAt: Date.now(),
+                });
+              }}
+              className="rounded-md bg-primary px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary/90"
+            >
+              Sign in
+            </Link>
+          </div>
+        ) : !user.publisher ? (
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={pubDisplayName}
+              onChange={(e) => {
+                setPubDisplayName(e.target.value);
+                if (!pubSlug || pubSlug === pubDisplayName.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-")) {
+                  setPubSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-"));
+                }
+              }}
+              className="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+              placeholder="Publisher name"
+            />
+            <button
+              onClick={createPublisher}
+              disabled={creatingPublisher || !pubDisplayName}
+              className="rounded-md bg-primary px-5 py-2 text-sm font-medium text-white hover:bg-primary/90 disabled:opacity-50"
+            >
+              {creatingPublisher ? "Creating..." : "Create & publish"}
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={handlePublish}
+            disabled={loading || buildingArtifact || (validation !== null && !validation.valid)}
+            className="rounded-md bg-primary px-8 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
+          >
+            {buildingArtifact ? "Building artifact..." : loading ? "Publishing..." : "Publish"}
+          </button>
+        )}
       </div>
 
     </div>
