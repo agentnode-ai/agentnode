@@ -7,707 +7,23 @@ import yaml from "js-yaml";
 import { fetchWithAuth } from "@/lib/api";
 import { PLATFORMS, convertClientSide, parseResult } from "@/lib/import-utils";
 import { BUILDER_EXAMPLES, generateSkill, type BuilderResult } from "@/lib/builder-utils";
+
+// Extracted modules
+import type { UserInfo, ToolEntry, CodeFile, GuidedState, ValidationResult, CapabilityOption, InputTab } from "./lib/types";
+import { MAX_UPLOAD_SIZE_MB, DRAFT_TTL, DRAFT_KEY, SLUG_PATTERN, EMPTY_TOOL, DEFAULT_GUIDED, CAPABILITY_FALLBACK } from "./lib/constants";
+import { slugify, isValidSemver, buildManifestFromGuided, parseManifestToGuided } from "./lib/manifest";
+import { computeReadiness, computePanelStatuses } from "./lib/readiness";
+import { saveDraft, restoreDraft, clearDraft } from "./hooks/useDraft";
 import { StepIndicator } from "./components/StepIndicator";
-import { CollapsiblePanel, type PanelStatus } from "./components/CollapsiblePanel";
+import { CollapsiblePanel } from "./components/CollapsiblePanel";
 import { ReadinessChecklist } from "./components/ReadinessChecklist";
+import { ArtifactSection } from "./components/ArtifactSection";
+import { CapabilityDropdown } from "./components/CapabilityDropdown";
+import { StickyPublishBar } from "./components/StickyPublishBar";
 
 /* ------------------------------------------------------------------ */
-/*  Types                                                              */
-/* ------------------------------------------------------------------ */
-
-interface UserInfo {
-  id: string;
-  username: string;
-  publisher?: { slug: string; display_name: string } | null;
-}
-
-interface ToolEntry {
-  name: string;
-  description: string;
-  capability_id: string;
-  entrypoint: string;
-  input_schema: string;
-  output_schema: string;
-}
-
-interface CodeFile {
-  path: string;
-  content: string;
-}
-
-interface GuidedState {
-  name: string;
-  package_id: string;
-  package_type: "toolpack" | "agent" | "upgrade";
-  version: string;
-  summary: string;
-  description: string;
-  tools: ToolEntry[];
-  frameworks: string[];
-  network: string;
-  filesystem: string;
-  code_execution: string;
-  data_access: string;
-  user_approval: string;
-  tags: string;
-}
-
-interface ValidationResult {
-  valid: boolean;
-  errors: string[];
-  warnings: string[];
-}
-
-interface CapabilityOption {
-  id: string;
-  name: string;
-  category: string;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Draft Persistence (sessionStorage + TTL)                           */
-/* ------------------------------------------------------------------ */
-
-type InputTab = "describe" | "import" | "manifest";
-
-interface PublishDraft {
-  tab: InputTab;
-  description?: string;
-  importPlatform?: string;
-  importCode?: string;
-  manifestText?: string;
-  guided?: GuidedState;
-  source?: string;
-  hasBuilderArtifact?: boolean;
-  createdAt: number;
-}
-
-const MAX_UPLOAD_SIZE_MB = 10;
-const DRAFT_TTL = 45 * 60 * 1000;
-const DRAFT_KEY = "publish_draft";
-
-function saveDraft(draft: PublishDraft) {
-  sessionStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
-}
-
-function restoreDraft(): PublishDraft | null {
-  const raw = sessionStorage.getItem(DRAFT_KEY);
-  if (!raw) return null;
-  try {
-    const draft: PublishDraft = JSON.parse(raw);
-    if (Date.now() - draft.createdAt > DRAFT_TTL) {
-      sessionStorage.removeItem(DRAFT_KEY);
-      return null;
-    }
-    return draft;
-  } catch {
-    sessionStorage.removeItem(DRAFT_KEY);
-    return null;
-  }
-}
-
-function clearDraft() {
-  sessionStorage.removeItem(DRAFT_KEY);
-}
-
-/* ------------------------------------------------------------------ */
-/*  Helpers                                                            */
-/* ------------------------------------------------------------------ */
-
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 60);
-}
-
-function isValidSemver(v: string): boolean {
-  return /^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$/.test(v);
-}
-
-const SLUG_PATTERN = /^[a-z0-9-]{3,60}$/;
-
-/* ---- Static capability fallback ---- */
-const CAPABILITY_FALLBACK: CapabilityOption[] = [
-  { id: "pdf_extraction", name: "Extract text & tables from PDFs", category: "Document Processing" },
-  { id: "document_parsing", name: "Parse documents (Word, text, HTML)", category: "Document Processing" },
-  { id: "document_summary", name: "Summarize long documents", category: "Document Processing" },
-  { id: "citation_extraction", name: "Extract citations & references", category: "Document Processing" },
-  { id: "web_search", name: "Search the web", category: "Web & Browsing" },
-  { id: "webpage_extraction", name: "Extract content from web pages", category: "Web & Browsing" },
-  { id: "browser_navigation", name: "Navigate & interact with websites", category: "Web & Browsing" },
-  { id: "link_discovery", name: "Discover & validate links", category: "Web & Browsing" },
-  { id: "json_processing", name: "Parse, transform & validate JSON", category: "Data Analysis" },
-  { id: "csv_analysis", name: "Analyze & transform CSV data", category: "Data Analysis" },
-  { id: "spreadsheet_parsing", name: "Parse spreadsheet files", category: "Data Analysis" },
-  { id: "data_cleaning", name: "Clean & normalize data", category: "Data Analysis" },
-  { id: "statistics_analysis", name: "Run statistical analysis", category: "Data Analysis" },
-  { id: "chart_generation", name: "Generate charts & visualizations", category: "Data Analysis" },
-  { id: "sql_generation", name: "Generate SQL queries", category: "Data Analysis" },
-  { id: "log_analysis", name: "Parse & analyze log files", category: "Data Analysis" },
-  { id: "vector_memory", name: "Store & query vector embeddings", category: "Memory & Retrieval" },
-  { id: "knowledge_retrieval", name: "Retrieve knowledge from stores", category: "Memory & Retrieval" },
-  { id: "semantic_search", name: "Semantic similarity search", category: "Memory & Retrieval" },
-  { id: "embedding_generation", name: "Generate text embeddings", category: "Memory & Retrieval" },
-  { id: "document_indexing", name: "Index documents for search", category: "Memory & Retrieval" },
-  { id: "conversation_memory", name: "Store conversation context", category: "Memory & Retrieval" },
-  { id: "email_drafting", name: "Draft emails from prompts", category: "Communication" },
-  { id: "email_summary", name: "Summarize email threads", category: "Communication" },
-  { id: "meeting_summary", name: "Summarize meetings & calls", category: "Communication" },
-  { id: "scheduling", name: "Schedule events & reminders", category: "Productivity" },
-  { id: "task_management", name: "Create & manage tasks", category: "Productivity" },
-  { id: "translation", name: "Translate between languages", category: "Language" },
-  { id: "tone_adjustment", name: "Adjust text tone & style", category: "Language" },
-  { id: "code_analysis", name: "Analyze & review code", category: "Development" },
-];
-
-const EMPTY_TOOL: ToolEntry = {
-  name: "",
-  description: "",
-  capability_id: "",
-  entrypoint: "",
-  input_schema: "",
-  output_schema: "",
-};
-
-const DEFAULT_GUIDED: GuidedState = {
-  name: "",
-  package_id: "",
-  package_type: "toolpack",
-  version: "1.0.0",
-  summary: "",
-  description: "",
-  tools: [{ ...EMPTY_TOOL }],
-  frameworks: ["generic"],
-  network: "none",
-  filesystem: "none",
-  code_execution: "none",
-  data_access: "input_only",
-  user_approval: "never",
-  tags: "",
-};
-
-function buildManifestFromGuided(g: GuidedState, publisherSlug: string): Record<string, unknown> {
-  const tools = g.tools.map((t) => {
-    const tool: Record<string, unknown> = {
-      name: t.name,
-      description: t.description,
-      capability_id: t.capability_id,
-    };
-    if (t.entrypoint) tool.entrypoint = t.entrypoint;
-    if (t.input_schema.trim()) {
-      try { tool.input_schema = JSON.parse(t.input_schema); } catch { /* skip */ }
-    }
-    if (t.output_schema.trim()) {
-      try { tool.output_schema = JSON.parse(t.output_schema); } catch { /* skip */ }
-    }
-    return tool;
-  });
-
-  const manifest: Record<string, unknown> = {
-    manifest_version: "0.2",
-    package_id: g.package_id,
-    package_type: g.package_type,
-    name: g.name,
-    publisher: publisherSlug,
-    version: g.version,
-    summary: g.summary,
-    runtime: "python",
-    install_mode: "package",
-    hosting_type: "agentnode_hosted",
-    capabilities: { tools },
-    compatibility: { frameworks: g.frameworks },
-    permissions: {
-      network: { level: g.network },
-      filesystem: { level: g.filesystem },
-      code_execution: { level: g.code_execution },
-      data_access: { level: g.data_access },
-      user_approval: { required: g.user_approval },
-    },
-  };
-
-  if (g.description) manifest.description = g.description;
-  if (g.tags.trim()) {
-    manifest.tags = g.tags.split(",").map((t) => t.trim()).filter(Boolean);
-  }
-
-  return manifest;
-}
-
-function parseManifestToGuided(json: Record<string, unknown>): GuidedState {
-  const g = { ...DEFAULT_GUIDED };
-
-  if (typeof json.name === "string" && json.name) g.name = json.name;
-  else if (typeof json.display_name === "string" && json.display_name) g.name = json.display_name;
-
-  if (typeof json.package_id === "string") g.package_id = json.package_id;
-  if (json.package_type === "toolpack" || json.package_type === "agent" || json.package_type === "upgrade") {
-    g.package_type = json.package_type;
-  }
-  if (typeof json.version === "string") g.version = json.version;
-
-  if (typeof json.summary === "string" && json.summary) g.summary = json.summary;
-  else if (typeof json.description === "string" && json.description) g.summary = json.description;
-
-  if (typeof json.description === "string") g.description = json.description;
-
-  const caps = json.capabilities as Record<string, unknown> | undefined;
-  const capTools = caps && Array.isArray(caps.tools) ? caps.tools : null;
-  const topTools = Array.isArray(json.tools) ? json.tools : null;
-  const rawTools = (capTools && capTools.length > 0) ? capTools : topTools;
-
-  if (rawTools && rawTools.length > 0) {
-    g.tools = rawTools.map((t: Record<string, unknown>) => {
-      let capId = (t.capability_id as string) || "";
-      if (!capId && Array.isArray(t.capability_ids) && t.capability_ids.length > 0) {
-        capId = t.capability_ids[0] as string;
-      }
-      const inputSchema = t.input_schema || t.parameters;
-      const outputSchema = t.output_schema || t.returns;
-      return {
-        name: (t.name as string) || (t.id as string) || (t.display_name as string) || "",
-        description: (t.description as string) || "",
-        capability_id: capId,
-        entrypoint: (t.entrypoint as string) || "",
-        input_schema: inputSchema ? JSON.stringify(inputSchema, null, 2) : "",
-        output_schema: outputSchema ? JSON.stringify(outputSchema, null, 2) : "",
-      };
-    });
-  }
-
-  if (typeof json.entrypoint === "string" && json.entrypoint && g.tools.length === 1 && !g.tools[0].entrypoint) {
-    g.tools[0].entrypoint = json.entrypoint;
-  }
-
-  const compat = json.compatibility as Record<string, unknown> | undefined;
-  if (compat && Array.isArray(compat.frameworks) && compat.frameworks.length > 0) {
-    g.frameworks = compat.frameworks as string[];
-  }
-
-  const perms = json.permissions as Record<string, unknown> | undefined;
-  if (perms) {
-    const net = perms.network as Record<string, string> | undefined;
-    if (net?.level) g.network = net.level;
-    const fs = perms.filesystem as Record<string, string> | undefined;
-    if (fs?.level) g.filesystem = fs.level;
-    const exec = perms.code_execution as Record<string, string> | undefined;
-    if (exec?.level) g.code_execution = exec.level;
-    const data = perms.data_access as Record<string, string> | undefined;
-    if (data?.level) g.data_access = data.level;
-    const approval = perms.user_approval as Record<string, string> | undefined;
-    if (approval?.required) g.user_approval = approval.required;
-  }
-
-  if (Array.isArray(json.tags)) g.tags = json.tags.join(", ");
-  if (!g.tags && Array.isArray(json.dependencies)) {
-    g.tags = json.dependencies.join(", ");
-  }
-
-  return g;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Readiness Check                                                    */
-/* ------------------------------------------------------------------ */
-
-interface ReadinessItem {
-  label: string;
-  ok: boolean;
-  required: boolean;
-}
-
-function computeReadiness(
-  g: GuidedState,
-  hasArtifact: boolean,
-  source: string | null
-): { canPublish: boolean; items: (ReadinessItem & { target?: "name" | "artifact" | "tools" })[] } {
-  const hasContent = hasArtifact || source === "builder" || (source != null && source.startsWith("import"));
-
-  const items: (ReadinessItem & { target?: "name" | "artifact" | "tools" })[] = [
-    { label: "Package name", ok: !!g.name, required: true, target: "name" },
-    { label: "Package ID", ok: SLUG_PATTERN.test(g.package_id), required: true, target: "name" },
-    { label: "Version", ok: isValidSemver(g.version), required: true },
-    { label: "At least one tool with capability", ok: g.tools.some(t => t.name && t.capability_id), required: true, target: "tools" },
-    { label: "Code or artifact", ok: hasContent, required: true, target: "artifact" },
-    { label: "Summary", ok: !!g.summary, required: false, target: "name" },
-    { label: "Description", ok: !!g.description, required: false },
-    { label: "Tags", ok: !!g.tags.trim(), required: false },
-  ];
-
-  const canPublish = items.filter(i => i.required).every(i => i.ok);
-  return { canPublish, items };
-}
-
-function computePanelStatuses(
-  g: GuidedState,
-  codeFiles: CodeFile[],
-  artifactFile: File | null,
-  builderArtifactName: string,
-  tarGzFile: File | null,
-  uploadedFiles: File[],
-  permissionsTouched: boolean,
-): Record<string, PanelStatus> {
-  const hasCode = codeFiles.some((f) => f.content.trim());
-  const hasArtifact = !!(builderArtifactName || artifactFile || tarGzFile || uploadedFiles.length > 0 || hasCode);
-  const basicsOk = !!g.name && SLUG_PATTERN.test(g.package_id) && isValidSemver(g.version) && !!g.summary;
-  const toolsOk = g.tools.some((t) => t.name && t.capability_id);
-
-  return {
-    basics: basicsOk ? "complete" : "incomplete",
-    artifact: hasArtifact ? "complete" : "incomplete",
-    tools: toolsOk ? "complete" : "incomplete",
-    permissions: permissionsTouched ? "complete" : "warning",
-  };
-}
-
-
-/* ------------------------------------------------------------------ */
-/*  Artifact Section                                                   */
-/* ------------------------------------------------------------------ */
-
-function ArtifactSection({
-  artifactMode,
-  onModeChange,
-  codeFiles,
-  onCodeFilesChange,
-  uploadedFiles,
-  onUploadedFilesChange,
-  tarGzFile,
-  onTarGzChange,
-  builderArtifactName,
-  onBuilderArtifactClear,
-  packageId,
-}: {
-  artifactMode: "code" | "upload";
-  onModeChange: (mode: "code" | "upload") => void;
-  codeFiles: CodeFile[];
-  onCodeFilesChange: (files: CodeFile[]) => void;
-  uploadedFiles: File[];
-  onUploadedFilesChange: (files: File[]) => void;
-  tarGzFile: File | null;
-  onTarGzChange: (f: File | null) => void;
-  builderArtifactName?: string;
-  onBuilderArtifactClear?: () => void;
-  packageId?: string;
-}) {
-  const dropRef = useRef<HTMLDivElement>(null);
-  const [dragOver, setDragOver] = useState(false);
-
-  function updateCodeFile(index: number, field: "path" | "content", value: string) {
-    const next = [...codeFiles];
-    next[index] = { ...next[index], [field]: value };
-    onCodeFilesChange(next);
-  }
-
-  function addCodeFile() {
-    const moduleName = packageId ? packageId.replace(/-/g, "_") : "my_tool";
-    const existingCount = codeFiles.length;
-    const defaultPath = existingCount === 0
-      ? `${moduleName}/tool.py`
-      : `${moduleName}/helper_${existingCount}.py`;
-    onCodeFilesChange([...codeFiles, { path: defaultPath, content: "" }]);
-  }
-
-  function removeCodeFile(index: number) {
-    if (codeFiles.length <= 1) return;
-    onCodeFilesChange(codeFiles.filter((_, i) => i !== index));
-  }
-
-  function handleFileDrop(e: React.DragEvent) {
-    e.preventDefault();
-    setDragOver(false);
-    processUploadedFiles(Array.from(e.dataTransfer.files));
-  }
-
-  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    processUploadedFiles(Array.from(e.target.files || []));
-  }
-
-  function processUploadedFiles(files: File[]) {
-    if (files.length === 1 && (files[0].name.endsWith(".tar.gz") || files[0].name.endsWith(".tgz"))) {
-      onTarGzChange(files[0]);
-      onUploadedFilesChange([]);
-      return;
-    }
-    onTarGzChange(null);
-    onUploadedFilesChange([...uploadedFiles, ...files]);
-  }
-
-  function removeUploadedFile(index: number) {
-    onUploadedFilesChange(uploadedFiles.filter((_, i) => i !== index));
-  }
-
-  if (builderArtifactName && onBuilderArtifactClear) {
-    return (
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-4 py-2.5 text-sm">
-          <span className="text-primary">&#10003;</span>
-          <span className="font-mono text-foreground">{builderArtifactName}</span>
-          <span className="text-muted">(from Builder)</span>
-        </div>
-        <button type="button" onClick={onBuilderArtifactClear} className="text-xs text-muted hover:text-foreground">
-          Remove
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => onModeChange("code")}
-          className={`rounded-full border px-4 py-1.5 text-xs font-medium transition-colors ${
-            artifactMode === "code"
-              ? "border-primary bg-primary/10 text-primary"
-              : "border-border text-muted hover:border-primary/30"
-          }`}
-        >
-          Write code
-        </button>
-        <button
-          type="button"
-          onClick={() => onModeChange("upload")}
-          className={`rounded-full border px-4 py-1.5 text-xs font-medium transition-colors ${
-            artifactMode === "upload"
-              ? "border-primary bg-primary/10 text-primary"
-              : "border-border text-muted hover:border-primary/30"
-          }`}
-        >
-          Upload files
-        </button>
-      </div>
-
-      {artifactMode === "code" && (
-        <div className="space-y-3">
-          {codeFiles.some((f) => f.content.trim()) && codeFiles[0]?.path.includes("src/") && (
-            <div className="rounded-lg border border-green-500/30 bg-green-500/5 px-3 py-2 text-xs text-green-400">
-              Code imported from your original tool. Review and edit before publishing.
-            </div>
-          )}
-          {codeFiles.map((file, i) => (
-            <div key={i} className="rounded-lg border border-border bg-card overflow-hidden">
-              <div className="flex items-center gap-2 border-b border-border px-3 py-2 bg-card">
-                <input
-                  type="text"
-                  value={file.path}
-                  onChange={(e) => updateCodeFile(i, "path", e.target.value)}
-                  className="flex-1 bg-transparent text-xs font-mono text-foreground focus:outline-none placeholder:text-muted/50"
-                  placeholder="my_tool/tool.py"
-                />
-                {codeFiles.length > 1 && (
-                  <button type="button" onClick={() => removeCodeFile(i)} className="text-xs text-muted hover:text-danger transition-colors">
-                    Remove
-                  </button>
-                )}
-              </div>
-              <textarea
-                rows={10}
-                value={file.content}
-                onChange={(e) => updateCodeFile(i, "content", e.target.value)}
-                className="w-full bg-[#0d1117] px-4 py-3 font-mono text-xs text-gray-300 focus:outline-none resize-none"
-                placeholder="# Paste or write your Python code here..."
-                spellCheck={false}
-              />
-            </div>
-          ))}
-          <button
-            type="button"
-            onClick={addCodeFile}
-            className="w-full rounded-md border border-dashed border-border py-2.5 text-xs text-muted hover:border-primary/30 hover:text-foreground transition-colors"
-          >
-            + Add file
-          </button>
-          <p className="text-xs text-muted">
-            Your code will be automatically packaged. Include at least one .py file.
-            <span className="text-muted/50"> Max upload size: {MAX_UPLOAD_SIZE_MB} MB</span>
-          </p>
-        </div>
-      )}
-
-      {artifactMode === "upload" && (
-        <div className="space-y-3">
-          <div
-            ref={dropRef}
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={handleFileDrop}
-            className={`rounded-lg border-2 border-dashed px-6 py-8 text-center transition-colors ${
-              dragOver ? "border-primary bg-primary/5" : "border-border hover:border-primary/30"
-            }`}
-          >
-            <div className="text-sm text-muted">
-              Drag & drop files here, or{" "}
-              <label className="cursor-pointer text-primary hover:underline">
-                browse
-                <input type="file" multiple accept=".py,.toml,.yaml,.yml,.cfg,.txt,.md,.tar.gz,.tgz" onChange={handleFileSelect} className="hidden" />
-              </label>
-            </div>
-            <p className="mt-2 text-xs text-muted/60">
-              Individual files (.py, .toml, .yaml) or a single .tar.gz archive
-            </p>
-            <p className="mt-1 text-xs text-muted/50">
-              Max upload size: {MAX_UPLOAD_SIZE_MB} MB
-            </p>
-          </div>
-
-          {tarGzFile && (
-            <div className="flex items-center gap-3 rounded-md border border-primary/30 bg-primary/5 px-4 py-2.5 text-sm">
-              <span className="text-primary">&#10003;</span>
-              <span className="font-mono text-foreground">{tarGzFile.name}</span>
-              <span className="text-xs text-muted">({(tarGzFile.size / 1024).toFixed(1)} KB)</span>
-              <button type="button" onClick={() => onTarGzChange(null)} className="ml-auto text-xs text-muted hover:text-foreground">
-                Remove
-              </button>
-            </div>
-          )}
-
-          {uploadedFiles.length > 0 && (
-            <div className="rounded-lg border border-border divide-y divide-border">
-              {uploadedFiles.map((file, i) => (
-                <div key={i} className="flex items-center gap-3 px-4 py-2 text-sm">
-                  <span className="font-mono text-xs text-foreground">{file.name}</span>
-                  <span className="text-xs text-muted">({(file.size / 1024).toFixed(1)} KB)</span>
-                  <button type="button" onClick={() => removeUploadedFile(i)} className="ml-auto text-xs text-muted hover:text-danger transition-colors">
-                    Remove
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Capability Search Dropdown                                         */
-/* ------------------------------------------------------------------ */
-
-function CapabilityDropdown({
-  value,
-  onChange,
-  capabilities,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  capabilities: CapabilityOption[];
-}) {
-  const [open, setOpen] = useState(false);
-  const [search, setSearch] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
-
-  const capList = capabilities.length > 0 ? capabilities : CAPABILITY_FALLBACK;
-
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
-
-  const q = search.toLowerCase();
-  const filtered = q
-    ? capList.filter(
-        (c) =>
-          c.id.toLowerCase().includes(q) ||
-          c.name.toLowerCase().includes(q) ||
-          c.category.toLowerCase().includes(q)
-      )
-    : capList;
-
-  const grouped: Record<string, CapabilityOption[]> = {};
-  for (const c of filtered.slice(0, 60)) {
-    if (!grouped[c.category]) grouped[c.category] = [];
-    grouped[c.category].push(c);
-  }
-
-  const selectedCap = capList.find((c) => c.id === value);
-
-  return (
-    <div ref={ref} className="relative">
-      <input
-        type="text"
-        value={open ? search : value}
-        onChange={(e) => {
-          setSearch(e.target.value);
-          if (!open) setOpen(true);
-        }}
-        onFocus={() => {
-          setOpen(true);
-          setSearch(value);
-        }}
-        onBlur={() => {
-          setTimeout(() => {
-            if (open && search) {
-              const exactMatch = capList.find(c => c.id === search.toLowerCase().trim());
-              if (exactMatch) {
-                onChange(exactMatch.id);
-              }
-            }
-            setOpen(false);
-          }, 200);
-        }}
-        placeholder="What does your tool do? e.g. pdf, json, search..."
-        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono text-foreground focus:border-primary focus:outline-none"
-      />
-      {value && !open && selectedCap && (
-        <p className="mt-1 text-xs text-primary/80">{selectedCap.name}</p>
-      )}
-      {open && (
-        <div className="absolute z-50 mt-1 max-h-64 w-full overflow-auto rounded-md border border-border bg-card shadow-lg">
-          {Object.keys(grouped).length === 0 ? (
-            <div className="px-3 py-2 text-xs text-muted">
-              No matches found. You can type a custom ID below.
-            </div>
-          ) : (
-            Object.entries(grouped).map(([category, items]) => (
-              <div key={category}>
-                <div className="sticky top-0 bg-card/95 backdrop-blur-sm px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted/60 border-b border-border/50">
-                  {category}
-                </div>
-                {items.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => { onChange(c.id); setOpen(false); setSearch(""); }}
-                    className={`block w-full px-3 py-2 text-left hover:bg-primary/10 ${
-                      c.id === value ? "bg-primary/5" : ""
-                    }`}
-                  >
-                    <span className="text-sm text-foreground">{c.name}</span>
-                    <span className="ml-2 font-mono text-[10px] text-muted/60">{c.id}</span>
-                  </button>
-                ))}
-              </div>
-            ))
-          )}
-          {search && !filtered.some((c) => c.id === search) && (
-            <button
-              type="button"
-              onClick={() => { onChange(search); setOpen(false); setSearch(""); }}
-              className="block w-full border-t border-border px-3 py-2 text-left text-xs text-primary hover:bg-primary/10"
-            >
-              Use &quot;{search}&quot; as custom ID
-            </button>
-          )}
-        </div>
-      )}
-      {!value && !open && (
-        <p className="mt-1 text-xs text-muted">Describes what your tool does. Pick from the list or type a custom ID.</p>
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Main Content                                                       */
+/*  Main Content — all types, utilities, and sub-components            */
+/*  are extracted to ./lib/ ./hooks/ ./components/                     */
 /* ------------------------------------------------------------------ */
 
 function PublishContent() {
@@ -808,8 +124,10 @@ function PublishContent() {
   /* ---- Source tracking ---- */
   const [source, setSource] = useState<string | null>(fromSource);
 
-  /* ---- Draft expiry message ---- */
+  /* ---- Draft expiry / save message ---- */
   const [draftExpired, setDraftExpired] = useState(false);
+  const [draftSaveBanner, setDraftSaveBanner] = useState(false);
+  const draftSaveShownRef = useRef(false);
 
   /* ---- Form state ---- */
   const [guided, setGuided] = useState<GuidedState>(() => {
@@ -968,6 +286,16 @@ function PublishContent() {
       }
     }
   }, [hasPrefill]);
+
+  // Show draft-save banner once when entering draft review
+  useEffect(() => {
+    if (screen === "draft" && guided.name && !draftSaveShownRef.current) {
+      draftSaveShownRef.current = true;
+      setDraftSaveBanner(true);
+      const timer = setTimeout(() => setDraftSaveBanner(false), 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [screen, guided.name]);
 
   // Background auto-validation on edit screen
   const runValidation = useCallback((manifest: Record<string, unknown>) => {
@@ -1617,101 +945,87 @@ function PublishContent() {
           </div>
         )}
 
-        {/* Import conversion metadata */}
-        {source === "import" && importConfidence && (
-          <div className="mb-6 space-y-3">
-            {/* Confidence badge */}
-            <div className={`rounded-lg border px-4 py-3 ${
-              importConfidence.level === "high"
-                ? "border-green-500/30 bg-green-500/5"
-                : importConfidence.level === "medium"
-                ? "border-yellow-500/30 bg-yellow-500/5"
-                : "border-red-500/30 bg-red-500/5"
-            }`}>
-              <div className="flex items-center gap-2">
-                <span className={`text-xs font-semibold uppercase ${
-                  importConfidence.level === "high" ? "text-green-400"
-                    : importConfidence.level === "medium" ? "text-yellow-400"
-                    : "text-red-400"
-                }`}>
-                  {importConfidence.level === "high" ? "High" : importConfidence.level === "medium" ? "Medium" : "Low"} confidence
-                </span>
-                <span className="text-xs text-muted">
-                  {importDraftReady ? "— Draft generated, review all files before publishing" : "— Needs manual fixes before publishing"}
-                </span>
-              </div>
-              {importConfidence.reasons.length > 0 && importConfidence.level !== "high" && (
-                <ul className="mt-1.5 space-y-0.5">
-                  {importConfidence.reasons.map((r, i) => (
-                    <li key={i} className="text-xs text-muted">- {r}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
+        {/* Draft save banner */}
+        {draftSaveBanner && (
+          <div className="mb-6 rounded-lg border border-border bg-card px-4 py-3 text-xs text-muted flex items-center justify-between">
+            <span>Draft saved to this tab. It will be lost if you close this tab.</span>
+            <button type="button" onClick={() => setDraftSaveBanner(false)} className="text-muted hover:text-foreground ml-4">
+              &#10005;
+            </button>
+          </div>
+        )}
 
-            {/* What changed */}
-            {importChanges.length > 0 && (
-              <div className="rounded-lg border border-border bg-card px-4 py-3">
-                <div className="text-xs font-medium uppercase tracking-wider text-muted mb-1.5">What changed</div>
-                <ul className="space-y-0.5">
-                  {importChanges.map((c, i) => (
-                    <li key={i} className="text-xs text-foreground/80">- {c}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
+        {/* Import conversion metadata (collapsed — 3.6 alert-fatigue reduction) */}
+        {source === "import" && importConfidence && (() => {
+          const platform = source?.startsWith("import:") ? source.split(":")[1] : "import";
+          const noteCount = importGroupedWarnings.length || importWarnings.length || importChanges.length;
+          const colorClass = importConfidence.level === "high" ? "border-green-500/30 bg-green-500/5"
+            : importConfidence.level === "medium" ? "border-yellow-500/30 bg-yellow-500/5"
+            : "border-red-500/30 bg-red-500/5";
+          const textClass = importConfidence.level === "high" ? "text-green-400"
+            : importConfidence.level === "medium" ? "text-yellow-400" : "text-red-400";
 
-            {/* Grouped warnings */}
-            {importGroupedWarnings.length > 0 ? (() => {
-              const blocking = importGroupedWarnings.filter(w => w.category === "blocking");
-              const review = importGroupedWarnings.filter(w => w.category === "review");
-              const info = importGroupedWarnings.filter(w => w.category === "info");
-              return (
-                <div className="space-y-2">
-                  {blocking.length > 0 && (
-                    <div className="rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3">
-                      <div className="text-xs font-semibold uppercase tracking-wider text-red-400 mb-1.5">Blocking issues</div>
+          return (
+            <div className="mb-6">
+              <details className={`rounded-lg border ${colorClass} group`}>
+                <summary className="cursor-pointer px-4 py-3 flex items-center justify-between">
+                  <span className="text-sm">
+                    <span className={`font-semibold ${textClass}`}>
+                      Converted from {platform}
+                    </span>
+                    <span className="text-muted"> &mdash; {importConfidence.level} confidence</span>
+                    {noteCount > 0 && <span className="text-muted">, {noteCount} note{noteCount !== 1 ? "s" : ""}</span>}
+                  </span>
+                  <span className="text-xs text-muted group-open:hidden">Show details</span>
+                  <span className="text-xs text-muted hidden group-open:inline">Hide details</span>
+                </summary>
+                <div className="px-4 pb-4 space-y-3 border-t border-border/50 pt-3">
+                  {importConfidence.reasons.length > 0 && importConfidence.level !== "high" && (
+                    <ul className="space-y-0.5">
+                      {importConfidence.reasons.map((r, i) => (
+                        <li key={i} className="text-xs text-muted">- {r}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {importChanges.length > 0 && (
+                    <div>
+                      <div className="text-xs font-medium text-muted mb-1">Changes</div>
                       <ul className="space-y-0.5">
-                        {blocking.map((w, i) => (
-                          <li key={i} className="text-xs text-red-300/80">- {w.message}</li>
+                        {importChanges.map((c, i) => (
+                          <li key={i} className="text-xs text-foreground/80">- {c}</li>
                         ))}
                       </ul>
                     </div>
                   )}
-                  {review.length > 0 && (
-                    <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3">
-                      <div className="text-xs font-semibold uppercase tracking-wider text-yellow-400 mb-1.5">Needs review</div>
-                      <ul className="space-y-0.5">
-                        {review.map((w, i) => (
-                          <li key={i} className="text-xs text-yellow-300/80">- {w.message}</li>
-                        ))}
-                      </ul>
+                  {importGroupedWarnings.length > 0 && (
+                    <div>
+                      {importGroupedWarnings.filter(w => w.category === "blocking").length > 0 && (
+                        <div className="mb-2">
+                          <div className="text-xs font-semibold text-red-400 mb-1">Blocking</div>
+                          <ul className="space-y-0.5">
+                            {importGroupedWarnings.filter(w => w.category === "blocking").map((w, i) => (
+                              <li key={i} className="text-xs text-red-300/80">- {w.message}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {importGroupedWarnings.filter(w => w.category !== "blocking").map((w, i) => (
+                        <div key={i} className="text-xs text-muted">- {w.message}</div>
+                      ))}
                     </div>
                   )}
-                  {info.length > 0 && (
-                    <div className="rounded-lg border border-border bg-card px-4 py-3">
-                      <div className="text-xs font-medium uppercase tracking-wider text-muted mb-1.5">Informational</div>
-                      <ul className="space-y-0.5">
-                        {info.map((w, i) => (
-                          <li key={i} className="text-xs text-muted">- {w.message}</li>
-                        ))}
-                      </ul>
+                  {!importGroupedWarnings.length && importWarnings.length > 0 && (
+                    <div>
+                      {importWarnings.map((w, i) => (
+                        <div key={i} className="text-xs text-yellow-300/80">- {w}</div>
+                      ))}
                     </div>
                   )}
                 </div>
-              );
-            })() : importWarnings.length > 0 && (
-              <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3">
-                <div className="text-xs font-semibold uppercase tracking-wider text-yellow-400 mb-1.5">Warnings</div>
-                <ul className="space-y-0.5">
-                  {importWarnings.map((w, i) => (
-                    <li key={i} className="text-xs text-yellow-300/80">- {w}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
+              </details>
+            </div>
+          );
+        })()}
 
         {/* Alerts */}
         {error && (
@@ -2572,16 +1886,8 @@ function PublishContent() {
         </div>
       )}
 
-      {/* ---- Publish bar (with inline auth gates) ---- */}
-      <div className="flex items-center justify-between pt-4 border-t border-border">
-        <button
-          type="button"
-          onClick={() => { setScreen("draft"); setError(""); setSuccess(""); }}
-          className="rounded-md border border-border px-5 py-2.5 text-sm text-muted hover:text-foreground transition-colors"
-        >
-          &#8592; Back to review
-        </button>
-
+      {/* ---- Sticky Publish bar (with inline auth gates) ---- */}
+      <StickyPublishBar onBack={() => { setScreen("draft"); setError(""); setSuccess(""); }}>
         {!user ? (
           <div className="flex items-center gap-3">
             <span className="text-sm text-muted">Sign in to publish</span>
@@ -2631,12 +1937,12 @@ function PublishContent() {
             type="button"
             onClick={handlePublish}
             disabled={loading || buildingArtifact || (validation !== null && !validation.valid)}
-            className="rounded-md bg-primary px-8 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
+            className="rounded-md bg-primary px-10 py-3 text-sm font-bold text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
             {buildingArtifact ? "Building artifact..." : loading ? "Publishing..." : "Publish"}
           </button>
         )}
-      </div>
+      </StickyPublishBar>
 
     </div>
   );
