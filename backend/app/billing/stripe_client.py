@@ -75,4 +75,5 @@ def verify_webhook_signature(request_body: bytes, sig_header: str) -> dict:
         sig_header,
         settings.STRIPE_WEBHOOK_SECRET,
     )
-    return event
+    # Convert StripeObject to plain dict so service code can use .get() / ["key"]
+    return event.to_dict()
