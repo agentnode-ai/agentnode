@@ -17,6 +17,7 @@ const sections = [
   { id: "publishing-guide", label: "Publishing Guide" },
   { id: "anp-manifest", label: "ANP Manifest Reference" },
   { id: "cli-reference", label: "CLI Reference" },
+  { id: "llm-runtime", label: "LLM Runtime" },
   { id: "python-sdk", label: "Python SDK" },
   { id: "rest-api", label: "REST API" },
   { id: "mcp-integration", label: "MCP Integration" },
@@ -441,6 +442,189 @@ print(f"Ran in {data.mode_used} mode ({data.duration_ms}ms)")`}</CodeBlock>
           </section>
 
           {/* ============================================================ */}
+          {/*  LLM RUNTIME                                                  */}
+          {/* ============================================================ */}
+          <section>
+            <SectionHeading id="llm-runtime">LLM Runtime</SectionHeading>
+            <p className="mb-4 text-sm leading-relaxed text-muted">
+              <C>AgentNodeRuntime</C> connects any OpenAI, Anthropic, or Gemini agent
+              to AgentNode with zero configuration. It registers 5 meta-tools,
+              injects a system prompt, and runs the tool loop automatically.
+              The LLM discovers, installs, and runs capabilities on its own.
+            </p>
+
+            <SubHeading>Quick start</SubHeading>
+            <CodeBlock title="terminal">{`$ pip install agentnode-sdk`}</CodeBlock>
+
+            <SubHeading>OpenAI</SubHeading>
+            <CodeBlock title="openai_agent.py" language="python">{`from openai import OpenAI
+from agentnode_sdk import AgentNodeRuntime
+
+runtime = AgentNodeRuntime()
+client = OpenAI()
+
+result = runtime.run(
+    provider="openai",
+    client=client,
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Count the words in 'Hello world'"}],
+)
+print(result.content)`}</CodeBlock>
+
+            <SubHeading>Anthropic</SubHeading>
+            <CodeBlock title="anthropic_agent.py" language="python">{`from anthropic import Anthropic
+from agentnode_sdk import AgentNodeRuntime
+
+runtime = AgentNodeRuntime()
+client = Anthropic()
+
+result = runtime.run(
+    provider="anthropic",
+    client=client,
+    model="claude-sonnet-4-6",
+    messages=[{"role": "user", "content": "Search for PDF tools on AgentNode"}],
+)`}</CodeBlock>
+
+            <SubHeading>Gemini</SubHeading>
+            <CodeBlock title="gemini_agent.py" language="python">{`from google import genai
+from agentnode_sdk import AgentNodeRuntime
+
+runtime = AgentNodeRuntime()
+client = genai.Client()
+
+result = runtime.run(
+    provider="gemini",
+    client=client,
+    model="gemini-2.5-flash",
+    messages=[{"role": "user", "content": "What AgentNode tools are available?"}],
+)`}</CodeBlock>
+
+            <SubHeading>OpenRouter / any OpenAI-compatible provider</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              Use Mistral, DeepSeek, Qwen, Llama, and more via OpenRouter or any
+              OpenAI-compatible endpoint:
+            </p>
+            <CodeBlock title="openrouter_agent.py" language="python">{`from openai import OpenAI
+from agentnode_sdk import AgentNodeRuntime
+
+runtime = AgentNodeRuntime()
+client = OpenAI(
+    api_key="sk-or-...",
+    base_url="https://openrouter.ai/api/v1",
+)
+
+result = runtime.run(
+    provider="openai",
+    client=client,
+    model="mistralai/mistral-large",
+    messages=[{"role": "user", "content": "Find and install a PDF reader tool"}],
+)`}</CodeBlock>
+
+            <SubHeading>Manual tool calling</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              For any provider that supports tool calling, get tool definitions
+              and dispatch calls manually with <C>handle()</C>:
+            </p>
+            <CodeBlock title="manual.py" language="python">{`runtime = AgentNodeRuntime()
+
+# Get tool definitions in your provider's format
+tools = runtime.as_openai_tools()    # OpenAI function-calling format
+tools = runtime.as_anthropic_tools() # Anthropic format
+tools = runtime.as_gemini_tools()    # Gemini format
+tools = runtime.as_generic_tools()   # Generic / baseline format
+
+# When the LLM makes a tool call, dispatch it:
+result = runtime.handle("agentnode_search", {"query": "pdf extraction"})
+# → {"success": true, "result": {"total": 5, "results": [...]}}`}</CodeBlock>
+
+            <SubHeading>Constructor</SubHeading>
+            <CodeBlock title="init.py" language="python">{`AgentNodeRuntime(
+    client=None,                     # Optional AgentNodeClient
+    api_key=None,                    # Optional API key
+    minimum_trust_level="verified",  # "verified" | "trusted" | "curated"
+)`}</CodeBlock>
+
+            <SubHeading>5 meta-tools</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              These tools are automatically registered when you create a Runtime.
+              The LLM calls them as needed during the tool loop.
+            </p>
+            <DocTable
+              headers={["Tool", "Description"]}
+              rows={[
+                ["agentnode_capabilities", "List installed packages (local, no API call)"],
+                ["agentnode_search", "Search the registry (max 5 results)"],
+                ["agentnode_install", "Install a package by slug"],
+                ["agentnode_run", "Execute an installed tool"],
+                ["agentnode_acquire", "Search + install in one step"],
+              ]}
+            />
+
+            <SubHeading>API reference</SubHeading>
+            <DocTable
+              headers={["Method", "Description"]}
+              rows={[
+                ["tool_specs()", "Internal typed tool definitions (list[ToolSpec])"],
+                ["as_openai_tools()", "Tools in OpenAI function-calling format"],
+                ["as_anthropic_tools()", "Tools in Anthropic format"],
+                ["as_gemini_tools()", "Tools in Google Gemini format"],
+                ["as_generic_tools()", "Tools in generic/baseline format"],
+                ["system_prompt()", "AgentNode system prompt block (append to yours)"],
+                ["tool_bundle()", "Combined {\"tools\": [...], \"system_prompt\": \"...\"}"],
+                ["handle(name, args)", "Dispatch a tool call. Returns dict. Never throws."],
+                ["run(provider, client, ...)", "Auto-loop with tool dispatch. Never throws."],
+              ]}
+            />
+
+            <SubHeading>run() parameters</SubHeading>
+            <DocTable
+              headers={["Parameter", "Type", "Default", "Description"]}
+              rows={[
+                ["provider", "str", "—", "\"openai\", \"anthropic\", or \"gemini\""],
+                ["client", "Any", "—", "Provider SDK client instance"],
+                ["messages", "list[dict]", "—", "Conversation messages"],
+                ["model", "str", "\"\"", "Model name (e.g. \"gpt-4o\")"],
+                ["max_tool_rounds", "int", "8", "Max tool call rounds before stopping"],
+                ["inject_system_prompt", "bool", "True", "Append AgentNode prompt to system message"],
+              ]}
+            />
+
+            <SubHeading>Trust levels</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              <C>minimum_trust_level</C> controls which packages can be
+              installed and run through the Runtime. Higher levels are stricter:
+            </p>
+            <DocTable
+              headers={["Level", "Accepts"]}
+              rows={[
+                ["\"verified\"", "verified, trusted, curated"],
+                ["\"trusted\"", "trusted, curated"],
+                ["\"curated\"", "curated only"],
+              ]}
+            />
+
+            <SubHeading>Three surfaces</SubHeading>
+            <div className="mb-4 overflow-hidden rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <tbody>
+                  <tr className="border-b border-border">
+                    <td className="px-4 py-3 font-mono text-xs text-primary">CLI</td>
+                    <td className="px-4 py-3 text-muted">For humans &mdash; search, install, publish</td>
+                  </tr>
+                  <tr className="border-b border-border">
+                    <td className="px-4 py-3 font-mono text-xs text-primary">SDK / Client</td>
+                    <td className="px-4 py-3 text-muted">For programmatic access &mdash; search, resolve, install, run</td>
+                  </tr>
+                  <tr>
+                    <td className="px-4 py-3 font-mono text-xs text-primary">Runtime</td>
+                    <td className="px-4 py-3 text-muted">For LLM agents &mdash; tool registration, dispatch, auto-loop</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          {/* ============================================================ */}
           {/*  INSTALLATION                                                 */}
           {/* ============================================================ */}
           <section>
@@ -480,7 +664,7 @@ print(f"Ran in {data.mode_used} mode ({data.duration_ms}ms)")`}</CodeBlock>
               Verify the installation:
             </p>
             <CodeBlock title="terminal">{`$ agentnode --version
-agentnode/1.0.0
+agentnode/0.3.0
 
 $ agentnode --help
 Usage: agentnode <command> [options]
@@ -503,6 +687,7 @@ Commands:
   recommend         Get recommendations for missing capabilities
   resolve-upgrade   Find upgrade packages for capability gaps
   policy-check      Check policy constraints
+  api-keys          Manage API keys
   import            Import tools from other frameworks`}</CodeBlock>
 
             <SubHeading>Authentication</SubHeading>
@@ -675,20 +860,12 @@ client = AgentNodeClient(api_key="ank_live_abc123def456")
 result = client.resolve(
     capabilities=["pdf_extraction", "web_search", "email_sending"],
     framework="langchain",
-    policy={
-        "min_trust": "verified",
-        "max_permissions": {
-            "network": "restricted",
-            "filesystem": "read",
-            "code_execution": "none"
-        }
-    }
+    limit=5,
 )
 
 for match in result.results:
-    print(f"{match.capability_id}: {match.slug} (score: {match.score})")
+    print(f"{match.matched_capabilities}: {match.slug} (score: {match.score})")
     print(f"  Trust: {match.trust_level}")
-    print(f"  Permissions: {match.permissions}")
     print()`}</CodeBlock>
 
             <SubHeading>Policy constraints</SubHeading>
@@ -1067,7 +1244,7 @@ Published! https://agentnode.net/packages/github-integration-pack`}</CodeBlock>
                 ["runtime", "string", "Yes", "Execution runtime. Currently \"python\"."],
                 ["entrypoint", "string", "Yes", "Package-level Python module path. Example: \"pdf_reader_pack.tool\". In v0.2, individual tools can have their own entrypoints."],
                 ["install_mode", "string", "Yes", "How the pack is installed. Values: \"package\" (pip install), \"standalone\" (script)."],
-                ["hosting_type", "string", "No", "Where the pack is hosted. Values: \"registry\" (default), \"self-hosted\"."],
+                ["hosting_type", "string", "No", "Where the pack is hosted. Values: \"agentnode_hosted\" (default), \"self_hosted\", \"remote\"."],
               ]}
             />
 
@@ -1496,9 +1673,9 @@ for hit in result.hits:
 for match in result.results:
     print(f"{match.slug} v{match.version}")
     print(f"  Score: {match.score}  Trust: {match.trust_level}")
-    print(f"  Breakdown: cap={match.breakdown.capability_match} "
-          f"fw={match.breakdown.framework_fit} "
-          f"trust={match.breakdown.trust_level}")`}</CodeBlock>
+    print(f"  Breakdown: cap={match.breakdown.capability} "
+          f"fw={match.breakdown.framework} "
+          f"trust={match.breakdown.trust}")`}</CodeBlock>
 
             <SubHeading>Pre-flight check</SubHeading>
             <p className="mb-3 text-sm text-muted">
@@ -1676,21 +1853,23 @@ if meta.permissions:
             <p className="mb-4 text-sm leading-relaxed text-muted">
               The AgentNode REST API provides direct HTTP access to all registry
               functionality. Base URL:{" "}
-              <C>https://api.agentnode.net</C>
+              <C>https://api.agentnode.net/v1</C>
             </p>
 
             <SubHeading>Authentication</SubHeading>
             <p className="mb-3 text-sm text-muted">
-              Include your API key in the <C>Authorization</C> header as a
-              Bearer token. Read-only endpoints (search, info) may work without
+              Include your API key in the <C>X-API-Key</C> header.
+              Read-only endpoints (search, info) may work without
               authentication but are rate-limited.
             </p>
-            <CodeBlock title="terminal" language="bash">{`curl -H "Authorization: Bearer ank_live_abc123def456" \\
+            <CodeBlock title="terminal" language="bash">{`curl -H "X-API-Key: ank_live_abc123def456" \\
   https://api.agentnode.net/v1/packages/pdf-reader-pack`}</CodeBlock>
 
             <SubHeading>Search packages</SubHeading>
-            <CodeBlock title="terminal" language="bash">{`# GET /v1/packages/search
-curl "https://api.agentnode.net/v1/packages/search?q=pdf+extraction&framework=langchain&trust=verified"
+            <CodeBlock title="terminal" language="bash">{`# POST /v1/search
+curl -X POST "https://api.agentnode.net/v1/search" \\
+  -H "Content-Type: application/json" \\
+  -d '{"q": "pdf extraction", "framework": "langchain", "trust": "verified"}'
 
 # Response:
 {
@@ -1744,7 +1923,7 @@ curl "https://api.agentnode.net/v1/packages/pdf-reader-pack"
             <SubHeading>Resolve capabilities</SubHeading>
             <CodeBlock title="terminal" language="bash">{`# POST /v1/resolve
 curl -X POST "https://api.agentnode.net/v1/resolve" \\
-  -H "Authorization: Bearer ank_live_abc123def456" \\
+  -H "X-API-Key: ank_live_abc123def456" \\
   -H "Content-Type: application/json" \\
   -d '{
     "capabilities": ["pdf_extraction", "web_search"],
@@ -1758,18 +1937,18 @@ curl -X POST "https://api.agentnode.net/v1/resolve" \\
 {
   "results": [
     {
-      "capability_id": "pdf_extraction",
       "slug": "pdf-reader-pack",
       "version": "1.2.0",
       "score": 0.94,
-      "trust_level": "trusted"
+      "trust_level": "trusted",
+      "matched_capabilities": ["pdf_extraction"]
     },
     {
-      "capability_id": "web_search",
       "slug": "web-search-pack",
       "version": "1.0.0",
       "score": 0.92,
-      "trust_level": "trusted"
+      "trust_level": "trusted",
+      "matched_capabilities": ["web_search"]
     }
   ]
 }`}</CodeBlock>
@@ -1777,11 +1956,11 @@ curl -X POST "https://api.agentnode.net/v1/resolve" \\
             <SubHeading>Check policy</SubHeading>
             <CodeBlock title="terminal" language="bash">{`# POST /v1/check-policy
 curl -X POST "https://api.agentnode.net/v1/check-policy" \\
-  -H "Authorization: Bearer ank_live_abc123def456" \\
+  -H "X-API-Key: ank_live_abc123def456" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "slug": "pdf-reader-pack",
-    "constraints": {
+    "package_slug": "pdf-reader-pack",
+    "policy": {
       "min_trust": "trusted",
       "max_permissions": {
         "network": "none",
@@ -1803,9 +1982,9 @@ curl -X POST "https://api.agentnode.net/v1/check-policy" \\
             <SubHeading>Publish a package</SubHeading>
             <CodeBlock title="terminal" language="bash">{`# POST /v1/packages/publish
 curl -X POST "https://api.agentnode.net/v1/packages/publish" \\
-  -H "Authorization: Bearer ank_live_abc123def456" \\
+  -H "X-API-Key: ank_live_abc123def456" \\
   -H "Content-Type: multipart/form-data" \\
-  -F "package=@./dist/my-pack-1.0.0.tar.gz" \\
+  -F "artifact=@./dist/my-pack-1.0.0.tar.gz" \\
   -F "manifest=@./agentnode.yaml"
 
 # Response:
@@ -1841,7 +2020,7 @@ curl "https://api.agentnode.net/v1/capabilities"
                 ["POST", "/v1/packages/:slug/reviews", "Submit a review for a package"],
                 ["GET", "/v1/packages/:slug/reviews", "List reviews for a package"],
                 ["POST", "/v1/packages/:slug/report", "Report a package for security or policy violations"],
-                ["GET", "/v1/packages/:slug/install", "Get install metadata (hash, URL, dependencies)"],
+                ["GET", "/v1/packages/:slug/install-info", "Get install metadata (hash, URL, dependencies)"],
                 ["POST", "/v1/packages/:slug/install", "Record an installation event"],
                 ["POST", "/v1/recommend", "Get pack recommendations based on installed capabilities"],
                 ["POST", "/v1/packages/validate", "Validate a manifest without publishing"],

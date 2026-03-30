@@ -167,7 +167,9 @@ export default function HomePage() {
             Works with your AI stack
           </h2>
           <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
-            AgentNode tools are compatible with most modern AI systems.
+            Native runtime integration for OpenAI, Anthropic, and Gemini.
+            Framework adapters for LangChain, CrewAI, and MCP.
+            Compatible with any system that runs Python.
           </p>
 
           <AiStackLogos />
@@ -424,6 +426,82 @@ print(result.installed_slug) # "pdf-reader-pack"`}</code>
             Use <code className="rounded bg-background/50 px-1 py-0.5 font-mono text-xs">detect_and_install()</code> to
             handle detection and installation separately.{" "}
             <Link href="/docs#python-sdk" className="text-primary hover:text-foreground transition-colors">See docs</Link>
+          </p>
+        </div>
+      </section>
+
+      {/* ============================================================ */}
+      {/*  LLM RUNTIME — Direct OpenAI / Anthropic integration         */}
+      {/* ============================================================ */}
+      <section className="border-b border-border bg-card/30">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
+          <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
+            Or let the LLM decide
+          </h2>
+          <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
+            Connect any OpenAI or Anthropic agent to AgentNode. The Runtime registers tools,
+            injects the system prompt, and runs the tool loop automatically.
+          </p>
+          <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-2">
+            {/* OpenAI */}
+            <div className="overflow-hidden rounded-lg border border-border bg-[#0d1117]">
+              <div className="flex items-center gap-2 border-b border-border/50 px-4 py-2">
+                <div className="h-3 w-3 rounded-full bg-red-500/60" />
+                <div className="h-3 w-3 rounded-full bg-yellow-500/60" />
+                <div className="h-3 w-3 rounded-full bg-green-500/60" />
+                <span className="ml-2 font-mono text-xs text-muted">openai_agent.py</span>
+              </div>
+              <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-gray-300">
+                <code>{`from openai import OpenAI
+from agentnode_sdk import AgentNodeRuntime
+
+runtime = AgentNodeRuntime()
+client = OpenAI()
+
+result = runtime.run(
+    provider="openai",
+    client=client,
+    model="gpt-4o",
+    messages=[{
+        "role": "user",
+        "content": "Extract text from report.pdf"
+    }],
+)
+print(result.content)`}</code>
+              </pre>
+            </div>
+            {/* Anthropic */}
+            <div className="overflow-hidden rounded-lg border border-border bg-[#0d1117]">
+              <div className="flex items-center gap-2 border-b border-border/50 px-4 py-2">
+                <div className="h-3 w-3 rounded-full bg-red-500/60" />
+                <div className="h-3 w-3 rounded-full bg-yellow-500/60" />
+                <div className="h-3 w-3 rounded-full bg-green-500/60" />
+                <span className="ml-2 font-mono text-xs text-muted">anthropic_agent.py</span>
+              </div>
+              <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-gray-300">
+                <code>{`from anthropic import Anthropic
+from agentnode_sdk import AgentNodeRuntime
+
+runtime = AgentNodeRuntime()
+client = Anthropic()
+
+result = runtime.run(
+    provider="anthropic",
+    client=client,
+    model="claude-sonnet-4-6",
+    messages=[{
+        "role": "user",
+        "content": "Search for PDF tools"
+    }],
+)`}</code>
+              </pre>
+            </div>
+          </div>
+          <p className="mt-8 text-center text-sm text-muted">
+            The LLM discovers, installs, and runs tools autonomously &mdash; no hardcoded tool calls.{" "}
+            <Link href="/docs#llm-runtime" className="text-primary hover:text-foreground transition-colors">
+              Runtime docs
+            </Link>
           </p>
         </div>
       </section>

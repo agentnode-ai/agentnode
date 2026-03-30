@@ -488,11 +488,11 @@ print(result.upgraded)   # True — skill was installed by policy`}</code>
               </div>
               <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-gray-300">
                 <code>{`# Detect → resolve → install, then run yourself
-installed = client.detect_and_install(
-    lambda: process_pdf("report.pdf"),
-    auto_upgrade_policy="strict",
-)
-print(installed)  # ["pdf-reader-pack@1.2.0"]`}</code>
+try:
+    process_pdf("report.pdf")
+except Exception as e:
+    result = client.detect_and_install(e, auto_upgrade_policy="strict")
+    print(result.installed)  # ["pdf-reader-pack"]`}</code>
               </pre>
             </div>
           </div>
@@ -516,8 +516,40 @@ print(installed)  # ["pdf-reader-pack@1.2.0"]`}</code>
             </div>
           </div>
 
+          {/* LLM Runtime */}
+          <div className="mx-auto mt-10 max-w-2xl">
+            <p className="mb-3 text-center text-xs font-medium uppercase tracking-wider text-muted">For LLM agents</p>
+            <div className="overflow-hidden rounded-lg border border-border bg-[#0d1117]">
+              <div className="flex items-center gap-2 border-b border-border/50 px-4 py-2">
+                <div className="h-3 w-3 rounded-full bg-red-500/60" />
+                <div className="h-3 w-3 rounded-full bg-yellow-500/60" />
+                <div className="h-3 w-3 rounded-full bg-green-500/60" />
+                <span className="ml-2 font-mono text-xs text-muted">llm_agent.py</span>
+                <span className="ml-auto font-mono text-xs text-muted/50">AgentNodeRuntime</span>
+              </div>
+              <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-gray-300">
+                <code>{`from openai import OpenAI
+from agentnode_sdk import AgentNodeRuntime
+
+runtime = AgentNodeRuntime()
+
+# The LLM discovers, installs, and uses your tool autonomously
+result = runtime.run(
+    provider="openai",
+    client=OpenAI(),
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Extract text from report.pdf"}],
+)`}</code>
+              </pre>
+            </div>
+          </div>
+
           <p className="mt-8 text-center text-sm text-muted">
             Higher trust levels mean automatic installation. See{" "}
+            <Link href="/docs#llm-runtime" className="text-primary hover:underline">
+              LLM Runtime docs
+            </Link>{" "}
+            or the{" "}
             <Link href="/docs#runtime-quickstart" className="text-primary hover:underline">
               Runtime QuickStart
             </Link>{" "}
@@ -550,6 +582,14 @@ print(installed)  # ["pdf-reader-pack@1.2.0"]`}</code>
                 </tr>
               </thead>
               <tbody className="text-muted">
+                <tr className="border-b border-border/50">
+                  <td className="py-3 pr-6">
+                    <span className="font-medium text-yellow-400">curated</span>
+                  </td>
+                  <td className="py-3 pr-4 text-center text-foreground">&#x2714; auto</td>
+                  <td className="py-3 pr-4 text-center text-foreground">&#x2714; auto</td>
+                  <td className="py-3 text-center">&#x2718; manual</td>
+                </tr>
                 <tr className="border-b border-border/50">
                   <td className="py-3 pr-6">
                     <span className="font-medium text-green-400">trusted</span>

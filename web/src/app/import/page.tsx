@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   PLATFORMS,
@@ -65,9 +65,29 @@ export default function ImportPage() {
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [activeFileTab, setActiveFileTab] = useState(0);
+  const [packageCount, setPackageCount] = useState<number | null>(null);
+  const [capabilityCount, setCapabilityCount] = useState<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const selectedPlatform = PLATFORMS.find((p) => p.id === platform)!;
+
+  useEffect(() => {
+    fetch("/api/v1/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ q: "", per_page: 1 }),
+    })
+      .then((r) => r.json())
+      .then((d) => { if (d.total) setPackageCount(d.total); })
+      .catch(() => {});
+    fetch("/api/v1/capabilities")
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d.capabilities)) setCapabilityCount(d.capabilities.length);
+        else if (typeof d.total === "number") setCapabilityCount(d.total);
+      })
+      .catch(() => {});
+  }, []);
 
   const handleConvert = async () => {
     if (!code.trim()) {
@@ -668,11 +688,11 @@ export default function ImportPage() {
             <div className="mx-auto max-w-5xl px-4 sm:px-6 py-14">
               <div className="grid gap-6 sm:grid-cols-3">
                 <div className="rounded-xl border border-border bg-card p-6 text-center">
-                  <div className="text-3xl font-bold text-foreground">77+</div>
+                  <div className="text-3xl font-bold text-foreground">{packageCount ?? "77"}+</div>
                   <div className="mt-1 text-sm text-muted">Published packages</div>
                 </div>
                 <div className="rounded-xl border border-border bg-card p-6 text-center">
-                  <div className="text-3xl font-bold text-foreground">80+</div>
+                  <div className="text-3xl font-bold text-foreground">{capabilityCount ?? "80"}+</div>
                   <div className="mt-1 text-sm text-muted">Capability IDs</div>
                 </div>
                 <div className="rounded-xl border border-border bg-card p-6 text-center">
