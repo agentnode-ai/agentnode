@@ -20,6 +20,7 @@ from app.packages.models import (  # noqa: F401
 )
 from app.webhooks.models import Webhook, WebhookDelivery  # noqa: F401
 from app.admin.models import AdminAuditLog  # noqa: F401
+from app.billing.models import ReviewRequest, ProcessedStripeEvent  # noqa: F401
 from app.blog.models import BlogPost, BlogImage, BlogCategory, BlogPostType  # noqa: F401
 
 TEST_DATABASE_URL = settings.DATABASE_URL
@@ -75,6 +76,10 @@ async def client(session):
     mock_redis = AsyncMock()
     mock_redis.ping = AsyncMock(return_value=True)
     mock_redis.pipeline = MagicMock(return_value=mock_pipe)
+    mock_redis.get = AsyncMock(return_value=None)  # login lockout check
+    mock_redis.incr = AsyncMock(return_value=1)
+    mock_redis.expire = AsyncMock(return_value=True)
+    mock_redis.delete = AsyncMock(return_value=True)
     mock_redis.close = AsyncMock()
     app.state.redis = mock_redis
 

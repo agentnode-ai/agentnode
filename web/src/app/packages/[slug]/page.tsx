@@ -244,6 +244,37 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
               )}
               <VerificationBadge verification={verification} />
             </div>
+
+            {/* Review badges (per-version) */}
+            {(latestVersion?.security_reviewed_at || latestVersion?.compatibility_reviewed_at || latestVersion?.manually_reviewed_at) && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {latestVersion.security_reviewed_at && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 border border-blue-500/20 px-2.5 py-0.5 text-[11px] font-medium text-blue-400"
+                    title={`Security reviewed on ${new Date(latestVersion.security_reviewed_at).toLocaleDateString()}`}
+                  >
+                    Security Reviewed
+                  </span>
+                )}
+                {latestVersion.compatibility_reviewed_at && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full bg-purple-500/10 border border-purple-500/20 px-2.5 py-0.5 text-[11px] font-medium text-purple-400"
+                    title={`Compatibility reviewed on ${new Date(latestVersion.compatibility_reviewed_at).toLocaleDateString()}`}
+                  >
+                    Compatibility Reviewed
+                  </span>
+                )}
+                {latestVersion.manually_reviewed_at && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 text-[11px] font-medium text-emerald-400"
+                    title={`Manually reviewed on ${new Date(latestVersion.manually_reviewed_at).toLocaleDateString()}`}
+                  >
+                    Manually Reviewed
+                  </span>
+                )}
+              </div>
+            )}
+
             <p className="mt-2 text-sm text-muted">
               by{" "}
               <Link

@@ -82,6 +82,15 @@ export default function DashboardPage() {
   const [myPackages, setMyPackages] = useState<SearchHit[]>([]);
   const [loadingPackages, setLoadingPackages] = useState(false);
 
+  // Manual Reviews
+  const [myReviews, setMyReviews] = useState<any[]>([]);
+  const [loadingReviews, setLoadingReviews] = useState(false);
+  const [reviewForm, setReviewForm] = useState({ package_slug: "", version: "", tier: "security", express: false });
+  const [requestingReview, setRequestingReview] = useState(false);
+  const [showReviewForm, setShowReviewForm] = useState(false);
+  // Package versions for review form
+  const [reviewVersions, setReviewVersions] = useState<string[]>([]);
+
   // API Key copy (Fix 8)
   const [copiedKey, setCopiedKey] = useState(false);
 
@@ -108,7 +117,10 @@ export default function DashboardPage() {
       }
       const data = await res.json();
       setUser(data);
-      if (data.publisher?.slug) loadMyPackages(data.publisher.slug);
+      if (data.publisher?.slug) {
+        loadMyPackages(data.publisher.slug);
+        loadReviews();
+      }
     } catch {
       router.push("/auth/login");
     } finally {
@@ -356,6 +368,74 @@ export default function DashboardPage() {
       setSavingPublisher(false);
     }
   }
+
+  async function loadReviews() {
+    setLoadingReviews(true);
+    try {
+      const res = await fetchWithAuth("/reviews/my");
+      if (res.ok) {
+        const data = await res.json();
+        setMyReviews(data || []);
+      }
+    } catch { /* non-critical */ }
+    finally { setLoadingReviews(false); }
+  }
+
+  async function loadVersionsForReview(slug: string) {
+    try {
+      const res = await fetchWithAuth(`/packages/${encodeURIComponent(slug)}/versions/all`);
+      if (res.ok) {
+        const data = await res.json();
+        const vers = (data.versions || []).map((v: any) => v.version_number);
+        setReviewVersions(vers);
+        if (vers.length > 0) setReviewForm(f => ({ ...f, version: vers[0] }));
+      }
+    } catch { /* non-critical */ }
+  }
+
+  async function requestReview() {
+    setRequestingReview(true);
+    clearMessages();
+    try {
+      const res = await fetchWithAuth("/reviews/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(reviewForm),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        // Redirect to Stripe Checkout
+        if (data.checkout_url) {
+          window.location.href = data.checkout_url;
+          return;
+        }
+        setShowReviewForm(false);
+        await loadReviews();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error?.message || "Failed to request review");
+      }
+    } finally {
+      setRequestingReview(false);
+    }
+  }
+
+  const tierPrices: Record<string, number> = { security: 49, compatibility: 99, full: 199 };
+  const expressSurcharge = 100;
+  function reviewPrice() {
+    const base = tierPrices[reviewForm.tier] || 0;
+    return base + (reviewForm.express ? expressSurcharge : 0);
+  }
+
+  const statusColors: Record<string, string> = {
+    pending_payment: "bg-yellow-500/10 text-yellow-400",
+    paid: "bg-blue-500/10 text-blue-400",
+    in_review: "bg-purple-500/10 text-purple-400",
+    approved: "bg-green-500/10 text-green-400",
+    changes_requested: "bg-orange-500/10 text-orange-400",
+    rejected: "bg-red-500/10 text-red-400",
+    refunded: "bg-gray-500/10 text-gray-400",
+  };
 
   if (loading) {
     return (
@@ -810,6 +890,175 @@ export default function DashboardPage() {
               No packages yet.{" "}
               <Link href="/publish" className="text-primary hover:underline">Publish your first package</Link>
             </div>
+          )}
+        </section>
+      )}
+
+      {/* Manual Reviews */}
+      {user.publisher && (
+        <section className="mb-8 rounded-lg border border-border bg-card p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-foreground">Manual Reviews</h2>
+            <button
+              onClick={() => setShowReviewForm(!showReviewForm)}
+              className="text-xs text-primary hover:underline"
+            >
+              {showReviewForm ? "Cancel" : "Request a review"}
+            </button>
+          </div>
+
+          <p className="mb-4 text-sm text-muted">
+            Reviewed tools build more trust with users. Request a manual code review for any package version.
+          </p>
+
+          {showReviewForm && (
+            <div className="mb-6 rounded-lg border border-primary/20 bg-background p-4 space-y-3">
+              <div>
+                <label className="mb-1 block text-sm text-muted">Package</label>
+                <select
+                  value={reviewForm.package_slug}
+                  onChange={(e) => {
+                    const slug = e.target.value;
+                    setReviewForm(f => ({ ...f, package_slug: slug, version: "" }));
+                    if (slug) loadVersionsForReview(slug);
+                  }}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                >
+                  <option value="">Select a package</option>
+                  {myPackages.map(p => (
+                    <option key={p.slug} value={p.slug}>{p.name} ({p.slug})</option>
+                  ))}
+                </select>
+              </div>
+              {reviewForm.package_slug && (
+                <div>
+                  <label className="mb-1 block text-sm text-muted">Version</label>
+                  <select
+                    value={reviewForm.version}
+                    onChange={(e) => setReviewForm(f => ({ ...f, version: e.target.value }))}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                  >
+                    <option value="">Select a version</option>
+                    {reviewVersions.map(v => (
+                      <option key={v} value={v}>v{v}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="mb-1 block text-sm text-muted">Review Tier</label>
+                <div className="space-y-2">
+                  {[
+                    { value: "security", label: "Security Review", price: "$49", desc: "Dependency audit, permission check, sandbox-escape analysis" },
+                    { value: "compatibility", label: "Compatibility Review", price: "$99", desc: "Security + provider compatibility, edge-cases, error handling" },
+                    { value: "full", label: "Full Review", price: "$199", desc: "Everything + code quality, docs, best practices" },
+                  ].map(t => (
+                    <label key={t.value} className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${reviewForm.tier === t.value ? "border-primary bg-primary/5" : "border-border hover:border-border/80"}`}>
+                      <input
+                        type="radio"
+                        name="tier"
+                        value={t.value}
+                        checked={reviewForm.tier === t.value}
+                        onChange={(e) => setReviewForm(f => ({ ...f, tier: e.target.value }))}
+                        className="mt-0.5"
+                      />
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium text-foreground">{t.label}</span>
+                          <span className="text-sm font-mono text-primary">{t.price}</span>
+                        </div>
+                        <p className="text-xs text-muted mt-0.5">{t.desc}</p>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={reviewForm.express}
+                    onChange={(e) => setReviewForm(f => ({ ...f, express: e.target.checked }))}
+                  />
+                  <span className="text-sm text-foreground">Express (+$100, 48h instead of 7 days)</span>
+                </label>
+              </div>
+              <div className="flex items-center justify-between pt-2 border-t border-border">
+                <span className="text-sm text-muted">Total: <span className="font-mono font-medium text-foreground">${reviewPrice()}</span> USD</span>
+                <button
+                  onClick={requestReview}
+                  disabled={requestingReview || !reviewForm.package_slug || !reviewForm.version}
+                  className="rounded bg-primary px-4 py-2 text-sm text-white hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {requestingReview ? "Processing..." : "Request Review"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {loadingReviews ? (
+            <p className="text-sm text-muted">Loading reviews...</p>
+          ) : myReviews.length > 0 ? (
+            <div className="space-y-2">
+              {myReviews.map((r: any) => (
+                <div key={r.id} className="rounded-lg border border-border bg-background px-4 py-3">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-foreground">{r.package_name || r.package_slug}</span>
+                      <span className="font-mono text-xs text-muted">v{r.version}</span>
+                      <span className="rounded-full px-2 py-0.5 text-[10px] font-medium capitalize border border-border bg-card text-muted">{r.tier}</span>
+                      {r.express && <span className="rounded-full bg-yellow-500/10 px-2 py-0.5 text-[10px] font-medium text-yellow-400">Express</span>}
+                    </div>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${statusColors[r.status] || "bg-card text-muted"}`}>
+                      {r.status.replace(/_/g, " ")}
+                    </span>
+                  </div>
+                  <div className="text-xs text-muted">
+                    ${(r.price_cents / 100).toFixed(0)} USD
+                    {r.paid_at && <> &middot; Paid {new Date(r.paid_at).toLocaleDateString()}</>}
+                    {r.reviewed_at && <> &middot; Reviewed {new Date(r.reviewed_at).toLocaleDateString()}</>}
+                  </div>
+                  {/* Show structured feedback for completed reviews */}
+                  {r.review_result && (r.status === "changes_requested" || r.status === "approved" || r.status === "rejected") && (
+                    <div className="mt-2 rounded border border-border bg-card p-3 text-xs space-y-1">
+                      <div className="flex gap-4">
+                        <span className={r.review_result.security_passed ? "text-green-400" : "text-red-400"}>
+                          Security: {r.review_result.security_passed ? "Passed" : "Failed"}
+                        </span>
+                        {r.review_result.compatibility_passed !== undefined && (
+                          <span className={r.review_result.compatibility_passed ? "text-green-400" : "text-red-400"}>
+                            Compatibility: {r.review_result.compatibility_passed ? "Passed" : "Failed"}
+                          </span>
+                        )}
+                        {r.review_result.docs_passed !== undefined && (
+                          <span className={r.review_result.docs_passed ? "text-green-400" : "text-red-400"}>
+                            Docs: {r.review_result.docs_passed ? "Passed" : "Failed"}
+                          </span>
+                        )}
+                      </div>
+                      {r.review_result.required_changes && r.review_result.required_changes.length > 0 && (
+                        <div className="mt-1">
+                          <span className="text-muted">Required changes:</span>
+                          <ul className="mt-0.5 list-disc list-inside text-foreground">
+                            {r.review_result.required_changes.map((c: string, i: number) => (
+                              <li key={i}>{c}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {r.review_result.reviewer_summary && (
+                        <p className="text-muted mt-1">{r.review_result.reviewer_summary}</p>
+                      )}
+                    </div>
+                  )}
+                  {r.review_notes && (
+                    <p className="mt-1 text-xs text-muted italic">{r.review_notes}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted">No review requests yet.</p>
           )}
         </section>
       )}

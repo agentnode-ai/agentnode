@@ -24,6 +24,9 @@ class VersionInfo(BaseModel):
     version_number: str
     channel: str
     published_at: datetime
+    security_reviewed_at: datetime | None = None
+    compatibility_reviewed_at: datetime | None = None
+    manually_reviewed_at: datetime | None = None
 
 
 class CapabilityBlock(BaseModel):

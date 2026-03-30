@@ -116,6 +116,11 @@ class PackageVersion(Base, UUIDPrimaryKeyMixin):
     verification_score = Column(Integer, nullable=True)
     verification_tier = Column(Text, nullable=True)
 
+    # Materialized review badges (set by paid review workflow)
+    security_reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    compatibility_reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    manually_reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+
     # Lifecycle
     is_yanked = Column(Boolean, nullable=False, default=False)
     published_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default="now()")

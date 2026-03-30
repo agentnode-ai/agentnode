@@ -124,6 +124,9 @@ def assemble_package_detail(
             version_number=version.version_number,
             channel=version.channel,
             published_at=version.published_at,
+            security_reviewed_at=version.security_reviewed_at,
+            compatibility_reviewed_at=version.compatibility_reviewed_at,
+            manually_reviewed_at=version.manually_reviewed_at,
         )
 
         # Capabilities block

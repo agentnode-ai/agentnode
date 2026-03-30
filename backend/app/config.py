@@ -123,6 +123,13 @@ class Settings(BaseSettings):
     VERIFICATION_SANDBOX_MODE: str = "subprocess"   # "subprocess" or "container"
     VERIFICATION_CONTAINER_IMAGE: str = "agentnode-verifier:latest"
 
+    # Stripe (billing)
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_PUBLISHABLE_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
+    STRIPE_TAX_ENABLED: bool = True
+    AGENTNODE_BASE_URL: str = "https://agentnode.net"
+
     # Environment
     ENVIRONMENT: str = "development"
 
