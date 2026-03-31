@@ -2,6 +2,9 @@
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.packages.find]
+include = ["app*"]
+
 [project]
 name = "agentnode-backend"
 version = "0.1.0"

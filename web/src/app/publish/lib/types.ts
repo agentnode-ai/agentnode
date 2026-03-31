@@ -33,6 +33,11 @@ export interface GuidedState {
   data_access: string;
   user_approval: string;
   tags: string;
+  // Upgrade-specific fields (only used when package_type === "upgrade")
+  upgrade_recommended_for: string;
+  upgrade_replaces: string;
+  upgrade_roles: string;
+  upgrade_install_strategy: string;
 }
 
 export interface ValidationResult {

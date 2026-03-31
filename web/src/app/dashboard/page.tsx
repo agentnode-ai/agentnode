@@ -355,7 +355,7 @@ export default function DashboardPage() {
   async function loadMyPackages(publisherSlug: string) {
     setLoadingPackages(true);
     try {
-      const res = await search({ publisher_slug: publisherSlug, per_page: 10 });
+      const res = await search({ publisher_slug: publisherSlug, per_page: 50 });
       setMyPackages(res.hits || []);
     } catch { /* non-critical */ }
     finally { setLoadingPackages(false); }

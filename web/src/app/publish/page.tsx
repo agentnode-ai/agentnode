@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import yaml from "js-yaml";
-import { fetchWithAuth } from "@/lib/api";
+import { fetchWithAuth, search } from "@/lib/api";
 import { PLATFORMS, convertClientSide, parseResult } from "@/lib/import-utils";
 import { BUILDER_EXAMPLES, generateSkill, type BuilderResult } from "@/lib/builder-utils";
 
@@ -98,7 +98,7 @@ function PublishContent() {
     // Check for restored draft
     if (typeof window !== "undefined") {
       const draft = restoreDraft();
-      if (draft?.guided) return "draft";
+      if (draft?.guided && typeof draft.guided === "object" && Array.isArray(draft.guided.tools)) return "draft";
     }
     return "input";
   });
@@ -143,7 +143,7 @@ function PublishContent() {
     // From restored draft
     if (typeof window !== "undefined") {
       const draft = restoreDraft();
-      if (draft?.guided) {
+      if (draft?.guided && typeof draft.guided === "object") {
         // Restore tab state too
         if (draft.tab) setTimeout(() => setActiveTab(draft.tab), 0);
         if (draft.description) setTimeout(() => setDescriptionText(draft.description!), 0);
@@ -152,7 +152,20 @@ function PublishContent() {
         if (draft.manifestText) setTimeout(() => setManifestInput(draft.manifestText!), 0);
         if (draft.source) setTimeout(() => setSource(draft.source!), 0);
         clearDraft();
-        return draft.guided;
+        // Merge with defaults to prevent crashes from incomplete/corrupted drafts
+        const defaults = { ...DEFAULT_GUIDED, tools: [{ ...EMPTY_TOOL }] };
+        const g = draft.guided as unknown as Record<string, unknown>;
+        const safeTools = Array.isArray(g.tools)
+          ? g.tools.map((t: Record<string, unknown>) => ({ ...EMPTY_TOOL, ...Object.fromEntries(Object.entries(t).filter(([, v]) => typeof v === "string")) }))
+          : defaults.tools;
+        return {
+          ...defaults,
+          ...Object.fromEntries(Object.entries(g).filter(([k, v]) => k !== "tools" && typeof v === "string")),
+          tools: safeTools,
+          // Preserve arrays/non-string fields from defaults if not in draft
+          frameworks: Array.isArray(g.frameworks) ? g.frameworks as string[] : defaults.frameworks,
+          package_type: (typeof g.package_type === "string" ? g.package_type : defaults.package_type) as GuidedState["package_type"],
+        };
       }
     }
     return { ...DEFAULT_GUIDED, tools: [{ ...EMPTY_TOOL }] };
@@ -198,6 +211,7 @@ function PublishContent() {
 
   /* ---- Capabilities list ---- */
   const [capabilities, setCapabilities] = useState<CapabilityOption[]>([]);
+  const [myPackages, setMyPackages] = useState<{ slug: string; name: string }[]>([]);
 
   /* ---- Tool advanced toggles ---- */
   const [toolAdvanced, setToolAdvanced] = useState<Set<number>>(new Set());
@@ -247,6 +261,20 @@ function PublishContent() {
       .then((data: CapabilityOption[]) => { if (Array.isArray(data)) setCapabilities(data); })
       .catch(() => {});
   }, []);
+
+  // Load own packages for upgrade type
+  useEffect(() => {
+    if (!user?.publisher?.slug || guided.package_type !== "upgrade") return;
+    search({ publisher_slug: user.publisher.slug, per_page: 100 })
+      .then((res) => {
+        const pkgs = (res.hits || []).map((h) => ({
+          slug: h.slug,
+          name: h.name || h.slug,
+        })).filter((p) => p.slug);
+        setMyPackages(pkgs);
+      })
+      .catch(() => {});
+  }, [user?.publisher?.slug, guided.package_type]);
 
   // Restore builder artifact from publish_prefill_artifact (backward compat)
   useEffect(() => {
@@ -1480,6 +1508,90 @@ function PublishContent() {
                 )}
               </div>
             </div>
+
+            {guided.package_type === "upgrade" && (
+              <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 space-y-4">
+                <div>
+                  <p className="text-sm font-medium text-foreground mb-1">Upgrade configuration</p>
+                  <p className="text-xs text-muted">
+                    {user ? "Select which of your packages this upgrade extends or replaces." : "Sign in to select from your published packages."}
+                  </p>
+                </div>
+                {!user && (
+                  <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-400">
+                    You must be signed in to create an upgrade. Your own packages will appear here after login.
+                  </div>
+                )}
+                {user && (
+                  <>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-foreground">
+                        Recommended for <span className="text-xs text-muted font-normal">(which of your packages does this upgrade enhance?)</span>
+                      </label>
+                      {myPackages.length > 0 ? (
+                        <select
+                          value={guided.upgrade_recommended_for}
+                          onChange={(e) => updateGuided("upgrade_recommended_for", e.target.value)}
+                          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono text-foreground focus:border-primary focus:outline-none"
+                        >
+                          <option value="">Select a package...</option>
+                          {myPackages.map((p) => (
+                            <option key={p.slug} value={p.slug}>{p.name} ({p.slug})</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <p className="text-xs text-muted py-2">Loading your packages...</p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-foreground">
+                        Replaces <span className="text-xs text-muted font-normal">(optional — does this replace an existing package?)</span>
+                      </label>
+                      {myPackages.length > 0 ? (
+                        <select
+                          value={guided.upgrade_replaces}
+                          onChange={(e) => updateGuided("upgrade_replaces", e.target.value)}
+                          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono text-foreground focus:border-primary focus:outline-none"
+                        >
+                          <option value="">None</option>
+                          {myPackages.map((p) => (
+                            <option key={p.slug} value={p.slug}>{p.name} ({p.slug})</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <p className="text-xs text-muted py-2">Loading your packages...</p>
+                      )}
+                    </div>
+                  </>
+                )}
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-foreground">
+                      Roles <span className="text-xs text-muted font-normal">(comma-separated, optional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={guided.upgrade_roles}
+                      onChange={(e) => updateGuided("upgrade_roles", e.target.value)}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono text-foreground focus:border-primary focus:outline-none"
+                      placeholder="enhancer, optimizer"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-foreground">Install strategy</label>
+                    <select
+                      value={guided.upgrade_install_strategy}
+                      onChange={(e) => updateGuided("upgrade_install_strategy", e.target.value)}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    >
+                      <option value="local">local</option>
+                      <option value="global">global</option>
+                      <option value="managed">managed</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div>
               <label className="mb-1 flex items-center justify-between text-sm font-medium text-foreground">

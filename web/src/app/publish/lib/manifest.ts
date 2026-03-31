@@ -59,6 +59,24 @@ export function buildManifestFromGuided(g: GuidedState, publisherSlug: string): 
     manifest.tags = g.tags.split(",").map((t) => t.trim()).filter(Boolean);
   }
 
+  // Upgrade metadata
+  if (g.package_type === "upgrade") {
+    const upgrade: Record<string, unknown> = {};
+    if (g.upgrade_recommended_for.trim()) {
+      upgrade.recommended_for = g.upgrade_recommended_for.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+    if (g.upgrade_replaces.trim()) {
+      upgrade.replaces = g.upgrade_replaces.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+    if (g.upgrade_roles.trim()) {
+      upgrade.roles = g.upgrade_roles.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+    if (g.upgrade_install_strategy) {
+      upgrade.install_strategy = g.upgrade_install_strategy;
+    }
+    manifest.upgrade_metadata = upgrade;
+  }
+
   return manifest;
 }
 
@@ -129,6 +147,15 @@ export function parseManifestToGuided(json: Record<string, unknown>): GuidedStat
   if (Array.isArray(json.tags)) g.tags = json.tags.join(", ");
   if (!g.tags && Array.isArray(json.dependencies)) {
     g.tags = json.dependencies.join(", ");
+  }
+
+  // Upgrade metadata
+  const upgrade = json.upgrade_metadata as Record<string, unknown> | undefined;
+  if (upgrade) {
+    if (Array.isArray(upgrade.recommended_for)) g.upgrade_recommended_for = upgrade.recommended_for.join(", ");
+    if (Array.isArray(upgrade.replaces)) g.upgrade_replaces = upgrade.replaces.join(", ");
+    if (Array.isArray(upgrade.roles)) g.upgrade_roles = upgrade.roles.join(", ");
+    if (typeof upgrade.install_strategy === "string") g.upgrade_install_strategy = upgrade.install_strategy;
   }
 
   return g;

@@ -29,6 +29,10 @@ export const DEFAULT_GUIDED: GuidedState = {
   data_access: "input_only",
   user_approval: "never",
   tags: "",
+  upgrade_recommended_for: "",
+  upgrade_replaces: "",
+  upgrade_roles: "",
+  upgrade_install_strategy: "local",
 };
 
 export const CAPABILITY_FALLBACK: CapabilityOption[] = [
