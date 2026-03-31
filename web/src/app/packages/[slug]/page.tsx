@@ -293,6 +293,24 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
             <p className="mt-3 max-w-2xl text-base leading-relaxed text-muted">
               {pkg.summary}
             </p>
+            {pkg.description && pkg.description !== pkg.summary && (
+              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted/80">
+                {pkg.description}
+              </p>
+            )}
+            {pkg.tags && pkg.tags.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {(pkg.tags as string[]).map((tag: string) => (
+                  <Link
+                    key={tag}
+                    href={`/search?q=${encodeURIComponent(tag)}`}
+                    className="rounded-md bg-card px-2 py-0.5 text-xs text-muted border border-border hover:text-foreground hover:border-primary/30 transition-colors"
+                  >
+                    {tag}
+                  </Link>
+                ))}
+              </div>
+            )}
 
             {/* Compatibility badges */}
             {(compat.frameworks ?? []).length > 0 && (
@@ -595,8 +613,8 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                 <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted">
                   Runtime
                 </p>
-                <span className="rounded-md bg-background px-2.5 py-1 text-xs text-foreground border border-border">
-                  Python
+                <span className="rounded-md bg-background px-2.5 py-1 text-xs text-foreground border border-border capitalize">
+                  {compat.runtime ?? "python"}
                 </span>
               </div>
               {compat.python && (

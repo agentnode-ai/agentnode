@@ -13,6 +13,8 @@ interface PackageCardProps {
   verification_status?: string | null;
   verification_tier?: string | null;
   verification_score?: number | null;
+  package_type?: string | null;
+  publisher_name?: string | null;
 }
 
 function formatDownloads(count: number): string {
@@ -32,6 +34,8 @@ export default function PackageCard({
   verification_status,
   verification_tier,
   verification_score,
+  package_type,
+  publisher_name,
 }: PackageCardProps) {
   return (
     <Link
@@ -43,8 +47,18 @@ export default function PackageCard({
           <h3 className="truncate font-mono text-sm font-semibold text-foreground group-hover:text-primary transition-colors">
             {name ?? slug}
           </h3>
-          {version && (
-            <span className="text-xs text-muted">v{version}</span>
+          <div className="flex items-center gap-1.5">
+            {version && (
+              <span className="text-xs text-muted">v{version}</span>
+            )}
+            {package_type && package_type !== "toolpack" && (
+              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                {package_type}
+              </span>
+            )}
+          </div>
+          {publisher_name && (
+            <span className="text-xs text-muted truncate">by {publisher_name}</span>
           )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">

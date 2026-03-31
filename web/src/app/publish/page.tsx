@@ -1488,7 +1488,6 @@ function PublishContent() {
                   className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none"
                 >
                   <option value="toolpack">toolpack &mdash; collection of tools (most common)</option>
-                  <option value="agent">agent &mdash; a full autonomous agent</option>
                   <option value="upgrade">upgrade &mdash; extends an existing package</option>
                 </select>
               </div>

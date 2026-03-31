@@ -166,7 +166,8 @@ def assemble_package_detail(
                 python_ver = r.runtime_version
                 break
         deps = [d.dependency_package_slug for d in version.dependencies]
-        blocks_compat = CompatibilityBlock(frameworks=frameworks, python=python_ver, dependencies=deps)
+        runtime = version.runtime or "python"
+        blocks_compat = CompatibilityBlock(frameworks=frameworks, runtime=runtime, python=python_ver, dependencies=deps)
 
         # Permissions block
         if version.permissions:

@@ -1,6 +1,6 @@
 manifest_version: "0.1"
 package_id: "research-agent-pack"
-package_type: "agent"
+package_type: "toolpack"
 name: "Research Agent Pack"
 publisher: "agentnode"
 version: "1.0.0"

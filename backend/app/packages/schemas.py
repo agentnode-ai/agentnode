@@ -55,6 +55,7 @@ class InstallBlock(BaseModel):
 
 class CompatibilityBlock(BaseModel):
     frameworks: list[str]
+    runtime: str = "python"
     python: str | None = None
     dependencies: list[str]
 

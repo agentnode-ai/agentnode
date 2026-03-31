@@ -21,7 +21,7 @@ export interface CodeFile {
 export interface GuidedState {
   name: string;
   package_id: string;
-  package_type: "toolpack" | "agent" | "upgrade";
+  package_type: "toolpack" | "upgrade";
   version: string;
   summary: string;
   description: string;

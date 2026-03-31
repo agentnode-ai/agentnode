@@ -87,8 +87,10 @@ export function parseManifestToGuided(json: Record<string, unknown>): GuidedStat
   else if (typeof json.display_name === "string" && json.display_name) g.name = json.display_name;
 
   if (typeof json.package_id === "string") g.package_id = json.package_id;
-  if (json.package_type === "toolpack" || json.package_type === "agent" || json.package_type === "upgrade") {
+  if (json.package_type === "toolpack" || json.package_type === "upgrade") {
     g.package_type = json.package_type;
+  } else if (json.package_type === "agent") {
+    g.package_type = "toolpack"; // Legacy: "agent" maps to "toolpack"
   }
   if (typeof json.version === "string") g.version = json.version;
 
