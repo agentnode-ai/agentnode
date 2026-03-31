@@ -18,7 +18,7 @@ An ANP package consists of:
 |-------|------|-------|
 | `manifest_version` | string | Must be `"0.1"` |
 | `package_id` | string | `[a-z0-9-]`, 3-60 chars, unique |
-| `package_type` | enum | `toolpack`, `agent`, `upgrade` |
+| `package_type` | enum | `toolpack`, `upgrade` (legacy: `agent` accepted, treated as `toolpack`) |
 | `name` | string | 1-100 chars |
 | `publisher` | string | Must match existing publisher slug |
 | `version` | string | Valid semver (e.g., `1.0.0`) |
