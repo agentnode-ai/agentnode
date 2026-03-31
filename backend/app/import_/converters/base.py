@@ -21,7 +21,8 @@ from app.import_.schemas import (
 # ── Framework import sets ────────────────────────────────────────────
 LANGCHAIN_MODULES = {"langchain", "langchain_core", "langchain_community"}
 CREWAI_MODULES = {"crewai", "crewai_tools"}
-ALL_FRAMEWORK_MODULES = LANGCHAIN_MODULES | CREWAI_MODULES
+MCP_MODULES = {"mcp", "fastmcp"}
+ALL_FRAMEWORK_MODULES = LANGCHAIN_MODULES | CREWAI_MODULES | MCP_MODULES
 
 # ── Known third-party packages (conservative whitelist) ──────────────
 KNOWN_THIRD_PARTY = {
@@ -422,7 +423,7 @@ def extract_function_body(func: ast.FunctionDef, source_lines: list[str]) -> str
     """Extract the body source of a function (excluding the def line + docstring)."""
     body = func.body
     if not body:
-        return "    pass\n"
+        return "pass\n"
 
     # Skip docstring if present
     start_idx = 0
@@ -431,7 +432,7 @@ def extract_function_body(func: ast.FunctionDef, source_lines: list[str]) -> str
         start_idx = 1
 
     if start_idx >= len(body):
-        return "    pass\n"
+        return "pass\n"
 
     first = body[start_idx]
     last = body[-1]
@@ -440,7 +441,7 @@ def extract_function_body(func: ast.FunctionDef, source_lines: list[str]) -> str
 
     lines = source_lines[start_line:end_line]
     if not lines:
-        return "    pass\n"
+        return "pass\n"
 
     return textwrap.dedent("\n".join(lines)) + "\n"
 
@@ -712,7 +713,7 @@ def _build_param_sig(params: list[ToolParam]) -> str:
 # ── Capability Detection ─────────────────────────────────────────────
 
 def detect_capability_ids(tools: list[ExtractedTool]) -> list[str]:
-    """Detect capability IDs from tool names and descriptions."""
+    """Detect capability IDs from all tool names and descriptions (package-level)."""
     text = " ".join(f"{t.name} {t.description}" for t in tools).lower()
     found: list[str] = []
     for keywords, cap_id in _CAPABILITY_MAP:
@@ -722,6 +723,16 @@ def detect_capability_ids(tools: list[ExtractedTool]) -> list[str]:
                     found.append(cap_id)
                 break
     return found or ["code_analysis"]
+
+
+def detect_capability_id_for_tool(tool: ExtractedTool) -> str:
+    """Detect the best capability_id for a single tool based on its name and description."""
+    text = f"{tool.name} {tool.description}".lower()
+    for keywords, cap_id in _CAPABILITY_MAP:
+        for kw in keywords:
+            if kw in text:
+                return cap_id
+    return "code_analysis"
 
 
 # ── Permission Inference ─────────────────────────────────────────────
@@ -793,9 +804,12 @@ def generate_manifest_dict(
         if required:
             input_schema["required"] = required
 
+        # Per-tool capability detection: each tool gets its own best-match ID
+        tool_cap_id = detect_capability_id_for_tool(tool)
+
         tool_entry: dict = {
             "name": tool.name,
-            "capability_id": cap_ids[0] if cap_ids else "code_analysis",
+            "capability_id": tool_cap_id,
             "description": tool.description[:200] if tool.description else "",
         }
 
@@ -842,7 +856,7 @@ def generate_manifest_dict(
         },
         "tags": cap_ids[:3],
         "categories": [
-            cap_ids[0].rsplit("_", 1)[0] if cap_ids and "_" in cap_ids[0] else "general"
+            cap_ids[0].rsplit("_", 1)[0] if cap_ids and "_" in cap_ids[0] else (cap_ids[0] if cap_ids else "general")
         ],
     }
 
@@ -1185,29 +1199,53 @@ def get_return_annotation(func: ast.FunctionDef) -> str | None:
 
 
 def wrap_return_value(body_source: str) -> str:
-    """Wrap return values in {'result': ...} for non-dict-returning functions."""
+    """Wrap return values in {'result': ...} for non-dict-returning functions.
+
+    Only wraps top-level returns — returns inside nested functions are left alone.
+    """
     try:
         tree = ast.parse(body_source)
     except SyntaxError:
         return body_source
 
     lines = body_source.splitlines()
-    # Find return statements and wrap them
-    replacements: list[tuple[int, str, str]] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Return) and node.value is not None:
-            line_idx = node.lineno - 1
-            if line_idx < len(lines):
-                original_line = lines[line_idx]
-                indent = original_line[: len(original_line) - len(original_line.lstrip())]
-                value_src = ast.unparse(node.value)
-                new_line = f'{indent}return {{"result": {value_src}}}'
-                replacements.append((line_idx, original_line, new_line))
 
-    for line_idx, old, new in reversed(replacements):
-        lines[line_idx] = new
+    # Collect top-level return nodes (skip returns inside nested functions/lambdas)
+    top_level_returns: list[ast.Return] = []
+    for stmt in ast.iter_child_nodes(tree):
+        _collect_top_returns(stmt, top_level_returns)
+
+    # Each replacement: (start_line_idx, end_line_idx, new_line)
+    replacements: list[tuple[int, int, str]] = []
+    for node in top_level_returns:
+        if node.value is None:
+            continue
+        start_idx = node.lineno - 1
+        end_idx = (node.end_lineno or node.lineno) - 1
+        if start_idx < len(lines):
+            original_line = lines[start_idx]
+            indent = original_line[: len(original_line) - len(original_line.lstrip())]
+            value_src = ast.unparse(node.value)
+            new_line = f'{indent}return {{"result": {value_src}}}'
+            replacements.append((start_idx, end_idx, new_line))
+
+    # Apply in reverse order to preserve line indices
+    for start_idx, end_idx, new in reversed(replacements):
+        lines[start_idx:end_idx + 1] = [new]
 
     return "\n".join(lines)
+
+
+def _collect_top_returns(node: ast.AST, out: list[ast.Return]) -> None:
+    """Walk an AST node collecting Return statements, but stop at nested function boundaries."""
+    if isinstance(node, ast.Return):
+        out.append(node)
+        return
+    # Don't descend into nested function definitions or lambdas
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        return
+    for child in ast.iter_child_nodes(node):
+        _collect_top_returns(child, out)
 
 
 # ── Body Name Collection ─────────────────────────────────────────────

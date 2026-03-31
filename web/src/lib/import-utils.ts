@@ -50,21 +50,20 @@ class WebSearchTool(BaseTool):
     id: "mcp",
     name: "MCP",
     icon: "\u26A1",
-    example: `from mcp.server import Server
-from mcp.types import Tool
+    example: `from mcp.server.fastmcp import FastMCP
+import pandas as pd
 
-server = Server("my-tools")
+mcp = FastMCP("my-tools")
 
-@server.tool()
-async def analyze_csv(file_path: str, operation: str = "describe") -> str:
+@mcp.tool()
+def analyze_csv(file_path: str, operation: str = "describe") -> dict:
     """Analyze a CSV file \u2014 describe columns, show head, or compute stats."""
-    import pandas as pd
     df = pd.read_csv(file_path)
     if operation == "describe":
-        return df.describe().to_string()
+        return {"result": df.describe().to_string()}
     elif operation == "head":
-        return df.head(10).to_string()
-    return f"Columns: {list(df.columns)}"`,
+        return {"result": df.head(10).to_string()}
+    return {"columns": list(df.columns)}`,
   },
   {
     id: "openai",
@@ -119,14 +118,16 @@ export function parseResult(manifest: string, platform: string): ConversionResul
   const tools: ParsedTool[] = [];
   let packageId = "";
 
+  const stripQuotes = (s: string) => s.replace(/^["']|["']$/g, "");
+
   const toolRegex = /- name:\s*(\S+)\n\s*capability_id:\s*(\S+)/g;
   let m;
   while ((m = toolRegex.exec(manifest)) !== null) {
-    tools.push({ name: m[1], description: "", capability_id: m[2] });
+    tools.push({ name: stripQuotes(m[1]), description: "", capability_id: stripQuotes(m[2]) });
   }
 
   const pkgMatch = manifest.match(/package_id:\s*(\S+)/);
-  if (pkgMatch) packageId = pkgMatch[1];
+  if (pkgMatch) packageId = stripQuotes(pkgMatch[1]);
 
   return {
     manifest,
@@ -184,9 +185,33 @@ export function convertClientSide(platform: string, content: string): string {
     const SKIP_PREFIXES = ["_run", "_arun", "run", "__init__", "setUp", "test_"];
     let m: RegExpExecArray | null;
 
-    // 1. @tool decorator (most specific — CrewAI / MCP)
-    const decoratorRegex = /@(?:server\.)?tool\((?:["']([^"']+)["'])?\)\s*\n(?:async\s+)?def\s+(\w+)\s*\([^)]*\)(?:\s*->[^:]+)?:\s*\n\s*"""([^"]*?)"""/g;
+    // 0. Detect FastMCP variable names (e.g., mcp = FastMCP("name"))
+    const fastmcpVars = new Set<string>();
+    const fastmcpVarRegex = /(\w+)\s*=\s*FastMCP\s*\(/g;
+    while ((m = fastmcpVarRegex.exec(content)) !== null) {
+      fastmcpVars.add(m[1]);
+    }
+
+    // 0b. Skip @mcp.resource() and @mcp.prompt() decorated functions
+    const skipFuncs = new Set<string>();
+    for (const v of fastmcpVars) {
+      const skipRegex = new RegExp(`@${v}\\.(?:resource|prompt)\\([^)]*\\)\\s*\\n(?:async\\s+)?def\\s+(\\w+)`, "g");
+      let sm;
+      while ((sm = skipRegex.exec(content)) !== null) {
+        skipFuncs.add(sm[1]);
+      }
+    }
+
+    // 1. @tool decorator (most specific — CrewAI / MCP / FastMCP)
+    // Match @tool(...), @server.tool(...), @mcp.tool(...), @<any_fastmcp_var>.tool(...)
+    const varAlts = fastmcpVars.size > 0 ? [...fastmcpVars].join("|") : "";
+    const prefixPattern = varAlts ? `(?:server|${varAlts})` : "server";
+    const decoratorRegex = new RegExp(
+      `@(?:${prefixPattern}\\.)?tool\\((?:["']([^"']+)["'])?\\)\\s*\\n(?:async\\s+)?def\\s+(\\w+)\\s*\\([^)]*\\)(?:\\s*->[^:]+)?:\\s*\\n\\s*"""([^"]*?)"""`,
+      "g"
+    );
     while ((m = decoratorRegex.exec(content)) !== null) {
+      if (skipFuncs.has(m[2])) continue;
       const name = m[1] || m[2];
       addTool(name.toLowerCase().replace(/\s+/g, "_"), m[3].trim().split("\n")[0]);
     }
@@ -197,11 +222,11 @@ export function convertClientSide(platform: string, content: string): string {
       addTool(m[2], m[3]);
     }
 
-    // 3. Plain def with docstring (fallback — skip framework internals)
+    // 3. Plain def with docstring (fallback — skip framework internals + MCP non-tools)
     const defRegex = /def\s+(\w+)\s*\([^)]*\)(?:\s*->[^:]+)?:\s*\n\s*"""([^"]*?)"""/g;
     while ((m = defRegex.exec(content)) !== null) {
       const match = m;
-      if (!SKIP_PREFIXES.some((skip) => match[1].startsWith(skip))) {
+      if (!SKIP_PREFIXES.some((skip) => match[1].startsWith(skip)) && !skipFuncs.has(match[1])) {
         addTool(match[1], match[2].trim().split("\n")[0]);
       }
     }
@@ -219,23 +244,40 @@ export function convertClientSide(platform: string, content: string): string {
     )
     .join("\n");
 
-  return `manifest_version: "0.2"
+  // Derive categories from first tool's capability ID
+  const firstCapId = guessCapId(tools[0].name, tools[0].description);
+  const category = firstCapId.includes("_") ? firstCapId.split("_")[0] : firstCapId;
+  const capIds = [...new Set(tools.map((t) => guessCapId(t.name, t.description)))];
+
+  return `manifest_version: "${tools.length > 1 ? "0.2" : "0.1"}"
 package_id: "${slug}"
 package_type: toolpack
 name: "${slug
     .split("-")
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ")}"
-publisher: "your-publisher-name"
-version: "1.0.0"
-summary: "${tools[0].description.slice(0, 200)}"
-runtime: ${platform === "mcp" ? "mcp" : "python"}
+version: "0.1.0"
+summary: "${tools[0].description.slice(0, 120)}"
+description: "${tools[0].description.slice(0, 500)}"
+runtime: python
+install_mode: package
+hosting_type: agentnode_hosted
 entrypoint: "${moduleName}.tool"
 capabilities:
   tools:
 ${capTools}
+  resources: []
+  prompts: []
+permissions:
+  network: false
+  filesystem: false
+  code_execution: false
+  data_access: false
+  user_approval: true
 compatibility:
   frameworks:
     - generic
-tags: [${tools.map((t) => `"${t.name}"`).join(", ")}]`;
+  python: ">=3.10"
+tags: [${capIds.slice(0, 3).map((c) => `"${c}"`).join(", ")}]
+categories: ["${category}"]`;
 }

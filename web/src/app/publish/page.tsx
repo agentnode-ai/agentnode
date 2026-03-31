@@ -39,7 +39,7 @@ function PublishContent() {
 
   /* ---- Prefill from builder/import (backward compat) ---- */
   const [_prefillFiles, set_prefillFiles] = useState<CodeFile[] | null>(null);
-  const [_prefillPlatform, set_prefillPlatform] = useState<string | null>(null);
+  /* _prefillPlatform removed — source upgrade in prefill loading handles platform */
   const [importConfidence, setImportConfidence] = useState<{
     level: string; reasons: string[];
   } | null>(null);
@@ -65,7 +65,11 @@ function PublishContent() {
             set_prefillFiles([{ path: `src/${moduleId}/tool.py`, content: prefill.originalCode }]);
           }
           if (prefill.importPlatform) {
-            set_prefillPlatform(prefill.importPlatform);
+            // Upgrade source from bare "import" to "import:PlatformName"
+            const plat = PLATFORMS.find(p => p.id === prefill.importPlatform);
+            if (plat) {
+              setTimeout(() => setSource(`import:${plat.name}`), 0);
+            }
           }
           // Import conversion metadata
           if (prefill.confidence) {
@@ -128,6 +132,7 @@ function PublishContent() {
   const [draftExpired, setDraftExpired] = useState(false);
   const [draftSaveBanner, setDraftSaveBanner] = useState(false);
   const draftSaveShownRef = useRef(false);
+  const restoredDraftTabRef = useRef<string | null>(null);
 
   /* ---- Form state ---- */
   const [guided, setGuided] = useState<GuidedState>(() => {
@@ -145,12 +150,21 @@ function PublishContent() {
       const draft = restoreDraft();
       if (draft?.guided && typeof draft.guided === "object") {
         // Restore tab state too
-        if (draft.tab) setTimeout(() => setActiveTab(draft.tab), 0);
+        if (draft.tab) {
+          restoredDraftTabRef.current = draft.tab;
+          setTimeout(() => setActiveTab(draft.tab), 0);
+        }
         if (draft.description) setTimeout(() => setDescriptionText(draft.description!), 0);
         if (draft.importPlatform) setTimeout(() => setImportPlatform(draft.importPlatform!), 0);
         if (draft.importCode) setTimeout(() => setImportCode(draft.importCode!), 0);
         if (draft.manifestText) setTimeout(() => setManifestInput(draft.manifestText!), 0);
         if (draft.source) setTimeout(() => setSource(draft.source!), 0);
+        // Restore import conversion metadata
+        if (draft.importConfidence) setTimeout(() => setImportConfidence(draft.importConfidence!), 0);
+        if (typeof draft.importDraftReady === "boolean") setTimeout(() => setImportDraftReady(draft.importDraftReady!), 0);
+        if (draft.importWarnings?.length) setTimeout(() => setImportWarnings(draft.importWarnings!), 0);
+        if (draft.importGroupedWarnings?.length) setTimeout(() => setImportGroupedWarnings(draft.importGroupedWarnings!), 0);
+        if (draft.importChanges?.length) setTimeout(() => setImportChanges(draft.importChanges!), 0);
         clearDraft();
         // Merge with defaults to prevent crashes from incomplete/corrupted drafts
         const defaults = { ...DEFAULT_GUIDED, tools: [{ ...EMPTY_TOOL }] };
@@ -247,8 +261,7 @@ function PublishContent() {
     if (user) return; // logged-in users keep default
     if (tabParam) return; // URL param has priority (Rule 6)
     // Don't override if a draft was restored that was on "describe"
-    const draft = typeof window !== "undefined" ? restoreDraft() : null;
-    if (draft?.tab === "describe") return;
+    if (restoredDraftTabRef.current === "describe") return;
     if (activeTab === "describe") {
       setActiveTab("import");
     }
@@ -445,8 +458,16 @@ function PublishContent() {
     }
     setError("");
 
-    // Try API first, fall back to client-side
     const doConvert = async () => {
+      let usedFallback = false;
+      let manifest = "";
+      let apiCodeFiles: CodeFile[] = [];
+      let apiConfidence: { level: string; reasons: string[] } | null = null;
+      let apiWarnings: string[] = [];
+      let apiGroupedWarnings: { message: string; category: "blocking" | "review" | "info" }[] = [];
+      let apiChanges: string[] = [];
+      let apiDraftReady: boolean | null = null;
+
       try {
         const res = await fetch("/api/v1/import/convert", {
           method: "POST",
@@ -455,17 +476,82 @@ function PublishContent() {
         });
         if (res.ok) {
           const data = await res.json();
-          return data.manifest_yaml || data.manifest || "";
+          manifest = data.manifest_yaml || data.manifest || "";
+          // Extract code_files from API response
+          if (Array.isArray(data.code_files) && data.code_files.length > 0) {
+            apiCodeFiles = data.code_files;
+          }
+          if (data.confidence) {
+            apiConfidence = data.confidence;
+          }
+          if (Array.isArray(data.warnings)) {
+            apiWarnings = data.warnings;
+          }
+          if (Array.isArray(data.grouped_warnings)) {
+            apiGroupedWarnings = data.grouped_warnings;
+          }
+          if (Array.isArray(data.changes)) {
+            apiChanges = data.changes;
+          }
+          if (typeof data.draft_ready === "boolean") {
+            apiDraftReady = data.draft_ready;
+          }
+        } else {
+          usedFallback = true;
+          manifest = convertClientSide(importPlatform, importCode);
         }
-      } catch { /* fallback */ }
-      return convertClientSide(importPlatform, importCode);
+      } catch {
+        usedFallback = true;
+        manifest = convertClientSide(importPlatform, importCode);
+      }
+
+      return { manifest, apiCodeFiles, apiConfidence, apiWarnings, apiGroupedWarnings, apiChanges, apiDraftReady, usedFallback };
     };
 
-    doConvert().then((manifest) => {
-      if (manifest.startsWith("# No tools")) {
+    // Clear stale import metadata before new conversion
+    setImportConfidence(null);
+    setImportDraftReady(null);
+    setImportWarnings([]);
+    setImportGroupedWarnings([]);
+    setImportChanges([]);
+
+    doConvert().then(({ manifest, apiCodeFiles, apiConfidence, apiWarnings, apiGroupedWarnings, apiChanges, apiDraftReady, usedFallback }) => {
+      if (manifest.startsWith("# No tools") || !manifest.trim()) {
         setError("No tools detected. Check your input format and try again.");
         return;
       }
+
+      // Populate code files from API response
+      if (apiCodeFiles.length > 0) {
+        setCodeFiles(apiCodeFiles);
+        set_prefillFiles(apiCodeFiles);
+      }
+      // Populate import conversion metadata
+      if (apiConfidence) {
+        setImportConfidence(apiConfidence);
+      }
+      if (apiWarnings.length > 0) {
+        setImportWarnings(apiWarnings);
+      }
+      if (apiGroupedWarnings.length > 0) {
+        setImportGroupedWarnings(apiGroupedWarnings);
+      }
+      if (apiChanges.length > 0) {
+        setImportChanges(apiChanges);
+      }
+      if (apiDraftReady !== null) {
+        setImportDraftReady(apiDraftReady);
+      }
+
+      // Show fallback warning so user knows conversion was client-side only
+      if (usedFallback) {
+        setImportWarnings(prev => [
+          "Server-side conversion unavailable. Used simplified client-side conversion (no code files generated, no dependency analysis).",
+          ...prev,
+        ]);
+        setImportConfidence({ level: "low", reasons: ["Client-side fallback — no AST analysis performed"] });
+      }
+
       const result = parseResult(manifest, importPlatform);
       // Parse YAML manifest to GuidedState
       try {
@@ -488,13 +574,8 @@ function PublishContent() {
         }));
       }
       const selectedPlatform = PLATFORMS.find(p => p.id === importPlatform);
-      setSource("import");
+      setSource(`import:${selectedPlatform?.name || importPlatform}`);
       setScreen("draft");
-
-      // Store conversion metadata for source banner
-      if (selectedPlatform) {
-        setSource(`import:${selectedPlatform.name}`);
-      }
     });
   }
 
@@ -522,6 +603,12 @@ function PublishContent() {
     setValidation(null);
     setError("");
     setSource(null);
+    setImportConfidence(null);
+    setImportDraftReady(null);
+    setImportWarnings([]);
+    setImportGroupedWarnings([]);
+    setImportChanges([]);
+    setCodeFiles([{ path: "my_tool/tool.py", content: "" }]);
     setScreen("edit");
   }
 
@@ -673,6 +760,11 @@ function PublishContent() {
         guided,
         source: source || undefined,
         createdAt: Date.now(),
+        importConfidence: importConfidence || undefined,
+        importDraftReady: importDraftReady ?? undefined,
+        importWarnings: importWarnings.length ? importWarnings : undefined,
+        importGroupedWarnings: importGroupedWarnings.length ? importGroupedWarnings : undefined,
+        importChanges: importChanges.length ? importChanges : undefined,
       });
       setError("Sign in to publish your skill.");
       return;
@@ -924,7 +1016,7 @@ function PublishContent() {
 
   if (screen === "draft") {
     const hasArtifact = !!(builderArtifactName || artifact || tarGzFile);
-    const { canPublish, items } = computeReadiness(guided, hasArtifact, source);
+    const { canPublish, items } = computeReadiness(guided, hasArtifact, source, codeFiles);
     const toolCount = guided.tools.filter((t) => t.name).length;
 
     // Determine source banner text
@@ -984,9 +1076,9 @@ function PublishContent() {
         )}
 
         {/* Import conversion metadata (collapsed — 3.6 alert-fatigue reduction) */}
-        {source === "import" && importConfidence && (() => {
+        {source?.startsWith("import") && importConfidence && (() => {
           const platform = source?.startsWith("import:") ? source.split(":")[1] : "import";
-          const noteCount = importGroupedWarnings.length || importWarnings.length || importChanges.length;
+          const noteCount = importGroupedWarnings.length + importWarnings.length + importChanges.length;
           const colorClass = importConfidence.level === "high" ? "border-green-500/30 bg-green-500/5"
             : importConfidence.level === "medium" ? "border-yellow-500/30 bg-yellow-500/5"
             : "border-red-500/30 bg-red-500/5";
@@ -1214,6 +1306,11 @@ function PublishContent() {
                     guided,
                     source: source || undefined,
                     createdAt: Date.now(),
+                    importConfidence: importConfidence || undefined,
+                    importDraftReady: importDraftReady ?? undefined,
+                    importWarnings: importWarnings.length ? importWarnings : undefined,
+                    importGroupedWarnings: importGroupedWarnings.length ? importGroupedWarnings : undefined,
+                    importChanges: importChanges.length ? importChanges : undefined,
                   });
                 }}
                 className="rounded-md bg-primary px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary/90"
@@ -1251,14 +1348,14 @@ function PublishContent() {
               <button
                 type="button"
                 onClick={handlePublishFromDraft}
-                disabled={!canDoPublish || loading || buildingArtifact || (source === "import" && importDraftReady === false)}
+                disabled={!canDoPublish || loading || buildingArtifact || (source?.startsWith("import") && importDraftReady === false)}
                 className="rounded-md bg-primary px-8 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
               >
-                {source === "import" && importDraftReady === false
+                {source?.startsWith("import") && importDraftReady === false
                   ? "Fix issues first"
                   : buildingArtifact ? "Building artifact..." : loading ? "Publishing..." : "Publish now"}
               </button>
-              {source === "import" && importDraftReady === false && (
+              {source?.startsWith("import") && importDraftReady === false && (
                 <p className="mt-2 text-center text-xs text-danger">
                   The import conversion has issues that must be resolved before publishing.
                 </p>
@@ -2014,6 +2111,11 @@ function PublishContent() {
                   guided,
                   source: source || undefined,
                   createdAt: Date.now(),
+                  importConfidence: importConfidence || undefined,
+                  importDraftReady: importDraftReady ?? undefined,
+                  importWarnings: importWarnings.length ? importWarnings : undefined,
+                  importGroupedWarnings: importGroupedWarnings.length ? importGroupedWarnings : undefined,
+                  importChanges: importChanges.length ? importChanges : undefined,
                 });
               }}
               className="rounded-md bg-primary px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary/90"

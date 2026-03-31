@@ -13,9 +13,14 @@ export interface ReadinessItem {
 export function computeReadiness(
   g: GuidedState,
   hasArtifact: boolean,
-  source: string | null
+  source: string | null,
+  codeFiles?: CodeFile[],
 ): { canPublish: boolean; items: ReadinessItem[] } {
-  const hasContent = hasArtifact || source === "builder" || (source != null && source.startsWith("import"));
+  // Check actual code file content rather than trusting source alone.
+  // Import-sourced packages only count as having content if code_files
+  // actually contain non-empty content, or if a real artifact was uploaded.
+  const hasCodeContent = codeFiles ? codeFiles.some(f => f.content.trim()) : false;
+  const hasContent = hasArtifact || hasCodeContent || source === "builder";
 
   const items: ReadinessItem[] = [
     { label: "Package name", ok: !!g.name, required: true, target: "name" },

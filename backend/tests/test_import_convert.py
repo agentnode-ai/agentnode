@@ -902,3 +902,410 @@ def run(q: str) -> dict:
                 f"Hardcoded credential fixture was draft_ready=True! "
                 f"Warnings: {resp.warnings}"
             )
+
+
+# ── MCP Converter Tests ─────────────────────────────────────────────
+
+import json
+
+MCP_SIMPLE = '''
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("my-server")
+
+@mcp.tool()
+def word_count(text: str) -> dict:
+    """Count words in text."""
+    words = text.split()
+    return {"count": len(words)}
+'''
+
+MCP_ASYNC = '''
+from mcp.server.fastmcp import FastMCP
+import httpx
+
+mcp = FastMCP("fetcher")
+
+@mcp.tool()
+async def fetch_url(url: str) -> str:
+    """Fetch content from a URL."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url)
+        return response.text
+'''
+
+MCP_CONTEXT = '''
+from mcp.server.fastmcp import FastMCP, Context
+
+mcp = FastMCP("db-server")
+
+@mcp.tool()
+def query_db(query: str, ctx: Context) -> dict:
+    """Run a database query."""
+    return {"results": [], "query": query}
+'''
+
+MCP_MULTI = '''
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("calculator")
+
+@mcp.tool()
+def add(a: int, b: int) -> dict:
+    """Add two numbers."""
+    return {"result": a + b}
+
+@mcp.tool(description="Multiply two numbers together")
+def multiply(a: int, b: int) -> dict:
+    return {"result": a * b}
+'''
+
+MCP_ALT_VAR = '''
+from mcp.server.fastmcp import FastMCP
+
+app = FastMCP("my-app")
+
+@app.tool()
+def ping() -> dict:
+    """Ping the server."""
+    return {"status": "ok"}
+'''
+
+MCP_RESOURCE_PROMPT = '''
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("mixed")
+
+@mcp.tool()
+def search(query: str) -> dict:
+    """Search for something."""
+    return {"results": []}
+
+@mcp.resource("config://settings")
+def get_settings() -> str:
+    return "settings"
+
+@mcp.prompt()
+def summarize_prompt(text: str) -> str:
+    return f"Please summarize: {text}"
+'''
+
+MCP_LOW_LEVEL = '''
+from mcp.server import Server
+import mcp.server.stdio
+
+server = Server("my-server")
+
+@server.call_tool()
+async def call_tool(name: str, arguments: dict):
+    if name == "search":
+        return [{"type": "text", "text": "result"}]
+'''
+
+MCP_HELPER = '''
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("tools")
+
+def _normalize(text: str) -> str:
+    return text.lower().strip()
+
+@mcp.tool()
+def analyze(text: str) -> dict:
+    """Analyze text."""
+    clean = _normalize(text)
+    return {"length": len(clean)}
+'''
+
+
+class TestMCPSimple:
+    """MCP: Simple sync @mcp.tool() -> high confidence, draft_ready=True"""
+
+    def test_basic_conversion(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_SIMPLE))
+        assert resp.confidence.level == "high"
+        assert resp.draft_ready is True
+        assert len(resp.code_files) == 5
+        assert len(resp.detected_tools) == 1
+        assert resp.detected_tools[0].name == "word_count"
+
+    def test_generated_code_valid(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_SIMPLE))
+        tool_py = next(f for f in resp.code_files if f.path.endswith("tool.py") and "test" not in f.path)
+        ast.parse(tool_py.content)
+
+    def test_no_mcp_imports(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_SIMPLE))
+        tool_py = next(f for f in resp.code_files if f.path.endswith("tool.py") and "test" not in f.path)
+        assert "mcp" not in tool_py.content.lower()
+        assert "FastMCP" not in tool_py.content
+
+    def test_no_fastmcp_in_helpers(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_SIMPLE))
+        tool_py = next(f for f in resp.code_files if f.path.endswith("tool.py") and "test" not in f.path)
+        assert "FastMCP(" not in tool_py.content
+
+
+class TestMCPAsync:
+    """MCP: Async tool -> low confidence, not draft_ready"""
+
+    def test_confidence_low(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_ASYNC))
+        assert resp.confidence.level == "low"
+        assert resp.draft_ready is False
+
+    def test_has_async_warning(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_ASYNC))
+        assert any("async" in w.lower() for w in resp.warnings)
+
+    def test_httpx_in_deps(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_ASYNC))
+        assert "httpx" in resp.detected_dependencies
+
+
+class TestMCPContext:
+    """MCP: Context parameter should be stripped"""
+
+    def test_context_param_removed(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_CONTEXT))
+        assert len(resp.detected_tools) == 1
+        params = [p.name for p in resp.detected_tools[0].params]
+        assert "query" in params
+        assert "ctx" not in params
+
+    def test_context_removal_in_changes(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_CONTEXT))
+        assert any("Context" in c for c in resp.changes)
+
+
+class TestMCPMulti:
+    """MCP: Multiple tools -> manifest v0.2"""
+
+    def test_both_tools_extracted(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_MULTI))
+        names = {t.name for t in resp.detected_tools}
+        assert "add" in names
+        assert "multiply" in names
+
+    def test_manifest_v02(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_MULTI))
+        assert resp.manifest_json["manifest_version"] == "0.2"
+
+    def test_decorator_description(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_MULTI))
+        multiply = next(t for t in resp.detected_tools if t.name == "multiply")
+        assert "Multiply" in multiply.description
+
+
+class TestMCPAltVar:
+    """MCP: Different FastMCP variable name (app instead of mcp)"""
+
+    def test_tool_extracted(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_ALT_VAR))
+        assert len(resp.detected_tools) == 1
+        assert resp.detected_tools[0].name == "ping"
+
+
+class TestMCPResourcePrompt:
+    """MCP: Resources and prompts should be detected but skipped"""
+
+    def test_only_tool_extracted(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_RESOURCE_PROMPT))
+        assert len(resp.detected_tools) == 1
+        assert resp.detected_tools[0].name == "search"
+
+    def test_resource_prompt_warnings(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_RESOURCE_PROMPT))
+        assert any("resource" in w.lower() for w in resp.warnings)
+        assert any("prompt" in w.lower() for w in resp.warnings)
+
+
+class TestMCPLowLevel:
+    """MCP: Low-level Server.call_tool() -> warn only, no extraction"""
+
+    def test_no_tools_extracted(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_LOW_LEVEL))
+        assert len(resp.detected_tools) == 0
+        assert resp.draft_ready is False
+
+    def test_has_call_tool_warning(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_LOW_LEVEL))
+        assert any("call_tool" in w.lower() for w in resp.warnings)
+
+
+class TestMCPHelper:
+    """MCP: Helper functions should be preserved"""
+
+    def test_helper_in_output(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_HELPER))
+        tool_py = next(f for f in resp.code_files if f.path.endswith("tool.py") and "test" not in f.path)
+        assert "_normalize" in tool_py.content
+
+    def test_no_unresolved_for_helper(self):
+        resp = convert(ConvertRequest(platform="mcp", content=MCP_HELPER))
+        assert not any("_normalize" in w and "not defined" in w for w in resp.warnings)
+
+
+# ── OpenAI Converter Tests ──────────────────────────────────────────
+
+OPENAI_CHAT_COMPLETIONS = json.dumps([
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the current weather in a location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City name"},
+                    "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+                },
+                "required": ["location"]
+            }
+        }
+    }
+])
+
+OPENAI_MULTI = json.dumps([
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "Search the web",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "parse_pdf",
+            "description": "Extract text from a PDF",
+            "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]}
+        }
+    }
+])
+
+OPENAI_BARE = json.dumps({
+    "name": "create_issue",
+    "description": "Create a GitHub issue",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Issue title"},
+            "body": {"type": "string", "description": "Issue body"},
+            "labels": {"type": "array", "description": "Labels"}
+        },
+        "required": ["title"]
+    }
+})
+
+OPENAI_WRAPPER = json.dumps({
+    "tools": [
+        {"type": "function", "function": {"name": "tool_a", "description": "Does A", "parameters": {"type": "object", "properties": {"x": {"type": "string"}}}}},
+        {"type": "function", "function": {"name": "tool_b", "description": "Does B", "parameters": {"type": "object", "properties": {"y": {"type": "integer"}}}}}
+    ]
+})
+
+
+class TestOpenAIChatCompletions:
+    """OpenAI: Chat Completions format -> medium confidence, draft_ready=False"""
+
+    def test_basic_conversion(self):
+        resp = convert(ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS))
+        assert resp.confidence.level == "medium"
+        assert resp.draft_ready is False
+        assert len(resp.detected_tools) == 1
+        assert resp.detected_tools[0].name == "get_weather"
+        assert len(resp.code_files) == 5
+
+    def test_params_extracted(self):
+        resp = convert(ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS))
+        tool = resp.detected_tools[0]
+        param_names = [p.name for p in tool.params]
+        assert "location" in param_names
+        assert "unit" in param_names
+
+    def test_required_params(self):
+        resp = convert(ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS))
+        tool = resp.detected_tools[0]
+        location = next(p for p in tool.params if p.name == "location")
+        unit = next(p for p in tool.params if p.name == "unit")
+        assert location.required is True
+        assert unit.required is False
+
+    def test_json_schema_preserved_in_manifest(self):
+        resp = convert(ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS))
+        tools = resp.manifest_json["capabilities"]["tools"]
+        schema = tools[0]["input_schema"]
+        assert "required" in schema
+        assert "location" in schema["properties"]
+
+    def test_stub_code_generated(self):
+        resp = convert(ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS))
+        tool_py = next(f for f in resp.code_files if f.path.endswith("tool.py") and "test" not in f.path)
+        assert "NotImplementedError" in tool_py.content
+        assert "def get_weather" in tool_py.content
+
+    def test_has_stub_warning(self):
+        resp = convert(ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS))
+        assert any("stub" in w.lower() for w in resp.warnings)
+
+
+class TestOpenAIMulti:
+    """OpenAI: Multiple functions -> per-tool capability IDs"""
+
+    def test_both_tools_extracted(self):
+        resp = convert(ConvertRequest(platform="openai", content=OPENAI_MULTI))
+        names = {t.name for t in resp.detected_tools}
+        assert "search_web" in names
+        assert "parse_pdf" in names
+
+    def test_per_tool_capability_ids(self):
+        resp = convert(ConvertRequest(platform="openai", content=OPENAI_MULTI))
+        tools = resp.manifest_json["capabilities"]["tools"]
+        cap_ids = {t["name"]: t["capability_id"] for t in tools}
+        assert cap_ids["search_web"] == "web_search"
+        assert cap_ids["parse_pdf"] == "pdf_extraction"
+
+
+class TestOpenAIBare:
+    """OpenAI: Single bare function format"""
+
+    def test_tool_extracted(self):
+        resp = convert(ConvertRequest(platform="openai", content=OPENAI_BARE))
+        assert len(resp.detected_tools) == 1
+        assert resp.detected_tools[0].name == "create_issue"
+
+    def test_optional_params(self):
+        resp = convert(ConvertRequest(platform="openai", content=OPENAI_BARE))
+        tool = resp.detected_tools[0]
+        body = next(p for p in tool.params if p.name == "body")
+        labels = next(p for p in tool.params if p.name == "labels")
+        assert body.required is False
+        assert labels.required is False
+
+
+class TestOpenAIWrapper:
+    """OpenAI: {tools: [...]} wrapper format"""
+
+    def test_both_tools_extracted(self):
+        resp = convert(ConvertRequest(platform="openai", content=OPENAI_WRAPPER))
+        assert len(resp.detected_tools) == 2
+        names = {t.name for t in resp.detected_tools}
+        assert "tool_a" in names
+        assert "tool_b" in names
+
+
+class TestOpenAIInvalid:
+    """OpenAI: Invalid JSON should return error"""
+
+    def test_invalid_json(self):
+        resp = convert(ConvertRequest(platform="openai", content="this is not json {{{"))
+        assert resp.confidence.level == "low"
+        assert resp.draft_ready is False
+        assert any("json" in w.lower() for w in resp.warnings)
+
+    def test_empty_functions(self):
+        resp = convert(ConvertRequest(platform="openai", content='{"tools": []}'))
+        assert resp.confidence.level == "low"
+        assert resp.draft_ready is False

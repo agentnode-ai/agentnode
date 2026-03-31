@@ -64,4 +64,10 @@ export interface PublishDraft {
   source?: string;
   hasBuilderArtifact?: boolean;
   createdAt: number;
+  /* Import conversion metadata — preserved across login redirect */
+  importConfidence?: { level: string; reasons: string[] };
+  importDraftReady?: boolean;
+  importWarnings?: string[];
+  importGroupedWarnings?: { message: string; category: "blocking" | "review" | "info" }[];
+  importChanges?: string[];
 }

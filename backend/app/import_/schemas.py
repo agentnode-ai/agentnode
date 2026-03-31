@@ -7,7 +7,7 @@ from app.builder.schemas import CodeFile
 
 
 class ConvertRequest(BaseModel):
-    platform: Literal["langchain", "crewai"]
+    platform: Literal["langchain", "crewai", "mcp", "openai"]
     content: str = Field(..., min_length=10, max_length=30_000)
 
 

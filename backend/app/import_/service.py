@@ -32,6 +32,8 @@ from app.import_.converters.base import (
 )
 from app.import_.converters import langchain as langchain_converter
 from app.import_.converters import crewai as crewai_converter
+from app.import_.converters import mcp as mcp_converter
+from app.import_.converters import openai_funcs as openai_converter
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,10 @@ def convert(request: ConvertRequest) -> ConvertResponse:
     """Convert framework-specific tool code into an ANP package."""
     t0 = time.monotonic()
 
+    # OpenAI is JSON, not Python — entirely different pipeline (no AST)
+    if request.platform == "openai":
+        return openai_converter.convert(request, t0, _classify_warning, _emit_outcome, _error_response)
+
     # 1. Parse
     try:
         tree = parse_source(request.content)
@@ -110,6 +116,8 @@ def convert(request: ConvertRequest) -> ConvertResponse:
         result = langchain_converter.extract(request.content, tree)
     elif request.platform == "crewai":
         result = crewai_converter.extract(request.content, tree)
+    elif request.platform == "mcp":
+        result = mcp_converter.extract(request.content, tree)
     else:
         return _error_response(f"Unsupported platform: {request.platform}")
 
@@ -122,9 +130,13 @@ def convert(request: ConvertRequest) -> ConvertResponse:
 
     # 4a. No tools found?
     if not result.tools:
+        hint = {
+            "langchain": "No @tool decorator or BaseTool class found.",
+            "crewai": "No @tool decorator or BaseTool class found.",
+            "mcp": "No @mcp.tool() decorator found. Make sure you use FastMCP.",
+        }.get(request.platform, "No recognized tool pattern found.")
         all_warnings = result.warnings + [
-            "No @tool decorator or BaseTool class found. "
-            "Check that your code contains a recognized tool pattern."
+            f"{hint} Check that your code contains a recognized tool pattern."
         ]
         _emit_outcome(
             platform=request.platform,

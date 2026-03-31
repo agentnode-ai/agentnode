@@ -98,6 +98,7 @@ export default function ImportPage() {
     setError("");
     setResult(null);
     setApiResponse(null);
+    setActiveFileTab(0);
 
     try {
       const res = await fetch("/api/v1/import/convert", {
@@ -189,10 +190,19 @@ export default function ImportPage() {
     const encoded = JSON.stringify(payload);
     const payloadSize = new Blob([encoded]).size;
     if (payloadSize > 1_000_000) {
-      sessionStorage.setItem(
-        "publish_prefill",
-        JSON.stringify({ source: "import", manifestText: result?.manifest || "" })
-      );
+      // Payload too large for sessionStorage — keep manifest + metadata but warn user
+      const slim = { ...payload };
+      delete slim.originalFiles;
+      try {
+        sessionStorage.setItem("publish_prefill", JSON.stringify(slim));
+      } catch {
+        // Absolute fallback — manifest only
+        sessionStorage.setItem(
+          "publish_prefill",
+          JSON.stringify({ source: "import", importPlatform: platform, manifestText: result?.manifest || "" })
+        );
+      }
+      alert("Your code is too large to transfer automatically. You can re-paste or upload it on the publish page.");
     } else {
       sessionStorage.setItem("publish_prefill", encoded);
     }
@@ -229,7 +239,7 @@ export default function ImportPage() {
             Turn Any Tool Into an AgentNode Package
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-lg text-muted">
-            Best for self-contained LangChain and CrewAI tools in a single file.
+            Import tools from LangChain, CrewAI, MCP servers, or OpenAI function schemas.
           </p>
         </div>
       </section>
@@ -315,9 +325,13 @@ export default function ImportPage() {
         <section className="border-b border-border bg-card/30">
           <div className="mx-auto max-w-5xl px-4 sm:px-6 py-10">
             {/* Draft-only banner */}
-            {apiResponse && (
+            {apiResponse ? (
               <div className="mb-6 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3 text-sm text-yellow-300">
                 This is a draft only. Review all generated files before publishing.
+              </div>
+            ) : (
+              <div className="mb-6 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3 text-sm text-yellow-300">
+                Converted locally (server unavailable). Results are approximate — review carefully before publishing.
               </div>
             )}
 
@@ -333,7 +347,7 @@ export default function ImportPage() {
                   <h2 className="text-xl font-bold text-foreground">
                     {apiResponse?.detected_tools.length
                       ? `${apiResponse.detected_tools.length} tool${apiResponse.detected_tools.length > 1 ? "s" : ""} extracted`
-                      : "Your tool is ANP-compatible"}
+                      : `Conversion generated (${result?.toolCount || 0} tool${(result?.toolCount || 0) !== 1 ? "s" : ""} detected)`}
                   </h2>
                   {apiResponse && (
                     <span className={`rounded-full border px-3 py-0.5 text-xs font-medium ${confidenceColor(apiResponse.confidence.level)}`}>
@@ -545,21 +559,20 @@ export default function ImportPage() {
                 <div>
                   <h3 className="text-lg font-bold text-foreground">
                     {apiResponse?.draft_ready === false
-                      ? "Manual fixes needed before publishing"
+                      ? "Review needed before publishing"
                       : "Publish this package on AgentNode"}
                   </h3>
                   <p className="mt-1 text-sm text-muted">
                     {apiResponse?.draft_ready === false
-                      ? "Review the warnings above and fix the highlighted issues, then convert again."
+                      ? "This conversion needs manual edits. Continue to the publish page to add your implementation code."
                       : "Make it discoverable and installable by any AI agent."}
                   </p>
                 </div>
                 <button
                   onClick={handlePublish}
-                  disabled={apiResponse?.draft_ready === false}
-                  className="shrink-0 rounded-xl bg-primary px-8 py-3 text-center text-sm font-bold text-white transition-colors hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="shrink-0 rounded-xl bg-primary px-8 py-3 text-center text-sm font-bold text-white transition-colors hover:bg-primary/90"
                 >
-                  {apiResponse?.draft_ready === false ? "Not ready" : "Publish on AgentNode"}
+                  {apiResponse?.draft_ready === false ? "Continue to publish" : "Publish on AgentNode"}
                 </button>
               </div>
 
@@ -658,7 +671,7 @@ export default function ImportPage() {
                   </div>
                   <h3 className="mb-2 text-base font-semibold text-foreground">Paste your code</h3>
                   <p className="text-sm text-muted">
-                    Paste a LangChain or CrewAI tool. We detect tools, extract parameters, and analyze imports automatically.
+                    Paste a LangChain, CrewAI, or MCP tool — or an OpenAI function schema. We detect tools, extract parameters, and analyze imports automatically.
                   </p>
                 </div>
                 <div className="text-center">
