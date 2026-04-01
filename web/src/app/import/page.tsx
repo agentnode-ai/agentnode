@@ -154,11 +154,15 @@ export default function ImportPage() {
     textareaRef.current?.focus();
   };
 
-  const handleCopy = () => {
+  const handleCopy = async () => {
     if (result) {
-      navigator.clipboard.writeText(result.manifest);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      try {
+        await navigator.clipboard.writeText(result.manifest);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch {
+        // Clipboard API unavailable — silently ignore
+      }
     }
   };
 
@@ -210,7 +214,7 @@ export default function ImportPage() {
   };
 
   const shareText = result
-    ? `I just converted my ${selectedPlatform.name} tool into a portable ANP package on @agentnode_ai — any AI agent can now discover and install it.\n\nhttps://agentnode.net/import`
+    ? `I just converted my ${selectedPlatform.name} tool into a portable skill on @agentnode_net — any AI agent can now discover and install it.\n\nhttps://agentnode.net/import`
     : "";
 
   /* ---- Confidence helpers ---- */
@@ -513,12 +517,16 @@ export default function ImportPage() {
                   })}
                   <div className="flex-1" />
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       const file = apiResponse.code_files[activeFileTab];
                       if (file) {
-                        navigator.clipboard.writeText(file.content);
-                        setCopied(true);
-                        setTimeout(() => setCopied(false), 2000);
+                        try {
+                          await navigator.clipboard.writeText(file.content);
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 2000);
+                        } catch {
+                          // Clipboard API unavailable — silently ignore
+                        }
                       }
                     }}
                     className="shrink-0 rounded border border-border mx-2 px-2 py-1 text-xs text-muted transition-colors hover:text-foreground"
@@ -702,11 +710,11 @@ export default function ImportPage() {
               <div className="grid gap-6 sm:grid-cols-3">
                 <div className="rounded-xl border border-border bg-card p-6 text-center">
                   <div className="text-3xl font-bold text-foreground">{packageCount ?? "77"}+</div>
-                  <div className="mt-1 text-sm text-muted">Published packages</div>
+                  <div className="mt-1 text-sm text-muted">Published skills</div>
                 </div>
                 <div className="rounded-xl border border-border bg-card p-6 text-center">
                   <div className="text-3xl font-bold text-foreground">{capabilityCount ?? "80"}+</div>
-                  <div className="mt-1 text-sm text-muted">Capability IDs</div>
+                  <div className="mt-1 text-sm text-muted">Skill categories</div>
                 </div>
                 <div className="rounded-xl border border-border bg-card p-6 text-center">
                   <div className="text-3xl font-bold text-foreground">All</div>

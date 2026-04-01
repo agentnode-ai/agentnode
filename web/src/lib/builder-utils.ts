@@ -61,6 +61,10 @@ export async function generateSkill(
       return { ok: false, status: 401, error: "Please log in to use the Skill Generator." };
     }
 
+    if (res.status === 429) {
+      return { ok: false, status: 429, error: "You're generating too quickly. Please wait a minute and try again." };
+    }
+
     const data = await res.json().catch(() => ({}));
     return {
       ok: false,

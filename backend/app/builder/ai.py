@@ -37,6 +37,8 @@ RULES:
   meeting_summary, scheduling, task_management, translation, tone_adjustment,
   code_analysis
 - package_id must be lowercase kebab-case ending with -pack (e.g. email-extractor-pack)
+- package_name should be concise (2-4 words max), like "Web Search Pack" or "PDF Extractor Pack"
+- package_id must be max 40 characters (before the -pack suffix)
 - tool function name must be snake_case
 - entrypoint format: module_name.tool:function_name
 - module_name = package_id with hyphens replaced by underscores
@@ -204,7 +206,7 @@ def _normalize_manifest(ai: dict, data: dict, package_id: str, module_name: str,
         tools.append({
             "name": tool_name,
             "description": description,
-            "capability_id": cap_ids[0] if cap_ids else "",
+            "capability_id": cap_ids[0] if cap_ids else "code_analysis",
             "entrypoint": entrypoint,
         })
 
@@ -244,13 +246,18 @@ def _normalize_manifest(ai: dict, data: dict, package_id: str, module_name: str,
         "permissions": normalized_perms,
     }
 
-    # Enrichment fields
-    if ai.get("use_cases"):
-        result["use_cases"] = ai["use_cases"]
-    if ai.get("examples"):
-        result["examples"] = ai["examples"]
-    if ai.get("env_requirements"):
-        result["env_requirements"] = ai["env_requirements"]
+    # Enrichment fields (check manifest first, fall back to top-level response)
+    if ai.get("use_cases") or data.get("use_cases"):
+        result["use_cases"] = ai.get("use_cases") or data.get("use_cases")
+    if ai.get("examples") or data.get("examples"):
+        result["examples"] = ai.get("examples") or data.get("examples")
+    if ai.get("env_requirements") or data.get("env_requirements"):
+        result["env_requirements"] = ai.get("env_requirements") or data.get("env_requirements")
+
+    # readme_code from AI response → manifest
+    readme_code = data.get("readme_code")
+    if readme_code:
+        result["readme_md"] = readme_code
 
     return result
 
@@ -262,6 +269,8 @@ def _normalize_tool(t: dict, module_name: str) -> dict:
     cap_id = t.get("capability_id") or ""
     if not cap_id and isinstance(t.get("capability_ids"), list) and t["capability_ids"]:
         cap_id = t["capability_ids"][0]
+    if not cap_id:
+        cap_id = "code_analysis"
     entrypoint = t.get("entrypoint") or ""
     if not entrypoint and name:
         entrypoint = f"{module_name}.tool:{name}"
@@ -277,6 +286,11 @@ def _normalize_tool(t: dict, module_name: str) -> dict:
     if t.get("output_schema") or t.get("returns"):
         tool["output_schema"] = t.get("output_schema") or t.get("returns")
     return tool
+
+
+def _escape_yaml_str(s: str) -> str:
+    """Escape a string for use inside YAML double quotes."""
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t").replace("\r", "\\r")
 
 
 def _json_to_yaml(obj: dict | list | str | int | float | bool | None, indent: int = 0) -> str:
@@ -295,7 +309,7 @@ def _json_to_yaml(obj: dict | list | str | int | float | bool | None, indent: in
                 elif all(isinstance(v, (str, int, float, bool)) for v in value):
                     # Inline simple lists
                     formatted = ", ".join(
-                        f'"{v}"' if isinstance(v, str) else str(v) for v in value
+                        f'"{_escape_yaml_str(v)}"' if isinstance(v, str) else str(v) for v in value
                     )
                     lines.append(f"{prefix}{key}: [{formatted}]")
                 else:
@@ -310,14 +324,14 @@ def _json_to_yaml(obj: dict | list | str | int | float | bool | None, indent: in
                                     lines.append(f"{item_prefix}{k2}:")
                                     lines.append(_json_to_yaml(v2, indent + 6))
                                 else:
-                                    val_str = f'"{v2}"' if isinstance(v2, str) else str(v2)
+                                    val_str = f'"{_escape_yaml_str(v2)}"' if isinstance(v2, str) else str(v2)
                                     lines.append(f"{item_prefix}{k2}: {val_str}")
                         else:
-                            val_str = f'"{item}"' if isinstance(item, str) else str(item)
+                            val_str = f'"{_escape_yaml_str(item)}"' if isinstance(item, str) else str(item)
                             lines.append(f"{prefix}  - {val_str}")
             else:
                 if isinstance(value, str):
-                    lines.append(f'{prefix}{key}: "{value}"')
+                    lines.append(f'{prefix}{key}: "{_escape_yaml_str(value)}"')
                 elif isinstance(value, bool):
                     lines.append(f"{prefix}{key}: {'true' if value else 'false'}")
                 elif value is None:

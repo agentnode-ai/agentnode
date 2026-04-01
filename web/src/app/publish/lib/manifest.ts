@@ -54,10 +54,30 @@ export function buildManifestFromGuided(g: GuidedState, publisherSlug: string): 
     },
   };
 
+  // Package-level entrypoint (explicit or auto-derived from first tool)
+  if (g.entrypoint) {
+    manifest.entrypoint = g.entrypoint;
+  } else if (g.tools.length > 0 && g.tools[0].entrypoint) {
+    const parts = g.tools[0].entrypoint.split(":");
+    if (parts.length === 2) manifest.entrypoint = parts[0];
+  }
+
   if (g.description) manifest.description = g.description;
   if (g.tags.trim()) {
     manifest.tags = g.tags.split(",").map((t) => t.trim()).filter(Boolean);
   }
+
+  // AI Builder enrichment fields
+  if (g.use_cases?.length) manifest.use_cases = g.use_cases;
+  if (g.examples?.length) manifest.examples = g.examples;
+  if (g.env_requirements?.length) manifest.env_requirements = g.env_requirements;
+  if (g.readme_md?.trim()) manifest.readme_md = g.readme_md;
+
+  // Links & license
+  if (g.license) manifest.license = g.license;
+  if (g.homepage_url?.trim()) manifest.homepage_url = g.homepage_url;
+  if (g.docs_url?.trim()) manifest.docs_url = g.docs_url;
+  if (g.source_url?.trim()) manifest.source_url = g.source_url;
 
   // Upgrade metadata
   if (g.package_type === "upgrade") {
@@ -87,10 +107,10 @@ export function parseManifestToGuided(json: Record<string, unknown>): GuidedStat
   else if (typeof json.display_name === "string" && json.display_name) g.name = json.display_name;
 
   if (typeof json.package_id === "string") g.package_id = json.package_id;
-  if (json.package_type === "toolpack" || json.package_type === "upgrade") {
+  if (json.package_type === "toolpack") {
     g.package_type = json.package_type;
-  } else if (json.package_type === "agent") {
-    g.package_type = "toolpack"; // Legacy: "agent" maps to "toolpack"
+  } else if (json.package_type === "agent" || json.package_type === "upgrade") {
+    g.package_type = "toolpack"; // Legacy/upgrade: force to toolpack on main publish page
   }
   if (typeof json.version === "string") g.version = json.version;
 
@@ -123,8 +143,12 @@ export function parseManifestToGuided(json: Record<string, unknown>): GuidedStat
     });
   }
 
-  if (typeof json.entrypoint === "string" && json.entrypoint && g.tools.length === 1 && !g.tools[0].entrypoint) {
-    g.tools[0].entrypoint = json.entrypoint;
+  if (typeof json.entrypoint === "string" && json.entrypoint) {
+    g.entrypoint = json.entrypoint;
+    // Also push down to single tool if it has no entrypoint
+    if (g.tools.length === 1 && !g.tools[0].entrypoint) {
+      g.tools[0].entrypoint = json.entrypoint;
+    }
   }
 
   const compat = json.compatibility as Record<string, unknown> | undefined;
@@ -150,6 +174,18 @@ export function parseManifestToGuided(json: Record<string, unknown>): GuidedStat
   if (!g.tags && Array.isArray(json.dependencies)) {
     g.tags = json.dependencies.join(", ");
   }
+
+  // AI Builder enrichment fields
+  if (Array.isArray(json.use_cases)) g.use_cases = json.use_cases as string[];
+  if (Array.isArray(json.examples)) g.examples = json.examples as { title: string; language: string; code: string }[];
+  if (Array.isArray(json.env_requirements)) g.env_requirements = json.env_requirements as { name: string; required: boolean; description: string }[];
+  if (typeof json.readme_md === "string") g.readme_md = json.readme_md;
+
+  // Links & license
+  if (typeof json.license === "string") g.license = json.license;
+  if (typeof json.homepage_url === "string") g.homepage_url = json.homepage_url;
+  if (typeof json.docs_url === "string") g.docs_url = json.docs_url;
+  if (typeof json.source_url === "string") g.source_url = json.source_url;
 
   // Upgrade metadata
   const upgrade = json.upgrade_metadata as Record<string, unknown> | undefined;

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { fetchWithAuth, fetchAllVersions } from "@/lib/api";
 
@@ -24,11 +25,13 @@ export default function OwnerActions({
   slug,
   publisherSlug,
   isDeprecated,
+  packageType,
   currentMetadata,
 }: {
   slug: string;
   publisherSlug: string;
   isDeprecated: boolean;
+  packageType?: string;
   currentMetadata: PackageMetadata;
 }) {
   const router = useRouter();
@@ -256,12 +259,29 @@ export default function OwnerActions({
             </div>
           </div>
         ) : (
-          <button
-            onClick={() => setEditing(true)}
-            className="rounded border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-card transition-colors"
-          >
-            Edit metadata
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setEditing(true)}
+              className="rounded border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-card transition-colors"
+            >
+              Edit metadata
+            </button>
+            <Link
+              href={`/publish?from=version&package=${encodeURIComponent(slug)}`}
+              className="rounded border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-card transition-colors"
+            >
+              Publish new version
+            </Link>
+            {packageType === "toolpack" && (
+              <Link
+                href={`/packages/${encodeURIComponent(slug)}/upgrade`}
+                className="rounded border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card transition-colors"
+                title="Create an extension package that enhances this toolpack with new capabilities"
+              >
+                Create upgrade
+              </Link>
+            )}
+          </div>
         )}
       </div>
 

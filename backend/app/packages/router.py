@@ -15,6 +15,7 @@ from app.shared.rate_limit import rate_limit
 from app.packages.assembler import assemble_package_detail
 from app.packages.models import Installation, Package, PackageReport, PackageVersion, Review
 from app.packages.schemas import (
+    ActionResponse,
     PackageDetailResponse,
     PublishResponse,
     UpdatePackageRequest,
@@ -35,7 +36,7 @@ from app.webhooks.service import fire_event
 router = APIRouter(prefix="/v1/packages", tags=["packages"])
 
 
-@router.post("/validate", response_model=ValidateResponse)
+@router.post("/validate", response_model=ValidateResponse, dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))])
 async def validate_package(
     body: ValidateRequest,
     user: User = Depends(get_current_user),
@@ -251,6 +252,19 @@ async def get_file_preview(
 ):
     """Get a preview of a file from a package version. Served from S3 preview store."""
     import os
+    import posixpath
+
+    # --- Path traversal protection ---
+    if '\x00' in file_path:
+        raise AppError("INVALID_FILE_PATH", "Invalid file path", 400)
+    if '..' in file_path:
+        raise AppError("INVALID_FILE_PATH", "Invalid file path", 400)
+    if file_path.startswith('/'):
+        raise AppError("INVALID_FILE_PATH", "Invalid file path", 400)
+    normalized = posixpath.normpath(file_path)
+    if normalized.startswith('..') or normalized.startswith('/'):
+        raise AppError("INVALID_FILE_PATH", "Invalid file path", 400)
+
     ext = os.path.splitext(file_path)[1].lower()
     if ext not in PREVIEW_EXTENSIONS:
         raise AppError("UNSUPPORTED_TYPE", f"File type '{ext}' not previewable", 415)
@@ -264,14 +278,17 @@ async def get_file_preview(
         raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
 
     ver_result = await session.execute(
-        select(PackageVersion.id).where(
+        select(PackageVersion).where(
             PackageVersion.package_id == pkg.id,
             PackageVersion.version_number == version,
         )
     )
-    version_id = ver_result.scalar_one_or_none()
-    if not version_id:
+    pv = ver_result.scalar_one_or_none()
+    if not pv:
         raise AppError("PACKAGE_VERSION_NOT_FOUND", f"Version '{version}' not found", 404)
+    if pv.quarantine_status == "quarantined":
+        raise AppError("VERSION_QUARANTINED", "This version is under review and not yet accessible", 403)
+    version_id = pv.id
 
     content = download_preview_file(str(version_id), file_path)
     if content is None:
@@ -295,7 +312,7 @@ async def get_file_preview(
     )
 
 
-@router.patch("/{slug}", dependencies=[Depends(rate_limit(20, 60))])
+@router.patch("/{slug}", response_model=ActionResponse, dependencies=[Depends(rate_limit(20, 60))])
 async def update_package(
     slug: str,
     body: UpdatePackageRequest,
@@ -373,7 +390,7 @@ async def update_package(
             from app.shared.meili import sync_package_to_meilisearch
             await sync_package_to_meilisearch(build_meili_document(pkg, pv, pv.manifest_raw or {}))
 
-    return {"ok": True}
+    return ActionResponse()
 
 
 @router.post("/{slug}/request-reverify", dependencies=[Depends(rate_limit(10, 60))])
@@ -423,7 +440,7 @@ async def request_reverify(
     return {"message": "Verification requested", "version": pv.version_number}
 
 
-@router.post("/{slug}/deprecate")
+@router.post("/{slug}/deprecate", response_model=ActionResponse, dependencies=[Depends(rate_limit(max_requests=5, window_seconds=60))])
 async def deprecate_package(
     slug: str,
     user: User = Depends(get_current_user),
@@ -456,10 +473,10 @@ async def deprecate_package(
     for row in install_results.all():
         await send_package_deprecated_email(row[0], slug)
 
-    return {"deprecated": True}
+    return ActionResponse(message="Package deprecated")
 
 
-@router.post("/{slug}/versions/{version}/yank")
+@router.post("/{slug}/versions/{version}/yank", response_model=ActionResponse, dependencies=[Depends(rate_limit(max_requests=5, window_seconds=60))])
 async def yank_version(
     slug: str,
     version: str,
@@ -493,7 +510,7 @@ async def yank_version(
 
     await fire_event(session, pkg.publisher_id, "version.yanked", {"slug": pkg.slug, "version": version})
 
-    return {"yanked": True}
+    return ActionResponse(message="Version yanked")
 
 
 # --- Reviews (Spec §8.8) ---

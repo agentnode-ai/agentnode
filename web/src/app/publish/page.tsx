@@ -178,6 +178,9 @@ function PublishContent() {
           tools: safeTools,
           // Preserve arrays/non-string fields from defaults if not in draft
           frameworks: Array.isArray(g.frameworks) ? g.frameworks as string[] : defaults.frameworks,
+          use_cases: Array.isArray(g.use_cases) ? g.use_cases as string[] : defaults.use_cases,
+          examples: Array.isArray(g.examples) ? g.examples as { title: string; language: string; code: string }[] : defaults.examples,
+          env_requirements: Array.isArray(g.env_requirements) ? g.env_requirements as { name: string; required: boolean; description: string }[] : defaults.env_requirements,
           package_type: (typeof g.package_type === "string" ? g.package_type : defaults.package_type) as GuidedState["package_type"],
         };
       }
@@ -225,8 +228,6 @@ function PublishContent() {
 
   /* ---- Capabilities list ---- */
   const [capabilities, setCapabilities] = useState<CapabilityOption[]>([]);
-  const [myPackages, setMyPackages] = useState<{ slug: string; name: string }[]>([]);
-
   /* ---- Tool advanced toggles ---- */
   const [toolAdvanced, setToolAdvanced] = useState<Set<number>>(new Set());
 
@@ -255,7 +256,8 @@ function PublishContent() {
       .finally(() => setAuthChecked(true));
   }, []);
 
-  // Default tab: non-logged-in users land on "import" (free, no account required)
+  // Default tab: non-logged-in users land on "manifest" (free, no account required)
+  // Builder and Import have their own dedicated pages; Publish defaults to paste-manifest.
   useEffect(() => {
     if (!authChecked) return;
     if (user) return; // logged-in users keep default
@@ -263,7 +265,7 @@ function PublishContent() {
     // Don't override if a draft was restored that was on "describe"
     if (restoredDraftTabRef.current === "describe") return;
     if (activeTab === "describe") {
-      setActiveTab("import");
+      setActiveTab("manifest");
     }
   }, [authChecked, user, tabParam]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -274,20 +276,6 @@ function PublishContent() {
       .then((data: CapabilityOption[]) => { if (Array.isArray(data)) setCapabilities(data); })
       .catch(() => {});
   }, []);
-
-  // Load own packages for upgrade type
-  useEffect(() => {
-    if (!user?.publisher?.slug || guided.package_type !== "upgrade") return;
-    search({ publisher_slug: user.publisher.slug, per_page: 100 })
-      .then((res) => {
-        const pkgs = (res.hits || []).map((h) => ({
-          slug: h.slug,
-          name: h.name || h.slug,
-        })).filter((p) => p.slug);
-        setMyPackages(pkgs);
-      })
-      .catch(() => {});
-  }, [user?.publisher?.slug, guided.package_type]);
 
   // Restore builder artifact from publish_prefill_artifact (backward compat)
   useEffect(() => {
@@ -440,6 +428,10 @@ function PublishContent() {
 
     if (res.ok && res.data) {
       setBuilderResult(res.data);
+      if (res.data.code_files?.length) {
+        setCodeFiles(res.data.code_files);
+        set_prefillFiles(res.data.code_files);
+      }
       const g = parseManifestToGuided(res.data.manifest_json);
       setGuided(g);
       setSource("builder");
@@ -451,12 +443,15 @@ function PublishContent() {
   }
 
   /* ---- Import tab: Convert ---- */
+  const [importConverting, setImportConverting] = useState(false);
+
   function handleConvert() {
     if (!importCode.trim()) {
       setError("Paste your tool code above.");
       return;
     }
     setError("");
+    setImportConverting(true);
 
     const doConvert = async () => {
       let usedFallback = false;
@@ -576,6 +571,8 @@ function PublishContent() {
       const selectedPlatform = PLATFORMS.find(p => p.id === importPlatform);
       setSource(`import:${selectedPlatform?.name || importPlatform}`);
       setScreen("draft");
+    }).finally(() => {
+      setImportConverting(false);
     });
   }
 
@@ -864,7 +861,7 @@ function PublishContent() {
           <div className="space-y-6">
             <div>
               <label className="mb-2 block text-sm font-medium text-foreground">
-                Describe what your tool does in plain English
+                Describe what your skill does in plain English
               </label>
               <textarea
                 rows={4}
@@ -957,10 +954,17 @@ function PublishContent() {
             <div className="flex items-center gap-4">
               <button
                 onClick={handleConvert}
-                disabled={!importCode.trim()}
+                disabled={importConverting || !importCode.trim()}
                 className="rounded-xl bg-primary px-8 py-3 text-sm font-semibold text-white transition-all hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                Convert &amp; continue
+                {importConverting ? (
+                  <span className="flex items-center gap-2">
+                    <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                    Converting&hellip;
+                  </span>
+                ) : (
+                  "Convert & continue"
+                )}
               </button>
               <span className="text-xs text-muted">Free &mdash; no account required</span>
             </div>
@@ -1003,8 +1007,52 @@ function PublishContent() {
           </div>
         )}
 
-        {/* Footer links */}
-        <div className="mt-12 border-t border-border pt-8 text-center space-y-2">
+        {/* SEO content */}
+        <div className="mt-16 border-t border-border pt-10 space-y-10 text-sm text-muted">
+          <div className="text-center max-w-2xl mx-auto space-y-3">
+            <h2 className="text-lg font-semibold text-foreground">Publish AI skills for any agent framework</h2>
+            <p>
+              AgentNode is the open registry for agent skills. Publish tools, resources, and prompts that any AI agent can discover and install &mdash; across LangChain, CrewAI, AutoGen, OpenAI Agents, and more.
+            </p>
+          </div>
+
+          <div className="grid gap-8 sm:grid-cols-3">
+            <div>
+              <h3 className="mb-2 font-medium text-foreground">Three ways to publish</h3>
+              <p>
+                <strong className="text-foreground">Describe it</strong> &mdash; tell us what your skill does in plain English and our AI generates the manifest and code scaffold.{" "}
+                <strong className="text-foreground">Import code</strong> &mdash; paste an existing LangChain tool, CrewAI tool, or MCP server and we convert it automatically.{" "}
+                <strong className="text-foreground">Paste manifest</strong> &mdash; drop in your ANP manifest JSON or YAML directly.
+              </p>
+            </div>
+            <div>
+              <h3 className="mb-2 font-medium text-foreground">What gets published</h3>
+              <p>
+                Every skill includes a versioned manifest, capability declarations, permission model, and optional code artifact. Agents use this metadata to discover, install, and safely execute your skill at runtime.
+              </p>
+            </div>
+            <div>
+              <h3 className="mb-2 font-medium text-foreground">Built for trust</h3>
+              <p>
+                Published skills go through automated verification, quality gates, and optional manual review. The permission system ensures agents only get the access they need &mdash; network, filesystem, code execution, and data access are all explicitly declared.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-8 sm:grid-cols-2">
+            <div>
+              <h3 className="mb-2 font-medium text-foreground">Supported frameworks</h3>
+              <p>
+                Import existing tools from <strong className="text-foreground">LangChain</strong>, <strong className="text-foreground">CrewAI</strong>, <strong className="text-foreground">AutoGen</strong>, <strong className="text-foreground">OpenAI Agents SDK</strong>, <strong className="text-foreground">Haystack</strong>, <strong className="text-foreground">MCP servers</strong>, and <strong className="text-foreground">smolagents</strong>. The converter handles schema mapping, capability detection, and runtime configuration automatically.
+              </p>
+            </div>
+            <div>
+              <h3 className="mb-2 font-medium text-foreground">Open and free</h3>
+              <p>
+                Publishing on AgentNode is free for all developers. Skills are discoverable via search, API, and the <Link href="/docs/cli" className="text-primary hover:underline">CLI</Link>. The registry is built on the open <Link href="/docs/anp" className="text-primary hover:underline">Agent Node Package (ANP)</Link> specification.
+              </p>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -1185,9 +1233,6 @@ function PublishContent() {
                 {t.capability_id}
               </span>
             ))}
-            <span className="rounded-full border border-border bg-background px-2.5 py-0.5 text-xs text-muted">
-              {guided.package_type}
-            </span>
             <span className="rounded-full border border-border bg-background px-2.5 py-0.5 text-xs text-muted">
               {toolCount} tool{toolCount !== 1 ? "s" : ""}
             </span>
@@ -1499,9 +1544,6 @@ function PublishContent() {
           <span className="rounded-full border border-border bg-background px-2.5 py-0.5 text-xs text-muted">
             {toolCount} tool{toolCount !== 1 ? "s" : ""}
           </span>
-          <span className="rounded-full border border-border bg-background px-2.5 py-0.5 text-xs text-muted">
-            {guided.package_type}
-          </span>
         </div>
       </div>
 
@@ -1543,7 +1585,7 @@ function PublishContent() {
             status={panelStatuses.basics}
           >
             <div>
-              <label className="mb-1 block text-sm font-medium text-foreground">Name</label>
+              <label className="mb-1 block text-sm font-medium text-foreground">Name <span className="text-danger">*</span></label>
               <input
                 type="text"
                 value={guided.name}
@@ -1554,14 +1596,17 @@ function PublishContent() {
                     updateGuided("package_id", slugify(e.target.value));
                   }
                 }}
-                className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none"
+                className={`w-full rounded-md border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none ${guided.name && guided.name.trim().length > 0 && guided.name.trim().length < 3 ? "border-danger" : "border-border"}`}
                 placeholder="My PDF Extractor"
               />
+              {guided.name && guided.name.trim().length > 0 && guided.name.trim().length < 3 && (
+                <p className="mt-1 text-xs text-danger">Name must be at least 3 characters</p>
+              )}
             </div>
 
             <div>
               <label className="mb-1 block text-sm font-medium text-foreground">
-                Package ID
+                Package ID <span className="text-danger">*</span>
                 <span className="ml-2 text-xs text-muted font-normal">a-z, 0-9, dashes, 3-60 chars</span>
               </label>
               <input
@@ -1576,123 +1621,26 @@ function PublishContent() {
               )}
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-sm font-medium text-foreground">Type</label>
-                <select
-                  value={guided.package_type}
-                  onChange={(e) => updateGuided("package_type", e.target.value as GuidedState["package_type"])}
-                  className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none"
-                >
-                  <option value="toolpack">toolpack &mdash; collection of tools (most common)</option>
-                  <option value="upgrade">upgrade &mdash; extends an existing package</option>
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-foreground">
-                  Version <span className="text-xs text-muted font-normal">semver</span>
-                </label>
-                <input
-                  type="text"
-                  value={guided.version}
-                  onChange={(e) => updateGuided("version", e.target.value)}
-                  className="w-full rounded-md border border-border bg-background px-3 py-2.5 font-mono text-foreground focus:border-primary focus:outline-none"
-                  placeholder="1.0.0"
-                />
-                {guided.version && !isValidSemver(guided.version) && (
-                  <p className="mt-1 text-xs text-danger">Must be valid semver (e.g. 1.0.0)</p>
-                )}
-              </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-foreground">
+                Version <span className="text-danger">*</span> <span className="text-xs text-muted font-normal">semver</span>
+              </label>
+              <input
+                type="text"
+                value={guided.version}
+                onChange={(e) => updateGuided("version", e.target.value)}
+                className="w-full rounded-md border border-border bg-background px-3 py-2.5 font-mono text-foreground focus:border-primary focus:outline-none"
+                placeholder="1.0.0"
+              />
+              {guided.version && !isValidSemver(guided.version) && (
+                <p className="mt-1 text-xs text-danger">Must be valid semver (e.g. 1.0.0)</p>
+              )}
             </div>
-
-            {guided.package_type === "upgrade" && (
-              <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 space-y-4">
-                <div>
-                  <p className="text-sm font-medium text-foreground mb-1">Upgrade configuration</p>
-                  <p className="text-xs text-muted">
-                    {user ? "Select which of your packages this upgrade extends or replaces." : "Sign in to select from your published packages."}
-                  </p>
-                </div>
-                {!user && (
-                  <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-400">
-                    You must be signed in to create an upgrade. Your own packages will appear here after login.
-                  </div>
-                )}
-                {user && (
-                  <>
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-foreground">
-                        Recommended for <span className="text-xs text-muted font-normal">(which of your packages does this upgrade enhance?)</span>
-                      </label>
-                      {myPackages.length > 0 ? (
-                        <select
-                          value={guided.upgrade_recommended_for}
-                          onChange={(e) => updateGuided("upgrade_recommended_for", e.target.value)}
-                          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono text-foreground focus:border-primary focus:outline-none"
-                        >
-                          <option value="">Select a package...</option>
-                          {myPackages.map((p) => (
-                            <option key={p.slug} value={p.slug}>{p.name} ({p.slug})</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <p className="text-xs text-muted py-2">Loading your packages...</p>
-                      )}
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-foreground">
-                        Replaces <span className="text-xs text-muted font-normal">(optional — does this replace an existing package?)</span>
-                      </label>
-                      {myPackages.length > 0 ? (
-                        <select
-                          value={guided.upgrade_replaces}
-                          onChange={(e) => updateGuided("upgrade_replaces", e.target.value)}
-                          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono text-foreground focus:border-primary focus:outline-none"
-                        >
-                          <option value="">None</option>
-                          {myPackages.map((p) => (
-                            <option key={p.slug} value={p.slug}>{p.name} ({p.slug})</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <p className="text-xs text-muted py-2">Loading your packages...</p>
-                      )}
-                    </div>
-                  </>
-                )}
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-foreground">
-                      Roles <span className="text-xs text-muted font-normal">(comma-separated, optional)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={guided.upgrade_roles}
-                      onChange={(e) => updateGuided("upgrade_roles", e.target.value)}
-                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono text-foreground focus:border-primary focus:outline-none"
-                      placeholder="enhancer, optimizer"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-foreground">Install strategy</label>
-                    <select
-                      value={guided.upgrade_install_strategy}
-                      onChange={(e) => updateGuided("upgrade_install_strategy", e.target.value)}
-                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
-                    >
-                      <option value="local">local</option>
-                      <option value="global">global</option>
-                      <option value="managed">managed</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-            )}
 
             <div>
               <label className="mb-1 flex items-center justify-between text-sm font-medium text-foreground">
-                <span>Summary</span>
-                <span className={`text-xs font-normal ${guided.summary.length > 200 ? "text-danger" : "text-muted"}`}>
+                <span>Summary <span className="text-danger">*</span> <span className="text-xs text-muted font-normal">(min 20 characters)</span></span>
+                <span className={`text-xs font-normal ${guided.summary.length > 200 ? "text-danger" : guided.summary.length > 0 && guided.summary.trim().length < 20 ? "text-warning" : "text-muted"}`}>
                   {guided.summary.length}/200
                 </span>
               </label>
@@ -1700,7 +1648,7 @@ function PublishContent() {
                 rows={2}
                 value={guided.summary}
                 onChange={(e) => updateGuided("summary", e.target.value)}
-                className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none resize-none"
+                className={`w-full rounded-md border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none resize-none ${guided.summary.length > 200 ? "border-danger" : guided.summary.length > 0 && guided.summary.trim().length < 20 ? "border-warning" : "border-border"}`}
                 placeholder="Extract text and tables from PDF files"
               />
               <p className="mt-1 text-xs text-muted">One sentence &mdash; shown in search results and package cards.</p>
@@ -1731,6 +1679,250 @@ function PublishContent() {
                 className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none"
                 placeholder="pdf, extraction, text"
               />
+            </div>
+
+            {/* Links & License */}
+            <div className="rounded-lg border border-border bg-card/50 p-4 space-y-4">
+              <div className="text-sm font-medium text-foreground">Links &amp; License</div>
+              <div>
+                <label className="mb-1 block text-xs text-muted">License</label>
+                <select
+                  value={guided.license || "MIT"}
+                  onChange={(e) => updateGuided("license", e.target.value)}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                >
+                  <option value="MIT">MIT</option>
+                  <option value="Apache-2.0">Apache 2.0</option>
+                  <option value="GPL-3.0">GPL 3.0</option>
+                  <option value="BSD-3-Clause">BSD 3-Clause</option>
+                  <option value="ISC">ISC</option>
+                  <option value="proprietary">Proprietary</option>
+                </select>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label className="mb-1 block text-xs text-muted">Homepage URL</label>
+                  <input
+                    type="url"
+                    value={guided.homepage_url}
+                    onChange={(e) => updateGuided("homepage_url", e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    placeholder="https://example.com"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-muted">Docs URL</label>
+                  <input
+                    type="url"
+                    value={guided.docs_url}
+                    onChange={(e) => updateGuided("docs_url", e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    placeholder="https://docs.example.com"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-muted">Source URL</label>
+                  <input
+                    type="url"
+                    value={guided.source_url}
+                    onChange={(e) => updateGuided("source_url", e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    placeholder="https://github.com/..."
+                  />
+                </div>
+              </div>
+            </div>
+            <p className="mt-4 text-xs text-muted"><span className="text-danger">*</span> Required field</p>
+          </CollapsiblePanel>
+        </div>
+
+        {/* === CONTENT (README, Use Cases, Examples, Env Requirements) === */}
+        <div data-panel="content">
+          <CollapsiblePanel
+            title="Content"
+            subtitle={guided.readme_md ? "README provided" : "README, use cases, examples"}
+            open={openPanels.has("content")}
+            onToggle={() => togglePanel("content")}
+          >
+            {/* README */}
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted">README (Markdown)</label>
+              <textarea
+                value={guided.readme_md}
+                onChange={(e) => setGuided(prev => ({ ...prev, readme_md: e.target.value }))}
+                rows={8}
+                className="w-full rounded-lg border border-border bg-card px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted/60 focus:border-primary focus:outline-none resize-y"
+                placeholder={"# My Skill\n\nDescribe what your skill does, how to use it, and provide examples..."}
+              />
+            </div>
+
+            {/* Use Cases */}
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted">Use Cases</label>
+              <div className="space-y-2">
+                {guided.use_cases.map((uc, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={uc}
+                      onChange={(e) => {
+                        const next = [...guided.use_cases];
+                        next[i] = e.target.value;
+                        setGuided(prev => ({ ...prev, use_cases: next }));
+                      }}
+                      className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                      placeholder="e.g. Extract tables from PDF files"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setGuided(prev => ({ ...prev, use_cases: prev.use_cases.filter((_, j) => j !== i) }))}
+                      className="shrink-0 text-xs text-muted hover:text-danger transition-colors"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setGuided(prev => ({ ...prev, use_cases: [...prev.use_cases, ""] }))}
+                  className="text-xs text-primary hover:underline"
+                >
+                  + Add use case
+                </button>
+              </div>
+            </div>
+
+            {/* Examples */}
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted">Examples</label>
+              <div className="space-y-3">
+                {guided.examples.map((ex, i) => (
+                  <div key={i} className="rounded-lg border border-border bg-card/50 p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-foreground">Example {i + 1}</span>
+                      <button
+                        type="button"
+                        onClick={() => setGuided(prev => ({ ...prev, examples: prev.examples.filter((_, j) => j !== i) }))}
+                        className="text-xs text-muted hover:text-danger transition-colors"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-0.5 block text-xs text-muted">Title</label>
+                        <input
+                          type="text"
+                          value={ex.title}
+                          onChange={(e) => {
+                            const next = [...guided.examples];
+                            next[i] = { ...next[i], title: e.target.value };
+                            setGuided(prev => ({ ...prev, examples: next }));
+                          }}
+                          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground focus:border-primary focus:outline-none"
+                          placeholder="Basic usage"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-0.5 block text-xs text-muted">Language</label>
+                        <input
+                          type="text"
+                          value={ex.language}
+                          onChange={(e) => {
+                            const next = [...guided.examples];
+                            next[i] = { ...next[i], language: e.target.value };
+                            setGuided(prev => ({ ...prev, examples: next }));
+                          }}
+                          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground focus:border-primary focus:outline-none"
+                          placeholder="python"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="mb-0.5 block text-xs text-muted">Code</label>
+                      <textarea
+                        value={ex.code}
+                        onChange={(e) => {
+                          const next = [...guided.examples];
+                          next[i] = { ...next[i], code: e.target.value };
+                          setGuided(prev => ({ ...prev, examples: next }));
+                        }}
+                        rows={4}
+                        className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs text-foreground focus:border-primary focus:outline-none resize-y"
+                        placeholder="result = await skill.run_tool(...)"
+                        spellCheck={false}
+                      />
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setGuided(prev => ({ ...prev, examples: [...prev.examples, { title: "", language: "python", code: "" }] }))}
+                  className="text-xs text-primary hover:underline"
+                >
+                  + Add example
+                </button>
+              </div>
+            </div>
+
+            {/* Environment Requirements */}
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted">Environment Variables</label>
+              <div className="space-y-2">
+                {guided.env_requirements.map((env, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={env.name}
+                      onChange={(e) => {
+                        const next = [...guided.env_requirements];
+                        next[i] = { ...next[i], name: e.target.value };
+                        setGuided(prev => ({ ...prev, env_requirements: next }));
+                      }}
+                      className="w-32 shrink-0 rounded-md border border-border bg-background px-3 py-2 text-sm font-mono text-foreground focus:border-primary focus:outline-none"
+                      placeholder="API_KEY"
+                    />
+                    <input
+                      type="text"
+                      value={env.description}
+                      onChange={(e) => {
+                        const next = [...guided.env_requirements];
+                        next[i] = { ...next[i], description: e.target.value };
+                        setGuided(prev => ({ ...prev, env_requirements: next }));
+                      }}
+                      className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                      placeholder="Description"
+                    />
+                    <label className="flex items-center gap-1.5 shrink-0 text-xs text-muted">
+                      <input
+                        type="checkbox"
+                        checked={env.required}
+                        onChange={(e) => {
+                          const next = [...guided.env_requirements];
+                          next[i] = { ...next[i], required: e.target.checked };
+                          setGuided(prev => ({ ...prev, env_requirements: next }));
+                        }}
+                        className="rounded border-border"
+                      />
+                      Required
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setGuided(prev => ({ ...prev, env_requirements: prev.env_requirements.filter((_, j) => j !== i) }))}
+                      className="shrink-0 text-xs text-muted hover:text-danger transition-colors"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setGuided(prev => ({ ...prev, env_requirements: [...prev.env_requirements, { name: "", required: false, description: "" }] }))}
+                  className="text-xs text-primary hover:underline"
+                >
+                  + Add variable
+                </button>
+              </div>
             </div>
           </CollapsiblePanel>
         </div>

@@ -328,6 +328,7 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
         slug={slug}
         publisherSlug={publisher.slug}
         isDeprecated={!!pkg.is_deprecated}
+        packageType={pkg.package_type}
         currentMetadata={{
           name: pkg.name,
           summary: pkg.summary,

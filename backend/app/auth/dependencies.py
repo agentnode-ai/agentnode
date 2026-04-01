@@ -39,10 +39,11 @@ async def get_current_user(
 
 
 async def require_publisher(user: User = Depends(get_current_user)) -> User:
-    """Ensure the user has a publisher profile."""
+    """Ensure the user has a publisher profile and is not suspended."""
     if not user.publisher:
-        # Need to load the publisher relationship
         raise AppError("PUBLISHER_REQUIRED", "You must create a publisher profile first", 403)
+    if user.publisher.is_suspended:
+        raise AppError("PUBLISHER_SUSPENDED", "Your publisher account is suspended", 403)
     return user
 
 

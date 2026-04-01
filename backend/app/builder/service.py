@@ -65,14 +65,24 @@ def _slugify(text: str) -> str:
     text = text.lower().strip()
     text = re.sub(r"[^a-z0-9\s-]", "", text)
     text = re.sub(r"[\s-]+", "-", text)
-    return text.strip("-")[:60]
+    text = text.strip("-")
+    # Cut at word boundary, max 40 chars
+    if len(text) > 40:
+        text = text[:40].rsplit("-", 1)[0]
+    return text
 
 
 def _to_snake(text: str) -> str:
+    import keyword
     text = text.lower().strip()
     text = re.sub(r"[^a-z0-9\s]", "", text)
     text = re.sub(r"\s+", "_", text)
-    return text.strip("_")[:60]
+    result = text.strip("_")[:60]
+    if result and result[0].isdigit():
+        result = f"_{result}"
+    if keyword.iskeyword(result):
+        result = f"{result}_tool"
+    return result
 
 
 def _escape_yaml(s: str) -> str:
@@ -89,7 +99,12 @@ def _extract_core_action(description: str) -> str:
         verb = m.group(1).rstrip("e")
         obj = m.group(2).strip()
         obj = re.sub(r"\s+(from|in|on|into|to|using|with|for).*$", "", obj)
-        return f"{verb} {obj}".strip()[:40]
+        result = f"{verb} {obj}".strip()
+        # If still too long, take only the first 3 meaningful words
+        if len(result) > 30:
+            words = result.split()[:3]
+            result = " ".join(words)
+        return result
 
     words = re.findall(r"[a-z]+", desc_lower)
     skip = {"a", "an", "the", "that", "which", "tool", "to", "for", "and", "or", "is", "it"}
@@ -110,6 +125,8 @@ def _detect_capability_ids(description: str) -> list[str]:
                 if cap_id not in found:
                     found.append(cap_id)
                 break
+        if len(found) >= 2:
+            break
     return found or ["code_analysis"]
 
 
@@ -178,7 +195,7 @@ def _build_manifest_yaml(
     output_array: bool,
 ) -> str:
     cat = cap_ids[0].rsplit("_", 1)[0] if "_" in cap_ids[0] else "general"
-    tags = ", ".join(f'"{c}"' for c in cap_ids[:3])
+    tags = ", ".join(f'"{c}"' for c in cap_ids[:1])
 
     # Build output_schema block (8-space base indent to match input_schema)
     if output_array:
@@ -378,7 +395,7 @@ def generate_capability(description: str) -> BuilderGenerateResponse:
             "data_access": {"level": permissions["data_access"]},
             "user_approval": {"required": permissions["user_approval"]},
         },
-        "tags": cap_ids[:3],
+        "tags": cap_ids[:1],  # Only the primary capability as tag
         "categories": [cap_ids[0].rsplit("_", 1)[0] if "_" in cap_ids[0] else "general"],
     }
 
@@ -426,8 +443,8 @@ def generate_capability(description: str) -> BuilderGenerateResponse:
         tool_count=1,
         detected_capability_ids=cap_ids,
         detected_framework="generic",
-        publish_ready=True,
-        warnings=warnings,
+        publish_ready=False,
+        warnings=warnings + ["This is a scaffold — implement the tool logic before publishing."],
     )
 
     return BuilderGenerateResponse(

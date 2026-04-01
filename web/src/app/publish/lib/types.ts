@@ -33,6 +33,17 @@ export interface GuidedState {
   data_access: string;
   user_approval: string;
   tags: string;
+  entrypoint: string;
+  // AI Builder enrichment fields (preserved through guided round-trip)
+  use_cases: string[];
+  examples: { title: string; language: string; code: string }[];
+  env_requirements: { name: string; required: boolean; description: string }[];
+  readme_md: string;
+  // Links & license
+  license: string;
+  homepage_url: string;
+  docs_url: string;
+  source_url: string;
   // Upgrade-specific fields (only used when package_type === "upgrade")
   upgrade_recommended_for: string;
   upgrade_replaces: string;

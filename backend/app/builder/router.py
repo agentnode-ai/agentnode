@@ -1,6 +1,8 @@
 import io
 import json
 import logging
+import os
+import re
 import tarfile
 
 from fastapi import APIRouter, Depends
@@ -118,26 +120,41 @@ async def builder_artifact(
 
         # Add code files
         for f in body.code_files:
+            safe_path = os.path.normpath(f.path)
+            if safe_path.startswith(("/", "\\")) or ".." in safe_path:
+                raise AppError(
+                    "BUILDER_INVALID_PATH",
+                    f"Invalid file path: {f.path}",
+                    400,
+                )
             data = f.content.encode()
-            info = tarfile.TarInfo(name=f.path)
+            info = tarfile.TarInfo(name=safe_path)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
 
-        # Add test file (required by quality gate)
-        test_bytes = test_content.encode()
-        info = tarfile.TarInfo(name=f"tests/test_{tool_func}.py")
-        info.size = len(test_bytes)
-        tar.addfile(info, io.BytesIO(test_bytes))
+        # Add test file only if none already included in code_files
+        has_test = any(
+            f.path.startswith("tests/") and f.path.endswith(".py") and f.path != "tests/__init__.py"
+            for f in body.code_files
+        )
+        if not has_test:
+            test_bytes = test_content.encode()
+            info = tarfile.TarInfo(name=f"tests/test_{tool_func}.py")
+            info.size = len(test_bytes)
+            tar.addfile(info, io.BytesIO(test_bytes))
 
-        # Add tests/__init__.py
-        init_bytes = b""
-        info = tarfile.TarInfo(name="tests/__init__.py")
-        info.size = 0
-        tar.addfile(info, io.BytesIO(init_bytes))
+        # Add tests/__init__.py if not already present
+        has_test_init = any(f.path == "tests/__init__.py" for f in body.code_files)
+        if not has_test_init:
+            init_bytes = b""
+            info = tarfile.TarInfo(name="tests/__init__.py")
+            info.size = 0
+            tar.addfile(info, io.BytesIO(init_bytes))
 
     buf.seek(0)
+    safe_name = re.sub(r'[^a-z0-9-]', '', body.package_id)[:60] or 'package'
     return StreamingResponse(
         buf,
         media_type="application/gzip",
-        headers={"Content-Disposition": f'attachment; filename="{body.package_id}.tar.gz"'},
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.tar.gz"'},
     )

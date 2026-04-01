@@ -200,6 +200,11 @@ class PublishResponse(BaseModel):
     message: str
 
 
+class ActionResponse(BaseModel):
+    ok: bool = True
+    message: str = ""
+
+
 class UpdatePackageRequest(BaseModel):
     name: str | None = None          # Package-level
     summary: str | None = None       # Package-level

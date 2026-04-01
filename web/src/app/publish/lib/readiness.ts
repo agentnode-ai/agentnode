@@ -23,15 +23,21 @@ export function computeReadiness(
   const hasContent = hasArtifact || hasCodeContent || source === "builder";
 
   const items: ReadinessItem[] = [
-    { label: "Package name", ok: !!g.name, required: true, target: "name" },
+    { label: "Package name (min 3 characters)", ok: !!g.name && g.name.trim().length >= 3, required: true, target: "name" },
     { label: "Package ID", ok: SLUG_PATTERN.test(g.package_id), required: true, target: "name" },
     { label: "Version", ok: isValidSemver(g.version), required: true },
     { label: "At least one tool with capability", ok: g.tools.some(t => t.name && t.capability_id), required: true, target: "tools" },
-    { label: "Code or artifact", ok: hasContent, required: true, target: "artifact" },
-    { label: "Summary", ok: !!g.summary, required: false, target: "name" },
-    { label: "Description", ok: !!g.description, required: false },
+    { label: "Code or artifact", ok: hasContent, required: g.package_type !== "upgrade", target: "artifact" },
+    { label: "Summary (20-200 characters)", ok: !!g.summary && g.summary.trim().length >= 20 && g.summary.trim().length <= 200, required: true, target: "name" },
+    { label: "Description (min 50 characters)", ok: !!g.description && g.description.trim().length >= 50 && g.description !== g.summary, required: false },
+    { label: "Tool descriptions", ok: g.tools.every(t => !!t.description?.trim()), required: false },
     { label: "Tags", ok: !!g.tags.trim(), required: false },
   ];
+
+  // Upgrade-specific required fields
+  if (g.package_type === "upgrade") {
+    items.push({ label: "Upgrade target (recommended_for)", ok: !!g.upgrade_recommended_for.trim(), required: true });
+  }
 
   const canPublish = items.filter(i => i.required).every(i => i.ok);
   return { canPublish, items };
@@ -48,7 +54,7 @@ export function computePanelStatuses(
 ): Record<string, PanelStatus> {
   const hasCode = codeFiles.some((f) => f.content.trim());
   const hasArtifact = !!(builderArtifactName || artifactFile || tarGzFile || uploadedFiles.length > 0 || hasCode);
-  const basicsOk = !!g.name && SLUG_PATTERN.test(g.package_id) && isValidSemver(g.version) && !!g.summary;
+  const basicsOk = !!g.name && g.name.trim().length >= 3 && SLUG_PATTERN.test(g.package_id) && isValidSemver(g.version) && !!g.summary && g.summary.trim().length >= 20 && g.summary.trim().length <= 200;
   const toolsOk = g.tools.some((t) => t.name && t.capability_id);
 
   return {

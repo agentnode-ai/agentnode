@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { refreshSession } from "@/lib/api";
 
 const navLinks = [
   { href: "/import", label: "Import" },
@@ -33,6 +34,17 @@ export default function Navbar() {
     setIsLoggedIn(loggedIn);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- Sync admin state from cookie
     setIsAdmin(loggedIn && admin);
+
+    // Proactively refresh access token on every navigation so the user
+    // never hits a stale-token 401 on the next API call.
+    if (loggedIn) {
+      refreshSession().then((valid) => {
+        if (!valid) {
+          setIsLoggedIn(false);
+          setIsAdmin(false);
+        }
+      });
+    }
   }, [pathname]);
 
   // Close mobile menu on navigation

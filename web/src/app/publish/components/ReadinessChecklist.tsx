@@ -38,7 +38,7 @@ export function ReadinessChecklist({
                 className="text-sm text-primary hover:underline transition-colors"
               >
                 {item.label}
-                {item.required && <span className="text-danger ml-1">*</span>}
+                {item.required && <span className="text-danger ml-0.5">*</span>}
               </button>
             ) : (
               <span
@@ -47,12 +47,13 @@ export function ReadinessChecklist({
                 }`}
               >
                 {item.label}
-                {!item.ok && item.required && <span className="text-danger ml-1">*</span>}
+                {item.required && <span className="text-danger ml-0.5">*</span>}
               </span>
             )}
           </li>
         ))}
       </ul>
+      <p className="mt-3 text-xs text-muted"><span className="text-danger">*</span> Required field</p>
     </div>
   );
 }

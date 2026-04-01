@@ -40,9 +40,49 @@ export interface SearchParams {
   per_page?: number;
 }
 
-// ---- API Client ----
+// ---- Session refresh ----
 
 const API_BASE = "/api/v1";
+
+/** Singleton promise so concurrent callers share a single in-flight refresh. */
+let _refreshPromise: Promise<boolean> | null = null;
+
+/**
+ * Proactively refresh the access token. Safe to call on every navigation —
+ * deduplicates concurrent calls and is a no-op when no session exists.
+ * Returns true if the session is valid after the call.
+ */
+export async function refreshSession(): Promise<boolean> {
+  // No logged_in cookie → nothing to refresh
+  if (typeof document === "undefined") return false;
+  if (!document.cookie.split("; ").some((c) => c.startsWith("logged_in="))) return false;
+
+  if (_refreshPromise) return _refreshPromise;
+
+  _refreshPromise = (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (res.ok) return true;
+      // Refresh failed — session truly expired, clear stale signal cookies
+      document.cookie = "logged_in=; path=/; max-age=0";
+      document.cookie = "is_admin=; path=/; max-age=0";
+      return false;
+    } catch {
+      return false;
+    } finally {
+      _refreshPromise = null;
+    }
+  })();
+
+  return _refreshPromise;
+}
+
+// ---- API Client ----
 
 async function fetchAPI<T>(
   endpoint: string,

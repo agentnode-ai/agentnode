@@ -143,7 +143,7 @@ async def publish_package(
     publisher_id: UUID,
     session: AsyncSession,
     artifact_bytes: bytes | None = None,
-) -> tuple[Package, PackageVersion]:
+) -> tuple[Package, PackageVersion, list[str]]:
     """Full publish flow: validate, check typosquatting, create/update package, create version."""
 
     # 0. Normalize manifest (v0.2 only — applies defaults to compact manifests)
@@ -306,15 +306,18 @@ async def publish_package(
     pv.homepage_url = manifest.get("homepage_url") or None
     pv.docs_url = manifest.get("docs_url") or None
     pv.source_url = manifest.get("source_url") or None
+    pv.readme_md = manifest.get("readme_md") or None
 
     session.add(pv)
     await session.flush()  # Get pv.id
 
     # 6c. Extract artifact metadata (file_list, readme_md, preview files)
+    # Artifact README overrides manifest readme if present
     if artifact_bytes:
         metadata = extract_artifact_metadata(artifact_bytes, str(pv.id))
         pv.file_list = metadata.get("file_list") or None
-        pv.readme_md = metadata.get("readme_md")
+        if metadata.get("readme_md"):
+            pv.readme_md = metadata["readme_md"]
 
     # 7. Create capabilities
     capabilities = manifest.get("capabilities", {})
@@ -393,11 +396,66 @@ async def publish_package(
     # 13. Upgrade metadata (for package_type == "upgrade")
     if manifest["package_type"] == "upgrade":
         upgrade = manifest.get("upgrade_metadata", {})
+        # Validate recommended_for packages exist AND are owned by this publisher
+        rec_for = upgrade.get("recommended_for", [])
+        if rec_for:
+            from sqlalchemy import func
+            existing_count = await session.execute(
+                select(func.count()).where(Package.slug.in_(rec_for))
+            )
+            found = existing_count.scalar() or 0
+            if found < len(rec_for):
+                raise AppError(
+                    "UPGRADE_TARGET_NOT_FOUND",
+                    "One or more packages in recommended_for do not exist",
+                    422,
+                )
+            # Ownership check: publisher must own all target packages
+            unowned_result = await session.execute(
+                select(Package.slug).where(
+                    Package.slug.in_(rec_for),
+                    Package.publisher_id != publisher_id,
+                )
+            )
+            unowned_slugs = [row[0] for row in unowned_result.all()]
+            if unowned_slugs:
+                raise AppError(
+                    "UPGRADE_OWNERSHIP_VIOLATION",
+                    f"You can only create upgrades for your own packages. Not owned: {', '.join(unowned_slugs)}",
+                    403,
+                )
+        # Validate replaces packages exist AND are owned by this publisher
+        replaces = upgrade.get("replaces", [])
+        if replaces:
+            from sqlalchemy import func as sa_func
+            replaces_count = await session.execute(
+                select(sa_func.count()).where(Package.slug.in_(replaces))
+            )
+            found_replaces = replaces_count.scalar() or 0
+            if found_replaces < len(replaces):
+                raise AppError(
+                    "UPGRADE_TARGET_NOT_FOUND",
+                    "One or more packages in replaces do not exist",
+                    422,
+                )
+            unowned_replaces = await session.execute(
+                select(Package.slug).where(
+                    Package.slug.in_(replaces),
+                    Package.publisher_id != publisher_id,
+                )
+            )
+            unowned_replaces_slugs = [row[0] for row in unowned_replaces.all()]
+            if unowned_replaces_slugs:
+                raise AppError(
+                    "UPGRADE_OWNERSHIP_VIOLATION",
+                    f"You can only replace your own packages. Not owned: {', '.join(unowned_replaces_slugs)}",
+                    403,
+                )
         session.add(UpgradeMetadata(
             package_version_id=pv.id,
             upgrade_roles=upgrade.get("roles", []),
             recommended_for=upgrade.get("recommended_for", []),
-            replaces_packages=upgrade.get("replaces", []),
+            replaces_packages=replaces,
             install_strategy=upgrade.get("install_strategy", "local"),
             delegation_mode=upgrade.get("delegation_mode"),
             fallback_behavior=upgrade.get("fallback_behavior", "skip"),
@@ -412,7 +470,7 @@ async def publish_package(
     await session.refresh(pkg)
 
     # 16. Sync to Meilisearch (fire-and-forget, non-blocking)
-    if not quarantine_for_typosquatting:
+    if not quarantine_for_typosquatting and not quarantine_for_new_publisher:
         await sync_package_to_meilisearch(build_meili_document(pkg, pv, manifest))
 
     if quarantine_for_typosquatting:

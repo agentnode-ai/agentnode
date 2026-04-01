@@ -157,6 +157,8 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     name = manifest.get("name", "")
     if not name or len(name) > 100:
         errors.append("name must be 1-100 chars")
+    elif len(name) < 3:
+        errors.append("name must be at least 3 characters")
 
     # publisher
     publisher = manifest.get("publisher", "")
@@ -172,10 +174,15 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     summary = manifest.get("summary", "")
     if not summary or len(summary) > 200:
         errors.append("summary must be 1-200 chars")
+    elif len(summary) < 20:
+        errors.append("summary must be at least 20 characters")
 
     # description — optional but recommended
-    if not manifest.get("description"):
+    description = manifest.get("description", "")
+    if not description:
         warnings.append("description is recommended for discoverability")
+    elif description == summary:
+        warnings.append("description should provide more detail than summary")
 
     # runtime (MVP: only python)
     runtime = manifest.get("runtime", "")
@@ -281,10 +288,29 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
 
     # Upgrade-specific validations
     if pkg_type == "upgrade":
-        if not manifest.get("upgrade_roles"):
-            warnings.append("upgrade_roles is recommended for upgrade packages")
-        if not manifest.get("recommended_for"):
-            warnings.append("recommended_for is recommended for upgrade packages")
+        upgrade_meta = manifest.get("upgrade_metadata", {})
+        rec_for = upgrade_meta.get("recommended_for", [])
+        replaces = upgrade_meta.get("replaces", [])
+        slug_re = re.compile(r"^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$")
+
+        if not rec_for:
+            errors.append("upgrade_metadata.recommended_for is required for upgrade packages")
+        elif not isinstance(rec_for, list):
+            errors.append("upgrade_metadata.recommended_for must be an array of package slugs")
+        else:
+            for slug_val in rec_for:
+                if not isinstance(slug_val, str) or not slug_re.match(slug_val):
+                    errors.append(f"upgrade_metadata.recommended_for contains invalid slug: {slug_val!r}")
+                    break
+
+        if replaces and isinstance(replaces, list):
+            for slug_val in replaces:
+                if not isinstance(slug_val, str) or not slug_re.match(slug_val):
+                    errors.append(f"upgrade_metadata.replaces contains invalid slug: {slug_val!r}")
+                    break
+
+        if not upgrade_meta.get("roles"):
+            warnings.append("upgrade_metadata.roles is recommended for upgrade packages")
 
     # --- v0.2 enrichment field validation (optional) ---
     _validate_enrichment_fields(manifest, errors, warnings)
