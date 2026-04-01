@@ -57,6 +57,7 @@ export default function SearchInput({
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
         autoFocus={autoFocus}
+        aria-label="Search packages"
         className={`w-full border border-border bg-card text-foreground placeholder-muted transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary ${sizeClasses} ${
           size === "large" ? "pl-12" : "pl-10"
         }`}

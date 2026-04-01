@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     # Meilisearch
     MEILISEARCH_URL: str = "http://localhost:7700"
     MEILISEARCH_KEY: str = "masterKey"
+    MEILISEARCH_SEARCH_KEY: str = ""
 
     # S3 / MinIO
     S3_ENDPOINT: str = "http://localhost:9000"

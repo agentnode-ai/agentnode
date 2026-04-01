@@ -16,6 +16,23 @@ MEILI_INDEX = "packages"
 # Default sort when no query text — spec §8.2
 DEFAULT_SORT = "download_count:desc"
 
+# Shared httpx client pool — reuses TCP connections across requests
+_search_client: httpx.AsyncClient | None = None
+
+
+def _get_search_client() -> httpx.AsyncClient:
+    global _search_client
+    if _search_client is None:
+        _search_client = httpx.AsyncClient(timeout=10)
+    return _search_client
+
+
+def _get_search_key() -> str:
+    """Return the search-only key if configured, otherwise fall back to master key."""
+    if settings.MEILISEARCH_SEARCH_KEY:
+        return settings.MEILISEARCH_SEARCH_KEY
+    return settings.MEILISEARCH_KEY
+
 
 @router.post("/search", response_model=SearchResponse, dependencies=[Depends(rate_limit(30, 60))])
 async def search_packages(body: SearchRequest):
@@ -57,20 +74,19 @@ async def search_packages(body: SearchRequest):
     elif not q:
         meili_body["sort"] = [DEFAULT_SORT]
 
-    headers = {"Authorization": f"Bearer {settings.MEILISEARCH_KEY}"}
+    headers = {"Authorization": f"Bearer {_get_search_key()}"}
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{settings.MEILISEARCH_URL}/indexes/{MEILI_INDEX}/search",
-                json=meili_body,
-                headers=headers,
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                logger.error(f"Meilisearch search failed: {resp.status_code} {resp.text}")
-                return SearchResponse(query=q, hits=[], total=0, page=page, per_page=per_page)
+        client = _get_search_client()
+        resp = await client.post(
+            f"{settings.MEILISEARCH_URL}/indexes/{MEILI_INDEX}/search",
+            json=meili_body,
+            headers=headers,
+        )
+        if resp.status_code != 200:
+            logger.error(f"Meilisearch search failed: {resp.status_code} {resp.text}")
+            return SearchResponse(query=q, hits=[], total=0, page=page, per_page=per_page)
 
-            data = resp.json()
+        data = resp.json()
     except Exception as e:
         logger.error(f"Meilisearch search error: {e}")
         return SearchResponse(query=q, hits=[], total=0, page=page, per_page=per_page)

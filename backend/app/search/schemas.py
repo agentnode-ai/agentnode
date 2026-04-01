@@ -11,7 +11,7 @@ _ALLOWED_SORTS = {
 
 
 class SearchRequest(BaseModel):
-    q: str = ""
+    q: str = Field("", max_length=256)
     package_type: str | None = None
     capability_id: str | None = None
     framework: str | None = None
@@ -20,7 +20,7 @@ class SearchRequest(BaseModel):
     verification_tier: str | None = None
     publisher_slug: str | None = None
     sort_by: str | None = None
-    page: int = Field(1, ge=1)
+    page: int = Field(1, ge=1, le=500)
     per_page: int = Field(20, ge=1, le=100)
 
     @field_validator(
