@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import optional_current_user
 from app.auth.models import User
 from app.database import get_session
 from app.packages.models import Package, PackageVersion
@@ -84,7 +84,7 @@ def _build_response(
 async def get_verification_status(
     slug: str,
     session: AsyncSession = Depends(get_session),
-    user: User | None = Depends(get_current_user),
+    user: User | None = Depends(optional_current_user),
 ):
     """Get verification status for the latest version of a package."""
     result = await session.execute(
@@ -125,7 +125,7 @@ async def get_version_verification_status(
     slug: str,
     version: str,
     session: AsyncSession = Depends(get_session),
-    user: User | None = Depends(get_current_user),
+    user: User | None = Depends(optional_current_user),
 ):
     """Get verification status for a specific version."""
     result = await session.execute(

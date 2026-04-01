@@ -1,8 +1,22 @@
 """Integration tests for packages endpoints."""
+import io
 import json
+import tarfile
 from unittest.mock import patch
 
 import pytest
+
+
+def _make_minimal_artifact() -> bytes:
+    """Create a minimal valid tar.gz artifact that passes validate_artifact_quality."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        # Add a stub test file (required by quality gate)
+        test_content = b"def test_placeholder(): pass\n"
+        info = tarfile.TarInfo(name="tests/test_stub.py")
+        info.size = len(test_content)
+        tar.addfile(info, io.BytesIO(test_content))
+    return buf.getvalue()
 
 TEST_USER = {
     "email": "pkguser@agentnode.dev",
@@ -117,8 +131,16 @@ async def test_validate_unauthenticated(client):
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_publish_new_package(mock_meili, mock_s3, client):
+async def test_publish_new_package(mock_meili, mock_s3, client, session):
     token = await get_auth_token(client)
+    # Mark publisher as trusted so versions are not quarantined
+    from app.publishers.models import Publisher
+    from sqlalchemy import select
+    result = await session.execute(select(Publisher).where(Publisher.slug == "pkg-publisher"))
+    pub = result.scalar_one()
+    pub.trust_level = "trusted"
+    await session.flush()
+
     resp = await client.post(
         "/v1/packages/publish",
         data={"manifest": json.dumps(TEST_MANIFEST)},
@@ -199,14 +221,23 @@ async def test_publish_new_version(mock_meili, mock_s3, client):
 
 
 @pytest.mark.asyncio
+@patch("app.packages.service.upload_preview_file", return_value="previews/mock.py")
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_publish_with_artifact(mock_meili, mock_s3, client):
+async def test_publish_with_artifact(mock_meili, mock_s3, mock_preview, client, session):
     token = await get_auth_token(client)
+    # Mark publisher as trusted so versions are not quarantined
+    from app.publishers.models import Publisher
+    from sqlalchemy import select
+    result = await session.execute(select(Publisher).where(Publisher.slug == "pkg-publisher"))
+    pub = result.scalar_one()
+    pub.trust_level = "trusted"
+    await session.flush()
+    artifact_bytes = _make_minimal_artifact()
     resp = await client.post(
         "/v1/packages/publish",
         data={"manifest": json.dumps(TEST_MANIFEST)},
-        files={"artifact": ("test.tar.gz", b"fake-artifact-data", "application/gzip")},
+        files={"artifact": ("test.tar.gz", artifact_bytes, "application/gzip")},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 200
@@ -239,8 +270,17 @@ async def test_publish_invalid_manifest(mock_meili, mock_s3, client):
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_publish_versions_list(mock_meili, mock_s3, client):
+async def test_publish_versions_list(mock_meili, mock_s3, client, session):
     token = await get_auth_token(client)
+    # Mark publisher as trusted so versions are not quarantined
+    # (new unverified publishers trigger auto-quarantine, hiding versions from public list)
+    from app.publishers.models import Publisher
+    from sqlalchemy import select
+    result = await session.execute(select(Publisher).where(Publisher.slug == "pkg-publisher"))
+    pub = result.scalar_one()
+    pub.trust_level = "trusted"
+    await session.flush()
+
     await client.post(
         "/v1/packages/publish",
         data={"manifest": json.dumps(TEST_MANIFEST)},

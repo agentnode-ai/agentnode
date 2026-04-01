@@ -246,9 +246,19 @@ export function usePublishForm() {
 
   // Load capabilities
   useEffect(() => {
-    fetch("/api/v1/resolution/capabilities")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((data: CapabilityOption[]) => { if (Array.isArray(data)) setCapabilities(data); })
+    fetch("/api/v1/capabilities")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && Array.isArray(data.capabilities)) {
+          setCapabilities(
+            data.capabilities.map((c: { id: string; display_name: string; description: string | null; category: string }) => ({
+              id: c.id,
+              name: c.display_name || c.id,
+              category: c.category,
+            }))
+          );
+        }
+      })
       .catch(() => {});
   }, []);
 

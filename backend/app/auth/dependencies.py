@@ -38,6 +38,28 @@ async def get_current_user(
     return user
 
 
+async def optional_current_user(
+    request: Request,
+    authorization: str | None = Header(None),
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    session: AsyncSession = Depends(get_session),
+) -> User | None:
+    """Like get_current_user but returns None instead of 401 when unauthenticated."""
+    try:
+        if x_api_key:
+            return await _authenticate_api_key(session, x_api_key)
+        elif authorization and authorization.startswith("Bearer "):
+            token = authorization[7:]
+            return await _authenticate_jwt(session, token, expected_type="access")
+        else:
+            cookie_token = request.cookies.get("access_token")
+            if cookie_token:
+                return await _authenticate_jwt(session, cookie_token, expected_type="access")
+    except AppError:
+        return None
+    return None
+
+
 async def require_publisher(user: User = Depends(get_current_user)) -> User:
     """Ensure the user has a publisher profile and is not suspended."""
     if not user.publisher:
