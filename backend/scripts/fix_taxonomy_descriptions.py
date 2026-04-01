@@ -52,23 +52,23 @@ async def main() -> None:
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session() as session:
-        # Find all entries with NULL description
-        result = await session.execute(
-            text(
-                "SELECT id, display_name, category FROM capability_taxonomy "
-                "WHERE description IS NULL ORDER BY id"
-            )
-        )
-        rows = result.all()
-
-        if not rows:
-            print("All capabilities already have descriptions. Nothing to do.")
-            await engine.dispose()
-            return
-
-        print(f"Found {len(rows)} capabilities without descriptions:\n")
-
         async with session.begin():
+            # Find all entries with NULL description
+            result = await session.execute(
+                text(
+                    "SELECT id, display_name, category FROM capability_taxonomy "
+                    "WHERE description IS NULL ORDER BY id"
+                )
+            )
+            rows = result.all()
+
+            if not rows:
+                print("All capabilities already have descriptions. Nothing to do.")
+                await engine.dispose()
+                return
+
+            print(f"Found {len(rows)} capabilities without descriptions:\n")
+
             for row in rows:
                 cap_id, display_name, category = row
                 desc = generate_description(cap_id, display_name, category)
@@ -82,11 +82,12 @@ async def main() -> None:
                 print(f"  {cap_id}: {desc}")
 
         # Verify
-        result = await session.execute(
-            text("SELECT COUNT(*) FROM capability_taxonomy WHERE description IS NULL")
-        )
-        null_count = result.scalar()
-        print(f"\nRemaining NULL descriptions: {null_count}")
+        async with session.begin():
+            result = await session.execute(
+                text("SELECT COUNT(*) FROM capability_taxonomy WHERE description IS NULL")
+            )
+            null_count = result.scalar()
+            print(f"\nRemaining NULL descriptions: {null_count}")
 
     await engine.dispose()
     print("Done.")
