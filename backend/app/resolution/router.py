@@ -415,22 +415,40 @@ async def list_capabilities(
     session: AsyncSession = Depends(get_session),
 ):
     """List all capabilities in the taxonomy. Public endpoint."""
-    query = select(CapabilityTaxonomy).order_by(CapabilityTaxonomy.category, CapabilityTaxonomy.id)
+    # Subquery: count distinct non-deprecated packages per capability_id
+    pkg_count_sq = (
+        select(
+            Capability.capability_id,
+            func.count(func.distinct(Package.id)).label("package_count"),
+        )
+        .join(PackageVersion, Capability.package_version_id == PackageVersion.id)
+        .join(Package, PackageVersion.package_id == Package.id)
+        .where(Package.is_deprecated == False)  # noqa: E712
+        .group_by(Capability.capability_id)
+        .subquery()
+    )
+
+    query = (
+        select(CapabilityTaxonomy, pkg_count_sq.c.package_count)
+        .outerjoin(pkg_count_sq, CapabilityTaxonomy.id == pkg_count_sq.c.capability_id)
+        .order_by(CapabilityTaxonomy.category, CapabilityTaxonomy.id)
+    )
     if category:
         query = query.where(CapabilityTaxonomy.category == category)
 
     result = await session.execute(query)
-    caps = result.scalars().all()
+    rows = result.all()
 
     return {
         "capabilities": [
             {
-                "id": c.id,
-                "display_name": c.display_name,
-                "description": c.description,
-                "category": c.category,
+                "id": row[0].id,
+                "display_name": row[0].display_name,
+                "description": row[0].description,
+                "category": row[0].category,
+                "package_count": row[1] or 0,
             }
-            for c in caps
+            for row in rows
         ],
-        "total": len(caps),
+        "total": len(rows),
     }
