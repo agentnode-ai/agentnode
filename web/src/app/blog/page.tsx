@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 import Link from "next/link";
 import type { Metadata } from "next";
 import SafeImage from "@/components/blog/SafeImage";
+import { BACKEND_URL } from "@/lib/constants";
 
 export const metadata: Metadata = {
   title: "Blog — AI Agent Skills, MCP Tools & Agentic AI Insights",
@@ -41,14 +42,14 @@ interface Category {
 }
 
 async function getPosts(page = 1) {
-  const url = `${process.env.BACKEND_URL || "http://localhost:8001"}/v1/blog/posts?page=${page}&per_page=50&post_type=post`;
+  const url = `${BACKEND_URL}/v1/blog/posts?page=${page}&per_page=50&post_type=post`;
   const res = await fetch(url, { next: { revalidate: 60 } });
   if (!res.ok) return { posts: [], total: 0, page: 1, per_page: 20 };
   return res.json();
 }
 
 async function getCategories() {
-  const url = `${process.env.BACKEND_URL || "http://localhost:8001"}/v1/blog/categories`;
+  const url = `${BACKEND_URL}/v1/blog/categories`;
   const res = await fetch(url, { next: { revalidate: 60 } });
   if (!res.ok) return [];
   return res.json();

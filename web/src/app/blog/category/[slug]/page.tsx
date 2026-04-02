@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 import Link from "next/link";
 import type { Metadata } from "next";
 import SafeImage from "@/components/blog/SafeImage";
+import { BACKEND_URL } from "@/lib/constants";
 
 interface Post {
   id: string;
@@ -18,7 +19,7 @@ interface Post {
 }
 
 async function getPosts(categorySlug: string) {
-  const url = `${process.env.BACKEND_URL || "http://localhost:8001"}/v1/blog/posts?category=${categorySlug}&per_page=50`;
+  const url = `${BACKEND_URL}/v1/blog/posts?category=${categorySlug}&per_page=50`;
   const res = await fetch(url, { next: { revalidate: 60 } });
   if (!res.ok) return { posts: [], total: 0 };
   return res.json();

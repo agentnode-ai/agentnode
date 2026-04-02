@@ -35,14 +35,15 @@ async def main():
     from app.verification.pipeline import run_verification
 
     async with async_session_factory() as session:
-        placeholders = ",".join(f"'{s}'" for s in TARGETS)
+        bind_params = {f"s{i}": s for i, s in enumerate(TARGETS)}
+        placeholders = ", ".join(f":s{i}" for i in range(len(TARGETS)))
         r = await session.execute(text(f"""
             SELECT p.slug, pv.id as version_id, pv.artifact_object_key
             FROM packages p
             JOIN package_versions pv ON p.latest_version_id = pv.id
             WHERE p.slug IN ({placeholders})
             ORDER BY p.slug
-        """))
+        """), bind_params)
         rows = r.fetchall()
 
     for i, row in enumerate(rows, 1):
@@ -52,7 +53,8 @@ async def main():
 
     # Report
     async with async_session_factory() as session:
-        placeholders = ",".join(f"'{s}'" for s in TARGETS)
+        bind_params = {f"s{i}": s for i, s in enumerate(TARGETS)}
+        placeholders = ", ".join(f":s{i}" for i in range(len(TARGETS)))
         r = await session.execute(text(f"""
             SELECT p.slug, vr.smoke_status, vr.smoke_log
             FROM packages p
@@ -60,7 +62,7 @@ async def main():
             JOIN verification_results vr ON pv.latest_verification_result_id = vr.id
             WHERE p.slug IN ({placeholders})
             ORDER BY p.slug
-        """))
+        """), bind_params)
         rows = r.fetchall()
 
     print("\n" + "=" * 60)

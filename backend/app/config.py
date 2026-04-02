@@ -1,13 +1,7 @@
-import secrets
 import shutil
 import sys
 
 from pydantic_settings import BaseSettings
-
-
-def _dev_only_default(name: str, fallback: str) -> str:
-    """Return fallback for local dev; in production, the env var MUST be set."""
-    return fallback
 
 
 def _detect_system_capabilities() -> dict[str, bool]:

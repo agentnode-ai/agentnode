@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -175,7 +175,7 @@ async def reject_version(
     )
 
 
-@router.get("/quarantined", response_model=list[QuarantinedVersionItem])
+@router.get("/quarantined", response_model=list[QuarantinedVersionItem], dependencies=[Depends(rate_limit(30, 60))])
 async def list_quarantined(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
@@ -297,7 +297,7 @@ async def unsuspend_publisher(
     )
 
 
-@router.get("/publishers/suspended", response_model=list[SuspendedPublisherItem])
+@router.get("/publishers/suspended", response_model=list[SuspendedPublisherItem], dependencies=[Depends(rate_limit(30, 60))])
 async def list_suspended(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
@@ -373,7 +373,7 @@ class UpdateCapabilityRequest(BaseModel):
     category: str | None = None
 
 
-@router.get("/capabilities")
+@router.get("/capabilities", dependencies=[Depends(rate_limit(30, 60))])
 async def list_capabilities(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
@@ -397,7 +397,7 @@ async def list_capabilities(
     }
 
 
-@router.post("/capabilities", status_code=201)
+@router.post("/capabilities", status_code=201, dependencies=[Depends(rate_limit(10, 60))])
 async def create_capability(
     body: CreateCapabilityRequest,
     user: User = Depends(require_admin),
@@ -422,7 +422,7 @@ async def create_capability(
     return {"id": cap.id, "display_name": cap.display_name, "category": cap.category}
 
 
-@router.put("/capabilities/{cap_id}")
+@router.put("/capabilities/{cap_id}", dependencies=[Depends(rate_limit(10, 60))])
 async def update_capability(
     cap_id: str,
     body: UpdateCapabilityRequest,
@@ -449,7 +449,7 @@ async def update_capability(
     return {"id": cap.id, "display_name": cap.display_name, "category": cap.category}
 
 
-@router.delete("/capabilities/{cap_id}")
+@router.delete("/capabilities/{cap_id}", dependencies=[Depends(rate_limit(10, 60))])
 async def delete_capability(
     cap_id: str,
     user: User = Depends(require_admin),
@@ -472,7 +472,7 @@ async def delete_capability(
 # --- Report Management ---
 
 
-@router.get("/reports")
+@router.get("/reports", dependencies=[Depends(rate_limit(30, 60))])
 async def list_reports(
     status: str | None = None,
     user: User = Depends(require_admin),
@@ -610,7 +610,7 @@ async def reopen_report(
 
 # --- GET /v1/admin/stats (Observability) ---
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[Depends(rate_limit(30, 60))])
 async def get_platform_stats(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
@@ -718,7 +718,7 @@ async def get_platform_stats(
 # --- User Management ---
 
 
-@router.get("/users")
+@router.get("/users", dependencies=[Depends(rate_limit(30, 60))])
 async def list_users(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
@@ -731,9 +731,10 @@ async def list_users(
     count_query = select(func.count(User.id))
 
     if search:
+        safe_search = search.replace("%", r"\%").replace("_", r"\_")
         search_filter = or_(
-            User.username.ilike(f"%{search}%"),
-            User.email.ilike(f"%{search}%"),
+            User.username.ilike(f"%{safe_search}%", escape="\\"),
+            User.email.ilike(f"%{safe_search}%", escape="\\"),
         )
         query = query.where(search_filter)
         count_query = count_query.where(search_filter)
@@ -820,8 +821,19 @@ class BanUserRequest(BaseModel):
     reason: str = Field("Admin action", max_length=500)
 
 class EditUserRequest(BaseModel):
-    email: str | None = None
+    email: EmailStr | None = None
     username: str | None = None
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        import re
+        v = v.lower()
+        if not re.match(r"^[a-z0-9_-]{3,30}$", v):
+            raise ValueError("Username must be 3-30 chars, only lowercase letters, digits, hyphens, underscores")
+        return v
 
 
 @router.post("/users/{user_id}/ban", dependencies=[Depends(rate_limit(5, 60))])
@@ -1030,7 +1042,7 @@ async def delete_user(
 # --- All Publishers listing ---
 
 
-@router.get("/publishers")
+@router.get("/publishers", dependencies=[Depends(rate_limit(30, 60))])
 async def list_all_publishers(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
@@ -1044,9 +1056,10 @@ async def list_all_publishers(
     count_query = select(func.count(Publisher.id))
 
     if search:
+        safe_search = search.replace("%", r"\%").replace("_", r"\_")
         search_filter = or_(
-            Publisher.slug.ilike(f"%{search}%"),
-            Publisher.display_name.ilike(f"%{search}%"),
+            Publisher.slug.ilike(f"%{safe_search}%", escape="\\"),
+            Publisher.display_name.ilike(f"%{safe_search}%", escape="\\"),
         )
         query = query.where(search_filter)
         count_query = count_query.where(search_filter)
@@ -1105,7 +1118,7 @@ async def delete_publisher(
 # --- All Packages listing ---
 
 
-@router.get("/packages")
+@router.get("/packages", dependencies=[Depends(rate_limit(30, 60))])
 async def list_all_packages(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
@@ -1118,9 +1131,10 @@ async def list_all_packages(
     count_query = select(func.count(Package.id))
 
     if search:
+        safe_search = search.replace("%", r"\%").replace("_", r"\_")
         search_filter = or_(
-            Package.slug.ilike(f"%{search}%"),
-            Package.name.ilike(f"%{search}%"),
+            Package.slug.ilike(f"%{safe_search}%", escape="\\"),
+            Package.name.ilike(f"%{safe_search}%", escape="\\"),
         )
         query = query.where(search_filter)
         count_query = count_query.where(search_filter)
@@ -1159,7 +1173,7 @@ async def list_all_packages(
 # --- Package Admin Actions ---
 
 
-@router.get("/packages/{slug}/versions")
+@router.get("/packages/{slug}/versions", dependencies=[Depends(rate_limit(30, 60))])
 async def list_package_versions(
     slug: str,
     user: User = Depends(require_admin),
@@ -1396,7 +1410,7 @@ async def unyank_version(
 # --- Audit Log ---
 
 
-@router.get("/audit")
+@router.get("/audit", dependencies=[Depends(rate_limit(30, 60))])
 async def list_audit_logs(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
@@ -1418,7 +1432,8 @@ async def list_audit_logs(
     if date_to:
         base_filters.append(AdminAuditLog.created_at <= date_to)
     if admin_username:
-        base_filters.append(AdminAuditLog.admin_user_id.in_(select(User.id).where(User.username.ilike(f"%{admin_username}%"))))
+        safe_name = admin_username.replace("%", r"\%").replace("_", r"\_")
+        base_filters.append(AdminAuditLog.admin_user_id.in_(select(User.id).where(User.username.ilike(f"%{safe_name}%", escape="\\"))))
 
     count_query = select(func.count(AdminAuditLog.id))
     for f in base_filters:
@@ -1463,7 +1478,7 @@ async def list_audit_logs(
     }
 
 
-@router.get("/audit/export")
+@router.get("/audit/export", dependencies=[Depends(rate_limit(30, 60))])
 async def export_audit_logs(
     action: str | None = None,
     date_from: str | None = None,
@@ -1527,7 +1542,7 @@ class SmtpSettingsRequest(BaseModel):
     from_name: str = "AgentNode"
 
 
-@router.get("/settings/smtp")
+@router.get("/settings/smtp", dependencies=[Depends(rate_limit(30, 60))])
 async def get_smtp_settings(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
@@ -1666,7 +1681,7 @@ class ApiKeysRequest(BaseModel):
     anthropic_api_key: str = ""
 
 
-@router.get("/settings/api-keys")
+@router.get("/settings/api-keys", dependencies=[Depends(rate_limit(30, 60))])
 async def get_api_keys(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
@@ -1739,7 +1754,7 @@ async def update_api_keys(
     return {"message": "API keys updated", "source": "database"}
 
 
-@router.get("/installations")
+@router.get("/installations", dependencies=[Depends(rate_limit(30, 60))])
 async def list_installations(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
@@ -1837,7 +1852,7 @@ async def reverify_version(
 
     from app.verification.pipeline import run_verification
     import asyncio
-    asyncio.get_event_loop().create_task(run_verification(pv.id, triggered_by="admin_reverify"))
+    asyncio.get_running_loop().create_task(run_verification(pv.id, triggered_by="admin_reverify"))
 
     return {"message": f"Verification re-triggered for {slug}@{version}"}
 
@@ -1937,7 +1952,7 @@ async def reverify_batch(
 
     triggered = []
     for pv in versions:
-        asyncio.get_event_loop().create_task(run_verification(pv.id, triggered_by="admin_reverify"))
+        asyncio.get_running_loop().create_task(run_verification(pv.id, triggered_by="admin_reverify"))
         triggered.append({"slug": pv.package.slug, "version": pv.version_number})
 
     await _audit(session, request, user, "reverify_batch", "verification", "batch", {

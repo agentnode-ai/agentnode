@@ -64,6 +64,8 @@ async def publish(
 
     artifact_bytes = None
     if artifact:
+        if artifact.content_type and not artifact.content_type.startswith(("application/gzip", "application/x-gzip", "application/octet-stream", "application/x-tar", "application/x-compressed")):
+            raise AppError("ARTIFACT_INVALID_TYPE", f"Artifact content type '{artifact.content_type}' not allowed. Expected a gzip/tar archive.", 400)
         limit = settings.MAX_ARTIFACT_SIZE_BYTES
         artifact_bytes = await artifact.read(limit + 1)
         if len(artifact_bytes) > limit:
@@ -114,7 +116,7 @@ def _version_eager_loads():
     ]
 
 
-@router.get("/{slug}", response_model=PackageDetailResponse)
+@router.get("/{slug}", response_model=PackageDetailResponse, dependencies=[Depends(rate_limit(60, 60))])
 async def get_package(
     slug: str,
     v: str | None = Query(None, description="Specific version number to load"),
@@ -181,7 +183,7 @@ async def get_package(
     )
 
 
-@router.get("/{slug}/versions", response_model=VersionsResponse)
+@router.get("/{slug}/versions", response_model=VersionsResponse, dependencies=[Depends(rate_limit(60, 60))])
 async def get_versions(
     slug: str,
     session: AsyncSession = Depends(get_session),
@@ -209,7 +211,7 @@ async def get_versions(
     )
 
 
-@router.get("/{slug}/versions/all", response_model=VersionsResponse)
+@router.get("/{slug}/versions/all", response_model=VersionsResponse, dependencies=[Depends(rate_limit(30, 60))])
 async def get_all_versions(
     slug: str,
     user: User = Depends(get_current_user),
@@ -243,7 +245,7 @@ async def get_all_versions(
     )
 
 
-@router.get("/{slug}/versions/{version}/files/{file_path:path}")
+@router.get("/{slug}/versions/{version}/files/{file_path:path}", dependencies=[Depends(rate_limit(60, 60))])
 async def get_file_preview(
     slug: str,
     version: str,
@@ -294,13 +296,8 @@ async def get_file_preview(
     if content is None:
         raise AppError("FILE_NOT_FOUND", f"File '{file_path}' not found in preview store", 404)
 
-    content_type_map = {
-        ".md": "text/markdown", ".py": "text/x-python", ".ts": "text/typescript",
-        ".js": "text/javascript", ".json": "application/json", ".yaml": "text/yaml",
-        ".yml": "text/yaml", ".toml": "text/toml", ".txt": "text/plain",
-        ".cfg": "text/plain", ".ini": "text/plain",
-    }
-    ct = content_type_map.get(ext, "text/plain")
+    from app.shared.storage import _CONTENT_TYPE_MAP
+    ct = _CONTENT_TYPE_MAP.get(ext, "text/plain")
 
     return PlainTextResponse(
         content=content,
@@ -520,7 +517,7 @@ class CreateReviewRequest(BaseModel):
     comment: str | None = Field(None, max_length=1000)
 
 
-@router.post("/{slug}/reviews", status_code=201)
+@router.post("/{slug}/reviews", status_code=201, dependencies=[Depends(rate_limit(10, 60))])
 async def create_review(
     slug: str,
     body: CreateReviewRequest,
@@ -565,7 +562,7 @@ async def create_review(
     return {"id": str(review.id)}
 
 
-@router.get("/{slug}/reviews")
+@router.get("/{slug}/reviews", dependencies=[Depends(rate_limit(30, 60))])
 async def list_reviews(
     slug: str,
     session: AsyncSession = Depends(get_session),

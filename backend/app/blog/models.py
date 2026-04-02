@@ -50,7 +50,7 @@ class BlogPost(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     seo_description = Column(VARCHAR(170), nullable=True)
     og_image_url = Column(VARCHAR(500), nullable=True)
     category_id = Column(UUID(as_uuid=True), ForeignKey("blog_categories.id", ondelete="SET NULL"), nullable=True, index=True)
-    tags = Column(JSONB, default=[])
+    tags = Column(JSONB, default=list)
     author_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     status = Column(
         Enum("draft", "published", "archived", name="blog_post_status", create_type=False),

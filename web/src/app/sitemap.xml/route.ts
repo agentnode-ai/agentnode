@@ -1,4 +1,4 @@
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8001";
+import { BACKEND_URL } from "@/lib/constants";
 const SITE_URL = "https://agentnode.net";
 
 interface PostType {

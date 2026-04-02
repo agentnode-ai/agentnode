@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import PackageCard from "@/components/PackageCard";
 import type { SearchResponse } from "@/lib/api";
+import { BACKEND_URL } from "@/lib/constants";
 
 export const metadata: Metadata = {
   title: "Discover Agent Skills — Trending AI Agent Tools & Packs",
@@ -20,7 +21,7 @@ export const metadata: Metadata = {
 
 async function fetchTrending(): Promise<SearchResponse | null> {
   try {
-    const baseUrl = process.env.BACKEND_URL ?? "http://localhost:8001";
+    const baseUrl = BACKEND_URL;
     const res = await fetch(`${baseUrl}/v1/search`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -41,7 +42,7 @@ async function fetchTrending(): Promise<SearchResponse | null> {
 
 async function fetchNewest(): Promise<SearchResponse | null> {
   try {
-    const baseUrl = process.env.BACKEND_URL ?? "http://localhost:8001";
+    const baseUrl = BACKEND_URL;
     const res = await fetch(`${baseUrl}/v1/search`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -20,6 +20,7 @@ logger = logging.getLogger("agentnode.cron")
 
 # Track milestone thresholds already notified (in-memory, resets on restart)
 _notified_milestones: set[str] = set()
+_MAX_MILESTONE_ENTRIES = 10_000  # prevent unbounded growth
 
 MILESTONES = [100, 1_000, 5_000, 10_000, 50_000, 100_000]
 
@@ -44,6 +45,8 @@ async def check_download_milestones():
                     if key in _notified_milestones:
                         continue
                     if pkg.download_count >= milestone:
+                        if len(_notified_milestones) >= _MAX_MILESTONE_ENTRIES:
+                            _notified_milestones.clear()
                         _notified_milestones.add(key)
                         # Only send for the highest crossed milestone
                         next_milestones = [m for m in MILESTONES if m > milestone]
@@ -64,7 +67,7 @@ async def send_daily_admin_digest():
     """Send daily stats summary to all admins."""
     try:
         from app.auth.models import User
-        from app.packages.models import Package, PackageVersion, PackageReport
+        from app.packages.models import Installation, Package, PackageVersion, PackageReport
         from app.shared.email import send_admin_daily_digest, get_admin_emails
 
         now = datetime.now(timezone.utc)
@@ -91,9 +94,9 @@ async def send_daily_admin_digest():
                 select(func.count(PackageVersion.id)).where(PackageVersion.quarantine_status == "quarantined")
             )).scalar() or 0
 
-            # Total downloads (approximate from sum)
-            total_dl = (await session.execute(
-                select(func.sum(Package.download_count))
+            # Installations in last 24h (proxy for downloads)
+            downloads_24h = (await session.execute(
+                select(func.count(Installation.id)).where(Installation.created_at >= yesterday)
             )).scalar() or 0
 
         stats = {
@@ -101,7 +104,7 @@ async def send_daily_admin_digest():
             "new_packages": new_packages,
             "open_reports": open_reports,
             "quarantined": quarantined,
-            "downloads_24h": 0,  # Would need a separate counter for daily deltas
+            "downloads_24h": downloads_24h,
         }
 
         # Only send if there's something to report
@@ -198,8 +201,8 @@ async def cleanup_stale_verification_dirs():
                 if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
                     shutil.rmtree(path, ignore_errors=True)
                     cleaned += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Could not clean up {path}: {e}")
 
         if cleaned:
             logger.info(f"Cleaned up {cleaned} stale verification dir(s)")
@@ -285,7 +288,7 @@ def start_cron_tasks():
     except Exception:
         logger.warning("Startup: failed to cleanup stale verification dirs")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     _tasks.append(loop.create_task(
         _run_periodic(3600, check_download_milestones, "download_milestones")

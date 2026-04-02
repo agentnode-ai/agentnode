@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import TrustBadge from "@/components/TrustBadge";
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8001";
+import { BACKEND_URL } from "@/lib/constants";
 
 async function getPublisher(slug: string) {
   const res = await fetch(`${BACKEND_URL}/v1/publishers/${slug}`, {

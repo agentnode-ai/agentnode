@@ -198,7 +198,7 @@ class Permission(Base, UUIDPrimaryKeyMixin):
         Enum("none", "restricted", "unrestricted", name="permission_level", create_type=False),
         nullable=False, default="none",
     )
-    allowed_domains = Column(JSONB, default=[])
+    allowed_domains = Column(JSONB, default=list)
     filesystem_level = Column(
         Enum("none", "temp", "workspace_read", "workspace_write", "any", name="fs_level", create_type=False),
         nullable=False, default="none",
@@ -215,20 +215,20 @@ class Permission(Base, UUIDPrimaryKeyMixin):
         Enum("always", "high_risk_only", "once", "never", name="approval_level", create_type=False),
         nullable=False, default="never",
     )
-    external_integrations = Column(JSONB, default=[])
+    external_integrations = Column(JSONB, default=list)
 
 
 class UpgradeMetadata(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "upgrade_metadata"
 
     package_version_id = Column(UUID(as_uuid=True), ForeignKey("package_versions.id", ondelete="CASCADE"), nullable=False, unique=True)
-    upgrade_roles = Column(JSONB, default=[])
-    recommended_for = Column(JSONB, default=[])
-    replaces_packages = Column(JSONB, default=[])
+    upgrade_roles = Column(JSONB, default=list)
+    recommended_for = Column(JSONB, default=list)
+    replaces_packages = Column(JSONB, default=list)
     install_strategy = Column(Text, nullable=False, default="local")
     delegation_mode = Column(Text, nullable=True)
     fallback_behavior = Column(Text, nullable=False, default="skip")
-    policy_requirements = Column(JSONB, default={})
+    policy_requirements = Column(JSONB, default=dict)
 
 
 class SecurityFinding(Base, UUIDPrimaryKeyMixin):

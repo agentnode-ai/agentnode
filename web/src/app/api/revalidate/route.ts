@@ -1,15 +1,27 @@
 import { revalidatePath } from "next/cache";
 import { NextRequest, NextResponse } from "next/server";
 
+const REVALIDATE_SECRET = process.env.REVALIDATE_SECRET || "";
+
 /**
  * On-demand revalidation endpoint.
  * Called by admin pages after mutations (save, publish, delete)
  * to bust the Next.js data cache immediately.
  *
  * POST /api/revalidate { paths: ["/blog", "/blog/my-slug"] }
+ *
+ * In production, requires X-Revalidate-Secret header matching REVALIDATE_SECRET env var.
  */
 export async function POST(req: NextRequest) {
   try {
+    // Require secret in production to prevent cache-busting abuse
+    if (REVALIDATE_SECRET) {
+      const secret = req.headers.get("x-revalidate-secret");
+      if (secret !== REVALIDATE_SECRET) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+    }
+
     const { paths } = await req.json();
     if (!Array.isArray(paths) || paths.length === 0) {
       return NextResponse.json({ error: "paths required" }, { status: 400 });

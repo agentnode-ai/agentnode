@@ -26,6 +26,7 @@ from app.packages.typosquatting import check_typosquatting
 from app.packages.validator import normalize_manifest, validate_manifest, validate_artifact_quality
 from app.packages.version_queries import recalculate_latest_version_id
 from app.shared.exceptions import AppError
+from app.shared.validators import is_safe_url
 from app.shared.meili import sync_package_to_meilisearch
 from app.shared.storage import (
     upload_artifact,
@@ -36,6 +37,13 @@ from app.shared.storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_safe_provenance_url(url: str | None) -> bool:
+    """Validate provenance URLs — block private IPs to prevent SSRF."""
+    if not url:
+        return False
+    return is_safe_url(url, block_private=True)
 
 
 async def get_all_package_slugs(session: AsyncSession) -> list[str]:
@@ -250,9 +258,6 @@ async def publish_package(
     # Verify signature if provided
     signature_verified = False
     if security.get("signature") and artifact_hash:
-        publisher_result = await session.execute(
-            select(Package.publisher_id).where(Package.id == pkg.id)
-        ) if pkg.id else None
         from app.publishers.models import Publisher
         pub_result = await session.execute(
             select(Publisher).where(Publisher.id == publisher_id)
@@ -268,6 +273,7 @@ async def publish_package(
                 )
                 if not signature_verified:
                     logger.warning(f"Signature verification FAILED for {slug}@{version_str}")
+                    raise AppError("PUBLISH_SIGNATURE_INVALID", "Artifact signature verification failed", 400)
             except Exception as e:
                 logger.warning(f"Signature verification error for {slug}@{version_str}: {e}")
         elif security.get("signature"):
@@ -289,7 +295,7 @@ async def publish_package(
         artifact_hash_sha256=artifact_hash,
         artifact_size_bytes=artifact_size,
         signature=security.get("signature"),
-        source_repo_url=provenance.get("source_repo"),
+        source_repo_url=provenance.get("source_repo") if _is_safe_provenance_url(provenance.get("source_repo")) else None,
         source_commit=provenance.get("commit"),
         build_system=provenance.get("build_system"),
         quarantine_status="quarantined" if (quarantine_for_typosquatting or quarantine_for_new_publisher) else "none",
@@ -493,6 +499,12 @@ async def publish_package(
 
     # 14. Recalculate latest_version_id
     await recalculate_latest_version_id(session, pkg.id)
+
+    # 14b. Increment publisher's packages_published_count
+    from app.publishers.models import Publisher
+    pub_obj = await session.get(Publisher, publisher_id)
+    if pub_obj:
+        pub_obj.packages_published_count = (pub_obj.packages_published_count or 0) + 1
 
     # 15. Commit
     await session.commit()

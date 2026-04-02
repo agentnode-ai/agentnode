@@ -553,6 +553,12 @@ async def upload_image(
     if not file.content_type or not file.content_type.startswith("image/"):
         raise AppError("BLOG_INVALID_FILE", "Only image files are allowed", 400)
 
+    # Restrict file extensions to prevent uploading disguised files
+    ALLOWED_IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "svg", "ico", "avif"}
+    ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else "jpg"
+    if ext not in ALLOWED_IMAGE_EXTS:
+        raise AppError("BLOG_INVALID_FILE", f"File extension '.{ext}' not allowed. Use: {', '.join(sorted(ALLOWED_IMAGE_EXTS))}", 400)
+
     data = await file.read()
     if len(data) > 10 * 1024 * 1024:  # 10 MB
         raise AppError("BLOG_FILE_TOO_LARGE", "Image must be under 10 MB", 400)
@@ -569,7 +575,6 @@ async def upload_image(
     original_filename = file.filename
 
     image_id = uuid.uuid4()
-    ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else "jpg"
     object_key = f"blog/{image_id}.{ext}"
 
     upload_artifact(object_key, data, content_type=file.content_type)

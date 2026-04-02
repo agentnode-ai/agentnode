@@ -5,6 +5,7 @@ Falls back to logging when SMTP is not configured (development mode).
 Supports runtime-configurable SMTP settings stored in the database.
 """
 
+import html as html_mod
 import logging
 import time
 from email.message import EmailMessage
@@ -202,6 +203,11 @@ _LOGO = '<div class="logo">Agent<span>Node</span></div>'
 _FOOTER_AUTOMATED = '<div class="footer"><p>This is an automated notification from AgentNode.</p></div>'
 
 
+def _esc(value: str) -> str:
+    """Escape HTML special characters in user-provided values."""
+    return html_mod.escape(str(value))
+
+
 def _wrap(body_content: str) -> str:
     return f'<!DOCTYPE html><html><head>{_BASE_STYLE}</head><body><div class="container">{_LOGO}{body_content}{_FOOTER_AUTOMATED}</div></body></html>'
 
@@ -215,7 +221,7 @@ def _wrap(body_content: str) -> str:
 async def send_welcome_email(to: str, username: str, verify_token: str) -> bool:
     verify_url = f"{settings.FRONTEND_URL}/auth/verify-email?token={verify_token}"
     html = _wrap(f"""
-      <h1>Welcome to AgentNode, {username}!</h1>
+      <h1>Welcome to AgentNode, {_esc(username)}!</h1>
       <p>Your account has been created. AgentNode is the open registry where AI agents discover, install, and use capabilities across every framework.</p>
       <p>First, verify your email address:</p>
       <p style="text-align:center; margin: 24px 0;">
@@ -242,7 +248,6 @@ async def send_verification_email(to: str, token: str) -> bool:
       <div class="code">{verify_url}</div>
       <div class="footer"><p>This link expires in 24 hours. If you didn't request this, you can safely ignore it.</p></div>
     """)
-    logger.info(f"Email verification token for {to}: {token}")
     return await send_email(to, "Verify your email - AgentNode", html,
         f"Verify your AgentNode email: {verify_url}")
 
@@ -275,7 +280,6 @@ async def send_password_reset_email(to: str, token: str) -> bool:
       <div class="code">{reset_url}</div>
       <div class="footer"><p>This link expires in 1 hour. If you didn't request this, ignore this email.</p></div>
     """)
-    logger.info(f"Password reset token for {to}: {token}")
     return await send_email(to, "Reset your password - AgentNode", html,
         f"Reset your AgentNode password: {reset_url}")
 
@@ -313,7 +317,7 @@ async def send_email_changed_verify(new_email: str, token: str) -> bool:
 async def send_email_changed_alert(old_email: str, new_email: str) -> bool:
     html = _wrap(f"""
       <h1>Email address changed</h1>
-      <p>The email address on your AgentNode account was changed to <strong>{new_email}</strong>.</p>
+      <p>The email address on your AgentNode account was changed to <strong>{_esc(new_email)}</strong>.</p>
       <p class="warn">If you did not make this change, your account may be compromised. Contact support immediately.</p>
     """)
     return await send_email(old_email, "Email address changed - AgentNode", html,
@@ -336,8 +340,8 @@ async def send_2fa_enabled_email(to: str) -> bool:
 async def send_publisher_suspended_email(to: str, publisher_slug: str, reason: str) -> bool:
     html = _wrap(f"""
       <h1>Publisher account suspended</h1>
-      <p>Your publisher account <strong>@{publisher_slug}</strong> has been suspended by an administrator.</p>
-      <p><strong>Reason:</strong> {reason}</p>
+      <p>Your publisher account <strong>@{_esc(publisher_slug)}</strong> has been suspended by an administrator.</p>
+      <p><strong>Reason:</strong> {_esc(reason)}</p>
       <p>If you believe this was done in error, please contact support.</p>
     """)
     return await send_email(to, f"Publisher @{publisher_slug} suspended - AgentNode", html)
@@ -357,8 +361,8 @@ async def send_publisher_unsuspended_email(to: str, publisher_slug: str) -> bool
 async def send_quarantine_email(to: str, package_slug: str, version: str, reason: str) -> bool:
     html = _wrap(f"""
       <h1>Package version quarantined</h1>
-      <p>Version <strong>{version}</strong> of <strong>{package_slug}</strong> has been quarantined.</p>
-      <p><strong>Reason:</strong> {reason}</p>
+      <p>Version <strong>{_esc(version)}</strong> of <strong>{_esc(package_slug)}</strong> has been quarantined.</p>
+      <p><strong>Reason:</strong> {_esc(reason)}</p>
       <p>The version is temporarily hidden from search and installation. You may be contacted for further details.</p>
     """)
     return await send_email(to, f"{package_slug}@{version} quarantined - AgentNode", html)
@@ -391,8 +395,8 @@ async def send_report_admin_notification(package_slug: str, reason: str, reporte
     admin_url = f"{settings.FRONTEND_URL}/admin/reports"
     html = _wrap(f"""
       <h1>New package report</h1>
-      <p>A report has been filed against <strong>{package_slug}</strong> by @{reporter_username}.</p>
-      <p><strong>Reason:</strong> {reason}</p>
+      <p>A report has been filed against <strong>{_esc(package_slug)}</strong> by @{_esc(reporter_username)}.</p>
+      <p><strong>Reason:</strong> {_esc(reason)}</p>
       <p style="text-align:center; margin: 24px 0;">
         <a href="{admin_url}" class="btn">Review Reports</a>
       </p>
@@ -466,7 +470,7 @@ async def send_trust_level_changed_email(to: str, publisher_slug: str, old_level
 
 # 19. Report resolved — notify reporter
 async def send_report_resolved_reporter_email(to: str, package_slug: str, status: str, resolution_note: str | None) -> bool:
-    note_html = f"<p><strong>Note:</strong> {resolution_note}</p>" if resolution_note else ""
+    note_html = f"<p><strong>Note:</strong> {_esc(resolution_note)}</p>" if resolution_note else ""
     html = _wrap(f"""
       <h1>Report update</h1>
       <p>Your report against <strong>{package_slug}</strong> has been <strong>{status}</strong> by an administrator.</p>
@@ -484,7 +488,7 @@ async def send_new_login_alert_email(to: str, ip_address: str, user_agent: str) 
     html = _wrap(f"""
       <h1>New sign-in detected</h1>
       <p>A new sign-in to your AgentNode account was detected.</p>
-      <p><strong>IP:</strong> {ip_address}<br><strong>Device:</strong> {user_agent[:100]}</p>
+      <p><strong>IP:</strong> {_esc(ip_address)}<br><strong>Device:</strong> {_esc(user_agent[:100])}</p>
       <p class="warn">If this wasn't you, reset your password immediately:</p>
       <p style="text-align:center; margin: 24px 0;">
         <a href="{reset_url}" class="btn">Reset Password</a>
@@ -499,7 +503,7 @@ async def send_api_key_created_email(to: str, label: str | None, key_prefix: str
     html = _wrap(f"""
       <h1>API key created</h1>
       <p>A new API key was created for your AgentNode account.</p>
-      <p><strong>Label:</strong> {label or '(none)'}<br><strong>Prefix:</strong> {key_prefix}...</p>
+      <p><strong>Label:</strong> {_esc(label) if label else '(none)'}<br><strong>Prefix:</strong> {_esc(key_prefix)}...</p>
       <p class="warn">If you did not create this key, revoke it immediately in your dashboard.</p>
       <p style="text-align:center; margin: 24px 0;">
         <a href="{settings.FRONTEND_URL}/dashboard" class="btn">Go to Dashboard</a>
@@ -773,7 +777,7 @@ async def send_review_completed_email(
     changes_html = ""
     required_changes = review_result.get("required_changes", []) if review_result else []
     if required_changes:
-        items = "".join(f"<li style='margin:4px 0;'>{c}</li>" for c in required_changes)
+        items = "".join(f"<li style='margin:4px 0;'>{_esc(c)}</li>" for c in required_changes)
         changes_html = f'<div style="margin:12px 0;"><p style="color:#f59e0b; font-weight:600; font-size:14px;">Required changes:</p><ul style="color:#a3a3a3; font-size:13px; padding-left:20px;">{items}</ul></div>'
 
     summary_html = ""
@@ -782,7 +786,7 @@ async def send_review_completed_email(
 
     notes_html = ""
     if notes:
-        notes_html = f'<p style="font-size:13px; color:#a3a3a3; font-style:italic;">{notes}</p>'
+        notes_html = f'<p style="font-size:13px; color:#a3a3a3; font-style:italic;">{_esc(notes)}</p>'
 
     next_steps_html = ""
     if outcome == "changes_requested":

@@ -4,7 +4,9 @@ Central place for validators used across search, admin, packages, etc.
 Prevents drift and ensures consistent security boundaries.
 """
 
+import ipaddress
 import re
+from urllib.parse import urlparse
 
 # --- Slug validation ---
 
@@ -18,9 +20,34 @@ def is_valid_slug(value: str) -> bool:
 
 # --- URL validation ---
 
-def is_safe_url(value: str) -> bool:
-    """Check if URL uses a safe protocol (http/https only)."""
-    return value.lower().startswith(("https://", "http://"))
+def is_safe_url(value: str, block_private: bool = False) -> bool:
+    """Check if URL uses a safe protocol (http/https only).
+    If block_private=True, also reject URLs pointing to private/loopback IPs (SSRF prevention).
+    """
+    if not value.lower().startswith(("https://", "http://")):
+        return False
+    if not block_private:
+        return True
+    try:
+        parsed = urlparse(value)
+        hostname = parsed.hostname or ""
+        if not hostname:
+            return False
+        # Block obvious private hostnames
+        if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+            return False
+        # Try to parse as IP and check if private/reserved
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+                return False
+        except ValueError:
+            # Not an IP — hostname like "internal.corp" is allowed
+            # (DNS resolution check would be better but adds latency)
+            pass
+        return True
+    except Exception:
+        return False
 
 
 # --- Filter value validation ---

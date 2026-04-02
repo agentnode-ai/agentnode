@@ -5,6 +5,8 @@ import logging
 
 from fastapi import APIRouter, Depends
 
+from app.auth.dependencies import get_current_user
+from app.auth.models import User
 from app.import_.schemas import ConvertRequest, ConvertResponse
 from app.import_.service import convert
 from app.shared.rate_limit import rate_limit
@@ -15,7 +17,7 @@ router = APIRouter(prefix="/v1/import", tags=["import"])
 
 
 @router.post("/convert", response_model=ConvertResponse, dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60))])
-async def convert_tool(body: ConvertRequest) -> ConvertResponse:
+async def convert_tool(body: ConvertRequest, user: User = Depends(get_current_user)) -> ConvertResponse:
     try:
         return convert(body)
     except Exception:

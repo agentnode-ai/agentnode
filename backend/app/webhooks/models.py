@@ -10,7 +10,7 @@ class Webhook(Base, UUIDPrimaryKeyMixin):
     publisher_id = Column(UUID(as_uuid=True), ForeignKey("publishers.id", ondelete="CASCADE"), nullable=False, index=True)
     url = Column(Text, nullable=False)
     secret = Column(Text, nullable=True)
-    events = Column(JSONB, nullable=False, default=[])
+    events = Column(JSONB, nullable=False, default=list)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default="now()")
 

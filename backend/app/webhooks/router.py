@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +9,7 @@ from app.auth.models import User
 from app.database import get_session
 from app.shared.exceptions import AppError
 from app.shared.rate_limit import rate_limit
+from app.shared.validators import is_safe_url
 from app.webhooks.models import Webhook, WebhookDelivery
 from app.webhooks.schemas import (
     CreateWebhookRequest,
@@ -25,6 +28,8 @@ async def create_webhook(
     session: AsyncSession = Depends(get_session),
 ):
     """Register a webhook for package events."""
+    if not is_safe_url(body.url, block_private=True):
+        raise AppError("INVALID_URL", "Webhook URL must be a public https:// or http:// URL", 422)
     invalid = [e for e in body.events if e not in VALID_EVENTS]
     if invalid:
         raise AppError("INVALID_EVENTS", f"Invalid event types: {invalid}", 422)
@@ -48,7 +53,7 @@ async def create_webhook(
     )
 
 
-@router.get("", response_model=list[WebhookResponse])
+@router.get("", response_model=list[WebhookResponse], dependencies=[Depends(rate_limit(30, 60))])
 async def list_webhooks(
     user: User = Depends(require_publisher),
     session: AsyncSession = Depends(get_session),
@@ -71,17 +76,16 @@ async def list_webhooks(
     ]
 
 
-@router.delete("/{webhook_id}")
+@router.delete("/{webhook_id}", dependencies=[Depends(rate_limit(10, 60))])
 async def delete_webhook(
-    webhook_id: str,
+    webhook_id: UUID,
     user: User = Depends(require_publisher),
     session: AsyncSession = Depends(get_session),
 ):
     """Delete a webhook."""
-    from uuid import UUID
     result = await session.execute(
         select(Webhook).where(
-            Webhook.id == UUID(webhook_id),
+            Webhook.id == webhook_id,
             Webhook.publisher_id == user.publisher.id,
         )
     )
@@ -94,18 +98,17 @@ async def delete_webhook(
     return {"deleted": True}
 
 
-@router.get("/{webhook_id}/deliveries", response_model=list[WebhookDeliveryItem])
+@router.get("/{webhook_id}/deliveries", response_model=list[WebhookDeliveryItem], dependencies=[Depends(rate_limit(30, 60))])
 async def list_deliveries(
-    webhook_id: str,
+    webhook_id: UUID,
     user: User = Depends(require_publisher),
     session: AsyncSession = Depends(get_session),
 ):
     """List recent deliveries for a webhook."""
-    from uuid import UUID
     # Verify ownership
     wh_result = await session.execute(
         select(Webhook).where(
-            Webhook.id == UUID(webhook_id),
+            Webhook.id == webhook_id,
             Webhook.publisher_id == user.publisher.id,
         )
     )
@@ -114,7 +117,7 @@ async def list_deliveries(
 
     result = await session.execute(
         select(WebhookDelivery)
-        .where(WebhookDelivery.webhook_id == UUID(webhook_id))
+        .where(WebhookDelivery.webhook_id == webhook_id)
         .order_by(WebhookDelivery.delivered_at.desc())
         .limit(50)
     )

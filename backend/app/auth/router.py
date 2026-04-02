@@ -8,6 +8,7 @@ GET mutations, this decision must be revisited.
 """
 
 from fastapi import APIRouter, Depends, Request, Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user
@@ -164,7 +165,7 @@ async def refresh(body: RefreshRequest, request: Request, response: Response, se
     return RefreshResponse(access_token=new_access, refresh_token=new_refresh)
 
 
-@router.post("/logout", response_model=LogoutResponse)
+@router.post("/logout", response_model=LogoutResponse, dependencies=[Depends(rate_limit(10, 60))])
 async def logout(request: Request, response: Response):
     """Clear auth cookies and revoke refresh token."""
     redis = request.app.state.redis
@@ -181,7 +182,7 @@ async def logout(request: Request, response: Response):
     return LogoutResponse(message="Logged out successfully.")
 
 
-@router.get("/api-keys", response_model=ApiKeyListResponse)
+@router.get("/api-keys", response_model=ApiKeyListResponse, dependencies=[Depends(rate_limit(30, 60))])
 async def list_api_keys(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -190,7 +191,7 @@ async def list_api_keys(
     return ApiKeyListResponse(keys=keys)
 
 
-@router.post("/api-keys", response_model=ApiKeyResponse, status_code=201)
+@router.post("/api-keys", response_model=ApiKeyResponse, status_code=201, dependencies=[Depends(rate_limit(10, 60))])
 async def create_api_key(
     body: CreateApiKeyRequest,
     user: User = Depends(get_current_user),
@@ -200,7 +201,7 @@ async def create_api_key(
     return ApiKeyResponse(**result)
 
 
-@router.delete("/api-keys/{key_id}", status_code=204)
+@router.delete("/api-keys/{key_id}", status_code=204, dependencies=[Depends(rate_limit(10, 60))])
 async def revoke_api_key(
     key_id: str,
     user: User = Depends(get_current_user),
@@ -211,7 +212,7 @@ async def revoke_api_key(
     return Response(status_code=204)
 
 
-@router.get("/me", response_model=MeResponse)
+@router.get("/me", response_model=MeResponse, dependencies=[Depends(rate_limit(30, 60))])
 async def me(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     user = await get_user_with_publisher(session, user.id)
     publisher_data = None
@@ -305,7 +306,7 @@ async def verify_email_route(
 from app.shared.email import EMAIL_PREF_DEFAULTS
 
 
-@router.get("/email-preferences")
+@router.get("/email-preferences", dependencies=[Depends(rate_limit(30, 60))])
 async def get_email_preferences(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -316,7 +317,7 @@ async def get_email_preferences(
     return {"preferences": prefs}
 
 
-@router.put("/email-preferences")
+@router.put("/email-preferences", dependencies=[Depends(rate_limit(10, 60))])
 async def update_email_preferences(
     body: dict,
     user: User = Depends(get_current_user),
@@ -335,7 +336,7 @@ async def update_email_preferences(
     return {"preferences": prefs}
 
 
-@router.put("/profile", response_model=UpdateProfileResponse)
+@router.put("/profile", response_model=UpdateProfileResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def update_profile_route(
     body: UpdateProfileRequest,
     user: User = Depends(get_current_user),

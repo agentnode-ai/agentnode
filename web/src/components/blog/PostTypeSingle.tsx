@@ -5,7 +5,7 @@ import SafeImage from "@/components/blog/SafeImage";
 import FaqSection, { extractFaqFromHtml } from "@/components/blog/FaqSection";
 import { sanitizeHtml } from "@/lib/sanitize";
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8001";
+import { BACKEND_URL } from "@/lib/constants";
 
 interface Post {
   id: string;

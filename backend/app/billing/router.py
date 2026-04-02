@@ -81,7 +81,7 @@ async def request_review(
     )
 
 
-@router.get("/v1/reviews/my", response_model=list[ReviewRequestResponse])
+@router.get("/v1/reviews/my", response_model=list[ReviewRequestResponse], dependencies=[Depends(rate_limit(30, 60))])
 async def my_reviews(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -125,7 +125,7 @@ async def my_reviews(
     return items
 
 
-@router.get("/v1/reviews/{review_id}", response_model=ReviewRequestResponse)
+@router.get("/v1/reviews/{review_id}", response_model=ReviewRequestResponse, dependencies=[Depends(rate_limit(30, 60))])
 async def get_review(
     review_id: UUID,
     user: User = Depends(get_current_user),
@@ -214,7 +214,7 @@ async def stripe_webhook(
 # ---- Admin endpoints ----
 
 
-@router.get("/v1/admin/reviews/queue", response_model=list[AdminQueueItem])
+@router.get("/v1/admin/reviews/queue", response_model=list[AdminQueueItem], dependencies=[Depends(rate_limit(30, 60))])
 async def admin_review_queue(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
@@ -261,7 +261,7 @@ async def admin_review_queue(
     return items
 
 
-@router.post("/v1/admin/reviews/{review_id}/assign")
+@router.post("/v1/admin/reviews/{review_id}/assign", dependencies=[Depends(rate_limit(10, 60))])
 async def admin_assign_reviewer(
     review_id: UUID,
     body: AssignReviewerBody,
@@ -278,7 +278,7 @@ async def admin_assign_reviewer(
     return {"status": "assigned", "review_id": str(review.id)}
 
 
-@router.post("/v1/admin/reviews/{review_id}/complete")
+@router.post("/v1/admin/reviews/{review_id}/complete", dependencies=[Depends(rate_limit(10, 60))])
 async def admin_complete_review(
     review_id: UUID,
     body: CompleteReviewBody,
@@ -325,7 +325,7 @@ async def admin_complete_review(
     }
 
 
-@router.post("/v1/admin/reviews/{review_id}/refund")
+@router.post("/v1/admin/reviews/{review_id}/refund", dependencies=[Depends(rate_limit(5, 60))])
 async def admin_refund_review(
     review_id: UUID,
     body: RefundReviewBody,

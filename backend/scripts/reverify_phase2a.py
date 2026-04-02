@@ -41,14 +41,15 @@ async def reverify(targets, label):
     from app.verification.pipeline import run_verification
 
     async with async_session_factory() as session:
-        placeholders = ",".join(f"'{s}'" for s in targets)
+        bind_params = {f"s{i}": s for i, s in enumerate(targets)}
+        placeholders = ", ".join(f":s{i}" for i in range(len(targets)))
         r = await session.execute(text(f"""
             SELECT p.slug, pv.id as version_id
             FROM packages p
             JOIN package_versions pv ON p.latest_version_id = pv.id
             WHERE p.slug IN ({placeholders})
             ORDER BY p.slug
-        """))
+        """), bind_params)
         rows = r.fetchall()
 
     for i, row in enumerate(rows, 1):
@@ -58,7 +59,8 @@ async def reverify(targets, label):
 
     # Report
     async with async_session_factory() as session:
-        placeholders = ",".join(f"'{s}'" for s in targets)
+        bind_params = {f"s{i}": s for i, s in enumerate(targets)}
+        placeholders = ", ".join(f":s{i}" for i in range(len(targets)))
         r = await session.execute(text(f"""
             SELECT p.slug, vr.smoke_status, vr.smoke_log
             FROM packages p
@@ -66,7 +68,7 @@ async def reverify(targets, label):
             JOIN verification_results vr ON pv.latest_verification_result_id = vr.id
             WHERE p.slug IN ({placeholders})
             ORDER BY p.slug
-        """))
+        """), bind_params)
         rows = r.fetchall()
 
     print()

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import TrustBadge from "@/components/TrustBadge";
 import VerificationBadgeShared from "@/components/VerificationBadge";
+import { BACKEND_URL } from "@/lib/constants";
 import CodeBlockWrapper from "./CodeBlockWrapper";
 import QuickStartWrapper from "./QuickStartWrapper";
 import ReadmeSection from "./ReadmeSection";
@@ -20,7 +21,7 @@ interface PageProps {
 /* eslint-disable @typescript-eslint/no-explicit-any */
 async function fetchPackage(slug: string, version?: string): Promise<any | null> {
   try {
-    const baseUrl = process.env.BACKEND_URL ?? "http://localhost:8001";
+    const baseUrl = BACKEND_URL;
     const vParam = version ? `?v=${encodeURIComponent(version)}` : "";
     const res = await fetch(
       `${baseUrl}/v1/packages/${encodeURIComponent(slug)}${vParam}`,
@@ -35,7 +36,7 @@ async function fetchPackage(slug: string, version?: string): Promise<any | null>
 
 async function fetchVersions(slug: string): Promise<any[]> {
   try {
-    const baseUrl = process.env.BACKEND_URL ?? "http://localhost:8001";
+    const baseUrl = BACKEND_URL;
     const res = await fetch(
       `${baseUrl}/v1/packages/${encodeURIComponent(slug)}/versions`,
       { next: { revalidate: 120 } }
@@ -48,19 +49,7 @@ async function fetchVersions(slug: string): Promise<any[]> {
   }
 }
 
-function timeAgo(dateStr: string): string {
-  const now = new Date();
-  const date = new Date(dateStr);
-  const diffMs = now.getTime() - date.getTime();
-  const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-  if (days === 0) return "today";
-  if (days === 1) return "yesterday";
-  if (days < 30) return `${days} days ago`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months} month${months > 1 ? "s" : ""} ago`;
-  const years = Math.floor(months / 12);
-  return `${years} year${years > 1 ? "s" : ""} ago`;
-}
+import { timeAgo } from "@/lib/time";
 
 export async function generateMetadata({ params, searchParams }: PageProps): Promise<Metadata> {
   const { slug } = await params;

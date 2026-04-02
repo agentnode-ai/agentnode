@@ -1,4 +1,5 @@
 import CapabilityFilter from "./CapabilityFilter";
+import { BACKEND_URL } from "@/lib/constants";
 
 interface Capability {
   id: string;
@@ -15,8 +16,7 @@ interface CapabilitiesResponse {
 
 async function fetchCapabilities(): Promise<Capability[]> {
   try {
-    const baseUrl = process.env.BACKEND_URL ?? "http://localhost:8001";
-    const res = await fetch(`${baseUrl}/v1/capabilities`, {
+    const res = await fetch(`${BACKEND_URL}/v1/capabilities`, {
       next: { revalidate: 60 },
     });
     if (!res.ok) return [];

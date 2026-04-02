@@ -56,6 +56,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     stop_cron_tasks()
+    # Close search httpx client
+    from app.search.router import _search_client
+    if _search_client is not None:
+        await _search_client.aclose()
     await app.state.redis.close()
     await engine.dispose()
 

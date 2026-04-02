@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import SafeImage from "@/components/blog/SafeImage";
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8001";
+import { BACKEND_URL } from "@/lib/constants";
 
 interface PostType {
   id: string;

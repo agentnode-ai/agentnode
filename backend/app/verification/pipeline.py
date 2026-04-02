@@ -414,7 +414,7 @@ async def run_verification(version_id: UUID, triggered_by: str = "publish") -> N
 
                 # Run verification in thread pool (subprocess.run blocks)
                 start_time = time.monotonic()
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 step_results = await asyncio.wait_for(
                     loop.run_in_executor(
                         None, _run_verification_sync, artifact_bytes, tools

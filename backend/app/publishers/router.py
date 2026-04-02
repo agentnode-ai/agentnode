@@ -7,11 +7,12 @@ from app.database import get_session
 from app.publishers.schemas import CreatePublisherRequest, PublisherResponse, UpdatePublisherRequest
 from app.publishers.service import create_publisher, get_publisher_by_slug
 from app.shared.exceptions import AppError
+from app.shared.rate_limit import rate_limit
 
 router = APIRouter(prefix="/v1/publishers", tags=["publishers"])
 
 
-@router.post("", response_model=PublisherResponse, status_code=201)
+@router.post("", response_model=PublisherResponse, status_code=201, dependencies=[Depends(rate_limit(5, 60))])
 async def create_publisher_route(
     body: CreatePublisherRequest,
     user: User = Depends(get_current_user),
@@ -34,7 +35,7 @@ async def create_publisher_route(
     )
 
 
-@router.get("/{slug}", response_model=PublisherResponse)
+@router.get("/{slug}", response_model=PublisherResponse, dependencies=[Depends(rate_limit(60, 60))])
 async def get_publisher(slug: str, session: AsyncSession = Depends(get_session)):
     publisher = await get_publisher_by_slug(session, slug)
     return PublisherResponse(
@@ -50,7 +51,7 @@ async def get_publisher(slug: str, session: AsyncSession = Depends(get_session))
     )
 
 
-@router.put("/{slug}", response_model=PublisherResponse)
+@router.put("/{slug}", response_model=PublisherResponse, dependencies=[Depends(rate_limit(10, 60))])
 async def update_publisher(
     slug: str,
     body: UpdatePublisherRequest,

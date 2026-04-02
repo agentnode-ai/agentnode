@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.publishers.models import Publisher
@@ -30,7 +31,11 @@ async def create_publisher(
         github_url=github_url,
     )
     session.add(publisher)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise AppError("PUBLISHER_SLUG_TAKEN", "Publisher slug already taken", 409)
     await session.refresh(publisher)
 
     # Send confirmation email

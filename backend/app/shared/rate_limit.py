@@ -2,7 +2,6 @@
 Spec section 19."""
 
 import time
-from typing import Callable
 
 from fastapi import Depends, Request, Response
 
