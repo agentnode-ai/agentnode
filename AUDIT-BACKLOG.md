@@ -154,7 +154,7 @@
 - [x] Quarantine auto-clear bypass — only clears verification/new_publisher quarantine, preserves admin/security (BizLogic 4.2)
 - [x] Resolution engine stale versions — joins on Package.latest_version_id (BizLogic 2.1)
 - [x] Download count deduplication — Redis SET NX with 1h TTL, user ID or IP (BizLogic 8.1, API F23)
-- [ ] CLI publish — include artifact tar.gz (BizLogic 10.1)
+- [x] CLI publish — include artifact tar.gz (BizLogic 10.1)
 - [x] Signing key registration — PUT/GET /{slug}/signing-key endpoints + migration 024 (BizLogic 1.1)
 
 ### Frontend
@@ -164,16 +164,16 @@
 
 ### Testing (ongoing)
 - [ ] Frontend test framework setup (Testing P0.3)
-- [ ] JWT security negative tests (Testing P0.1)
-- [ ] Ed25519 signature tests (Testing P0.2)
-- [ ] Cross-publisher authorization tests (Testing P0.4)
+- [x] JWT security negative tests — 17 tests covering expired/tampered/alg-confusion/wrong-type (Testing P0.1)
+- [x] Ed25519 signature tests — 22 tests covering valid/invalid/tampered/malformed (Testing P0.2)
+- [x] Cross-publisher authorization tests — 17 tests covering ownership isolation + admin override (Testing P0.4)
 - [ ] Fix rate limit tests — real Redis (Testing P1.5)
 - [ ] Verification pipeline integration test (Testing P1.6)
 - [ ] Shared test fixtures (Testing P1.9)
 
 ### Dependencies
-- [ ] Generate Python lock files (Deps C1)
-- [ ] Add upper bounds on security packages (Deps H1)
+- [x] Generate Python lock file — 275 pinned deps in requirements.lock (Deps C1)
+- [x] Add upper bounds on security packages — bcrypt, PyJWT, pyotp, PyNaCl (Deps H1)
 - [ ] Update Meilisearch Docker v1.6 → v1.12 (Deps M5)
 
 ---

@@ -153,15 +153,21 @@ export async function createApiKey(label: string, token: string): Promise<any> {
   return data;
 }
 
-export async function publishPackage(manifest: string, token: string): Promise<any> {
+export async function publishPackage(manifest: string, token: string, artifactBytes?: Uint8Array): Promise<any> {
   const url = `${getBaseUrl()}/v1/packages/publish`;
   const formData = new FormData();
   formData.append("manifest", manifest);
+
+  if (artifactBytes) {
+    const blob = new Blob([artifactBytes], { type: "application/gzip" });
+    formData.append("artifact", blob, "package.tar.gz");
+  }
 
   const resp = await fetch(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: formData,
+    signal: AbortSignal.timeout(120_000),
   });
   const data = await resp.json();
   if (!resp.ok) {
