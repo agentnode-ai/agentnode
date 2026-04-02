@@ -83,7 +83,7 @@ async def get_install_metadata(
 
     artifact = None
     if pv.artifact_object_key:
-        artifact_data = build_artifact_info(pv)
+        artifact_data = await build_artifact_info(pv)
         artifact = ArtifactInfo(**artifact_data) if artifact_data else None
 
     capabilities = [
@@ -152,7 +152,7 @@ async def install_package(
     artifact_url = None
     artifact_hash = None
     if pv.artifact_object_key:
-        artifact_data = build_artifact_info(pv)
+        artifact_data = await build_artifact_info(pv)
         if artifact_data:
             artifact_url = artifact_data["url"]
             artifact_hash = artifact_data["hash_sha256"]
@@ -210,7 +210,7 @@ async def download_package(
 
     download_url = None
     if pv.artifact_object_key:
-        artifact_data = build_artifact_info(pv)
+        artifact_data = await build_artifact_info(pv)
         download_url = artifact_data["url"] if artifact_data else None
 
     new_count = await track_download(session, pkg.id, pv.id)

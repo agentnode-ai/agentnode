@@ -40,7 +40,7 @@ from app.database import get_session
 from app.shared.constants import RESERVED_URL_PREFIXES
 from app.shared.exceptions import AppError
 from app.shared.rate_limit import rate_limit
-from app.shared.storage import delete_artifact, get_s3_client, upload_artifact
+from app.shared.storage import delete_artifact, upload_artifact
 from app.config import settings
 
 
@@ -577,7 +577,7 @@ async def upload_image(
     image_id = uuid.uuid4()
     object_key = f"blog/{image_id}.{ext}"
 
-    upload_artifact(object_key, data, content_type=file.content_type)
+    await upload_artifact(object_key, data, content_type=file.content_type)
 
     # Build public URL
     public_endpoint = settings.S3_PUBLIC_ENDPOINT or settings.S3_ENDPOINT
@@ -749,7 +749,7 @@ async def delete_image(
 
     # Delete from S3
     try:
-        delete_artifact(image.object_key)
+        await delete_artifact(image.object_key)
     except Exception:
         pass  # Continue even if S3 delete fails
 
@@ -776,7 +776,7 @@ async def bulk_delete_images(
 
     for img in deletable:
         try:
-            delete_artifact(img.object_key)
+            await delete_artifact(img.object_key)
         except Exception:
             pass
         await session.delete(img)

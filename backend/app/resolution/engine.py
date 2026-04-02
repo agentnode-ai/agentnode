@@ -12,19 +12,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from uuid import UUID
 
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.packages.models import (
     Capability,
     CapabilityTaxonomy,
-    CompatibilityRule,
     Package,
     PackageVersion,
-    Permission,
 )
-from app.packages.version_queries import get_latest_public_version
 
 # Scoring weights
 W_CAPABILITY = 0.40
@@ -122,9 +119,12 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
     # Expand capabilities with fuzzy matching via taxonomy
     expanded_caps = await _expand_capabilities(req.capabilities, session)
 
-    # Find all package versions that have at least one matching capability
+    # Find capabilities only from the latest version of each package.
+    # Join Capability → Package (via latest_version_id) so stale old
+    # versions are never considered.
     cap_result = await session.execute(
         select(Capability.package_version_id, Capability.capability_id)
+        .join(Package, Package.latest_version_id == Capability.package_version_id)
         .where(Capability.capability_id.in_(expanded_caps))
     )
     cap_rows = cap_result.all()
@@ -137,7 +137,7 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
     for version_id, cap_id in cap_rows:
         version_caps.setdefault(version_id, set()).add(cap_id)
 
-    # Load the package versions with relationships
+    # Load the package versions (already limited to latest per package)
     version_ids = list(version_caps.keys())
     ver_result = await session.execute(
         select(PackageVersion)
@@ -154,16 +154,10 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
     )
     versions = list(ver_result.scalars().all())
 
-    # For each package, pick the latest public version if multiple match
-    best_version_per_package: dict[UUID, PackageVersion] = {}
-    for v in versions:
-        pkg_id = v.package_id
-        if pkg_id not in best_version_per_package:
-            best_version_per_package[pkg_id] = v
-        else:
-            existing = best_version_per_package[pkg_id]
-            if v.published_at and existing.published_at and v.published_at > existing.published_at:
-                best_version_per_package[pkg_id] = v
+    # Map versions by package_id (one per package since we filtered to latest)
+    best_version_per_package: dict[UUID, PackageVersion] = {
+        v.package_id: v for v in versions
+    }
 
     # Optional policy evaluation
     policy_evaluator = None

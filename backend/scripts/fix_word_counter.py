@@ -1,4 +1,5 @@
 """Fix word-counter-pack: make count_words accept both kwargs and dict input."""
+import asyncio
 import io
 import os
 import shutil
@@ -36,31 +37,37 @@ def count_words(text: str = "", **kwargs) -> dict:
     }
 '''
 
-slug = "word-counter-pack"
-artifact_key = f"artifacts/{slug}/1.0.0/package.tar.gz"
-data = download_artifact(artifact_key)
 
-tmp = tempfile.mkdtemp()
-try:
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-        tar.extractall(tmp, filter="data")
+async def main():
+    slug = "word-counter-pack"
+    artifact_key = f"artifacts/{slug}/1.0.0/package.tar.gz"
+    data = await download_artifact(artifact_key)
 
-    tool_path = os.path.join(tmp, "src", "word_counter_pack", "tool.py")
-    with open(tool_path, "w", encoding="utf-8") as f:
-        f.write(NEW_TOOL)
-    print(f"Fixed {tool_path}")
+    tmp = tempfile.mkdtemp()
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            tar.extractall(tmp, filter="data")
 
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for root, dirs, files in os.walk(tmp):
-            for fn in files:
-                full = os.path.join(root, fn)
-                arcname = "./" + os.path.relpath(full, tmp).replace("\\", "/")
-                tar.add(full, arcname=arcname)
-    buf.seek(0)
-    upload_artifact(artifact_key, buf.read())
-    print(f"Uploaded {slug}")
-finally:
-    shutil.rmtree(tmp)
+        tool_path = os.path.join(tmp, "src", "word_counter_pack", "tool.py")
+        with open(tool_path, "w", encoding="utf-8") as f:
+            f.write(NEW_TOOL)
+        print(f"Fixed {tool_path}")
 
-print("Done!")
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for root, dirs, files in os.walk(tmp):
+                for fn in files:
+                    full = os.path.join(root, fn)
+                    arcname = "./" + os.path.relpath(full, tmp).replace("\\", "/")
+                    tar.add(full, arcname=arcname)
+        buf.seek(0)
+        await upload_artifact(artifact_key, buf.read())
+        print(f"Uploaded {slug}")
+    finally:
+        shutil.rmtree(tmp)
+
+    print("Done!")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

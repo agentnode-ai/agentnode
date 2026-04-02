@@ -169,7 +169,7 @@ async def publish_all():
 
             # Upload to MinIO
             from app.shared.storage import upload_artifact
-            upload_artifact(artifact_key, artifact_bytes)
+            await upload_artifact(artifact_key, artifact_bytes)
             print(f"  Uploaded artifact ({artifact_size} bytes)")
 
             # Read manifest

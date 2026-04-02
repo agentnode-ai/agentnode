@@ -353,7 +353,7 @@ async def get_file_preview(
         raise AppError("VERSION_QUARANTINED", "This version is under review and not yet accessible", 403)
     version_id = pv.id
 
-    content = download_preview_file(str(version_id), file_path)
+    content = await download_preview_file(str(version_id), file_path)
     if content is None:
         raise AppError("FILE_NOT_FOUND", f"File '{file_path}' not found in preview store", 404)
 

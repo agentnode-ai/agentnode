@@ -5,6 +5,7 @@ with enum values and correct defaults. Also fixes tool.py where needed.
 
 Usage: PYTHONPATH=/opt/agentnode/backend python -m scripts.fix_packages_v2
 """
+import asyncio
 import io
 import json
 import os
@@ -28,16 +29,16 @@ def _update_manifest_schema(manifest: dict, tool_name: str, new_schema: dict) ->
     return manifest
 
 
-def _fix_artifact(slug: str, manifest_patches: dict = None, file_patches: dict = None):
+async def _fix_artifact(slug: str, manifest_patches: dict = None, file_patches: dict = None):
     """Download, patch, and re-upload a package artifact."""
     artifact_key = f"artifacts/{slug}/1.0.0/package.tar.gz"
 
     # For packages that might be v0.1.0
     try:
-        data = download_artifact(artifact_key)
+        data = await download_artifact(artifact_key)
     except Exception:
         artifact_key = f"artifacts/{slug}/0.1.0/package.tar.gz"
-        data = download_artifact(artifact_key)
+        data = await download_artifact(artifact_key)
 
     tmp = tempfile.mkdtemp()
     try:
@@ -94,7 +95,7 @@ def _fix_artifact(slug: str, manifest_patches: dict = None, file_patches: dict =
                     tar.add(full, arcname=arcname)
         buf.seek(0)
 
-        upload_artifact(artifact_key, buf.read())
+        await upload_artifact(artifact_key, buf.read())
         print(f"  ✓ Uploaded {slug}")
     finally:
         shutil.rmtree(tmp)
@@ -290,11 +291,11 @@ FIXES["ocr-reader-pack"] = {
 }
 
 
-if __name__ == "__main__":
+async def _main():
     for slug, fix_config in FIXES.items():
         print(f"\nFixing {slug}...")
         try:
-            _fix_artifact(
+            await _fix_artifact(
                 slug,
                 manifest_patches=fix_config.get("manifest_patches"),
                 file_patches=fix_config.get("file_patches"),
@@ -303,3 +304,7 @@ if __name__ == "__main__":
             print(f"  ✗ ERROR: {e}")
 
     print("\nDone! Run reverification to see updated scores.")
+
+
+if __name__ == "__main__":
+    asyncio.run(_main())

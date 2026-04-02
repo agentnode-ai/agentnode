@@ -1,3 +1,5 @@
+import asyncio
+
 import boto3
 from botocore.config import Config
 
@@ -37,9 +39,10 @@ def _get_public_s3_client():
     return _public_client
 
 
-def upload_artifact(object_key: str, data: bytes, content_type: str = "application/gzip") -> None:
+async def upload_artifact(object_key: str, data: bytes, content_type: str = "application/gzip") -> None:
     client = get_s3_client()
-    client.put_object(
+    await asyncio.to_thread(
+        client.put_object,
         Bucket=settings.S3_BUCKET,
         Key=object_key,
         Body=data,
@@ -47,23 +50,28 @@ def upload_artifact(object_key: str, data: bytes, content_type: str = "applicati
     )
 
 
-def download_artifact(object_key: str) -> bytes:
+async def download_artifact(object_key: str) -> bytes:
     """Download an artifact from S3 and return the raw bytes."""
     client = get_s3_client()
-    response = client.get_object(Bucket=settings.S3_BUCKET, Key=object_key)
-    return response["Body"].read()
+    response = await asyncio.to_thread(
+        client.get_object, Bucket=settings.S3_BUCKET, Key=object_key
+    )
+    return await asyncio.to_thread(response["Body"].read)
 
 
-def delete_artifact(object_key: str) -> None:
+async def delete_artifact(object_key: str) -> None:
     """Delete an object from S3."""
     client = get_s3_client()
-    client.delete_object(Bucket=settings.S3_BUCKET, Key=object_key)
+    await asyncio.to_thread(
+        client.delete_object, Bucket=settings.S3_BUCKET, Key=object_key
+    )
 
 
-def generate_presigned_url(object_key: str, expires_in: int = 900) -> str:
+async def generate_presigned_url(object_key: str, expires_in: int = 900) -> str:
     """Generate a presigned download URL. Default expiry: 15 minutes."""
     client = _get_public_s3_client()
-    return client.generate_presigned_url(
+    return await asyncio.to_thread(
+        client.generate_presigned_url,
         "get_object",
         Params={"Bucket": settings.S3_BUCKET, "Key": object_key},
         ExpiresIn=expires_in,
@@ -88,14 +96,15 @@ def _preview_key(version_id: str, file_path: str) -> str:
     return f"previews/{version_id}/{file_path}"
 
 
-def upload_preview_file(version_id: str, file_path: str, content: str) -> str:
+async def upload_preview_file(version_id: str, file_path: str, content: str) -> str:
     """Upload a preview file to S3. Returns the object key."""
     import os
     ext = os.path.splitext(file_path)[1].lower()
     content_type = _CONTENT_TYPE_MAP.get(ext, "text/plain")
     key = _preview_key(version_id, file_path)
     client = get_s3_client()
-    client.put_object(
+    await asyncio.to_thread(
+        client.put_object,
         Bucket=settings.S3_BUCKET,
         Key=key,
         Body=content.encode("utf-8"),
@@ -105,13 +114,16 @@ def upload_preview_file(version_id: str, file_path: str, content: str) -> str:
     return key
 
 
-def download_preview_file(version_id: str, file_path: str) -> str | None:
+async def download_preview_file(version_id: str, file_path: str) -> str | None:
     """Download a preview file from S3. Returns content string or None."""
     key = _preview_key(version_id, file_path)
     try:
         client = get_s3_client()
-        response = client.get_object(Bucket=settings.S3_BUCKET, Key=key)
-        return response["Body"].read().decode("utf-8")
+        response = await asyncio.to_thread(
+            client.get_object, Bucket=settings.S3_BUCKET, Key=key
+        )
+        body = await asyncio.to_thread(response["Body"].read)
+        return body.decode("utf-8")
     except client.exceptions.NoSuchKey:
         return None
     except Exception:

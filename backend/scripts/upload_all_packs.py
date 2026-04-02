@@ -83,7 +83,7 @@ async def main():
 
             # Upload to S3
             try:
-                upload_artifact(s3_key, tarball)
+                await upload_artifact(s3_key, tarball)
             except Exception as e:
                 print(f"FAIL {pack_slug}: S3 upload error: {e}")
                 continue

@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # --- Artifact extraction (same logic as service.py) ---
 
-def extract_artifact_metadata(artifact_bytes: bytes, version_id: str) -> dict:
+async def extract_artifact_metadata(artifact_bytes: bytes, version_id: str) -> dict:
     """Extract file_list, readme_md, and upload preview files from a tar.gz artifact."""
     result = {"file_list": [], "readme_md": None, "preview_count": 0}
 
@@ -76,7 +76,7 @@ def extract_artifact_metadata(artifact_bytes: bytes, version_id: str) -> dict:
                                 lines = content.splitlines(True)
                                 if len(lines) > PREVIEW_MAX_LINES:
                                     content = "".join(lines[:PREVIEW_MAX_LINES])
-                                upload_preview_file(version_id, normalized, content)
+                                await upload_preview_file(version_id, normalized, content)
                                 result["preview_count"] += 1
                             except UnicodeDecodeError:
                                 pass
@@ -339,8 +339,8 @@ async def backfill():
             if needs_artifact_extract:
                 try:
                     logger.info(f"  Downloading artifact: {artifact_key}")
-                    artifact_bytes = download_artifact(artifact_key)
-                    metadata = extract_artifact_metadata(artifact_bytes, version_id)
+                    artifact_bytes = await download_artifact(artifact_key)
+                    metadata = await extract_artifact_metadata(artifact_bytes, version_id)
 
                     if metadata["file_list"]:
                         updates["file_list"] = json.dumps(metadata["file_list"])

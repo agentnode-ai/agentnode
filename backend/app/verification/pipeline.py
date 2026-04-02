@@ -359,7 +359,7 @@ async def run_verification(version_id: UUID, triggered_by: str = "publish") -> N
                 # Download artifact and verify integrity
                 import hashlib
                 from app.shared.storage import download_artifact
-                artifact_bytes = download_artifact(pv.artifact_object_key)
+                artifact_bytes = await download_artifact(pv.artifact_object_key)
 
                 if pv.artifact_hash_sha256:
                     actual_hash = hashlib.sha256(artifact_bytes).hexdigest()
@@ -511,37 +511,54 @@ async def run_verification(version_id: UUID, triggered_by: str = "publish") -> N
                         f"Auto-quarantined {version_id}: {step_results['error_summary']}"
                     )
 
-                # Auto-clear quarantine on verification pass
+                # Auto-clear quarantine on verification pass — but ONLY for
+                # verification-related quarantine reasons (auto-quarantine from
+                # failed verification or new-publisher review).  Admin-imposed
+                # quarantine (security concerns, policy violations, etc.) and
+                # security-scan quarantine must NOT be bypassed.
+                _AUTO_CLEARABLE_REASONS = (
+                    "Auto-quarantined: verification failed",
+                    "new_publisher_review",
+                )
                 if final_status == "passed" and pv.quarantine_status == "quarantined":
-                    pv.quarantine_status = "cleared"
-                    pv.quarantine_reason = None
-                    logger.info(
-                        f"Auto-cleared quarantine for {version_id}: verification passed"
+                    reason = pv.quarantine_reason or ""
+                    is_auto_clearable = any(
+                        reason.startswith(prefix) for prefix in _AUTO_CLEARABLE_REASONS
                     )
-
-                    # Recalculate latest_version_id so the package page shows data
-                    from app.packages.version_queries import recalculate_latest_version_id
-                    await recalculate_latest_version_id(session, pv.package_id)
-
-                    # Increment publisher's packages_cleared_count
-                    pkg_result2 = await session.execute(
-                        select(Package).where(Package.id == pv.package_id)
-                    )
-                    pkg2 = pkg_result2.scalar_one_or_none()
-                    if pkg2:
-                        from app.publishers.models import Publisher
-                        pub_result = await session.execute(
-                            select(Publisher).where(Publisher.id == pkg2.publisher_id)
+                    if is_auto_clearable:
+                        pv.quarantine_status = "cleared"
+                        pv.quarantine_reason = None
+                        logger.info(
+                            f"Auto-cleared quarantine for {version_id}: verification passed"
                         )
-                        publisher_obj = pub_result.scalar_one_or_none()
-                        if publisher_obj:
-                            publisher_obj.packages_cleared_count = (publisher_obj.packages_cleared_count or 0) + 1
+                        # Recalculate latest_version_id so the package page shows data
+                        from app.packages.version_queries import recalculate_latest_version_id
+                        await recalculate_latest_version_id(session, pv.package_id)
 
-                        # Sync to Meilisearch now that version is public
-                        from app.packages.service import build_meili_document
-                        from app.shared.meili import sync_package_to_meilisearch
-                        await session.refresh(pkg2, ["publisher"])
-                        await sync_package_to_meilisearch(build_meili_document(pkg2, pv, pv.manifest_raw or {}))
+                        # Increment publisher's packages_cleared_count
+                        pkg_result2 = await session.execute(
+                            select(Package).where(Package.id == pv.package_id)
+                        )
+                        pkg2 = pkg_result2.scalar_one_or_none()
+                        if pkg2:
+                            from app.publishers.models import Publisher
+                            pub_result = await session.execute(
+                                select(Publisher).where(Publisher.id == pkg2.publisher_id)
+                            )
+                            publisher_obj = pub_result.scalar_one_or_none()
+                            if publisher_obj:
+                                publisher_obj.packages_cleared_count = (publisher_obj.packages_cleared_count or 0) + 1
+
+                            # Sync to Meilisearch now that version is public
+                            from app.packages.service import build_meili_document
+                            from app.shared.meili import sync_package_to_meilisearch
+                            await session.refresh(pkg2, ["publisher"])
+                            await sync_package_to_meilisearch(build_meili_document(pkg2, pv, pv.manifest_raw or {}))
+                    else:
+                        logger.info(
+                            f"Quarantine NOT auto-cleared for {version_id}: "
+                            f"reason '{reason}' is not verification-related"
+                        )
 
                 await session.commit()
                 logger.info(

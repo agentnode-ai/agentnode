@@ -140,7 +140,7 @@
 ### Architecture
 - [x] Meili httpx singleton client — init/close in app lifespan (Perf 7.2, CodeQuality #7)
 - [x] Webhook httpx shared client — init/close in app lifespan (Perf 7.3)
-- [ ] Wrap all boto3 S3 calls in `asyncio.to_thread()` or switch to aiobotocore (Perf 7.4, 8.1-8.3, 10.2)
+- [x] All boto3 S3 calls wrapped in `asyncio.to_thread()` — 6 functions + all callers (Perf 7.4, 8.1-8.3, 10.2)
 - [ ] Background tasks for email + webhooks (Perf 8.4)
 - [ ] Replace `get_all_package_slugs` with pg_trgm (DB C6, Perf 3.4, 4.2)
 - [ ] `BaseHTTPMiddleware` → pure ASGI middleware (Perf 10.3)
@@ -151,8 +151,8 @@
 - [x] Add UniqueConstraint to import_candidates(source, source_url) (DB H8)
 
 ### Business Logic
-- [ ] Quarantine auto-clear bypass — only clear verification-related quarantine (BizLogic 4.2)
-- [ ] Resolution engine stale versions — join with latest version only (BizLogic 2.1)
+- [x] Quarantine auto-clear bypass — only clears verification/new_publisher quarantine, preserves admin/security (BizLogic 4.2)
+- [x] Resolution engine stale versions — joins on Package.latest_version_id (BizLogic 2.1)
 - [ ] Download count auth + deduplication (BizLogic 8.1, API F23)
 - [ ] CLI publish — include artifact tar.gz (BizLogic 10.1)
 - [ ] Signing key registration endpoint (BizLogic 1.1)

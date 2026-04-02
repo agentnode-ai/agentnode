@@ -68,12 +68,12 @@ async def get_install_version(
     return pkg, pv, reason
 
 
-def build_artifact_info(pv: PackageVersion) -> dict | None:
+async def build_artifact_info(pv: PackageVersion) -> dict | None:
     """Build presigned download URL for artifact if available."""
     if not pv.artifact_object_key:
         return None
 
-    url = generate_presigned_url(pv.artifact_object_key, expires_in=900)
+    url = await generate_presigned_url(pv.artifact_object_key, expires_in=900)
     return {
         "url": url,
         "hash_sha256": pv.artifact_hash_sha256,

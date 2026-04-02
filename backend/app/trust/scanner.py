@@ -193,7 +193,7 @@ async def run_security_scan(version_id: UUID) -> None:
             if pv.artifact_object_key:
                 try:
                     from app.shared.storage import download_artifact
-                    artifact_bytes = download_artifact(pv.artifact_object_key)
+                    artifact_bytes = await download_artifact(pv.artifact_object_key)
                     raw_findings.extend(_extract_and_scan(artifact_bytes))
                     # Also extract code files for AI scan
                     artifact_code_files = _extract_code_files(artifact_bytes)

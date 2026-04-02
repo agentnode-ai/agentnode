@@ -86,7 +86,7 @@ def build_meili_document(pkg: Package, version: PackageVersion, manifest: dict) 
     }
 
 
-def extract_artifact_metadata(artifact_bytes: bytes, version_id: str | None = None) -> dict:
+async def extract_artifact_metadata(artifact_bytes: bytes, version_id: str | None = None) -> dict:
     """Extract file_list and readme_md from a tar.gz artifact.
 
     Also uploads preview files to S3 if version_id is provided.
@@ -138,7 +138,7 @@ def extract_artifact_metadata(artifact_bytes: bytes, version_id: str | None = No
                                     lines = content.splitlines(True)
                                     if len(lines) > PREVIEW_MAX_LINES:
                                         content = "".join(lines[:PREVIEW_MAX_LINES])
-                                    key = upload_preview_file(version_id, normalized, content)
+                                    key = await upload_preview_file(version_id, normalized, content)
                                     result["preview_keys"].append(key)
                                 except UnicodeDecodeError:
                                     pass
@@ -250,7 +250,7 @@ async def publish_package(
         artifact_hash = hashlib.sha256(artifact_bytes).hexdigest()
         artifact_size = len(artifact_bytes)
         artifact_key = f"artifacts/{slug}/{version_str}/package.tar.gz"
-        upload_artifact(artifact_key, artifact_bytes)
+        await upload_artifact(artifact_key, artifact_bytes)
 
     # 5. Provenance & signature verification
     security = manifest.get("security", {})
@@ -322,7 +322,7 @@ async def publish_package(
     # 6c. Extract artifact metadata (file_list, readme_md, preview files)
     # Artifact README overrides manifest readme if present
     if artifact_bytes:
-        metadata = extract_artifact_metadata(artifact_bytes, str(pv.id))
+        metadata = await extract_artifact_metadata(artifact_bytes, str(pv.id))
         pv.file_list = metadata.get("file_list") or None
         if metadata.get("readme_md"):
             pv.readme_md = metadata["readme_md"]

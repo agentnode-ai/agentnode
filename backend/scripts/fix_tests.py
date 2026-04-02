@@ -1,4 +1,5 @@
 """Fix test files in word-counter-pack and webpage-extractor-pack artifacts."""
+import asyncio
 import io
 import os
 import shutil
@@ -57,33 +58,39 @@ FIXES = {
     },
 }
 
-for slug, file_fixes in FIXES.items():
-    artifact_key = f"artifacts/{slug}/1.0.0/package.tar.gz"
-    data = download_artifact(artifact_key)
 
-    tmp = tempfile.mkdtemp()
-    try:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-            tar.extractall(tmp, filter="data")
+async def main():
+    for slug, file_fixes in FIXES.items():
+        artifact_key = f"artifacts/{slug}/1.0.0/package.tar.gz"
+        data = await download_artifact(artifact_key)
 
-        for path, content in file_fixes.items():
-            full_path = os.path.join(tmp, path)
-            with open(full_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            print(f"  Fixed {slug}: {path}")
+        tmp = tempfile.mkdtemp()
+        try:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+                tar.extractall(tmp, filter="data")
 
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            for root, dirs, files in os.walk(tmp):
-                for fn in files:
-                    full = os.path.join(root, fn)
-                    arcname = "./" + os.path.relpath(full, tmp).replace("\\", "/")
-                    tar.add(full, arcname=arcname)
-        buf.seek(0)
+            for path, content in file_fixes.items():
+                full_path = os.path.join(tmp, path)
+                with open(full_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                print(f"  Fixed {slug}: {path}")
 
-        upload_artifact(artifact_key, buf.read())
-        print(f"  Uploaded {slug}")
-    finally:
-        shutil.rmtree(tmp)
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                for root, dirs, files in os.walk(tmp):
+                    for fn in files:
+                        full = os.path.join(root, fn)
+                        arcname = "./" + os.path.relpath(full, tmp).replace("\\", "/")
+                        tar.add(full, arcname=arcname)
+            buf.seek(0)
 
-print("Done!")
+            await upload_artifact(artifact_key, buf.read())
+            print(f"  Uploaded {slug}")
+        finally:
+            shutil.rmtree(tmp)
+
+    print("Done!")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
