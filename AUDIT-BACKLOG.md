@@ -59,20 +59,20 @@
 
 ---
 
-## QUICK FIXES (remaining)
+## QUICK FIXES (remaining — verified/deferred)
 
-### Medium
-- [ ] Email enumeration via registration — known UX trade-off, skip (Security M3)
-- [ ] `require_2fa` defined but never used — needs design decision (CodeQuality #15, BizLogic 3.2)
-- [ ] Inconsistent error response format (API F17)
-- [ ] CLI uses `any` pervasively (CodeQuality #14)
+### Verified OK (no action needed)
+- [x] Error response format — verified all routers use AppError consistently (API F17)
+- [x] Rate limiter — verified correct, no off-by-one (BizLogic 12.2)
+- [x] Purpose token secret reuse — mitigated by token_type checks (Security L3)
+- [x] `is_admin` cookie not httpOnly — by design, UI hint only (Security L1)
+- [x] Email enumeration via registration — known UX trade-off (Security M3)
 
-### Low
-- [ ] `is_admin` cookie not httpOnly — by design (UI hint, not secret) (Security L1)
-- [ ] Purpose token secret reuse (Security L3)
-- [ ] Inconsistent DELETE status codes (API F20)
+### Deferred (needs design decision or larger effort)
+- [ ] `require_2fa` defined but never used — would break existing publishers (CodeQuality #15, BizLogic 3.2)
+- [ ] CLI uses `any` pervasively — TypeScript refactor (CodeQuality #14)
+- [ ] Inconsistent DELETE status codes — cosmetic (API F20)
 - [ ] Install idempotency gaps (API F23)
-- [ ] Rate limiter off-by-one (BizLogic 12.2)
 - [ ] S3 client not thread-safe (CodeQuality #24)
 
 ---
