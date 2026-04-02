@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import type { Metadata } from "next";
 import SafeImage from "@/components/blog/SafeImage";
 import FaqSection, { extractFaqFromHtml } from "@/components/blog/FaqSection";
+import { sanitizeHtml } from "@/lib/sanitize";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8001";
 
@@ -223,7 +224,7 @@ export default async function PostTypeSingle({
         {cleanHtml && (
           <div
             className="prose prose-invert max-w-none prose-headings:font-bold prose-h2:text-2xl prose-h3:text-xl prose-a:text-primary prose-code:text-primary prose-pre:bg-card prose-pre:border prose-pre:border-border prose-img:rounded-lg"
-            dangerouslySetInnerHTML={{ __html: cleanHtml }}
+            dangerouslySetInnerHTML={{ __html: sanitizeHtml(cleanHtml) }}
           />
         )}
 

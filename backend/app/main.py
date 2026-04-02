@@ -123,16 +123,16 @@ async def readyz():
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
         details["postgres"] = "ok"
-    except Exception as e:
-        details["postgres"] = str(e)
+    except Exception:
+        details["postgres"] = "unavailable"
         ready = False
 
     # Check Redis
     try:
         await app.state.redis.ping()
         details["redis"] = "ok"
-    except Exception as e:
-        details["redis"] = str(e)
+    except Exception:
+        details["redis"] = "unavailable"
         ready = False
 
     # Check Meilisearch (optional in MVP)

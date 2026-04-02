@@ -132,10 +132,11 @@ def _extract_and_scan(artifact_bytes: bytes) -> list[dict]:
     tmp_dir = tempfile.mkdtemp(prefix="agentnode_scan_")
     try:
         with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
-            for member in tar.getmembers():
-                if os.path.normpath(member.name).startswith("..") or os.path.isabs(member.name):
-                    continue
-            tar.extractall(tmp_dir, filter="data")
+            safe_members = [
+                m for m in tar.getmembers()
+                if not os.path.normpath(m.name).startswith("..") and not os.path.isabs(m.name)
+            ]
+            tar.extractall(tmp_dir, members=safe_members, filter="data")
 
         # Heuristic regex scan
         for root, _dirs, files in os.walk(tmp_dir):

@@ -35,6 +35,9 @@ async def get_current_user(
     if not user:
         raise AppError("AUTH_INVALID_CREDENTIALS", "Missing or invalid authentication", 401)
 
+    if user.is_banned:
+        raise AppError("AUTH_ACCOUNT_BANNED", "Your account has been suspended", 403)
+
     return user
 
 
