@@ -106,6 +106,52 @@ def _load_post_query():
     )
 
 
+# Formats that should not be optimized (vector, animated, or tiny icons)
+_SKIP_OPTIMIZE_EXTS = {"svg", "ico", "gif"}
+
+
+def _optimize_image(data: bytes, ext: str, max_width: int = 1200, quality: int = 85) -> tuple[bytes, str, str]:
+    """Resize and compress a raster image before upload.
+
+    Returns (optimised_bytes, new_content_type, new_extension).
+    Falls back to the original data on any error.
+    """
+    if ext in _SKIP_OPTIMIZE_EXTS:
+        return data, f"image/{ext}", ext
+
+    try:
+        img = PILImage.open(BytesIO(data))
+
+        # Only resize if wider than the maximum
+        if img.width > max_width:
+            ratio = max_width / img.width
+            new_height = int(img.height * ratio)
+            img = img.resize((max_width, new_height), PILImage.LANCZOS)
+
+        # Attempt WebP conversion for best compression
+        buf = BytesIO()
+        try:
+            # Preserve alpha channel if present
+            if img.mode in ("RGBA", "LA", "PA"):
+                img.save(buf, format="WEBP", quality=quality)
+            else:
+                img.save(buf, format="WEBP", quality=quality)
+            return buf.getvalue(), "image/webp", "webp"
+        except Exception:
+            # WebP not available — fall back to original format
+            buf = BytesIO()
+            out_format = "JPEG" if ext in ("jpg", "jpeg") else ext.upper()
+            if out_format == "JPEG" and img.mode in ("RGBA", "LA", "PA"):
+                img = img.convert("RGB")
+            save_kwargs: dict = {"quality": quality} if out_format in ("JPEG", "WEBP") else {}
+            img.save(buf, format=out_format, **save_kwargs)
+            content_type = f"image/{'jpeg' if out_format == 'JPEG' else ext}"
+            return buf.getvalue(), content_type, ext
+    except Exception:
+        # Any PIL failure — upload the original untouched
+        return data, f"image/{ext}", ext
+
+
 async def _get_default_post_type_id(session: AsyncSession) -> uuid.UUID:
     result = await session.execute(
         select(BlogPostType.id).where(BlogPostType.slug == "post")
@@ -563,6 +609,9 @@ async def upload_image(
     if len(data) > 10 * 1024 * 1024:  # 10 MB
         raise AppError("BLOG_FILE_TOO_LARGE", "Image must be under 10 MB", 400)
 
+    # Optimize raster images: resize to max 1200px wide, convert to WebP
+    data, content_type, ext = _optimize_image(data, ext)
+
     # Extract dimensions via Pillow (non-fatal for SVG/ICO etc.)
     width, height = None, None
     try:
@@ -577,7 +626,7 @@ async def upload_image(
     image_id = uuid.uuid4()
     object_key = f"blog/{image_id}.{ext}"
 
-    await upload_artifact(object_key, data, content_type=file.content_type)
+    await upload_artifact(object_key, data, content_type=content_type)
 
     # Build public URL
     public_endpoint = settings.S3_PUBLIC_ENDPOINT or settings.S3_ENDPOINT

@@ -162,10 +162,10 @@ async def test_full_e2e_flow(client):
     assert dl_data["version"] == "1.0.0"
     assert dl_data["download_count"] == 1
 
-    # Download again to verify count increments
+    # Download again from same IP — deduplicated, count stays at 1
     resp = await client.post("/v1/packages/e2e-pdf-reader/download")
     assert resp.status_code == 200
-    assert resp.json()["download_count"] == 2
+    assert resp.json()["download_count"] == 1
 
 
 @pytest.mark.asyncio

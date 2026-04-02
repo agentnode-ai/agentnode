@@ -1,18 +1,18 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user, optional_current_user
 from app.auth.models import User
 from app.database import get_session
 from app.packages.models import Installation, Package, PackageVersion
 from app.shared.exceptions import AppError
-from app.shared.rate_limit import rate_limit, rate_limit_authenticated
+from app.shared.rate_limit import rate_limit, rate_limit_authenticated, _get_client_ip
 from app.install.schemas import (
     ArtifactInfo,
     CapabilityInfo,
@@ -143,6 +143,7 @@ async def get_install_metadata(
 async def install_package(
     slug: str,
     body: InstallRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -168,7 +169,9 @@ async def install_package(
     )
 
     if body.event_type in ("install", "update"):
-        await track_download(session, pkg.id, pv.id)
+        redis = request.app.state.redis
+        dedup_key = f"user:{user.id}"
+        await track_download(session, pkg.id, pv.id, redis=redis, dedup_key=dedup_key)
 
     await session.commit()
 
@@ -202,7 +205,9 @@ async def install_package(
 @router.post("/{slug}/download", response_model=DownloadResponse, dependencies=[Depends(rate_limit(30, 60))])
 async def download_package(
     slug: str,
+    request: Request,
     version: str | None = None,
+    user: User | None = Depends(optional_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Track download and return presigned artifact URL."""
@@ -213,7 +218,9 @@ async def download_package(
         artifact_data = await build_artifact_info(pv)
         download_url = artifact_data["url"] if artifact_data else None
 
-    new_count = await track_download(session, pkg.id, pv.id)
+    redis = request.app.state.redis
+    dedup_key = f"user:{user.id}" if user else f"ip:{_get_client_ip(request)}"
+    new_count = await track_download(session, pkg.id, pv.id, redis=redis, dedup_key=dedup_key)
     await session.commit()
 
     return DownloadResponse(

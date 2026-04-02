@@ -23,7 +23,7 @@ from app.packages.models import (
     Permission,
     UpgradeMetadata,
 )
-from app.packages.typosquatting import check_typosquatting
+from app.packages.typosquatting import find_similar_slugs_db
 from app.packages.validator import normalize_manifest, validate_manifest, validate_artifact_quality
 from app.packages.version_queries import recalculate_latest_version_id
 from app.shared.exceptions import AppError
@@ -45,11 +45,6 @@ def _is_safe_provenance_url(url: str | None) -> bool:
     if not url:
         return False
     return is_safe_url(url, block_private=True)
-
-
-async def get_all_package_slugs(session: AsyncSession) -> list[str]:
-    result = await session.execute(select(Package.slug))
-    return [row[0] for row in result.all()]
 
 
 def build_meili_document(pkg: Package, version: PackageVersion, manifest: dict) -> dict:
@@ -189,8 +184,8 @@ async def publish_package(
     version_str = manifest["version"]
 
     # 2. Check typosquatting — quarantine + warning instead of rejecting (spec §12.3)
-    existing_slugs = await get_all_package_slugs(session)
-    similar = check_typosquatting(slug, existing_slugs)
+    # Uses pg_trgm for efficient DB-level fuzzy matching (no full-table scan)
+    similar = await find_similar_slugs_db(slug, session)
     quarantine_for_typosquatting = bool(similar)
 
     # 2b. Check if this is a new publisher's first package — auto-quarantine

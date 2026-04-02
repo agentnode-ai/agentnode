@@ -142,7 +142,7 @@
 - [x] Webhook httpx shared client — init/close in app lifespan (Perf 7.3)
 - [x] All boto3 S3 calls wrapped in `asyncio.to_thread()` — 6 functions + all callers (Perf 7.4, 8.1-8.3, 10.2)
 - [ ] Background tasks for email + webhooks (Perf 8.4)
-- [ ] Replace `get_all_package_slugs` with pg_trgm (DB C6, Perf 3.4, 4.2)
+- [x] Replace `get_all_package_slugs` with pg_trgm (DB C6, Perf 3.4, 4.2)
 - [ ] `BaseHTTPMiddleware` → pure ASGI middleware (Perf 10.3)
 
 ### Missing Migrations
@@ -153,14 +153,14 @@
 ### Business Logic
 - [x] Quarantine auto-clear bypass — only clears verification/new_publisher quarantine, preserves admin/security (BizLogic 4.2)
 - [x] Resolution engine stale versions — joins on Package.latest_version_id (BizLogic 2.1)
-- [ ] Download count auth + deduplication (BizLogic 8.1, API F23)
+- [x] Download count deduplication — Redis SET NX with 1h TTL, user ID or IP (BizLogic 8.1, API F23)
 - [ ] CLI publish — include artifact tar.gz (BizLogic 10.1)
 - [ ] Signing key registration endpoint (BizLogic 1.1)
 
 ### Frontend
 - [x] Dynamic import TipTap editor + loading skeleton (Perf 5.1)
 - [x] Dynamic import react-markdown + qrcode (Perf 5.2, 5.3)
-- [ ] Blog image optimization on upload (Perf 9.1)
+- [x] Blog image optimization — Pillow resize to 1200px + WebP conversion (Perf 9.1)
 
 ### Testing (ongoing)
 - [ ] Frontend test framework setup (Testing P0.3)

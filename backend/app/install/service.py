@@ -12,6 +12,8 @@ from app.packages.version_queries import InstallResolution, get_latest_installab
 from app.shared.exceptions import AppError
 from app.shared.storage import generate_presigned_url
 
+DOWNLOAD_DEDUP_TTL = 3600  # 1 hour
+
 logger = logging.getLogger(__name__)
 
 
@@ -106,11 +108,26 @@ async def create_installation(
     return inst.id
 
 
-async def track_download(session: AsyncSession, package_id, version_id) -> int:
+async def track_download(session: AsyncSession, package_id, version_id, *, redis=None, dedup_key: str | None = None) -> int:
     """Increment download counter and return new count.
+
+    When *redis* and *dedup_key* are provided the counter is only bumped
+    once per dedup_key within DOWNLOAD_DEDUP_TTL seconds.  Repeated calls
+    within the window return the current count without incrementing.
 
     Does NOT commit — the caller controls the transaction boundary.
     """
+    if redis and dedup_key:
+        redis_key = f"download:{package_id}:{dedup_key}"
+        # SET NX returns True if the key was created (first download in window)
+        is_new = await redis.set(redis_key, "1", ex=DOWNLOAD_DEDUP_TTL, nx=True)
+        if not is_new:
+            # Duplicate within the dedup window — return current count only
+            result = await session.execute(
+                select(Package.download_count).where(Package.id == package_id)
+            )
+            return result.scalar_one()
+
     result = await session.execute(
         update(Package)
         .where(Package.id == package_id)

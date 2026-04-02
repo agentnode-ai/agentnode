@@ -158,10 +158,10 @@ async def test_download_increments_count(mock_meili, mock_s3, client):
     assert resp1.status_code == 200
     assert resp1.json()["download_count"] == 1
 
-    # Second download
+    # Second download from same IP — deduplicated, count stays at 1
     resp2 = await client.post("/v1/packages/install-test-pkg/download")
     assert resp2.status_code == 200
-    assert resp2.json()["download_count"] == 2
+    assert resp2.json()["download_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -193,10 +193,11 @@ async def test_download_count_reflected_in_detail(mock_meili, mock_s3, client):
     token = await get_auth_token(client)
     await publish_test_package(client, token)
 
+    # Three downloads from same IP — only the first increments due to dedup
     await client.post("/v1/packages/install-test-pkg/download")
     await client.post("/v1/packages/install-test-pkg/download")
     await client.post("/v1/packages/install-test-pkg/download")
 
     resp = await client.get("/v1/packages/install-test-pkg")
     assert resp.status_code == 200
-    assert resp.json()["download_count"] == 3
+    assert resp.json()["download_count"] == 1

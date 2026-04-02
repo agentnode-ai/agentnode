@@ -1,5 +1,13 @@
-"""Typosquatting detection for package slugs."""
+"""Typosquatting detection for package slugs.
+
+Uses PostgreSQL pg_trgm for efficient fuzzy matching instead of loading
+all slugs into memory.  The pure-Python helpers (check_typosquatting) are
+kept for unit tests that don't need a database.
+"""
 from difflib import SequenceMatcher
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # Common character substitutions used in typosquatting attacks
@@ -93,3 +101,46 @@ def check_typosquatting(new_slug: str, existing_slugs: list[str]) -> list[str]:
                         break
 
     return list(set(suspicious))
+
+
+async def find_similar_slugs_db(
+    new_slug: str,
+    session: AsyncSession,
+    similarity_threshold: float = 0.3,
+    limit: int = 20,
+) -> list[str]:
+    """Find similar slugs using PostgreSQL pg_trgm, then refine with Python checks.
+
+    Two-phase approach:
+    1. pg_trgm similarity search + normalized equality check in SQL (fast, indexed)
+    2. Python-side homograph/Levenshtein refinement on the small candidate set
+
+    Returns the final list of suspiciously similar existing slugs.
+    """
+    # Phase 1: SQL — get candidates via trigram similarity OR separator-normalized match
+    # The REPLACE-based normalization catches hyphen/underscore equivalence in SQL.
+    result = await session.execute(
+        text("""
+            SELECT slug FROM packages
+            WHERE slug != :new_slug
+              AND (
+                  similarity(slug, :new_slug) > :threshold
+                  OR REPLACE(REPLACE(slug, '-', ''), '_', '')
+                     = REPLACE(REPLACE(:new_slug, '-', ''), '_', '')
+              )
+            ORDER BY similarity(slug, :new_slug) DESC
+            LIMIT :lim
+        """),
+        {
+            "new_slug": new_slug,
+            "threshold": similarity_threshold,
+            "lim": limit,
+        },
+    )
+    candidates = [row[0] for row in result.all()]
+
+    if not candidates:
+        return []
+
+    # Phase 2: Python — run full check_typosquatting on the small candidate set
+    return check_typosquatting(new_slug, candidates)

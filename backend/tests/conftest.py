@@ -37,6 +37,9 @@ async def engine():
     eng = create_async_engine(TEST_DATABASE_URL)
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+        # Enable pg_trgm extension (required for typosquatting similarity queries)
+        from sqlalchemy import text
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         await conn.run_sync(Base.metadata.create_all)
         # Seed capability taxonomy for validation tests
         for cap_id, display_name, description, category in SEED_CAPABILITY_IDS:
@@ -76,8 +79,11 @@ async def client(session):
     # Simple in-memory store so refresh tokens round-trip correctly
     _redis_store: dict[str, str] = {}
 
-    async def _mock_set(key, value, ex=None):
+    async def _mock_set(key, value, ex=None, nx=False):
+        if nx and key in _redis_store:
+            return False  # Key exists — SET NX fails
         _redis_store[key] = value
+        return True
 
     async def _mock_get(key):
         return _redis_store.get(key)
