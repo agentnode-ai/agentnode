@@ -135,51 +135,60 @@ async def send_weekly_publisher_digests():
         week_ago = now - timedelta(days=7)
 
         async with async_session_factory() as session:
+            # Load all publishers with users in one query
             result = await session.execute(
                 select(Publisher).options(selectinload(Publisher.user))
             )
             publishers = result.scalars().all()
 
-            for pub in publishers:
-                if not pub.user or not pub.user.email:
-                    continue
+            valid_pubs = [p for p in publishers if p.user and p.user.email]
+            if not valid_pubs:
+                return
 
-                # Count packages
-                pkg_count = (await session.execute(
-                    select(func.count(Package.id)).where(Package.publisher_id == pub.id)
-                )).scalar() or 0
+            pub_ids = [p.id for p in valid_pubs]
 
+            # Aggregate: package count + total downloads per publisher (1 query)
+            pkg_stats_result = await session.execute(
+                select(
+                    Package.publisher_id,
+                    func.count(Package.id).label("pkg_count"),
+                    func.coalesce(func.sum(Package.download_count), 0).label("total_downloads"),
+                )
+                .where(Package.publisher_id.in_(pub_ids))
+                .group_by(Package.publisher_id)
+            )
+            pkg_stats = {row.publisher_id: (row.pkg_count, row.total_downloads) for row in pkg_stats_result.all()}
+
+            # Aggregate: new installs this week per publisher (1 query)
+            install_result = await session.execute(
+                select(
+                    Package.publisher_id,
+                    func.count(Installation.id).label("new_installs"),
+                )
+                .join(Installation, Installation.package_id == Package.id)
+                .where(
+                    Package.publisher_id.in_(pub_ids),
+                    Installation.installed_at >= week_ago,
+                )
+                .group_by(Package.publisher_id)
+            )
+            install_stats = {row.publisher_id: row.new_installs for row in install_result.all()}
+
+            sent = 0
+            for pub in valid_pubs:
+                pkg_count, total_downloads = pkg_stats.get(pub.id, (0, 0))
                 if pkg_count == 0:
-                    continue  # Skip publishers with no packages
-
-                # Total downloads
-                total_downloads = (await session.execute(
-                    select(func.sum(Package.download_count)).where(Package.publisher_id == pub.id)
-                )).scalar() or 0
-
-                # New installations this week
-                pub_packages = (await session.execute(
-                    select(Package.id).where(Package.publisher_id == pub.id)
-                )).scalars().all()
-
-                new_installs = 0
-                if pub_packages:
-                    new_installs = (await session.execute(
-                        select(func.count(Installation.id)).where(
-                            Installation.package_id.in_(pub_packages),
-                            Installation.installed_at >= week_ago,
-                        )
-                    )).scalar() or 0
+                    continue
 
                 stats = {
                     "downloads": total_downloads,
-                    "installs": new_installs,
+                    "installs": install_stats.get(pub.id, 0),
                     "packages": pkg_count,
                 }
-
                 await send_weekly_publisher_digest(pub.user.email, pub.slug, stats)
+                sent += 1
 
-            logger.info(f"Weekly publisher digests sent to {len(publishers)} publisher(s)")
+            logger.info(f"Weekly publisher digests sent to {sent} publisher(s)")
 
     except Exception:
         logger.exception("send_weekly_publisher_digests failed")

@@ -86,6 +86,7 @@
 - [x] Billing reviews — `_batch_review_context()` + `_batch_publisher_context()` batch helpers (API F8)
 - [x] Admin candidates listing — ROW_NUMBER() window + batch click counts (API F7)
 - [x] Deprecate email loop — batch query + background task (API F15, Perf 1.4)
+- [x] Weekly publisher digests — 2 aggregate queries instead of 3N+1 (Perf 1.6)
 
 ### Caching
 - [x] Redis cache for `/v1/capabilities` — 5-min TTL, `package_count` added to response (Perf 6.1)
@@ -130,8 +131,7 @@
 
 ## MEDIUM EFFORT (remaining)
 
-### N+1 Query Fixes
-- [ ] Weekly publisher digests — aggregate query (Perf 1.6)
+(All medium effort items complete!)
 
 ---
 
