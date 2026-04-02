@@ -1,7 +1,8 @@
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, select
@@ -36,6 +37,16 @@ from app.webhooks.service import fire_event
 
 router = APIRouter(prefix="/v1/packages", tags=["packages"])
 
+logger = logging.getLogger(__name__)
+
+
+async def invalidate_package_cache(redis, slug: str) -> None:
+    """Clear cached package detail for a given slug."""
+    try:
+        await redis.delete(f"package:{slug}")
+    except Exception:
+        logger.warning("Failed to invalidate package cache for %s", slug, exc_info=True)
+
 
 @router.post("/validate", response_model=ValidateResponse, dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))])
 async def validate_package(
@@ -49,6 +60,7 @@ async def validate_package(
 
 @router.post("/publish", response_model=PublishResponse, dependencies=[Depends(rate_limit(10, 60))])
 async def publish(
+    request: Request,
     manifest: str = Form(...),
     artifact: UploadFile | None = File(None),
     background_tasks: BackgroundTasks = BackgroundTasks(),
@@ -79,6 +91,9 @@ async def publish(
         session=session,
         artifact_bytes=artifact_bytes,
     )
+
+    # Invalidate package detail cache
+    await invalidate_package_cache(request.app.state.redis, pkg.slug)
 
     # Schedule async security scan + verification (do NOT block publish response)
     background_tasks.add_task(run_security_scan, pv.id)
@@ -120,9 +135,21 @@ def _version_eager_loads():
 @router.get("/{slug}", response_model=PackageDetailResponse, dependencies=[Depends(rate_limit(60, 60))])
 async def get_package(
     slug: str,
+    request: Request,
     v: str | None = Query(None, description="Specific version number to load"),
     session: AsyncSession = Depends(get_session),
 ):
+    # Try Redis cache first (only for default version, not ?v= queries)
+    redis = request.app.state.redis
+    cache_key = f"package:{slug}"
+    if not v:
+        try:
+            cached = await redis.get(cache_key)
+            if cached:
+                return json.loads(cached)
+        except Exception:
+            logger.warning("Redis cache read failed for %s", cache_key, exc_info=True)
+
     result = await session.execute(
         select(Package)
         .options(
@@ -176,12 +203,22 @@ async def get_package(
     installable_pv, install_reason = await get_latest_installable_version(session, pkg.id)
     installable_version = installable_pv.version_number if installable_pv else None
 
-    return assemble_package_detail(
+    response = assemble_package_detail(
         pkg, version,
         quarantine_status=quarantine_status,
         installable_version=installable_version,
         install_resolution=install_reason,
     )
+
+    # Cache the response with 2-minute TTL (only for default version)
+    if not v:
+        try:
+            serialized = response.model_dump(mode="json") if hasattr(response, "model_dump") else response
+            await redis.set(cache_key, json.dumps(serialized), ex=120)
+        except Exception:
+            logger.warning("Redis cache write failed for %s", cache_key, exc_info=True)
+
+    return response
 
 
 @router.get("/{slug}/versions", response_model=VersionsResponse, dependencies=[Depends(rate_limit(60, 60))])
@@ -337,6 +374,7 @@ async def get_file_preview(
 async def update_package(
     slug: str,
     body: UpdatePackageRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -400,6 +438,9 @@ async def update_package(
             session.add(PackageTag(package_version_id=pv.id, tag=tag))
 
     await session.commit()
+
+    # Invalidate package detail cache
+    await invalidate_package_cache(request.app.state.redis, slug)
 
     # Sync to Meilisearch if search-relevant fields changed
     if search_fields_changed:
@@ -501,6 +542,7 @@ async def deprecate_package(
 async def yank_version(
     slug: str,
     version: str,
+    request: Request,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -528,6 +570,9 @@ async def yank_version(
     from app.packages.version_queries import recalculate_latest_version_id
     await recalculate_latest_version_id(session, pkg.id)
     await session.commit()
+
+    # Invalidate package detail cache
+    await invalidate_package_cache(request.app.state.redis, slug)
 
     await fire_event(session, pkg.publisher_id, "version.yanked", {"slug": pkg.slug, "version": version})
 

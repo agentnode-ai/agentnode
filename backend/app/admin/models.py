@@ -7,7 +7,7 @@ from app.shared.models import Base, UUIDPrimaryKeyMixin
 class AdminAuditLog(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "admin_audit_logs"
 
-    admin_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    admin_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     action = Column(String(100), nullable=False, index=True)
     target_type = Column(String(50), nullable=False)  # user, publisher, package, report, capability
     target_id = Column(String(255), nullable=False)

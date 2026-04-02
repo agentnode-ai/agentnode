@@ -146,7 +146,7 @@ class Capability(Base, UUIDPrimaryKeyMixin):
         Enum("tool", "resource", "prompt", name="capability_type", create_type=False),
         nullable=False,
     )
-    capability_id = Column(Text, ForeignKey("capability_taxonomy.id"), nullable=False, index=True)
+    capability_id = Column(Text, ForeignKey("capability_taxonomy.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(Text, nullable=False)
     description = Column(Text, nullable=True)
     input_schema = Column(JSONB, nullable=True)
@@ -287,8 +287,8 @@ class Review(Base, UUIDPrimaryKeyMixin):
 class PackageReport(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "package_reports"
 
-    package_id = Column(UUID(as_uuid=True), ForeignKey("packages.id"), nullable=False)
-    reporter_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    package_id = Column(UUID(as_uuid=True), ForeignKey("packages.id", ondelete="CASCADE"), nullable=False)
+    reporter_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     reason = Column(Text, nullable=False)
     description = Column(Text, nullable=True)
     status = Column(Text, nullable=False, default="submitted", index=True)

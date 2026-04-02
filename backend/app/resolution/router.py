@@ -323,59 +323,72 @@ async def recommend(
             )
             related_caps = [r.id for r in related_result.scalars().all()]
 
-    # 4) Resolve primary capabilities
-    for cap_id in cap_ids_to_resolve:
+    # 4) Resolve primary capabilities — single batched resolve call
+    if cap_ids_to_resolve:
         req = ResolveRequest(
-            capabilities=[cap_id],
+            capabilities=cap_ids_to_resolve,
             framework=body.framework,
             runtime=body.runtime,
-            limit=5,
+            limit=5 * len(cap_ids_to_resolve),  # enough headroom per capability
         )
         scored = await resolve(req, session)
 
-        packages = []
-        for s in scored:
-            if s.slug in installed_set:
-                continue
-            # Find additional capabilities this package provides
+        # Batch-load additional capabilities for ALL result packages in one query
+        all_slugs = [s.slug for s in scored if s.slug not in installed_set]
+        slug_caps_map: dict[str, list[str]] = {}
+        if all_slugs:
             cap_result = await session.execute(
-                select(Capability.capability_id)
+                select(Package.slug, Capability.capability_id)
                 .join(PackageVersion, Capability.package_version_id == PackageVersion.id)
                 .join(Package, PackageVersion.package_id == Package.id)
-                .where(Package.slug == s.slug)
+                .where(Package.slug.in_(all_slugs))
             )
-            all_caps = [row[0] for row in cap_result.all()]
-            also_provides = [c for c in all_caps if c != cap_id]
+            for slug, cap_id in cap_result.all():
+                slug_caps_map.setdefault(slug, []).append(cap_id)
 
-            packages.append({
-                "slug": s.slug,
-                "name": s.name,
-                "version": s.version,
-                "compatibility_score": s.score,
-                "trust_level": s.trust_level,
-                "reason": f"Provides {cap_id} capability"
-                + (f" (+ {', '.join(also_provides[:3])})" if also_provides else ""),
-                "also_provides": also_provides,
-                "install_command": f"agentnode install {s.slug}",
-            })
+        # Group scored results by which requested capability they matched
+        for cap_id in cap_ids_to_resolve:
+            packages = []
+            for s in scored:
+                if s.slug in installed_set:
+                    continue
+                # Check if this package matched this specific capability
+                if cap_id not in s.matched_capabilities:
+                    continue
+                all_caps = slug_caps_map.get(s.slug, [])
+                also_provides = [c for c in all_caps if c != cap_id]
 
-        if packages:
-            recommendations.append({
-                "capability_id": cap_id,
-                "source": "requested",
-                "packages": packages,
-            })
+                packages.append({
+                    "slug": s.slug,
+                    "name": s.name,
+                    "version": s.version,
+                    "compatibility_score": s.score,
+                    "trust_level": s.trust_level,
+                    "reason": f"Provides {cap_id} capability"
+                    + (f" (+ {', '.join(also_provides[:3])})" if also_provides else ""),
+                    "also_provides": also_provides,
+                    "install_command": f"agentnode install {s.slug}",
+                })
 
-    # 5) Suggest related capabilities the user didn't ask for
-    if related_caps:
-        for cap_id in related_caps[:5]:
-            req = ResolveRequest(
-                capabilities=[cap_id],
-                framework=body.framework,
-                runtime=body.runtime,
-                limit=2,
-            )
-            scored = await resolve(req, session)
+            if packages:
+                recommendations.append({
+                    "capability_id": cap_id,
+                    "source": "requested",
+                    "packages": packages,
+                })
+
+    # 5) Suggest related capabilities the user didn't ask for — single batched call
+    related_subset = related_caps[:5]
+    if related_subset:
+        req = ResolveRequest(
+            capabilities=related_subset,
+            framework=body.framework,
+            runtime=body.runtime,
+            limit=2 * len(related_subset),
+        )
+        scored = await resolve(req, session)
+
+        for cap_id in related_subset:
             packages = [
                 {
                     "slug": s.slug,
@@ -388,7 +401,7 @@ async def recommend(
                     "install_command": f"agentnode install {s.slug}",
                 }
                 for s in scored
-                if s.slug not in installed_set
+                if s.slug not in installed_set and cap_id in s.matched_capabilities
             ]
             if packages:
                 recommendations.append({

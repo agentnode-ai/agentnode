@@ -82,10 +82,18 @@
 ### N+1 Query Fixes
 - [x] `check_updates` — batch load with window function (API F4, Perf 1.1)
 - [x] `resolve_upgrade` — batch load scored packages with `Package.slug.in_()` (API F5, Perf 1.2)
+- [x] `/recommend` — single batch resolve + batch capability load instead of per-cap loops (API F6, Perf 1.3)
 - [x] Billing reviews — `_batch_review_context()` + `_batch_publisher_context()` batch helpers (API F8)
 
 ### Caching
 - [x] Redis cache for `/v1/capabilities` — 5-min TTL, `package_count` added to response (Perf 6.1)
+- [x] Redis cache for package detail — 2-min TTL, invalidated on publish/yank/update (Perf 6.2)
+
+### FK Constraints (migration 021)
+- [x] `PackageReport.package_id` → `ON DELETE CASCADE` (DB C3)
+- [x] `PackageReport.reporter_user_id` → `ON DELETE SET NULL` (DB C3)
+- [x] `AdminAuditLog.admin_user_id` → `ON DELETE SET NULL` (DB C4)
+- [x] `Capability.capability_id` → `ON DELETE CASCADE` (DB C5)
 
 ### Missing Indices (migration 020)
 - [x] `Installation.status` + `package_version_id` + `installed_at` (DB H1, H2)
@@ -120,18 +128,11 @@
 ## MEDIUM EFFORT (remaining)
 
 ### N+1 Query Fixes
-- [ ] `/recommend` — batch resolution (API F6, Perf 1.3)
 - [ ] Admin candidates listing — join instead of loop (API F7)
 - [ ] Deprecate email loop — background task (API F15, Perf 1.4)
 - [ ] Weekly publisher digests — aggregate query (Perf 1.6)
 
-### FK Constraints
-- [ ] `PackageReport` — add ondelete CASCADE/SET NULL (DB C3)
-- [ ] `AdminAuditLog` — add ondelete SET NULL (DB C4)
-- [ ] `Capability` → `capability_taxonomy` — explicit ondelete (DB C5)
-
 ### Caching
-- [ ] Redis cache for package detail (Perf 6.2)
 - [ ] Meilisearch result caching (Perf 6.4)
 
 ---
