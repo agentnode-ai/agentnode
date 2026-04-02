@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Enum, ForeignKey, Integer, Text
+from sqlalchemy import Boolean, Column, Enum, ForeignKey, Integer, Text, TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -24,5 +24,6 @@ class Publisher(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     packages_published_count = Column(Integer, nullable=False, default=0)
     packages_cleared_count = Column(Integer, nullable=False, default=0)
     signing_public_key = Column(Text, nullable=True)
+    signing_key_registered_at = Column(TIMESTAMP(timezone=True), nullable=True)
 
     user = relationship("User", back_populates="publisher")

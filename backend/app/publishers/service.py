@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from uuid import UUID
 
+from fastapi import BackgroundTasks
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +14,7 @@ from app.shared.exceptions import AppError
 async def create_publisher(
     session: AsyncSession, user_id: UUID, display_name: str, slug: str,
     bio: str | None = None, website_url: str | None = None, github_url: str | None = None,
+    background_tasks: BackgroundTasks | None = None,
 ) -> Publisher:
     # Check if user already has a publisher
     result = await session.execute(select(Publisher).where(Publisher.user_id == user_id))
@@ -44,7 +48,10 @@ async def create_publisher(
     user_obj = user_result.scalar_one_or_none()
     if user_obj:
         from app.shared.email import send_publisher_created_email
-        await send_publisher_created_email(user_obj.email, slug)
+        if background_tasks:
+            background_tasks.add_task(send_publisher_created_email, user_obj.email, slug)
+        else:
+            await send_publisher_created_email(user_obj.email, slug)
 
     return publisher
 

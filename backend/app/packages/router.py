@@ -90,6 +90,7 @@ async def publish(
         publisher_id=user.publisher.id,
         session=session,
         artifact_bytes=artifact_bytes,
+        background_tasks=background_tasks,
     )
 
     # Invalidate package detail cache
@@ -100,8 +101,8 @@ async def publish(
     from app.verification.pipeline import run_verification
     background_tasks.add_task(run_verification, pv.id)
 
-    # Fire webhook event (after commit in publish_package)
-    await fire_event(session, user.publisher.id, "version.published", {
+    # Fire webhook event in background (after commit in publish_package)
+    background_tasks.add_task(fire_event, session, user.publisher.id, "version.published", {
         "slug": pkg.slug, "version": pv.version_number, "package_type": pkg.package_type,
     })
 
@@ -524,7 +525,7 @@ async def deprecate_package(
     await recalculate_latest_version_id(session, pkg.id)
     await session.commit()
 
-    await fire_event(session, pkg.publisher_id, "package.deprecated", {"slug": pkg.slug})
+    background_tasks.add_task(fire_event, session, pkg.publisher_id, "package.deprecated", {"slug": pkg.slug})
 
     # Batch-load emails + preferences for users with active installations (single query)
     from app.shared.email import send_package_deprecated_emails_batch, EMAIL_PREF_DEFAULTS
@@ -551,6 +552,7 @@ async def yank_version(
     slug: str,
     version: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -582,7 +584,7 @@ async def yank_version(
     # Invalidate package detail cache
     await invalidate_package_cache(request.app.state.redis, slug)
 
-    await fire_event(session, pkg.publisher_id, "version.yanked", {"slug": pkg.slug, "version": version})
+    background_tasks.add_task(fire_event, session, pkg.publisher_id, "version.yanked", {"slug": pkg.slug, "version": version})
 
     return ActionResponse(message="Version yanked")
 
@@ -703,6 +705,7 @@ class CreateReportRequest(BaseModel):
 async def create_report(
     slug: str,
     body: CreateReportRequest,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -748,8 +751,8 @@ async def create_report(
     session.add(report)
     await session.commit()
 
-    # Notify admins
+    # Notify admins in background
     from app.shared.email import send_report_admin_notification
-    await send_report_admin_notification(slug, body.reason, user.username)
+    background_tasks.add_task(send_report_admin_notification, slug, body.reason, user.username)
 
     return {"report_id": str(report.id), "status": "submitted"}

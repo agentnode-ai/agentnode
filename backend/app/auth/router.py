@@ -7,7 +7,7 @@ these methods. If the auth model changes to SameSite=none or cookie-based
 GET mutations, this decision must be revisited.
 """
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -74,8 +74,8 @@ router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=201, dependencies=[Depends(rate_limit(5, 60))])
-async def register(body: RegisterRequest, session: AsyncSession = Depends(get_session)):
-    user = await register_user(session, body.email, body.username, body.password)
+async def register(body: RegisterRequest, background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)):
+    user = await register_user(session, body.email, body.username, body.password, background_tasks=background_tasks)
 
     # Track invite funnel: account_registered event
     if body.invite_code:
@@ -100,19 +100,19 @@ async def register(body: RegisterRequest, session: AsyncSession = Depends(get_se
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, request: Request, response: Response, session: AsyncSession = Depends(get_session)):
+async def login(body: LoginRequest, request: Request, response: Response, background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)):
     await check_login_rate_limits(request, response, body.email)
     redis = request.app.state.redis
     result = await login_user(session, body.email, body.password, body.totp_code, redis=redis)
     # Set httpOnly cookies for web clients
     set_auth_cookies(response, result["access_token"], result["refresh_token"], is_admin=result.get("is_admin", False))
 
-    # New login alert (fire-and-forget)
+    # New login alert (background — don't block login response)
     forwarded = request.headers.get("x-forwarded-for")
     ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
     ua = request.headers.get("user-agent", "unknown")
     from app.shared.email import send_new_login_alert_email
-    await send_new_login_alert_email(body.email, ip, ua)
+    background_tasks.add_task(send_new_login_alert_email, body.email, ip, ua)
 
     return TokenResponse(**result)
 
@@ -194,10 +194,11 @@ async def list_api_keys(
 @router.post("/api-keys", response_model=ApiKeyResponse, status_code=201, dependencies=[Depends(rate_limit(10, 60))])
 async def create_api_key(
     body: CreateApiKeyRequest,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await create_api_key_for_user(session, user.id, body.label)
+    result = await create_api_key_for_user(session, user.id, body.label, background_tasks=background_tasks)
     return ApiKeyResponse(**result)
 
 
@@ -245,10 +246,11 @@ async def setup_2fa_route(
 @router.post("/2fa/verify", response_model=Verify2FAResponse, dependencies=[Depends(rate_limit(10, 60))])
 async def verify_2fa_route(
     body: Verify2FARequest,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await verify_2fa(session, user.id, body.code)
+    result = await verify_2fa(session, user.id, body.code, background_tasks=background_tasks)
     return Verify2FAResponse(**result)
 
 
@@ -258,37 +260,41 @@ async def verify_2fa_route(
 @router.post("/change-password", response_model=ChangePasswordResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def change_password_route(
     body: ChangePasswordRequest,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await change_password(session, user.id, body.current_password, body.new_password)
+    result = await change_password(session, user.id, body.current_password, body.new_password, background_tasks=background_tasks)
     return ChangePasswordResponse(**result)
 
 
 @router.post("/request-password-reset", response_model=RequestPasswordResetResponse, dependencies=[Depends(rate_limit(3, 60))])
 async def request_password_reset_route(
     body: RequestPasswordResetRequest,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
-    result = await request_password_reset(session, body.email)
+    result = await request_password_reset(session, body.email, background_tasks=background_tasks)
     return RequestPasswordResetResponse(**result)
 
 
 @router.post("/reset-password", response_model=ResetPasswordResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def reset_password_route(
     body: ResetPasswordRequest,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
-    result = await reset_password(session, body.token, body.new_password)
+    result = await reset_password(session, body.token, body.new_password, background_tasks=background_tasks)
     return ResetPasswordResponse(**result)
 
 
 @router.post("/email/request-verification", response_model=RequestEmailVerificationResponse, dependencies=[Depends(rate_limit(3, 60))])
 async def request_email_verification_route(
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await request_email_verification(session, user.id)
+    result = await request_email_verification(session, user.id, background_tasks=background_tasks)
     return RequestEmailVerificationResponse(**result)
 
 
@@ -339,8 +345,9 @@ async def update_email_preferences(
 @router.put("/profile", response_model=UpdateProfileResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def update_profile_route(
     body: UpdateProfileRequest,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await update_profile(session, user.id, body.username, body.email)
+    result = await update_profile(session, user.id, body.username, body.email, background_tasks=background_tasks)
     return UpdateProfileResponse(**result)

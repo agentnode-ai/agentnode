@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -62,6 +62,7 @@ async def quarantine_version(
     version: str,
     body: QuarantineVersionRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -76,12 +77,12 @@ async def quarantine_version(
     await _audit(session, request, user, "quarantine_version", "package", slug, {"version": version, "reason": body.reason})
     await session.commit()
 
-    await fire_event(session, pkg.publisher_id, "version.quarantined", {"slug": slug, "version": version, "reason": body.reason})
+    background_tasks.add_task(fire_event, session, pkg.publisher_id, "version.quarantined", {"slug": slug, "version": version, "reason": body.reason})
 
     from app.shared.email import send_quarantine_email, get_publisher_email
     pub_email = await get_publisher_email(pkg.publisher_id)
     if pub_email:
-        await send_quarantine_email(pub_email, slug, version, body.reason)
+        background_tasks.add_task(send_quarantine_email, pub_email, slug, version, body.reason)
 
     return QuarantineActionResponse(
         slug=slug, version=version,
@@ -95,6 +96,7 @@ async def clear_quarantine(
     slug: str,
     version: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -127,12 +129,12 @@ async def clear_quarantine(
     await _audit(session, request, user, "clear_quarantine", "package", slug, {"version": version})
     await session.commit()
 
-    await fire_event(session, pkg.publisher_id, "version.cleared", {"slug": slug, "version": version})
+    background_tasks.add_task(fire_event, session, pkg.publisher_id, "version.cleared", {"slug": slug, "version": version})
 
     from app.shared.email import send_quarantine_cleared_email, get_publisher_email
     pub_email = await get_publisher_email(pkg.publisher_id)
     if pub_email:
-        await send_quarantine_cleared_email(pub_email, slug, version)
+        background_tasks.add_task(send_quarantine_cleared_email, pub_email, slug, version)
 
     return QuarantineActionResponse(
         slug=slug, version=version,
@@ -146,6 +148,7 @@ async def reject_version(
     slug: str,
     version: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -161,12 +164,12 @@ async def reject_version(
     await _audit(session, request, user, "reject_version", "package", slug, {"version": version})
     await session.commit()
 
-    await fire_event(session, pkg.publisher_id, "version.rejected", {"slug": slug, "version": version})
+    background_tasks.add_task(fire_event, session, pkg.publisher_id, "version.rejected", {"slug": slug, "version": version})
 
     from app.shared.email import send_version_rejected_email, get_publisher_email
     pub_email = await get_publisher_email(pkg.publisher_id)
     if pub_email:
-        await send_version_rejected_email(pub_email, slug, version)
+        background_tasks.add_task(send_version_rejected_email, pub_email, slug, version)
 
     return QuarantineActionResponse(
         slug=slug, version=version,
@@ -223,6 +226,7 @@ async def set_trust_level(
     slug: str,
     body: SetTrustLevelRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -236,7 +240,7 @@ async def set_trust_level(
     from app.shared.email import send_trust_level_changed_email, get_publisher_email
     pub_email = await get_publisher_email(pub.id)
     if pub_email:
-        await send_trust_level_changed_email(pub_email, slug, old_level, body.trust_level)
+        background_tasks.add_task(send_trust_level_changed_email, pub_email, slug, old_level, body.trust_level)
 
     return TrustLevelResponse(
         publisher_slug=slug,
@@ -253,6 +257,7 @@ async def suspend_publisher(
     slug: str,
     body: SuspendPublisherRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -270,7 +275,7 @@ async def suspend_publisher(
     from app.shared.email import send_publisher_suspended_email, get_publisher_email
     pub_email = await get_publisher_email(pub.id)
     if pub_email:
-        await send_publisher_suspended_email(pub_email, slug, body.reason)
+        background_tasks.add_task(send_publisher_suspended_email, pub_email, slug, body.reason)
 
     return SuspensionResponse(
         publisher_slug=slug,
@@ -284,6 +289,7 @@ async def suspend_publisher(
 async def unsuspend_publisher(
     slug: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -301,7 +307,7 @@ async def unsuspend_publisher(
     from app.shared.email import send_publisher_unsuspended_email, get_publisher_email
     pub_email = await get_publisher_email(pub.id)
     if pub_email:
-        await send_publisher_unsuspended_email(pub_email, slug)
+        background_tasks.add_task(send_publisher_unsuspended_email, pub_email, slug)
 
     return SuspensionResponse(
         publisher_slug=slug,
@@ -557,6 +563,7 @@ async def resolve_report(
     report_id: str,
     body: ResolveReportRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -582,8 +589,9 @@ async def resolve_report(
     pkg_result = await session.execute(select(Package).where(Package.id == report.package_id))
     pkg_obj = pkg_result.scalar_one_or_none()
     if reporter_user and pkg_obj:
-        await send_report_resolved_reporter_email(
-            reporter_user.email, pkg_obj.slug, body.status, body.resolution_note
+        background_tasks.add_task(
+            send_report_resolved_reporter_email,
+            reporter_user.email, pkg_obj.slug, body.status, body.resolution_note,
         )
 
     return {"resolved": True, "status": body.status}
@@ -971,6 +979,7 @@ async def disable_user_2fa(
 async def reset_user_password(
     user_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -988,17 +997,15 @@ async def reset_user_password(
     await _audit(session, request, user, "reset_password", "user", user_id, {"username": target_user.username})
     await session.commit()
 
-    # Try to send email
-    try:
-        from app.shared.email import send_email
-        await send_email(
-            to=target_user.email,
-            subject="AgentNode — Password Reset by Admin",
-            html_body=f"<p>Your password has been reset by an administrator.</p><p>Temporary password: <strong>{temp_password}</strong></p><p>Please change it immediately after logging in.</p>",
-            text_body=f"Your password has been reset by an administrator. Temporary password: {temp_password}",
-        )
-    except Exception:
-        pass
+    # Send email in background
+    from app.shared.email import send_email
+    background_tasks.add_task(
+        send_email,
+        to=target_user.email,
+        subject="AgentNode — Password Reset by Admin",
+        html_body=f"<p>Your password has been reset by an administrator.</p><p>Temporary password: <strong>{temp_password}</strong></p><p>Please change it immediately after logging in.</p>",
+        text_body=f"Your password has been reset by an administrator. Temporary password: {temp_password}",
+    )
 
     return {"message": f"Password reset for '{target_user.username}'. Temporary password sent via email."}
 

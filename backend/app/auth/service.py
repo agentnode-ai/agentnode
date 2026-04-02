@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from uuid import UUID
 
+from fastapi import BackgroundTasks
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -26,7 +29,7 @@ from app.auth.security import (
 from app.shared.exceptions import AppError
 
 
-async def register_user(session: AsyncSession, email: str, username: str, password: str) -> User:
+async def register_user(session: AsyncSession, email: str, username: str, password: str, background_tasks: BackgroundTasks | None = None) -> User:
     # Check email uniqueness
     result = await session.execute(select(User).where(User.email == email))
     if result.scalar_one_or_none():
@@ -49,7 +52,10 @@ async def register_user(session: AsyncSession, email: str, username: str, passwo
     # Send welcome email with embedded verification link
     from app.shared.email import send_welcome_email
     verify_token = create_purpose_token(str(user.id), "email_verify", expire_hours=24)
-    await send_welcome_email(email, username, verify_token)
+    if background_tasks:
+        background_tasks.add_task(send_welcome_email, email, username, verify_token)
+    else:
+        await send_welcome_email(email, username, verify_token)
 
     return user
 
@@ -95,7 +101,7 @@ async def login_user(session: AsyncSession, email: str, password: str, totp_code
     }
 
 
-async def create_api_key_for_user(session: AsyncSession, user_id: UUID, label: str | None = None) -> dict:
+async def create_api_key_for_user(session: AsyncSession, user_id: UUID, label: str | None = None, background_tasks: BackgroundTasks | None = None) -> dict:
     full_key, prefix, key_hash = generate_api_key()
 
     api_key = ApiKey(
@@ -111,7 +117,10 @@ async def create_api_key_for_user(session: AsyncSession, user_id: UUID, label: s
     # Notify user about new API key
     user = await get_user_with_publisher(session, user_id)
     from app.shared.email import send_api_key_created_email
-    await send_api_key_created_email(user.email, label, prefix)
+    if background_tasks:
+        background_tasks.add_task(send_api_key_created_email, user.email, label, prefix)
+    else:
+        await send_api_key_created_email(user.email, label, prefix)
 
     return {
         "id": api_key.id,
@@ -182,7 +191,7 @@ async def revoke_api_key_for_user(session: AsyncSession, user_id: UUID, key_id: 
     await session.commit()
 
 
-async def verify_2fa(session: AsyncSession, user_id: UUID, totp_code: str) -> dict:
+async def verify_2fa(session: AsyncSession, user_id: UUID, totp_code: str, background_tasks: BackgroundTasks | None = None) -> dict:
     user = await get_user_with_publisher(session, user_id)
 
     if not user.two_factor_secret:
@@ -195,7 +204,10 @@ async def verify_2fa(session: AsyncSession, user_id: UUID, totp_code: str) -> di
     await session.commit()
 
     from app.shared.email import send_2fa_enabled_email
-    await send_2fa_enabled_email(user.email)
+    if background_tasks:
+        background_tasks.add_task(send_2fa_enabled_email, user.email)
+    else:
+        await send_2fa_enabled_email(user.email)
 
     return {"two_factor_enabled": True}
 
@@ -204,7 +216,8 @@ async def verify_2fa(session: AsyncSession, user_id: UUID, totp_code: str) -> di
 
 
 async def change_password(
-    session: AsyncSession, user_id: UUID, current_password: str, new_password: str
+    session: AsyncSession, user_id: UUID, current_password: str, new_password: str,
+    background_tasks: BackgroundTasks | None = None,
 ) -> dict:
     user = await get_user_with_publisher(session, user_id)
 
@@ -215,12 +228,15 @@ async def change_password(
     await session.commit()
 
     from app.shared.email import send_password_changed_email
-    await send_password_changed_email(user.email)
+    if background_tasks:
+        background_tasks.add_task(send_password_changed_email, user.email)
+    else:
+        await send_password_changed_email(user.email)
 
     return {"message": "Password changed successfully."}
 
 
-async def request_password_reset(session: AsyncSession, email: str) -> dict:
+async def request_password_reset(session: AsyncSession, email: str, background_tasks: BackgroundTasks | None = None) -> dict:
     """Generate a password reset token and send email."""
     result = await session.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
@@ -232,12 +248,15 @@ async def request_password_reset(session: AsyncSession, email: str) -> dict:
     token = create_purpose_token(str(user.id), "password_reset", expire_hours=1)
 
     from app.shared.email import send_password_reset_email
-    await send_password_reset_email(email, token)
+    if background_tasks:
+        background_tasks.add_task(send_password_reset_email, email, token)
+    else:
+        await send_password_reset_email(email, token)
 
     return {"message": "If an account with that email exists, a reset link has been sent."}
 
 
-async def reset_password(session: AsyncSession, token: str, new_password: str) -> dict:
+async def reset_password(session: AsyncSession, token: str, new_password: str, background_tasks: BackgroundTasks | None = None) -> dict:
     try:
         user_id = decode_purpose_token(token, "password_reset")
     except Exception:
@@ -252,12 +271,15 @@ async def reset_password(session: AsyncSession, token: str, new_password: str) -
     await session.commit()
 
     from app.shared.email import send_password_reset_confirmation_email
-    await send_password_reset_confirmation_email(user.email)
+    if background_tasks:
+        background_tasks.add_task(send_password_reset_confirmation_email, user.email)
+    else:
+        await send_password_reset_confirmation_email(user.email)
 
     return {"message": "Password has been reset successfully."}
 
 
-async def request_email_verification(session: AsyncSession, user_id: UUID) -> dict:
+async def request_email_verification(session: AsyncSession, user_id: UUID, background_tasks: BackgroundTasks | None = None) -> dict:
     user = await get_user_with_publisher(session, user_id)
 
     if user.is_email_verified:
@@ -266,7 +288,10 @@ async def request_email_verification(session: AsyncSession, user_id: UUID) -> di
     token = create_purpose_token(str(user.id), "email_verify", expire_hours=24)
 
     from app.shared.email import send_verification_email
-    await send_verification_email(user.email, token)
+    if background_tasks:
+        background_tasks.add_task(send_verification_email, user.email, token)
+    else:
+        await send_verification_email(user.email, token)
 
     return {"message": "Verification email sent."}
 
@@ -288,7 +313,8 @@ async def verify_email(session: AsyncSession, token: str) -> dict:
 
 
 async def update_profile(
-    session: AsyncSession, user_id: UUID, username: str | None = None, email: str | None = None
+    session: AsyncSession, user_id: UUID, username: str | None = None, email: str | None = None,
+    background_tasks: BackgroundTasks | None = None,
 ) -> dict:
     user = await get_user_with_publisher(session, user_id)
 
@@ -316,8 +342,12 @@ async def update_profile(
     if email_changed:
         from app.shared.email import send_email_changed_verify, send_email_changed_alert
         verify_token = create_purpose_token(str(user.id), "email_verify", expire_hours=24)
-        await send_email_changed_verify(user.email, verify_token)
-        await send_email_changed_alert(old_email, user.email)
+        if background_tasks:
+            background_tasks.add_task(send_email_changed_verify, user.email, verify_token)
+            background_tasks.add_task(send_email_changed_alert, old_email, user.email)
+        else:
+            await send_email_changed_verify(user.email, verify_token)
+            await send_email_changed_alert(old_email, user.email)
 
     return {
         "id": user.id,

@@ -1,4 +1,6 @@
 """Publish service — creates packages and versions from validated manifests."""
+from __future__ import annotations
+
 import hashlib
 import io
 import logging
@@ -7,6 +9,7 @@ import tarfile
 from datetime import datetime, timezone
 from uuid import UUID
 
+from fastapi import BackgroundTasks
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -148,6 +151,7 @@ async def publish_package(
     publisher_id: UUID,
     session: AsyncSession,
     artifact_bytes: bytes | None = None,
+    background_tasks: BackgroundTasks | None = None,
 ) -> tuple[Package, PackageVersion, list[str]]:
     """Full publish flow: validate, check typosquatting, create/update package, create version."""
 
@@ -525,13 +529,19 @@ async def publish_package(
             "Once approved, future packages will publish directly."
         )
 
-    # Send publish confirmation email
+    # Send publish confirmation email (background if available)
     from app.shared.email import send_package_published_email, get_publisher_email
     pub_email = await get_publisher_email(publisher_id)
     if pub_email:
-        await send_package_published_email(
-            pub_email, slug, version_str,
-            quarantined=(quarantine_for_typosquatting or quarantine_for_new_publisher),
-        )
+        if background_tasks:
+            background_tasks.add_task(
+                send_package_published_email, pub_email, slug, version_str,
+                quarantine_for_typosquatting or quarantine_for_new_publisher,
+            )
+        else:
+            await send_package_published_email(
+                pub_email, slug, version_str,
+                quarantined=(quarantine_for_typosquatting or quarantine_for_new_publisher),
+            )
 
     return pkg, pv, publish_warnings

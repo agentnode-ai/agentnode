@@ -141,9 +141,9 @@
 - [x] Meili httpx singleton client — init/close in app lifespan (Perf 7.2, CodeQuality #7)
 - [x] Webhook httpx shared client — init/close in app lifespan (Perf 7.3)
 - [x] All boto3 S3 calls wrapped in `asyncio.to_thread()` — 6 functions + all callers (Perf 7.4, 8.1-8.3, 10.2)
-- [ ] Background tasks for email + webhooks (Perf 8.4)
+- [x] Background tasks for email + webhooks — 20+ endpoints moved to BackgroundTasks (Perf 8.4)
 - [x] Replace `get_all_package_slugs` with pg_trgm (DB C6, Perf 3.4, 4.2)
-- [ ] `BaseHTTPMiddleware` → pure ASGI middleware (Perf 10.3)
+- [x] `BaseHTTPMiddleware` → pure ASGI middleware (Perf 10.3)
 
 ### Missing Migrations
 - [x] Create migration 022 for 5 missing tables + 3 enums + email_preferences column (DB C1)
@@ -155,7 +155,7 @@
 - [x] Resolution engine stale versions — joins on Package.latest_version_id (BizLogic 2.1)
 - [x] Download count deduplication — Redis SET NX with 1h TTL, user ID or IP (BizLogic 8.1, API F23)
 - [ ] CLI publish — include artifact tar.gz (BizLogic 10.1)
-- [ ] Signing key registration endpoint (BizLogic 1.1)
+- [x] Signing key registration — PUT/GET /{slug}/signing-key endpoints + migration 024 (BizLogic 1.1)
 
 ### Frontend
 - [x] Dynamic import TipTap editor + loading skeleton (Perf 5.1)

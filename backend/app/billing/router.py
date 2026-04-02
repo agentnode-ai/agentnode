@@ -2,7 +2,7 @@ import logging
 from uuid import UUID
 
 import stripe
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -171,6 +171,7 @@ async def get_review(
 @router.post("/v1/webhooks/stripe")
 async def stripe_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
     """Handle Stripe webhook events (signature-verified, idempotent)."""
@@ -191,7 +192,7 @@ async def stripe_webhook(
     result = await process_stripe_event(session, event)
     await session.commit()
 
-    # Send payment received email after commit (fire-and-forget)
+    # Send payment received email after commit (background — don't block webhook response)
     if result.get("status") == "processed" and event["type"] == "checkout.session.completed":
         try:
             order_id = event["data"]["object"].get("client_reference_id", "")
@@ -203,11 +204,12 @@ async def stripe_webhook(
                 if review and review.status == "paid":
                     slug, ver, email = await _get_review_email_context(session, review.id)
                     if email:
-                        await send_review_payment_received_email(
+                        background_tasks.add_task(
+                            send_review_payment_received_email,
                             email, slug, ver, review.tier, review.express, review.price_cents,
                         )
         except Exception:
-            logger.warning("Failed to send review payment email", exc_info=True)
+            logger.warning("Failed to prepare review payment email", exc_info=True)
 
     return result
 
@@ -289,6 +291,7 @@ async def admin_complete_review(
     review_id: UUID,
     body: CompleteReviewBody,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -306,16 +309,17 @@ async def admin_complete_review(
     })
     await session.commit()
 
-    # Send completion email after commit (fire-and-forget)
+    # Send completion email in background (don't block response)
     try:
         slug, ver, email = await _get_review_email_context(session, review.id)
         if email:
-            await send_review_completed_email(
+            background_tasks.add_task(
+                send_review_completed_email,
                 email, slug, ver, review.tier,
                 body.outcome, body.review_result, body.notes,
             )
     except Exception:
-        logger.warning("Failed to send review completion email", exc_info=True)
+        logger.warning("Failed to prepare review completion email", exc_info=True)
 
     # Sync badge to Meilisearch after commit (fire-and-forget)
     if body.outcome == "approved":
@@ -336,6 +340,7 @@ async def admin_refund_review(
     review_id: UUID,
     body: RefundReviewBody,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -354,15 +359,16 @@ async def admin_refund_review(
     })
     await session.commit()
 
-    # Send refund email after commit (fire-and-forget)
+    # Send refund email in background (don't block response)
     try:
         slug, ver, email = await _get_review_email_context(session, review.id)
         if email:
-            await send_review_refund_email(
+            background_tasks.add_task(
+                send_review_refund_email,
                 email, slug, ver, review.refund_amount_cents, is_full,
             )
     except Exception:
-        logger.warning("Failed to send review refund email", exc_info=True)
+        logger.warning("Failed to prepare review refund email", exc_info=True)
 
     # Sync badge removal to Meilisearch after full refund (fire-and-forget)
     if is_full:
