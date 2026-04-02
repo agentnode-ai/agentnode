@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends
+import json
+import logging
+
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -167,16 +170,10 @@ async def resolve_upgrade(
     )
     scored = await resolve(req, session)
 
-    constraints = PolicyConstraints(
-        min_trust=body.policy.min_trust,
-        allow_shell=body.policy.allow_shell,
-        allow_network=body.policy.allow_network,
-    )
-
-    recommended = []
-    for s in scored:
-        # Load permissions for policy eval
-        pkg_result = await session.execute(
+    # Batch-load all packages with relations to avoid N+1 queries
+    slugs = [s.slug for s in scored]
+    if slugs:
+        pkg_results = await session.execute(
             select(Package)
             .options(
                 selectinload(Package.publisher),
@@ -185,9 +182,21 @@ async def resolve_upgrade(
                 selectinload(Package.latest_version)
                 .selectinload(PackageVersion.upgrade_metadata),
             )
-            .where(Package.slug == s.slug)
+            .where(Package.slug.in_(slugs))
         )
-        pkg = pkg_result.scalar_one_or_none()
+        pkg_map = {p.slug: p for p in pkg_results.scalars().all()}
+    else:
+        pkg_map = {}
+
+    constraints = PolicyConstraints(
+        min_trust=body.policy.min_trust,
+        allow_shell=body.policy.allow_shell,
+        allow_network=body.policy.allow_network,
+    )
+
+    recommended = []
+    for s in scored:
+        pkg = pkg_map.get(s.slug)
         if not pkg or not pkg.latest_version:
             continue
 
@@ -409,12 +418,36 @@ async def recommend(
 
 # --- GET /v1/capabilities (public listing) ---
 
+logger = logging.getLogger(__name__)
+
+
+async def invalidate_capabilities_cache(redis) -> None:
+    """Clear cached capabilities listings."""
+    try:
+        keys = await redis.keys("capabilities:*")
+        if keys:
+            await redis.delete(*keys)
+    except Exception:
+        logger.warning("Failed to invalidate capabilities cache", exc_info=True)
+
+
 @router.get("/capabilities", dependencies=[Depends(rate_limit(60, 60))])
 async def list_capabilities(
+    request: Request,
     category: str | None = None,
     session: AsyncSession = Depends(get_session),
 ):
     """List all capabilities in the taxonomy. Public endpoint."""
+    # Try Redis cache first
+    redis = request.app.state.redis
+    cache_key = f"capabilities:{category or 'all'}"
+    try:
+        cached = await redis.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        logger.warning("Redis cache read failed for %s", cache_key, exc_info=True)
+
     # Subquery: count distinct non-deprecated packages per capability_id
     pkg_count_sq = (
         select(
@@ -439,7 +472,7 @@ async def list_capabilities(
     result = await session.execute(query)
     rows = result.all()
 
-    return {
+    response = {
         "capabilities": [
             {
                 "id": row[0].id,
@@ -452,3 +485,11 @@ async def list_capabilities(
         ],
         "total": len(rows),
     }
+
+    # Cache the response with 5-minute TTL
+    try:
+        await redis.set(cache_key, json.dumps(response), ex=300)
+    except Exception:
+        logger.warning("Redis cache write failed for %s", cache_key, exc_info=True)
+
+    return response

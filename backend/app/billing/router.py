@@ -98,10 +98,11 @@ async def my_reviews(
     )
     reviews = result.scalars().all()
 
-    # Batch-load package + version info
+    # Batch-load package + version info (2 queries total instead of 2*N)
+    ctx = await _batch_review_context(session, reviews)
     items = []
     for r in reviews:
-        pkg_name, pkg_slug, ver = await _get_review_context(session, r)
+        pkg_name, pkg_slug, ver = ctx.get(r.id, (None, None, None))
         items.append(
             ReviewRequestResponse(
                 id=r.id,
@@ -231,10 +232,15 @@ async def admin_review_queue(
     )
     reviews = result.scalars().all()
 
+    # Batch-load all context (3 queries total instead of 3*N)
+    ctx = await _batch_review_context(session, reviews)
+    publisher_ids = {r.publisher_id for r in reviews if r.publisher_id is not None}
+    pub_ctx = await _batch_publisher_context(session, publisher_ids)
+
     items = []
     for r in reviews:
-        pkg_name, pkg_slug, ver = await _get_review_context(session, r)
-        pub_slug, pub_name = await _get_publisher_context(session, r.publisher_id)
+        pkg_name, pkg_slug, ver = ctx.get(r.id, (None, None, None))
+        pub_slug, pub_name = pub_ctx.get(r.publisher_id, (None, None))
         items.append(
             AdminQueueItem(
                 id=r.id,
@@ -431,6 +437,65 @@ async def _get_review_context(session: AsyncSession, review: ReviewRequest) -> t
         pkg_row.slug if pkg_row else None,
         pv_row.version_number if pv_row else None,
     )
+
+
+async def _batch_review_context(
+    session: AsyncSession, reviews: list[ReviewRequest],
+) -> dict[UUID, tuple[str | None, str | None, str | None]]:
+    """Batch-load (package_name, package_slug, version_number) for many reviews.
+
+    Returns a dict keyed by review.id.  Two queries total instead of 2*N.
+    """
+    if not reviews:
+        return {}
+
+    package_ids = {r.package_id for r in reviews if r.package_id is not None}
+    version_ids = {r.package_version_id for r in reviews if r.package_version_id is not None}
+
+    # Single query for all packages
+    pkg_map: dict[UUID, tuple[str | None, str | None]] = {}
+    if package_ids:
+        pkg_result = await session.execute(
+            select(Package.id, Package.name, Package.slug).where(Package.id.in_(package_ids))
+        )
+        for row in pkg_result.all():
+            pkg_map[row.id] = (row.name, row.slug)
+
+    # Single query for all versions
+    ver_map: dict[UUID, str] = {}
+    if version_ids:
+        pv_result = await session.execute(
+            select(PackageVersion.id, PackageVersion.version_number).where(PackageVersion.id.in_(version_ids))
+        )
+        for row in pv_result.all():
+            ver_map[row.id] = row.version_number
+
+    # Assemble per-review context
+    result: dict[UUID, tuple[str | None, str | None, str | None]] = {}
+    for r in reviews:
+        pkg_name, pkg_slug = pkg_map.get(r.package_id, (None, None))
+        ver = ver_map.get(r.package_version_id)
+        result[r.id] = (pkg_name, pkg_slug, ver)
+    return result
+
+
+async def _batch_publisher_context(
+    session: AsyncSession, publisher_ids: set[UUID],
+) -> dict[UUID, tuple[str | None, str | None]]:
+    """Batch-load (publisher_slug, publisher_name) for many publisher IDs.
+
+    Returns a dict keyed by publisher_id.  One query instead of N.
+    """
+    if not publisher_ids:
+        return {}
+
+    result = await session.execute(
+        select(Publisher.id, Publisher.slug, Publisher.display_name).where(Publisher.id.in_(publisher_ids))
+    )
+    pub_map: dict[UUID, tuple[str | None, str | None]] = {}
+    for row in result.all():
+        pub_map[row.id] = (row.slug, row.display_name)
+    return pub_map
 
 
 async def _get_publisher_context(session: AsyncSession, publisher_id) -> tuple[str | None, str | None]:

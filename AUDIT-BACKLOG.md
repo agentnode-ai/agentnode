@@ -81,6 +81,11 @@
 
 ### N+1 Query Fixes
 - [x] `check_updates` — batch load with window function (API F4, Perf 1.1)
+- [x] `resolve_upgrade` — batch load scored packages with `Package.slug.in_()` (API F5, Perf 1.2)
+- [x] Billing reviews — `_batch_review_context()` + `_batch_publisher_context()` batch helpers (API F8)
+
+### Caching
+- [x] Redis cache for `/v1/capabilities` — 5-min TTL, `package_count` added to response (Perf 6.1)
 
 ### Missing Indices (migration 020)
 - [x] `Installation.status` + `package_version_id` + `installed_at` (DB H1, H2)
@@ -115,10 +120,8 @@
 ## MEDIUM EFFORT (remaining)
 
 ### N+1 Query Fixes
-- [ ] `resolve_upgrade` — batch load scored packages (API F5, Perf 1.2)
 - [ ] `/recommend` — batch resolution (API F6, Perf 1.3)
 - [ ] Admin candidates listing — join instead of loop (API F7)
-- [ ] Billing reviews — selectinload (API F8)
 - [ ] Deprecate email loop — background task (API F15, Perf 1.4)
 - [ ] Weekly publisher digests — aggregate query (Perf 1.6)
 
@@ -128,7 +131,6 @@
 - [ ] `Capability` → `capability_taxonomy` — explicit ondelete (DB C5)
 
 ### Caching
-- [ ] Redis cache for `/v1/capabilities` (Perf 6.1)
 - [ ] Redis cache for package detail (Perf 6.2)
 - [ ] Meilisearch result caching (Perf 6.4)
 
