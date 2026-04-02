@@ -167,9 +167,9 @@
 - [x] JWT security negative tests — 17 tests covering expired/tampered/alg-confusion/wrong-type (Testing P0.1)
 - [x] Ed25519 signature tests — 22 tests covering valid/invalid/tampered/malformed (Testing P0.2)
 - [x] Cross-publisher authorization tests — 17 tests covering ownership isolation + admin override (Testing P0.4)
-- [ ] Fix rate limit tests — real Redis (Testing P1.5)
-- [ ] Verification pipeline integration test (Testing P1.6)
-- [ ] Shared test fixtures (Testing P1.9)
+- [x] Fix rate limit tests — stateful sorted-set mock, 7 tests verifying 429 behavior (Testing P1.5)
+- [x] Verification pipeline integration test — 10 tests covering pass/fail/quarantine/S3-error (Testing P1.6)
+- [x] Shared test fixtures — 5 reusable helpers + TEST_MANIFEST in conftest.py (Testing P1.9)
 
 ### Dependencies
 - [x] Generate Python lock file — 275 pinned deps in requirements.lock (Deps C1)
