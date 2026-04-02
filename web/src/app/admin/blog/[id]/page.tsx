@@ -6,7 +6,10 @@ import dynamic from "next/dynamic";
 import { fetchWithAuth } from "@/lib/api";
 import MediaLibraryModal from "@/components/blog/MediaLibraryModal";
 
-const TipTapEditor = dynamic(() => import("@/components/blog/TipTapEditor"), { ssr: false });
+const TipTapEditor = dynamic(() => import("@/components/blog/TipTapEditor"), {
+  ssr: false,
+  loading: () => <div className="h-[400px] animate-pulse rounded-lg border border-border bg-card" />,
+});
 
 interface Category {
   id: string;

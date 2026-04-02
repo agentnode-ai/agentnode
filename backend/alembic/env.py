@@ -15,10 +15,15 @@ from app.packages.models import (  # noqa: F401
     Package, PackageVersion, Capability, PackageTag, PackageCategory,
     CompatibilityRule, Dependency, Permission, UpgradeMetadata,
     SecurityFinding, CapabilityTaxonomy,
+    Installation, Review, PackageReport,
 )
 from app.verification.models import VerificationResult  # noqa: F401
 from app.blog.models import BlogCategory, BlogPost, BlogImage, BlogPostType  # noqa: F401
 from app.sitemap.models import SitemapPage  # noqa: F401
+from app.admin.models import AdminAuditLog, SystemSetting  # noqa: F401
+from app.billing.models import ReviewRequest, ProcessedStripeEvent  # noqa: F401
+from app.webhooks.models import Webhook, WebhookDelivery  # noqa: F401
+from app.invites.models import ImportCandidate, InviteCode, CandidateEvent  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)

@@ -138,17 +138,17 @@
 ## LARGE EFFORT (half-day+, needs planning)
 
 ### Architecture
+- [x] Meili httpx singleton client — init/close in app lifespan (Perf 7.2, CodeQuality #7)
+- [x] Webhook httpx shared client — init/close in app lifespan (Perf 7.3)
 - [ ] Wrap all boto3 S3 calls in `asyncio.to_thread()` or switch to aiobotocore (Perf 7.4, 8.1-8.3, 10.2)
-- [ ] Meili httpx singleton client (Perf 7.2, CodeQuality #7)
-- [ ] Webhook httpx shared client (Perf 7.3)
 - [ ] Background tasks for email + webhooks (Perf 8.4)
 - [ ] Replace `get_all_package_slugs` with pg_trgm (DB C6, Perf 3.4, 4.2)
 - [ ] `BaseHTTPMiddleware` → pure ASGI middleware (Perf 10.3)
 
 ### Missing Migrations
-- [ ] Create migration for 5 missing tables + 4 enums + email_preferences column (DB C1)
-- [ ] Fix alembic/env.py model imports (DB H7)
-- [ ] Add UniqueConstraint to import_candidates model (DB H8)
+- [x] Create migration 022 for 5 missing tables + 3 enums + email_preferences column (DB C1)
+- [x] Fix alembic/env.py model imports — all model modules now imported (DB H7)
+- [x] Add UniqueConstraint to import_candidates(source, source_url) (DB H8)
 
 ### Business Logic
 - [ ] Quarantine auto-clear bypass — only clear verification-related quarantine (BizLogic 4.2)
@@ -158,8 +158,8 @@
 - [ ] Signing key registration endpoint (BizLogic 1.1)
 
 ### Frontend
-- [ ] Dynamic import TipTap editor (Perf 5.1)
-- [ ] Dynamic import react-markdown/qrcode (Perf 5.2, 5.3)
+- [x] Dynamic import TipTap editor + loading skeleton (Perf 5.1)
+- [x] Dynamic import react-markdown + qrcode (Perf 5.2, 5.3)
 - [ ] Blog image optimization on upload (Perf 9.1)
 
 ### Testing (ongoing)

@@ -33,6 +33,12 @@ async def lifespan(app: FastAPI):
     # Startup: create Redis connection pool
     app.state.redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
 
+    # Startup: create shared httpx clients
+    from app.shared.meili import init_meili_client, close_meili_client
+    from app.webhooks.service import init_webhook_client, close_webhook_client
+    init_meili_client()
+    init_webhook_client()
+
     # Start background cron tasks
     from app.tasks.cron import start_cron_tasks, stop_cron_tasks
     start_cron_tasks()
@@ -60,6 +66,9 @@ async def lifespan(app: FastAPI):
     from app.search.router import _search_client
     if _search_client is not None:
         await _search_client.aclose()
+    # Close shared httpx clients
+    await close_meili_client()
+    await close_webhook_client()
     await app.state.redis.close()
     await engine.dispose()
 
@@ -141,11 +150,10 @@ async def readyz():
 
     # Check Meilisearch (optional in MVP)
     try:
-        import httpx
-
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{settings.MEILISEARCH_URL}/health", timeout=5)
-            details["meilisearch"] = "ok" if resp.status_code == 200 else "degraded"
+        from app.shared.meili import get_meili_client
+        client = get_meili_client()
+        resp = await client.get("/health")
+        details["meilisearch"] = "ok" if resp.status_code == 200 else "degraded"
     except Exception:
         details["meilisearch"] = "unavailable (non-critical)"
 

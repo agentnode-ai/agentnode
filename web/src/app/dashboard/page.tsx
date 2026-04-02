@@ -3,9 +3,14 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import QRCode from "qrcode";
+import dynamic from "next/dynamic";
 import { fetchWithAuth, search, type SearchHit } from "@/lib/api";
 import VerificationBadge from "@/components/VerificationBadge";
+
+const QRCodeImage = dynamic(() => import("./QRCodeImage"), {
+  ssr: false,
+  loading: () => <div className="mb-4 flex justify-center"><div className="h-[200px] w-[200px] animate-pulse rounded-lg bg-muted/30" /></div>,
+});
 
 interface ApiKeyInfo {
   id: string;
@@ -94,8 +99,6 @@ export default function DashboardPage() {
   // API Key copy (Fix 8)
   const [copiedKey, setCopiedKey] = useState(false);
 
-  // QR code (Fix 9)
-  const [qrDataUrl, setQrDataUrl] = useState("");
 
   useEffect(() => {
     // Handle review redirect params from Stripe
@@ -145,7 +148,6 @@ export default function DashboardPage() {
 
   async function setup2FA() {
     setShowSetup2FA(true);
-    setQrDataUrl("");
     const res = await fetchWithAuth("/auth/2fa/setup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -155,9 +157,6 @@ export default function DashboardPage() {
       const uri = data.provisioning_uri || data.qr_uri || "";
       setQrUri(uri);
       setSecret(data.secret || "");
-      if (uri) {
-        try { const url = await QRCode.toDataURL(uri, { width: 200, margin: 2 }); setQrDataUrl(url); } catch { /* fallback to text */ }
-      }
     }
   }
 
@@ -642,11 +641,7 @@ export default function DashboardPage() {
           <p className="mb-4 text-sm text-muted">
             Scan the QR code with your authenticator app, or enter the secret manually.
           </p>
-          {qrDataUrl && (
-            <div className="mb-4 flex justify-center">
-              <img src={qrDataUrl} alt="2FA QR Code" width={200} height={200} className="rounded-lg" />
-            </div>
-          )}
+          {qrUri && <QRCodeImage uri={qrUri} />}
           {secret && (
             <div className="mb-4">
               <p className="mb-1 text-xs text-muted">Or enter this secret manually:</p>

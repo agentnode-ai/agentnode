@@ -1,7 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import MarkdownRenderer from "@/components/MarkdownRenderer";
+import dynamic from "next/dynamic";
+
+const MarkdownRenderer = dynamic(() => import("@/components/MarkdownRenderer"), {
+  ssr: false,
+  loading: () => <div className="h-64 animate-pulse rounded bg-muted/30" />,
+});
 
 interface ReadmeSectionProps {
   content: string;
