@@ -26,7 +26,7 @@
 - Node.js 20+
 - PostgreSQL 16
 - Redis 7
-- Meilisearch 1.6+
+- Meilisearch 1.12+
 - MinIO (or S3-compatible storage)
 
 ## Quick Start with Docker Compose (Development)

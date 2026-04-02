@@ -174,7 +174,7 @@
 ### Dependencies
 - [x] Generate Python lock file — 275 pinned deps in requirements.lock (Deps C1)
 - [x] Add upper bounds on security packages — bcrypt, PyJWT, pyotp, PyNaCl (Deps H1)
-- [ ] Update Meilisearch Docker v1.6 → v1.12 (Deps M5)
+- [x] Update Meilisearch Docker v1.6 → v1.12 (Deps M5)
 
 ---
 
