@@ -548,6 +548,29 @@ async def send_package_deprecated_email(to: str, package_slug: str) -> bool:
     return await send_email(to, f"{package_slug} deprecated - AgentNode", html)
 
 
+async def send_package_deprecated_emails_batch(recipients: list[str], package_slug: str) -> int:
+    """Send deprecation emails to a pre-filtered list of recipients.
+
+    Unlike send_package_deprecated_email, this does NOT call check_email_pref
+    per recipient — the caller is expected to have already filtered by preference.
+    Returns the number of emails successfully sent.
+    """
+    html = _wrap(f"""
+      <h1>Package deprecated</h1>
+      <p>The package <strong>{package_slug}</strong> has been marked as deprecated by its publisher.</p>
+      <p>It will remain available but is no longer actively maintained. Consider migrating to an alternative.</p>
+      <p style="text-align:center; margin: 24px 0;">
+        <a href="{settings.FRONTEND_URL}/search" class="btn">Find Alternatives</a>
+      </p>
+    """)
+    subject = f"{package_slug} deprecated - AgentNode"
+    sent = 0
+    for to in recipients:
+        if await send_email(to, subject, html):
+            sent += 1
+    return sent
+
+
 # 24. Security scan report
 async def send_security_scan_report_email(to: str, package_slug: str, version: str, finding_count: int, high_count: int) -> bool:
     severity_note = f'<p class="warn">{high_count} high-severity finding(s) detected.</p>' if high_count else ""

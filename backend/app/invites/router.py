@@ -219,26 +219,50 @@ async def list_candidates(
     result = await session.execute(query)
     candidates = result.scalars().all()
 
-    # Enrich with invite info
-    items = []
-    for c in candidates:
-        invite_result = await session.execute(
-            select(InviteCode.code, InviteCode.status)
-            .where(InviteCode.candidate_id == c.id)
-            .order_by(InviteCode.created_at.desc())
-            .limit(1)
-        )
-        invite_row = invite_result.first()
+    # Batch-load invite info and click counts (avoid N+1 queries)
+    candidate_ids = [c.id for c in candidates]
 
+    invite_map: dict = {}  # candidate_id -> (code, status)
+    click_map: dict = {}   # candidate_id -> int
+
+    if candidate_ids:
+        # Latest invite per candidate via window function
+        row_num = func.row_number().over(
+            partition_by=InviteCode.candidate_id,
+            order_by=InviteCode.created_at.desc(),
+        ).label("rn")
+        invite_sub = (
+            select(
+                InviteCode.candidate_id,
+                InviteCode.code,
+                InviteCode.status,
+                row_num,
+            )
+            .where(InviteCode.candidate_id.in_(candidate_ids))
+            .subquery()
+        )
+        invite_result = await session.execute(
+            select(invite_sub.c.candidate_id, invite_sub.c.code, invite_sub.c.status)
+            .where(invite_sub.c.rn == 1)
+        )
+        for row in invite_result.all():
+            invite_map[row[0]] = (row[1], row[2])
+
+        # Click counts per candidate in one query
         click_result = await session.execute(
-            select(func.count(CandidateEvent.id))
+            select(CandidateEvent.candidate_id, func.count(CandidateEvent.id))
             .where(and_(
-                CandidateEvent.candidate_id == c.id,
+                CandidateEvent.candidate_id.in_(candidate_ids),
                 CandidateEvent.event_type == "invite_link_clicked",
             ))
+            .group_by(CandidateEvent.candidate_id)
         )
-        click_count = click_result.scalar() or 0
+        for row in click_result.all():
+            click_map[row[0]] = row[1]
 
+    items = []
+    for c in candidates:
+        invite_info = invite_map.get(c.id)
         items.append(CandidateResponse(
             id=c.id,
             source=c.source,
@@ -264,9 +288,9 @@ async def list_candidates(
             skip_reason=c.skip_reason,
             created_at=c.created_at,
             updated_at=c.updated_at,
-            invite_code=invite_row[0] if invite_row else None,
-            invite_status=invite_row[1] if invite_row else None,
-            click_count=click_count,
+            invite_code=invite_info[0] if invite_info else None,
+            invite_status=invite_info[1] if invite_info else None,
+            click_count=click_map.get(c.id, 0),
         ))
 
     return CandidateListResponse(items=items, total=total)

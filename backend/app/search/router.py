@@ -1,7 +1,9 @@
+import hashlib
+import json
 import logging
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from app.config import settings
 from app.shared.rate_limit import rate_limit
@@ -34,9 +36,42 @@ def _get_search_key() -> str:
     return settings.MEILISEARCH_KEY
 
 
+def _build_search_cache_key(body: SearchRequest) -> str:
+    """Build a deterministic cache key from search parameters."""
+    key_parts = {
+        "q": body.q,
+        "package_type": body.package_type,
+        "capability_id": body.capability_id,
+        "framework": body.framework,
+        "runtime": body.runtime,
+        "trust_level": body.trust_level,
+        "verification_tier": body.verification_tier,
+        "publisher_slug": body.publisher_slug,
+        "sort_by": body.sort_by,
+        "page": body.page,
+        "per_page": body.per_page,
+    }
+    raw = json.dumps(key_parts, sort_keys=True)
+    digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
+    return f"search:{digest}"
+
+
+SEARCH_CACHE_TTL = 60  # seconds
+
+
 @router.post("/search", response_model=SearchResponse, dependencies=[Depends(rate_limit(30, 60))])
-async def search_packages(body: SearchRequest):
+async def search_packages(body: SearchRequest, request: Request):
     """Full-text search over published packages via Meilisearch. Spec §8.2."""
+    # Try Redis cache first
+    redis = request.app.state.redis
+    cache_key = _build_search_cache_key(body)
+    try:
+        cached = await redis.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        logger.warning("Redis cache read failed for %s", cache_key, exc_info=True)
+
     q = body.q
     per_page = body.per_page
     page = body.page
@@ -115,4 +150,12 @@ async def search_packages(body: SearchRequest):
 
     total = data.get("estimatedTotalHits", data.get("totalHits", len(hits)))
 
-    return SearchResponse(query=q, hits=hits, total=total, page=page, per_page=per_page)
+    response = SearchResponse(query=q, hits=hits, total=total, page=page, per_page=per_page)
+
+    # Cache the response
+    try:
+        await redis.set(cache_key, json.dumps(response.model_dump(mode="json")), ex=SEARCH_CACHE_TTL)
+    except Exception:
+        logger.warning("Redis cache write failed for %s", cache_key, exc_info=True)
+
+    return response

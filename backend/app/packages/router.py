@@ -505,6 +505,7 @@ async def request_reverify(
 @router.post("/{slug}/deprecate", response_model=ActionResponse, dependencies=[Depends(rate_limit(max_requests=5, window_seconds=60))])
 async def deprecate_package(
     slug: str,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -525,15 +526,22 @@ async def deprecate_package(
 
     await fire_event(session, pkg.publisher_id, "package.deprecated", {"slug": pkg.slug})
 
-    # Notify users with active installations
-    from app.shared.email import send_package_deprecated_email
+    # Batch-load emails + preferences for users with active installations (single query)
+    from app.shared.email import send_package_deprecated_emails_batch, EMAIL_PREF_DEFAULTS
     install_results = await session.execute(
-        select(User.__table__.c.email).distinct()
+        select(User.__table__.c.email, User.__table__.c.email_preferences).distinct()
         .select_from(Installation.__table__.join(User.__table__, Installation.user_id == User.__table__.c.id))
         .where(Installation.package_id == pkg.id, Installation.status == "active")
     )
-    for row in install_results.all():
-        await send_package_deprecated_email(row[0], slug)
+    # Filter out users who opted out of deprecation emails — no per-row DB call
+    deprecated_default = EMAIL_PREF_DEFAULTS.get("deprecated", True)
+    recipients = [
+        row[0] for row in install_results.all()
+        if (row[1] or {}).get("deprecated", deprecated_default)
+    ]
+
+    if recipients:
+        background_tasks.add_task(send_package_deprecated_emails_batch, recipients, slug)
 
     return ActionResponse(message="Package deprecated")
 

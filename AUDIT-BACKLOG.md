@@ -84,10 +84,13 @@
 - [x] `resolve_upgrade` — batch load scored packages with `Package.slug.in_()` (API F5, Perf 1.2)
 - [x] `/recommend` — single batch resolve + batch capability load instead of per-cap loops (API F6, Perf 1.3)
 - [x] Billing reviews — `_batch_review_context()` + `_batch_publisher_context()` batch helpers (API F8)
+- [x] Admin candidates listing — ROW_NUMBER() window + batch click counts (API F7)
+- [x] Deprecate email loop — batch query + background task (API F15, Perf 1.4)
 
 ### Caching
 - [x] Redis cache for `/v1/capabilities` — 5-min TTL, `package_count` added to response (Perf 6.1)
 - [x] Redis cache for package detail — 2-min TTL, invalidated on publish/yank/update (Perf 6.2)
+- [x] Meilisearch search result caching — 60s TTL, SHA-256 key from params (Perf 6.4)
 
 ### FK Constraints (migration 021)
 - [x] `PackageReport.package_id` → `ON DELETE CASCADE` (DB C3)
@@ -128,12 +131,7 @@
 ## MEDIUM EFFORT (remaining)
 
 ### N+1 Query Fixes
-- [ ] Admin candidates listing — join instead of loop (API F7)
-- [ ] Deprecate email loop — background task (API F15, Perf 1.4)
 - [ ] Weekly publisher digests — aggregate query (Perf 1.6)
-
-### Caching
-- [ ] Meilisearch result caching (Perf 6.4)
 
 ---
 
