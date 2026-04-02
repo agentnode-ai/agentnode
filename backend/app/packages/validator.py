@@ -224,7 +224,7 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
             if not cap_id:
                 errors.append(f"tools[{i}].capability_id is required")
             elif valid_cap_ids is not None and cap_id not in valid_cap_ids:
-                errors.append(f"tools[{i}].capability_id '{cap_id}' not in capability_taxonomy")
+                warnings.append(f"tools[{i}].capability_id '{cap_id}' is new — will be added as uncategorized")
 
             # Validate input_schema as JSON Schema
             input_schema = tool.get("input_schema")

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.packages.models import (
     Capability,
+    CapabilityTaxonomy,
     CompatibilityRule,
     Dependency,
     Package,
@@ -319,8 +320,36 @@ async def publish_package(
         if metadata.get("readme_md"):
             pv.readme_md = metadata["readme_md"]
 
-    # 7. Create capabilities
+    # 7. Auto-create unknown capability_ids in taxonomy
     capabilities = manifest.get("capabilities", {})
+    all_cap_ids = set()
+    for tool in capabilities.get("tools", []):
+        if tool.get("capability_id"):
+            all_cap_ids.add(tool["capability_id"])
+    for resource in capabilities.get("resources", []):
+        if resource.get("capability_id"):
+            all_cap_ids.add(resource["capability_id"])
+    for prompt in capabilities.get("prompts", []):
+        if prompt.get("capability_id"):
+            all_cap_ids.add(prompt["capability_id"])
+
+    if all_cap_ids:
+        existing = await session.execute(
+            select(CapabilityTaxonomy.id).where(CapabilityTaxonomy.id.in_(all_cap_ids))
+        )
+        existing_ids = {row[0] for row in existing.all()}
+        for new_id in all_cap_ids - existing_ids:
+            display = new_id.replace("_", " ").title()
+            session.add(CapabilityTaxonomy(
+                id=new_id,
+                display_name=display,
+                description=None,
+                category="uncategorized",
+            ))
+            logger.info("Auto-created taxonomy entry '%s' (uncategorized)", new_id)
+        await session.flush()
+
+    # 7b. Create capabilities
     for tool in capabilities.get("tools", []):
         session.add(Capability(
             package_version_id=pv.id,
