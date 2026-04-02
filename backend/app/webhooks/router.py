@@ -1,7 +1,7 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import require_publisher
@@ -53,27 +53,43 @@ async def create_webhook(
     )
 
 
-@router.get("", response_model=list[WebhookResponse], dependencies=[Depends(rate_limit(30, 60))])
+@router.get("", dependencies=[Depends(rate_limit(30, 60))])
 async def list_webhooks(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=100),
     user: User = Depends(require_publisher),
     session: AsyncSession = Depends(get_session),
 ):
     """List all webhooks for the current publisher."""
+    total_result = await session.execute(
+        select(func.count(Webhook.id)).where(Webhook.publisher_id == user.publisher.id)
+    )
+    total = total_result.scalar() or 0
+
     result = await session.execute(
-        select(Webhook).where(Webhook.publisher_id == user.publisher.id)
+        select(Webhook)
+        .where(Webhook.publisher_id == user.publisher.id)
+        .order_by(Webhook.created_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
     )
     webhooks = result.scalars().all()
 
-    return [
-        WebhookResponse(
-            id=wh.id,
-            url=wh.url,
-            events=wh.events,
-            is_active=wh.is_active,
-            created_at=wh.created_at,
-        )
-        for wh in webhooks
-    ]
+    return {
+        "items": [
+            WebhookResponse(
+                id=wh.id,
+                url=wh.url,
+                events=wh.events,
+                is_active=wh.is_active,
+                created_at=wh.created_at,
+            ).model_dump()
+            for wh in webhooks
+        ],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+    }
 
 
 @router.delete("/{webhook_id}", dependencies=[Depends(rate_limit(10, 60))])

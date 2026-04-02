@@ -5,7 +5,7 @@ All version visibility logic MUST go through these helpers.
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import and_, case, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.packages.models import Package, PackageVersion
@@ -169,3 +169,56 @@ async def get_latest_installable_version(
         return None, InstallResolution.FALLBACK
 
     return pv, _derive_install_reason(pv)
+
+
+async def get_latest_installable_versions_batch(
+    session: AsyncSession,
+    package_ids: list[UUID],
+) -> dict[UUID, tuple[PackageVersion, str]]:
+    """Batch version of get_latest_installable_version.
+
+    Returns {package_id: (version, reason)} for each package that has an
+    installable version. Packages with no qualifying version are omitted.
+    """
+    if not package_ids:
+        return {}
+
+    recent_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+
+    tier_priority = case(
+        (PackageVersion.verification_tier.in_(("gold", "verified")), 1),
+        (PackageVersion.verification_tier == "partial", 2),
+        (and_(
+            PackageVersion.verification_status == "pending",
+            PackageVersion.published_at >= recent_cutoff,
+        ), 3),
+        else_=4,
+    )
+
+    row_num = func.row_number().over(
+        partition_by=PackageVersion.package_id,
+        order_by=[tier_priority.asc(), PackageVersion.published_at.desc()],
+    ).label("rn")
+
+    subq = (
+        select(PackageVersion.id, PackageVersion.package_id, row_num)
+        .where(
+            PackageVersion.package_id.in_(package_ids),
+            PackageVersion.channel == "stable",
+            PackageVersion.quarantine_status.in_(("none", "cleared")),
+            PackageVersion.is_yanked == False,  # noqa: E712
+        )
+        .subquery()
+    )
+
+    result = await session.execute(
+        select(PackageVersion)
+        .join(subq, PackageVersion.id == subq.c.id)
+        .where(subq.c.rn == 1)
+    )
+    versions = result.scalars().all()
+
+    return {
+        pv.package_id: (pv, _derive_install_reason(pv))
+        for pv in versions
+    }

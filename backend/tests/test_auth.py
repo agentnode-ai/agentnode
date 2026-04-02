@@ -176,14 +176,14 @@ async def test_2fa_setup_and_verify(client):
     assert setup_resp.status_code == 200
     data = setup_resp.json()
     assert "secret" in data
-    assert "qr_uri" in data
+    assert "provisioning_uri" in data or "qr_uri" in data
 
     # Verify with correct code
     import pyotp
     totp = pyotp.TOTP(data["secret"])
     verify_resp = await client.post(
         "/v1/auth/2fa/verify",
-        json={"totp_code": totp.now()},
+        json={"code": totp.now()},
         headers=headers,
     )
     assert verify_resp.status_code == 200

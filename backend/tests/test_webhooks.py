@@ -125,7 +125,11 @@ async def test_list_webhooks(client):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 200
-    assert len(resp.json()) == 2
+    data = resp.json()
+    assert data["total"] == 2
+    assert data["page"] == 1
+    assert data["per_page"] == 50
+    assert len(data["items"]) == 2
 
 
 @pytest.mark.asyncio
@@ -152,7 +156,9 @@ async def test_delete_webhook(client):
         "/v1/webhooks",
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert len(list_resp.json()) == 0
+    data = list_resp.json()
+    assert data["total"] == 0
+    assert len(data["items"]) == 0
 
 
 @pytest.mark.asyncio

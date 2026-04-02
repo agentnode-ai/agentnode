@@ -191,6 +191,9 @@ class VersionListItem(BaseModel):
 
 class VersionsResponse(BaseModel):
     versions: list[VersionListItem]
+    total: int | None = None
+    page: int | None = None
+    per_page: int | None = None
 
 
 class PublishResponse(BaseModel):

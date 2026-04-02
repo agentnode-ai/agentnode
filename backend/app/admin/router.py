@@ -175,30 +175,44 @@ async def reject_version(
     )
 
 
-@router.get("/quarantined", response_model=list[QuarantinedVersionItem], dependencies=[Depends(rate_limit(30, 60))])
+@router.get("/quarantined", dependencies=[Depends(rate_limit(30, 60))])
 async def list_quarantined(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=100),
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     """List all quarantined versions."""
+    total_result = await session.execute(
+        select(func.count(PackageVersion.id)).where(PackageVersion.quarantine_status == "quarantined")
+    )
+    total = total_result.scalar() or 0
+
     result = await session.execute(
         select(PackageVersion)
         .options(selectinload(PackageVersion.package))
         .where(PackageVersion.quarantine_status == "quarantined")
         .order_by(PackageVersion.quarantined_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
     )
     versions = result.scalars().all()
 
-    return [
-        QuarantinedVersionItem(
-            package_slug=v.package.slug,
-            version_number=v.version_number,
-            quarantine_status=v.quarantine_status,
-            quarantined_at=v.quarantined_at,
-            quarantine_reason=v.quarantine_reason,
-        )
-        for v in versions
-    ]
+    return {
+        "items": [
+            QuarantinedVersionItem(
+                package_slug=v.package.slug,
+                version_number=v.version_number,
+                quarantine_status=v.quarantine_status,
+                quarantined_at=v.quarantined_at,
+                quarantine_reason=v.quarantine_reason,
+            ).model_dump()
+            for v in versions
+        ],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+    }
 
 
 # --- Trust level endpoints ---
@@ -475,12 +489,20 @@ async def delete_capability(
 @router.get("/reports", dependencies=[Depends(rate_limit(30, 60))])
 async def list_reports(
     status: str | None = None,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=100),
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     """List package reports with readable package slug and reporter username."""
     # Aliases for the reporter user
     reporter = User.__table__.alias("reporter")
+
+    count_query = select(func.count(PackageReport.id))
+    if status:
+        count_query = count_query.where(PackageReport.status == status)
+    total_result = await session.execute(count_query)
+    total = total_result.scalar() or 0
 
     query = (
         select(
@@ -492,7 +514,8 @@ async def list_reports(
         .outerjoin(Package, PackageReport.package_id == Package.id)
         .outerjoin(reporter, PackageReport.reporter_user_id == reporter.c.id)
         .order_by(PackageReport.created_at.desc())
-        .limit(100)
+        .offset((page - 1) * per_page)
+        .limit(per_page)
     )
     if status:
         query = query.where(PackageReport.status == status)
@@ -518,7 +541,9 @@ async def list_reports(
             }
             for r in rows
         ],
-        "total": len(rows),
+        "total": total,
+        "page": page,
+        "per_page": per_page,
     }
 
 

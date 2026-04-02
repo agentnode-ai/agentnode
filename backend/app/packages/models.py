@@ -182,7 +182,7 @@ class CompatibilityRule(Base, UUIDPrimaryKeyMixin):
 class Dependency(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "dependencies"
 
-    package_version_id = Column(UUID(as_uuid=True), ForeignKey("package_versions.id", ondelete="CASCADE"), nullable=False)
+    package_version_id = Column(UUID(as_uuid=True), ForeignKey("package_versions.id", ondelete="CASCADE"), nullable=False, index=True)
     dependency_package_slug = Column(Text, nullable=False)
     role = Column(Text, nullable=True)
     is_required = Column(Boolean, nullable=False, default=True)
@@ -234,7 +234,7 @@ class UpgradeMetadata(Base, UUIDPrimaryKeyMixin):
 class SecurityFinding(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "security_findings"
 
-    package_version_id = Column(UUID(as_uuid=True), ForeignKey("package_versions.id", ondelete="CASCADE"), nullable=False)
+    package_version_id = Column(UUID(as_uuid=True), ForeignKey("package_versions.id", ondelete="CASCADE"), nullable=False, index=True)
     severity = Column(
         Enum("low", "medium", "high", "critical", name="severity_level", create_type=False),
         nullable=False,
@@ -251,7 +251,7 @@ class Installation(Base, UUIDPrimaryKeyMixin):
 
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     package_id = Column(UUID(as_uuid=True), ForeignKey("packages.id", ondelete="CASCADE"), nullable=False, index=True)
-    package_version_id = Column(UUID(as_uuid=True), ForeignKey("package_versions.id", ondelete="CASCADE"), nullable=False)
+    package_version_id = Column(UUID(as_uuid=True), ForeignKey("package_versions.id", ondelete="CASCADE"), nullable=False, index=True)
     source = Column(
         Enum("cli", "api", "web", "sdk", "adapter", name="install_source", create_type=False),
         nullable=False,
@@ -260,6 +260,7 @@ class Installation(Base, UUIDPrimaryKeyMixin):
         Enum("installed", "active", "failed", "uninstalled", name="install_status", create_type=False),
         nullable=False,
         default="installed",
+        index=True,
     )
     event_type = Column(
         Enum("install", "update", "rollback", name="install_event_type", create_type=False),
@@ -277,7 +278,7 @@ class Review(Base, UUIDPrimaryKeyMixin):
     __table_args__ = (UniqueConstraint("user_id", "package_id"),)
 
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    package_id = Column(UUID(as_uuid=True), ForeignKey("packages.id", ondelete="CASCADE"), nullable=False)
+    package_id = Column(UUID(as_uuid=True), ForeignKey("packages.id", ondelete="CASCADE"), nullable=False, index=True)
     rating = Column(Integer, nullable=False)
     comment = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default="now()")
@@ -287,10 +288,10 @@ class PackageReport(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "package_reports"
 
     package_id = Column(UUID(as_uuid=True), ForeignKey("packages.id"), nullable=False)
-    reporter_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    reporter_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     reason = Column(Text, nullable=False)
     description = Column(Text, nullable=True)
-    status = Column(Text, nullable=False, default="submitted")
+    status = Column(Text, nullable=False, default="submitted", index=True)
     resolved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     resolution_note = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default="now()")

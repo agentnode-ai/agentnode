@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.packages.models import (
@@ -506,8 +507,12 @@ async def publish_package(
     if pub_obj:
         pub_obj.packages_published_count = (pub_obj.packages_published_count or 0) + 1
 
-    # 15. Commit
-    await session.commit()
+    # 15. Commit (catch concurrent publish of same version — DB unique constraint)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise AppError("VERSION_EXISTS", f"Version {version_str} already exists (concurrent publish)", 409)
     await session.refresh(pkg)
 
     # 16. Sync to Meilisearch (fire-and-forget, non-blocking)

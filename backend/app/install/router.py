@@ -25,7 +25,7 @@ from app.install.schemas import (
     ToolInfo,
 )
 from app.install.service import build_artifact_info, get_install_version, track_download, create_installation
-from app.packages.version_queries import InstallResolution, get_latest_installable_version
+from app.packages.version_queries import get_latest_installable_versions_batch
 
 router = APIRouter(prefix="/v1/packages", tags=["install"])
 installations_router = APIRouter(prefix="/v1/installations", tags=["install"])
@@ -246,16 +246,25 @@ async def check_updates(
     session: AsyncSession = Depends(get_session),
 ):
     """Batch check for available updates. Spec §8.6.2."""
+    # 1. Collect all slugs from the request
+    slugs = [p.slug for p in body.packages]
+
+    # 2. Single query: load all packages + their latest published versions
+    result = await session.execute(
+        select(Package)
+        .options(selectinload(Package.latest_version))
+        .where(Package.slug.in_(slugs))
+    )
+    pkg_map = {pkg.slug: pkg for pkg in result.scalars().all()}
+
+    # 3. Single query: load best installable version per package
+    found_ids = [pkg.id for pkg in pkg_map.values()]
+    installable_map = await get_latest_installable_versions_batch(session, found_ids)
+
+    # 4. Map results back and compare versions
     updates = []
     for pkg_check in body.packages:
-        result = await session.execute(
-            select(Package)
-            .options(
-                selectinload(Package.latest_version),
-            )
-            .where(Package.slug == pkg_check.slug)
-        )
-        pkg = result.scalar_one_or_none()
+        pkg = pkg_map.get(pkg_check.slug)
         if not pkg:
             updates.append({
                 "slug": pkg_check.slug,
@@ -268,12 +277,16 @@ async def check_updates(
             })
             continue
 
-        # Use installable version (prefers verified) for update target
-        installable, reason = await get_latest_installable_version(session, pkg.id)
-        installable_ver = installable.version_number if installable else None
-        installable_tier = installable.verification_tier if installable else None
+        installable_entry = installable_map.get(pkg.id)
+        if installable_entry:
+            installable, reason = installable_entry
+            installable_ver = installable.version_number
+            installable_tier = installable.verification_tier
+        else:
+            installable_ver = None
+            installable_tier = None
+            reason = None
 
-        # Keep latest published for context
         latest_published = pkg.latest_version.version_number if pkg.latest_version else None
 
         updates.append({
@@ -283,7 +296,7 @@ async def check_updates(
             "latest_published_version": latest_published,
             "has_update": bool(installable_ver and installable_ver != pkg_check.version),
             "verification_tier": installable_tier,
-            "install_resolution": reason if installable else None,
+            "install_resolution": reason,
         })
 
     return {"updates": updates}

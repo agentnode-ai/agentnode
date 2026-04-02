@@ -187,6 +187,14 @@ async def test_clear_non_quarantined_fails(mock_meili, mock_s3, client, session)
         headers={"Authorization": f"Bearer {token}"},
     )
 
+    # Ensure the version is NOT quarantined (new publishers may auto-quarantine)
+    from app.packages.models import PackageVersion
+    from sqlalchemy import select, update
+    await session.execute(
+        update(PackageVersion).where(PackageVersion.version_number == "1.0.0").values(quarantine_status="none")
+    )
+    await session.commit()
+
     resp = await client.post(
         "/v1/admin/packages/mod-test-pkg/versions/1.0.0/clear",
         headers={"Authorization": f"Bearer {token}"},
@@ -216,7 +224,11 @@ async def test_list_quarantined(mock_meili, mock_s3, client, session):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 200
-    items = resp.json()
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["page"] == 1
+    assert data["per_page"] == 50
+    items = data["items"]
     assert len(items) == 1
     assert items[0]["package_slug"] == "mod-test-pkg"
 
@@ -241,8 +253,8 @@ async def test_quarantined_not_installable(mock_meili, mock_s3, client, session)
         headers={"Authorization": f"Bearer {token}"},
     )
 
-    # Try to install — should fail (no installable version)
-    resp = await client.get("/v1/packages/mod-test-pkg/install")
+    # Try to get install info — should fail (no installable version)
+    resp = await client.get("/v1/packages/mod-test-pkg/install-info")
     assert resp.status_code == 404
 
 

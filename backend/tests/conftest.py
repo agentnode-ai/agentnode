@@ -73,13 +73,27 @@ async def client(session):
     mock_pipe.zcard = MagicMock(return_value=mock_pipe)
     mock_pipe.expire = MagicMock(return_value=mock_pipe)
 
+    # Simple in-memory store so refresh tokens round-trip correctly
+    _redis_store: dict[str, str] = {}
+
+    async def _mock_set(key, value, ex=None):
+        _redis_store[key] = value
+
+    async def _mock_get(key):
+        return _redis_store.get(key)
+
+    async def _mock_delete(key):
+        _redis_store.pop(key, None)
+
     mock_redis = AsyncMock()
     mock_redis.ping = AsyncMock(return_value=True)
     mock_redis.pipeline = MagicMock(return_value=mock_pipe)
-    mock_redis.get = AsyncMock(return_value=None)  # login lockout check
+    mock_redis.set = AsyncMock(side_effect=_mock_set)
+    mock_redis.get = AsyncMock(side_effect=_mock_get)
     mock_redis.incr = AsyncMock(return_value=1)
     mock_redis.expire = AsyncMock(return_value=True)
-    mock_redis.delete = AsyncMock(return_value=True)
+    mock_redis.delete = AsyncMock(side_effect=_mock_delete)
+    mock_redis.ttl = AsyncMock(return_value=-1)
     mock_redis.close = AsyncMock()
     app.state.redis = mock_redis
 

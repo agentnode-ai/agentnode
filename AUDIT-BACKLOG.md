@@ -77,10 +77,44 @@
 
 ---
 
-## MEDIUM EFFORT (1-2 hours each, next sprint)
+## MEDIUM EFFORT — DONE
 
 ### N+1 Query Fixes
-- [ ] `check_updates` — batch load packages (API F4, Perf 1.1) **HIGH PRIORITY**
+- [x] `check_updates` — batch load with window function (API F4, Perf 1.1)
+
+### Missing Indices (migration 020)
+- [x] `Installation.status` + `package_version_id` + `installed_at` (DB H1, H2)
+- [x] `PackageReport.status` + `reporter_user_id` (DB H3)
+- [x] `Review.package_id` (DB H4)
+- [x] `SecurityFinding.package_version_id` (DB H5)
+- [x] `Dependency.package_version_id` (DB H6)
+- [x] `PackageVersion.verification_status` (Perf 2.2)
+- [x] Composite index `(package_id, quarantine_status, is_yanked, channel, published_at)` (Perf 2.3)
+- [x] `PackageVersion.quarantine_status` — already existed as `idx_versions_quarantine` (Perf 2.1)
+
+### Pagination
+- [x] `GET /packages/{slug}/reviews` (API F10)
+- [x] `GET /webhooks` (API F11)
+- [x] `GET /admin/quarantined` (API F11)
+- [x] `GET /admin/reports` (API F11)
+- [x] `GET /packages/{slug}/versions` (Perf 3.1, 3.2)
+
+### Race Conditions
+- [x] Concurrent publish — catch IntegrityError (API F12, BizLogic 3.1)
+- [x] Double review submission — catch IntegrityError (API F13)
+
+### Test Fixes
+- [x] Redis mock now stores refresh JTIs (test_refresh_token)
+- [x] Fixed test_clear_non_quarantined_fails (auto-quarantine behavior)
+- [x] Fixed test_quarantined_not_installable (wrong endpoint URL)
+- [x] Fixed test_2fa_setup_and_verify (field name mismatch)
+- [x] Fixed test_delete_webhook (pagination response shape)
+
+---
+
+## MEDIUM EFFORT (remaining)
+
+### N+1 Query Fixes
 - [ ] `resolve_upgrade` — batch load scored packages (API F5, Perf 1.2)
 - [ ] `/recommend` — batch resolution (API F6, Perf 1.3)
 - [ ] Admin candidates listing — join instead of loop (API F7)
@@ -88,31 +122,10 @@
 - [ ] Deprecate email loop — background task (API F15, Perf 1.4)
 - [ ] Weekly publisher digests — aggregate query (Perf 1.6)
 
-### Missing Indices (single migration)
-- [ ] `Installation.status` + `Installation.package_version_id` (DB H1, H2)
-- [ ] `PackageReport.status` + `reporter_user_id` (DB H3)
-- [ ] `Review.package_id` (DB H4)
-- [ ] `SecurityFinding.package_version_id` (DB H5)
-- [ ] `Dependency.package_version_id` (DB H6)
-- [ ] `PackageVersion.quarantine_status` (Perf 2.1)
-- [ ] `PackageVersion.verification_status` (Perf 2.2)
-- [ ] Composite index `(package_id, quarantine_status, is_yanked, channel, published_at)` (Perf 2.3)
-
-### Missing Pagination
-- [ ] `GET /packages/{slug}/reviews` (API F10)
-- [ ] `GET /webhooks` (API F11)
-- [ ] `GET /admin/quarantined` (API F11)
-- [ ] `GET /admin/reports` (API F11)
-- [ ] `GET /packages/{slug}/versions` (Perf 3.1, 3.2)
-
 ### FK Constraints
 - [ ] `PackageReport` — add ondelete CASCADE/SET NULL (DB C3)
 - [ ] `AdminAuditLog` — add ondelete SET NULL (DB C4)
 - [ ] `Capability` → `capability_taxonomy` — explicit ondelete (DB C5)
-
-### Race Conditions
-- [ ] Concurrent publish — catch IntegrityError (API F12, BizLogic 3.1)
-- [ ] Double review submission — catch IntegrityError (API F13)
 
 ### Caching
 - [ ] Redis cache for `/v1/capabilities` (Perf 6.1)

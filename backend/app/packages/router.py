@@ -5,6 +5,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Uplo
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -186,6 +187,8 @@ async def get_package(
 @router.get("/{slug}/versions", response_model=VersionsResponse, dependencies=[Depends(rate_limit(60, 60))])
 async def get_versions(
     slug: str,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=100),
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
@@ -195,7 +198,25 @@ async def get_versions(
     if not pkg:
         raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
 
-    versions = await get_public_versions(session, pkg.id)
+    base_filter = and_(
+        PackageVersion.package_id == pkg.id,
+        PackageVersion.quarantine_status.in_(("none", "cleared")),
+        PackageVersion.is_yanked == False,  # noqa: E712
+    )
+
+    total_result = await session.execute(
+        select(func.count(PackageVersion.id)).where(base_filter)
+    )
+    total = total_result.scalar() or 0
+
+    versions_result = await session.execute(
+        select(PackageVersion)
+        .where(base_filter)
+        .order_by(PackageVersion.published_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    versions = versions_result.scalars().all()
 
     return VersionsResponse(
         versions=[
@@ -207,7 +228,10 @@ async def get_versions(
                 verification_status=v.verification_status,
             )
             for v in versions
-        ]
+        ],
+        total=total,
+        page=page,
+        per_page=per_page,
     )
 
 
@@ -557,7 +581,11 @@ async def create_review(
         comment=body.comment,
     )
     session.add(review)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise AppError("REVIEW_EXISTS", "You have already reviewed this package", 409)
 
     return {"id": str(review.id)}
 
@@ -565,6 +593,8 @@ async def create_review(
 @router.get("/{slug}/reviews", dependencies=[Depends(rate_limit(30, 60))])
 async def list_reviews(
     slug: str,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=100),
     session: AsyncSession = Depends(get_session),
 ):
     """List reviews for a package. Spec §8.8."""
@@ -573,11 +603,18 @@ async def list_reviews(
     if not pkg:
         raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
 
+    total_result = await session.execute(
+        select(func.count(Review.id)).where(Review.package_id == pkg.id)
+    )
+    total = total_result.scalar() or 0
+
     reviews_result = await session.execute(
         select(Review, User.username)
         .join(User, Review.user_id == User.id)
         .where(Review.package_id == pkg.id)
         .order_by(Review.created_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
     )
     rows = reviews_result.all()
 
@@ -596,7 +633,7 @@ async def list_reviews(
         for row in rows
     ]
 
-    return {"reviews": reviews, "avg_rating": round(float(avg_rating), 2), "total": len(reviews)}
+    return {"reviews": reviews, "avg_rating": round(float(avg_rating), 2), "total": total, "page": page, "per_page": per_page}
 
 
 # --- Reports (Spec §8.9) ---
