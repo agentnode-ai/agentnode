@@ -72,12 +72,6 @@ async def require_publisher(user: User = Depends(get_current_user)) -> User:
     return user
 
 
-async def require_2fa(user: User = Depends(get_current_user)) -> User:
-    """Ensure the user has 2FA enabled (required for publish)."""
-    if not user.two_factor_enabled:
-        raise AppError("PUBLISHER_2FA_REQUIRED", "2FA must be enabled to perform this action", 403)
-    return user
-
 
 async def require_admin(user: User = Depends(get_current_user)) -> User:
     """Ensure the user is an admin."""

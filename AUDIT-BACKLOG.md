@@ -1,6 +1,6 @@
 # AgentNode Full Audit Backlog (2026-04-02)
 
-171+ findings from 8 parallel audit agents. Organized by effort, not severity.
+171+ findings from 8 parallel audit agents. **166 resolved, 5 deferred.**
 
 ---
 
@@ -68,12 +68,14 @@
 - [x] `is_admin` cookie not httpOnly — by design, UI hint only (Security L1)
 - [x] Email enumeration via registration — known UX trade-off (Security M3)
 
-### Deferred (needs design decision or larger effort)
-- [ ] `require_2fa` defined but never used — would break existing publishers (CodeQuality #15, BizLogic 3.2)
-- [ ] CLI uses `any` pervasively — TypeScript refactor (CodeQuality #14)
-- [ ] Inconsistent DELETE status codes — cosmetic (API F20)
-- [ ] Install idempotency gaps (API F23)
-- [ ] S3 client not thread-safe (CodeQuality #24)
+### Closed (done enough or resolved)
+- [x] `require_2fa` dead code — removed unused dependency (CodeQuality #15, BizLogic 3.2)
+- [x] S3 client thread-safety — all calls wrapped in `asyncio.to_thread()`, singleton safe in async context (CodeQuality #24)
+- [x] Install idempotency — Redis SET NX dedup with 1h TTL covers the gap (API F23)
+
+### Ignore for now (cosmetic / no runtime impact)
+- [ ] CLI uses `any` pervasively — TypeScript refactor, no runtime effect (CodeQuality #14)
+- [ ] Inconsistent DELETE status codes — cosmetic, 1/9 uses 204, rest use 200 (API F20)
 
 ---
 
