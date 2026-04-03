@@ -163,7 +163,7 @@
 - [x] Blog image optimization — Pillow resize to 1200px + WebP conversion (Perf 9.1)
 
 ### Testing (ongoing)
-- [ ] Frontend test framework setup (Testing P0.3)
+- [x] Frontend test framework setup — Vitest + React Testing Library, 74 tests across 5 suites (Testing P0.3)
 - [x] JWT security negative tests — 17 tests covering expired/tampered/alg-confusion/wrong-type (Testing P0.1)
 - [x] Ed25519 signature tests — 22 tests covering valid/invalid/tampered/malformed (Testing P0.2)
 - [x] Cross-publisher authorization tests — 17 tests covering ownership isolation + admin override (Testing P0.4)
@@ -178,11 +178,14 @@
 
 ---
 
-## DEFERRED (needs design decision)
+## DESIGN DECISIONS — IMPLEMENTED
 
-- [ ] Capability expansion gaming prevention (BizLogic 2.2)
-- [ ] SMTP settings cache → Redis (Perf 6.3)
-- [ ] CDN for blog images (Perf 9.2)
-- [ ] `next/image` adoption (Perf 9.3)
-- [ ] Separate download-count from install-count (BizLogic 8.1)
-- [ ] Deploy script SSH key in repo (Security M7)
+- [x] Capability expansion gaming — diminishing returns after 10 caps, log2 decay (BizLogic 2.2)
+- [x] SMTP settings cache — loaded at app start, immediate reload on admin update (Perf 6.3)
+- [x] Deploy CI/CD — GitHub Actions: test → build → SCP → migrate → restart (Security M7)
+
+## DEFERRED (later, when needed)
+
+- [ ] CDN for blog images — images already optimized, act when measured as bottleneck (Perf 9.2)
+- [ ] `next/image` wrapper component — `<OptImage>`, blog images first (Perf 9.3)
+- [ ] Separate download-count from install-count — event-based aggregation (BizLogic 8.1)

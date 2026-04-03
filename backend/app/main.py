@@ -58,6 +58,14 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass  # DB may not have the table yet
 
+    # Load SMTP config into memory cache (avoids per-email DB queries)
+    try:
+        from app.shared.email import load_smtp_config
+        async with AsyncSession(engine) as session:
+            await load_smtp_config(session)
+    except Exception:
+        pass  # Will fall back to env vars
+
     yield
 
     # Shutdown

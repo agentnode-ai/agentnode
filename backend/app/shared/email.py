@@ -7,7 +7,6 @@ Supports runtime-configurable SMTP settings stored in the database.
 
 import html as html_mod
 import logging
-import time
 from email.message import EmailMessage
 
 import aiosmtplib
@@ -17,37 +16,31 @@ from app.config import settings
 
 logger = logging.getLogger("agentnode.email")
 
-# --- In-memory settings cache (TTL-based) ---
+# --- In-memory settings cache (loaded at startup) ---
 
-_smtp_cache: dict | None = None
-_smtp_cache_ts: float = 0
-_CACHE_TTL = 60  # seconds
+_smtp_config: dict | None = None
 
 
-async def _get_smtp_settings() -> dict:
-    """Get SMTP settings from DB (cached) with env-var fallback."""
-    global _smtp_cache, _smtp_cache_ts
-
-    if _smtp_cache is not None and (time.time() - _smtp_cache_ts) < _CACHE_TTL:
-        return _smtp_cache
+async def load_smtp_config(db_session) -> None:
+    """Load SMTP settings from DB into module-level cache. Called once at app startup."""
+    global _smtp_config
 
     try:
-        from app.database import async_session_factory
         from app.admin.models import SystemSetting
 
-        async with async_session_factory() as session:
-            result = await session.execute(
-                select(SystemSetting).where(SystemSetting.key == "smtp")
-            )
-            row = result.scalar_one_or_none()
-            if row and row.value:
-                _smtp_cache = row.value
-                _smtp_cache_ts = time.time()
-                return _smtp_cache
+        result = await db_session.execute(
+            select(SystemSetting).where(SystemSetting.key == "smtp")
+        )
+        row = result.scalar_one_or_none()
+        if row and row.value:
+            _smtp_config = row.value
+            logger.info("SMTP config loaded from database")
+            return
     except Exception as e:
         logger.debug(f"Could not load SMTP settings from DB: {e}")
 
-    _smtp_cache = {
+    # Fallback to env vars
+    _smtp_config = {
         "host": settings.SMTP_HOST,
         "port": settings.SMTP_PORT,
         "user": settings.SMTP_USER,
@@ -56,15 +49,35 @@ async def _get_smtp_settings() -> dict:
         "from_email": settings.EMAIL_FROM,
         "from_name": settings.EMAIL_FROM_NAME,
     }
-    _smtp_cache_ts = time.time()
-    return _smtp_cache
+    logger.info("SMTP config loaded from environment variables")
+
+
+def get_smtp_config() -> dict:
+    """Return the cached SMTP config. Falls back to env vars if not yet loaded."""
+    if _smtp_config is not None:
+        return _smtp_config
+    # Fallback for edge case where email is sent before startup completes
+    return {
+        "host": settings.SMTP_HOST,
+        "port": settings.SMTP_PORT,
+        "user": settings.SMTP_USER,
+        "password": settings.SMTP_PASSWORD,
+        "use_tls": settings.SMTP_USE_TLS,
+        "from_email": settings.EMAIL_FROM,
+        "from_name": settings.EMAIL_FROM_NAME,
+    }
+
+
+async def _get_smtp_settings() -> dict:
+    """Get SMTP settings from the startup-loaded cache."""
+    return get_smtp_config()
 
 
 def invalidate_smtp_cache() -> None:
-    """Call after updating SMTP settings in the DB."""
-    global _smtp_cache, _smtp_cache_ts
-    _smtp_cache = None
-    _smtp_cache_ts = 0
+    """Reset cached config. After invalidation, get_smtp_config() returns env-var fallback
+    until the service is restarted and load_smtp_config() runs again."""
+    global _smtp_config
+    _smtp_config = None
 
 
 def _build_message(smtp: dict, to: str, subject: str, html_body: str, text_body: str | None = None) -> EmailMessage:

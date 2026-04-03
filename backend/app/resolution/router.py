@@ -63,6 +63,7 @@ async def resolve_capabilities(
             policy_result=s.policy_result,
             breakdown=ScoreBreakdown(**s.breakdown),
             matched_capabilities=s.matched_capabilities,
+            broad_package=s.broad_package,
         )
         for s in scored
     ]

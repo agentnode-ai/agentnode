@@ -9,10 +9,11 @@ Scoring weights:
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -36,6 +37,25 @@ TRUST_SCORES = {
     "verified": 0.6,
     "unverified": 0.3,
 }
+
+# Capability expansion gaming prevention — diminishing returns beyond threshold
+CAPABILITY_FULL_SCORE_THRESHOLD = 10  # Full linear contribution up to this count
+BROAD_PACKAGE_THRESHOLD = 10  # UI hint when declared caps exceed this
+
+
+def effective_capability_count(declared: int) -> float:
+    """Return the effective capability count with diminishing returns.
+
+    Up to CAPABILITY_FULL_SCORE_THRESHOLD capabilities: full linear credit.
+    Beyond that: logarithmic decay using threshold + log2(excess + 1).
+    This prevents gaming where packages declare 50+ capabilities to rank higher
+    in resolution results.
+    """
+    if declared <= CAPABILITY_FULL_SCORE_THRESHOLD:
+        return float(declared)
+    excess = declared - CAPABILITY_FULL_SCORE_THRESHOLD
+    return CAPABILITY_FULL_SCORE_THRESHOLD + math.log2(excess + 1)
+
 
 # Spec §4.3 — direct subtraction penalties for permissions scoring
 PERMISSION_DEDUCTIONS = {
@@ -70,6 +90,7 @@ class ScoredPackage:
     breakdown: dict = field(default_factory=dict)
     matched_capabilities: list[str] = field(default_factory=list)
     download_count: int = 0
+    broad_package: bool = False  # True when declared capabilities exceed threshold
 
 
 async def _expand_capabilities(
@@ -137,6 +158,19 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
     for version_id, cap_id in cap_rows:
         version_caps.setdefault(version_id, set()).add(cap_id)
 
+    # Count total declared capabilities per version (for gaming prevention)
+    total_cap_result = await session.execute(
+        select(
+            Capability.package_version_id,
+            func.count(Capability.capability_id),
+        )
+        .where(Capability.package_version_id.in_(list(version_caps.keys())))
+        .group_by(Capability.package_version_id)
+    )
+    version_total_caps: dict[UUID, int] = {
+        row[0]: row[1] for row in total_cap_result.all()
+    }
+
     # Load the package versions (already limited to latest per package)
     version_ids = list(version_caps.keys())
     ver_result = await session.execute(
@@ -195,6 +229,17 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
         if expanded_only and cap_score < 1.0:
             bonus = min(0.5 * (1.0 - cap_score), len(expanded_only) * 0.1)
             cap_score += bonus
+
+        # Capability expansion gaming prevention: diminishing returns for
+        # packages that declare excessive capabilities to game resolution.
+        # The effective count compresses linearly up to the threshold, then
+        # logarithmically — so the ratio effective/declared shrinks as the
+        # declared count grows, penalising breadth-spamming.
+        declared_caps = version_total_caps.get(version.id, len(matched))
+        is_broad = declared_caps > BROAD_PACKAGE_THRESHOLD
+        if declared_caps > CAPABILITY_FULL_SCORE_THRESHOLD:
+            breadth_ratio = effective_capability_count(declared_caps) / declared_caps
+            cap_score *= breadth_ratio
 
         # Framework score
         fw_score = 0.0
@@ -277,6 +322,7 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
             },
             matched_capabilities=sorted(matched),
             download_count=pkg.download_count,
+            broad_package=is_broad,
         ))
 
     # Sort by score descending, then by downloads (tiebreaker), then alphabetical

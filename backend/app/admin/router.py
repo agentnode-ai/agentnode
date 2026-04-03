@@ -1623,7 +1623,11 @@ async def update_smtp_settings(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    """Update SMTP settings in the database."""
+    """Update SMTP settings in the database.
+
+    Note: SMTP config is cached at startup. Changes saved here take effect
+    after the service is restarted (or the cache is explicitly reloaded).
+    """
     result = await session.execute(
         select(SystemSetting).where(SystemSetting.key == "smtp")
     )
@@ -1653,9 +1657,9 @@ async def update_smtp_settings(
     await _audit(session, request, user, "update_smtp_settings", "system", "smtp")
     await session.commit()
 
-    # Invalidate the email service cache
-    from app.shared.email import invalidate_smtp_cache
-    invalidate_smtp_cache()
+    # Reload SMTP config into the in-memory cache so changes take effect immediately
+    from app.shared.email import load_smtp_config
+    await load_smtp_config(session)
 
     return {"message": "SMTP settings updated", "source": "database"}
 
@@ -1667,10 +1671,10 @@ async def test_smtp_settings(
     session: AsyncSession = Depends(get_session),
 ):
     """Send a test email using current SMTP settings."""
-    from app.shared.email import send_email, invalidate_smtp_cache
+    from app.shared.email import send_email, load_smtp_config
 
-    # Force fresh settings
-    invalidate_smtp_cache()
+    # Reload settings from DB so the test uses the latest saved config
+    await load_smtp_config(session)
 
     success = await send_email(
         to=user.email,

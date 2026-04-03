@@ -36,6 +36,7 @@ class ResolvedPackage(BaseModel):
     policy_result: str = "allowed"
     breakdown: ScoreBreakdown
     matched_capabilities: list[str]
+    broad_package: bool = False
 
 
 class ResolveResponse(BaseModel):
