@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { VerificationPipelineDiagram, TrustPyramidDiagram } from "@/components/diagrams";
 
 export const metadata = {
   title: "Why AgentNode — The Verified Agent Skills Registry",
@@ -313,24 +314,24 @@ export default function WhyAgentNodePage() {
 
           <div className="space-y-10">
             {differentiators.map((d) => (
-              <div
-                key={d.number}
-                className="rounded-lg border border-border bg-card p-6 sm:p-8"
-              >
-                <div className="mb-1 flex items-center gap-4">
-                  <span className="font-mono text-sm font-bold text-primary">
-                    {d.number}
-                  </span>
-                  <h3 className="text-lg font-semibold text-foreground sm:text-xl">
-                    {d.title}
-                  </h3>
+              <div key={d.number}>
+                <div className="rounded-lg border border-border bg-card p-6 sm:p-8">
+                  <div className="mb-1 flex items-center gap-4">
+                    <span className="font-mono text-sm font-bold text-primary">
+                      {d.number}
+                    </span>
+                    <h3 className="text-lg font-semibold text-foreground sm:text-xl">
+                      {d.title}
+                    </h3>
+                  </div>
+                  <p className="mb-3 text-sm font-medium text-primary/80">
+                    {d.subtitle}
+                  </p>
+                  <p className="text-sm leading-relaxed text-muted">
+                    {d.description}
+                  </p>
+                  {d.number === "02" && <VerificationPipelineDiagram />}
                 </div>
-                <p className="mb-3 text-sm font-medium text-primary/80">
-                  {d.subtitle}
-                </p>
-                <p className="text-sm leading-relaxed text-muted">
-                  {d.description}
-                </p>
               </div>
             ))}
           </div>
@@ -717,44 +718,7 @@ result = AgentNodeRuntime().run(
             Every pack in the registry has a clear, auditable trust level.
           </p>
 
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {[
-              {
-                level: "Unverified",
-                color: "text-gray-400",
-                border: "border-gray-500/30",
-                desc: "Published but not yet reviewed. Use at your own risk.",
-              },
-              {
-                level: "Verified",
-                color: "text-blue-400",
-                border: "border-blue-500/30",
-                desc: "Metadata validated, publisher identity confirmed, basic checks pass.",
-              },
-              {
-                level: "Trusted",
-                color: "text-green-400",
-                border: "border-green-500/30",
-                desc: "Security scanned, tests pass, active maintenance, community usage.",
-              },
-              {
-                level: "Curated",
-                color: "text-primary",
-                border: "border-primary/30",
-                desc: "Manually reviewed by AgentNode team. Highest assurance level.",
-              },
-            ].map((t) => (
-              <div
-                key={t.level}
-                className={`rounded-lg border ${t.border} bg-card p-4`}
-              >
-                <p className={`mb-2 font-mono text-sm font-bold ${t.color}`}>
-                  {t.level}
-                </p>
-                <p className="text-xs leading-relaxed text-muted">{t.desc}</p>
-              </div>
-            ))}
-          </div>
+          <TrustPyramidDiagram />
 
           <div className="mt-8 rounded-lg border border-border bg-card/50 p-5 text-center">
             <p className="text-sm leading-relaxed text-muted">

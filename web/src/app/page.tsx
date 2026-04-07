@@ -4,6 +4,7 @@ import TerminalAnimation from "@/components/TerminalAnimation";
 import PackageCard from "@/components/PackageCard";
 import AiStackLogos from "@/components/AiStackLogos";
 import CopyInstallButton from "./CopyInstallButton";
+import { LifecycleDiagram } from "@/components/diagrams";
 
 export const metadata: Metadata = {
   title: "Verified Agent Skills for AI Agents | Auto-Detect & Install | AgentNode",
@@ -116,6 +117,9 @@ export default function HomePage() {
               capabilities. Build a capability once and use it with any Python agent framework.
             </p>
           </div>
+
+          <LifecycleDiagram />
+
           <div className="grid gap-6 sm:grid-cols-3">
             <div className="rounded-xl border border-border bg-card p-6 text-center">
               <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-xl">
