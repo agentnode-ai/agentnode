@@ -196,6 +196,64 @@ export default function HomePage() {
       </section>
 
       {/* ============================================================ */}
+      {/*  MODEL COMPATIBILITY — Verified with 175+ models             */}
+      {/* ============================================================ */}
+      <section className="border-b border-border">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
+          <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
+            Verified with <span className="text-green-400">175+</span> models
+          </h2>
+          <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
+            We tested AgentNode Runtime against 182 models from 32 providers.
+            96% achieve perfect tool-calling compatibility.
+          </p>
+
+          <div className="mx-auto max-w-4xl grid grid-cols-2 gap-3 sm:grid-cols-4 mb-10">
+            <div className="rounded-xl border border-border bg-card p-5 text-center">
+              <div className="text-3xl font-bold text-foreground">182</div>
+              <div className="text-xs text-muted mt-1">Models Tested</div>
+            </div>
+            <div className="rounded-xl border border-green-500/20 bg-green-500/5 p-5 text-center">
+              <div className="text-3xl font-bold text-green-400">175</div>
+              <div className="text-xs text-muted mt-1">Perfect Score</div>
+            </div>
+            <div className="rounded-xl border border-border bg-card p-5 text-center">
+              <div className="text-3xl font-bold text-foreground">32</div>
+              <div className="text-xs text-muted mt-1">Providers</div>
+            </div>
+            <div className="rounded-xl border border-primary/20 bg-primary/5 p-5 text-center">
+              <div className="text-3xl font-bold text-primary">96%</div>
+              <div className="text-xs text-muted mt-1">S-Tier Rate</div>
+            </div>
+          </div>
+
+          <div className="mx-auto max-w-4xl flex flex-wrap justify-center gap-2">
+            {["OpenAI", "Anthropic", "Google", "Meta", "Mistral", "DeepSeek", "Qwen", "xAI", "Amazon", "Cohere"].map((name) => (
+              <span
+                key={name}
+                className="rounded-full border border-border bg-card px-3 py-1 text-xs text-muted"
+              >
+                {name}
+              </span>
+            ))}
+            <span className="rounded-full border border-border bg-card px-3 py-1 text-xs text-muted">
+              +22 more
+            </span>
+          </div>
+
+          <div className="mt-8 text-center">
+            <Link
+              href="/compatibility"
+              className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:text-primary-hover transition-colors"
+            >
+              Full compatibility matrix
+              <span aria-hidden="true">&rarr;</span>
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* ============================================================ */}
       {/*  AUTONOMY — Agents don't wait                                */}
       {/* ============================================================ */}
       <section className="border-b border-border">

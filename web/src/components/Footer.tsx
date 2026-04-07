@@ -17,6 +17,9 @@ export default function Footer() {
           <Link href="/capabilities" className="transition-colors hover:text-foreground">
             Capabilities
           </Link>
+          <Link href="/compatibility" className="transition-colors hover:text-foreground">
+            Models
+          </Link>
           <Link href="/for-developers" className="transition-colors hover:text-foreground">
             For Developers
           </Link>
