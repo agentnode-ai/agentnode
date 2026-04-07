@@ -28,6 +28,7 @@ class Package(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     is_deprecated = Column(Boolean, nullable=False, default=False)
     download_count = Column(Integer, nullable=False, default=0)
+    install_count = Column(Integer, nullable=False, default=0)
     latest_version_id = Column(UUID(as_uuid=True), ForeignKey("package_versions.id", ondelete="SET NULL", use_alter=True, name="fk_latest_version"), nullable=True)
 
     publisher = relationship("Publisher", backref="packages")

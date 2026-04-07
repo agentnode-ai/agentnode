@@ -106,7 +106,7 @@ export default async function PublisherPage({
         <p className="text-muted">No packages published yet.</p>
       ) : (
         <div className="space-y-3">
-          {packages.map((pkg: { slug: string; name: string; latest_version?: string; download_count?: number; summary?: string }) => (
+          {packages.map((pkg: { slug: string; name: string; latest_version?: string; download_count?: number; install_count?: number; summary?: string }) => (
             <Link
               key={pkg.slug}
               href={`/packages/${pkg.slug}`}
@@ -117,7 +117,12 @@ export default async function PublisherPage({
                   <span className="font-medium text-foreground">{pkg.name || pkg.slug}</span>
                   <span className="ml-2 text-xs text-muted">{pkg.latest_version || ""}</span>
                 </div>
-                <span className="text-xs text-muted">{pkg.download_count} downloads</span>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-muted">{pkg.download_count} downloads</span>
+                  {pkg.install_count != null && pkg.install_count > 0 && (
+                    <span className="text-xs text-muted">{pkg.install_count} installs</span>
+                  )}
+                </div>
               </div>
               <p className="mt-1 text-sm text-muted">{pkg.summary}</p>
             </Link>

@@ -117,6 +117,27 @@ describe('PackageCard', () => {
     expect(screen.getByTestId('verification-badge')).toHaveTextContent('gold')
   })
 
+  it('shows install count when provided and > 0', () => {
+    render(<PackageCard {...baseProps} install_count={312} />)
+    expect(screen.getByText('312 installs')).toBeInTheDocument()
+  })
+
+  it('does not show install count when zero', () => {
+    render(<PackageCard {...baseProps} install_count={0} />)
+    expect(screen.queryByText(/installs/)).not.toBeInTheDocument()
+  })
+
+  it('does not show install count when not provided', () => {
+    render(<PackageCard {...baseProps} />)
+    expect(screen.queryByText(/installs/)).not.toBeInTheDocument()
+  })
+
+  it('shows both download and install counts together', () => {
+    render(<PackageCard {...baseProps} download_count={1500} install_count={312} />)
+    expect(screen.getByText('1.5k downloads')).toBeInTheDocument()
+    expect(screen.getByText('312 installs')).toBeInTheDocument()
+  })
+
   it('handles missing optional fields gracefully', () => {
     // Render with only required props — should not throw
     render(

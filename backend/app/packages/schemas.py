@@ -70,6 +70,7 @@ class PermissionsBlock(BaseModel):
 
 class PerformanceBlock(BaseModel):
     download_count: int
+    install_count: int = 0
     review_count: int = 0
     avg_rating: float | None = None
 
@@ -162,6 +163,7 @@ class PackageDetailResponse(BaseModel):
     publisher: PublisherInfo
     latest_version: VersionInfo | None
     download_count: int
+    install_count: int = 0
     is_deprecated: bool
     quarantine_status: str | None = None
     blocks: PackageBlocks

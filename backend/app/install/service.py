@@ -136,3 +136,33 @@ async def track_download(session: AsyncSession, package_id, version_id, *, redis
     )
     new_count = result.scalar_one()
     return new_count
+
+
+INSTALL_DEDUP_TTL = 3600  # 1 hour
+
+
+async def track_install(session: AsyncSession, package_id, *, version_id, redis=None, dedup_key: str | None = None) -> int:
+    """Increment install counter and return new count.
+
+    When *redis* and *dedup_key* are provided the counter is only bumped
+    once per dedup_key per version within INSTALL_DEDUP_TTL seconds.
+
+    Does NOT commit — the caller controls the transaction boundary.
+    """
+    if redis and dedup_key:
+        redis_key = f"install:{package_id}:{version_id}:{dedup_key}"
+        is_new = await redis.set(redis_key, "1", ex=INSTALL_DEDUP_TTL, nx=True)
+        if not is_new:
+            result = await session.execute(
+                select(Package.install_count).where(Package.id == package_id)
+            )
+            return result.scalar_one()
+
+    result = await session.execute(
+        update(Package)
+        .where(Package.id == package_id)
+        .values(install_count=Package.install_count + 1)
+        .returning(Package.install_count)
+    )
+    new_count = result.scalar_one()
+    return new_count

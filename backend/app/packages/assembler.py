@@ -216,6 +216,7 @@ def assemble_package_detail(
         publisher=publisher_info,
         latest_version=version_info,
         download_count=pkg.download_count,
+        install_count=pkg.install_count,
         is_deprecated=pkg.is_deprecated,
         quarantine_status=quarantine_status,
         blocks=PackageBlocks(
@@ -224,7 +225,7 @@ def assemble_package_detail(
             install=blocks_install,
             compatibility=blocks_compat,
             permissions=blocks_perms,
-            performance=PerformanceBlock(download_count=pkg.download_count),
+            performance=PerformanceBlock(download_count=pkg.download_count, install_count=pkg.install_count),
             trust=blocks_trust,
         ),
         license_model=pkg.license_model,

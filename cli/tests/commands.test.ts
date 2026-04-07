@@ -592,6 +592,55 @@ describe("publishPackage", () => {
 
     await expect(api.publishPackage("{}", "bad_token")).rejects.toThrow("UNAUTHORIZED");
   });
+
+  it("should include artifact in FormData when provided", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        slug: "my-tool",
+        version: "1.0.0",
+        package_type: "toolpack",
+        message: "Published with artifact",
+      }),
+    });
+
+    const manifest = JSON.stringify({ name: "my-tool", version: "1.0.0" });
+    const artifactBytes = new Uint8Array([0x1f, 0x8b, 0x08, 0x00]); // gzip magic bytes
+    const result = await api.publishPackage(manifest, "tok_abc123", artifactBytes);
+
+    expect(result.message).toBe("Published with artifact");
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toContain("/v1/packages/publish");
+    expect(init.method).toBe("POST");
+    expect(init.headers.Authorization).toBe("Bearer tok_abc123");
+    // Verify the body is FormData containing both manifest and artifact
+    expect(init.body).toBeInstanceOf(FormData);
+    const formData = init.body as FormData;
+    expect(formData.get("manifest")).toBe(manifest);
+    expect(formData.get("artifact")).toBeTruthy();
+  });
+
+  it("should not include artifact in FormData when not provided", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        slug: "my-tool",
+        version: "1.0.0",
+        package_type: "toolpack",
+        message: "Published metadata-only",
+      }),
+    });
+
+    const manifest = JSON.stringify({ name: "my-tool", version: "1.0.0" });
+    const result = await api.publishPackage(manifest, "tok_abc123");
+
+    expect(result.message).toBe("Published metadata-only");
+
+    const formData = mockFetch.mock.calls[0][1].body as FormData;
+    expect(formData.get("manifest")).toBe(manifest);
+    expect(formData.get("artifact")).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

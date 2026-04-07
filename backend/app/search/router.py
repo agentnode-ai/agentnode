@@ -142,6 +142,7 @@ async def search_packages(body: SearchRequest, request: Request):
             tags=doc.get("tags", []),
             frameworks=doc.get("frameworks", []),
             download_count=doc.get("download_count", 0),
+            install_count=doc.get("install_count", 0),
             is_deprecated=doc.get("is_deprecated", False),
             verification_status=doc.get("verification_status"),
             verification_score=doc.get("verification_score"),

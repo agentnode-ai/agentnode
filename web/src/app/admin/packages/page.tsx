@@ -13,6 +13,7 @@ interface PackageItem {
   package_type: string;
   publisher_slug: string | null;
   download_count: number;
+  install_count: number;
   is_deprecated: boolean;
   created_at: string | null;
 }
@@ -347,7 +348,7 @@ function InlineEditRow({
           className="w-full rounded border border-border bg-background px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none resize-y"
         />
       </td>
-      <td className="px-4 py-2.5" colSpan={5}>
+      <td className="px-4 py-2.5" colSpan={6}>
         <div className="flex items-end gap-2 h-full">
           <button
             onClick={() => onSave(name.trim(), summary.trim(), description.trim())}
@@ -832,6 +833,7 @@ export default function AdminPackagesPage() {
                   <th className="px-4 py-2.5">Type</th>
                   <th className="px-4 py-2.5">Publisher</th>
                   <th className="px-4 py-2.5 text-right">Downloads</th>
+                  <th className="px-4 py-2.5 text-right">Installs</th>
                   <th className="px-4 py-2.5">Created</th>
                   <th className="px-4 py-2.5 text-right">Actions</th>
                 </tr>
@@ -839,13 +841,13 @@ export default function AdminPackagesPage() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-muted">
+                    <td colSpan={8} className="px-4 py-8 text-center text-muted">
                       Loading...
                     </td>
                   </tr>
                 ) : packages.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-muted">
+                    <td colSpan={8} className="px-4 py-8 text-center text-muted">
                       No packages found.
                     </td>
                   </tr>
@@ -896,6 +898,9 @@ export default function AdminPackagesPage() {
                         </td>
                         <td className="px-4 py-2.5 text-right font-mono text-foreground">
                           {p.download_count.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-mono text-foreground">
+                          {(p.install_count ?? 0).toLocaleString()}
                         </td>
                         <td className="px-4 py-2.5 text-muted text-xs">
                           {p.created_at

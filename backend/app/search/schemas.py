@@ -5,6 +5,7 @@ from app.shared.validators import is_safe_filter_value
 # Allowed sort fields to prevent sort injection
 _ALLOWED_SORTS = {
     "download_count:asc", "download_count:desc",
+    "install_count:asc", "install_count:desc",
     "published_at:asc", "published_at:desc",
     "name:asc", "name:desc",
 }
@@ -60,6 +61,7 @@ class SearchHit(BaseModel):
     tags: list[str] = []
     frameworks: list[str] = []
     download_count: int = 0
+    install_count: int = 0
     is_deprecated: bool = False
     verification_status: str | None = None
     verification_score: int | None = None

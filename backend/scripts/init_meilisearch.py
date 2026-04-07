@@ -14,11 +14,11 @@ INDEX_SETTINGS = {
         "is_deprecated", "publisher_slug", "verification_tier",
         "has_security_review", "has_compatibility_review", "has_manual_review",
     ],
-    "sortableAttributes": ["download_count", "published_at", "verification_score"],
+    "sortableAttributes": ["download_count", "install_count", "published_at", "verification_score"],
     "displayedAttributes": [
         "slug", "name", "package_type", "summary", "publisher_name", "publisher_slug",
         "trust_level", "latest_version", "runtime", "capability_ids", "tags",
-        "frameworks", "download_count", "is_deprecated", "verification_status",
+        "frameworks", "download_count", "install_count", "is_deprecated", "verification_status",
         "verification_score", "verification_tier",
     ],
     "rankingRules": [

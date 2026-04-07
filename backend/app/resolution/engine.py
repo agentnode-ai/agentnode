@@ -89,6 +89,7 @@ class ScoredPackage:
     policy_result: str = "allowed"  # allowed | requires_approval | blocked
     breakdown: dict = field(default_factory=dict)
     matched_capabilities: list[str] = field(default_factory=list)
+    install_count: int = 0
     download_count: int = 0
     broad_package: bool = False  # True when declared capabilities exceed threshold
 
@@ -321,11 +322,12 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
                 "permissions": round(perm_score, 4),
             },
             matched_capabilities=sorted(matched),
+            install_count=pkg.install_count,
             download_count=pkg.download_count,
             broad_package=is_broad,
         ))
 
-    # Sort by score descending, then by downloads (tiebreaker), then alphabetical
-    results.sort(key=lambda r: (-r.score, -r.download_count, r.slug))
+    # Sort by score descending, then by installs, then downloads, then alphabetical
+    results.sort(key=lambda r: (-r.score, -r.install_count, -r.download_count, r.slug))
 
     return results[:req.limit]

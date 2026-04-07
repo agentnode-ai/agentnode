@@ -24,7 +24,7 @@ from app.install.schemas import (
     PermissionsInfo,
     ToolInfo,
 )
-from app.install.service import build_artifact_info, get_install_version, track_download, create_installation
+from app.install.service import build_artifact_info, get_install_version, track_download, track_install, create_installation
 from app.packages.version_queries import get_latest_installable_versions_batch
 
 router = APIRouter(prefix="/v1/packages", tags=["install"])
@@ -171,7 +171,7 @@ async def install_package(
     if body.event_type in ("install", "update"):
         redis = request.app.state.redis
         dedup_key = f"user:{user.id}"
-        await track_download(session, pkg.id, pv.id, redis=redis, dedup_key=dedup_key)
+        await track_install(session, pkg.id, version_id=pv.id, redis=redis, dedup_key=dedup_key)
 
     await session.commit()
 

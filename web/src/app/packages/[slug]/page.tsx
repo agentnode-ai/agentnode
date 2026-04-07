@@ -551,6 +551,12 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                 </span>
               </div>
               <div className="flex items-center justify-between text-sm">
+                <span className="text-muted">Installs</span>
+                <span className="font-mono font-medium text-foreground">
+                  {(pkg.install_count ?? 0).toLocaleString()}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
                 <span className="text-muted">Version</span>
                 <span className="font-mono text-foreground">v{version}</span>
               </div>

@@ -10,6 +10,7 @@ interface PackageCardProps {
   frameworks: string[];
   version?: string;
   download_count?: number;
+  install_count?: number;
   verification_status?: string | null;
   verification_tier?: string | null;
   verification_score?: number | null;
@@ -31,6 +32,7 @@ export default function PackageCard({
   frameworks,
   version,
   download_count,
+  install_count,
   verification_status,
   verification_tier,
   verification_score,
@@ -86,11 +88,18 @@ export default function PackageCard({
             </span>
           ))}
         </div>
-        {download_count != null && (
-          <span className="whitespace-nowrap text-xs text-muted">
-            {formatDownloads(download_count)} downloads
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {download_count != null && (
+            <span className="whitespace-nowrap text-xs text-muted">
+              {formatDownloads(download_count)} downloads
+            </span>
+          )}
+          {install_count != null && install_count > 0 && (
+            <span className="whitespace-nowrap text-xs text-muted">
+              {formatDownloads(install_count)} installs
+            </span>
+          )}
+        </div>
       </div>
     </Link>
   );

@@ -27,12 +27,14 @@ const OPTION_LABELS: Record<string, string> = {
 const SORT_OPTIONS = [
   { value: "", label: "Relevance" },
   { value: "downloads", label: "Most downloads" },
+  { value: "installs", label: "Most installed" },
   { value: "newest", label: "Newest first" },
   { value: "name", label: "Name A-Z" },
 ];
 
 const SORT_VALUE_TO_API: Record<string, string> = {
   downloads: "download_count:desc",
+  installs: "install_count:desc",
   newest: "published_at:desc",
   name: "name:asc",
 };
@@ -486,6 +488,7 @@ function SearchContent() {
                         frameworks={pkg.frameworks}
                         version={pkg.latest_version ?? undefined}
                         download_count={pkg.download_count}
+                        install_count={pkg.install_count}
                         verification_status={pkg.verification_status}
                         verification_tier={pkg.verification_tier}
                         verification_score={pkg.verification_score}

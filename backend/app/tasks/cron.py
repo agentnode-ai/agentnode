@@ -194,6 +194,59 @@ async def send_weekly_publisher_digests():
         logger.exception("send_weekly_publisher_digests failed")
 
 
+# --- Task: Reconcile install counts (daily) ---
+
+async def reconcile_install_counts():
+    """Reconcile denormalized install_count from installations table.
+
+    Only updates packages with drift. Whitelist: status IN ('installed', 'active').
+    """
+    try:
+        from app.packages.models import Package, Installation
+
+        async with async_session_factory() as session:
+            # Get actual counts from installations table
+            result = await session.execute(
+                select(
+                    Installation.package_id,
+                    func.count(Installation.id).label("cnt"),
+                )
+                .where(Installation.status.in_(("installed", "active")))
+                .group_by(Installation.package_id)
+            )
+            actual_counts = {row.package_id: row.cnt for row in result.all()}
+
+            # Get current denormalized counts
+            pkg_result = await session.execute(
+                select(Package.id, Package.slug, Package.install_count)
+            )
+            packages = pkg_result.all()
+
+            updated = 0
+            for pkg_id, slug, current_count in packages:
+                actual = actual_counts.get(pkg_id, 0)
+                if actual != current_count:
+                    drift = actual - current_count
+                    logger.warning(
+                        "install_count drift: %s old=%d computed=%d drift=%d",
+                        slug, current_count, actual, drift,
+                    )
+                    from sqlalchemy import update
+                    await session.execute(
+                        update(Package)
+                        .where(Package.id == pkg_id)
+                        .values(install_count=actual)
+                    )
+                    updated += 1
+
+            if updated:
+                await session.commit()
+                logger.info("Reconciled install_count for %d package(s)", updated)
+
+    except Exception:
+        logger.exception("reconcile_install_counts failed")
+
+
 # --- Task: Cleanup stale verification dirs (every hour) ---
 
 async def cleanup_stale_verification_dirs():
@@ -316,6 +369,11 @@ def start_cron_tasks():
     # Phase 4C: Scheduled reverification every 6 hours
     _tasks.append(loop.create_task(
         _run_periodic(21600, scheduled_reverification, "scheduled_reverification")
+    ))
+
+    # Daily install count reconciliation
+    _tasks.append(loop.create_task(
+        _run_periodic(86400, reconcile_install_counts, "reconcile_install_counts")
     ))
 
     logger.info(f"Started {len(_tasks)} cron tasks")

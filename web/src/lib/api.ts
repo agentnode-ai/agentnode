@@ -14,6 +14,7 @@ export interface SearchHit {
   tags: string[];
   frameworks: string[];
   download_count: number;
+  install_count: number;
   is_deprecated: boolean;
   verification_status: string | null;
   verification_score?: number | null;
