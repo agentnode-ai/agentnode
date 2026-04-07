@@ -184,13 +184,22 @@ _TOOL_SPECS = [
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = (
-    "You have access to AgentNode tools for discovering, installing, "
-    "and running capabilities.\n\n"
+    "You have access to AgentNode tools. You MUST use them to complete tasks — "
+    "never answer from memory when a tool call is required.\n\n"
+    "Available tools: agentnode_capabilities, agentnode_search, agentnode_install, "
+    "agentnode_run, agentnode_acquire.\n\n"
+    "Workflow:\n"
+    "1. To list installed tools → call agentnode_capabilities\n"
+    "2. To find new tools → call agentnode_search, then agentnode_install to install\n"
+    "3. To execute a tool → call agentnode_run with the slug and arguments\n"
+    "4. After agentnode_run returns output, present the result to the user in text\n\n"
     "Rules:\n"
-    "1. Prefer installed capabilities. Do not search or install unnecessarily.\n"
-    "2. Do not invent tool names, package names, or results.\n"
-    "3. After agentnode_run returns output, present it to the user. "
-    "Never repeat the same tool call."
+    "- ALWAYS call the tool rather than describing what you would do\n"
+    "- When asked to search AND install, do both — search first, then install the result\n"
+    "- When asked to run a tool, call agentnode_run — do not just call agentnode_capabilities\n"
+    "- After receiving tool results, respond with a text summary for the user\n"
+    "- Do not invent tool names or package slugs\n"
+    "- Never repeat the same tool call with identical arguments"
 )
 
 
@@ -201,6 +210,78 @@ _SYSTEM_PROMPT = (
 def _make_call_key(name: str, args: dict) -> str:
     """Stable key for dedup: tool name + sorted JSON args."""
     return name + ":" + json.dumps(args, sort_keys=True)
+
+
+def _sanitize_tool_arguments(raw: str) -> dict:
+    """Parse tool-call arguments JSON, tolerating open-source model quirks.
+
+    Some models (e.g. Gemma 4 31B) leak special token fragments like ``<|\\``
+    or ``<|end_of_turn|>`` into JSON string values, producing invalid escapes.
+    This function strips those artifacts and retries before giving up.
+    """
+    if not raw:
+        return {}
+
+    # Fast path: valid JSON
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    import re
+
+    # Strip special-token artifacts: <|...|>, <|\, |>, etc.
+    cleaned = re.sub(r"<\|[^>]*\|?>", "", raw)
+    # Remove orphan <|\ that didn't close
+    cleaned = re.sub(r"<\|\\?", "", cleaned)
+    # Fix invalid \X escapes (not one of \", \\, \/, \b, \f, \n, \r, \t, \u)
+    cleaned = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", cleaned)
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Last resort: try to extract a JSON object
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
+    raise json.JSONDecodeError(
+        f"Cannot parse tool arguments after sanitization: {raw[:120]}",
+        raw, 0,
+    )
+
+
+class _SyntheticMessage:
+    """Minimal message object returned when the provider crashes after
+    successful tool rounds.  Carries the last tool result as content so
+    callers still receive a usable response."""
+
+    def __init__(self, content: str):
+        self.content = content
+        self.tool_calls = None
+        self.role = "assistant"
+
+
+def _synthesize_from_tool_results(messages: list[dict]) -> _SyntheticMessage:
+    """Build a synthetic assistant message from the last tool result in
+    the conversation history.  Used when the model successfully executed
+    tools but the provider crashed before the model could produce a text
+    summary."""
+    # Walk backwards to find the last tool result
+    for msg in reversed(messages):
+        if msg.get("role") == "tool":
+            try:
+                data = json.loads(msg["content"])
+                result = data.get("result", data)
+                return _SyntheticMessage(json.dumps(result, ensure_ascii=False))
+            except (json.JSONDecodeError, TypeError):
+                return _SyntheticMessage(str(msg.get("content", "")))
+    return _SyntheticMessage("")
 
 
 def _run_openai_loop(
@@ -225,11 +306,80 @@ def _run_openai_loop(
     }
 
     last_msg = None
+    completed_rounds = 0  # rounds with successful tool execution
+    nudged = False  # whether we already sent a tool-use nudge
     for _ in range(max_tool_rounds):
-        response = client.chat.completions.create(**create_kwargs)
+        # Retry on transient provider errors (503 overloaded, 429 rate limit)
+        response = None
+        for attempt in range(3):
+            try:
+                response = client.chat.completions.create(**create_kwargs)
+                break
+            except Exception as api_err:
+                err_str = str(api_err)
+                retryable = (
+                    "503" in err_str or "overloaded" in err_str
+                    or "429" in err_str or "rate_limit" in err_str
+                    # Some providers reject the model's own invalid JSON
+                    # with 400 — retry gives the model another chance
+                    or "Invalid \\escape" in err_str
+                    or "invalid_request_error" in err_str
+                )
+                if retryable:
+                    import time as _time
+                    _time.sleep(2 ** attempt)
+                    continue
+                # If we already completed tool rounds, don't crash —
+                # synthesize a response from the last tool results
+                if completed_rounds > 0:
+                    return _synthesize_from_tool_results(messages)
+                raise
+        if response is None:
+            if completed_rounds > 0:
+                return _synthesize_from_tool_results(messages)
+            raise RuntimeError("Provider unavailable after 3 retries")
+        if not response.choices:
+            if completed_rounds > 0:
+                return _synthesize_from_tool_results(messages)
+            raise RuntimeError("Provider returned empty choices")
         last_msg = response.choices[0].message
+        if last_msg is None:
+            if completed_rounds > 0:
+                return _synthesize_from_tool_results(messages)
+            raise RuntimeError("Provider returned empty message")
 
         if not last_msg.tool_calls:
+            # If the model answered with text but never called any tools,
+            # nudge it once to actually use the available tools.
+            if completed_rounds == 0 and not nudged:
+                nudged = True
+                messages.append(last_msg)
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You have AgentNode tools available. Please use them "
+                        "to complete the task instead of answering from memory. "
+                        "Call the appropriate agentnode_* tool now."
+                    ),
+                })
+                continue
+            # Continuation nudge: if the model called some tools but
+            # stopped with a text response, nudge once to continue.
+            # This rescues "search-then-stop" patterns where the model
+            # searches but doesn't install.
+            if completed_rounds > 0 and not nudged:
+                nudged = True
+                messages.append(last_msg)
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You completed one step but the task is not finished. "
+                        "Please continue by calling the next agentnode_* tool. "
+                        "For example, after searching, call agentnode_install. "
+                        "After checking capabilities, call agentnode_run."
+                    ),
+                })
+                continue
             return last_msg
 
         # Append assistant message with tool calls
@@ -238,8 +388,29 @@ def _run_openai_loop(
         # Check for repeated identical calls
         all_repeated = True
         for tc in last_msg.tool_calls:
-            args = json.loads(tc.function.arguments) if tc.function.arguments else {}
-            call_key = _make_call_key(tc.function.name, args)
+            try:
+                args = _sanitize_tool_arguments(tc.function.arguments)
+            except json.JSONDecodeError:
+                # Totally unparseable — return error to model so it can retry
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps({
+                        "success": False,
+                        "error": {
+                            "code": "invalid_arguments",
+                            "message": (
+                                "Your tool call arguments contained invalid JSON. "
+                                "Please retry with valid JSON. Do not include "
+                                "special tokens or unescaped characters in string values."
+                            ),
+                        },
+                    }),
+                })
+                all_repeated = False
+                continue
+            clean_name = AgentNodeRuntime._sanitize_tool_name(tc.function.name)
+            call_key = _make_call_key(clean_name, args)
 
             if call_key in call_cache:
                 # Return cached result with a stop hint
@@ -255,7 +426,7 @@ def _run_openai_loop(
                 })
             else:
                 all_repeated = False
-                result = runtime.handle(tc.function.name, args)
+                result = runtime.handle(clean_name, args)
                 result_json = json.dumps(result)
                 call_cache[call_key] = result_json
                 messages.append({
@@ -263,6 +434,9 @@ def _run_openai_loop(
                     "tool_call_id": tc.id,
                     "content": result_json,
                 })
+
+        if not all_repeated:
+            completed_rounds += 1
 
         # If every call was a repeat, give one more chance to produce text
         if all_repeated:
@@ -320,6 +494,8 @@ def _run_anthropic_loop(
         create_kwargs["system"] = system
 
     response = None
+    completed_rounds = 0
+    nudged = False
     for _ in range(max_tool_rounds):
         create_kwargs["messages"] = filtered
         response = client.messages.create(**create_kwargs)
@@ -327,6 +503,24 @@ def _run_anthropic_loop(
         # Check for tool use blocks
         tool_uses = [b for b in response.content if b.type == "tool_use"]
         if not tool_uses:
+            if not nudged:
+                nudged = True
+                filtered.append({
+                    "role": "assistant",
+                    "content": _anthropic_content_to_dicts(response.content),
+                })
+                nudge_text = (
+                    "You have AgentNode tools available. Please use them "
+                    "to complete the task instead of answering from memory. "
+                    "Call the appropriate agentnode_* tool now."
+                ) if completed_rounds == 0 else (
+                    "You completed one step but the task is not finished. "
+                    "Please continue by calling the next agentnode_* tool. "
+                    "For example, after searching, call agentnode_install. "
+                    "After checking capabilities, call agentnode_run."
+                )
+                filtered.append({"role": "user", "content": nudge_text})
+                continue
             return response
 
         # Dispatch tool calls and build result messages
@@ -356,6 +550,9 @@ def _run_anthropic_loop(
                     "tool_use_id": tu.id,
                     "content": result_json,
                 })
+
+        if not all_repeated:
+            completed_rounds += 1
 
         # Append assistant + tool results for next round
         filtered.append({
@@ -430,6 +627,8 @@ def _run_gemini_loop(
 
     call_cache: dict[str, str] = {}
     response = None
+    completed_rounds = 0
+    nudged = False
 
     for _ in range(max_tool_rounds):
         response = client.models.generate_content(
@@ -447,6 +646,24 @@ def _run_gemini_loop(
             p for p in candidate.content.parts if p.function_call
         ]
         if not function_calls:
+            if not nudged:
+                nudged = True
+                contents.append(candidate.content)
+                nudge_text = (
+                    "You have AgentNode tools available. Please use them "
+                    "to complete the task instead of answering from memory. "
+                    "Call the appropriate agentnode_* tool now."
+                ) if completed_rounds == 0 else (
+                    "You completed one step but the task is not finished. "
+                    "Please continue by calling the next agentnode_* tool. "
+                    "For example, after searching, call agentnode_install. "
+                    "After checking capabilities, call agentnode_run."
+                )
+                contents.append(gtypes.Content(
+                    role="user",
+                    parts=[gtypes.Part.from_text(text=nudge_text)],
+                ))
+                continue
             return response
 
         # Append assistant response to conversation
@@ -480,6 +697,9 @@ def _run_gemini_loop(
                     name=fc.name,
                     response=result,
                 ))
+
+        if not all_repeated:
+            completed_rounds += 1
 
         # Append function results as user turn
         contents.append(gtypes.Content(role="user", parts=result_parts))
@@ -606,8 +826,23 @@ class AgentNodeRuntime:
 
     # --- Executor (public API, never throws) ---
 
+    @staticmethod
+    def _sanitize_tool_name(name: str) -> str:
+        """Clean tool name from model quirks.
+
+        Some models append markdown fences, newlines, or other artifacts
+        to tool names (e.g. ``agentnode_search\\n```json``).
+        """
+        import re
+        # Strip whitespace, newlines, markdown fences
+        cleaned = re.sub(r"[\n\r`]", "", name).strip()
+        # Remove trailing non-identifier chars (e.g. punctuation)
+        cleaned = re.sub(r"[^a-z0-9_].*$", "", cleaned, flags=re.IGNORECASE)
+        return cleaned or name
+
     def handle(self, tool_name: str, arguments: dict | None = None) -> dict:
         """Dispatch a tool call. Returns structured dict. Never throws."""
+        tool_name = self._sanitize_tool_name(tool_name)
         args = arguments or {}
         handlers = {
             "agentnode_capabilities": self._handle_capabilities,
@@ -617,6 +852,39 @@ class AgentNodeRuntime:
             "agentnode_acquire": self._handle_acquire,
         }
         handler = handlers.get(tool_name)
+        # Fuzzy match: some models abbreviate or misspell tool names
+        # (e.g. "agentnode_caps" → "agentnode_capabilities")
+        if handler is None and tool_name.startswith("agentnode"):
+            normalized = tool_name.replace(" ", "_").lower().strip()
+            # Try prefix match first
+            for name, h in handlers.items():
+                if name.startswith(normalized) or normalized.startswith(name):
+                    handler = h
+                    break
+            # Try substring match if prefix didn't work
+            if handler is None:
+                # Map common abbreviations
+                key = normalized.replace("agentnode_", "")
+                _FUZZY_MAP = {
+                    "cap": "agentnode_capabilities",
+                    "caps": "agentnode_capabilities",
+                    "capabilities": "agentnode_capabilities",
+                    "list": "agentnode_capabilities",
+                    "search": "agentnode_search",
+                    "find": "agentnode_search",
+                    "query": "agentnode_search",
+                    "install": "agentnode_install",
+                    "add": "agentnode_install",
+                    "get": "agentnode_install",
+                    "run": "agentnode_run",
+                    "exec": "agentnode_run",
+                    "execute": "agentnode_run",
+                    "acquire": "agentnode_acquire",
+                    "req": "agentnode_search",
+                }
+                matched_name = _FUZZY_MAP.get(key)
+                if matched_name:
+                    handler = handlers.get(matched_name)
         if handler is None:
             return _result_to_dict(ToolResult(
                 success=False,
@@ -730,9 +998,25 @@ class AgentNodeRuntime:
                 "tools": tools,
                 "capability_ids": info.get("capability_ids", []),
             })
+        hint = ""
+        if pkg_list:
+            hint = (
+                "If you need to run one of these tools, call agentnode_run "
+                f"with the package slug (e.g. slug='{pkg_list[0]['slug']}'). "
+                "Do NOT just describe the result — call the tool."
+            )
+        else:
+            hint = (
+                "No packages installed. Use agentnode_search to find packages, "
+                "then agentnode_install to install them."
+            )
         return ToolResult(
             success=True,
-            result={"installed_count": len(pkg_list), "packages": pkg_list},
+            result={
+                "installed_count": len(pkg_list),
+                "packages": pkg_list,
+                "hint": hint,
+            },
         )
 
     def _handle_search(self, args: dict) -> ToolResult:
@@ -759,9 +1043,22 @@ class AgentNodeRuntime:
             }
             for hit in search_result.hits[:5]
         ]
+        hint = ""
+        if results:
+            hint = (
+                f"IMPORTANT: Do NOT respond to the user yet. "
+                f"Your next step is to call agentnode_install with "
+                f"slug='{results[0]['slug']}' to install this package. "
+                f"After installing, use agentnode_run to execute it."
+            )
         return ToolResult(
             success=True,
-            result={"total": search_result.total, "results": results},
+            result={
+                "total": search_result.total,
+                "results": results,
+                "next_action": f"call agentnode_install(slug='{results[0]['slug']}')" if results else None,
+                "hint": hint,
+            },
         )
 
     def _handle_install(self, args: dict) -> ToolResult:
@@ -774,6 +1071,26 @@ class AgentNodeRuntime:
                     code="missing_parameter",
                     message="'slug' is required.",
                 ),
+            )
+
+        # Check if already installed
+        lockfile = read_lockfile()
+        existing = lockfile.get("packages", {}).get(slug)
+        if existing:
+            tools = [t.get("name", "") for t in existing.get("tools", [])]
+            return ToolResult(
+                success=True,
+                result={
+                    "slug": slug,
+                    "version": existing.get("version", ""),
+                    "message": (
+                        f"Package '{slug}' is already installed. "
+                        "Use agentnode_run to execute it — do not install again."
+                    ),
+                    "trust_level": existing.get("trust_level", "unknown"),
+                    "already_installed": True,
+                    "available_tools": tools,
+                },
             )
 
         require_trusted = self._minimum_trust_level in ("trusted", "curated")
@@ -894,6 +1211,10 @@ class AgentNodeRuntime:
                 "output": run_result.result,
                 "duration_ms": run_result.duration_ms,
                 "action": "present_to_user",
+                "hint": (
+                    "Task complete. Present this result to the user in your "
+                    "next text response. Do not call any more tools."
+                ),
             },
         )
 

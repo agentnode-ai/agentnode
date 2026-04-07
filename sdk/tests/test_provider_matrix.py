@@ -259,6 +259,25 @@ MODELS: list[ModelConfig] = [
         default_base_url="https://openrouter.ai/api/v1",
     ),
 
+    ModelConfig(
+        id="openrouter_gemma4_27b",
+        provider="openai",
+        model="google/gemma-4-26b-a4b-it",
+        tier="compat",
+        env_key="OPENROUTER_API_KEY",
+        env_base_url="OPENROUTER_BASE_URL",
+        default_base_url="https://openrouter.ai/api/v1",
+    ),
+    ModelConfig(
+        id="openrouter_gemma4_31b",
+        provider="openai",
+        model="google/gemma-4-31b-it",
+        tier="compat",
+        env_key="OPENROUTER_API_KEY",
+        env_base_url="OPENROUTER_BASE_URL",
+        default_base_url="https://openrouter.ai/api/v1",
+    ),
+
     # --- NVIDIA NIM (Tier 2) — free API, OpenAI-compatible ---
     ModelConfig(
         id="nvidia_llama3_70b",
