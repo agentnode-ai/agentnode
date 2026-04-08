@@ -27,6 +27,7 @@ from agentnode_sdk.models import (
     SearchResult,
     SmartRunResult,
 )
+from agentnode_sdk.compatibility import recommend_model
 from agentnode_sdk.runner import run_tool
 from agentnode_sdk.runtime import AgentNodeRuntime
 
@@ -66,4 +67,5 @@ __all__ = [
     "DetectAndInstallResult",
     "SmartRunResult",
     "AgentNodeRuntime",
+    "recommend_model",
 ]

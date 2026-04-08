@@ -25,6 +25,7 @@ from app.shared.exceptions import AppError, app_error_handler
 from app.shared.logging_middleware import RequestLoggingMiddleware
 from app.trust.router import router as trust_router
 from app.verification.router import router as verification_router
+from app.compatibility.router import router as compatibility_router
 from app.webhooks.router import router as webhooks_router
 
 
@@ -125,6 +126,7 @@ app.include_router(sitemap_router)
 app.include_router(sitemap_admin_router)
 app.include_router(invites_router)
 app.include_router(invites_admin_router)
+app.include_router(compatibility_router)
 
 
 @app.get("/health")

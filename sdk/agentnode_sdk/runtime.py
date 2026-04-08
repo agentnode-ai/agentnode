@@ -916,6 +916,15 @@ class AgentNodeRuntime:
         inject_system_prompt: bool = True,
     ) -> Any:
         """Run an LLM tool loop. Returns provider response. Never throws."""
+        if not model:
+            try:
+                from agentnode_sdk.compatibility import recommend_model
+                rec = recommend_model(provider)
+                if rec:
+                    model = rec
+            except Exception:
+                pass  # Fall through to provider loop which handles empty model
+
         if inject_system_prompt:
             prompt_block = self.system_prompt()
             has_system = False

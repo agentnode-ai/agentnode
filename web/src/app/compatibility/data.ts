@@ -1,5 +1,5 @@
 // Auto-generated from batch verification results
-// Last updated: 2026-04-07
+// Last updated: 2026-04-08
 
 export interface ModelResult {
   model: string;
@@ -17,12 +17,199 @@ export interface ProviderData {
   models: ModelResult[];
 }
 
-export const LAST_UPDATED = "2026-04-07";
+export const LAST_UPDATED = "2026-04-08";
 export const TOTAL_MODELS = 182;
 export const S_TIER_COUNT = 175;
-export const PROVIDER_COUNT = 32;
+export const PROVIDER_COUNT = 35;
 
 export const COMPATIBILITY_DATA: ProviderData[] = [
+  {
+    name: "ai21",
+    models: [
+      { model: "jamba-large-1.7", tier: "C", passed: 1, total: 4, s1: true, s2: false, s3: false, s4: false },
+    ],
+  },
+  {
+    name: "alibaba",
+    models: [
+      { model: "tongyi-deepresearch-30b-a3b", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "allenai",
+    models: [
+      { model: "olmo-3.1-32b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "amazon",
+    models: [
+      { model: "nova-2-lite-v1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "nova-lite-v1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "nova-micro-v1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "nova-premier-v1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "nova-pro-v1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "anthropic",
+    models: [
+      { model: "claude-3-haiku", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "claude-3.7-sonnet", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "claude-haiku-4.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "claude-opus-4", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "claude-opus-4.1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "claude-opus-4.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "claude-opus-4.6", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "claude-sonnet-4", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "claude-sonnet-4.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "claude-sonnet-4.6", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "arcee-ai",
+    models: [
+      { model: "trinity-mini", tier: "C", passed: 1, total: 4, s1: false, s2: true, s3: false, s4: false },
+    ],
+  },
+  {
+    name: "bytedance-seed",
+    models: [
+      { model: "seed-1.6", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "seed-1.6-flash", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "seed-2.0-lite", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "seed-2.0-mini", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "cohere",
+    models: [
+      { model: "command-r-08-2024", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "command-r-plus-08-2024", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "deepseek",
+    models: [
+      { model: "deepseek-chat", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "deepseek-chat-v3-0324", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "deepseek-chat-v3.1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "deepseek-r1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "deepseek-r1-0528", tier: "A", passed: 3, total: 4, s1: true, s2: false, s3: true, s4: true },
+      { model: "deepseek-v3.1-terminus", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "deepseek-v3.2", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "deepseek-v3.2-exp", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "essentialai",
+    models: [
+      { model: "rnj-1-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "google",
+    models: [
+      { model: "gemini-2.0-flash-001", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "gemini-2.0-flash-lite-001", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "gemini-2.5-flash", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "gemini-2.5-flash-lite", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "gemini-2.5-pro", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "gemma-4-26b-a4b-it", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "gemma-4-31b-it", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "inception",
+    models: [
+      { model: "mercury", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mercury-2", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mercury-coder", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "kwaipilot",
+    models: [
+      { model: "kat-coder-pro-v2", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "meituan",
+    models: [
+      { model: "longcat-flash-chat", tier: "C", passed: 1, total: 4, s1: false, s2: true, s3: false, s4: false },
+    ],
+  },
+  {
+    name: "meta-llama",
+    models: [
+      { model: "llama-3-8b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "llama-3.1-70b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "llama-3.1-8b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "llama-3.3-70b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "llama-4-maverick", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "llama-4-scout", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "minimax",
+    models: [
+      { model: "minimax-m1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "minimax-m2", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "minimax-m2.1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "minimax-m2.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "minimax-m2.7", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "mistralai",
+    models: [
+      { model: "codestral-2508", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "devstral-2512", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "devstral-medium", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "devstral-small", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "ministral-14b-2512", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "ministral-3b-2512", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "ministral-8b-2512", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mistral-large", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mistral-large-2407", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mistral-large-2411", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mistral-large-2512", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mistral-medium-3", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mistral-medium-3.1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mistral-nemo", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mistral-saba", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mistral-small-2603", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mistral-small-3.2-24b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mistral-small-creative", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mixtral-8x22b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mixtral-8x7b-instruct", tier: "F", passed: 0, total: 4, s1: false, s2: false, s3: false, s4: false },
+      { model: "pixtral-large-2411", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "voxtral-small-24b-2507", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "moonshotai",
+    models: [
+      { model: "kimi-k2", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "kimi-k2-0905", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "kimi-k2.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "nex-agi",
+    models: [
+      { model: "deepseek-v3.1-nex-n1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "nvidia",
+    models: [
+      { model: "llama-3.1-nemotron-70b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "llama-3.3-nemotron-super-49b-v1.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "nemotron-3-nano-30b-a3b", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "nemotron-nano-9b-v2", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
   {
     name: "openai",
     models: [
@@ -54,6 +241,7 @@ export const COMPATIBILITY_DATA: ProviderData[] = [
       { model: "gpt-5.4-nano", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
       { model: "gpt-oss-120b", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
       { model: "gpt-oss-20b", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "gpt-oss-safeguard-20b", tier: "B", passed: 2, total: 4, s1: true, s2: false, s3: true, s4: false },
       { model: "o1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
       { model: "o3", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
       { model: "o3-mini", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
@@ -61,7 +249,19 @@ export const COMPATIBILITY_DATA: ProviderData[] = [
       { model: "o3-pro", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
       { model: "o4-mini", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
       { model: "o4-mini-high", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "gpt-oss-safeguard-20b", tier: "B", passed: 2, total: 4, s1: true, s2: false, s3: true, s4: false },
+    ],
+  },
+  {
+    name: "openrouter",
+    models: [
+      { model: "auto", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "free", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "prime-intellect",
+    models: [
+      { model: "intellect-3", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
     ],
   },
   {
@@ -98,244 +298,6 @@ export const COMPATIBILITY_DATA: ProviderData[] = [
     ],
   },
   {
-    name: "mistralai",
-    models: [
-      { model: "codestral-2508", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "devstral-2512", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "devstral-medium", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "devstral-small", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "ministral-14b-2512", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "ministral-3b-2512", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "ministral-8b-2512", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mistral-large", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mistral-large-2407", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mistral-large-2411", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mistral-large-2512", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mistral-medium-3", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mistral-medium-3.1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mistral-nemo", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mistral-saba", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mistral-small-2603", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mistral-small-3.2-24b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mistral-small-creative", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mixtral-8x22b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "pixtral-large-2411", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "voxtral-small-24b-2507", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mixtral-8x7b-instruct", tier: "F", passed: 0, total: 4, s1: false, s2: false, s3: false, s4: false },
-    ],
-  },
-  {
-    name: "z-ai",
-    models: [
-      { model: "glm-4-32b", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "glm-4.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "glm-4.5-air", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "glm-4.5v", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "glm-4.6", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "glm-4.6v", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "glm-4.7", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "glm-4.7-flash", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "glm-5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "glm-5-turbo", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "glm-5v-turbo", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "anthropic",
-    models: [
-      { model: "claude-3-haiku", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "claude-3.7-sonnet", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "claude-haiku-4.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "claude-opus-4", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "claude-opus-4.1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "claude-opus-4.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "claude-opus-4.6", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "claude-sonnet-4", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "claude-sonnet-4.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "claude-sonnet-4.6", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "x-ai",
-    models: [
-      { model: "grok-3", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "grok-3-beta", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "grok-3-mini", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "grok-3-mini-beta", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "grok-4", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "grok-4-fast", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "grok-4.1-fast", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "grok-4.20", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "grok-code-fast-1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "deepseek",
-    models: [
-      { model: "deepseek-chat", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "deepseek-chat-v3-0324", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "deepseek-chat-v3.1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "deepseek-r1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "deepseek-v3.1-terminus", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "deepseek-v3.2", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "deepseek-v3.2-exp", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "deepseek-r1-0528", tier: "A", passed: 3, total: 4, s1: true, s2: false, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "google",
-    models: [
-      { model: "gemini-2.0-flash-001", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "gemini-2.0-flash-lite-001", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "gemini-2.5-flash", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "gemini-2.5-flash-lite", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "gemini-2.5-pro", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "gemma-4-26b-a4b-it", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "gemma-4-31b-it", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "meta-llama",
-    models: [
-      { model: "llama-3-8b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "llama-3.1-70b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "llama-3.1-8b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "llama-3.3-70b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "llama-4-maverick", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "llama-4-scout", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "amazon",
-    models: [
-      { model: "nova-2-lite-v1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "nova-lite-v1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "nova-micro-v1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "nova-premier-v1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "nova-pro-v1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "minimax",
-    models: [
-      { model: "minimax-m1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "minimax-m2", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "minimax-m2.1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "minimax-m2.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "minimax-m2.7", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "bytedance-seed",
-    models: [
-      { model: "seed-1.6", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "seed-1.6-flash", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "seed-2.0-lite", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "seed-2.0-mini", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "nvidia",
-    models: [
-      { model: "llama-3.1-nemotron-70b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "llama-3.3-nemotron-super-49b-v1.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "nemotron-3-nano-30b-a3b", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "nemotron-nano-9b-v2", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "inception",
-    models: [
-      { model: "mercury", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mercury-2", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mercury-coder", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "moonshotai",
-    models: [
-      { model: "kimi-k2", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "kimi-k2-0905", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "kimi-k2.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "xiaomi",
-    models: [
-      { model: "mimo-v2-flash", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mimo-v2-omni", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "mimo-v2-pro", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "cohere",
-    models: [
-      { model: "command-r-08-2024", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "command-r-plus-08-2024", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "openrouter",
-    models: [
-      { model: "auto", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-      { model: "free", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "ai21",
-    models: [
-      { model: "jamba-large-1.7", tier: "C", passed: 1, total: 4, s1: true, s2: false, s3: false, s4: false },
-    ],
-  },
-  {
-    name: "alibaba",
-    models: [
-      { model: "tongyi-deepresearch-30b-a3b", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "allenai",
-    models: [
-      { model: "olmo-3.1-32b-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "arcee-ai",
-    models: [
-      { model: "trinity-mini", tier: "C", passed: 1, total: 4, s1: false, s2: true, s3: false, s4: false },
-    ],
-  },
-  {
-    name: "essentialai",
-    models: [
-      { model: "rnj-1-instruct", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "kwaipilot",
-    models: [
-      { model: "kat-coder-pro-v2", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "meituan",
-    models: [
-      { model: "longcat-flash-chat", tier: "C", passed: 1, total: 4, s1: false, s2: true, s3: false, s4: false },
-    ],
-  },
-  {
-    name: "nex-agi",
-    models: [
-      { model: "deepseek-v3.1-nex-n1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
-    name: "prime-intellect",
-    models: [
-      { model: "intellect-3", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
-    ],
-  },
-  {
     name: "rekaai",
     models: [
       { model: "reka-edge", tier: "A", passed: 3, total: 4, s1: true, s2: false, s3: true, s4: true },
@@ -363,6 +325,44 @@ export const COMPATIBILITY_DATA: ProviderData[] = [
     name: "upstage",
     models: [
       { model: "solar-pro-3", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "x-ai",
+    models: [
+      { model: "grok-3", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "grok-3-beta", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "grok-3-mini", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "grok-3-mini-beta", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "grok-4", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "grok-4-fast", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "grok-4.1-fast", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "grok-4.20", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "grok-code-fast-1", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "xiaomi",
+    models: [
+      { model: "mimo-v2-flash", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mimo-v2-omni", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "mimo-v2-pro", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+    ],
+  },
+  {
+    name: "z-ai",
+    models: [
+      { model: "glm-4-32b", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "glm-4.5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "glm-4.5-air", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "glm-4.5v", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "glm-4.6", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "glm-4.6v", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "glm-4.7", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "glm-4.7-flash", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "glm-5", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "glm-5-turbo", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
+      { model: "glm-5v-turbo", tier: "S", passed: 4, total: 4, s1: true, s2: true, s3: true, s4: true },
     ],
   },
 ];
