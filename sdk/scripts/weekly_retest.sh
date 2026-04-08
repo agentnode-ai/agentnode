@@ -16,6 +16,7 @@ ARTIFACTS_DIR="${SDK_DIR}/.artifacts/batch_reports"
 STAGING_DIR="/tmp/compat_staging_$(date +%s)"
 SUMMARY_FILE="${ARTIFACTS_DIR}/last_run_summary.json"
 
+PYTHON="${SDK_DIR}/.venv/bin/python"
 BATCH_VERIFY="${SCRIPTS_DIR}/batch_verify.py"
 GENERATE="${SCRIPTS_DIR}/generate_compatibility_artifacts.py"
 MERGED_MATRIX="${ARTIFACTS_DIR}/merged_matrix.json"
@@ -37,7 +38,7 @@ echo ""
 echo "[1/4] Running batch verification..."
 cd "${SDK_DIR}"
 
-if ! python "${BATCH_VERIFY}"; then
+if ! ${PYTHON} "${BATCH_VERIFY}"; then
     echo "ERROR: batch_verify.py failed"
     exit 1
 fi
@@ -56,7 +57,7 @@ fi
 # Snapshot previous S-tier count for drift detection
 PREV_S_TIER=0
 if [ -f "${SUMMARY_FILE}" ]; then
-    PREV_S_TIER=$(python -c "
+    PREV_S_TIER=$(${PYTHON} -c "
 import json, sys
 try:
     d = json.load(open('${SUMMARY_FILE}'))
@@ -69,10 +70,10 @@ fi
 echo ""
 echo "[3/4] Generating backend compatibility data..."
 
-python "${GENERATE}" --target backend --output-dir "${STAGING_DIR}/"
+${PYTHON} "${GENERATE}" --target backend --output-dir "${STAGING_DIR}/"
 
 # Validate JSON
-if ! python -c "import json; json.load(open('${STAGING_DIR}/compatibility_matrix.json'))"; then
+if ! ${PYTHON} -c "import json; json.load(open('${STAGING_DIR}/compatibility_matrix.json'))"; then
     echo "ERROR: Generated JSON is invalid"
     exit 1
 fi
@@ -85,13 +86,13 @@ echo "Backend data updated (mtime-based reload will pick it up)"
 echo ""
 echo "[4/4] Writing run summary..."
 
-CURR_S_TIER=$(python -c "
+CURR_S_TIER=$(${PYTHON} -c "
 import json
 d = json.load(open('${REPO_DIR}/backend/data/compatibility_matrix.json'))
 print(d.get('s_tier_count', 0))
 ")
 
-TOTAL_MODELS=$(python -c "
+TOTAL_MODELS=$(${PYTHON} -c "
 import json
 d = json.load(open('${REPO_DIR}/backend/data/compatibility_matrix.json'))
 print(d.get('total_models', 0))
@@ -107,7 +108,7 @@ if [ "${PREV_S_TIER}" -gt 0 ] && [ "${DELTA}" -lt -5 ]; then
 fi
 
 # Write machine-readable summary
-python -c "
+${PYTHON} -c "
 import json
 summary = {
     'generated_at': '${NOW}',
