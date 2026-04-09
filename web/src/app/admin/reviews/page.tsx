@@ -4,6 +4,8 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { fetchWithAuth } from "@/lib/api";
 import { useAdminUser } from "../layout";
+import CompleteForm from "./CompleteForm";
+import RefundForm from "./RefundForm";
 
 interface ReviewItem {
   id: string;
@@ -62,23 +64,14 @@ export default function AdminReviewsPage() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  // Complete form
-  const [completeId, setCompleteId] = useState("");
-  const [completeOutcome, setCompleteOutcome] = useState<"approved" | "changes_requested" | "rejected">("approved");
-  const [securityPassed, setSecurityPassed] = useState(true);
-  const [compatibilityPassed, setCompatibilityPassed] = useState(true);
-  const [docsPassed, setDocsPassed] = useState(true);
-  const [requiredChanges, setRequiredChanges] = useState<string[]>([""]);
-  const [reviewerSummary, setReviewerSummary] = useState("");
-  const [completeNotes, setCompleteNotes] = useState("");
-  const [completing, setCompleting] = useState(false);
+  // History (completed reviews)
+  const [historyReviews, setHistoryReviews] = useState<ReviewItem[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
-  // Refund form
+  // Forms
+  const [completeId, setCompleteId] = useState("");
   const [refundId, setRefundId] = useState("");
-  const [refundType, setRefundType] = useState<"full" | "partial">("full");
-  const [refundAmount, setRefundAmount] = useState("");
-  const [refundReason, setRefundReason] = useState("");
-  const [refunding, setRefunding] = useState(false);
 
   // Filter
   const [filter, setFilter] = useState("");
@@ -104,6 +97,25 @@ export default function AdminReviewsPage() {
     }
   }
 
+  async function loadHistory() {
+    if (historyLoaded) return;
+    setHistoryLoading(true);
+    try {
+      const res = await fetchWithAuth("/admin/reviews/history?per_page=100");
+      if (res.ok) {
+        const data = await res.json();
+        setHistoryReviews(data || []);
+        setHistoryLoaded(true);
+      } else {
+        setError("Failed to load review history");
+      }
+    } catch {
+      setError("Failed to load review history");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
   async function assignToMe(reviewId: string) {
     if (!adminUser) return;
     setError("");
@@ -126,72 +138,6 @@ export default function AdminReviewsPage() {
     }
   }
 
-  function openCompleteForm(reviewId: string) {
-    setCompleteId(reviewId);
-    setCompleteOutcome("approved");
-    setSecurityPassed(true);
-    setCompatibilityPassed(true);
-    setDocsPassed(true);
-    setRequiredChanges([""]);
-    setReviewerSummary("");
-    setCompleteNotes("");
-  }
-
-  function validateCompleteForm(): string | null {
-    if (completeOutcome === "approved") {
-      if (!reviewerSummary.trim()) return "Reviewer summary is required for approved outcome";
-    } else if (completeOutcome === "changes_requested") {
-      const nonEmpty = requiredChanges.filter((c) => c.trim());
-      if (nonEmpty.length === 0) return "At least one required change is needed";
-    } else if (completeOutcome === "rejected") {
-      if (!reviewerSummary.trim() && !completeNotes.trim()) return "Reviewer summary or notes required for rejection";
-    }
-    return null;
-  }
-
-  async function submitComplete() {
-    const validationError = validateCompleteForm();
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-    setCompleting(true);
-    setError("");
-    setSuccess("");
-    try {
-      const review_result: Record<string, any> = {
-        security_passed: securityPassed,
-        compatibility_passed: compatibilityPassed,
-        docs_passed: docsPassed,
-      };
-      if (reviewerSummary.trim()) review_result.reviewer_summary = reviewerSummary.trim();
-      const nonEmptyChanges = requiredChanges.filter((c) => c.trim());
-      if (nonEmptyChanges.length > 0) review_result.required_changes = nonEmptyChanges;
-
-      const res = await fetchWithAuth(`/admin/reviews/${completeId}/complete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          outcome: completeOutcome,
-          notes: completeNotes.trim() || null,
-          review_result,
-        }),
-      });
-      if (res.ok) {
-        setSuccess(`Review ${completeOutcome}`);
-        setCompleteId("");
-        await loadReviews();
-      } else {
-        const d = await res.json().catch(() => ({}));
-        setError(d.error?.message || "Failed to complete review");
-      }
-    } catch {
-      setError("Failed to complete review");
-    } finally {
-      setCompleting(false);
-    }
-  }
-
   function canRefund(r: ReviewItem): boolean {
     return (
       ["paid", "in_review", "approved"].includes(r.status) &&
@@ -200,51 +146,23 @@ export default function AdminReviewsPage() {
     );
   }
 
-  async function submitRefund() {
-    if (!refundReason.trim()) {
-      setError("Refund reason is required");
-      return;
-    }
-    setRefunding(true);
-    setError("");
-    setSuccess("");
-    try {
-      const body: Record<string, any> = { reason: refundReason.trim() };
-      if (refundType === "partial") {
-        const cents = Math.round(parseFloat(refundAmount) * 100);
-        if (isNaN(cents) || cents <= 0) {
-          setError("Invalid refund amount");
-          setRefunding(false);
-          return;
-        }
-        body.amount_cents = cents;
-      }
-      const res = await fetchWithAuth(`/admin/reviews/${refundId}/refund`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+  // Determine which list to display
+  const isCompletedTab = filter === "completed";
+  const displayReviews = isCompletedTab
+    ? historyReviews
+    : reviews.filter((r) => {
+        if (!filter) return true;
+        if (filter === "mine") return r.assigned_reviewer_id === adminUser?.id;
+        return r.status === filter;
       });
-      if (res.ok) {
-        setSuccess("Refund processed");
-        setRefundId("");
-        setRefundReason("");
-        setRefundAmount("");
-        await loadReviews();
-      } else {
-        const d = await res.json().catch(() => ({}));
-        setError(d.error?.message || "Failed to process refund");
-      }
-    } catch {
-      setError("Failed to process refund");
-    } finally {
-      setRefunding(false);
-    }
-  }
 
-  const filteredReviews = reviews.filter((r) => {
-    if (!filter) return true;
-    return r.status === filter;
-  });
+  const tabs = [
+    { value: "", label: "All" },
+    { value: "paid", label: "Paid" },
+    { value: "in_review", label: "In Review" },
+    { value: "mine", label: "Assigned to me" },
+    { value: "completed", label: "Completed" },
+  ];
 
   return (
     <div>
@@ -271,14 +189,13 @@ export default function AdminReviewsPage() {
 
       {/* Filter tabs */}
       <div className="mb-4 flex gap-1 border-b border-border">
-        {[
-          { value: "", label: "All" },
-          { value: "paid", label: "Paid" },
-          { value: "in_review", label: "In Review" },
-        ].map((f) => (
+        {tabs.map((f) => (
           <button
             key={f.value}
-            onClick={() => setFilter(f.value)}
+            onClick={() => {
+              setFilter(f.value);
+              if (f.value === "completed") loadHistory();
+            }}
             className={`px-4 py-2 text-sm border-b-2 transition-colors ${
               filter === f.value
                 ? "border-primary text-foreground"
@@ -290,21 +207,21 @@ export default function AdminReviewsPage() {
         ))}
       </div>
 
-      {reviews.length >= 100 && (
+      {!isCompletedTab && reviews.length >= 100 && (
         <div className="mb-4 rounded-md border border-warning/30 bg-warning/10 px-4 py-2 text-xs text-warning">
           Showing first 100 reviews. Older reviews may not be displayed.
         </div>
       )}
 
-      {loading ? (
+      {(isCompletedTab ? historyLoading : loading) ? (
         <div className="py-8 text-center text-muted">Loading...</div>
-      ) : filteredReviews.length === 0 ? (
+      ) : displayReviews.length === 0 ? (
         <div className="rounded-lg border border-border bg-card p-8 text-center text-sm text-muted">
-          No reviews in queue.
+          {isCompletedTab ? "No completed reviews yet." : "No reviews in queue."}
         </div>
       ) : (
         <div className="space-y-3">
-          {filteredReviews.map((r) => (
+          {displayReviews.map((r) => (
             <div
               key={r.id}
               className="rounded-lg border border-border bg-card p-4"
@@ -318,7 +235,7 @@ export default function AdminReviewsPage() {
                         STATUS_BADGES[r.status] || "bg-muted/20 text-muted"
                       }`}
                     >
-                      {r.status.replace(/_/g, " ")}
+                      {r.status === "refunded" ? "Refunded" : r.status.replace(/_/g, " ")}
                     </span>
                     <span className="rounded px-2 py-0.5 text-xs font-medium bg-card border border-border text-muted">
                       {TIER_LABELS[r.tier] || r.tier}
@@ -373,6 +290,11 @@ export default function AdminReviewsPage() {
                         Paid {timeAgo(r.paid_at)}
                       </span>
                     )}
+                    {r.reviewed_at && isCompletedTab && (
+                      <span>
+                        Reviewed {timeAgo(r.reviewed_at)}
+                      </span>
+                    )}
                     {r.assigned_reviewer_id && (
                       <span className="text-purple-400">Reviewer assigned</span>
                     )}
@@ -380,31 +302,45 @@ export default function AdminReviewsPage() {
                 </div>
 
                 {/* Actions */}
-                <div className="flex shrink-0 gap-2">
-                  {r.status === "paid" && (
-                    <button
-                      onClick={() => assignToMe(r.id)}
-                      className="rounded bg-purple-500/20 px-3 py-1 text-xs font-medium text-purple-400 hover:bg-purple-500/30"
-                    >
-                      Assign to me
-                    </button>
+                <div className="flex shrink-0 gap-2 items-center">
+                  <Link
+                    href={`/admin/reviews/${r.id}`}
+                    className="rounded border border-border px-3 py-1 text-xs text-muted hover:text-foreground hover:border-border/80"
+                  >
+                    View details &rarr;
+                  </Link>
+                  {!isCompletedTab && (
+                    <>
+                      {r.status === "paid" && (
+                        <button
+                          onClick={() => assignToMe(r.id)}
+                          className="rounded bg-purple-500/20 px-3 py-1 text-xs font-medium text-purple-400 hover:bg-purple-500/30"
+                        >
+                          Assign to me
+                        </button>
+                      )}
+                      {r.status === "in_review" && completeId !== r.id && (
+                        <button
+                          onClick={() => setCompleteId(r.id)}
+                          className="rounded bg-primary/20 px-3 py-1 text-xs font-medium text-primary hover:bg-primary/30"
+                        >
+                          Complete
+                        </button>
+                      )}
+                      {canRefund(r) && refundId !== r.id && (
+                        <button
+                          onClick={() => setRefundId(r.id)}
+                          className="rounded bg-danger/20 px-3 py-1 text-xs font-medium text-danger hover:bg-danger/30"
+                        >
+                          Refund
+                        </button>
+                      )}
+                    </>
                   )}
-                  {r.status === "in_review" && completeId !== r.id && (
+                  {/* Completed tab: only allow refund if eligible */}
+                  {isCompletedTab && canRefund(r) && refundId !== r.id && (
                     <button
-                      onClick={() => openCompleteForm(r.id)}
-                      className="rounded bg-primary/20 px-3 py-1 text-xs font-medium text-primary hover:bg-primary/30"
-                    >
-                      Complete
-                    </button>
-                  )}
-                  {canRefund(r) && refundId !== r.id && (
-                    <button
-                      onClick={() => {
-                        setRefundId(r.id);
-                        setRefundType("full");
-                        setRefundReason("");
-                        setRefundAmount("");
-                      }}
+                      onClick={() => setRefundId(r.id)}
                       className="rounded bg-danger/20 px-3 py-1 text-xs font-medium text-danger hover:bg-danger/30"
                     >
                       Refund
@@ -413,273 +349,71 @@ export default function AdminReviewsPage() {
                 </div>
               </div>
 
-              {/* Complete form */}
-              {completeId === r.id && (
-                <div className="mt-4 rounded-lg border border-primary/20 bg-background p-4 space-y-3">
-                  <h3 className="text-sm font-medium text-foreground">
-                    Complete Review
-                  </h3>
-
-                  {/* Outcome */}
-                  <div>
-                    <label className="mb-1 block text-xs text-muted">
-                      Outcome
-                    </label>
-                    <div className="flex gap-2">
-                      {(
-                        [
-                          "approved",
-                          "changes_requested",
-                          "rejected",
-                        ] as const
-                      ).map((o) => (
-                        <label
-                          key={o}
-                          className={`flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs cursor-pointer transition-colors ${
-                            completeOutcome === o
-                              ? "border-primary bg-primary/10 text-foreground"
-                              : "border-border text-muted hover:border-border/80"
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="outcome"
-                            value={o}
-                            checked={completeOutcome === o}
-                            onChange={() => setCompleteOutcome(o)}
-                            className="sr-only"
-                          />
-                          {o.replace(/_/g, " ")}
-                        </label>
-                      ))}
-                    </div>
+              {/* Inline review result for completed tab */}
+              {isCompletedTab && r.review_result && (
+                <div className="mt-3 rounded border border-border/50 bg-background p-3 space-y-2">
+                  <div className="flex gap-2 flex-wrap">
+                    {r.review_result.security_passed !== undefined && (
+                      <span className={`rounded px-2 py-0.5 text-[10px] font-medium ${r.review_result.security_passed ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                        Security {r.review_result.security_passed ? "pass" : "fail"}
+                      </span>
+                    )}
+                    {r.review_result.compatibility_passed !== undefined && (
+                      <span className={`rounded px-2 py-0.5 text-[10px] font-medium ${r.review_result.compatibility_passed ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                        Compat {r.review_result.compatibility_passed ? "pass" : "fail"}
+                      </span>
+                    )}
+                    {r.review_result.docs_passed !== undefined && (
+                      <span className={`rounded px-2 py-0.5 text-[10px] font-medium ${r.review_result.docs_passed ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                        Docs {r.review_result.docs_passed ? "pass" : "fail"}
+                      </span>
+                    )}
                   </div>
-
-                  {/* Checkboxes */}
-                  <div>
-                    <label className="mb-1 block text-xs text-muted">
-                      Checks
-                    </label>
-                    <div className="flex gap-4">
-                      <label className="flex items-center gap-1.5 text-xs text-foreground cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={securityPassed}
-                          onChange={(e) => setSecurityPassed(e.target.checked)}
-                        />
-                        Security
-                      </label>
-                      <label className="flex items-center gap-1.5 text-xs text-foreground cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={compatibilityPassed}
-                          onChange={(e) =>
-                            setCompatibilityPassed(e.target.checked)
-                          }
-                        />
-                        Compatibility
-                      </label>
-                      <label className="flex items-center gap-1.5 text-xs text-foreground cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={docsPassed}
-                          onChange={(e) => setDocsPassed(e.target.checked)}
-                        />
-                        Docs
-                      </label>
-                    </div>
-                  </div>
-
-                  {/* Required Changes (dynamic list) */}
-                  {completeOutcome === "changes_requested" && (
+                  {r.review_result.required_changes && r.review_result.required_changes.length > 0 && (
                     <div>
-                      <label className="mb-1 block text-xs text-muted">
-                        Required Changes
-                      </label>
-                      <div className="space-y-1">
-                        {requiredChanges.map((c, i) => (
-                          <div key={i} className="flex gap-1">
-                            <input
-                              type="text"
-                              value={c}
-                              onChange={(e) => {
-                                const updated = [...requiredChanges];
-                                updated[i] = e.target.value;
-                                setRequiredChanges(updated);
-                              }}
-                              placeholder={`Change ${i + 1}`}
-                              className="flex-1 rounded border border-border bg-card px-2 py-1 text-xs text-foreground focus:border-primary focus:outline-none"
-                            />
-                            {requiredChanges.length > 1 && (
-                              <button
-                                onClick={() =>
-                                  setRequiredChanges(
-                                    requiredChanges.filter((_, j) => j !== i)
-                                  )
-                                }
-                                className="text-xs text-danger hover:text-danger/80"
-                              >
-                                Remove
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                        <button
-                          onClick={() =>
-                            setRequiredChanges([...requiredChanges, ""])
-                          }
-                          className="text-xs text-primary hover:underline"
-                        >
-                          + Add change
-                        </button>
-                      </div>
+                      <span className="text-[10px] text-muted">Required Changes: </span>
+                      <span className="text-xs text-foreground">{r.review_result.required_changes.join("; ")}</span>
                     </div>
                   )}
-
-                  {/* Reviewer Summary */}
-                  <div>
-                    <label className="mb-1 block text-xs text-muted">
-                      Reviewer Summary{" "}
-                      {completeOutcome === "approved" && (
-                        <span className="text-danger">*</span>
-                      )}
-                    </label>
-                    <textarea
-                      value={reviewerSummary}
-                      onChange={(e) => setReviewerSummary(e.target.value)}
-                      rows={2}
-                      className="w-full rounded border border-border bg-card px-2 py-1 text-xs text-foreground focus:border-primary focus:outline-none resize-none"
-                      placeholder="Summary of the review findings..."
-                    />
-                  </div>
-
-                  {/* Notes */}
-                  <div>
-                    <label className="mb-1 block text-xs text-muted">
-                      Notes (internal)
-                    </label>
-                    <textarea
-                      value={completeNotes}
-                      onChange={(e) => setCompleteNotes(e.target.value)}
-                      rows={2}
-                      className="w-full rounded border border-border bg-card px-2 py-1 text-xs text-foreground focus:border-primary focus:outline-none resize-none"
-                      placeholder="Optional internal notes..."
-                    />
-                  </div>
-
-                  <div className="flex gap-2 pt-1">
-                    <button
-                      onClick={submitComplete}
-                      disabled={completing}
-                      className="rounded bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-primary/90 disabled:opacity-50"
-                    >
-                      {completing ? "Submitting..." : "Submit Review"}
-                    </button>
-                    <button
-                      onClick={() => setCompleteId("")}
-                      className="text-xs text-muted hover:text-foreground"
-                    >
-                      Cancel
-                    </button>
-                  </div>
+                  {r.review_result.reviewer_summary && (
+                    <p className="text-xs text-foreground/80">{r.review_result.reviewer_summary}</p>
+                  )}
                 </div>
               )}
 
-              {/* Refund form */}
+              {/* Complete form (inline, queue only) */}
+              {completeId === r.id && !isCompletedTab && (
+                <div className="mt-4">
+                  <CompleteForm
+                    reviewId={r.id}
+                    onSuccess={async (outcome) => {
+                      setSuccess(`Review ${outcome}`);
+                      setCompleteId("");
+                      await loadReviews();
+                    }}
+                    onCancel={() => setCompleteId("")}
+                  />
+                </div>
+              )}
+
+              {/* Refund form (inline) */}
               {refundId === r.id && (
-                <div className="mt-4 rounded-lg border border-danger/20 bg-background p-4 space-y-3">
-                  <h3 className="text-sm font-medium text-foreground">
-                    Refund Review
-                  </h3>
-
-                  <div>
-                    <label className="mb-1 block text-xs text-muted">
-                      Refund Type
-                    </label>
-                    <div className="flex gap-2">
-                      <label
-                        className={`flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs cursor-pointer ${
-                          refundType === "full"
-                            ? "border-primary bg-primary/10 text-foreground"
-                            : "border-border text-muted"
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="refundType"
-                          value="full"
-                          checked={refundType === "full"}
-                          onChange={() => setRefundType("full")}
-                          className="sr-only"
-                        />
-                        Full (${(r.price_cents / 100).toFixed(0)})
-                      </label>
-                      <label
-                        className={`flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs cursor-pointer ${
-                          refundType === "partial"
-                            ? "border-primary bg-primary/10 text-foreground"
-                            : "border-border text-muted"
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="refundType"
-                          value="partial"
-                          checked={refundType === "partial"}
-                          onChange={() => setRefundType("partial")}
-                          className="sr-only"
-                        />
-                        Partial
-                      </label>
-                    </div>
-                  </div>
-
-                  {refundType === "partial" && (
-                    <div>
-                      <label className="mb-1 block text-xs text-muted">
-                        Amount (USD)
-                      </label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0.01"
-                        max={(r.price_cents / 100).toFixed(2)}
-                        value={refundAmount}
-                        onChange={(e) => setRefundAmount(e.target.value)}
-                        className="w-32 rounded border border-border bg-card px-2 py-1 text-xs text-foreground focus:border-primary focus:outline-none"
-                        placeholder="0.00"
-                      />
-                    </div>
-                  )}
-
-                  <div>
-                    <label className="mb-1 block text-xs text-muted">
-                      Reason <span className="text-danger">*</span>
-                    </label>
-                    <textarea
-                      value={refundReason}
-                      onChange={(e) => setRefundReason(e.target.value)}
-                      rows={2}
-                      className="w-full rounded border border-border bg-card px-2 py-1 text-xs text-foreground focus:border-primary focus:outline-none resize-none"
-                      placeholder="Reason for refund..."
-                    />
-                  </div>
-
-                  <div className="flex gap-2 pt-1">
-                    <button
-                      onClick={submitRefund}
-                      disabled={refunding || !refundReason.trim()}
-                      className="rounded bg-danger px-3 py-1.5 text-xs font-medium text-white hover:bg-danger/90 disabled:opacity-50"
-                    >
-                      {refunding ? "Processing..." : "Process Refund"}
-                    </button>
-                    <button
-                      onClick={() => setRefundId("")}
-                      className="text-xs text-muted hover:text-foreground"
-                    >
-                      Cancel
-                    </button>
-                  </div>
+                <div className="mt-4">
+                  <RefundForm
+                    reviewId={r.id}
+                    priceCents={r.price_cents}
+                    onSuccess={async () => {
+                      setSuccess("Refund processed");
+                      setRefundId("");
+                      if (isCompletedTab) {
+                        setHistoryLoaded(false);
+                        await loadHistory();
+                      } else {
+                        await loadReviews();
+                      }
+                    }}
+                    onCancel={() => setRefundId("")}
+                  />
                 </div>
               )}
             </div>

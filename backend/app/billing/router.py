@@ -2,7 +2,7 @@ import logging
 from uuid import UUID
 
 import stripe
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -271,6 +271,119 @@ async def admin_review_queue(
             )
         )
     return items
+
+
+@router.get("/v1/admin/reviews/history", response_model=list[AdminQueueItem], dependencies=[Depends(rate_limit(30, 60))])
+async def admin_review_history(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=100),
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """List completed reviews (approved, changes_requested, rejected, refunded), newest first."""
+    offset = (page - 1) * per_page
+    result = await session.execute(
+        select(ReviewRequest)
+        .where(ReviewRequest.status.in_(["approved", "changes_requested", "rejected", "refunded"]))
+        .order_by(ReviewRequest.reviewed_at.desc().nulls_last(), ReviewRequest.created_at.desc())
+        .offset(offset)
+        .limit(per_page)
+    )
+    reviews = result.scalars().all()
+
+    ctx = await _batch_review_context(session, reviews)
+    publisher_ids = {r.publisher_id for r in reviews if r.publisher_id is not None}
+    pub_ctx = await _batch_publisher_context(session, publisher_ids)
+
+    items = []
+    for r in reviews:
+        pkg_name, pkg_slug, ver, v_status, v_tier, v_score = ctx.get(r.id, (None, None, None, None, None, None))
+        pub_slug, pub_name = pub_ctx.get(r.publisher_id, (None, None))
+        items.append(
+            AdminQueueItem(
+                id=r.id,
+                order_id=r.order_id,
+                package_slug=pkg_slug,
+                package_name=pkg_name,
+                version=ver,
+                tier=r.tier,
+                express=r.express,
+                price_cents=r.price_cents,
+                currency=r.currency,
+                status=r.status,
+                review_notes=r.review_notes,
+                review_result=r.review_result,
+                refund_amount_cents=r.refund_amount_cents,
+                paid_at=r.paid_at,
+                reviewed_at=r.reviewed_at,
+                created_at=r.created_at,
+                publisher_slug=pub_slug,
+                publisher_name=pub_name,
+                assigned_reviewer_id=r.assigned_reviewer_id,
+                verification_status=v_status,
+                verification_tier=v_tier,
+                verification_score=v_score,
+            )
+        )
+    return items
+
+
+@router.get("/v1/admin/reviews/{review_id}", response_model=AdminQueueItem, dependencies=[Depends(rate_limit(30, 60))])
+async def admin_review_detail(
+    review_id: UUID,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get a single review with full admin context."""
+    result = await session.execute(
+        select(ReviewRequest).where(ReviewRequest.id == review_id)
+    )
+    r = result.scalar_one_or_none()
+    if not r:
+        raise AppError("REVIEW_NOT_FOUND", "Review request not found", 404)
+
+    pkg_name, pkg_slug, ver = await _get_review_context(session, r)
+
+    # Verification info
+    v_status, v_tier, v_score = None, None, None
+    if r.package_version_id:
+        pv_result = await session.execute(
+            select(
+                PackageVersion.verification_status,
+                PackageVersion.verification_tier,
+                PackageVersion.verification_score,
+            ).where(PackageVersion.id == r.package_version_id)
+        )
+        pv_row = pv_result.one_or_none()
+        if pv_row:
+            v_status, v_tier, v_score = pv_row.verification_status, pv_row.verification_tier, pv_row.verification_score
+
+    pub_slug, pub_name = await _get_publisher_context(session, r.publisher_id)
+
+    return AdminQueueItem(
+        id=r.id,
+        order_id=r.order_id,
+        package_slug=pkg_slug,
+        package_name=pkg_name,
+        version=ver,
+        tier=r.tier,
+        express=r.express,
+        price_cents=r.price_cents,
+        currency=r.currency,
+        status=r.status,
+        review_notes=r.review_notes,
+        review_result=r.review_result,
+        refund_amount_cents=r.refund_amount_cents,
+        paid_at=r.paid_at,
+        reviewed_at=r.reviewed_at,
+        created_at=r.created_at,
+        publisher_slug=pub_slug,
+        publisher_name=pub_name,
+        assigned_reviewer_id=r.assigned_reviewer_id,
+        verification_status=v_status,
+        verification_tier=v_tier,
+        verification_score=v_score,
+    )
 
 
 @router.post("/v1/admin/reviews/{review_id}/assign", dependencies=[Depends(rate_limit(10, 60))])
