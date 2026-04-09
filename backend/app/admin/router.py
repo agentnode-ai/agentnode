@@ -2068,3 +2068,56 @@ async def verification_regressions(
         ],
         "count": len(rows),
     }
+
+
+# --- Feature Flags ---
+
+# Default values for all feature flags
+_FEATURE_FLAG_DEFAULTS = {
+    "manual_reviews_enabled": False,
+}
+
+
+@router.get("/feature-flags", dependencies=[Depends(rate_limit(60, 60))])
+async def get_feature_flags(
+    session: AsyncSession = Depends(get_session),
+):
+    """Public endpoint — returns current feature flag values. No auth required."""
+    result = await session.execute(
+        select(SystemSetting).where(SystemSetting.key == "feature_flags")
+    )
+    row = result.scalar_one_or_none()
+    flags = dict(_FEATURE_FLAG_DEFAULTS)
+    if row and row.value:
+        flags.update(row.value)
+    return flags
+
+
+@router.put("/feature-flags", dependencies=[Depends(rate_limit(10, 60))])
+async def update_feature_flags(
+    request: Request,
+    body: dict,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Admin-only — update feature flags."""
+    # Only allow known flag keys
+    allowed_keys = set(_FEATURE_FLAG_DEFAULTS.keys())
+    filtered = {k: v for k, v in body.items() if k in allowed_keys}
+
+    result = await session.execute(
+        select(SystemSetting).where(SystemSetting.key == "feature_flags")
+    )
+    row = result.scalar_one_or_none()
+    if row:
+        current = dict(row.value) if row.value else {}
+        current.update(filtered)
+        row.value = current
+        row.updated_at = datetime.now(timezone.utc)
+    else:
+        row = SystemSetting(key="feature_flags", value=filtered, updated_at=datetime.now(timezone.utc))
+        session.add(row)
+
+    await _audit(session, request, user, "update_feature_flags", "system", "feature_flags", filtered)
+    await session.commit()
+    return {**_FEATURE_FLAG_DEFAULTS, **row.value}

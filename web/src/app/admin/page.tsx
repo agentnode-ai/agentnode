@@ -27,6 +27,9 @@ function StatCard({ label, value, sub, href }: { label: string; value: number; s
 export default function AdminOverviewPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [flags, setFlags] = useState<Record<string, boolean>>({});
+  const [flagsLoading, setFlagsLoading] = useState(true);
+  const [flagsSaving, setFlagsSaving] = useState(false);
 
   useEffect(() => {
     fetchWithAuth("/admin/stats")
@@ -34,7 +37,28 @@ export default function AdminOverviewPage() {
       .then(setStats)
       .catch(() => {})
       .finally(() => setLoading(false));
+    fetchWithAuth("/admin/feature-flags")
+      .then((r) => r.json())
+      .then(setFlags)
+      .catch(() => {})
+      .finally(() => setFlagsLoading(false));
   }, []);
+
+  async function toggleFlag(key: string, value: boolean) {
+    setFlagsSaving(true);
+    try {
+      const res = await fetchWithAuth("/admin/feature-flags", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [key]: value }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setFlags(updated);
+      }
+    } catch {}
+    setFlagsSaving(false);
+  }
 
   if (loading) {
     return <div className="py-12 text-center text-muted">Loading stats...</div>;
@@ -92,6 +116,30 @@ export default function AdminOverviewPage() {
           </div>
         </section>
       )}
+
+      {/* Feature Flags */}
+      <section className="mt-8">
+        <h2 className="mb-3 text-sm font-semibold text-foreground">Feature Flags</h2>
+        <div className="rounded-lg border border-border bg-card p-4">
+          {flagsLoading ? (
+            <p className="text-sm text-muted">Loading...</p>
+          ) : (
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!flags.manual_reviews_enabled}
+                disabled={flagsSaving}
+                onChange={(e) => toggleFlag("manual_reviews_enabled", e.target.checked)}
+                className="h-4 w-4 accent-primary"
+              />
+              <div>
+                <span className="text-sm text-foreground">Manual Reviews</span>
+                <p className="text-xs text-muted">Zeigt die manuelle Review-Funktion im Dashboard und auf Package-Seiten für Publisher an.</p>
+              </div>
+            </label>
+          )}
+        </div>
+      </section>
 
       {/* Quick actions */}
       <section className="mt-8">

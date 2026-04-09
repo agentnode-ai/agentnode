@@ -99,6 +99,9 @@ export default function DashboardPage() {
   // API Key copy (Fix 8)
   const [copiedKey, setCopiedKey] = useState(false);
 
+  // Feature flags
+  const [reviewsEnabled, setReviewsEnabled] = useState(false);
+
 
   useEffect(() => {
     // Handle review redirect params from Stripe
@@ -119,6 +122,10 @@ export default function DashboardPage() {
     loadUser();
     loadApiKeys();
     loadEmailPrefs();
+    fetch("/api/v1/admin/feature-flags")
+      .then(r => r.json())
+      .then(f => setReviewsEnabled(!!f.manual_reviews_enabled))
+      .catch(() => {});
   }, []);
 
   function clearMessages() {
@@ -924,7 +931,7 @@ export default function DashboardPage() {
       )}
 
       {/* Manual Reviews */}
-      {user.publisher && (
+      {user.publisher && reviewsEnabled && (
         <section id="reviews" className="mb-8 rounded-lg border border-border bg-card p-6">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-lg font-semibold text-foreground">Manual Reviews</h2>
@@ -1188,7 +1195,8 @@ export default function DashboardPage() {
       <section className="mb-8 rounded-lg border border-border bg-card p-6">
         <h2 className="mb-4 text-lg font-semibold text-foreground">API Keys</h2>
         <p className="mb-4 text-sm text-muted">
-          API keys allow programmatic access via the SDK or API. Keys are shown only once at creation.
+          API keys authenticate your requests to the AgentNode API and SDK. Use them to publish packages, manage versions,
+          and integrate AgentNode into your CI/CD pipeline. Pass the key via the <code className="rounded bg-background px-1 py-0.5 text-xs font-mono text-foreground">X-API-Key</code> header. Keys are shown only once at creation.
         </p>
 
         {createdKey && (

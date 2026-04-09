@@ -45,6 +45,7 @@ export default function OwnerActions({
   const [confirmAction, setConfirmAction] = useState<{ type: "deprecate" | "yank"; version?: string } | null>(null);
   const [error, setError] = useState("");
   const [deprecated, setDeprecated] = useState(isDeprecated);
+  const [reviewsEnabled, setReviewsEnabled] = useState(false);
 
   // Edit state
   const [editing, setEditing] = useState(false);
@@ -80,6 +81,10 @@ export default function OwnerActions({
       }
     }
     checkOwner();
+    fetch("/api/v1/admin/feature-flags")
+      .then(r => r.json())
+      .then(f => { if (!cancelled) setReviewsEnabled(!!f.manual_reviews_enabled); })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [slug, publisherSlug]);
 
@@ -283,15 +288,17 @@ export default function OwnerActions({
                 Create upgrade
               </Link>
             )}
-            <Link
-              href="/dashboard#reviews"
-              className="rounded border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-card transition-colors"
-            >
-              Request review
-            </Link>
+            {reviewsEnabled && (
+              <Link
+                href="/dashboard#reviews"
+                className="rounded border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-card transition-colors"
+              >
+                Request review
+              </Link>
+            )}
           </div>
         )}
-        {!hasManualReview && !editing && (
+        {reviewsEnabled && !hasManualReview && !editing && (
           <p className="mt-2 text-xs text-muted">
             <Link href="/dashboard#reviews" className="text-primary hover:underline">
               Request a manual review
