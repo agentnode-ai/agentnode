@@ -42,6 +42,12 @@ TIER_BADGE_COLUMN = {
     "full": "manually_reviewed_at",
 }
 
+TIER_BADGE_LABELS = {
+    "security": "Security Reviewed",
+    "compatibility": "Compatibility Reviewed",
+    "full": "Manually Reviewed",
+}
+
 
 # --- Review lifecycle ---
 

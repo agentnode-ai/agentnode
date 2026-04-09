@@ -65,3 +65,6 @@ class AdminQueueItem(ReviewRequestResponse):
     publisher_slug: str | None = None
     publisher_name: str | None = None
     assigned_reviewer_id: UUID | None = None
+    verification_status: str | None = None
+    verification_tier: str | None = None
+    verification_score: int | None = None

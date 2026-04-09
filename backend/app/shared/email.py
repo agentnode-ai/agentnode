@@ -756,6 +756,31 @@ async def send_invite_followup_email(
 # =========================================================================
 
 
+# 29a. Reviewer assigned
+async def send_review_assigned_email(
+    to: str, package_slug: str, version: str, tier: str, express: bool,
+) -> bool:
+    tier_labels = {"security": "Security Review", "compatibility": "Compatibility Review", "full": "Full Review"}
+    tier_label = tier_labels.get(tier, tier.title())
+    turnaround = (
+        "<p>As an express review, we&rsquo;re targeting completion within <strong>48 hours</strong>.</p>"
+        if express
+        else "<p>Standard reviews are typically completed within <strong>7 business days</strong>.</p>"
+    )
+
+    html = _wrap(f"""
+      <h1>Your review is in progress</h1>
+      <p>Your <strong>{tier_label}</strong> for <strong>{_esc(package_slug)}@{_esc(version)}</strong> has been assigned to a reviewer.</p>
+      {turnaround}
+      <p>Track status in your dashboard:</p>
+      <p style="text-align:center; margin: 24px 0;">
+        <a href="{settings.FRONTEND_URL}/dashboard#reviews" class="btn">View Dashboard</a>
+      </p>
+    """)
+    return await send_email(to, f"Your review is in progress: {package_slug} - AgentNode", html,
+        f"Your {tier_label} for {package_slug}@{version} has been assigned to a reviewer.")
+
+
 # 29. Review payment received
 async def send_review_payment_received_email(
     to: str, package_slug: str, version: str, tier: str, express: bool, price_cents: int,
@@ -828,6 +853,17 @@ async def send_review_completed_email(
     if outcome == "changes_requested":
         next_steps_html = '<p style="color:#f59e0b; font-size:13px; margin-top:16px;">Fix the issues listed above, publish a new version, then request another review for the new version.</p>'
 
+    badge_info_html = ""
+    if outcome == "approved":
+        from app.billing.service import TIER_BADGE_LABELS
+        badge_label = TIER_BADGE_LABELS.get(tier, "Reviewed")
+        badge_info_html = (
+            f'<div style="margin:16px 0; padding:12px 16px; background:#052e16; border:1px solid rgba(34,197,94,0.3); border-radius:8px; font-size:13px; color:#86efac;">'
+            f'Your package now displays the <strong>{badge_label}</strong> badge. '
+            f'<a href="{settings.FRONTEND_URL}/packages/{package_slug}" style="color:#60a5fa;">View your package</a>'
+            f'</div>'
+        )
+
     html = _wrap(f"""
       <h1>Review complete: {package_slug}@{version}</h1>
       <p>Outcome: {badge_html}</p>
@@ -835,6 +871,7 @@ async def send_review_completed_email(
       {changes_html}
       {summary_html}
       {notes_html}
+      {badge_info_html}
       {next_steps_html}
       <p style="text-align:center; margin: 24px 0;">
         <a href="{settings.FRONTEND_URL}/dashboard" class="btn">View Details</a>

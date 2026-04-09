@@ -25,6 +25,9 @@ interface ReviewItem {
   publisher_slug: string | null;
   publisher_name: string | null;
   assigned_reviewer_id: string | null;
+  verification_status: string | null;
+  verification_tier: string | null;
+  verification_score: number | null;
 }
 
 const STATUS_BADGES: Record<string, string> = {
@@ -41,6 +44,16 @@ const TIER_LABELS: Record<string, string> = {
   compatibility: "Compatibility",
   full: "Full",
 };
+
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
 
 export default function AdminReviewsPage() {
   const adminUser = useAdminUser();
@@ -320,12 +333,26 @@ export default function AdminReviewsPage() {
                     </span>
                   </div>
                   <div className="mt-1 flex items-center gap-2">
-                    <span className="text-sm font-medium text-foreground">
-                      {r.package_name || r.package_slug || "Unknown"}
-                    </span>
+                    {r.package_slug ? (
+                      <a
+                        href={`/packages/${r.package_slug}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm font-medium text-primary hover:underline"
+                      >
+                        {r.package_name || r.package_slug} &#8599;
+                      </a>
+                    ) : (
+                      <span className="text-sm font-medium text-foreground">Unknown</span>
+                    )}
                     {r.version && (
                       <span className="font-mono text-xs text-muted">
                         v{r.version}
+                      </span>
+                    )}
+                    {r.verification_tier && (
+                      <span className="text-[10px] text-muted">
+                        Auto: {r.verification_tier}{r.verification_score != null ? ` (${r.verification_score})` : ""}
                       </span>
                     )}
                   </div>
@@ -343,7 +370,7 @@ export default function AdminReviewsPage() {
                     )}
                     {r.paid_at && (
                       <span>
-                        Paid: {new Date(r.paid_at).toLocaleDateString()}
+                        Paid {timeAgo(r.paid_at)}
                       </span>
                     )}
                     {r.assigned_reviewer_id && (

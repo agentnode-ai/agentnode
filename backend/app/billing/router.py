@@ -35,6 +35,7 @@ from app.database import get_session
 from app.packages.models import Package, PackageVersion
 from app.publishers.models import Publisher
 from app.shared.email import (
+    send_review_assigned_email,
     send_review_payment_received_email,
     send_review_completed_email,
     send_review_refund_email,
@@ -102,7 +103,7 @@ async def my_reviews(
     ctx = await _batch_review_context(session, reviews)
     items = []
     for r in reviews:
-        pkg_name, pkg_slug, ver = ctx.get(r.id, (None, None, None))
+        pkg_name, pkg_slug, ver, _, _, _ = ctx.get(r.id, (None, None, None, None, None, None))
         items.append(
             ReviewRequestResponse(
                 id=r.id,
@@ -241,7 +242,7 @@ async def admin_review_queue(
 
     items = []
     for r in reviews:
-        pkg_name, pkg_slug, ver = ctx.get(r.id, (None, None, None))
+        pkg_name, pkg_slug, ver, v_status, v_tier, v_score = ctx.get(r.id, (None, None, None, None, None, None))
         pub_slug, pub_name = pub_ctx.get(r.publisher_id, (None, None))
         items.append(
             AdminQueueItem(
@@ -264,6 +265,9 @@ async def admin_review_queue(
                 publisher_slug=pub_slug,
                 publisher_name=pub_name,
                 assigned_reviewer_id=r.assigned_reviewer_id,
+                verification_status=v_status,
+                verification_tier=v_tier,
+                verification_score=v_score,
             )
         )
     return items
@@ -274,6 +278,7 @@ async def admin_assign_reviewer(
     review_id: UUID,
     body: AssignReviewerBody,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -283,6 +288,18 @@ async def admin_assign_reviewer(
         "reviewer_id": str(body.reviewer_id),
     })
     await session.commit()
+
+    # Send "reviewer assigned" email in background
+    try:
+        slug, ver, email = await _get_review_email_context(session, review.id)
+        if email:
+            background_tasks.add_task(
+                send_review_assigned_email,
+                email, slug, ver, review.tier, review.express,
+            )
+    except Exception:
+        logger.warning("Failed to prepare review assigned email", exc_info=True)
+
     return {"status": "assigned", "review_id": str(review.id)}
 
 
@@ -447,8 +464,8 @@ async def _get_review_context(session: AsyncSession, review: ReviewRequest) -> t
 
 async def _batch_review_context(
     session: AsyncSession, reviews: list[ReviewRequest],
-) -> dict[UUID, tuple[str | None, str | None, str | None]]:
-    """Batch-load (package_name, package_slug, version_number) for many reviews.
+) -> dict[UUID, tuple[str | None, str | None, str | None, str | None, str | None, int | None]]:
+    """Batch-load (package_name, package_slug, version_number, verification_status, verification_tier, verification_score) for many reviews.
 
     Returns a dict keyed by review.id.  Two queries total instead of 2*N.
     """
@@ -467,21 +484,31 @@ async def _batch_review_context(
         for row in pkg_result.all():
             pkg_map[row.id] = (row.name, row.slug)
 
-    # Single query for all versions
-    ver_map: dict[UUID, str] = {}
+    # Single query for all versions (include verification fields)
+    ver_map: dict[UUID, tuple[str, str | None, str | None, int | None]] = {}
     if version_ids:
         pv_result = await session.execute(
-            select(PackageVersion.id, PackageVersion.version_number).where(PackageVersion.id.in_(version_ids))
+            select(
+                PackageVersion.id,
+                PackageVersion.version_number,
+                PackageVersion.verification_status,
+                PackageVersion.verification_tier,
+                PackageVersion.verification_score,
+            ).where(PackageVersion.id.in_(version_ids))
         )
         for row in pv_result.all():
-            ver_map[row.id] = row.version_number
+            ver_map[row.id] = (row.version_number, row.verification_status, row.verification_tier, row.verification_score)
 
     # Assemble per-review context
-    result: dict[UUID, tuple[str | None, str | None, str | None]] = {}
+    result: dict[UUID, tuple[str | None, str | None, str | None, str | None, str | None, int | None]] = {}
     for r in reviews:
         pkg_name, pkg_slug = pkg_map.get(r.package_id, (None, None))
-        ver = ver_map.get(r.package_version_id)
-        result[r.id] = (pkg_name, pkg_slug, ver)
+        ver_info = ver_map.get(r.package_version_id)
+        if ver_info:
+            ver, v_status, v_tier, v_score = ver_info
+        else:
+            ver, v_status, v_tier, v_score = None, None, None, None
+        result[r.id] = (pkg_name, pkg_slug, ver, v_status, v_tier, v_score)
     return result
 
 

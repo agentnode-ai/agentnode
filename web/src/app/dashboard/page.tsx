@@ -454,6 +454,22 @@ export default function DashboardPage() {
     refunded: "bg-gray-500/10 text-gray-400",
   };
 
+  const TIER_BADGE_LABELS: Record<string, string> = {
+    security: "Security Reviewed",
+    compatibility: "Compatibility Reviewed",
+    full: "Manually Reviewed",
+  };
+
+  function timeAgo(dateStr: string): string {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const minutes = Math.floor(diff / 60000);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  }
+
   if (loading) {
     return (
       <div className="mx-auto max-w-6xl px-6 py-24 text-center text-muted">
@@ -909,7 +925,7 @@ export default function DashboardPage() {
 
       {/* Manual Reviews */}
       {user.publisher && (
-        <section className="mb-8 rounded-lg border border-border bg-card p-6">
+        <section id="reviews" className="mb-8 rounded-lg border border-border bg-card p-6">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-lg font-semibold text-foreground">Manual Reviews</h2>
             <button
@@ -961,31 +977,67 @@ export default function DashboardPage() {
                 </div>
               )}
               <div>
-                <label className="mb-1 block text-sm text-muted">Review Tier</label>
-                <div className="space-y-2">
-                  {[
-                    { value: "security", label: "Security Review", price: "$49", desc: "Dependency audit, permission check, sandbox-escape analysis" },
-                    { value: "compatibility", label: "Compatibility Review", price: "$99", desc: "Security + provider compatibility, edge-cases, error handling" },
-                    { value: "full", label: "Full Review", price: "$199", desc: "Everything + code quality, docs, best practices" },
-                  ].map(t => (
-                    <label key={t.value} className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${reviewForm.tier === t.value ? "border-primary bg-primary/5" : "border-border hover:border-border/80"}`}>
-                      <input
-                        type="radio"
-                        name="tier"
-                        value={t.value}
-                        checked={reviewForm.tier === t.value}
-                        onChange={(e) => setReviewForm(f => ({ ...f, tier: e.target.value }))}
-                        className="mt-0.5"
-                      />
-                      <div className="flex-1">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm font-medium text-foreground">{t.label}</span>
-                          <span className="text-sm font-mono text-primary">{t.price}</span>
-                        </div>
-                        <p className="text-xs text-muted mt-0.5">{t.desc}</p>
-                      </div>
-                    </label>
-                  ))}
+                <label className="mb-2 block text-sm text-muted">Review Tier</label>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr>
+                        <th className="text-left py-2 pr-3 text-muted font-normal"></th>
+                        {([
+                          { value: "security", label: "Security", price: "$49" },
+                          { value: "compatibility", label: "Compatibility", price: "$99" },
+                          { value: "full", label: "Full", price: "$199" },
+                        ] as const).map(t => (
+                          <th
+                            key={t.value}
+                            onClick={() => setReviewForm(f => ({ ...f, tier: t.value }))}
+                            className={`text-center px-3 py-2 cursor-pointer rounded-t-lg transition-colors ${reviewForm.tier === t.value ? "bg-primary/10 border border-b-0 border-primary/30" : "hover:bg-card"}`}
+                          >
+                            <div className="flex items-center justify-center gap-1.5">
+                              <input
+                                type="radio"
+                                name="tier"
+                                value={t.value}
+                                checked={reviewForm.tier === t.value}
+                                onChange={() => setReviewForm(f => ({ ...f, tier: t.value }))}
+                                className="accent-primary"
+                              />
+                              <span className="font-medium text-foreground">{t.label}</span>
+                            </div>
+                            <span className="font-mono text-primary">{t.price}</span>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="text-muted">
+                      {[
+                        { feature: "Dependency audit", security: true, compatibility: true, full: true },
+                        { feature: "Permission review", security: true, compatibility: true, full: true },
+                        { feature: "Sandbox analysis", security: true, compatibility: true, full: true },
+                        { feature: "Provider compatibility", security: false, compatibility: true, full: true },
+                        { feature: "Edge-case handling", security: false, compatibility: true, full: true },
+                        { feature: "Error handling", security: false, compatibility: true, full: true },
+                        { feature: "Code quality", security: false, compatibility: false, full: true },
+                        { feature: "Documentation review", security: false, compatibility: false, full: true },
+                        { feature: "Best practices", security: false, compatibility: false, full: true },
+                      ].map(row => (
+                        <tr key={row.feature} className="border-t border-border/50">
+                          <td className="py-1.5 pr-3 text-foreground">{row.feature}</td>
+                          {(["security", "compatibility", "full"] as const).map(tier => (
+                            <td
+                              key={tier}
+                              onClick={() => setReviewForm(f => ({ ...f, tier }))}
+                              className={`text-center py-1.5 px-3 cursor-pointer transition-colors ${reviewForm.tier === tier ? "bg-primary/10" : ""}`}
+                            >
+                              {row[tier]
+                                ? <span className="text-green-400">&#10003;</span>
+                                : <span className="text-muted/40">&mdash;</span>}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
               <div className="flex items-center gap-3">
@@ -998,15 +1050,20 @@ export default function DashboardPage() {
                   <span className="text-sm text-foreground">Express (+$100, 48h instead of 7 days)</span>
                 </label>
               </div>
-              <div className="flex items-center justify-between pt-2 border-t border-border">
-                <span className="text-sm text-muted">Total: <span className="font-mono font-medium text-foreground">${reviewPrice()}</span> USD</span>
-                <button
-                  onClick={requestReview}
-                  disabled={requestingReview || !reviewForm.package_slug || !reviewForm.version}
-                  className="rounded bg-primary px-4 py-2 text-sm text-white hover:bg-primary/90 disabled:opacity-50"
-                >
-                  {requestingReview ? "Processing..." : "Request Review"}
-                </button>
+              <div className="pt-2 border-t border-border space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted">Total: <span className="font-mono font-medium text-foreground">${reviewPrice()}</span> USD</span>
+                  <button
+                    onClick={requestReview}
+                    disabled={requestingReview || !reviewForm.package_slug || !reviewForm.version}
+                    className="rounded bg-primary px-4 py-2 text-sm text-white hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {requestingReview ? "Processing..." : "Request Review"}
+                  </button>
+                </div>
+                <p className="text-[11px] text-muted">
+                  A new paid review is required if changes are requested for the updated version.
+                </p>
               </div>
             </div>
           )}
@@ -1015,8 +1072,42 @@ export default function DashboardPage() {
             <p className="text-sm text-muted">Loading reviews...</p>
           ) : myReviews.length > 0 ? (
             <div className="space-y-2">
-              {myReviews.map((r: any) => (
+              {myReviews.map((r: any) => {
+                const isPaid = !!r.paid_at;
+                const isInProgress = ["in_review", "approved", "changes_requested", "rejected"].includes(r.status);
+                const isCompleted = ["approved", "changes_requested", "rejected"].includes(r.status);
+                return (
                 <div key={r.id} className="rounded-lg border border-border bg-background px-4 py-3">
+                  {/* Status Timeline */}
+                  {isPaid && (
+                    <div className="mb-3">
+                      <div className="flex items-center gap-1 text-[11px]">
+                        <span className={`inline-flex items-center gap-1 ${isPaid ? "text-primary" : "text-muted/40"}`}>
+                          <span className={`inline-block h-2 w-2 rounded-full ${isPaid ? "bg-primary" : "bg-muted/30"}`} />
+                          Paid
+                        </span>
+                        <span className="text-muted/30 mx-1">&rarr;</span>
+                        <span className={`inline-flex items-center gap-1 ${isInProgress ? "text-primary" : "text-muted/40"}`}>
+                          <span className={`inline-block h-2 w-2 rounded-full ${isInProgress ? "bg-primary" : "bg-muted/30"}`} />
+                          In Progress
+                        </span>
+                        <span className="text-muted/30 mx-1">&rarr;</span>
+                        <span className={`inline-flex items-center gap-1 ${isCompleted ? "text-primary" : "text-muted/40"}`}>
+                          <span className={`inline-block h-2 w-2 rounded-full ${isCompleted ? "bg-primary" : "bg-muted/30"}`} />
+                          Completed
+                        </span>
+                      </div>
+                      {isPaid && !isInProgress && r.paid_at && (
+                        <p className="mt-1 text-[11px] text-muted">
+                          Paid {timeAgo(r.paid_at)}. Estimated turnaround: {r.express ? "target: ~48 hours" : "~7 business days"}
+                        </p>
+                      )}
+                      {r.status === "in_review" && (
+                        <p className="mt-1 text-[11px] text-purple-400">Your review is being worked on</p>
+                      )}
+                    </div>
+                  )}
+
                   <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-foreground">{r.package_name || r.package_slug}</span>
@@ -1066,6 +1157,14 @@ export default function DashboardPage() {
                       )}
                     </div>
                   )}
+                  {r.status === "approved" && (
+                    <div className="mt-2 rounded border border-green-500/30 bg-green-500/10 px-3 py-2 text-xs text-green-300">
+                      Your package now displays the <strong>{TIER_BADGE_LABELS[r.tier] || "Reviewed"}</strong> badge.{" "}
+                      <Link href={`/packages/${r.package_slug}`} className="text-primary hover:underline">
+                        View package
+                      </Link>
+                    </div>
+                  )}
                   {r.status === "changes_requested" && (
                     <div className="mt-2 rounded border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-300">
                       <strong>Next steps:</strong> Fix the issues above, publish a new version,
@@ -1076,7 +1175,8 @@ export default function DashboardPage() {
                     <p className="mt-1 text-xs text-muted italic">{r.review_notes}</p>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <p className="text-sm text-muted">No review requests yet.</p>

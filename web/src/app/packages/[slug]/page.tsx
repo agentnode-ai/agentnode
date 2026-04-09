@@ -324,6 +324,7 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
           description: pkg.description ?? "",
           tags: pkg.tags ?? [],
         }}
+        hasManualReview={!!(latestVersion?.security_reviewed_at || latestVersion?.compatibility_reviewed_at || latestVersion?.manually_reviewed_at)}
       />
 
       <div className="grid gap-8 lg:grid-cols-3">

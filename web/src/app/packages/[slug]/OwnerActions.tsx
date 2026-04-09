@@ -27,12 +27,14 @@ export default function OwnerActions({
   isDeprecated,
   packageType,
   currentMetadata,
+  hasManualReview,
 }: {
   slug: string;
   publisherSlug: string;
   isDeprecated: boolean;
   packageType?: string;
   currentMetadata: PackageMetadata;
+  hasManualReview?: boolean;
 }) {
   const router = useRouter();
   const [isOwner, setIsOwner] = useState(false);
@@ -281,7 +283,21 @@ export default function OwnerActions({
                 Create upgrade
               </Link>
             )}
+            <Link
+              href="/dashboard#reviews"
+              className="rounded border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-card transition-colors"
+            >
+              Request review
+            </Link>
           </div>
+        )}
+        {!hasManualReview && !editing && (
+          <p className="mt-2 text-xs text-muted">
+            <Link href="/dashboard#reviews" className="text-primary hover:underline">
+              Request a manual review
+            </Link>{" "}
+            to improve trust.
+          </p>
         )}
       </div>
 
