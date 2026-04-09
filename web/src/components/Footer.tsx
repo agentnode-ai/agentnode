@@ -32,6 +32,9 @@ export default function Footer() {
           <Link href="/docs" className="transition-colors hover:text-foreground">
             Docs
           </Link>
+          <Link href="/faq" className="transition-colors hover:text-foreground">
+            FAQ
+          </Link>
           <Link href="/license" className="transition-colors hover:text-foreground">
             License
           </Link>

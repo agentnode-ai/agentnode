@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, createContext, useContext } from "react";
+import { useState, useEffect, createContext, useContext, useRef } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { fetchWithAuth } from "@/lib/api";
@@ -33,7 +33,81 @@ const navItems = [
   { href: "/admin/blog", label: "Blog", icon: "✎" },
   { href: "/admin/media", label: "Media", icon: "▣" },
   { href: "/admin/sitemap", label: "Sitemap", icon: "◎" },
+  { href: "/admin/support", label: "Support", icon: "?" },
 ];
+
+function MobileAdminNav({ pathname }: { pathname: string }) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    if (open) document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  return (
+    <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur-md px-2 py-1.5" ref={menuRef}>
+      {open && (
+        <div className="absolute bottom-full left-0 right-0 max-h-[60vh] overflow-y-auto border-t border-border bg-background/95 backdrop-blur-md p-2">
+          <div className="grid grid-cols-3 gap-1">
+            {navItems.slice(4).map((item) => {
+              const isActive = pathname === item.href;
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`flex flex-col items-center gap-0.5 rounded-md px-2 py-2 text-xs ${
+                    isActive ? "text-primary bg-primary/10" : "text-muted"
+                  }`}
+                >
+                  <span>{item.icon}</span>
+                  <span className="truncate">{item.label}</span>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      <div className="flex justify-around">
+        {navItems.slice(0, 4).map((item) => {
+          const isActive = pathname === item.href;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`flex flex-col items-center gap-0.5 px-2 py-1 text-xs ${
+                isActive ? "text-primary" : "text-muted"
+              }`}
+            >
+              <span>{item.icon}</span>
+              <span>{item.label}</span>
+            </Link>
+          );
+        })}
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className={`flex flex-col items-center gap-0.5 px-2 py-1 text-xs ${
+            open || navItems.slice(4).some((i) => pathname === i.href)
+              ? "text-primary"
+              : "text-muted"
+          }`}
+        >
+          <span>⋯</span>
+          <span>More</span>
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -96,25 +170,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         </aside>
 
         {/* Mobile nav */}
-        <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur-md px-2 py-1.5">
-          <div className="flex justify-around">
-            {navItems.slice(0, 5).map((item) => {
-              const isActive = pathname === item.href;
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={`flex flex-col items-center gap-0.5 px-2 py-1 text-xs ${
-                    isActive ? "text-primary" : "text-muted"
-                  }`}
-                >
-                  <span>{item.icon}</span>
-                  <span>{item.label}</span>
-                </Link>
-              );
-            })}
-          </div>
-        </div>
+        <MobileAdminNav pathname={pathname} />
 
         {/* Main content */}
         <main className="min-w-0 flex-1">{children}</main>

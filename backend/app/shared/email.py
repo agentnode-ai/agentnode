@@ -752,6 +752,72 @@ async def send_invite_followup_email(
 
 
 # =========================================================================
+#  PHASE 6 — Support Ticket Notifications
+# =========================================================================
+
+
+# 32. New support ticket — admin notification
+async def send_new_support_ticket_admin_email(
+    to: str, ticket_number: int, subject: str,
+    ticket_id: str | None = None, category: str | None = None, username: str | None = None,
+) -> bool:
+    admin_url = f"{settings.FRONTEND_URL}/admin/support"
+    if ticket_id:
+        admin_url = f"{settings.FRONTEND_URL}/admin/support/{ticket_id}"
+    extra = ""
+    if category:
+        extra += f"<p><strong>Category:</strong> {_esc(category)}</p>"
+    if username:
+        extra += f"<p><strong>User:</strong> {_esc(username)}</p>"
+    html = _wrap(f"""
+      <h1>New support ticket #{ticket_number}</h1>
+      <p>A new support ticket has been opened.</p>
+      <p><strong>Subject:</strong> {_esc(subject)}</p>
+      {extra}
+      <p style="text-align:center; margin: 24px 0;">
+        <a href="{admin_url}" class="btn">View Ticket</a>
+      </p>
+    """)
+    return await send_email(to, f"New support ticket #{ticket_number}: {subject}", html)
+
+
+# 33. Admin reply — user notification
+async def send_support_reply_email(to: str, ticket_number: int, ticket_id: str | None = None) -> bool:
+    ticket_url = f"{settings.FRONTEND_URL}/dashboard/support"
+    if ticket_id:
+        ticket_url = f"{settings.FRONTEND_URL}/dashboard/support/{ticket_id}"
+    html = _wrap(f"""
+      <h1>Reply to your ticket #{ticket_number}</h1>
+      <p>The support team has replied to your ticket <strong>#{ticket_number}</strong>.</p>
+      <p style="text-align:center; margin: 24px 0;">
+        <a href="{ticket_url}" class="btn">View Ticket</a>
+      </p>
+    """)
+    return await send_email(to, f"Reply to your ticket #{ticket_number} - AgentNode", html,
+        f"The AgentNode support team replied to your ticket #{ticket_number}.")
+
+
+# 34. Status change — user notification
+async def send_support_status_change_email(
+    to: str, ticket_number: int, new_status: str, ticket_id: str | None = None,
+) -> bool:
+    ticket_url = f"{settings.FRONTEND_URL}/dashboard/support"
+    if ticket_id:
+        ticket_url = f"{settings.FRONTEND_URL}/dashboard/support/{ticket_id}"
+    status_label = new_status.replace("_", " ").title()
+    html = _wrap(f"""
+      <h1>Ticket #{ticket_number} — Status Update</h1>
+      <p>The status of your support ticket <strong>#{ticket_number}</strong> has been changed to
+         <strong>{_esc(status_label)}</strong>.</p>
+      <p style="text-align:center; margin: 24px 0;">
+        <a href="{ticket_url}" class="btn">View Ticket</a>
+      </p>
+    """)
+    return await send_email(to, f"Ticket #{ticket_number} status: {status_label} - AgentNode", html,
+        f"Your ticket #{ticket_number} status has been updated to {status_label}.")
+
+
+# =========================================================================
 #  PHASE 5 — Review Notifications (transactional, always send)
 # =========================================================================
 

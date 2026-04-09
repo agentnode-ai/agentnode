@@ -190,7 +190,11 @@ result = client.smart_run(
             If your agent uses tool calling,{" "}
             <code className="rounded bg-background px-1 py-0.5 font-mono text-xs">AgentNodeRuntime</code>{" "}
             handles everything &mdash; tool registration, system prompt, and the
-            tool loop. Tested across 22 models. Native support for OpenAI, Anthropic, and Gemini.
+            tool loop. Tested across{" "}
+            <Link href="/compatibility" className="text-primary hover:text-foreground transition-colors">
+              175+ models
+            </Link>
+            . Native support for OpenAI, Anthropic, and Gemini.
             Any OpenAI-compatible provider (Mistral, DeepSeek, Qwen, Llama) works via OpenRouter.
           </p>
 
@@ -321,14 +325,41 @@ print(result.content)`}
       <section className="border-b border-border bg-card/30">
         <div className="mx-auto max-w-4xl px-4 sm:px-6 py-20">
           <h2 className="mb-4 text-2xl font-bold text-foreground">
-            Works with your stack
+            Verified with <span className="text-green-400">175+</span> models
           </h2>
           <p className="mb-12 max-w-2xl text-muted">
-            Native runtime integration for OpenAI, Anthropic, and Gemini.
-            Framework adapters for LangChain, CrewAI, and MCP. Compatible with
-            Mistral, DeepSeek, Qwen, Ollama, and any OpenAI-compatible provider.
+            Native runtime for OpenAI, Anthropic, and Gemini. Framework adapters
+            for LangChain, CrewAI, and MCP. Tested against 182 models from 32
+            providers &mdash; 96% achieve perfect tool-calling compatibility.
           </p>
           <AiStackLogos />
+          <div className="mx-auto mt-10 max-w-2xl grid grid-cols-4 gap-3">
+            <div className="rounded-xl border border-border bg-background/50 p-3 text-center">
+              <div className="text-xl font-bold text-foreground">182</div>
+              <div className="text-[11px] text-muted mt-0.5">Models</div>
+            </div>
+            <div className="rounded-xl border border-green-500/20 bg-green-500/5 p-3 text-center">
+              <div className="text-xl font-bold text-green-400">175</div>
+              <div className="text-[11px] text-muted mt-0.5">Perfect</div>
+            </div>
+            <div className="rounded-xl border border-border bg-background/50 p-3 text-center">
+              <div className="text-xl font-bold text-foreground">32</div>
+              <div className="text-[11px] text-muted mt-0.5">Providers</div>
+            </div>
+            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 text-center">
+              <div className="text-xl font-bold text-primary">96%</div>
+              <div className="text-[11px] text-muted mt-0.5">S-Tier</div>
+            </div>
+          </div>
+          <div className="mt-6 text-center">
+            <Link
+              href="/compatibility"
+              className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:text-primary-hover transition-colors"
+            >
+              Full compatibility matrix
+              <span aria-hidden="true">&rarr;</span>
+            </Link>
+          </div>
         </div>
       </section>
 

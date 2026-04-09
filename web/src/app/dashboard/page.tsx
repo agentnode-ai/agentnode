@@ -1297,6 +1297,28 @@ export default function DashboardPage() {
         )}
       </section>
 
+      {/* Support */}
+      <section className="mb-8 rounded-lg border border-border bg-card p-6">
+        <h2 className="mb-2 text-lg font-semibold text-foreground">Support</h2>
+        <p className="text-sm text-muted mb-3">
+          Need help? Check the FAQ or open a support ticket.
+        </p>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/faq"
+            className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-background"
+          >
+            FAQ
+          </Link>
+          <Link
+            href="/dashboard/support"
+            className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary/90"
+          >
+            My Tickets
+          </Link>
+        </div>
+      </section>
+
       {/* Account Deletion (Fix 14) */}
       <section className="mb-8 rounded-lg border border-border bg-card p-6">
         <h2 className="mb-2 text-lg font-semibold text-foreground">Delete Account</h2>
