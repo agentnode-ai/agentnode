@@ -48,14 +48,20 @@ def create_access_token(user_id: str) -> str:
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
-def create_refresh_token(user_id: str) -> tuple[str, str]:
-    """Create a refresh token with a unique JTI. Returns (token, jti)."""
+def create_refresh_token(user_id: str, gen: int = 0) -> tuple[str, str]:
+    """Create a refresh token with a unique JTI. Returns (token, jti).
+
+    ``gen`` is the user's session generation counter — any refresh token with
+    a gen lower than the current user generation is considered revoked. This
+    provides group-revocation semantics (password change, reset, admin ban).
+    """
     jti = uuid4().hex
     expire = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
     payload = {
         "sub": str(user_id),
         "token_type": "refresh",
         "jti": jti,
+        "gen": gen,
         "exp": expire,
     }
     token = jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
@@ -182,14 +188,79 @@ async def store_refresh_token(redis, user_id: str, jti: str) -> None:
 
 
 async def validate_refresh_jti(redis, jti: str) -> str | None:
-    """Check if a refresh token JTI is valid. Returns user_id or None."""
+    """Check if a refresh token JTI is valid. Returns user_id or None.
+
+    NOTE: Non-atomic. Prefer `consume_refresh_jti` on the hot refresh path
+    to avoid TOCTOU races between concurrent refresh requests (P1-S1).
+    """
     key = f"refresh:{jti}"
     return await redis.get(key)
+
+
+async def consume_refresh_jti(redis, jti: str) -> str | None:
+    """Atomically validate and consume a refresh token JTI in one round-trip.
+
+    Uses Redis GETDEL (6.2+) when available, otherwise falls back to a
+    non-atomic GET+DEL (only hit in unit-test mocks). On the first of two
+    concurrent refresh attempts, GETDEL returns the user_id; on the second,
+    it returns None, closing the TOCTOU window that let legacy rotation
+    accept the same token twice.
+    """
+    key = f"refresh:{jti}"
+    getdel = getattr(redis, "getdel", None)
+    if getdel is not None:
+        try:
+            return await getdel(key)
+        except Exception:
+            pass
+    val = await redis.get(key)
+    if val is not None:
+        await redis.delete(key)
+    return val
 
 
 async def revoke_refresh_jti(redis, jti: str) -> None:
     """Revoke a single refresh token JTI."""
     await redis.delete(f"refresh:{jti}")
+
+
+# --- Group refresh-token revocation via session generation counter ---
+#
+# Revoking every active refresh token for a single user (after password
+# change, password reset, or admin ban) requires either a per-user index of
+# JTIs or a monotonically increasing "session generation". We use the
+# latter: each refresh token embeds the user's generation counter at the
+# time of issue. On refresh, we reject tokens whose `gen` is below the
+# user's current generation. Incrementing the counter is an atomic INCR.
+
+
+def _user_gen_key(user_id: str) -> str:
+    return f"user_session_gen:{user_id}"
+
+
+async def get_user_session_gen(redis, user_id: str) -> int:
+    """Return the user's current refresh-token session generation.
+
+    Legacy users without a generation entry default to 0, meaning previously
+    issued tokens (also gen=0) remain valid until the generation is first
+    bumped via `bump_user_session_gen`.
+    """
+    val = await redis.get(_user_gen_key(str(user_id)))
+    if val is None:
+        return 0
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def bump_user_session_gen(redis, user_id: str) -> int:
+    """Atomically increment the user's session generation counter.
+
+    Invalidates every refresh token previously issued to this user. Returns
+    the new generation. Called by `revoke_all_refresh_tokens`.
+    """
+    return await redis.incr(_user_gen_key(str(user_id)))
 
 
 # --- Account Lockout (Redis) ---

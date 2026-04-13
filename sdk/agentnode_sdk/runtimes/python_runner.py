@@ -11,9 +11,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
+
+# P1-SDK7: serialize concurrent callers of _run_direct so the
+# os.environ["AGENTNODE_LOCKFILE"] save/restore dance is atomic.
+# Concurrent calls from different threads would otherwise race the
+# environment variable and leak one another's lockfile paths.
+_DIRECT_ENV_LOCK = threading.Lock()
 
 from agentnode_sdk.exceptions import AgentNodeToolError
 from agentnode_sdk.installer import load_tool, read_lockfile
@@ -23,8 +30,12 @@ from agentnode_sdk.models import RunToolResult
 # Constants
 # ---------------------------------------------------------------------------
 
-_TRUSTED_LEVELS = {"trusted", "curated"}
-_DIRECT_TRUST_LEVELS = _TRUSTED_LEVELS  # auto-mode runs these direct
+_TRUSTED_LEVELS = {"trusted", "curated"}  # retained for display/logging
+# P0-06: ``mode='auto'`` must ALWAYS resolve to subprocess so that the
+# documented isolation guarantee is true by default, independent of trust
+# level. ``mode='direct'`` remains an explicit opt-in for performance-
+# critical workloads that knowingly share in-process globals.
+_DIRECT_TRUST_LEVELS: set[str] = set()
 
 # Environment variables safe to pass to the subprocess.
 # Allowlist approach: anything not listed is stripped.
@@ -46,13 +57,16 @@ _ENV_ALLOWLIST = {
 }
 
 # Wrapper script executed inside the subprocess.
-# Uses stdin for input (JSON), writes result to stdout (JSON).
-# stdout is redirected inside the tool call so print() doesn't pollute JSON.
+#
+# P1-SDK8: slug and tool_name are passed on stdin alongside kwargs, not
+# format-injected into the script source. Previously any slug/tool_name
+# containing escape sequences, braces, or weird Unicode could either
+# break `.format()` or inject arbitrary Python via `repr()`. The wrapper
+# is now a pure static string — no `.format()` substitution happens.
 _SUBPROCESS_WRAPPER = '''\
 import io
 import json
 import sys
-import traceback
 
 def _safe_serialize(obj):
     """JSON-serialize *obj*, falling back to repr for non-serializable types."""
@@ -60,14 +74,17 @@ def _safe_serialize(obj):
         json.dumps(obj)
         return obj
     except (TypeError, ValueError, OverflowError):
-        return {{"__agentnode_fallback_repr__": True, "repr": repr(obj)[:2000]}}
+        return {"__agentnode_fallback_repr__": True, "repr": repr(obj)[:2000]}
 
 try:
-    kwargs = json.loads(sys.stdin.read())
+    _payload = json.loads(sys.stdin.read())
+    _slug = _payload["slug"]
+    _tool_name = _payload.get("tool_name")
+    kwargs = _payload.get("kwargs") or {}
 
     from agentnode_sdk.installer import load_tool
 
-    func = load_tool({slug!r}, tool_name={tool_name!r})
+    func = load_tool(_slug, tool_name=_tool_name)
 
     # Capture stdout so tool print() calls don't corrupt our JSON output.
     captured = io.StringIO()
@@ -79,7 +96,7 @@ try:
         sys.stdout = real_stdout
 
     logs = captured.getvalue()
-    payload = {{"ok": True, "result": _safe_serialize(result)}}
+    payload = {"ok": True, "result": _safe_serialize(result)}
     if logs:
         payload["logs"] = logs[:10000]
     json.dump(payload, real_stdout)
@@ -87,7 +104,7 @@ try:
 except Exception as exc:
     # Write error as JSON so the parent always gets parseable output.
     json.dump(
-        {{"ok": False, "error": f"{{type(exc).__name__}}: {{exc}}"}},
+        {"ok": False, "error": type(exc).__name__ + ": " + str(exc)},
         sys.__stdout__,
     )
 '''
@@ -166,22 +183,15 @@ def run_python(
 # ---------------------------------------------------------------------------
 
 def _resolve_mode(mode: str, trust_level: str | None) -> str:
-    """Map ``"auto"`` to a concrete mode based on trust level.
+    """Map ``"auto"`` to a concrete execution mode.
 
-    ========== ===========
-    Trust      Mode
-    ========== ===========
-    curated    direct
-    trusted    direct
-    verified   subprocess
-    unverified subprocess
-    None       subprocess  (backward compat with old lockfiles)
-    ========== ===========
+    ``auto`` always resolves to ``subprocess`` regardless of trust level,
+    so the isolation guarantee documented in the SDK README holds by
+    default. Callers that want in-process execution must pass
+    ``mode="direct"`` explicitly.
     """
     if mode != "auto":
         return mode
-    if trust_level in _DIRECT_TRUST_LEVELS:
-        return "direct"
     return "subprocess"
 
 
@@ -204,22 +214,38 @@ def _run_direct(
     kwargs: dict,
     lockfile_path: Path | None,
 ) -> Any:
-    """Load and call the tool in the current process."""
-    # If a custom lockfile path is set, make it visible to load_tool
-    old_env = os.environ.get("AGENTNODE_LOCKFILE")
-    if lockfile_path:
+    """Load and call the tool in the current process.
+
+    P1-SDK7: the env-var mutation is guarded by ``_DIRECT_ENV_LOCK`` so
+    concurrent callers from different threads can't clobber each other's
+    ``AGENTNODE_LOCKFILE``. Note this still does NOT make the ACTUAL tool
+    call concurrency-safe — two threads loading different tools that
+    share a module will still interleave inside the tool. The lock only
+    covers the env-var save/restore and the ``load_tool()`` lookup.
+    """
+    if lockfile_path is None:
+        # No lockfile override — env doesn't need touching, no lock needed.
+        try:
+            func = load_tool(slug, tool_name=tool_name)
+            return func(**kwargs)
+        except ImportError as exc:
+            raise AgentNodeToolError(str(exc), tool_name=tool_name or slug) from exc
+
+    with _DIRECT_ENV_LOCK:
+        old_env = os.environ.get("AGENTNODE_LOCKFILE")
         os.environ["AGENTNODE_LOCKFILE"] = str(lockfile_path)
-    try:
-        func = load_tool(slug, tool_name=tool_name)
-        return func(**kwargs)
-    except ImportError as exc:
-        raise AgentNodeToolError(str(exc), tool_name=tool_name or slug) from exc
-    finally:
-        if lockfile_path:
+        try:
+            func = load_tool(slug, tool_name=tool_name)
+        except ImportError as exc:
+            raise AgentNodeToolError(str(exc), tool_name=tool_name or slug) from exc
+        finally:
             if old_env is None:
                 os.environ.pop("AGENTNODE_LOCKFILE", None)
             else:
                 os.environ["AGENTNODE_LOCKFILE"] = old_env
+    # Run the tool OUTSIDE the lock — holding it across user code would
+    # serialize every direct-mode run_tool call unnecessarily.
+    return func(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +265,14 @@ def _run_subprocess(
     """
     tmpdir = tempfile.mkdtemp(prefix="agentnode-run-")
     try:
-        script = _SUBPROCESS_WRAPPER.format(slug=slug, tool_name=tool_name)
-        input_json = json.dumps(kwargs)
+        # P1-SDK8: wrapper is a static string; slug/tool_name travel via
+        # stdin alongside kwargs. No `.format()` substitution happens.
+        script = _SUBPROCESS_WRAPPER
+        input_json = json.dumps({
+            "slug": slug,
+            "tool_name": tool_name,
+            "kwargs": kwargs,
+        })
 
         env = _filtered_env()
         # Point subprocess at the real lockfile (cwd will be tmpdir)

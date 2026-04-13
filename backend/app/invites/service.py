@@ -236,6 +236,17 @@ async def mark_candidate_published(
     candidate_id: UUID,
     package_id: UUID,
 ) -> None:
+    # Idempotency: skip if event for this specific package already exists
+    existing = await session.execute(
+        select(CandidateEvent.id).where(
+            CandidateEvent.candidate_id == candidate_id,
+            CandidateEvent.event_type == "package_published",
+            CandidateEvent.metadata_["package_id"].astext == str(package_id),
+        ).limit(1)
+    )
+    if existing.scalar_one_or_none() is not None:
+        return
+
     now = datetime.now(timezone.utc)
     await session.execute(
         update(ImportCandidate)

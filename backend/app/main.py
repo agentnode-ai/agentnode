@@ -1,10 +1,56 @@
+import logging
+import logging.config
 from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+# P1-CD11: configure structured logging as early as possible so every
+# module-level logger call (including imports below) uses the same format.
+# We keep uvicorn.access on its own handler so HTTP access logs stay intact,
+# and route everything under 'agentnode.*' through a single stream handler
+# with a consistent prefix. dictConfig replaces uvicorn defaults cleanly when
+# Uvicorn is launched with --log-config app/logging.yml or when imports
+# happen before uvicorn installs its own handlers.
+_LOGGING_CONFIG: dict = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "format": "%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+            "datefmt": "%Y-%m-%dT%H:%M:%S%z",
+        },
+        "access": {
+            "format": "%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+            "datefmt": "%Y-%m-%dT%H:%M:%S%z",
+        },
+    },
+    "handlers": {
+        "default": {
+            "class": "logging.StreamHandler",
+            "formatter": "default",
+            "stream": "ext://sys.stderr",
+        },
+        "access": {
+            "class": "logging.StreamHandler",
+            "formatter": "access",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "loggers": {
+        "agentnode": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn.error": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
+    },
+    "root": {"handlers": ["default"], "level": "INFO"},
+}
+logging.config.dictConfig(_LOGGING_CONFIG)
+logger = logging.getLogger("agentnode.main")
 
 from app.admin.router import router as admin_router
 from app.billing.router import router as billing_router
@@ -45,7 +91,10 @@ async def lifespan(app: FastAPI):
     from app.tasks.cron import start_cron_tasks, stop_cron_tasks
     start_cron_tasks()
 
-    # Load API keys from database into settings
+    # Load API keys from database into settings.
+    # P1-CD4: narrow except — only swallow DB-related failures (table may not
+    # exist on first boot / before first migration). Any other exception is a
+    # real bug and must be logged + surfaced, not silently dropped.
     try:
         from sqlalchemy import select as sa_select
         from app.admin.models import SystemSetting
@@ -57,21 +106,30 @@ async def lifespan(app: FastAPI):
             if row and row.value:
                 if row.value.get("anthropic_api_key"):
                     settings.ANTHROPIC_API_KEY = row.value["anthropic_api_key"]
-    except Exception:
-        pass  # DB may not have the table yet
+    except SQLAlchemyError:
+        logger.exception(
+            "lifespan: failed to load api_keys from SystemSetting "
+            "(table may not exist yet — continuing)"
+        )
 
-    # Load SMTP config into memory cache (avoids per-email DB queries)
+    # Load SMTP config into memory cache (avoids per-email DB queries).
+    # P1-CD4: same narrowing — only tolerate DB errors, log everything else.
     try:
         from app.shared.email import load_smtp_config
         async with AsyncSession(engine) as session:
             await load_smtp_config(session)
-    except Exception:
-        pass  # Will fall back to env vars
+    except SQLAlchemyError:
+        logger.exception(
+            "lifespan: failed to load SMTP config from DB — falling back to env vars"
+        )
 
     yield
 
     # Shutdown
-    stop_cron_tasks()
+    # P1-CD8: stop_cron_tasks is now async and must be awaited so the loop
+    # actually waits for cron tasks to finish cancelling before we tear down
+    # Redis, Meili, and the DB engine.
+    await stop_cron_tasks()
     # Close search httpx client
     from app.search.router import _search_client
     if _search_client is not None:
@@ -160,14 +218,27 @@ async def readyz():
         details["redis"] = "unavailable"
         ready = False
 
-    # Check Meilisearch (optional in MVP)
+    # Check Meilisearch.
+    # P1-CD10: Meili powers every search on the site. In production a down
+    # Meili is a real outage — mark /readyz unhealthy so load balancers pull
+    # the instance. In development we keep the legacy "non-critical" behavior
+    # so local dev without Meili still boots cleanly.
     try:
         from app.shared.meili import get_meili_client
         client = get_meili_client()
         resp = await client.get("/health")
-        details["meilisearch"] = "ok" if resp.status_code == 200 else "degraded"
+        if resp.status_code == 200:
+            details["meilisearch"] = "ok"
+        else:
+            details["meilisearch"] = "degraded"
+            if settings.ENVIRONMENT == "production":
+                ready = False
     except Exception:
-        details["meilisearch"] = "unavailable (non-critical)"
+        if settings.ENVIRONMENT == "production":
+            details["meilisearch"] = "unavailable"
+            ready = False
+        else:
+            details["meilisearch"] = "unavailable (non-critical)"
 
     if not ready:
         from fastapi.responses import JSONResponse

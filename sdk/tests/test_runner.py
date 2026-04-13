@@ -39,11 +39,14 @@ def _write_lockfile(tmp_path: Path, packages: dict) -> Path:
 # ---------------------------------------------------------------------------
 
 class TestResolveMode:
-    def test_auto_curated_is_direct(self):
-        assert _resolve_mode("auto", "curated") == "direct"
+    """P0-06: ``mode='auto'`` must ALWAYS resolve to subprocess, regardless
+    of trust level. The SDK README's isolation guarantee is the contract."""
 
-    def test_auto_trusted_is_direct(self):
-        assert _resolve_mode("auto", "trusted") == "direct"
+    def test_auto_curated_is_subprocess(self):
+        assert _resolve_mode("auto", "curated") == "subprocess"
+
+    def test_auto_trusted_is_subprocess(self):
+        assert _resolve_mode("auto", "trusted") == "subprocess"
 
     def test_auto_verified_is_subprocess(self):
         assert _resolve_mode("auto", "verified") == "subprocess"
@@ -216,19 +219,29 @@ class TestRunToolSubprocess:
 # ---------------------------------------------------------------------------
 
 class TestRunToolAuto:
-    @patch("agentnode_sdk.runtimes.python_runner.load_tool")
-    def test_curated_uses_direct(self, mock_load, tmp_path):
-        mock_load.return_value = MagicMock(return_value="ok")
+    def test_curated_still_subprocess(self, tmp_path):
+        """P0-06: curated trust no longer bypasses subprocess isolation."""
         lf = _write_lockfile(tmp_path, {
             "safe-pack": {
                 "version": "1.0",
-                "entrypoint": "safe_pack.tool",
+                "entrypoint": "json",
                 "trust_level": "curated",
             },
         })
-        result = run_tool("safe-pack", mode="auto", lockfile_path=lf)
-        assert result.mode_used == "direct"
-        assert result.success is True
+        result = run_tool("safe-pack", mode="auto", timeout=5.0, lockfile_path=lf)
+        assert result.mode_used == "subprocess"
+
+    def test_trusted_still_subprocess(self, tmp_path):
+        """P0-06: trusted trust no longer bypasses subprocess isolation."""
+        lf = _write_lockfile(tmp_path, {
+            "t-pack": {
+                "version": "1.0",
+                "entrypoint": "json",
+                "trust_level": "trusted",
+            },
+        })
+        result = run_tool("t-pack", mode="auto", timeout=5.0, lockfile_path=lf)
+        assert result.mode_used == "subprocess"
 
     def test_missing_trust_falls_to_subprocess(self, tmp_path):
         lf = _write_lockfile(tmp_path, {
@@ -236,6 +249,33 @@ class TestRunToolAuto:
         })
         result = run_tool("old-pack", mode="auto", timeout=5.0, lockfile_path=lf)
         assert result.mode_used == "subprocess"
+
+    def test_explicit_direct_still_works(self, tmp_path):
+        """mode='direct' remains the explicit opt-in for in-process execution."""
+        mock_fn = MagicMock(return_value={"ok": True})
+        with patch("agentnode_sdk.runtimes.python_runner.load_tool", return_value=mock_fn):
+            lf = _write_lockfile(tmp_path, {
+                "d-pack": {
+                    "version": "1.0",
+                    "entrypoint": "d_pack.tool",
+                    "trust_level": "trusted",
+                },
+            })
+            result = run_tool("d-pack", mode="direct", lockfile_path=lf)
+            assert result.mode_used == "direct"
+            assert result.success is True
+
+
+class TestRunToolKwargCollision:
+    """P1-SDK5: reserved kwargs that can reach **kwargs must raise TypeError.
+    Names in run_tool's own signature (mode, timeout, slug, tool_name,
+    lockfile_path) are captured by the parameter and never reach the tool;
+    they are therefore not part of the collision set."""
+
+    def test_entry_kwarg_raises(self, tmp_path):
+        lf = _write_lockfile(tmp_path, {})
+        with pytest.raises(TypeError, match="reserved kwarg"):
+            run_tool("any-pack", lockfile_path=lf, entry={"internal": "value"})
 
 
 # ---------------------------------------------------------------------------

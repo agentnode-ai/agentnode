@@ -156,18 +156,19 @@ url = client.download("pdf-reader-pack")
 
 ### `run_tool(slug, tool_name, *, mode, timeout, lockfile_path, **kwargs) -> RunToolResult`
 
-Run an installed tool with optional subprocess isolation. This is the recommended way to execute tools — it automatically chooses direct or subprocess mode based on the tool's trust level.
+Run an installed tool with subprocess isolation by default.
 
 ```python
 from agentnode_sdk import run_tool
 
-# Auto-mode (default): trusted/curated → direct, verified/unverified → subprocess
+# Default (auto): runs the tool in an isolated subprocess regardless of trust.
 result = run_tool("pdf-reader-pack", file_path="report.pdf")
 
-# Force subprocess isolation
+# Explicit subprocess with a custom timeout.
 result = run_tool("untrusted-pack", mode="subprocess", timeout=15.0, data="input")
 
-# Force direct (in-process) execution
+# Opt-in direct (in-process) execution — for tools that need to share
+# in-process state with the host. This bypasses isolation.
 result = run_tool("my-trusted-pack", mode="direct", query="test")
 ```
 
@@ -181,14 +182,11 @@ result = run_tool("my-trusted-pack", mode="direct", query="test")
 | `lockfile_path` | Path \| None | None | Override path to `agentnode.lock` |
 | `**kwargs` | Any | — | Arguments forwarded to the tool function |
 
-**Auto-mode trust routing:**
-| Trust Level | Execution Mode |
-|-------------|---------------|
-| `curated` | direct (in-process) |
-| `trusted` | direct (in-process) |
-| `verified` | subprocess (isolated) |
-| `unverified` | subprocess (isolated) |
-| None (old lockfile) | subprocess (isolated) |
+**Auto-mode routing (SDK 0.4.1+):**
+`mode="auto"` always resolves to `subprocess`, independent of trust
+level. This makes the documented isolation guarantee true by default.
+Callers that want in-process execution (to share module-level state
+with the tool) must pass `mode="direct"` explicitly.
 
 **Subprocess safety features:**
 - Environment variable filtering — API keys and tokens are stripped

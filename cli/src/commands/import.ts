@@ -6,7 +6,7 @@
  *   --from langchain <file>   LangChain BaseTool subclass
  *   --from openai <file>      OpenAI function calling JSON
  *   --from crewai <file>      CrewAI @tool decorated functions
- *   --from clawhub <file>     ClawhHub tool manifest
+ *   --from clawhub <file>     ClawHub tool manifest
  *   --from skillssh <file>    Skills.sh skill config
  */
 
@@ -272,7 +272,7 @@ function parseClawhub(content: string): ParsedTool[] {
   const tools: ParsedTool[] = [];
   try {
     const data = JSON.parse(content);
-    // ClawhHub format: { name, description, tools: [...] }
+    // ClawHub format: { name, description, tools: [...] }
     const items = data.tools || data.skills || [data];
     for (const item of items) {
       tools.push({
@@ -485,6 +485,7 @@ export const importCommand = new Command("import")
   .option("--slug <slug>", "Package slug (auto-generated if not provided)")
   .option("--dry-run", "Show what would be generated without writing files")
   .option("--json", "Output manifest as JSON instead of YAML")
+  .option("--force", "Overwrite existing files in the output directory")
   .action(
     async (
       file: string,
@@ -495,6 +496,7 @@ export const importCommand = new Command("import")
         slug?: string;
         dryRun?: boolean;
         json?: boolean;
+        force?: boolean;
       }
     ) => {
       const platform = opts.from.toLowerCase();
@@ -558,6 +560,30 @@ export const importCommand = new Command("import")
       const srcDir = join(outDir, "src", slug.replace(/-/g, "_"));
       const testsDir = join(outDir, "tests");
 
+      // P1-C4: Refuse to clobber existing files unless --force is set.
+      // Previously `agentnode import` would happily overwrite a pre-existing
+      // package directory, silently wiping the user's implementation.
+      const manifestFile = opts.json ? "agentnode.json" : "agentnode.yaml";
+      const targetFiles = [
+        join(outDir, manifestFile),
+        join(outDir, "pyproject.toml"),
+        join(srcDir, "__init__.py"),
+        join(srcDir, "tool.py"),
+        join(testsDir, "__init__.py"),
+        join(testsDir, "test_tool.py"),
+      ];
+      const existing = targetFiles.filter((f) => existsSync(f));
+      if (existing.length > 0 && !opts.force) {
+        console.error(
+          chalk.red(
+            `✗ Refusing to overwrite existing files in ${outDir}:\n` +
+              existing.map((f) => `    ${f}`).join("\n") +
+              `\n  Re-run with --force to overwrite, or pick a different --output / --slug.`
+          )
+        );
+        process.exit(1);
+      }
+
       mkdirSync(srcDir, { recursive: true });
       mkdirSync(testsDir, { recursive: true });
 
@@ -565,7 +591,6 @@ export const importCommand = new Command("import")
       const manifestContent = opts.json
         ? JSON.stringify(manifest, null, 2)
         : toYAML(manifest);
-      const manifestFile = opts.json ? "agentnode.json" : "agentnode.yaml";
 
       writeFileSync(join(outDir, manifestFile), manifestContent);
       writeFileSync(join(outDir, "pyproject.toml"), generatePyprojectToml(slug));

@@ -38,13 +38,49 @@ async function request(method: string, path: string, body?: unknown): Promise<an
     throw new Error(`Network error: ${err.message}. Check your connection.`);
   }
 
-  const data = await resp.json();
+  // P1-C1: Parse the response body defensively. Previously we called
+  // `resp.json()` unconditionally, so any HTML/plain-text error page
+  // (reverse-proxy 502, maintenance page, Cloudflare challenge) crashed
+  // the CLI with a cryptic `SyntaxError: Unexpected token '<'`.
+  const ctype = (resp.headers?.get?.("content-type") || "").toLowerCase();
+  const looksJson = ctype.includes("json") || ctype === "";
+  let data: any = {};
+  if (looksJson) {
+    try {
+      data = await resp.json();
+    } catch {
+      // Body was advertised as JSON (or no content-type at all) but
+      // failed to parse. Treat as empty and fall through to status-based
+      // error handling below.
+      data = {};
+      if (resp.ok) {
+        throw new Error(
+          `Invalid JSON response from server (HTTP ${resp.status})`,
+        );
+      }
+    }
+  } else if (!resp.ok) {
+    // Non-JSON error body: keep the first 200 chars of text for the
+    // operator to diagnose without drowning the terminal.
+    const text = (await resp.text().catch(() => "")).trim().slice(0, 200);
+    if (resp.status >= 500) {
+      throw new Error(
+        `Server error (${resp.status})${text ? `: ${text}` : ""}. Please try again later.`,
+      );
+    }
+    throw new Error(
+      `HTTP ${resp.status}${text ? `: ${text}` : ""}`,
+    );
+  }
 
   if (!resp.ok) {
     if (resp.status >= 500) {
-      throw new Error(`Server error (${resp.status}). Please try again later.`);
+      const msg = data?.error?.message || "";
+      throw new Error(
+        `Server error (${resp.status})${msg ? `: ${msg}` : ""}. Please try again later.`,
+      );
     }
-    const err = data.error || {};
+    const err = (data && typeof data === "object" && data.error) || {};
     throw new Error(`[${err.code || resp.status}] ${err.message || "Request failed"}`);
   }
   return data;
@@ -159,7 +195,12 @@ export async function publishPackage(manifest: string, token: string, artifactBy
   formData.append("manifest", manifest);
 
   if (artifactBytes) {
-    const blob = new Blob([artifactBytes], { type: "application/gzip" });
+    // Copy into a fresh ArrayBuffer so the Blob constructor accepts it
+    // under strict `lib.dom.d.ts` typings (Uint8Array backed by
+    // SharedArrayBuffer is not a valid BlobPart on newer TS).
+    const ab = new ArrayBuffer(artifactBytes.byteLength);
+    new Uint8Array(ab).set(artifactBytes);
+    const blob = new Blob([ab], { type: "application/gzip" });
     formData.append("artifact", blob, "package.tar.gz");
   }
 

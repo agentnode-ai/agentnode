@@ -4,6 +4,7 @@ import { Suspense, useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import SearchInput from "@/components/SearchInput";
 import PackageCard from "@/components/PackageCard";
+import { ListSkeleton } from "@/components/Skeleton";
 import type { SearchHit, SearchResponse } from "@/lib/api";
 
 const PER_PAGE = 20;
@@ -380,7 +381,7 @@ function SearchContent() {
   );
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-10">
+    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-10">
       {/* Search header */}
       <div className="mb-8">
         <h1 className="mb-4 text-3xl font-bold text-foreground">
@@ -435,8 +436,11 @@ function SearchContent() {
           ) : (
             <>
               {loading && results.length === 0 && (
-                <div className="flex items-center justify-center py-20">
-                  <div className="text-sm text-muted">Searching...</div>
+                <div>
+                  <span className="sr-only" role="status" aria-live="polite">
+                    Searching…
+                  </span>
+                  <ListSkeleton count={6} />
                 </div>
               )}
 

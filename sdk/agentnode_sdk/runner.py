@@ -5,12 +5,26 @@ AgentNode tools. Routes based on the ``runtime`` field in the lockfile.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.models import RunToolResult
 from agentnode_sdk.policy import resolve_runtime
+
+logger = logging.getLogger(__name__)
+
+# Reserved kwarg names that may reach ``**kwargs`` via runtime-internal
+# forwarding paths (e.g. ``entry`` is set by the dispatcher). Most other
+# reserved names (``mode``, ``timeout``, ``slug``, ``tool_name``,
+# ``lockfile_path``) are captured by ``run_tool``'s own signature and can
+# never reach the tool — that is the documented behaviour.
+#
+# P1-SDK5: reject the ones that CAN slip through so a caller who passes a
+# tool argument that collides gets a loud error instead of a silent
+# type mismatch deep in the runtime.
+_RESERVED_RUN_TOOL_KWARGS = frozenset({"entry"})
 
 
 def run_tool(
@@ -38,11 +52,28 @@ def run_tool(
     if mode not in ("direct", "subprocess", "auto"):
         raise ValueError(f"Unknown mode: {mode!r}. Use 'direct', 'subprocess', or 'auto'.")
 
+    # P1-SDK5: reject reserved kwargs that would silently shadow run_tool
+    # parameters if the caller tried to pass them to the tool function.
+    collisions = _RESERVED_RUN_TOOL_KWARGS.intersection(kwargs)
+    if collisions:
+        raise TypeError(
+            f"run_tool() received reserved kwarg name(s) {sorted(collisions)}; "
+            "rename the tool argument(s) or use a wrapper function."
+        )
+
     # Read lockfile entry
     entry = _get_lockfile_entry(slug, lockfile_path)
 
     # Resolve runtime (default: python for backward compat)
     runtime = resolve_runtime(entry) if entry else "python"
+
+    # P1-SDK10: log which runtime/mode is actually used so callers can
+    # confirm that mode='auto' resolved to subprocess without parsing the
+    # RunToolResult after the fact.
+    logger.info(
+        "run_tool dispatch: slug=%s tool=%s runtime=%s mode=%s",
+        slug, tool_name, runtime, mode,
+    )
 
     if runtime == "python":
         from agentnode_sdk.runtimes.python_runner import run_python

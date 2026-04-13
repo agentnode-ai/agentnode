@@ -64,6 +64,7 @@ export default function ImportPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [notice, setNotice] = useState("");
   const [activeFileTab, setActiveFileTab] = useState(0);
   const [packageCount, setPackageCount] = useState<number | null>(null);
   const [capabilityCount, setCapabilityCount] = useState<number | null>(null);
@@ -206,10 +207,13 @@ export default function ImportPage() {
           JSON.stringify({ source: "import", importPlatform: platform, manifestText: result?.manifest || "" })
         );
       }
-      alert("Your code is too large to transfer automatically. You can re-paste or upload it on the publish page.");
-    } else {
-      sessionStorage.setItem("publish_prefill", encoded);
+      setNotice("Your code is too large to transfer automatically. You can re-paste or upload it on the publish page.");
+      // Give the screen reader + sighted user a moment to read the notice
+      // before navigating away.
+      setTimeout(() => router.push("/publish?from=import"), 1800);
+      return;
     }
+    sessionStorage.setItem("publish_prefill", encoded);
     router.push("/publish?from=import");
   };
 
@@ -317,6 +321,17 @@ export default function ImportPage() {
           {error && (
             <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-400">
               {error}
+            </div>
+          )}
+
+          {/* Non-blocking notice (replaces window.alert) */}
+          {notice && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="mt-4 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3 text-sm text-yellow-300"
+            >
+              {notice}
             </div>
           )}
         </div>

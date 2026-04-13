@@ -44,6 +44,13 @@ export const rollbackCommand = new Command("rollback")
           post_install_code: "",
           package_type: meta.package_type || "toolpack",
           capability_ids: (meta.capabilities || []).map((c: any) => c.capability_id),
+          tools: (meta.capabilities || [])
+            .filter((c: any) => c.entrypoint)
+            .map((c: any) => ({
+              name: c.name,
+              entrypoint: c.entrypoint,
+              capability_id: c.capability_id,
+            })),
           deprecated: false,
         },
         slug,

@@ -845,7 +845,7 @@ async def bulk_delete_images(
 public_router = APIRouter(prefix="/v1/blog", tags=["blog"])
 
 
-@public_router.get("/post-types", response_model=list[PostTypeResponse])
+@public_router.get("/post-types", response_model=list[PostTypeResponse], dependencies=[Depends(rate_limit(60, 60))])
 async def list_post_types_public(
     session: AsyncSession = Depends(get_session),
 ):
@@ -875,7 +875,7 @@ async def list_post_types_public(
     ]
 
 
-@public_router.get("/posts", response_model=PostListResponse)
+@public_router.get("/posts", response_model=PostListResponse, dependencies=[Depends(rate_limit(60, 60))])
 async def list_posts_public(
     category: str | None = Query(None),
     tag: str | None = Query(None),
@@ -908,7 +908,7 @@ async def list_posts_public(
     )
 
 
-@public_router.get("/posts/{slug}", response_model=PostDetail)
+@public_router.get("/posts/{slug}", response_model=PostDetail, dependencies=[Depends(rate_limit(60, 60))])
 async def get_post_public(
     slug: str,
     session: AsyncSession = Depends(get_session),
@@ -922,7 +922,7 @@ async def get_post_public(
     return PostDetail(**_post_to_detail(post))
 
 
-@public_router.get("/resolve", response_model=RedirectResponse)
+@public_router.get("/resolve", response_model=RedirectResponse, dependencies=[Depends(rate_limit(60, 60))])
 async def resolve_redirect(
     path: str = Query(...),
     session: AsyncSession = Depends(get_session),
@@ -946,7 +946,7 @@ async def resolve_redirect(
     return RedirectResponse(redirect_to=f"/{new_prefix}/{post.slug}")
 
 
-@public_router.get("/categories", response_model=list[CategoryResponse])
+@public_router.get("/categories", response_model=list[CategoryResponse], dependencies=[Depends(rate_limit(60, 60))])
 async def list_categories_public(
     session: AsyncSession = Depends(get_session),
 ):

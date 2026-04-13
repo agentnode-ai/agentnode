@@ -186,6 +186,7 @@ async def run_security_scan(version_id: UUID) -> None:
             )
             perm = perm_result.scalar_one_or_none()
 
+            pkg = None
             raw_findings: list[dict] = []
             artifact_code_files: dict[str, str] = {}  # for AI scan
 
@@ -205,8 +206,16 @@ async def run_security_scan(version_id: UUID) -> None:
                 raw_findings.extend(_scan_content(str(pv.manifest_raw), "<manifest>"))
 
             # --- Layer 3: AI semantic scan ---
-            # Only for unverified/verified publishers (cost control)
+            # P1-V5: AI scan now runs for ALL trust levels, not just
+            # unverified/verified. Trusted/curated publishers get an
+            # *advisory* run: findings are still recorded, but high/critical
+            # findings from the AI scanner on a trusted publisher are
+            # downgraded to "medium" so the auto-quarantine gate below
+            # doesn't flip a curated package into quarantine on a
+            # probabilistic signal. The history and audit trail still
+            # capture whatever the scanner saw.
             ai_findings: list[dict] = []
+            ai_advisory = False
             if artifact_code_files and pv.manifest_raw:
                 try:
                     pkg_result = await session.execute(
@@ -218,15 +227,25 @@ async def run_security_scan(version_id: UUID) -> None:
                             select(Publisher).where(Publisher.id == pkg.publisher_id)
                         )
                         publisher = pub_result.scalar_one_or_none()
-                        # Run AI scan for unverified and verified publishers
-                        if publisher and publisher.trust_level in ("unverified", "verified"):
+                        if publisher:
+                            ai_advisory = publisher.trust_level in ("trusted", "curated")
                             from app.trust.ai_scanner import ai_security_scan
                             manifest_dict = pv.manifest_raw if isinstance(pv.manifest_raw, dict) else {}
                             ai_findings = await ai_security_scan(manifest_dict, artifact_code_files)
+                            if ai_advisory:
+                                # Downgrade severity for advisory runs
+                                for f in ai_findings:
+                                    if f.get("severity") in ("high", "critical"):
+                                        f["severity"] = "medium"
+                                    # Mark description as advisory so admins
+                                    # can distinguish in the UI.
+                                    desc = f.get("description") or ""
+                                    if not desc.startswith("[advisory]"):
+                                        f["description"] = f"[advisory] {desc}"
                             logger.info(
-                                "AI scan for %s: %d finding(s) (publisher: %s, trust: %s)",
+                                "AI scan for %s: %d finding(s) (publisher: %s, trust: %s, advisory: %s)",
                                 version_id, len(ai_findings),
-                                publisher.slug, publisher.trust_level,
+                                publisher.slug, publisher.trust_level, ai_advisory,
                             )
                 except Exception:
                     logger.exception(f"AI security scan failed for {version_id}")
@@ -265,12 +284,51 @@ async def run_security_scan(version_id: UUID) -> None:
                     scanner=scanner_name,
                 ))
 
-            # Auto-quarantine on high/critical findings
+            # Auto-quarantine on high/critical findings.
+            #
+            # P0-03 fix: the previous gate `quarantine_status == "none"` meant a
+            # version that had been auto-cleared by the verification pipeline
+            # could never be re-quarantined on a follow-up scan, even if new
+            # scanners or signatures found something dangerous. We now
+            # quarantine whenever the scanner sees high/critical findings and
+            # the version isn't already quarantined — a cleared version gets
+            # forced back into quarantine with an audit-log entry so the state
+            # transition is visible to admins.
             high_count = sum(1 for f in filtered if f["severity"] in ("high", "critical"))
-            if (has_high or has_critical) and pv.quarantine_status == "none":
+            if (has_high or has_critical) and pv.quarantine_status != "quarantined":
+                was_cleared = pv.quarantine_status == "cleared"
                 pv.quarantine_status = "quarantined"
                 pv.quarantined_at = datetime.now(timezone.utc)
-                pv.quarantine_reason = f"Auto-quarantined: {high_count} high-severity finding(s)"
+                pv.quarantine_reason = f"Security scan: {high_count} high-severity finding(s)"
+                if was_cleared:
+                    logger.warning(
+                        "Re-quarantining previously auto-cleared version %s: "
+                        "%d high-severity finding(s)",
+                        version_id, high_count,
+                    )
+                    # Best-effort admin audit log so the transition is visible
+                    # in the admin review UI. If AdminAuditLog import fails or
+                    # the table is unavailable (e.g. tests), we do not fail the
+                    # scan.
+                    try:
+                        from app.admin.models import AdminAuditLog
+                        session.add(AdminAuditLog(
+                            admin_user_id=None,
+                            action="scanner.requarantine_after_clear",
+                            target_type="package_version",
+                            target_id=str(version_id),
+                            metadata_={
+                                "finding_count": high_count,
+                                "reason": pv.quarantine_reason,
+                            },
+                        ))
+                    except Exception:
+                        logger.exception(
+                            "Failed to write audit log for re-quarantine of %s",
+                            version_id,
+                        )
+                from app.packages.version_queries import recalculate_latest_version_id
+                await recalculate_latest_version_id(session, pv.package_id)
 
             await session.commit()
             logger.info(f"Security scan for {version_id}: {len(filtered)} finding(s) (static: {len(filtered) - len(ai_findings)}, ai: {len(ai_findings)})")

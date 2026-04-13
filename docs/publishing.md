@@ -27,7 +27,7 @@ my-tool-pack/
 ### The Manifest (`agentnode.yaml`)
 
 ```yaml
-manifest_version: "0.1"
+manifest_version: "0.2"
 package_id: "my-tool-pack"
 package_type: "toolpack"
 name: "My Tool Pack"

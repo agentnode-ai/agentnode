@@ -281,3 +281,63 @@ async def test_context_manager():
         assert ctx is client
     # After exiting, the internal client should be closed
     assert client._client.is_closed
+
+
+# ---------------------------------------------------------------------------
+# Sprint B tests: P0-04, P1-SDK3, P1-SDK4
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_p0_04_v1_prefix_added_when_missing():
+    """P0-04: AsyncAgentNode must append /v1 when base_url lacks it.
+    Previously it did not, producing 404s against production."""
+    route = respx.get("http://localhost:8000/v1/packages/foo").mock(
+        return_value=httpx.Response(200, json={"slug": "foo", "name": "Foo"})
+    )
+    async with AsyncAgentNode(api_key="k", base_url="http://localhost:8000") as client:
+        await client.get_package("foo")
+    assert route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_p0_04_v1_prefix_not_duplicated():
+    """If the caller already specifies /v1, don't double it to /v1/v1."""
+    route = respx.get("http://localhost:8000/v1/packages/foo").mock(
+        return_value=httpx.Response(200, json={"slug": "foo", "name": "Foo"})
+    )
+    async with AsyncAgentNode(api_key="k", base_url="http://localhost:8000/v1") as client:
+        await client.get_package("foo")
+    assert route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_p1_sdk3_non_dict_error_body_does_not_crash():
+    """P1-SDK3: an error response whose JSON body is a list/string must not
+    crash the SDK's _handle path."""
+    respx.get(f"{BASE}/v1/packages/broken").mock(
+        return_value=httpx.Response(500, json=["upstream", "failure"])
+    )
+    async with AsyncAgentNode(api_key="k") as client:
+        with pytest.raises(AgentNodeError) as exc_info:
+            await client.get_package("broken")
+        assert exc_info.value.code == "UNKNOWN"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_p1_sdk4_non_json_response_raises_agentnode_error():
+    """P1-SDK4: a 2xx with an HTML body must raise AgentNodeError instead
+    of crashing in response.json()."""
+    respx.get(f"{BASE}/v1/packages/html").mock(
+        return_value=httpx.Response(
+            200,
+            content=b"<html><body>Maintenance</body></html>",
+            headers={"content-type": "text/html"},
+        )
+    )
+    async with AsyncAgentNode(api_key="k") as client:
+        with pytest.raises(AgentNodeError):
+            await client.get_package("html")

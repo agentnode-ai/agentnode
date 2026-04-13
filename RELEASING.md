@@ -56,19 +56,31 @@ This document describes how to publish new versions of the SDK, adapters, and de
 
 Future adapters follow the same pattern: `adapter-<name>-v<semver>`.
 
-## Frontend Deploy
+## Deploy Paths
 
-The frontend is not auto-deployed via CI. Manual deploy via SSH:
+Two supported paths — pick one per release, don't mix them on the same change:
+
+1. **`./deploy.sh [web|api|all]`** (recommended)
+   Runs from your local machine, uploads via `scp`, installs pinned deps from
+   `backend/requirements.lock`, runs `alembic upgrade head`, restarts services,
+   and health-checks `/healthz` + `/readyz`. This is the same script CI uses
+   conceptually and is the path documented in `deploy.sh` itself.
+
+2. **GitHub Actions `.github/workflows/deploy.yml`**
+   Triggered on push to `main`. Builds the Next.js standalone bundle, runs
+   backend tests against Postgres + Redis, packages tarballs, uploads via
+   `ssh-action`, runs migrations, restarts, and health-checks.
+
+**Do not use `rsync` for production deploys.** `rsync --delete` against a live
+`/opt/agentnode/backend` is fragile: a network blip mid-transfer can leave the
+server in an inconsistent state where `.pyc` files exist for deleted `.py`
+files, and you cannot atomically swap. Use `tar` + `scp` + in-place extract
+instead (which is what `deploy.sh` and the workflow already do).
+
+### Frontend: local script path
 
 ```bash
-ssh -i ~/.ssh/agentnode root@91.98.142.165 bash -s <<'DEPLOY'
-cd /opt/agentnode-repo && git pull origin main
-rsync -av --delete \
-  --exclude='.next' --exclude='node_modules' --exclude='.env.local' \
-  /opt/agentnode-repo/web/ /opt/agentnode/web/
-cd /opt/agentnode/web && npm ci && npm run build
-systemctl restart agentnode-web
-DEPLOY
+./deploy.sh web
 ```
 
 Health check:
@@ -77,32 +89,25 @@ curl -s -o /dev/null -w "%{http_code}" https://agentnode.net/docs       # expect
 curl -s -o /dev/null -w "%{http_code}" https://agentnode.net/builder    # expect 200
 ```
 
-## Backend Deploy
+### Backend: local script path
 
-The backend is not auto-deployed via CI. Manual deploy via SSH:
+Always snapshot Postgres before running a release that contains a migration.
 
 ```bash
-ssh -i ~/.ssh/agentnode root@91.98.142.165 bash -s <<'DEPLOY'
-# 1. Backup affected tables before migrations
-docker exec agentnode-postgres-1 pg_dump -U agentnode agentnode > /tmp/agentnode_backup_$(date +%Y%m%d).sql
+# 1. Backup first
+ssh -i ~/.ssh/agentnode root@91.98.142.165 \
+  "docker exec agentnode-postgres-1 pg_dump -U agentnode agentnode" \
+  > /tmp/agentnode_backup_$(date +%Y%m%d_%H%M%S).sql
 
-# 2. Sync code
-cd /opt/agentnode-repo && git pull origin main
-rsync -av --delete \
-  --exclude='.venv' --exclude='__pycache__' --exclude='.env' --exclude='*.pyc' \
-  /opt/agentnode-repo/backend/ /opt/agentnode/backend/
-
-# 3. Run migrations
-cd /opt/agentnode/backend && .venv/bin/python -m alembic upgrade head
-
-# 4. Restart
-systemctl restart agentnode-api
-DEPLOY
+# 2. Deploy — uploads app/, alembic/, alembic.ini, pyproject.toml, requirements.lock,
+#    installs pinned deps, runs migrations, restarts, health-checks.
+./deploy.sh api
 ```
 
 Health check:
 ```bash
 curl -s -o /dev/null -w "%{http_code}" https://api.agentnode.net/health  # expect 200
+curl -s -o /dev/null -w "%{http_code}" https://api.agentnode.net/readyz  # expect 200
 ```
 
 ## Deploy Order

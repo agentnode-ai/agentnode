@@ -44,8 +44,14 @@ agentnode validate agentnode.yaml
 | `policy-check <slug>` | Evaluate package against security policy |
 | `validate <file>` | Validate an agentnode.yaml manifest |
 | `publish` | Publish a package to the registry |
+| `import` | Import a tool from another platform (langchain, mcp, …) |
 | `audit` | Audit installed packages for issues |
 | `doctor` | Diagnose environment problems |
+| `report <slug>` | Report a package for review |
+| `recommend` | Get capability recommendations for your project |
+| `resolve-upgrade` | Find a higher-trust replacement for an installed pack |
+| `explain <slug>` | Explain why a package was selected |
+| `api-keys` | Manage API keys (list, create, revoke) |
 | `login` | Authenticate with the registry |
 
 ## ANP v0.2 Support

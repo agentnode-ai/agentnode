@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, resolve as pathResolve } from "path";
 import { searchCommand } from "./commands/search.js";
 import { resolveCommand } from "./commands/resolve.js";
 import { installCommand } from "./commands/install.js";
@@ -20,12 +23,27 @@ import { explainCommand } from "./commands/explain.js";
 import { apiKeysCommand } from "./commands/api-keys.js";
 import { importCommand } from "./commands/import.js";
 
+// Read version from package.json so the --version output stays in sync
+// with the published npm package instead of drifting against a hardcoded
+// literal. Resolved relative to the compiled dist/index.js location.
+function getCliVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    // From dist/index.js → ../package.json, from src/index.ts (tests) → ../package.json
+    const pkgPath = pathResolve(here, "..", "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: string };
+    return pkg.version || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
 const program = new Command();
 
 program
   .name("agentnode")
   .description("CLI for AgentNode — discover, resolve, and install AI agent capabilities.")
-  .version("0.1.0");
+  .version(getCliVersion());
 
 program.addCommand(loginCommand);
 program.addCommand(searchCommand);

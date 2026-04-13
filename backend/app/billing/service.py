@@ -125,15 +125,31 @@ async def create_review_request(
         status="pending_payment",
     )
     session.add(review)
-    await session.flush()
 
-    # Create Stripe Checkout
-    checkout_session = await _create_checkout(
-        order_id=order_id,
-        tier=tier,
-        express=express,
-        price_cents=price_cents,
-    )
+    # P1-L7: persist the local review row BEFORE talking to Stripe. If the
+    # commit fails we never created a Stripe session, so no orphan. If the
+    # Stripe call later fails we roll back the local row in a short follow-up
+    # transaction (or, if even that fails, the pending_payment row is
+    # harmless — it just surfaces as a cancellable pending review in the UI
+    # instead of an invisible orphan on Stripe's side).
+    await session.commit()
+    await session.refresh(review)
+
+    try:
+        checkout_session = await _create_checkout(
+            order_id=order_id,
+            tier=tier,
+            express=express,
+            price_cents=price_cents,
+        )
+    except Exception:
+        logger.exception("Stripe checkout creation failed for order_id=%s; deleting local review row", order_id)
+        try:
+            await session.delete(review)
+            await session.commit()
+        except Exception:
+            logger.exception("Failed to roll back local review row for order_id=%s", order_id)
+        raise
 
     return review, checkout_session.url
 

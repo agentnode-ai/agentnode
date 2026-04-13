@@ -288,7 +288,7 @@ export function InputHub({ form }: { form: PublishFormState }) {
           <div>
             <h3 className="mb-2 font-medium text-foreground">Open and free</h3>
             <p>
-              Publishing on AgentNode is free for all developers. Skills are discoverable via search, API, and the <Link href="/docs/cli" className="text-primary hover:underline">CLI</Link>. The registry is built on the open <Link href="/docs/anp" className="text-primary hover:underline">Agent Node Package (ANP)</Link> specification.
+              Publishing on AgentNode is free for all developers. Skills are discoverable via search, API, and the <Link href="/docs#cli-reference" className="text-primary hover:underline">CLI</Link>. The registry is built on the open <Link href="/docs#anp-manifest" className="text-primary hover:underline">Agent Node Package (ANP)</Link> specification.
             </p>
           </div>
         </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
@@ -10,6 +10,10 @@ function VerifyEmailContent() {
 
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
   const [error, setError] = useState("");
+  // P1-F: Guard against React StrictMode double-invoking the effect in dev,
+  // which would otherwise POST /email/verify twice and burn the single-use
+  // token on the second call.
+  const verifyRequestedRef = useRef(false);
 
   useEffect(() => {
     if (!token) {
@@ -18,6 +22,8 @@ function VerifyEmailContent() {
       setError("No verification token provided.");
       return;
     }
+    if (verifyRequestedRef.current) return;
+    verifyRequestedRef.current = true;
 
     fetch("/api/v1/auth/email/verify", {
       method: "POST",

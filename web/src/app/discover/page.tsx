@@ -99,6 +99,10 @@ export default async function DiscoverPage() {
                 download_count={pkg.download_count}
                 install_count={pkg.install_count}
                 verification_status={pkg.verification_status}
+                verification_tier={pkg.verification_tier}
+                verification_score={pkg.verification_score}
+                package_type={pkg.package_type}
+                publisher_name={pkg.publisher_name}
               />
             ))}
           </div>
@@ -130,6 +134,10 @@ export default async function DiscoverPage() {
                 download_count={pkg.download_count}
                 install_count={pkg.install_count}
                 verification_status={pkg.verification_status}
+                verification_tier={pkg.verification_tier}
+                verification_score={pkg.verification_score}
+                package_type={pkg.package_type}
+                publisher_name={pkg.publisher_name}
               />
             ))}
           </div>

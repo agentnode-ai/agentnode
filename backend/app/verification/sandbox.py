@@ -61,6 +61,15 @@ class VerificationSandbox:
             self.python: str = os.path.join(self.venv_dir, "Scripts", "python.exe")
         else:
             self.python: str = os.path.join(self.venv_dir, "bin", "python")
+        # P1-L9: drop a pidfile so the hourly cleanup cron can tell an
+        # in-flight sandbox from a crashed/orphaned one. The cleanup job
+        # refuses to delete a dir whose pidfile points at a still-running
+        # process, even if the dir is older than the age cutoff.
+        try:
+            with open(os.path.join(self.work_dir, ".pid"), "w") as pf:
+                pf.write(str(os.getpid()))
+        except Exception:
+            logger.debug("sandbox: could not write pidfile in %s", self.work_dir)
 
     def extract_artifact(self, artifact_bytes: bytes) -> bool:
         """Extract tar.gz artifact into work_dir. Returns success."""

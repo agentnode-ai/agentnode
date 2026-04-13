@@ -1,6 +1,7 @@
 """AgentNode API client. Spec §14."""
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable
 from typing import Any
@@ -35,7 +36,7 @@ from agentnode_sdk.models import (
     SmartRunResult,
 )
 
-DEFAULT_BASE_URL = "https://api.agentnode.net/v1"
+DEFAULT_BASE_URL = "https://api.agentnode.net"
 
 TRUST_LEVELS_VERIFIED = ("verified", "trusted", "curated")
 TRUST_LEVELS_TRUSTED = ("trusted", "curated")
@@ -86,9 +87,16 @@ def _permissions_to_dict(perms: PermissionsInfo | None) -> dict | None:
 class AgentNode:
     """Spec-compliant SDK client (§14.3). Returns plain dicts."""
 
-    def __init__(self, api_key: str, base_url: str = DEFAULT_BASE_URL):
+    def __init__(self, api_key: str | None = None, base_url: str = DEFAULT_BASE_URL):
+        api_key = api_key or os.environ.get("AGENTNODE_API_KEY")
+        if not api_key:
+            raise ValueError("api_key is required (pass explicitly or set AGENTNODE_API_KEY)")
+        # Ensure base_url ends with /v1 for API routing
+        base = base_url.rstrip("/")
+        if not base.endswith("/v1"):
+            base = f"{base}/v1"
         self._client = httpx.Client(
-            base_url=base_url.rstrip("/"),
+            base_url=base,
             headers={"X-API-Key": api_key},
             timeout=30,
         )
@@ -204,16 +212,28 @@ class AgentNode:
     def _handle(self, response: httpx.Response) -> dict:
         """Parse response. Raise typed AgentNodeError on API errors."""
         if response.status_code >= 400:
+            code, message = "UNKNOWN", response.text
             try:
                 body = response.json()
-                err = body.get("error", {})
-                code = err.get("code", "UNKNOWN")
-                message = err.get("message", response.text)
-            except (ValueError, KeyError):
-                code, message = "UNKNOWN", response.text
+                if isinstance(body, dict):
+                    err = body.get("error", {})
+                    if isinstance(err, dict):
+                        code = err.get("code", code)
+                        message = err.get("message", message)
+            except (ValueError, KeyError, TypeError):
+                pass
             exc_class = ERROR_CLASS_MAP.get(response.status_code, AgentNodeError)
             raise exc_class(code, message)
-        return response.json()
+        ctype = response.headers.get("content-type", "")
+        if "json" not in ctype.lower():
+            raise AgentNodeError(
+                "UNKNOWN",
+                f"Expected JSON response, got content-type={ctype!r}",
+            )
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise AgentNodeError("UNKNOWN", f"Invalid JSON response: {exc}") from exc
 
 
 class AgentNodeClient:
@@ -231,7 +251,12 @@ class AgentNodeClient:
         token: str | None = None,
         timeout: float = 30.0,
     ):
-        self.base_url = base_url.rstrip("/")
+        # Ensure base_url ends with /v1 for API routing
+        base = base_url.rstrip("/")
+        if not base.endswith("/v1"):
+            base = f"{base}/v1"
+        self.base_url = base
+        api_key = api_key or os.environ.get("AGENTNODE_API_KEY")
         headers = {}
         if api_key:
             headers["X-API-Key"] = api_key
@@ -240,17 +265,6 @@ class AgentNodeClient:
         self._client = httpx.Client(
             base_url=self.base_url, headers=headers, timeout=timeout
         )
-
-        # Auto-load user config for trust/permission defaults
-        try:
-            from agentnode_sdk.config import config_exists, load_config
-
-            if config_exists():
-                self._user_config = load_config()
-            else:
-                self._user_config = {}
-        except Exception:
-            self._user_config = {}
 
     def close(self):
         self._client.close()
@@ -264,14 +278,31 @@ class AgentNodeClient:
     def _request(self, method: str, path: str, **kwargs) -> dict:
         resp = self._client.request(method, path, **kwargs)
         if resp.status_code >= 400:
-            data = resp.json()
-            err = data.get("error", {})
+            code, message = "UNKNOWN", resp.text
+            try:
+                data = resp.json()
+                if isinstance(data, dict):
+                    err = data.get("error", {})
+                    if isinstance(err, dict):
+                        code = err.get("code", code)
+                        message = err.get("message", message)
+            except (ValueError, KeyError, TypeError):
+                pass
             exc_class = ERROR_CLASS_MAP.get(resp.status_code, AgentNodeError)
-            raise exc_class(
-                code=err.get("code", "UNKNOWN"),
-                message=err.get("message", resp.text),
+            raise exc_class(code=code, message=message)
+        ctype = resp.headers.get("content-type", "")
+        if "json" not in ctype.lower():
+            raise AgentNodeError(
+                code="UNKNOWN",
+                message=f"Expected JSON response, got content-type={ctype!r}",
             )
-        return resp.json()
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise AgentNodeError(
+                code="UNKNOWN",
+                message=f"Invalid JSON response: {exc}",
+            ) from exc
 
     # --- Search ---
 
@@ -340,7 +371,7 @@ class AgentNodeClient:
                 summary=r["summary"],
                 version=r["version"],
                 publisher_slug=r["publisher_slug"],
-                trust_level=r["trust_level"],
+                trust_level=r.get("trust_level", "unverified"),  # P1-SDK9
                 score=r["score"],
                 breakdown=ScoreBreakdown(**r["breakdown"]),
                 matched_capabilities=r.get("matched_capabilities", []),
@@ -466,6 +497,26 @@ class AgentNodeClient:
         # 1. Get install metadata (read-only, no side effects)
         meta = self.get_install_metadata(slug, version)
 
+        # P1-SDK2: fail loud on pin mismatch. If the caller asked for a
+        # specific version but the server returned a different one (e.g.
+        # the requested version was yanked and the API silently fell back
+        # to the latest), refuse to install rather than silently upgrading
+        # under the caller. Pinned versions must be exact.
+        if version and meta.version and meta.version != version:
+            return InstallResult(
+                slug=slug,
+                version=meta.version,
+                installed=False,
+                already_installed=False,
+                message=(
+                    f"Pin mismatch: requested {slug}=={version} but server "
+                    f"returned {meta.version}. Refusing to install a "
+                    f"different version than pinned."
+                ),
+                trust_level=None,
+                verification_tier=None,
+            )
+
         # 2. Fetch trust/verification info
         trust_level = None
         verification_tier = None
@@ -511,11 +562,23 @@ class AgentNodeClient:
                     verification_tier=verification_tier,
                 )
 
-        # 4. Track download
+        # 4. Create installation record (P0-05: SDK must POST the install
+        # event so the backend tracks installs, updates counts, and returns
+        # the canonical artifact URL). This is best-effort: if the server
+        # call fails, we still attempt the local install below using the
+        # metadata we already fetched.
         try:
-            self.download(slug, version)
+            self._request(
+                "POST",
+                f"/packages/{slug}/install",
+                json={
+                    "version": version or meta.version,
+                    "source": "sdk",
+                    "event_type": "install",
+                },
+            )
         except Exception:
-            pass  # Non-fatal, continue with install
+            pass  # Non-fatal, continue with local install
 
         # 5. Run local install flow
         artifact_url = meta.artifact.url if meta.artifact else None
@@ -583,7 +646,7 @@ class AgentNodeClient:
                 allowed=False,
                 slug=slug,
                 version=meta.version,
-                trust_level="unknown",
+                trust_level="unverified",  # P1-SDK9: canonical default
                 reason="Package is deprecated.",
                 permissions=meta.permissions,
             )
@@ -594,13 +657,15 @@ class AgentNodeClient:
                 allowed=False,
                 slug=slug,
                 version=meta.version,
-                trust_level="unknown",
+                trust_level="unverified",  # P1-SDK9: canonical default
                 reason="No artifact available for download.",
                 permissions=meta.permissions,
             )
 
-        # Check trust
-        trust_level = "unknown"
+        # Check trust — P1-SDK9: canonical default is "unverified",
+        # never "unknown". Everything downstream expects the trust-level
+        # vocabulary from models.py (unverified/verified/trusted/curated).
+        trust_level = "unverified"
         try:
             detail = self._request("GET", f"/packages/{slug}")
             trust_level = detail.get("publisher", {}).get("trust_level", "unverified")
@@ -694,8 +759,8 @@ class AgentNodeClient:
         self,
         capabilities: list[str],
         framework: str | None = None,
-        require_trusted: bool = True,
-        require_verified: bool = False,
+        require_trusted: bool = False,
+        require_verified: bool = True,
         verbose: bool = False,
     ) -> InstallResult:
         """Resolve a capability gap and install the best match.

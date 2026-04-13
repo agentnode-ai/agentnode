@@ -8,6 +8,40 @@ import chalk from "chalk";
 import { createInterface } from "node:readline";
 import { saveConfig, loadConfig } from "../config.js";
 
+/**
+ * Prompt for a secret without echoing characters to the terminal.
+ *
+ * P1-C2: Previously the login flow echoed the API key as the user typed it,
+ * leaving the full key visible in the terminal scrollback and any active
+ * screen-recording/shoulder-surfing window. We mute echo by overriding the
+ * internal `_writeToOutput` hook on the readline interface, which is the
+ * standard Node.js pattern for hidden-input prompts.
+ */
+async function promptSecret(prompt: string): Promise<string> {
+  return new Promise((resolveFn) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const rlAny = rl as unknown as { _writeToOutput: (s: string) => void };
+    // Print the prompt, then mute output so the typed key is not echoed.
+    process.stdout.write(prompt);
+    rlAny._writeToOutput = (s: string) => {
+      // Still forward newlines (so the user sees a line break after Enter)
+      // but drop the echoed characters.
+      if (s === "\n" || s === "\r\n" || s === "\r") {
+        process.stdout.write(s);
+      }
+    };
+    rl.question("", (answer: string) => {
+      rl.close();
+      resolveFn(answer.trim());
+    });
+  });
+}
+
+function redactKey(key: string): string {
+  if (key.length <= 8) return "***";
+  return `${key.slice(0, 4)}…${key.slice(-4)}`;
+}
+
 export const loginCommand = new Command("login")
   .description("Authenticate with the AgentNode registry")
   .option("--api-key <key>", "API key (or set AGENTNODE_API_KEY env var)")
@@ -15,13 +49,7 @@ export const loginCommand = new Command("login")
     let apiKey = opts.apiKey;
 
     if (!apiKey) {
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      apiKey = await new Promise<string>((resolve) => {
-        rl.question("Enter your API key: ", (answer) => {
-          rl.close();
-          resolve(answer.trim());
-        });
-      });
+      apiKey = await promptSecret("Enter your API key: ");
     }
 
     if (!apiKey) {
@@ -31,7 +59,7 @@ export const loginCommand = new Command("login")
 
     // Verify the key by calling /v1/auth/me
     const config = loadConfig();
-    const baseUrl = process.env.AGENTNODE_API_URL || config.api_url || "https://api.agentnode.net/v1";
+    const baseUrl = process.env.AGENTNODE_API_URL || config.api_url || "https://api.agentnode.net";
 
     try {
       const resp = await fetch(`${baseUrl}/v1/auth/me`, {
@@ -46,7 +74,11 @@ export const loginCommand = new Command("login")
 
       const user = await resp.json();
       saveConfig({ ...config, api_key: apiKey, username: user.username });
-      console.log(chalk.green(`✓ Logged in as ${user.username}`));
+      console.log(
+        chalk.green(
+          `✓ Logged in as ${user.username} (${redactKey(apiKey)})`,
+        ),
+      );
     } catch (err: any) {
       console.error(chalk.red(`Login failed: ${err.message}`));
       process.exit(1);

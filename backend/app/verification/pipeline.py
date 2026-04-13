@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import select, and_
+from sqlalchemy import and_, func, select
 
 from app.config import settings
 from app.database import async_session_factory
@@ -22,6 +22,78 @@ from app.database import async_session_factory
 logger = logging.getLogger(__name__)
 
 RUNNER_VERSION = "2.0.0"
+
+# --- Quarantine auto-clear gating ------------------------------------------
+#
+# Auto-clear is ONLY valid for quarantine reasons the publish/verification
+# pipeline set automatically. Admin-imposed quarantine, security-scan
+# quarantine, and any reason not listed here must never be cleared by a
+# passing verification run. Canonicalized to snake_case; the matching
+# prefix `Auto-quarantined: verification failed` covers the legacy reason
+# strings with extra detail in parentheses.  (P1-L4)
+AUTO_CLEARABLE_REASONS: frozenset[str] = frozenset({
+    "Auto-quarantined: verification failed",
+    "new_publisher_review",
+})
+_AUTO_CLEAR_PREFIX = "Auto-quarantined: verification failed"
+
+# Triggers that MUST NOT auto-clear quarantine — e.g. an owner-initiated
+# re-verify must not undo a quarantine the admin imposed. (P1-V1)
+_NON_AUTO_CLEARING_TRIGGERS: frozenset[str] = frozenset({
+    "owner_request",
+    "admin_reverify",
+})
+
+
+async def _has_open_scanner_findings(session, version_id: UUID) -> bool:
+    """Return True if the scanner recorded any unresolved medium/high/critical
+    finding for this version. Used as a secondary gate on auto-clear so the
+    publish-trust pipeline cannot promote a package that the scanner flagged
+    as dangerous (P0-02).
+    """
+    from app.packages.models import SecurityFinding
+
+    stmt = (
+        select(func.count(SecurityFinding.id))
+        .where(
+            SecurityFinding.package_version_id == version_id,
+            SecurityFinding.is_resolved.is_(False),
+            SecurityFinding.severity.in_(("medium", "high", "critical")),
+        )
+    )
+    count = (await session.execute(stmt)).scalar() or 0
+    return count > 0
+
+
+async def _log_candidate_verification(package_id: UUID) -> None:
+    """If this package was published by an invited candidate, log verification_passed."""
+    from app.invites.models import ImportCandidate, CandidateEvent
+    from app.invites.service import log_event
+
+    async with async_session_factory() as session:
+        # Find candidate by published_package_id
+        result = await session.execute(
+            select(ImportCandidate.id).where(
+                ImportCandidate.published_package_id == package_id
+            )
+        )
+        candidate_id = result.scalar_one_or_none()
+        if not candidate_id:
+            return
+
+        # Idempotency: check if verification_passed already logged for this package
+        existing = await session.execute(
+            select(CandidateEvent.id).where(
+                CandidateEvent.candidate_id == candidate_id,
+                CandidateEvent.event_type == "verification_passed",
+                CandidateEvent.metadata_["package_id"].astext == str(package_id),
+            ).limit(1)
+        )
+        if existing.scalar_one_or_none() is not None:
+            return
+
+        await log_event(session, candidate_id, "verification_passed", {"package_id": str(package_id)})
+        await session.commit()
 
 # Concurrency limiter — prevents VPS overload on parallel publishes
 _verification_semaphore: asyncio.Semaphore | None = None
@@ -266,7 +338,11 @@ def _run_verification_sync(
         sandbox.cleanup()
 
 
-async def run_verification(version_id: UUID, triggered_by: str = "publish") -> None:
+async def run_verification(
+    version_id: UUID,
+    triggered_by: str = "publish",
+    admin_user_id: UUID | None = None,
+) -> None:
     """Run verification pipeline on a published package version.
 
     Called as a background task after publish, parallel to security scan.
@@ -276,6 +352,9 @@ async def run_verification(version_id: UUID, triggered_by: str = "publish") -> N
     Args:
         version_id: The package version to verify.
         triggered_by: "publish", "admin_reverify", or "runner_upgrade".
+        admin_user_id: If triggered_by='admin_reverify', the admin who fired
+            it. Used to write an `admin_audit_logs` entry with the outcome
+            once verification completes (P1-V2).
     """
     if not settings.VERIFICATION_ENABLED:
         return
@@ -286,7 +365,13 @@ async def run_verification(version_id: UUID, triggered_by: str = "publish") -> N
                 from app.packages.models import Capability, Package, PackageVersion
                 from app.verification.models import VerificationResult
 
-                # Lock the PackageVersion row to prevent concurrent verification runs
+                # Lock the PackageVersion row to prevent concurrent verification runs.
+                # P1-L3: the FOR UPDATE lock is deliberately released by the
+                # commit that follows the "running" VR insert below. From that
+                # point on, serialization is enforced by the running-VR check
+                # (stale_cutoff guarded). Holding FOR UPDATE across the slow
+                # verify step would pin a write row for the full timeout
+                # budget (~minutes) and block unrelated pv updates.
                 pv_result = await session.execute(
                     select(PackageVersion)
                     .where(PackageVersion.id == version_id)
@@ -498,7 +583,33 @@ async def run_verification(version_id: UUID, triggered_by: str = "publish") -> N
                 pv.verification_run_count = (pv.verification_run_count or 0) + 1
                 pv.last_verified_at = datetime.now(timezone.utc)
                 pv.verification_score = score_result.score
-                pv.verification_tier = score_result.tier
+
+                # P1-V4: Retroactive tier updates are downgrade-only.
+                # A fresh `publish` run establishes the canonical tier. A re-
+                # verify (admin_reverify, runner_upgrade, scheduled, owner_request)
+                # can only REDUCE the tier — never promote, because the
+                # re-verify environment may differ from the original publish
+                # in ways the publisher didn't consent to.
+                from app.verification.scoring import TIER_ORDER
+                current_tier = pv.verification_tier
+                new_tier = score_result.tier
+                if triggered_by == "publish" or current_tier is None:
+                    pv.verification_tier = new_tier
+                else:
+                    cur_rank = TIER_ORDER.get(current_tier, 0)
+                    new_rank = TIER_ORDER.get(new_tier, 0)
+                    if new_rank < cur_rank:
+                        logger.info(
+                            "Retroactive tier downgrade for %s: %s -> %s (trigger=%s)",
+                            version_id, current_tier, new_tier, triggered_by,
+                        )
+                        pv.verification_tier = new_tier
+                    else:
+                        logger.info(
+                            "Retroactive tier change blocked for %s: %s -> %s "
+                            "is not a downgrade (trigger=%s) — keeping %s",
+                            version_id, current_tier, new_tier, triggered_by, current_tier,
+                        )
 
                 # Auto-quarantine on install/import failure (only for publish, not admin re-verify)
                 if final_status == "failed" and pv.quarantine_status == "none" and triggered_by == "publish":
@@ -516,15 +627,33 @@ async def run_verification(version_id: UUID, triggered_by: str = "publish") -> N
                 # failed verification or new-publisher review).  Admin-imposed
                 # quarantine (security concerns, policy violations, etc.) and
                 # security-scan quarantine must NOT be bypassed.
-                _AUTO_CLEARABLE_REASONS = (
-                    "Auto-quarantined: verification failed",
-                    "new_publisher_review",
-                )
+                #
+                # Additional gates (Sprint A):
+                #   P0-02: refuse to clear if the scanner recorded open
+                #          medium/high/critical findings for this version.
+                #   P1-V1: refuse to clear for owner/admin-initiated
+                #          re-verifies — only a fresh `publish` trigger is
+                #          allowed to promote a quarantined version.
                 if final_status == "passed" and pv.quarantine_status == "quarantined":
                     reason = pv.quarantine_reason or ""
-                    is_auto_clearable = any(
-                        reason.startswith(prefix) for prefix in _AUTO_CLEARABLE_REASONS
+                    is_auto_clearable = (
+                        reason in AUTO_CLEARABLE_REASONS
+                        or reason.startswith(f"{_AUTO_CLEAR_PREFIX} (")
                     )
+                    if is_auto_clearable and triggered_by in _NON_AUTO_CLEARING_TRIGGERS:
+                        logger.info(
+                            "Quarantine NOT auto-cleared for %s: "
+                            "triggered_by=%s is not allowed to auto-clear",
+                            version_id, triggered_by,
+                        )
+                        is_auto_clearable = False
+                    if is_auto_clearable and await _has_open_scanner_findings(session, version_id):
+                        logger.warning(
+                            "Quarantine NOT auto-cleared for %s: "
+                            "open scanner findings present (P0-02 gate)",
+                            version_id,
+                        )
+                        is_auto_clearable = False
                     if is_auto_clearable:
                         pv.quarantine_status = "cleared"
                         pv.quarantine_reason = None
@@ -535,24 +664,29 @@ async def run_verification(version_id: UUID, triggered_by: str = "publish") -> N
                         from app.packages.version_queries import recalculate_latest_version_id
                         await recalculate_latest_version_id(session, pv.package_id)
 
-                        # Increment publisher's packages_cleared_count
+                        # Load package + publisher eagerly in one query. P1-L5:
+                        # avoid relying on sync lazy-loading inside async code,
+                        # which raised `MissingGreenlet` under Meilisearch-sync
+                        # refreshes that fired after the event-loop boundary.
+                        from sqlalchemy.orm import selectinload
                         pkg_result2 = await session.execute(
-                            select(Package).where(Package.id == pv.package_id)
+                            select(Package)
+                            .options(selectinload(Package.publisher))
+                            .where(Package.id == pv.package_id)
                         )
                         pkg2 = pkg_result2.scalar_one_or_none()
                         if pkg2:
-                            from app.publishers.models import Publisher
-                            pub_result = await session.execute(
-                                select(Publisher).where(Publisher.id == pkg2.publisher_id)
-                            )
-                            publisher_obj = pub_result.scalar_one_or_none()
-                            if publisher_obj:
-                                publisher_obj.packages_cleared_count = (publisher_obj.packages_cleared_count or 0) + 1
+                            # P1-V3: packages_cleared_count counts MANUAL
+                            # admin clears only. Auto-clearing on a passing
+                            # verification run must NOT inflate the publisher
+                            # reputation metric — that would let a publisher
+                            # farm the counter by publishing then re-verifying
+                            # trivial packages. The counter is incremented in
+                            # the admin manual-clear endpoint instead.
 
                             # Sync to Meilisearch now that version is public
                             from app.packages.service import build_meili_document
                             from app.shared.meili import sync_package_to_meilisearch
-                            await session.refresh(pkg2, ["publisher"])
                             await sync_package_to_meilisearch(build_meili_document(pkg2, pv, pv.manifest_raw or {}))
                     else:
                         logger.info(
@@ -561,6 +695,42 @@ async def run_verification(version_id: UUID, triggered_by: str = "publish") -> N
                         )
 
                 await session.commit()
+
+                # P1-V2: persist an admin audit log entry on admin-triggered
+                # reverifies so the `admin_audit_logs` table has both the
+                # trigger AND the outcome side-by-side. The trigger-side row
+                # is written by the admin endpoint before it fires off the
+                # background task; this completes the pair.
+                if triggered_by == "admin_reverify" and admin_user_id is not None:
+                    try:
+                        from app.admin.models import AdminAuditLog
+                        session.add(AdminAuditLog(
+                            admin_user_id=admin_user_id,
+                            action="reverify_version_completed",
+                            target_type="package_version",
+                            target_id=str(version_id),
+                            metadata_={
+                                "outcome": final_status,
+                                "score": score_result.score,
+                                "tier": pv.verification_tier,
+                                "install_status": install_status,
+                                "import_status": import_status,
+                                "smoke_status": step_results["smoke_status"],
+                                "tests_status": step_results["tests_status"],
+                                "duration_ms": duration_ms,
+                            },
+                        ))
+                        await session.commit()
+                    except Exception:
+                        logger.exception("Failed to write admin_reverify audit log")
+
+                # Log verification_passed for candidate tracking (if applicable)
+                if final_status == "passed":
+                    try:
+                        await _log_candidate_verification(pv.package_id)
+                    except Exception:
+                        logger.exception("Failed to log candidate verification event")
+
                 logger.info(
                     f"Verification for {version_id}: {final_status} "
                     f"(install={install_status}, import={import_status}, "

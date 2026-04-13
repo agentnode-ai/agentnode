@@ -31,7 +31,9 @@ def test_jwt_access_token():
 
 
 def test_jwt_refresh_token():
-    token = create_refresh_token("user-123")
+    token, jti = create_refresh_token("user-123")
     payload = decode_token(token)
     assert payload["sub"] == "user-123"
     assert payload["token_type"] == "refresh"
+    assert payload["jti"] == jti
+    assert payload["gen"] == 0

@@ -152,19 +152,62 @@ deploy_api() {
         error "Backend app directory not found: $BACKEND_DIR/app"
         exit 1
     fi
+    if [[ ! -d "$BACKEND_DIR/alembic" ]]; then
+        error "Backend alembic directory not found: $BACKEND_DIR/alembic"
+        exit 1
+    fi
+    if [[ ! -f "$BACKEND_DIR/alembic.ini" ]]; then
+        error "alembic.ini not found in $BACKEND_DIR"
+        exit 1
+    fi
+    if [[ ! -f "$BACKEND_DIR/pyproject.toml" ]]; then
+        error "pyproject.toml not found in $BACKEND_DIR"
+        exit 1
+    fi
+    if [[ ! -f "$BACKEND_DIR/requirements.lock" ]]; then
+        error "requirements.lock not found in $BACKEND_DIR — cannot deploy without pinned deps"
+        exit 1
+    fi
 
-    # 1. Upload backend/app
+    # 1. Upload backend/app + alembic + alembic.ini + pyproject.toml + requirements.lock
+    #    P0-09: previously only app/ was uploaded, so dependency changes and
+    #    new migrations were silently dropped. Upload everything the server
+    #    needs to install deps and run alembic upgrade head.
     info "Uploading backend/app..."
     $SCP_CMD -r "$BACKEND_DIR/app" "$SSH_HOST:$REMOTE_BACKEND/"
     success "backend/app uploaded"
 
-    # 2. Restart service
+    info "Uploading backend/alembic..."
+    $SCP_CMD -r "$BACKEND_DIR/alembic" "$SSH_HOST:$REMOTE_BACKEND/"
+    success "backend/alembic uploaded"
+
+    info "Uploading alembic.ini, pyproject.toml, requirements.lock..."
+    $SCP_CMD "$BACKEND_DIR/alembic.ini" "$SSH_HOST:$REMOTE_BACKEND/alembic.ini"
+    $SCP_CMD "$BACKEND_DIR/pyproject.toml" "$SSH_HOST:$REMOTE_BACKEND/pyproject.toml"
+    $SCP_CMD "$BACKEND_DIR/requirements.lock" "$SSH_HOST:$REMOTE_BACKEND/requirements.lock"
+    success "config files uploaded"
+
+    # 2. Install pinned dependencies from requirements.lock, then re-install
+    #    the backend package itself (no-deps so the lock stays authoritative).
+    step "Installing backend dependencies"
+    info "pip install -r requirements.lock (pinned)..."
+    $SSH_CMD "cd $REMOTE_BACKEND && .venv/bin/pip install -r requirements.lock --quiet"
+    info "pip install -e . --no-deps..."
+    $SSH_CMD "cd $REMOTE_BACKEND && .venv/bin/pip install -e . --no-deps --quiet"
+    success "Dependencies installed"
+
+    # 3. Run database migrations
+    step "Running alembic upgrade head"
+    $SSH_CMD "cd $REMOTE_BACKEND && .venv/bin/alembic upgrade head"
+    success "Migrations applied"
+
+    # 4. Restart service
     step "Restarting agentnode-api"
     info "Restarting systemd service..."
     $SSH_CMD "systemctl restart agentnode-api"
     sleep 3
 
-    # 3. Verify service is active
+    # 5. Verify service is active
     API_STATUS=$($SSH_CMD "systemctl is-active agentnode-api" 2>/dev/null || true)
     if [[ "$API_STATUS" == "active" ]]; then
         success "agentnode-api is ${GREEN}active${NC}"

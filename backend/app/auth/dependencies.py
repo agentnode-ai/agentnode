@@ -49,18 +49,21 @@ async def optional_current_user(
 ) -> User | None:
     """Like get_current_user but returns None instead of 401 when unauthenticated."""
     try:
+        user = None
         if x_api_key:
-            return await _authenticate_api_key(session, x_api_key)
+            user = await _authenticate_api_key(session, x_api_key)
         elif authorization and authorization.startswith("Bearer "):
             token = authorization[7:]
-            return await _authenticate_jwt(session, token, expected_type="access")
+            user = await _authenticate_jwt(session, token, expected_type="access")
         else:
             cookie_token = request.cookies.get("access_token")
             if cookie_token:
-                return await _authenticate_jwt(session, cookie_token, expected_type="access")
+                user = await _authenticate_jwt(session, cookie_token, expected_type="access")
+        if user and user.is_banned:
+            return None
+        return user
     except AppError:
         return None
-    return None
 
 
 async def require_publisher(user: User = Depends(get_current_user)) -> User:
@@ -113,7 +116,7 @@ async def _authenticate_api_key(session: AsyncSession, key: str) -> User | None:
                 raise AppError("AUTH_API_KEY_REVOKED", "API key has been revoked", 401)
             # Update last_used_at
             candidate.last_used_at = datetime.now(timezone.utc)
-            await session.commit()
+            await session.flush()
             # Load user with publisher
             user_result = await session.execute(
                 select(User).options(selectinload(User.publisher)).where(User.id == candidate.user_id)

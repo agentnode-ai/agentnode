@@ -43,7 +43,7 @@ cd backend
 cp .env.example .env
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock
 alembic upgrade head
 python scripts/seed_capabilities.py
 uvicorn app.main:app --host 0.0.0.0 --port 8001
@@ -143,7 +143,7 @@ cd agentnode/backend
 # Create virtual environment
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock
 
 # Configure
 cp .env.example .env
@@ -301,7 +301,7 @@ git pull origin main
 
 # Backend
 cd backend && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock
 alembic upgrade head
 sudo systemctl restart agentnode-api
 

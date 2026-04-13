@@ -550,7 +550,7 @@ async def _sync_review_badge_to_search(session: AsyncSession, package_id) -> Non
         await delete_package_from_meilisearch(pkg.slug)
         return
 
-    manifest = pv.manifest or {}
+    manifest = pv.manifest_raw or {}
     doc = build_meili_document(pkg, pv, manifest)
     await sync_package_to_meilisearch(doc)
 

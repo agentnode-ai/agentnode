@@ -39,7 +39,7 @@ export default function ForgotPasswordPage() {
       <h1 className="mb-2 text-2xl font-bold text-foreground">Reset your password</h1>
 
       {submitted ? (
-        <div className="mt-6">
+        <div className="mt-6" role="status" aria-live="polite">
           <p className="text-sm text-muted">
             If an account with that email exists, we&apos;ve sent a reset link.
             Check your inbox.
@@ -65,9 +65,12 @@ export default function ForgotPasswordPage() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="mb-1 block text-sm text-muted">Email</label>
+              <label htmlFor="forgot-email" className="mb-1 block text-sm text-muted">Email</label>
               <input
+                id="forgot-email"
+                name="email"
                 type="email"
+                autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required

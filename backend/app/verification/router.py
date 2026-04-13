@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
+from app.shared.rate_limit import rate_limit
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,7 +81,7 @@ def _build_response(
     return resp
 
 
-@router.get("/{slug}/verification", response_model=VerificationResponse)
+@router.get("/{slug}/verification", response_model=VerificationResponse, dependencies=[Depends(rate_limit(60, 60))])
 async def get_verification_status(
     slug: str,
     session: AsyncSession = Depends(get_session),
@@ -120,7 +121,7 @@ async def get_verification_status(
     return _build_response(vr, pv, include_logs=bool(is_owner))
 
 
-@router.get("/{slug}/versions/{version}/verification", response_model=VerificationResponse)
+@router.get("/{slug}/versions/{version}/verification", response_model=VerificationResponse, dependencies=[Depends(rate_limit(60, 60))])
 async def get_version_verification_status(
     slug: str,
     version: str,

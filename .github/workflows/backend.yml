@@ -67,5 +67,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev]"
+      # P1-CD3: install pinned runtime deps from lockfile so CI matches prod,
+      # then install the package + dev extras (pytest, httpx, ruff) on top.
+      - run: pip install -r requirements.lock
+      - run: pip install -e ".[dev]" --no-deps
+      - run: pip install pytest pytest-asyncio httpx
       - run: pytest -v --tb=short

@@ -24,6 +24,7 @@ export function CollapsiblePanel({
       <button
         type="button"
         onClick={onToggle}
+        aria-expanded={open}
         className="flex w-full items-center justify-between px-5 py-4 text-left hover:bg-card/50 transition-colors"
       >
         <div className="flex items-center gap-3 min-w-0 pr-4">

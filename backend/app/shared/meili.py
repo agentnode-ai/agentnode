@@ -64,3 +64,56 @@ async def delete_package_from_meilisearch(slug: str) -> None:
             logger.error(f"Meilisearch delete failed for {slug}: {resp.status_code}")
     except Exception as e:
         logger.error(f"Meilisearch delete error for {slug}: {e}")
+
+
+async def sync_package_to_meili(session, package_id) -> None:
+    """P1-D1: idempotent upsert/delete of a package in Meili from current DB state.
+
+    Called from: deprecate / undeprecate / yank / unyank / admin overrides.
+    Resolves the package's latest non-yanked version and either upserts the
+    resulting document into the search index, or — if there are no
+    eligible (non-yanked, published) versions — removes the document so
+    searches don't surface unreachable rows.
+
+    Never raises. All failures are logged, because search-index drift is
+    eventually consistent and must not block the DB-side state change.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from app.packages.models import Package, PackageVersion
+    from app.packages.service import build_meili_document
+
+    try:
+        result = await session.execute(
+            select(Package)
+            .options(selectinload(Package.publisher))
+            .where(Package.id == package_id)
+        )
+        pkg = result.scalar_one_or_none()
+        if pkg is None:
+            logger.warning("sync_package_to_meili: package %s not found", package_id)
+            return
+
+        # Pick the newest non-yanked published version (matches the visible row).
+        ver_result = await session.execute(
+            select(PackageVersion)
+            .where(
+                PackageVersion.package_id == pkg.id,
+                PackageVersion.is_yanked == False,  # noqa: E712
+                PackageVersion.status == "published",
+            )
+            .order_by(PackageVersion.published_at.desc().nullslast())
+            .limit(1)
+        )
+        pv = ver_result.scalar_one_or_none()
+
+        if pv is None:
+            # No visible version → delete from index.
+            await delete_package_from_meilisearch(pkg.slug)
+            return
+
+        doc = build_meili_document(pkg, pv, pv.manifest_raw or {})
+        await sync_package_to_meilisearch(doc)
+    except Exception as e:
+        logger.error("sync_package_to_meili failed for %s: %s", package_id, e)

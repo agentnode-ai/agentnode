@@ -8,7 +8,15 @@ export const resolveCommand = new Command("resolve")
   .option("-l, --limit <n>", "Max results", "5")
   .action(async (capabilities: string[], opts) => {
     try {
-      const body: Record<string, any> = { limit: parseInt(opts.limit) };
+      // P1-C7: Validate --limit (reject negatives/NaN, clamp to [1, 100]).
+      const parsedLimit = parseInt(opts.limit, 10);
+      if (!Number.isFinite(parsedLimit) || parsedLimit < 1) {
+        throw new Error(
+          `--limit must be a positive integer (got '${opts.limit}')`,
+        );
+      }
+      const limit = Math.min(100, parsedLimit);
+      const body: Record<string, any> = { limit };
       if (opts.framework) body.framework = opts.framework;
 
       const result = await resolve(capabilities, body);

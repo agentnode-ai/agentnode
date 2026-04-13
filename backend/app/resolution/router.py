@@ -438,9 +438,8 @@ logger = logging.getLogger(__name__)
 async def invalidate_capabilities_cache(redis) -> None:
     """Clear cached capabilities listings."""
     try:
-        keys = await redis.keys("capabilities:*")
-        if keys:
-            await redis.delete(*keys)
+        keys = ["capabilities:all"]
+        await redis.delete(*keys)
     except Exception:
         logger.warning("Failed to invalidate capabilities cache", exc_info=True)
 

@@ -11,7 +11,10 @@ const isWindows = process.platform === "win32";
 
 function tryPython(cmd: string): string | null {
   try {
-    const version = execSync(`${cmd} --version`, {
+    // P1-C3: quote the command in case the caller later passes a resolved
+    // path containing spaces (e.g. `C:\Program Files\Python313\python.exe`).
+    // Command names like `python3` / `python` are unchanged by quoting.
+    const version = execSync(`"${cmd}" --version`, {
       encoding: "utf-8",
       timeout: 5000,
       stdio: ["pipe", "pipe", "pipe"],
@@ -69,7 +72,10 @@ export function resolvePython(verbose = false): string {
 
 export function getPythonVersion(pythonPath: string): string {
   try {
-    return execSync(`${pythonPath} --version`, {
+    // P1-C3: quote the resolved path so that Windows paths containing
+    // spaces (e.g. `C:\Program Files\Python313\python.exe`) are handled
+    // correctly by the shell.
+    return execSync(`"${pythonPath}" --version`, {
       encoding: "utf-8",
       timeout: 5000,
       stdio: ["pipe", "pipe", "pipe"],

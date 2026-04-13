@@ -60,14 +60,24 @@ export async function generateMetadata({ params, searchParams }: PageProps): Pro
   const title = `${pkg.name} — Agent Skill for AI Agents`;
   const description = pkg.summary || `${pkg.name} is a verified agent skill on AgentNode. Install it in any AI agent framework.`;
 
+  // P1-SEO2: Set a canonical URL for each package detail page.
+  // Without this, Google indexes the `?v=<version>` variant and the
+  // slug-only URL as separate pages, splitting PageRank. Canonical
+  // always points to the slug-only form; the version-scoped URL is
+  // rendered as a visible "you are viewing vX.Y.Z" badge elsewhere.
+  const canonicalPath = `/packages/${slug}`;
+
   return {
     title,
     description,
+    alternates: {
+      canonical: canonicalPath,
+    },
     openGraph: {
       title: `${pkg.name} | AgentNode`,
       description,
       type: "website",
-      url: `https://agentnode.net/packages/${slug}`,
+      url: canonicalPath,
       siteName: "AgentNode",
     },
   };
@@ -396,7 +406,7 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                   >
                     <div className="flex items-center gap-3 flex-wrap">
                       <Link
-                        href={`/search?capability=${cap.capability_id}`}
+                        href={`/search?capability_id=${cap.capability_id}`}
                         className="rounded-md border border-primary/20 bg-primary/5 px-2.5 py-0.5 text-xs font-mono text-primary hover:bg-primary/10 transition-colors"
                       >
                         {cap.capability_id}

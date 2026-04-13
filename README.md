@@ -206,7 +206,7 @@ agentnode/
 ├── adapter-mcp/       # MCP server integration
 ├── web/               # Next.js frontend (agentnode.net)
 ├── action/            # GitHub Action for CI/CD publishing
-├── starter-packs/     # 89+ verified reference packages
+├── starter-packs/     # 75+ verified reference packages
 ├── docs/              # Documentation
 └── scripts/           # Tooling and seed scripts
 ```
@@ -227,7 +227,7 @@ AgentNode is open source. The SDK, CLI, adapters, and all starter packs are MIT-
 
 ```bash
 # Local development
-docker-compose up -d
+docker compose up -d
 cd backend && pip install -e ".[dev]" && alembic upgrade head && uvicorn app.main:app --reload
 cd web && npm install && npm run dev
 ```

@@ -9,11 +9,12 @@ from sqlalchemy.orm import selectinload
 from app.database import get_session
 from app.packages.models import Package, PackageVersion
 from app.shared.exceptions import AppError
+from app.shared.rate_limit import rate_limit
 
 router = APIRouter(prefix="/v1/packages", tags=["trust"])
 
 
-@router.get("/{slug}/trust")
+@router.get("/{slug}/trust", dependencies=[Depends(rate_limit(60, 60))])
 async def get_trust_info(
     slug: str,
     session: AsyncSession = Depends(get_session),

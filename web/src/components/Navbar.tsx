@@ -71,8 +71,11 @@ export default function Navbar() {
           <span>AgentNode</span>
         </Link>
 
-        {/* Desktop nav */}
-        <div className="hidden md:flex items-center gap-1">
+        {/* Desktop nav — P0-12: raised breakpoint from md (768) to lg
+            (1024) because the full link set (10 + auth buttons) does not
+            fit cleanly at 768-1023px and caused wrap/horizontal-scroll
+            artifacts in that range. */}
+        <div className="hidden lg:flex items-center gap-1">
           {navLinks.map((link) => {
             const isActive = !link.external && pathname === link.href;
             if (link.external) {
@@ -147,11 +150,15 @@ export default function Navbar() {
           )}
         </div>
 
-        {/* Mobile hamburger */}
+        {/* Mobile hamburger — P0-13: aria-expanded + aria-controls so
+            assistive tech can report the menu's open/closed state. */}
         <button
+          type="button"
           onClick={() => setMobileOpen(!mobileOpen)}
-          className="md:hidden flex flex-col gap-1.5 p-2"
-          aria-label="Toggle menu"
+          className="lg:hidden flex flex-col gap-1.5 p-2"
+          aria-label={mobileOpen ? "Close menu" : "Open menu"}
+          aria-expanded={mobileOpen}
+          aria-controls="primary-mobile-menu"
         >
           <span className={`block h-0.5 w-5 bg-foreground transition-transform ${mobileOpen ? "translate-y-2 rotate-45" : ""}`} />
           <span className={`block h-0.5 w-5 bg-foreground transition-opacity ${mobileOpen ? "opacity-0" : ""}`} />
@@ -161,7 +168,10 @@ export default function Navbar() {
 
       {/* Mobile menu */}
       {mobileOpen && (
-        <div className="md:hidden border-t border-border bg-background/95 backdrop-blur-md px-6 pb-4 pt-2">
+        <div
+          id="primary-mobile-menu"
+          className="lg:hidden border-t border-border bg-background/95 backdrop-blur-md px-6 pb-4 pt-2"
+        >
           <div className="flex flex-col gap-1">
             {navLinks.map((link) => {
               const isActive = !link.external && pathname === link.href;

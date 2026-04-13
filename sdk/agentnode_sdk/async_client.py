@@ -11,8 +11,12 @@ class AsyncAgentNode:
     """Async variant of the AgentNode SDK client. Returns plain dicts."""
 
     def __init__(self, api_key: str, base_url: str = DEFAULT_BASE_URL):
+        # Ensure base_url ends with /v1 for API routing (parity with sync AgentNode)
+        base = base_url.rstrip("/")
+        if not base.endswith("/v1"):
+            base = f"{base}/v1"
         self._client = httpx.AsyncClient(
-            base_url=base_url.rstrip("/"),
+            base_url=base,
             headers={"X-API-Key": api_key},
             timeout=30,
         )
@@ -127,13 +131,26 @@ class AsyncAgentNode:
     def _handle(self, response: httpx.Response) -> dict:
         """Parse response. Raise typed AgentNodeError on API errors."""
         if response.status_code >= 400:
+            code, message = "UNKNOWN", response.text
             try:
                 body = response.json()
-                err = body.get("error", {})
-                code = err.get("code", "UNKNOWN")
-                message = err.get("message", response.text)
-            except (ValueError, KeyError):
-                code, message = "UNKNOWN", response.text
+                if isinstance(body, dict):
+                    err = body.get("error", {})
+                    if isinstance(err, dict):
+                        code = err.get("code", code)
+                        message = err.get("message", message)
+            except (ValueError, KeyError, TypeError):
+                pass
             exc_class = ERROR_CLASS_MAP.get(response.status_code, AgentNodeError)
             raise exc_class(code, message)
-        return response.json()
+        # Guard against non-JSON response (e.g. HTML error page or empty body)
+        ctype = response.headers.get("content-type", "")
+        if "json" not in ctype.lower():
+            raise AgentNodeError(
+                "UNKNOWN",
+                f"Expected JSON response, got content-type={ctype!r}",
+            )
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise AgentNodeError("UNKNOWN", f"Invalid JSON response: {exc}") from exc

@@ -35,13 +35,23 @@ function RegisterContent() {
         throw new Error(err.message || "Registration failed");
       }
 
-      // Auto-login after registration
-      await fetch("/api/v1/auth/login", {
+      // Auto-login after registration. If the auto-login fails (e.g. email
+      // verification required, rate limit, network blip), we still want the
+      // user to land on the login page with a helpful message instead of
+      // silently landing on /dashboard while unauthenticated.
+      const loginRes = await fetch("/api/v1/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ email, password }),
       });
+
+      if (!loginRes.ok) {
+        router.push(
+          `/auth/login?returnTo=${encodeURIComponent(returnTo)}&registered=1`,
+        );
+        return;
+      }
 
       router.push(returnTo);
     } catch (err: unknown) {
@@ -79,9 +89,12 @@ function RegisterContent() {
 
       <form onSubmit={handleRegister} className="space-y-4">
         <div>
-          <label className="mb-1 block text-sm text-muted">Email</label>
+          <label htmlFor="register-email" className="mb-1 block text-sm text-muted">Email</label>
           <input
+            id="register-email"
+            name="email"
             type="email"
+            autoComplete="email"
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -91,9 +104,12 @@ function RegisterContent() {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm text-muted">Username</label>
+          <label htmlFor="register-username" className="mb-1 block text-sm text-muted">Username</label>
           <input
+            id="register-username"
+            name="username"
             type="text"
+            autoComplete="username"
             required
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -105,9 +121,12 @@ function RegisterContent() {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm text-muted">Password</label>
+          <label htmlFor="register-password" className="mb-1 block text-sm text-muted">Password</label>
           <input
+            id="register-password"
+            name="password"
             type="password"
+            autoComplete="new-password"
             required
             minLength={8}
             value={password}

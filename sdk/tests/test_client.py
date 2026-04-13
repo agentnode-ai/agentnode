@@ -150,3 +150,38 @@ def test_api_key_auth():
 
     assert route.called
     assert route.calls[0].request.headers["x-api-key"] == "ank_test123"
+
+
+# ---------------------------------------------------------------------------
+# Sprint B tests: P1-SDK3, P1-SDK4
+# ---------------------------------------------------------------------------
+
+@respx.mock
+def test_p1_sdk3_non_dict_error_body():
+    """P1-SDK3: _request must not crash if server returns a non-dict JSON
+    error body (e.g. a list or a bare string)."""
+    respx.get(f"{BASE}/v1/packages/broken").mock(
+        return_value=httpx.Response(500, json=["upstream", "failure"])
+    )
+    from agentnode_sdk.exceptions import AgentNodeError
+    with AgentNodeClient(api_key="k") as client:
+        with pytest.raises(AgentNodeError) as exc:
+            client.get_package("broken")
+        assert exc.value.code == "UNKNOWN"
+
+
+@respx.mock
+def test_p1_sdk4_non_json_response():
+    """P1-SDK4: a 2xx response with content-type text/html must raise
+    AgentNodeError instead of crashing in resp.json()."""
+    respx.get(f"{BASE}/v1/packages/html").mock(
+        return_value=httpx.Response(
+            200,
+            content=b"<html>maintenance</html>",
+            headers={"content-type": "text/html"},
+        )
+    )
+    from agentnode_sdk.exceptions import AgentNodeError
+    with AgentNodeClient(api_key="k") as client:
+        with pytest.raises(AgentNodeError):
+            client.get_package("html")

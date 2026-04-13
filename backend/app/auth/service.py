@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.auth.models import ApiKey, User
 from app.auth.security import (
+    bump_user_session_gen,
     check_login_lockout,
     clear_failed_logins,
     create_access_token,
@@ -18,6 +19,7 @@ from app.auth.security import (
     generate_api_key,
     generate_totp_secret,
     get_totp_uri,
+    get_user_session_gen,
     hash_password,
     record_failed_login,
     revoke_refresh_jti,
@@ -60,6 +62,26 @@ async def register_user(session: AsyncSession, email: str, username: str, passwo
     return user
 
 
+async def revoke_all_refresh_tokens(redis, user_id: UUID | str) -> int:
+    """Revoke every active refresh token for a user.
+
+    Implementation: atomically increment the user's session generation
+    counter (see `app.auth.security.bump_user_session_gen`). Any previously
+    issued refresh token carries the old generation and will be rejected on
+    the next `/refresh` call.
+
+    Called from: password change, password reset, and future admin-ban /
+    2FA enrol / email-change reauth flows (Sprint H P1-S4/P1-S5).
+
+    Returns the new session generation (>= 1) on success, or 0 if no redis
+    is available (fail-open for non-redis code paths; callers in production
+    always pass a redis client).
+    """
+    if redis is None:
+        return 0
+    return await bump_user_session_gen(redis, str(user_id))
+
+
 async def login_user(session: AsyncSession, email: str, password: str, totp_code: str | None = None, redis=None) -> dict:
     # Check lockout before attempting authentication
     if redis:
@@ -87,7 +109,8 @@ async def login_user(session: AsyncSession, email: str, password: str, totp_code
         await clear_failed_logins(redis, email)
 
     access_token = create_access_token(str(user.id))
-    refresh_token, jti = create_refresh_token(str(user.id))
+    gen = await get_user_session_gen(redis, str(user.id)) if redis else 0
+    refresh_token, jti = create_refresh_token(str(user.id), gen=gen)
 
     # Store refresh token JTI in Redis for rotation
     if redis:
@@ -140,11 +163,15 @@ async def get_user_with_publisher(session: AsyncSession, user_id: UUID) -> User:
     return user
 
 
-async def setup_2fa(session: AsyncSession, user_id: UUID) -> dict:
+async def setup_2fa(session: AsyncSession, user_id: UUID, current_password: str) -> dict:
     user = await get_user_with_publisher(session, user_id)
 
     if user.two_factor_enabled:
         raise AppError("AUTH_2FA_ALREADY_ENABLED", "2FA is already enabled", 400)
+
+    # P1-S4: reauth with the current password before enrolling 2FA.
+    if not verify_password(current_password, user.password_hash):
+        raise AppError("AUTH_REAUTH_REQUIRED", "Current password is incorrect", 403)
 
     secret = generate_totp_secret()
     user.two_factor_secret = secret
@@ -218,6 +245,7 @@ async def verify_2fa(session: AsyncSession, user_id: UUID, totp_code: str, backg
 async def change_password(
     session: AsyncSession, user_id: UUID, current_password: str, new_password: str,
     background_tasks: BackgroundTasks | None = None,
+    redis=None,
 ) -> dict:
     user = await get_user_with_publisher(session, user_id)
 
@@ -226,6 +254,11 @@ async def change_password(
 
     user.password_hash = hash_password(new_password)
     await session.commit()
+
+    # P0-01: revoke all active refresh tokens so any attacker already
+    # holding a refresh token is kicked out of the account after the
+    # victim changes their password.
+    await revoke_all_refresh_tokens(redis, user.id)
 
     from app.shared.email import send_password_changed_email
     if background_tasks:
@@ -256,11 +289,19 @@ async def request_password_reset(session: AsyncSession, email: str, background_t
     return {"message": "If an account with that email exists, a reset link has been sent."}
 
 
-async def reset_password(session: AsyncSession, token: str, new_password: str, background_tasks: BackgroundTasks | None = None) -> dict:
+async def reset_password(session: AsyncSession, token: str, new_password: str, background_tasks: BackgroundTasks | None = None, redis=None) -> dict:
     try:
         user_id = decode_purpose_token(token, "password_reset")
     except Exception:
         raise AppError("AUTH_TOKEN_INVALID", "Reset token is invalid or expired", 400)
+
+    # Prevent token reuse
+    import hashlib
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    if redis:
+        used = await redis.get(f"used_reset:{token_hash}")
+        if used:
+            raise AppError("AUTH_TOKEN_INVALID", "Reset token already used", 400)
 
     result = await session.execute(select(User).where(User.id == UUID(user_id)))
     user = result.scalar_one_or_none()
@@ -269,6 +310,15 @@ async def reset_password(session: AsyncSession, token: str, new_password: str, b
 
     user.password_hash = hash_password(new_password)
     await session.commit()
+
+    # Mark token as used
+    if redis:
+        await redis.set(f"used_reset:{token_hash}", "1", ex=3600)
+
+    # P0-01: revoke all active refresh tokens. A user who resets their
+    # password is almost always responding to a suspected compromise;
+    # any attacker sitting on a stolen refresh token must be booted.
+    await revoke_all_refresh_tokens(redis, user.id)
 
     from app.shared.email import send_password_reset_confirmation_email
     if background_tasks:
@@ -314,6 +364,7 @@ async def verify_email(session: AsyncSession, token: str) -> dict:
 
 async def update_profile(
     session: AsyncSession, user_id: UUID, username: str | None = None, email: str | None = None,
+    current_password: str | None = None,
     background_tasks: BackgroundTasks | None = None,
 ) -> dict:
     user = await get_user_with_publisher(session, user_id)
@@ -328,6 +379,11 @@ async def update_profile(
     old_email = user.email
     email_changed = False
     if email is not None and email != user.email:
+        # P1-S5: changing the email address is a high-impact action (it is
+        # also the target of password-reset flows), so require reauth with
+        # the current password. Username-only updates stay passwordless.
+        if not current_password or not verify_password(current_password, user.password_hash):
+            raise AppError("AUTH_REAUTH_REQUIRED", "Current password is required to change email", 403)
         # Check uniqueness
         result = await session.execute(select(User).where(User.email == email))
         if result.scalar_one_or_none():

@@ -5,6 +5,7 @@ import PackageCard from "@/components/PackageCard";
 import AiStackLogos from "@/components/AiStackLogos";
 import CopyInstallButton from "./CopyInstallButton";
 import { LifecycleDiagram } from "@/components/diagrams";
+import { TOTAL_MODELS, S_TIER_COUNT, PROVIDER_COUNT } from "@/app/compatibility/data";
 
 export const metadata: Metadata = {
   title: "Verified Agent Skills for AI Agents | Auto-Detect & Install | AgentNode",
@@ -31,7 +32,7 @@ const starterPacks = [
     summary: "Extract text, tables, and metadata from PDF documents with high fidelity.",
     trust_level: "trusted" as const,
     frameworks: ["generic"],
-    version: "1.2.0",
+    version: "1.0.0",
   },
   {
     slug: "web-search-pack",
@@ -168,32 +169,32 @@ export default function HomePage() {
       <section className="border-b border-border bg-card/30">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
-            Verified with <span className="text-green-400">175+</span> models
+            Verified with <span className="text-green-400">{S_TIER_COUNT}+</span> models
           </h2>
           <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
             Native runtime for OpenAI, Anthropic, and Gemini. Framework adapters
-            for LangChain, CrewAI, and MCP. Tested against 182 models from 32 providers
-            &mdash; 96% achieve perfect tool-calling compatibility.
+            for LangChain, CrewAI, and MCP. Tested against {TOTAL_MODELS} models from {PROVIDER_COUNT} providers
+            &mdash; {Math.round((S_TIER_COUNT / TOTAL_MODELS) * 100)}% achieve perfect tool-calling compatibility.
           </p>
 
           <AiStackLogos />
 
           {/* Stats */}
-          <div className="mx-auto mt-12 max-w-3xl grid grid-cols-4 gap-3">
+          <div className="mx-auto mt-12 max-w-3xl grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div className="rounded-xl border border-border bg-background/50 p-4 text-center">
-              <div className="text-2xl font-bold text-foreground">182</div>
+              <div className="text-2xl font-bold text-foreground">{TOTAL_MODELS}</div>
               <div className="text-[11px] text-muted mt-1">Models Tested</div>
             </div>
             <div className="rounded-xl border border-green-500/20 bg-green-500/5 p-4 text-center">
-              <div className="text-2xl font-bold text-green-400">175</div>
+              <div className="text-2xl font-bold text-green-400">{S_TIER_COUNT}</div>
               <div className="text-[11px] text-muted mt-1">Perfect Score</div>
             </div>
             <div className="rounded-xl border border-border bg-background/50 p-4 text-center">
-              <div className="text-2xl font-bold text-foreground">32</div>
+              <div className="text-2xl font-bold text-foreground">{PROVIDER_COUNT}</div>
               <div className="text-[11px] text-muted mt-1">Providers</div>
             </div>
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 text-center">
-              <div className="text-2xl font-bold text-primary">96%</div>
+              <div className="text-2xl font-bold text-primary">{Math.round((S_TIER_COUNT / TOTAL_MODELS) * 100)}%</div>
               <div className="text-[11px] text-muted mt-1">S-Tier Rate</div>
             </div>
           </div>
@@ -615,7 +616,7 @@ result = runtime.run(
           </p>
 
           {/* 4-step visual */}
-          <div className="mx-auto max-w-3xl grid grid-cols-4 gap-3 mb-10">
+          <div className="mx-auto max-w-3xl grid grid-cols-2 sm:grid-cols-4 gap-3 mb-10">
             {[
               { icon: "\u2714", label: "Install", desc: "Clean sandbox" },
               { icon: "\u2714", label: "Import", desc: "Entrypoints load" },

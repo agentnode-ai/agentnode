@@ -30,6 +30,7 @@ export function ArtifactSection({
   packageId?: string;
 }) {
   const dropRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
   function updateCodeFile(index: number, field: "path" | "content", value: string) {
@@ -169,19 +170,34 @@ export function ArtifactSection({
         <div className="space-y-3">
           <div
             ref={dropRef}
+            role="button"
+            tabIndex={0}
+            aria-label="Upload files: drag & drop, or press Enter to browse"
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
             onDrop={handleFileDrop}
-            className={`rounded-lg border-2 border-dashed px-6 py-8 text-center transition-colors ${
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
+            className={`cursor-pointer rounded-lg border-2 border-dashed px-6 py-8 text-center transition-colors ${
               dragOver ? "border-primary bg-primary/5" : "border-border hover:border-primary/30"
             }`}
           >
             <div className="text-sm text-muted">
               Drag & drop files here, or{" "}
-              <label className="cursor-pointer text-primary hover:underline">
-                browse
-                <input type="file" multiple accept=".py,.toml,.yaml,.yml,.cfg,.txt,.md,.tar.gz,.tgz" onChange={handleFileSelect} className="hidden" />
-              </label>
+              <span className="text-primary hover:underline">browse</span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".py,.toml,.yaml,.yml,.cfg,.txt,.md,.tar.gz,.tgz"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
             </div>
             <p className="mt-2 text-xs text-muted/60">
               Individual files (.py, .toml, .yaml) or a single .tar.gz archive

@@ -1003,7 +1003,7 @@ class AgentNodeRuntime:
             pkg_list.append({
                 "slug": slug,
                 "version": info.get("version", ""),
-                "trust_level": info.get("trust_level", "unknown"),
+                "trust_level": info.get("trust_level", "unverified"),  # P1-SDK9
                 "tools": tools,
                 "capability_ids": info.get("capability_ids", []),
             })
@@ -1096,7 +1096,7 @@ class AgentNodeRuntime:
                         f"Package '{slug}' is already installed. "
                         "Use agentnode_run to execute it — do not install again."
                     ),
-                    "trust_level": existing.get("trust_level", "unknown"),
+                    "trust_level": existing.get("trust_level", "unverified"),  # P1-SDK9
                     "already_installed": True,
                     "available_tools": tools,
                 },

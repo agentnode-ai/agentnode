@@ -83,6 +83,13 @@ class MeResponse(BaseModel):
     is_admin: bool = False
 
 
+class Setup2FARequest(BaseModel):
+    # P1-S4: reauth required to enrol 2FA. If an attacker gains access to
+    # an open session they could otherwise enrol their own 2FA secret and
+    # lock the real user out.
+    current_password: str
+
+
 class Setup2FAResponse(BaseModel):
     secret: str
     provisioning_uri: str
@@ -178,6 +185,10 @@ class VerifyEmailResponse(BaseModel):
 class UpdateProfileRequest(BaseModel):
     username: str | None = None
     email: EmailStr | None = None
+    # P1-S5: required when `email` is being changed. Ignored for username-only
+    # updates. The service enforces the requirement; the field is optional at
+    # the schema level so existing clients that only update username don't break.
+    current_password: str | None = None
 
     @field_validator("username")
     @classmethod

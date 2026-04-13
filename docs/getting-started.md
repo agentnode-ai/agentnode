@@ -48,7 +48,9 @@ This will:
 ```python
 from agentnode_sdk import run_tool
 
-# Auto-mode: trusted tools run direct, others in an isolated subprocess
+# Auto-mode (default) always runs the tool in an isolated subprocess,
+# matching the documented isolation guarantee. Pass mode="direct" only if
+# you need in-process execution for a trusted tool (performance opt-in).
 result = run_tool("pdf-reader-pack", file_path="report.pdf")
 print(result.result["text"])
 ```
@@ -62,25 +64,44 @@ pip install agentnode-sdk
 ```
 
 ```python
-from agentnode_sdk import AgentNode, run_tool
+from agentnode_sdk import AgentNodeClient, run_tool
 
-an = AgentNode(api_key="ank_your_key_here")
+# API key from arg, env var AGENTNODE_API_KEY, or ~/.agentnode/config.json
+client = AgentNodeClient(api_key="ank_your_key_here")
 
 # Search
-results = an.search("pdf extraction")
+results = client.search("pdf extraction")
 
 # Resolve a capability gap
-result = an.resolve_upgrade(
+result = client.resolve_upgrade(
     missing_capability="pdf_extraction",
     framework="langchain",
     runtime="python",
     policy={"min_trust": "verified", "allow_shell": False}
 )
 
-# Run an installed tool with trust-aware isolation
+# Run an installed tool. mode="auto" (default) always runs in a
+# subprocess sandbox; mode="direct" opts into in-process execution for
+# trusted tools when you need to share state or avoid subprocess overhead.
 result = run_tool("pdf-reader-pack", file_path="report.pdf")
-print(result.result)   # tool output
-print(result.mode_used)  # "direct" or "subprocess"
+print(result.result)     # tool output
+print(result.mode_used)  # "subprocess" (default) or "direct" (opt-in)
+```
+
+### For LLM Agents (Runtime)
+
+Agents can detect and install missing capabilities at runtime:
+
+```python
+from agentnode_sdk import AgentNodeClient
+
+client = AgentNodeClient()  # uses AGENTNODE_API_KEY env var
+
+# Auto-detect and install a missing capability
+result = client.detect_and_install(["pdf_extraction"])
+
+# Or use smart_run to auto-resolve + execute in one call
+result = client.smart_run("pdf_extraction", file_path="report.pdf")
 ```
 
 ## Using the LangChain Adapter
@@ -124,7 +145,7 @@ The key (format: `ank_...`) is shown only once. Store it securely.
 Use it in the SDK:
 
 ```python
-an = AgentNode(api_key="ank_your_key_here")
+client = AgentNodeClient(api_key="ank_your_key_here")
 ```
 
 Or in the CLI config (`~/.agentnode/config.json`):

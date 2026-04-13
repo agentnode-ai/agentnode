@@ -10,6 +10,7 @@ Scoring weights:
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field
 from uuid import UUID
 
@@ -94,6 +95,38 @@ class ScoredPackage:
     broad_package: bool = False  # True when declared capabilities exceed threshold
 
 
+# P1-D4: in-process cache for the full taxonomy id list. The resolution
+# engine used to SELECT every row on every fuzzy-matching request — a
+# 500-row table scan on what should be a sub-millisecond operation. The
+# taxonomy changes rarely (admin-edited seed data), so a 5-minute TTL is
+# perfectly safe and can be invalidated explicitly from admin endpoints if
+# needed. Key insight: the cache is per-process, so a rolling restart after
+# a taxonomy edit fully propagates the change.
+_TAXONOMY_CACHE_TTL = 300  # 5 minutes
+_taxonomy_ids_cache: tuple[float, list[str]] | None = None
+
+
+async def _get_all_taxonomy_ids(session: AsyncSession) -> list[str]:
+    """Return the full list of capability IDs from cache (5-min TTL)."""
+    global _taxonomy_ids_cache
+    now = time.monotonic()
+    if _taxonomy_ids_cache is not None:
+        cached_at, ids = _taxonomy_ids_cache
+        if now - cached_at < _TAXONOMY_CACHE_TTL:
+            return ids
+
+    result = await session.execute(select(CapabilityTaxonomy.id))
+    ids = [row[0] for row in result.all()]
+    _taxonomy_ids_cache = (now, ids)
+    return ids
+
+
+def invalidate_taxonomy_cache() -> None:
+    """Drop the cached taxonomy list. Call after admin taxonomy edits."""
+    global _taxonomy_ids_cache
+    _taxonomy_ids_cache = None
+
+
 async def _expand_capabilities(
     capabilities: list[str], session: AsyncSession
 ) -> set[str]:
@@ -116,11 +149,9 @@ async def _expand_capabilities(
     unknown = [c for c in capabilities if c not in known_ids]
 
     if unknown:
-        # Fuzzy: find taxonomy entries whose ID contains the search term
-        all_caps_result = await session.execute(
-            select(CapabilityTaxonomy.id)
-        )
-        all_cap_ids = [row[0] for row in all_caps_result.all()]
+        # P1-D4: use the cached taxonomy id list instead of hammering the DB
+        # on every resolve request.
+        all_cap_ids = await _get_all_taxonomy_ids(session)
 
         for query in unknown:
             query_normalized = query.replace("-", "_").lower()

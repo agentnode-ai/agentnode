@@ -213,6 +213,7 @@ async def publish_package(
     result = await session.execute(select(Package).where(Package.slug == slug))
     pkg = result.scalar_one_or_none()
 
+    is_new_package = pkg is None
     if pkg:
         # Existing package — verify ownership
         if pkg.publisher_id != publisher_id:
@@ -276,6 +277,8 @@ async def publish_package(
                     logger.warning(f"Signature verification FAILED for {slug}@{version_str}")
                     raise AppError("PUBLISH_SIGNATURE_INVALID", "Artifact signature verification failed", 400)
             except Exception as e:
+                if isinstance(e, AppError):
+                    raise
                 logger.warning(f"Signature verification error for {slug}@{version_str}: {e}")
         elif security.get("signature"):
             logger.info(f"Signature provided but no public key registered for publisher {publisher_id}")
@@ -296,6 +299,7 @@ async def publish_package(
         artifact_hash_sha256=artifact_hash,
         artifact_size_bytes=artifact_size,
         signature=security.get("signature"),
+        signature_verified=signature_verified,
         source_repo_url=provenance.get("source_repo") if _is_safe_provenance_url(provenance.get("source_repo")) else None,
         source_commit=provenance.get("commit"),
         build_system=provenance.get("build_system"),
@@ -501,11 +505,12 @@ async def publish_package(
     # 14. Recalculate latest_version_id
     await recalculate_latest_version_id(session, pkg.id)
 
-    # 14b. Increment publisher's packages_published_count
-    from app.publishers.models import Publisher
-    pub_obj = await session.get(Publisher, publisher_id)
-    if pub_obj:
-        pub_obj.packages_published_count = (pub_obj.packages_published_count or 0) + 1
+    # 14b. Increment publisher's packages_published_count (only for new packages, not new versions)
+    if is_new_package:
+        from app.publishers.models import Publisher
+        pub_obj = await session.get(Publisher, publisher_id)
+        if pub_obj:
+            pub_obj.packages_published_count = (pub_obj.packages_published_count or 0) + 1
 
     # 15. Commit (catch concurrent publish of same version — DB unique constraint)
     try:

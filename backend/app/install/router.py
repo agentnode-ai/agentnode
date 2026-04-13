@@ -33,7 +33,7 @@ installations_router = APIRouter(prefix="/v1/installations", tags=["install"])
 
 # --- GET /v1/installations (User's own installations) ---
 
-@installations_router.get("")
+@installations_router.get("", dependencies=[Depends(rate_limit_authenticated(60, 60))])
 async def list_my_installations(
     status: str | None = None,
     user: User = Depends(get_current_user),
@@ -72,7 +72,7 @@ async def list_my_installations(
     }
 
 
-@router.get("/{slug}/install-info", response_model=InstallMetadataResponse)
+@router.get("/{slug}/install-info", response_model=InstallMetadataResponse, dependencies=[Depends(rate_limit(60, 60))])
 async def get_install_metadata(
     slug: str,
     version: str | None = None,
@@ -311,7 +311,7 @@ async def check_updates(
 
 # --- POST /v1/installations/{id}/activate (Spec §8.6.3) ---
 
-@installations_router.post("/{installation_id}/activate")
+@installations_router.post("/{installation_id}/activate", dependencies=[Depends(rate_limit_authenticated(30, 60))])
 async def activate_installation(
     installation_id: UUID,
     user: User = Depends(get_current_user),
@@ -339,7 +339,7 @@ async def activate_installation(
 
 # --- POST /v1/installations/{id}/uninstall (Spec §8.6.3) ---
 
-@installations_router.post("/{installation_id}/uninstall")
+@installations_router.post("/{installation_id}/uninstall", dependencies=[Depends(rate_limit_authenticated(30, 60))])
 async def uninstall_installation(
     installation_id: UUID,
     user: User = Depends(get_current_user),
@@ -355,8 +355,26 @@ async def uninstall_installation(
     if inst.user_id != user.id:
         raise AppError("INSTALLATION_NOT_OWNED", "You do not own this installation", 403)
 
+    # Only decrement if we are actually transitioning from an "active" row.
+    # A double-uninstall must not go below zero.
+    was_active = inst.status in ("installed", "active")
+
     inst.status = "uninstalled"
     inst.uninstalled_at = datetime.now(timezone.utc)
+
+    if was_active:
+        # P1-D3: keep the denormalized install_count in sync. The cron-based
+        # reconcile job still runs nightly as a safety net, but we should not
+        # rely on it for basic correctness. GREATEST(install_count-1, 0) guards
+        # against ever going negative if the row was already decremented.
+        from sqlalchemy import update, func
+        from app.packages.models import Package
+        await session.execute(
+            update(Package)
+            .where(Package.id == inst.package_id)
+            .values(install_count=func.greatest(Package.install_count - 1, 0))
+        )
+
     await session.commit()
 
     return {"uninstalled": True}

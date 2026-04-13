@@ -35,6 +35,20 @@ body {
   font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
 }
 
+/* P0-11: Site-wide visible focus ring for keyboard users. The default
+ * user-agent outline is suppressed by Tailwind's preflight, which leaves
+ * keyboard-only navigators (tab, shift+tab) with zero affordance. We
+ * restore a high-contrast ring that only activates for :focus-visible
+ * (keyboard/AT focus), so pointer clicks remain unchanged. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 8px;

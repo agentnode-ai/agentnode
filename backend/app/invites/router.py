@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import RedirectResponse
@@ -39,13 +42,14 @@ from app.invites.service import (
     log_event,
 )
 from app.shared.exceptions import AppError
+from app.shared.rate_limit import rate_limit
 
 # ── Public router ──
 
 router = APIRouter(prefix="/v1", tags=["invites"])
 
 
-@router.get("/invites/{code}", response_model=InvitePublicResponse)
+@router.get("/invites/{code}", response_model=InvitePublicResponse, dependencies=[Depends(rate_limit(10, 60))])
 async def get_invite(code: str, session: AsyncSession = Depends(get_session)):
     """Public: get invite info (no sensitive data)."""
     invite = await get_invite_by_code(session, code)
@@ -72,10 +76,18 @@ async def get_invite(code: str, session: AsyncSession = Depends(get_session)):
             description = candidate.description
             source_url = candidate.source_url
 
-    # Log invite_viewed event
+    # Log invite_viewed event (deduplicated: max once per code per 60 min)
     if invite.candidate_id:
-        await log_event(session, invite.candidate_id, "invite_viewed", {"invite_code": code})
-        await session.commit()
+        recent = await session.execute(
+            select(CandidateEvent.id).where(
+                CandidateEvent.candidate_id == invite.candidate_id,
+                CandidateEvent.event_type == "invite_viewed",
+                CandidateEvent.created_at >= datetime.now(timezone.utc) - timedelta(minutes=60),
+            ).limit(1)
+        )
+        if not recent.scalar_one_or_none():
+            await log_event(session, invite.candidate_id, "invite_viewed", {"invite_code": code})
+            await session.commit()
 
     return InvitePublicResponse(
         code=code,
@@ -86,7 +98,7 @@ async def get_invite(code: str, session: AsyncSession = Depends(get_session)):
     )
 
 
-@router.post("/invites/{code}/claim", response_model=InviteClaimResponse)
+@router.post("/invites/{code}/claim", response_model=InviteClaimResponse, dependencies=[Depends(rate_limit(10, 60))])
 async def claim_invite_endpoint(
     code: str,
     user: User = Depends(get_current_user),
@@ -98,7 +110,7 @@ async def claim_invite_endpoint(
     return InviteClaimResponse(prefill_data=prefill_data)
 
 
-@router.get("/i/{code}")
+@router.get("/i/{code}", dependencies=[Depends(rate_limit(10, 60))])
 async def tracking_redirect(code: str, session: AsyncSession = Depends(get_session)):
     """Track link click and redirect to invite landing page."""
     invite = await get_invite_by_code(session, code)
@@ -110,13 +122,13 @@ async def tracking_redirect(code: str, session: AsyncSession = Depends(get_sessi
     return RedirectResponse(url=f"{base}/invite/{code}", status_code=302)
 
 
-@router.post("/invites/{code}/published")
+@router.post("/invites/{code}/published", dependencies=[Depends(rate_limit(10, 60))])
 async def mark_published_callback(
     code: str,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """MVP client-side callback after publish success."""
+    """Fallback: client-side callback (server hook is primary)."""
     invite = await get_invite_by_code(session, code)
     if not invite or not invite.candidate_id:
         return {"ok": True}  # Silently ignore if no candidate
@@ -124,20 +136,40 @@ async def mark_published_callback(
     if invite.claimed_by_user_id != user.id:
         return {"ok": True}  # Ignore if different user
 
-    # Find the user's latest package
+    # P1-L8: guard against:
+    #   a) users without a publisher row (the previous `hasattr`-trick produced
+    #      a broken `WHERE false` predicate that SQLAlchemy warned on);
+    #   b) race where the candidate's latest package is deleted/yanked between
+    #      our SELECT and the update in `mark_candidate_published`. We filter
+    #      yanked packages out of the lookup and fail gracefully if the row
+    #      disappears mid-callback rather than crashing with a FK/500.
+    publisher_id = getattr(user, "publisher_id", None)
+    if publisher_id is None:
+        return {"ok": True}
+
     from app.packages.models import Package
     result = await session.execute(
         select(Package.id)
-        .where(Package.publisher_id == user.publisher_id if hasattr(user, "publisher_id") else False)
+        .where(
+            Package.publisher_id == publisher_id,
+            Package.is_deprecated == False,  # noqa: E712
+        )
         .order_by(Package.created_at.desc())
         .limit(1)
     )
     pkg_row = result.first()
 
-    if pkg_row and invite.candidate_id:
-        from app.invites.service import mark_candidate_published
-        await mark_candidate_published(session, invite.candidate_id, pkg_row[0])
-        await session.commit()
+    if pkg_row:
+        try:
+            from app.invites.service import mark_candidate_published
+            await mark_candidate_published(session, invite.candidate_id, pkg_row[0])
+            await session.commit()
+        except Exception:
+            # Candidate package disappeared between SELECT and update, or any
+            # other transient failure — callback is best-effort; the server-
+            # side webhook is primary.
+            await session.rollback()
+            logger.warning("mark_published_callback: update failed for invite %s", code, exc_info=True)
 
     return {"ok": True}
 
@@ -296,7 +328,7 @@ async def list_candidates(
     return CandidateListResponse(items=items, total=total)
 
 
-@admin_router.post("/candidates", response_model=CandidateResponse, status_code=201)
+@admin_router.post("/candidates", response_model=CandidateResponse, status_code=201, dependencies=[Depends(rate_limit(30, 60))])
 async def create_candidate(
     body: CandidateCreateRequest,
     request: Request,
@@ -370,7 +402,7 @@ async def create_candidate(
     )
 
 
-@admin_router.put("/candidates/{candidate_id}", response_model=CandidateResponse)
+@admin_router.put("/candidates/{candidate_id}", response_model=CandidateResponse, dependencies=[Depends(rate_limit(30, 60))])
 async def update_candidate(
     candidate_id: UUID,
     body: CandidateUpdateRequest,
@@ -431,7 +463,7 @@ async def update_candidate(
     )
 
 
-@admin_router.post("/candidates/{candidate_id}/invite", response_model=InviteGenerateResponse)
+@admin_router.post("/candidates/{candidate_id}/invite", response_model=InviteGenerateResponse, dependencies=[Depends(rate_limit(20, 60))])
 async def generate_invite(
     candidate_id: UUID,
     request: Request,
@@ -483,7 +515,7 @@ async def generate_invite(
     )
 
 
-@admin_router.post("/candidates/{candidate_id}/email-sent")
+@admin_router.post("/candidates/{candidate_id}/email-sent", dependencies=[Depends(rate_limit(30, 60))])
 async def mark_email_sent(
     candidate_id: UUID,
     body: EmailSentRequest,
@@ -572,7 +604,7 @@ async def list_invites(
     )
 
 
-@admin_router.delete("/invites/{invite_id}")
+@admin_router.delete("/invites/{invite_id}", dependencies=[Depends(rate_limit(20, 60))])
 async def revoke_invite(
     invite_id: UUID,
     user: User = Depends(require_admin),
@@ -600,7 +632,7 @@ async def revoke_invite(
     return {"ok": True}
 
 
-@admin_router.post("/candidates/bulk-send", response_model=BulkSendResponse)
+@admin_router.post("/candidates/bulk-send", response_model=BulkSendResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def bulk_send_invites(
     body: BulkSendRequest,
     request: Request,
@@ -721,7 +753,7 @@ async def bulk_send_invites(
     )
 
 
-@admin_router.post("/candidates/{candidate_id}/followup")
+@admin_router.post("/candidates/{candidate_id}/followup", dependencies=[Depends(rate_limit(20, 60))])
 async def send_followup(
     candidate_id: UUID,
     user: User = Depends(require_admin),
@@ -773,7 +805,7 @@ async def send_followup(
     return {"ok": True, "email_sent": sent}
 
 
-@admin_router.post("/candidates/auto-followup")
+@admin_router.post("/candidates/auto-followup", dependencies=[Depends(rate_limit(5, 60))])
 async def auto_followup(
     days: int = Query(default=5, ge=1, le=30),
     limit: int = Query(default=50, ge=1, le=200),

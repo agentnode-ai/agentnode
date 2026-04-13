@@ -9,7 +9,8 @@ class SupportTicket(Base, UUIDPrimaryKeyMixin):
 
     ticket_number = Column(Integer, unique=True, nullable=False, server_default=text("nextval('support_ticket_number_seq')"))
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    category = Column(String(50), nullable=False)
+    # P1-D9: indexed so admin filtering by category stays fast.
+    category = Column(String(50), nullable=False, index=True)
     subject = Column(String(200), nullable=False)
     status = Column(String(20), nullable=False, default="open")
     created_at = Column(TIMESTAMP(timezone=True), server_default="now()")

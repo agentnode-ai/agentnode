@@ -377,7 +377,7 @@ export default function ForDevelopersPage() {
           </div>
 
           <p className="mt-6 text-center text-sm text-muted">
-            Also supports CrewAI, ClawhHub, Skills.sh, and more.
+            Also supports CrewAI, ClawHub, Skills.sh, and more.
           </p>
 
           <div className="mt-4 text-center">

@@ -81,9 +81,12 @@ function LoginContent() {
 
       <form onSubmit={handleLogin} className="space-y-4">
         <div>
-          <label className="mb-1 block text-sm text-muted">Email</label>
+          <label htmlFor="login-email" className="mb-1 block text-sm text-muted">Email</label>
           <input
+            id="login-email"
+            name="email"
             type="email"
+            autoComplete="username"
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -93,9 +96,12 @@ function LoginContent() {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm text-muted">Password</label>
+          <label htmlFor="login-password" className="mb-1 block text-sm text-muted">Password</label>
           <input
+            id="login-password"
+            name="password"
             type="password"
+            autoComplete="current-password"
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -106,10 +112,13 @@ function LoginContent() {
 
         {needs2FA && (
           <div>
-            <label className="mb-1 block text-sm text-muted">2FA Code</label>
+            <label htmlFor="login-totp" className="mb-1 block text-sm text-muted">2FA Code</label>
             <input
+              id="login-totp"
+              name="totp_code"
               type="text"
               inputMode="numeric"
+              autoComplete="one-time-code"
               maxLength={6}
               value={totpCode}
               onChange={(e) => setTotpCode(e.target.value)}

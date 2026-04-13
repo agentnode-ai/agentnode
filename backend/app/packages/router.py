@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse
@@ -12,7 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.auth.dependencies import get_current_user, require_publisher
 from app.auth.models import User
-from app.database import get_session
+from app.database import async_session_factory, get_session
 from app.shared.rate_limit import rate_limit
 from app.packages.assembler import assemble_package_detail
 from app.packages.models import Installation, Package, PackageReport, PackageVersion, Review
@@ -40,6 +41,42 @@ router = APIRouter(prefix="/v1/packages", tags=["packages"])
 logger = logging.getLogger(__name__)
 
 
+async def _check_invite_published(user_id: UUID, package_id: UUID) -> None:
+    """Background: if user claimed an invite, mark candidate as published."""
+    try:
+        async with async_session_factory() as session:
+            from app.invites.models import InviteCode
+            from app.invites.service import mark_candidate_published
+
+            # Find claimed invite for this user — deterministically pick newest
+            result = await session.execute(
+                select(InviteCode)
+                .where(
+                    InviteCode.claimed_by_user_id == user_id,
+                    InviteCode.status == "claimed",
+                    InviteCode.candidate_id.isnot(None),
+                )
+                .order_by(InviteCode.created_at.desc())
+                .limit(1)
+            )
+            invite = result.scalar_one_or_none()
+            if not invite:
+                return
+
+            await mark_candidate_published(session, invite.candidate_id, package_id)
+            await session.commit()
+            logger.info(
+                "candidate_auto_published",
+                extra={
+                    "candidate_id": str(invite.candidate_id),
+                    "user_id": str(user_id),
+                    "package_id": str(package_id),
+                },
+            )
+    except Exception:
+        logger.exception("Failed to check invite publish status")
+
+
 async def invalidate_package_cache(redis, slug: str) -> None:
     """Clear cached package detail for a given slug."""
     try:
@@ -58,7 +95,7 @@ async def validate_package(
     return ValidateResponse(valid=valid, errors=errors, warnings=warnings)
 
 
-@router.post("/publish", response_model=PublishResponse, dependencies=[Depends(rate_limit(10, 60))])
+@router.post("/publish", response_model=PublishResponse, status_code=201, dependencies=[Depends(rate_limit(10, 60))])
 async def publish(
     request: Request,
     manifest: str = Form(...),
@@ -96,13 +133,16 @@ async def publish(
     # Invalidate package detail cache
     await invalidate_package_cache(request.app.state.redis, pkg.slug)
 
+    # Check if user has a claimed invite → mark candidate as published
+    background_tasks.add_task(_check_invite_published, user.id, pkg.id)
+
     # Schedule async security scan + verification (do NOT block publish response)
     background_tasks.add_task(run_security_scan, pv.id)
     from app.verification.pipeline import run_verification
     background_tasks.add_task(run_verification, pv.id)
 
     # Fire webhook event in background (after commit in publish_package)
-    background_tasks.add_task(fire_event, session, user.publisher.id, "version.published", {
+    background_tasks.add_task(fire_event, user.publisher.id, "version.published", {
         "slug": pkg.slug, "version": pv.version_number, "package_type": pkg.package_type,
     })
 
@@ -525,7 +565,11 @@ async def deprecate_package(
     await recalculate_latest_version_id(session, pkg.id)
     await session.commit()
 
-    background_tasks.add_task(fire_event, session, pkg.publisher_id, "package.deprecated", {"slug": pkg.slug})
+    # P1-D1: sync Meili so the is_deprecated flag propagates to search results.
+    from app.shared.meili import sync_package_to_meili
+    await sync_package_to_meili(session, pkg.id)
+
+    background_tasks.add_task(fire_event, pkg.publisher_id, "package.deprecated", {"slug": pkg.slug})
 
     # Batch-load emails + preferences for users with active installations (single query)
     from app.shared.email import send_package_deprecated_emails_batch, EMAIL_PREF_DEFAULTS
@@ -584,7 +628,12 @@ async def yank_version(
     # Invalidate package detail cache
     await invalidate_package_cache(request.app.state.redis, slug)
 
-    background_tasks.add_task(fire_event, session, pkg.publisher_id, "version.yanked", {"slug": pkg.slug, "version": version})
+    # P1-D1: sync Meili so the yanked version disappears from search (or the
+    # whole package is removed if this was the last visible version).
+    from app.shared.meili import sync_package_to_meili
+    await sync_package_to_meili(session, pkg.id)
+
+    background_tasks.add_task(fire_event, pkg.publisher_id, "version.yanked", {"slug": pkg.slug, "version": version})
 
     return ActionResponse(message="Version yanked")
 

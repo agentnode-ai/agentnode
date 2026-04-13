@@ -1,11 +1,12 @@
 import { Command } from "commander";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join, extname, resolve, dirname } from "node:path";
 import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { parse as parseYAML } from "yaml";
 import { publishPackage } from "../api.js";
+import { getApiKey } from "../config.js";
 
 /**
  * Directories and file patterns excluded from the artifact tar.gz.
@@ -87,20 +88,25 @@ function buildArtifact(packageDir: string): Uint8Array {
   const artifactPath = join(tempDir, "package.tar.gz");
 
   try {
-    // Build --exclude flags
-    const excludeFlags = ARTIFACT_EXCLUDES.map((p) => `--exclude='${p}'`).join(
-      " "
-    );
+    // P0-07: Write excludes to a file and pass via --exclude-from. The
+    // previous approach used shell-quoted --exclude='pattern' flags, which
+    // Windows bsdtar does NOT dequote — it treats the literal single
+    // quotes as part of the pattern and fails to match anything, causing
+    // .git/node_modules/.venv/etc. to end up inside published artifacts.
+    // --exclude-from=file works uniformly across GNU tar and bsdtar.
+    const excludeFile = join(tempDir, "excludes.txt");
+    writeFileSync(excludeFile, ARTIFACT_EXCLUDES.join("\n") + "\n", "utf-8");
 
     // Use forward slashes for Windows bsdtar compatibility
     const safeArtifactPath = artifactPath.replace(/\\/g, "/");
     const safePackageDir = packageDir.replace(/\\/g, "/");
+    const safeExcludeFile = excludeFile.replace(/\\/g, "/");
 
     // Create tar.gz from the package directory
     // The -C flag changes to the parent directory and we archive the directory name,
     // so the archive has a single top-level directory (consistent with convention).
     execSync(
-      `tar czf "${safeArtifactPath}" ${excludeFlags} --force-local -C "${safePackageDir}" .`,
+      `tar czf "${safeArtifactPath}" --exclude-from="${safeExcludeFile}" --force-local -C "${safePackageDir}" .`,
       {
         timeout: 60_000,
         stdio: "pipe",
@@ -136,11 +142,37 @@ export const publishCommand = new Command("publish")
     "<path>",
     "Path to agentnode.yaml manifest file or package directory"
   )
-  .requiredOption("--token <token>", "Authentication token")
+  .option("--token <token>", "Authentication token")
   .option("--no-artifact", "Publish metadata only (skip artifact upload)")
   .action(async (pathArg: string, opts) => {
     try {
+      const token = opts.token || getApiKey();
+      if (!token) {
+        console.error("No authentication token. Use --token or run 'agentnode login' first.");
+        process.exit(1);
+      }
+
       const { json: manifest, dir: packageDir } = loadManifest(pathArg);
+
+      // P1-C11: Show a pre-publish "confirm" preview so the user can see
+      // exactly which package identity will be signed and uploaded under
+      // which auth credential before anything leaves the machine.
+      // Parse enough of the manifest to echo publisher+slug+version and
+      // redact the token to first-4 + last-4 (matches login redaction).
+      try {
+        const m = JSON.parse(manifest) as Record<string, any>;
+        const pubName = m.publisher || m.publisher_id || "(no publisher)";
+        const slug = m.package_id || m.slug || "(no slug)";
+        const ver = m.version || "(no version)";
+        const redacted =
+          token.length > 10 ? `${token.slice(0, 4)}…${token.slice(-4)}` : "***";
+        console.log(`Preparing publish:`);
+        console.log(`  package:   ${slug}@${ver}`);
+        console.log(`  publisher: ${pubName}`);
+        console.log(`  auth:      ${redacted}`);
+      } catch {
+        // manifest validation happens server-side; preview is best-effort
+      }
 
       // Build artifact unless --no-artifact was passed
       let artifactBytes: Uint8Array | undefined;
@@ -161,7 +193,7 @@ export const publishCommand = new Command("publish")
       }
 
       console.log("Publishing package...");
-      const result = await publishPackage(manifest, opts.token, artifactBytes);
+      const result = await publishPackage(manifest, token, artifactBytes);
 
       console.log(`\n  Published: ${result.slug}@${result.version}`);
       console.log(`  Type:      ${result.package_type}`);

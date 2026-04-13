@@ -1,17 +1,21 @@
 """Redis-based sliding window rate limiter with FastAPI dependency factory.
 Spec section 19."""
 
+import logging
 import time
 
 from fastapi import Depends, Request, Response
 
 from app.shared.exceptions import AppError
 
+logger = logging.getLogger(__name__)
+
 
 def _get_client_ip(request: Request) -> str:
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        # Trust rightmost IP (added by our reverse proxy)
+        return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
@@ -26,12 +30,31 @@ async def _check_rate_limit(
     redis_key = f"rate_limit:{key}"
     now = time.time()
 
-    pipe = redis.pipeline()
-    pipe.zremrangebyscore(redis_key, 0, now - window_seconds)
-    pipe.zadd(redis_key, {str(now): now})
-    pipe.zcard(redis_key)
-    pipe.expire(redis_key, window_seconds)
-    results = await pipe.execute()
+    try:
+        pipe = redis.pipeline()
+        pipe.zremrangebyscore(redis_key, 0, now - window_seconds)
+        pipe.zadd(redis_key, {str(now): now})
+        pipe.zcard(redis_key)
+        pipe.expire(redis_key, window_seconds)
+        results = await pipe.execute()
+    except Exception:
+        # P1-S3: fail-closed in production, fail-open in dev/test.
+        # An unreachable Redis in production is either a real outage (in
+        # which case we should shed load instead of becoming unlimited) or
+        # a configuration problem (in which case we want a loud 503, not
+        # silent unlimited access). Dev/test keeps the old behaviour so
+        # a local run without Redis doesn't require plumbing a fake client.
+        from app.config import settings
+        if getattr(settings, "ENVIRONMENT", "development") == "production":
+            logger.error("Rate limiter Redis unavailable in production — failing closed")
+            raise AppError(
+                "RATE_LIMIT_UNAVAILABLE",
+                "Rate limiter temporarily unavailable. Please retry shortly.",
+                503,
+                details={"retry_after": 5},
+            )
+        logger.warning("Rate limiter Redis unavailable, allowing request (non-production)")
+        return max_requests, max_requests, int(now + window_seconds)
 
     current_count = results[2]
     remaining = max(0, max_requests - current_count)

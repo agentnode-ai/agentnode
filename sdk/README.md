@@ -175,7 +175,7 @@ The programmatic client with typed return models.
 
 ### `run_tool()` (standalone)
 
-Top-level function for running tools with trust-aware execution mode.
+Top-level function for running tools with process isolation.
 
 ```python
 from agentnode_sdk import run_tool
@@ -183,6 +183,13 @@ from agentnode_sdk import run_tool
 result = run_tool("pdf-reader-pack", mode="auto", file_path="report.pdf")
 # result.success, result.result, result.error, result.mode_used, result.duration_ms
 ```
+
+**Isolation contract.** `mode="auto"` always resolves to `subprocess`,
+regardless of the package's trust level. This makes the isolation
+guarantee true by default. If you need in-process execution (for
+example, to share module-level state with the tool), pass
+`mode="direct"` explicitly — that is an opt-in performance trade-off,
+not a default.
 
 ## License
 

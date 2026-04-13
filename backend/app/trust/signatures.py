@@ -14,6 +14,7 @@ Flow:
 from __future__ import annotations
 
 import base64
+from binascii import Error as binascii_Error
 import hashlib
 import logging
 
@@ -35,20 +36,33 @@ def verify_signature(
     Returns:
         True if signature is valid, False otherwise.
     """
+    # P1-L1: catch specific exceptions rather than bare Exception. The old
+    # `(BadSignatureError, Exception)` tuple was dead code — `Exception`
+    # would have matched first regardless. Splitting the cases lets real
+    # programmer errors (e.g. import failures) surface rather than being
+    # silently converted into "signature invalid".
+    from nacl.signing import VerifyKey
+    from nacl.exceptions import BadSignatureError
+
     try:
-        from nacl.signing import VerifyKey
-        from nacl.exceptions import BadSignatureError
+        public_key_bytes = base64.b64decode(public_key_b64, validate=True)
+        signature_bytes = base64.b64decode(signature_b64, validate=True)
+    except (ValueError, TypeError, binascii_Error) as e:
+        logger.warning("Signature verification: malformed base64 (%s)", e)
+        return False
 
-        public_key_bytes = base64.b64decode(public_key_b64)
-        signature_bytes = base64.b64decode(signature_b64)
-        message = artifact_hash_hex.encode("utf-8")
-
+    message = artifact_hash_hex.encode("utf-8")
+    try:
         verify_key = VerifyKey(public_key_bytes)
         verify_key.verify(message, signature_bytes)
-        return True
-    except (BadSignatureError, Exception) as e:
-        logger.warning(f"Signature verification failed: {e}")
+    except BadSignatureError:
+        logger.warning("Signature verification: bad signature for hash %s", artifact_hash_hex[:12])
         return False
+    except ValueError as e:
+        # VerifyKey(...) raises ValueError on wrong-length key material
+        logger.warning("Signature verification: invalid key material (%s)", e)
+        return False
+    return True
 
 
 def sign_artifact_hash(

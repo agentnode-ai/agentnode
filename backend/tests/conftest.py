@@ -42,6 +42,10 @@ async def engine():
         # Enable pg_trgm extension (required for typosquatting similarity queries)
         from sqlalchemy import text
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+        # Sequence is created by alembic migration 026; create_all() on a
+        # bare schema does not know about it, so create it manually here so
+        # support_tickets can be created.
+        await conn.execute(text("CREATE SEQUENCE IF NOT EXISTS support_ticket_number_seq START 1"))
         await conn.run_sync(Base.metadata.create_all)
         # Seed capability taxonomy for validation tests
         for cap_id, display_name, description, category in SEED_CAPABILITY_IDS:
@@ -140,14 +144,27 @@ async def client(session):
     async def _mock_delete(key):
         _redis_store.pop(key, None)
 
+    async def _mock_getdel(key):
+        return _redis_store.pop(key, None)
+
+    async def _mock_incr(key):
+        try:
+            cur = int(_redis_store.get(key, 0))
+        except (TypeError, ValueError):
+            cur = 0
+        cur += 1
+        _redis_store[key] = str(cur)
+        return cur
+
     mock_redis = AsyncMock()
     mock_redis.ping = AsyncMock(return_value=True)
     mock_redis.pipeline = MagicMock(side_effect=lambda: _MockPipeline())
     mock_redis.set = AsyncMock(side_effect=_mock_set)
     mock_redis.get = AsyncMock(side_effect=_mock_get)
-    mock_redis.incr = AsyncMock(return_value=1)
+    mock_redis.incr = AsyncMock(side_effect=_mock_incr)
     mock_redis.expire = AsyncMock(return_value=True)
     mock_redis.delete = AsyncMock(side_effect=_mock_delete)
+    mock_redis.getdel = AsyncMock(side_effect=_mock_getdel)
     mock_redis.ttl = AsyncMock(return_value=-1)
     mock_redis.close = AsyncMock()
     app.state.redis = mock_redis

@@ -32,6 +32,7 @@ from app.auth.schemas import (
     RequestPasswordResetResponse,
     ResetPasswordRequest,
     ResetPasswordResponse,
+    Setup2FARequest,
     Setup2FAResponse,
     TokenResponse,
     UpdateProfileRequest,
@@ -43,9 +44,11 @@ from app.auth.schemas import (
 )
 from app.auth.security import (
     clear_auth_cookies,
+    consume_refresh_jti,
     create_access_token,
     create_refresh_token,
     decode_token,
+    get_user_session_gen,
     revoke_refresh_jti,
     set_auth_cookies,
     store_refresh_token,
@@ -139,19 +142,29 @@ async def refresh(body: RefreshRequest, request: Request, response: Response, se
 
     redis = request.app.state.redis
     old_jti = payload.get("jti")
+    token_gen = payload.get("gen", 0)
 
-    # Validate JTI if present (new tokens have it, legacy tokens don't)
+    # P0-01: reject refresh tokens from a revoked session generation.
+    # When the user changes/resets their password (or an admin bumps the
+    # counter), `get_user_session_gen` returns a value higher than the
+    # embedded `gen`, invalidating every token minted earlier.
+    current_gen = await get_user_session_gen(redis, user_id)
+    if token_gen < current_gen:
+        clear_auth_cookies(response)
+        raise AppError("AUTH_TOKEN_EXPIRED", "Refresh token has been revoked", 401)
+
+    # P1-S1: atomic validate + consume. `consume_refresh_jti` uses GETDEL so
+    # two concurrent refresh attempts cannot both succeed against the same
+    # JTI — the loser gets `None` back and is rejected below.
     if old_jti:
-        valid = await validate_refresh_jti(redis, old_jti)
-        if not valid:
+        consumed = await consume_refresh_jti(redis, old_jti)
+        if not consumed:
             clear_auth_cookies(response)
             raise AppError("AUTH_TOKEN_EXPIRED", "Refresh token has been revoked", 401)
-        # Revoke old token
-        await revoke_refresh_jti(redis, old_jti)
 
-    # Issue new tokens (rotation)
+    # Issue new tokens (rotation) using the current (post-revocation) gen
     new_access = create_access_token(user_id)
-    new_refresh, new_jti = create_refresh_token(user_id)
+    new_refresh, new_jti = create_refresh_token(user_id, gen=current_gen)
     await store_refresh_token(redis, user_id, new_jti)
 
     # Check admin status for cookie
@@ -236,10 +249,11 @@ async def me(user: User = Depends(get_current_user), session: AsyncSession = Dep
 
 @router.post("/2fa/setup", response_model=Setup2FAResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def setup_2fa_route(
+    body: Setup2FARequest,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await setup_2fa(session, user.id)
+    result = await setup_2fa(session, user.id, body.current_password)
     return Setup2FAResponse(**result)
 
 
@@ -260,11 +274,16 @@ async def verify_2fa_route(
 @router.post("/change-password", response_model=ChangePasswordResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def change_password_route(
     body: ChangePasswordRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await change_password(session, user.id, body.current_password, body.new_password, background_tasks=background_tasks)
+    result = await change_password(
+        session, user.id, body.current_password, body.new_password,
+        background_tasks=background_tasks,
+        redis=request.app.state.redis,
+    )
     return ChangePasswordResponse(**result)
 
 
@@ -281,10 +300,11 @@ async def request_password_reset_route(
 @router.post("/reset-password", response_model=ResetPasswordResponse, dependencies=[Depends(rate_limit(5, 60))])
 async def reset_password_route(
     body: ResetPasswordRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
-    result = await reset_password(session, body.token, body.new_password, background_tasks=background_tasks)
+    result = await reset_password(session, body.token, body.new_password, background_tasks=background_tasks, redis=request.app.state.redis)
     return ResetPasswordResponse(**result)
 
 
@@ -349,5 +369,9 @@ async def update_profile_route(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await update_profile(session, user.id, body.username, body.email, background_tasks=background_tasks)
+    result = await update_profile(
+        session, user.id, body.username, body.email,
+        current_password=body.current_password,
+        background_tasks=background_tasks,
+    )
     return UpdateProfileResponse(**result)

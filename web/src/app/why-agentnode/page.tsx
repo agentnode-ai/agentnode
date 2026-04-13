@@ -128,7 +128,7 @@ const comparisonData: Record<string, Record<string, string>> = {
     "Security scanning": "npm audit (CVE-based)",
     "Quality gate (tests)": "Not required",
   },
-  ClawhHub: {
+  ClawHub: {
     "AI-specific search": "Category browsing",
     "Trust verification": "Manual review",
     "Automated verification": "Not documented",

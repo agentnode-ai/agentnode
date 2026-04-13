@@ -27,7 +27,10 @@ import httpx
 LOCKFILE_NAME = "agentnode.lock"
 LOCKFILE_VERSION = "0.1"
 MAX_FILES_IN_ARCHIVE = 500
-MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB (per file)
+# Hard ceiling for artifact downloads. Prevents a malicious or misbehaving
+# server from filling the disk with an unbounded stream.
+MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
 DOWNLOAD_TIMEOUT = 120.0
 PIP_TIMEOUT = 120
 
@@ -109,12 +112,48 @@ def _try_python(cmd: str) -> str | None:
 # Download
 # ---------------------------------------------------------------------------
 
-def download_artifact(url: str, dest: Path) -> None:
-    """Download artifact from presigned URL to *dest*."""
+def download_artifact(
+    url: str,
+    dest: Path,
+    *,
+    max_bytes: int = MAX_DOWNLOAD_BYTES,
+) -> None:
+    """Download artifact from presigned URL to *dest*.
+
+    Enforces a ``max_bytes`` ceiling so a malicious or misbehaving server
+    cannot stream unbounded data into the local filesystem. If the server
+    declares a ``Content-Length`` header that exceeds the limit, the
+    download is refused before any bytes are written. Otherwise, the
+    stream is checked per chunk.
+    """
     with httpx.stream("GET", url, timeout=DOWNLOAD_TIMEOUT, follow_redirects=True) as resp:
         resp.raise_for_status()
+
+        declared = resp.headers.get("Content-Length")
+        if declared is not None:
+            try:
+                if int(declared) > max_bytes:
+                    raise RuntimeError(
+                        f"Artifact too large: {declared} bytes "
+                        f"(max {max_bytes}). Refusing download."
+                    )
+            except ValueError:
+                pass  # Ignore malformed Content-Length
+
+        written = 0
         with open(dest, "wb") as f:
             for chunk in resp.iter_bytes(chunk_size=8192):
+                written += len(chunk)
+                if written > max_bytes:
+                    f.close()
+                    try:
+                        dest.unlink()
+                    except OSError:
+                        pass
+                    raise RuntimeError(
+                        f"Artifact exceeded max size ({max_bytes} bytes) "
+                        "during download. Aborted."
+                    )
                 f.write(chunk)
 
 

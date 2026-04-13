@@ -72,8 +72,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install backend dependencies
-        run: pip install -e ".[dev]"
+      - name: Install backend dependencies (pinned from lockfile)
+        # P1-CD3: CI must install from requirements.lock so it matches
+        # production exactly. Dev extras (pytest, httpx, ruff) are added
+        # on top without --upgrade so pinned versions win.
+        run: |
+          pip install -r requirements.lock
+          pip install -e ".[dev]" --no-deps
+          pip install pytest pytest-asyncio httpx
 
       - name: Run pytest
         run: pytest -v --tb=short
@@ -143,6 +149,9 @@ jobs:
           mkdir -p release
 
           # Backend: app source, alembic, configs (no .venv, no __pycache__)
+          # P1-CD3: include requirements.lock so the server can install the
+          # exact pinned dependency set instead of resolving transitive deps
+          # from pyproject at deploy time.
           tar czf release/backend.tar.gz \
             --exclude='__pycache__' \
             --exclude='*.pyc' \
@@ -150,7 +159,7 @@ jobs:
             --exclude='.env' \
             --exclude='tests' \
             -C backend \
-            app alembic alembic.ini pyproject.toml
+            app alembic alembic.ini pyproject.toml requirements.lock
 
           # Frontend: standalone build (already prepared by build-frontend job)
           tar czf release/frontend.tar.gz \
@@ -191,8 +200,12 @@ jobs:
             echo "==> Extracting new backend..."
             tar xzf /tmp/backend.tar.gz -C "$BACKEND_DIR"
 
-            echo "==> Installing/updating Python dependencies..."
-            $VENV/bin/pip install -e "$BACKEND_DIR[dev]" --quiet
+            echo "==> Installing pinned Python dependencies from lockfile..."
+            # P1-CD3: install from requirements.lock first so production gets
+            # the exact same versions CI was tested against. Then install the
+            # package itself --no-deps so the lock stays authoritative.
+            $VENV/bin/pip install -r "$BACKEND_DIR/requirements.lock" --quiet
+            $VENV/bin/pip install -e "$BACKEND_DIR" --no-deps --quiet
 
             echo "==> Running Alembic migrations..."
             cd "$BACKEND_DIR"

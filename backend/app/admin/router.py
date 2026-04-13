@@ -77,7 +77,16 @@ async def quarantine_version(
     await _audit(session, request, user, "quarantine_version", "package", slug, {"version": version, "reason": body.reason})
     await session.commit()
 
-    background_tasks.add_task(fire_event, session, pkg.publisher_id, "version.quarantined", {"slug": slug, "version": version, "reason": body.reason})
+    background_tasks.add_task(fire_event, pkg.publisher_id, "version.quarantined", {"slug": slug, "version": version, "reason": body.reason})
+
+    # Update Meilisearch: remove if no public version left
+    if not pkg.latest_version_id:
+        from app.shared.meili import delete_package_from_meilisearch
+        await delete_package_from_meilisearch(slug)
+
+    # Invalidate Redis cache
+    from app.packages.router import invalidate_package_cache
+    await invalidate_package_cache(request.app.state.redis, slug)
 
     from app.shared.email import send_quarantine_email, get_publisher_email
     pub_email = await get_publisher_email(pkg.publisher_id)
@@ -129,7 +138,7 @@ async def clear_quarantine(
     await _audit(session, request, user, "clear_quarantine", "package", slug, {"version": version})
     await session.commit()
 
-    background_tasks.add_task(fire_event, session, pkg.publisher_id, "version.cleared", {"slug": slug, "version": version})
+    background_tasks.add_task(fire_event, pkg.publisher_id, "version.cleared", {"slug": slug, "version": version})
 
     from app.shared.email import send_quarantine_cleared_email, get_publisher_email
     pub_email = await get_publisher_email(pkg.publisher_id)
@@ -164,7 +173,7 @@ async def reject_version(
     await _audit(session, request, user, "reject_version", "package", slug, {"version": version})
     await session.commit()
 
-    background_tasks.add_task(fire_event, session, pkg.publisher_id, "version.rejected", {"slug": slug, "version": version})
+    background_tasks.add_task(fire_event, pkg.publisher_id, "version.rejected", {"slug": slug, "version": version})
 
     from app.shared.email import send_version_rejected_email, get_publisher_email
     pub_email = await get_publisher_email(pkg.publisher_id)
@@ -560,7 +569,7 @@ class ResolveReportRequest(BaseModel):
 
 @router.post("/reports/{report_id}/resolve", dependencies=[Depends(rate_limit(10, 60))])
 async def resolve_report(
-    report_id: str,
+    report_id: UUID,
     body: ResolveReportRequest,
     request: Request,
     background_tasks: BackgroundTasks,
@@ -569,7 +578,7 @@ async def resolve_report(
 ):
     """Resolve or dismiss a report."""
     result = await session.execute(
-        select(PackageReport).where(PackageReport.id == UUID(report_id))
+        select(PackageReport).where(PackageReport.id == report_id)
     )
     report = result.scalar_one_or_none()
     if not report:
@@ -602,13 +611,13 @@ async def resolve_report(
 
 @router.delete("/reports/{report_id}", dependencies=[Depends(rate_limit(10, 60))])
 async def delete_report(
-    report_id: str,
+    report_id: UUID,
     request: Request,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     """Delete a report."""
-    result = await session.execute(select(PackageReport).where(PackageReport.id == UUID(report_id)))
+    result = await session.execute(select(PackageReport).where(PackageReport.id == report_id))
     report = result.scalar_one_or_none()
     if not report:
         raise AppError("REPORT_NOT_FOUND", "Report not found", 404)
@@ -648,69 +657,78 @@ async def get_platform_stats(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    """Platform-wide stats for the admin dashboard."""
-    # User counts
-    user_total = await session.execute(select(func.count(User.id)))
-    total_users = user_total.scalar() or 0
+    """Platform-wide stats for the admin dashboard.
 
-    admin_count = await session.execute(
-        select(func.count(User.id)).where(User.is_admin == True)  # noqa: E712
-    )
-    total_admins = admin_count.scalar() or 0
+    P1-D8: previously this ran 13 sequential `COUNT(...)` queries. Each one
+    was cheap on its own but the round-trip latency dominated — on a prod
+    session the endpoint was ~2s. We collapse each table into a single query
+    using ``COUNT(*) FILTER (WHERE ...)`` (Postgres' conditional aggregate)
+    and keep top-packages + downloads-sum as their own single queries. Total:
+    6 queries instead of 13. All use a single session — no concurrency
+    hazards from cross-task session sharing.
+    """
+    # Users: 3 counts → 1 query
+    users_row = (await session.execute(
+        select(
+            func.count(User.id).label("total"),
+            func.count(User.id).filter(User.is_admin == True).label("admins"),  # noqa: E712
+            func.count(User.id).filter(User.is_email_verified == True).label("verified"),  # noqa: E712
+        )
+    )).one()
+    total_users = users_row.total or 0
+    total_admins = users_row.admins or 0
+    total_verified = users_row.verified or 0
 
-    verified_count = await session.execute(
-        select(func.count(User.id)).where(User.is_email_verified == True)  # noqa: E712
-    )
-    total_verified = verified_count.scalar() or 0
+    # Packages: count + downloads sum → 1 query
+    packages_row = (await session.execute(
+        select(
+            func.count(Package.id).label("total"),
+            func.coalesce(func.sum(Package.download_count), 0).label("downloads"),
+        )
+    )).one()
+    total_packages = packages_row.total or 0
+    total_downloads = packages_row.downloads or 0
 
-    # Package counts
-    pkg_count = await session.execute(select(func.count(Package.id)))
-    total_packages = pkg_count.scalar() or 0
+    # Versions: total + quarantined → 1 query
+    versions_row = (await session.execute(
+        select(
+            func.count(PackageVersion.id).label("total"),
+            func.count(PackageVersion.id).filter(
+                PackageVersion.quarantine_status == "quarantined"
+            ).label("quarantined"),
+        )
+    )).one()
+    total_versions = versions_row.total or 0
+    total_quarantined = versions_row.quarantined or 0
 
-    # Version counts
-    ver_count = await session.execute(select(func.count(PackageVersion.id)))
-    total_versions = ver_count.scalar() or 0
+    # Installations: total + active + failed → 1 query
+    installs_row = (await session.execute(
+        select(
+            func.count(Installation.id).label("total"),
+            func.count(Installation.id).filter(Installation.status == "active").label("active"),
+            func.count(Installation.id).filter(Installation.status == "failed").label("failed"),
+        )
+    )).one()
+    total_installs = installs_row.total or 0
+    total_active = installs_row.active or 0
+    total_failed = installs_row.failed or 0
 
-    # Total downloads
-    dl_sum = await session.execute(select(func.sum(Package.download_count)))
-    total_downloads = dl_sum.scalar() or 0
+    # Publishers: total + suspended → 1 query
+    publishers_row = (await session.execute(
+        select(
+            func.count(Publisher.id).label("total"),
+            func.count(Publisher.id).filter(Publisher.is_suspended == True).label("suspended"),  # noqa: E712
+        )
+    )).one()
+    total_publishers = publishers_row.total or 0
+    total_suspended = publishers_row.suspended or 0
 
-    # Installation stats
-    install_total = await session.execute(select(func.count(Installation.id)))
-    total_installs = install_total.scalar() or 0
-
-    active_installs = await session.execute(
-        select(func.count(Installation.id)).where(Installation.status == "active")
-    )
-    total_active = active_installs.scalar() or 0
-
-    failed_installs = await session.execute(
-        select(func.count(Installation.id)).where(Installation.status == "failed")
-    )
-    total_failed = failed_installs.scalar() or 0
-
-    # Publisher counts
-    pub_count = await session.execute(select(func.count(Publisher.id)))
-    total_publishers = pub_count.scalar() or 0
-
-    suspended_count = await session.execute(
-        select(func.count(Publisher.id)).where(Publisher.is_suspended == True)
-    )
-    total_suspended = suspended_count.scalar() or 0
-
-    # Quarantined versions
-    quarantined_count = await session.execute(
-        select(func.count(PackageVersion.id)).where(PackageVersion.quarantine_status == "quarantined")
-    )
-    total_quarantined = quarantined_count.scalar() or 0
-
-    # Open reports
-    open_reports = await session.execute(
+    # Moderation: open reports → 1 query
+    total_open_reports = (await session.execute(
         select(func.count(PackageReport.id)).where(PackageReport.status == "submitted")
-    )
-    total_open_reports = open_reports.scalar() or 0
+    )).scalar() or 0
 
-    # Top packages by downloads
+    # Top packages by downloads → 1 query
     top_packages_result = await session.execute(
         select(Package.slug, Package.download_count)
         .order_by(Package.download_count.desc())
@@ -805,13 +823,13 @@ async def list_users(
 
 @router.post("/users/{user_id}/promote", dependencies=[Depends(rate_limit(5, 60))])
 async def promote_user(
-    user_id: str,
+    user_id: UUID,
     request: Request,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     """Promote a user to admin."""
-    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target = await session.execute(select(User).where(User.id == user_id))
     target_user = target.scalar_one_or_none()
     if not target_user:
         raise AppError("USER_NOT_FOUND", "User not found", 404)
@@ -826,16 +844,16 @@ async def promote_user(
 
 @router.post("/users/{user_id}/demote", dependencies=[Depends(rate_limit(5, 60))])
 async def demote_user(
-    user_id: str,
+    user_id: UUID,
     request: Request,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     """Remove admin from a user."""
-    if str(user.id) == user_id:
+    if user.id == user_id:
         raise AppError("SELF_DEMOTE", "You cannot demote yourself", 400)
 
-    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target = await session.execute(select(User).where(User.id == user_id))
     target_user = target.scalar_one_or_none()
     if not target_user:
         raise AppError("USER_NOT_FOUND", "User not found", 404)
@@ -871,16 +889,16 @@ class EditUserRequest(BaseModel):
 
 @router.post("/users/{user_id}/ban", dependencies=[Depends(rate_limit(5, 60))])
 async def ban_user(
-    user_id: str,
+    user_id: UUID,
     body: BanUserRequest,
     request: Request,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     """Ban a user."""
-    if str(user.id) == user_id:
+    if user.id == user_id:
         raise AppError("SELF_BAN", "You cannot ban yourself", 400)
-    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target = await session.execute(select(User).where(User.id == user_id))
     target_user = target.scalar_one_or_none()
     if not target_user:
         raise AppError("USER_NOT_FOUND", "User not found", 404)
@@ -895,13 +913,13 @@ async def ban_user(
 
 @router.post("/users/{user_id}/unban", dependencies=[Depends(rate_limit(5, 60))])
 async def unban_user(
-    user_id: str,
+    user_id: UUID,
     request: Request,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     """Unban a user."""
-    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target = await session.execute(select(User).where(User.id == user_id))
     target_user = target.scalar_one_or_none()
     if not target_user:
         raise AppError("USER_NOT_FOUND", "User not found", 404)
@@ -916,13 +934,13 @@ async def unban_user(
 
 @router.post("/users/{user_id}/verify-email", dependencies=[Depends(rate_limit(5, 60))])
 async def verify_user_email(
-    user_id: str,
+    user_id: UUID,
     request: Request,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     """Manually verify a user's email."""
-    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target = await session.execute(select(User).where(User.id == user_id))
     target_user = target.scalar_one_or_none()
     if not target_user:
         raise AppError("USER_NOT_FOUND", "User not found", 404)
@@ -936,13 +954,13 @@ async def verify_user_email(
 
 @router.post("/users/{user_id}/unverify-email", dependencies=[Depends(rate_limit(5, 60))])
 async def unverify_user_email(
-    user_id: str,
+    user_id: UUID,
     request: Request,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     """Manually unverify a user's email."""
-    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target = await session.execute(select(User).where(User.id == user_id))
     target_user = target.scalar_one_or_none()
     if not target_user:
         raise AppError("USER_NOT_FOUND", "User not found", 404)
@@ -956,13 +974,13 @@ async def unverify_user_email(
 
 @router.post("/users/{user_id}/disable-2fa", dependencies=[Depends(rate_limit(5, 60))])
 async def disable_user_2fa(
-    user_id: str,
+    user_id: UUID,
     request: Request,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     """Disable 2FA for a user (admin override for lockout recovery)."""
-    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target = await session.execute(select(User).where(User.id == user_id))
     target_user = target.scalar_one_or_none()
     if not target_user:
         raise AppError("USER_NOT_FOUND", "User not found", 404)
@@ -977,7 +995,7 @@ async def disable_user_2fa(
 
 @router.post("/users/{user_id}/reset-password", dependencies=[Depends(rate_limit(3, 60))])
 async def reset_user_password(
-    user_id: str,
+    user_id: UUID,
     request: Request,
     background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
@@ -987,7 +1005,7 @@ async def reset_user_password(
     import secrets
     from app.auth.security import hash_password
 
-    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target = await session.execute(select(User).where(User.id == user_id))
     target_user = target.scalar_one_or_none()
     if not target_user:
         raise AppError("USER_NOT_FOUND", "User not found", 404)
@@ -1012,14 +1030,14 @@ async def reset_user_password(
 
 @router.put("/users/{user_id}", dependencies=[Depends(rate_limit(5, 60))])
 async def edit_user(
-    user_id: str,
+    user_id: UUID,
     body: EditUserRequest,
     request: Request,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     """Edit a user's profile (email, username)."""
-    target = await session.execute(select(User).where(User.id == UUID(user_id)))
+    target = await session.execute(select(User).where(User.id == user_id))
     target_user = target.scalar_one_or_none()
     if not target_user:
         raise AppError("USER_NOT_FOUND", "User not found", 404)
@@ -1263,6 +1281,11 @@ async def deprecate_package(
     pkg.is_deprecated = True
     await _audit(session, request, user, "deprecate_package", "package", slug)
     await session.commit()
+
+    # P1-D1: sync Meili so the deprecated flag shows in search.
+    from app.shared.meili import sync_package_to_meili
+    await sync_package_to_meili(session, pkg.id)
+
     return {"message": f"Package '{slug}' deprecated."}
 
 
@@ -1283,6 +1306,11 @@ async def undeprecate_package(
     pkg.is_deprecated = False
     await _audit(session, request, user, "undeprecate_package", "package", slug)
     await session.commit()
+
+    # P1-D1: sync Meili so the package reappears in search without the deprecated badge.
+    from app.shared.meili import sync_package_to_meili
+    await sync_package_to_meili(session, pkg.id)
+
     return {"message": f"Package '{slug}' undeprecated."}
 
 
@@ -1414,6 +1442,11 @@ async def yank_version(
     await recalculate_latest_version_id(session, pkg.id)
     await _audit(session, request, user, "yank_version", "package", slug, {"version": version})
     await session.commit()
+
+    # P1-D1: sync Meili after admin yank (owner-yank path is handled in packages/router.py).
+    from app.shared.meili import sync_package_to_meili
+    await sync_package_to_meili(session, pkg.id)
+
     return {"message": f"Version {slug}@{version} yanked."}
 
 
@@ -1433,6 +1466,11 @@ async def unyank_version(
     await recalculate_latest_version_id(session, pkg.id)
     await _audit(session, request, user, "unyank_version", "package", slug, {"version": version})
     await session.commit()
+
+    # P1-D1: sync Meili so the restored version reappears in search.
+    from app.shared.meili import sync_package_to_meili
+    await sync_package_to_meili(session, pkg.id)
+
     return {"message": f"Version {slug}@{version} unyanked."}
 
 
@@ -1888,7 +1926,9 @@ async def reverify_version(
 
     from app.verification.pipeline import run_verification
     import asyncio
-    asyncio.get_running_loop().create_task(run_verification(pv.id, triggered_by="admin_reverify"))
+    asyncio.get_running_loop().create_task(
+        run_verification(pv.id, triggered_by="admin_reverify", admin_user_id=user.id)
+    )
 
     return {"message": f"Verification re-triggered for {slug}@{version}"}
 
@@ -1988,7 +2028,9 @@ async def reverify_batch(
 
     triggered = []
     for pv in versions:
-        asyncio.get_running_loop().create_task(run_verification(pv.id, triggered_by="admin_reverify"))
+        asyncio.get_running_loop().create_task(
+            run_verification(pv.id, triggered_by="admin_reverify", admin_user_id=user.id)
+        )
         triggered.append({"slug": pv.package.slug, "version": pv.version_number})
 
     await _audit(session, request, user, "reverify_batch", "verification", "batch", {

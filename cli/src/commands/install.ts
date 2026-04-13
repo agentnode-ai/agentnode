@@ -12,15 +12,26 @@ export const installCommand = new Command("install")
   .description("Install a package from the AgentNode registry")
   .argument("<slug>", "Package slug")
   .option("-v, --version <version>", "Specific version to install")
+  // P1-C5: --pkg-version is an unambiguous alias for --version so scripts
+  // that call `agentnode install <slug> --pkg-version 1.2.3` never collide
+  // visually with the global `agentnode --version` flag. Both forms work.
+  .option("--pkg-version <version>", "Specific version to install (alias for --version)")
   .option("--verbose", "Show detailed output")
   .option("--json", "Output JSON")
+  .option(
+    "--allow-unhashed",
+    "Proceed even when the server did not return an artifact hash " +
+      "(unsafe — only use for local testing or development packages)",
+  )
   .action(async (slug: string, opts) => {
     try {
+      // P1-C5: accept either --version or --pkg-version (alias).
+      const pinnedVersion: string | undefined = opts.version || opts.pkgVersion;
       // 1. Get install metadata
       if (!opts.json) {
         console.log(`Resolving ${slug}...`);
       }
-      const meta = await getInstallMetadata(slug, opts.version);
+      const meta = await getInstallMetadata(slug, pinnedVersion);
 
       // Check if artifact is available
       if (!meta.artifact?.url) {
@@ -54,6 +65,29 @@ export const installCommand = new Command("install")
           entrypoint: c.entrypoint,
           capability_id: c.capability_id,
         }));
+
+      // P0-08: Fail closed when the server did not return an artifact
+      // hash. Previously the CLI silently bypassed hash verification by
+      // defaulting the expected hash to an empty string — a silent
+      // downgrade of the documented integrity check. Users can opt into
+      // the old behavior for local/dev packages with --allow-unhashed.
+      if (!meta.artifact.hash_sha256) {
+        if (!opts.allowUnhashed) {
+          throw new Error(
+            "Server did not return an artifact hash for " +
+              `${slug}@${meta.version}; refusing to install without ` +
+              "integrity verification. Pass --allow-unhashed to override " +
+              "(unsafe — only for local/dev testing).",
+          );
+        }
+        if (!opts.json) {
+          console.warn(
+            chalk.yellow(
+              "⚠ Installing without artifact hash verification (--allow-unhashed).",
+            ),
+          );
+        }
+      }
 
       const result = await installPackage(
         {

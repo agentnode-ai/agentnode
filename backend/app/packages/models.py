@@ -70,6 +70,11 @@ class PackageVersion(Base, UUIDPrimaryKeyMixin):
     artifact_hash_sha256 = Column(Text, nullable=True)
     artifact_size_bytes = Column(BigInteger, nullable=True)
     signature = Column(Text, nullable=True)
+    # P1-L2: persist the result of publish-time signature verification so
+    # install endpoints and admin review can distinguish "valid signature
+    # checked against registered key" from "signature supplied but never
+    # verified" without re-running the crypto on every request.
+    signature_verified = Column(Boolean, nullable=False, default=False, server_default="false")
 
     # Provenance
     source_repo_url = Column(Text, nullable=True)
@@ -288,7 +293,8 @@ class Review(Base, UUIDPrimaryKeyMixin):
 class PackageReport(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "package_reports"
 
-    package_id = Column(UUID(as_uuid=True), ForeignKey("packages.id", ondelete="CASCADE"), nullable=False)
+    # P1-D2: indexed so admin "reports for package X" queries don't full-scan.
+    package_id = Column(UUID(as_uuid=True), ForeignKey("packages.id", ondelete="CASCADE"), nullable=False, index=True)
     reporter_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     reason = Column(Text, nullable=False)
     description = Column(Text, nullable=True)

@@ -1,7 +1,8 @@
-"use client";
-
-import { useState, useEffect } from "react";
+// P1-SEO4: server component for SSR. The interactive scroll-spy sidebar
+// is extracted into a small client component (DocsSidebar) so the page
+// HTML is crawlable and robots see real content on first response.
 import Link from "next/link";
+import DocsSidebar from "./DocsSidebar";
 
 /* ------------------------------------------------------------------ */
 /*  Sidebar navigation sections                                        */
@@ -156,28 +157,6 @@ function DocTable({
 /* ------------------------------------------------------------------ */
 
 export default function DocsPage() {
-  const [activeSection, setActiveSection] = useState("quick-start");
-
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            setActiveSection(entry.target.id);
-          }
-        }
-      },
-      { rootMargin: "-80px 0px -70% 0px", threshold: 0 }
-    );
-
-    for (const section of sections) {
-      const el = document.getElementById(section.id);
-      if (el) observer.observe(el);
-    }
-
-    return () => observer.disconnect();
-  }, []);
-
   return (
     <div className="mx-auto max-w-6xl px-6 py-12">
       {/* Page header */}
@@ -193,52 +172,8 @@ export default function DocsPage() {
 
       {/* Layout: sidebar + content */}
       <div className="flex gap-10">
-        {/* ── Sidebar ── */}
-        <nav className="hidden w-56 shrink-0 lg:block">
-          <div className="sticky top-24">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted">
-              On this page
-            </p>
-            <ul className="space-y-1">
-              {sections.map((s) => (
-                <li key={s.id}>
-                  <a
-                    href={`#${s.id}`}
-                    className={`block rounded px-3 py-1.5 text-sm transition-colors ${
-                      activeSection === s.id
-                        ? "bg-primary/10 font-medium text-primary"
-                        : "text-muted hover:text-foreground"
-                    }`}
-                  >
-                    {s.label}
-                  </a>
-                </li>
-              ))}
-            </ul>
-            <div className="mt-6 border-t border-border pt-4">
-              <Link
-                href="/search"
-                className="block text-xs text-muted transition-colors hover:text-primary"
-              >
-                Browse packages
-              </Link>
-              <Link
-                href="/capabilities"
-                className="mt-2 block text-xs text-muted transition-colors hover:text-primary"
-              >
-                Capability taxonomy
-              </Link>
-              <a
-                href="https://github.com/agentnode-ai/agentnode"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-2 block text-xs text-muted transition-colors hover:text-primary"
-              >
-                GitHub repository
-              </a>
-            </div>
-          </div>
-        </nav>
+        {/* ── Sidebar (client — scroll-spy state only) ── */}
+        <DocsSidebar sections={sections} />
 
         {/* ── Main content ── */}
         <main className="min-w-0 flex-1 space-y-16">
@@ -2675,7 +2610,7 @@ History:
                 ["LangChain", "BaseTool subclasses, @tool decorated functions, schemas", "agentnode import tools.py --from langchain"],
                 ["OpenAI Functions", "Function definitions in JSON format", "agentnode import functions.json --from openai"],
                 ["CrewAI", "@tool decorated functions, tool descriptions", "agentnode import tools.py --from crewai"],
-                ["ClawhHub", "ClawhHub manifest files", "agentnode import manifest.json --from clawhub"],
+                ["ClawHub", "ClawHub manifest files", "agentnode import manifest.json --from clawhub"],
                 ["Skills.sh", "Skills.sh skill configs", "agentnode import skill.json --from skillssh"],
               ]}
             />
