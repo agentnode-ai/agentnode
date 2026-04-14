@@ -1,5 +1,87 @@
 # Changelog
 
+## v0.5.0 — Operational Completeness & Developer Surface (2026-04-14)
+
+v0.5 makes v0.4 features accessible to real users and operationally safe under
+production load. Nothing new was invented — every change closes a gap between
+"feature exists internally" and "user can actually use it".
+
+### Production Fixes
+
+**OAuth State on Redis**
+- OAuth pending states (`_pending_states`) moved from in-memory dict to Redis
+  with 5-minute TTL via `oauth:state:{token}` keys
+- Production (`ENVIRONMENT=production`): Redis required — unavailability returns
+  HTTP 503 with clear message instead of silently losing OAuth flows
+- Dev/test: automatic in-memory fallback with warning log
+- `_cleanup_expired_states()` removed — Redis TTL handles expiration
+- Dead code `_resolve_provider_from_manifest()` removed
+
+**Run-Log Retention**
+- `cleanup_old_runs(max_age_days=30, max_count=500)` deletes oldest run logs
+  when either limit is exceeded
+- Runs automatically after every agent execution (non-blocking, swallows errors)
+- Configurable via `~/.agentnode/config.json`:
+  ```json
+  { "run_log": { "max_age_days": 30, "max_count": 500 } }
+  ```
+- Previously: `~/.agentnode/runs/` grew without limit
+
+### New CLI Commands
+
+**`agentnode runs`** — manage agent run logs (local, no backend needed)
+- `agentnode runs list [--limit N]` — show recent runs (newest first)
+- `agentnode runs show <run_id>` — display events for a specific run
+- `agentnode runs clean [--dry-run] [--max-age <days>] [--max-count <n>]` — manual cleanup
+
+**`agentnode credentials`** — manage stored credentials via API
+- `agentnode credentials list` — show stored credentials (provider, status, domains)
+- `agentnode credentials test <id>` — test credential connectivity
+- `agentnode credentials delete <id>` — revoke a credential
+
+All additive — no breaking changes to existing commands (CLI V1 policy).
+
+### Dashboard
+
+**Credentials Page** (`/dashboard/credentials`)
+- Lists all stored credentials with provider, status, auth type, scopes, domains
+- "Test Connection" button calls `POST /v1/credentials/{id}/test`, shows reachable/latency
+- "Delete" button with confirmation dialog
+- OAuth success/error banners when redirected from OAuth callback
+- OAuth callback now redirects to `/dashboard/credentials` instead of non-existent `/credentials`
+
+### API Type Safety
+
+- Proxy endpoint: `body: dict` → `body: ProxyRequest` (Pydantic model)
+  - `ProxyRequest(resolve_token: str, method: Literal[...], url: str, json_body: dict | None)`
+  - Invalid payloads now get HTTP 422 with validation details
+- Resolve endpoint: response typed with `ResolveCredentialResponse`
+- Proxy response typed with `ProxyResponse(status_code: int, body: Any)`
+- Router docstring updated from "skeleton" to accurate description
+
+### Adapter Refresh
+
+- `adapter-langchain`: `langchain-core>=0.2` → `>=0.3`
+- `adapter-crewai`: `crewai>=0.80.0` → `>=0.86.0`
+- No API changes in adapter code — compatibility-only bumps
+
+### Ops Requirements
+
+**Redis is now a hard production dependency for OAuth flows.** Previously, OAuth
+used an in-memory dict that lost state on restart and didn't work across multiple
+instances. If your production deployment uses OAuth connectors, ensure Redis is
+reachable.
+
+### Upgrade Notes
+
+- **Backend**: No schema migrations. New Redis key pattern `oauth:state:*` (auto-expires).
+- **SDK**: New `cleanup_old_runs()` function. `run_log` section in config.json is optional.
+- **CLI**: Two new commands (`runs`, `credentials`). No changes to existing commands.
+- **Frontend**: New route `/dashboard/credentials`. No changes to existing pages.
+- **Adapters**: Version bounds bumped — install may pull newer transitive deps.
+
+---
+
 ## v0.4.0 — Hardening & Production-Readiness (2026-04-14)
 
 v0.4 makes the existing architecture production-ready. No new execution models,
@@ -92,7 +174,7 @@ Manifest authors who know their entrypoint is pickle-safe can opt into
 - **SDK**: `RunToolResult` has a new optional `run_id` field (default `None`). Non-breaking.
 - **Manifests**: New optional fields `agent.isolation`, `resource.content_path`, `step.when`. All backward-compatible.
 - **Backend**: New endpoints under `/v1/credentials/` (OAuth, resolve, proxy). Existing endpoints unchanged.
-- **Run logs**: Written to `~/.agentnode/runs/`. No cleanup mechanism yet — manage manually if needed.
+- **Run logs**: Written to `~/.agentnode/runs/`. Automatic cleanup added in v0.5.
 
 ---
 

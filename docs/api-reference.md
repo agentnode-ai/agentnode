@@ -482,27 +482,37 @@ Redirects to frontend with success/error status.
 
 Auth required. Get a short-lived resolve token for credential proxy access.
 
-**Response:** `200`
+**Response:** `200` (`ResolveCredentialResponse`)
 ```json
-{ "resolve_token": "eyJhbGc...", "expires_in": 60 }
+{ "resolve_token": "eyJhbGc...", "provider": "github", "allowed_domains": ["api.github.com"] }
 ```
 
 The token is a JWT with 60-second TTL. Use it with the proxy endpoint below.
 
 ### `POST /v1/credentials/proxy`
 
-Auth required. Execute an HTTP request with server-side credential injection.
+Execute an HTTP request with server-side credential injection.
 
+**Request** (`ProxyRequest` — Pydantic-validated):
 ```json
 {
   "resolve_token": "eyJhbGc...",
   "method": "GET",
   "url": "https://api.github.com/user",
-  "json": null
+  "json_body": null
 }
 ```
 
-**Response:** `200`
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `resolve_token` | string | yes | JWT from `/resolve/{provider}` |
+| `method` | string | no | `GET`, `POST`, `PUT`, `PATCH`, `DELETE` (default: `GET`) |
+| `url` | string | yes | Target URL (must match connector's `allowed_domains`) |
+| `json_body` | object | no | JSON body for POST/PUT/PATCH requests |
+
+Invalid payloads return HTTP 422 with Pydantic validation details.
+
+**Response:** `200` (`ProxyResponse`)
 ```json
 { "status_code": 200, "body": { "login": "octocat", "id": 1 } }
 ```

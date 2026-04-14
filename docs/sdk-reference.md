@@ -520,6 +520,32 @@ run_ids = list_runs(limit=10)
 
 Run logs contain only metadata — no tool inputs, outputs, or secrets.
 
+### Run-Log Retention
+
+```python
+from agentnode_sdk.run_log import cleanup_old_runs
+
+# Manual cleanup: delete runs older than 7 days, keep at most 100
+deleted = cleanup_old_runs(max_age_days=7, max_count=100)
+print(f"Deleted {deleted} old run logs")
+
+# Using config defaults (reads from ~/.agentnode/config.json)
+deleted = cleanup_old_runs()
+```
+
+**Configuration** (`~/.agentnode/config.json`):
+```json
+{
+  "run_log": {
+    "max_age_days": 30,
+    "max_count": 500
+  }
+}
+```
+
+Cleanup runs automatically after every `run_agent()` call. It is non-blocking —
+failures are logged at debug level and never crash the agent.
+
 ---
 
 ## Agent Isolation

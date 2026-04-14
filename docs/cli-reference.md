@@ -310,6 +310,62 @@ agentnode api-keys remove <key>
 
 ---
 
+### `agentnode runs`
+
+Manage agent run logs stored locally at `~/.agentnode/runs/`.
+
+```bash
+agentnode runs list
+agentnode runs list --limit 5 --json
+agentnode runs show <run_id>
+agentnode runs clean --dry-run
+agentnode runs clean --max-age 7 --max-count 100
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `list [--limit N]` | List recent runs (newest first, default: 20) |
+| `show <run_id>` | Show events for a specific run (full or prefix ID) |
+| `clean [--dry-run]` | Remove old run logs based on retention policy |
+
+**Clean options:**
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Show what would be deleted without deleting |
+| `--max-age <days>` | Max age in days (default: 30) |
+| `--max-count <n>` | Max number of runs to keep (default: 500) |
+
+Runs are also automatically cleaned after each agent execution based on
+`~/.agentnode/config.json`:
+
+```json
+{ "run_log": { "max_age_days": 30, "max_count": 500 } }
+```
+
+---
+
+### `agentnode credentials`
+
+Manage stored credentials for connector packages. Requires authentication.
+
+```bash
+agentnode credentials list
+agentnode credentials test <credential_id>
+agentnode credentials delete <credential_id>
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List all stored credentials (provider, status, domains) |
+| `test <id>` | Test a credential's connectivity via the backend health check |
+| `delete <id>` | Revoke and delete a stored credential |
+
+All subcommands support `--json` for machine-readable output.
+
+---
+
 ## Lockfile
 
 `agentnode.lock` is automatically created and maintained in your project directory. It tracks installed packages, versions, and artifact hashes.

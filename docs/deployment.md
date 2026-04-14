@@ -70,6 +70,10 @@ sudo -u postgres psql -c "ALTER USER agentnode PASSWORD 'YOUR_STRONG_PASSWORD';"
 
 #### Redis
 
+**Required** for rate limiting and OAuth state management. In production,
+Redis unavailability causes OAuth flows to fail with HTTP 503 and rate
+limiting to fail closed.
+
 ```bash
 sudo apt install redis-server
 sudo systemctl enable redis-server
