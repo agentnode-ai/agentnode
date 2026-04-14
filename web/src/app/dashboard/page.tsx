@@ -1297,6 +1297,20 @@ export default function DashboardPage() {
         )}
       </section>
 
+      {/* Credentials */}
+      <section className="mb-8 rounded-lg border border-border bg-card p-6">
+        <h2 className="mb-2 text-lg font-semibold text-foreground">Credentials</h2>
+        <p className="text-sm text-muted mb-3">
+          Manage stored credentials for connector packages (OAuth, API keys).
+        </p>
+        <Link
+          href="/dashboard/credentials"
+          className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary/90"
+        >
+          Manage Credentials
+        </Link>
+      </section>
+
       {/* Support */}
       <section className="mb-8 rounded-lg border border-border bg-card p-6">
         <h2 className="mb-2 text-lg font-semibold text-foreground">Support</h2>
