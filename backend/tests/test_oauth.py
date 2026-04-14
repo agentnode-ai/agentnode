@@ -1,25 +1,28 @@
-"""Tests for OAuth2 PKCE flow (PR 3)."""
+"""Tests for OAuth2 PKCE flow — Redis state store + PKCE + provider config."""
+import json
 import os
 import time
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.credentials.oauth import (
     _generate_pkce,
     _get_provider_config,
-    _pending_states,
+    _fallback_states,
+    _store_state,
+    _pop_state,
     _STATE_TTL_SECONDS,
-    _cleanup_expired_states,
 )
 from app.shared.exceptions import AppError
 
 
 @pytest.fixture(autouse=True)
 def _clean_state():
-    """Clear pending states after each test."""
-    _pending_states.clear()
+    """Clear fallback states after each test."""
+    _fallback_states.clear()
     yield
-    _pending_states.clear()
+    _fallback_states.clear()
 
 
 class TestPKCE:
@@ -79,23 +82,91 @@ class TestProviderConfig:
             _get_provider_config("notion")
 
 
-class TestStateManagement:
-    def test_state_stored_and_retrieved(self):
-        _pending_states["abc"] = {
+class TestRedisStateStore:
+    """Test the Redis-backed state store with mocked Redis."""
+
+    @pytest.mark.asyncio
+    async def test_store_and_pop_with_redis(self):
+        """State stored in Redis is retrieved and deleted correctly."""
+        mock_redis = AsyncMock()
+        stored = {}
+
+        async def fake_set(key, value, ex=None):
+            stored[key] = value
+
+        async def fake_get(key):
+            return stored.get(key)
+
+        async def fake_delete(key):
+            stored.pop(key, None)
+
+        mock_redis.set = fake_set
+        mock_redis.get = fake_get
+        mock_redis.delete = fake_delete
+        mock_redis.ping = AsyncMock()
+
+        payload = {
             "user_id": "u1",
             "provider": "github",
             "connector_package_slug": "gh-pack",
-            "code_verifier": "verifier",
+            "code_verifier": "verifier123",
+            "scopes": ["repo"],
+            "created_at": time.time(),
+        }
+
+        with patch("app.credentials.oauth._get_redis", return_value=mock_redis):
+            await _store_state("state-abc", payload)
+            assert "oauth:state:state-abc" in stored
+
+            result = await _pop_state("state-abc")
+            assert result is not None
+            assert result["provider"] == "github"
+            assert result["code_verifier"] == "verifier123"
+            assert "oauth:state:state-abc" not in stored
+
+    @pytest.mark.asyncio
+    async def test_pop_missing_state_returns_none(self):
+        """Popping a non-existent state returns None."""
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.ping = AsyncMock()
+
+        with patch("app.credentials.oauth._get_redis", return_value=mock_redis):
+            result = await _pop_state("nonexistent")
+            assert result is None
+
+
+class TestFallbackStateStore:
+    """Test the in-memory fallback when Redis is unavailable (dev only)."""
+
+    @pytest.mark.asyncio
+    async def test_fallback_store_and_pop(self, monkeypatch):
+        """Without Redis in dev, state is stored in memory."""
+        monkeypatch.setenv("ENVIRONMENT", "development")
+
+        payload = {
+            "user_id": "u1",
+            "provider": "github",
+            "connector_package_slug": "gh-pack",
+            "code_verifier": "v",
             "scopes": [],
             "created_at": time.time(),
         }
-        assert "abc" in _pending_states
-        popped = _pending_states.pop("abc")
-        assert popped["provider"] == "github"
-        assert "abc" not in _pending_states
 
-    def test_cleanup_expired(self):
-        _pending_states["old"] = {
+        with patch("app.credentials.oauth._get_redis", return_value=None):
+            await _store_state("abc", payload)
+            assert "abc" in _fallback_states
+
+            result = await _pop_state("abc")
+            assert result["provider"] == "github"
+            assert "abc" not in _fallback_states
+
+    @pytest.mark.asyncio
+    async def test_fallback_expired_state_returns_none(self, monkeypatch):
+        """Expired state in fallback returns None."""
+        monkeypatch.setenv("ENVIRONMENT", "development")
+
+        payload = {
             "user_id": "u1",
             "provider": "github",
             "connector_package_slug": "gh-pack",
@@ -103,14 +174,26 @@ class TestStateManagement:
             "scopes": [],
             "created_at": time.time() - _STATE_TTL_SECONDS - 10,
         }
-        _pending_states["new"] = {
-            "user_id": "u2",
-            "provider": "slack",
-            "connector_package_slug": "sl-pack",
-            "code_verifier": "v2",
-            "scopes": [],
-            "created_at": time.time(),
-        }
-        _cleanup_expired_states()
-        assert "old" not in _pending_states
-        assert "new" in _pending_states
+
+        with patch("app.credentials.oauth._get_redis", return_value=None):
+            await _store_state("old", payload)
+            result = await _pop_state("old")
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_production_without_redis_fails(self, monkeypatch):
+        """In production, missing Redis raises an error."""
+        monkeypatch.setenv("ENVIRONMENT", "production")
+
+        with patch("app.credentials.oauth._get_redis", return_value=None):
+            with pytest.raises(AppError, match="Redis is required"):
+                await _store_state("x", {"created_at": time.time()})
+
+    @pytest.mark.asyncio
+    async def test_production_pop_without_redis_fails(self, monkeypatch):
+        """In production, popping without Redis raises an error."""
+        monkeypatch.setenv("ENVIRONMENT", "production")
+
+        with patch("app.credentials.oauth._get_redis", return_value=None):
+            with pytest.raises(AppError, match="Redis is required"):
+                await _pop_state("x")

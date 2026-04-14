@@ -6,6 +6,7 @@ Config from env vars: OAUTH_{PROVIDER}_CLIENT_ID, OAUTH_{PROVIDER}_CLIENT_SECRET
 from __future__ import annotations
 
 import hashlib
+import json as _json
 import logging
 import os
 import secrets
@@ -23,10 +24,78 @@ from app.shared.exceptions import AppError
 
 logger = logging.getLogger("agentnode.credentials.oauth")
 
-# In-memory state store (production: use Redis with TTL)
-# {state_token: {user_id, provider, slug, code_verifier, scopes, created_at}}
-_pending_states: dict[str, dict] = {}
 _STATE_TTL_SECONDS = 300  # 5 minutes
+
+# ---------------------------------------------------------------------------
+# OAuth state store — Redis in production, in-memory fallback for dev/test
+# ---------------------------------------------------------------------------
+
+_fallback_states: dict[str, dict] = {}  # dev-only fallback
+
+
+async def _get_redis():
+    """Get the Redis client from the running FastAPI app.
+
+    Returns None if Redis is unavailable (only acceptable in non-production).
+    """
+    try:
+        from app.main import app
+        redis = app.state.redis
+        await redis.ping()
+        return redis
+    except Exception:
+        return None
+
+
+async def _store_state(state_token: str, payload: dict) -> None:
+    """Store OAuth state. Uses Redis with TTL; falls back to dict in dev."""
+    redis = await _get_redis()
+    if redis is not None:
+        key = f"oauth:state:{state_token}"
+        await redis.set(key, _json.dumps(payload), ex=_STATE_TTL_SECONDS)
+        return
+
+    # Redis unavailable — check environment
+    env = os.environ.get("ENVIRONMENT", "development")
+    if env == "production":
+        raise AppError(
+            "OAUTH_STATE_STORE_UNAVAILABLE",
+            "OAuth state store unavailable — Redis is required in production for OAuth flows",
+            503,
+        )
+
+    logger.warning("Redis unavailable — using in-memory OAuth state store (dev-only)")
+    _fallback_states[state_token] = payload
+
+
+async def _pop_state(state_token: str) -> dict | None:
+    """Retrieve and delete OAuth state. Returns None if not found / expired."""
+    redis = await _get_redis()
+    if redis is not None:
+        key = f"oauth:state:{state_token}"
+        raw = await redis.get(key)
+        if raw is None:
+            return None
+        await redis.delete(key)
+        return _json.loads(raw)
+
+    # Redis unavailable — check environment
+    env = os.environ.get("ENVIRONMENT", "development")
+    if env == "production":
+        raise AppError(
+            "OAUTH_STATE_STORE_UNAVAILABLE",
+            "OAuth state store unavailable — Redis is required in production for OAuth flows",
+            503,
+        )
+
+    logger.warning("Redis unavailable — reading from in-memory OAuth state store (dev-only)")
+    payload = _fallback_states.pop(state_token, None)
+    if payload is None:
+        return None
+    # Manual TTL check for in-memory fallback
+    if time.time() - payload.get("created_at", 0) > _STATE_TTL_SECONDS:
+        return None
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -82,12 +151,6 @@ def _get_provider_config(provider: str) -> dict:
         )
 
 
-def _resolve_provider_from_manifest(session, connector_package_slug: str) -> str:
-    """Extract the provider name from a connector manifest (sync helper)."""
-    # This is called from async context, so we receive the already-fetched value
-    raise NotImplementedError("Use async version")
-
-
 # ---------------------------------------------------------------------------
 # PKCE helpers
 # ---------------------------------------------------------------------------
@@ -98,14 +161,6 @@ def _generate_pkce() -> tuple[str, str]:
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     code_challenge = urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
     return code_verifier, code_challenge
-
-
-def _cleanup_expired_states() -> None:
-    """Remove expired state tokens."""
-    now = time.time()
-    expired = [k for k, v in _pending_states.items() if now - v["created_at"] > _STATE_TTL_SECONDS]
-    for k in expired:
-        del _pending_states[k]
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +205,8 @@ async def generate_auth_url(
     # Generate state token
     state = secrets.token_urlsafe(32)
 
-    # Store pending state
-    _cleanup_expired_states()
-    _pending_states[state] = {
+    # Store pending state (Redis with TTL, fallback to dict in dev)
+    state_payload = {
         "user_id": user_id,
         "provider": provider,
         "connector_package_slug": connector_package_slug,
@@ -160,6 +214,7 @@ async def generate_auth_url(
         "scopes": scopes or connector.get("scopes", []),
         "created_at": time.time(),
     }
+    await _store_state(state, state_payload)
 
     # Build authorization URL
     effective_scopes = scopes or connector.get("scopes", [])
@@ -191,9 +246,7 @@ async def exchange_code(
 
     Returns: {"provider": str, "stored": bool}
     """
-    _cleanup_expired_states()
-
-    pending = _pending_states.pop(state, None)
+    pending = await _pop_state(state)
     if not pending:
         raise AppError("OAUTH_INVALID_STATE", "Invalid or expired state token", 400)
 

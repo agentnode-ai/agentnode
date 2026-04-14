@@ -1,5 +1,6 @@
 """Pydantic schemas for credential CRUD — secrets never in responses."""
 from datetime import datetime
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -66,3 +67,31 @@ class OAuthInitiateResponse(BaseModel):
 
     auth_url: str
     state: str
+
+
+# ---------------------------------------------------------------------------
+# Proxy & Resolve (v0.5 — typed bodies)
+# ---------------------------------------------------------------------------
+
+class ProxyRequest(BaseModel):
+    """Request to proxy an authenticated API call through the backend."""
+
+    resolve_token: str
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "GET"
+    url: str
+    json_body: dict | None = None
+
+
+class ProxyResponse(BaseModel):
+    """Response from a proxied API call."""
+
+    status_code: int
+    body: Any
+
+
+class ResolveCredentialResponse(BaseModel):
+    """Response from the credential resolve endpoint."""
+
+    resolve_token: str
+    provider: str
+    allowed_domains: list[str]

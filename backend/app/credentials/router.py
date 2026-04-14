@@ -1,4 +1,4 @@
-"""Credential CRUD endpoints + OAuth callback skeleton.
+"""Credential CRUD endpoints + OAuth callback + vault-SDK bridge.
 
 Policy: trust >= verified required for credential operations.
 Secrets never appear in responses.
@@ -21,6 +21,9 @@ from app.credentials.schemas import (
     CredentialTestResponse,
     OAuthInitiateRequest,
     OAuthInitiateResponse,
+    ProxyRequest,
+    ProxyResponse,
+    ResolveCredentialResponse,
     StoreCredentialRequest,
 )
 from app.credentials.service import (
@@ -306,7 +309,7 @@ async def oauth_callback(
     try:
         result = await exchange_code(session, code=code, state=state)
         return RedirectResponse(
-            url=f"/credentials?oauth=success&provider={result['provider']}",
+            url=f"/dashboard/credentials?oauth=success&provider={result['provider']}",
             status_code=302,
         )
     except AppError:
@@ -314,7 +317,7 @@ async def oauth_callback(
     except Exception as exc:
         logger.error("OAuth callback failed: %s", exc)
         return RedirectResponse(
-            url=f"/credentials?oauth=error&message={type(exc).__name__}",
+            url=f"/dashboard/credentials?oauth=error&message={type(exc).__name__}",
             status_code=302,
         )
 
@@ -323,7 +326,7 @@ async def oauth_callback(
 # PR 5: Vault-SDK Bridge — resolve and proxy endpoints
 # ---------------------------------------------------------------------------
 
-@router.get("/resolve/{provider}", dependencies=[Depends(rate_limit(10, 60))])
+@router.get("/resolve/{provider}", response_model=ResolveCredentialResponse, dependencies=[Depends(rate_limit(10, 60))])
 async def resolve_credential(
     provider: str,
     user: User = Depends(get_current_user),
@@ -354,16 +357,16 @@ async def resolve_credential(
         algorithm="HS256",
     )
 
-    return {
-        "resolve_token": resolve_token,
-        "provider": provider,
-        "allowed_domains": cred.allowed_domains or [],
-    }
+    return ResolveCredentialResponse(
+        resolve_token=resolve_token,
+        provider=provider,
+        allowed_domains=cred.allowed_domains or [],
+    )
 
 
-@router.post("/proxy", dependencies=[Depends(rate_limit(10, 60))])
+@router.post("/proxy", response_model=ProxyResponse, dependencies=[Depends(rate_limit(10, 60))])
 async def proxy_request(
-    body: dict,
+    body: ProxyRequest,
     session: AsyncSession = Depends(get_session),
 ):
     """Proxy an authenticated request through the backend.
@@ -375,13 +378,10 @@ async def proxy_request(
     """
     import jwt
 
-    resolve_token = body.get("resolve_token")
-    method = body.get("method", "GET")
-    url = body.get("url")
-    json_body = body.get("json")
-
-    if not resolve_token or not url:
-        raise AppError("PROXY_INVALID", "resolve_token and url are required", 400)
+    resolve_token = body.resolve_token
+    method = body.method
+    url = body.url
+    json_body = body.json_body
 
     # Validate token
     secret_key = os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "fallback-key")
@@ -424,7 +424,7 @@ async def proxy_request(
     handle = decrypt_to_handle(cred)
     try:
         resp = handle.authorized_request(method, url, json=json_body, timeout=15.0)
-        return {"status_code": resp.status_code, "body": resp.body}
+        return ProxyResponse(status_code=resp.status_code, body=resp.body)
     except PermissionError as exc:
         raise AppError("PROXY_DOMAIN_DENIED", str(exc), 403)
     except Exception as exc:
