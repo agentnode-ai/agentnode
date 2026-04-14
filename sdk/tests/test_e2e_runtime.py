@@ -29,7 +29,8 @@ from pathlib import Path
 
 import pytest
 
-from agentnode_sdk.runtime import AgentNodeRuntime, trust_allows
+from agentnode_sdk.runtime import AgentNodeRuntime
+from agentnode_sdk.policy import _trust_meets_minimum as trust_allows
 
 # conftest.py utilities — imported via sys.path (pytest adds tests/ to path)
 from tests.conftest import (

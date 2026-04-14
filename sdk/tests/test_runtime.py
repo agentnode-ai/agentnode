@@ -13,8 +13,8 @@ from agentnode_sdk.runtime import (
     ToolResult,
     ToolSpec,
     _result_to_dict,
-    trust_allows,
 )
+from agentnode_sdk.policy import _trust_meets_minimum as trust_allows
 
 
 # ---------------------------------------------------------------------------

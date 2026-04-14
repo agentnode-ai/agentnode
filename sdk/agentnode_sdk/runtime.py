@@ -13,6 +13,7 @@ from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.policy import check_run as _policy_check_run
 from agentnode_sdk.policy import check_install as _policy_check_install
 from agentnode_sdk.policy import audit_decision as _policy_audit
+from agentnode_sdk.policy import _trust_meets_minimum
 
 
 # ---------------------------------------------------------------------------
@@ -55,24 +56,8 @@ class ToolResult:
 
 
 # ---------------------------------------------------------------------------
-# Trust helper
+# Trust helper — delegates to policy._trust_meets_minimum (Phase B)
 # ---------------------------------------------------------------------------
-
-_TRUST_ORDER = ["verified", "trusted", "curated"]
-
-
-def trust_allows(package_trust: str, minimum_trust_level: str) -> bool:
-    """Check if package_trust meets or exceeds minimum_trust_level.
-
-    Hierarchy (lenient → strict): verified < trusted < curated.
-    Unknown trust levels are rejected.
-    """
-    min_idx = _TRUST_ORDER.index(minimum_trust_level)
-    try:
-        pkg_idx = _TRUST_ORDER.index(package_trust)
-    except ValueError:
-        return False
-    return pkg_idx >= min_idx
 
 
 # ---------------------------------------------------------------------------
@@ -1131,7 +1116,7 @@ class AgentNodeRuntime:
         if (
             self._minimum_trust_level == "curated"
             and install_result.trust_level
-            and not trust_allows(install_result.trust_level, "curated")
+            and not _trust_meets_minimum(install_result.trust_level, "curated")
         ):
             return ToolResult(
                 success=False,
