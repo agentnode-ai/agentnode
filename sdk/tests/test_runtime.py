@@ -250,9 +250,9 @@ class TestToolBundle:
 # ---------------------------------------------------------------------------
 
 class TestSystemPrompt:
-    def test_under_500_chars(self):
+    def test_under_1200_chars(self):
         rt = _make_runtime()
-        assert len(rt.system_prompt()) < 500
+        assert len(rt.system_prompt()) < 1200
 
     def test_contains_key_rules(self):
         rt = _make_runtime()

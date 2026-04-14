@@ -85,7 +85,7 @@ def test_version(capsys):
     assert exc.value.code == 0
     out = capsys.readouterr().out
     assert "agentnode" in out
-    assert "0.4.0" in out
+    assert "0.4.1" in out
 
 
 # --- Dashboard ---
