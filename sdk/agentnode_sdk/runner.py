@@ -64,6 +64,15 @@ def run_tool(
     # Read lockfile entry
     entry = _get_lockfile_entry(slug, lockfile_path)
 
+    # upgrade is a distribution/relationship type, NOT an execution model.
+    # Runner and Policy ignore it. UI shows as "Add-on".
+    if entry.get("package_type") == "upgrade":
+        return RunToolResult(
+            success=False,
+            error=f"Package '{slug}' is an upgrade/add-on and cannot be executed directly.",
+            mode_used="not_executable",
+        )
+
     # Pre-execution policy check
     decision = check_run(slug, tool_name, kwargs, entry, interactive=True)
     audit_decision(
@@ -81,6 +90,13 @@ def run_tool(
             error=f"Policy requires approval: {decision.reason}",
             mode_used="policy_prompt",
         )
+
+    # Agent dispatch — package_type=agent gets its own runner.
+    # Agent timeout is configured via agent.limits.max_runtime_seconds,
+    # not run_tool()'s timeout parameter.
+    if entry.get("package_type") == "agent":
+        from agentnode_sdk.runtimes.agent_runner import run_agent
+        return run_agent(slug, entry=entry, **kwargs)
 
     # Resolve runtime (default: python for backward compat)
     runtime = resolve_runtime(entry) if entry else "python"

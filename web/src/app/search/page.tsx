@@ -10,18 +10,29 @@ import type { SearchHit, SearchResponse } from "@/lib/api";
 const PER_PAGE = 20;
 
 const FILTER_OPTIONS = {
+  package_type: ["toolpack", "agent"],
+  category: ["connector", "character", "research", "automation", "data"],
   framework: ["langchain", "crewai", "generic"],
   trust_level: ["curated", "trusted", "verified", "unverified"],
   verification_tier: ["gold", "verified", "partial"],
 };
 
 const FILTER_LABELS: Record<string, string> = {
+  package_type: "Package Type",
+  category: "Category",
   framework: "Framework",
   trust_level: "Publisher Trust",
   verification_tier: "Code Verification",
 };
 
 const OPTION_LABELS: Record<string, string> = {
+  toolpack: "Tool Pack",
+  agent: "Agent",
+  connector: "Connector",
+  character: "Character / Persona",
+  research: "Research",
+  automation: "Automation",
+  data: "Data & Analytics",
   generic: "Any framework",
 };
 
@@ -42,6 +53,8 @@ const SORT_VALUE_TO_API: Record<string, string> = {
 
 interface Filters {
   capability_id: string;
+  package_type: string;
+  category: string;
   framework: string;
   trust_level: string;
   verification_tier: string;
@@ -66,6 +79,8 @@ function SearchContent() {
   const [sortBy, setSortBy] = useState(searchParams.get("sort") ?? "");
   const [filters, setFilters] = useState<Filters>({
     capability_id: searchParams.get("capability_id") ?? "",
+    package_type: searchParams.get("package_type") ?? "",
+    category: searchParams.get("category") ?? "",
     framework: searchParams.get("framework") ?? "",
     trust_level: searchParams.get("trust_level") ?? "",
     verification_tier: searchParams.get("verification_tier") ?? "",
@@ -130,6 +145,8 @@ function SearchContent() {
       const params = new URLSearchParams();
       if (q) params.set("q", q);
       if (f.capability_id) params.set("capability_id", f.capability_id);
+      if (f.package_type) params.set("package_type", f.package_type);
+      if (f.category) params.set("category", f.category);
       if (f.framework) params.set("framework", f.framework);
       if (f.trust_level) params.set("trust_level", f.trust_level);
       if (f.verification_tier) params.set("verification_tier", f.verification_tier);
@@ -144,6 +161,8 @@ function SearchContent() {
         const body: Record<string, unknown> = { per_page: PER_PAGE, page: p };
         if (q) body.q = q;
         if (f.capability_id) body.capability_id = f.capability_id;
+        if (f.package_type) body.package_type = f.package_type;
+        if (f.category) body.tag = f.category;  // category maps to tag filter
         if (f.framework) body.framework = f.framework;
         if (f.trust_level) body.trust_level = f.trust_level;
         if (f.verification_tier) body.verification_tier = f.verification_tier;
@@ -223,6 +242,8 @@ function SearchContent() {
   const handleClearFilters = useCallback(() => {
     const cleared: Filters = {
       capability_id: "",
+      package_type: "",
+      category: "",
       framework: "",
       trust_level: "",
       verification_tier: "",
@@ -497,6 +518,7 @@ function SearchContent() {
                         verification_tier={pkg.verification_tier}
                         verification_score={pkg.verification_score}
                         package_type={pkg.package_type}
+                        tags={pkg.tags}
                         publisher_name={pkg.publisher_name}
                       />
                     ))}

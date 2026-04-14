@@ -19,6 +19,7 @@ class SearchRequest(BaseModel):
     runtime: str | None = None
     trust_level: str | None = None
     verification_tier: str | None = None
+    tag: str | None = None
     publisher_slug: str | None = None
     sort_by: str | None = None
     page: int = Field(1, ge=1, le=500)
@@ -26,7 +27,7 @@ class SearchRequest(BaseModel):
 
     @field_validator(
         "package_type", "capability_id", "framework", "runtime",
-        "trust_level", "verification_tier", "publisher_slug",
+        "trust_level", "verification_tier", "tag", "publisher_slug",
         mode="before",
     )
     @classmethod

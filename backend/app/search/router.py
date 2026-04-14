@@ -46,6 +46,7 @@ def _build_search_cache_key(body: SearchRequest) -> str:
         "runtime": body.runtime,
         "trust_level": body.trust_level,
         "verification_tier": body.verification_tier,
+        "tag": body.tag,
         "publisher_slug": body.publisher_slug,
         "sort_by": body.sort_by,
         "page": body.page,
@@ -93,6 +94,8 @@ async def search_packages(body: SearchRequest, request: Request):
         filters.append(f'publisher_slug = "{body.publisher_slug}"')
     if body.verification_tier:
         filters.append(f'verification_tier = "{body.verification_tier}"')
+    if body.tag:
+        filters.append(f'tags = "{body.tag}"')
     filters.append("is_deprecated = false")
 
     meili_body: dict = {

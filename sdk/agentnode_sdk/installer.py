@@ -312,6 +312,11 @@ def install_package(
     runtime: str = "python",
     mcp_command: list[str] | None = None,
     remote_endpoint: str | None = None,
+    # ANP v0.3 taxonomy fields
+    prompts: list[dict] | None = None,
+    resources: list[dict] | None = None,
+    connector: dict | None = None,
+    agent: dict | None = None,
 ) -> dict[str, Any]:
     """Execute the full local install flow (mirrors CLI §13.4).
 
@@ -386,6 +391,11 @@ def install_package(
             "source": "sdk",
             "trust_level": trust_level,
             "permissions": permissions,
+            # ANP v0.3 taxonomy fields
+            "prompts": prompts or [],
+            "resources": resources or [],
+            "connector": connector,
+            "agent": agent,
         }
         if mcp_command:
             lock_entry["mcp_command"] = mcp_command

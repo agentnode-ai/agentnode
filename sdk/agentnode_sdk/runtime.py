@@ -2,6 +2,9 @@
 
 Zero-config integration for LLM agents: automatic tool registration,
 system prompt injection, and tool-loop execution.
+
+Note: upgrade is a distribution/relationship type, NOT an execution model.
+Runner and Policy ignore it. UI shows as "Add-on".
 """
 from __future__ import annotations
 
@@ -10,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from agentnode_sdk.installer import read_lockfile
+from agentnode_sdk.models import PromptArgumentSpec, PromptSpec, ResourceSpec
 from agentnode_sdk.policy import check_run as _policy_check_run
 from agentnode_sdk.policy import check_install as _policy_check_install
 from agentnode_sdk.policy import audit_decision as _policy_audit
@@ -742,6 +746,65 @@ class AgentNodeRuntime:
     def tool_specs(self) -> list[ToolSpec]:
         """Return internal typed tool specifications."""
         return list(_TOOL_SPECS)
+
+    def prompt_specs(self) -> list[PromptSpec]:
+        """Return prompt assets from all installed packages.
+
+        Discovery only — prompts are NOT executable by the runtime.
+        The host/agent decides how to use them.
+        """
+        lockfile = read_lockfile()
+        packages = lockfile.get("packages", {})
+        specs: list[PromptSpec] = []
+        for slug, info in packages.items():
+            for p in info.get("prompts", []):
+                name = p.get("name")
+                template = p.get("template")
+                if not name or not template:
+                    continue
+                arguments = None
+                if p.get("arguments"):
+                    arguments = [
+                        PromptArgumentSpec(
+                            name=a["name"],
+                            description=a.get("description"),
+                            required=a.get("required", False),
+                        )
+                        for a in p["arguments"]
+                        if a.get("name")
+                    ]
+                specs.append(PromptSpec(
+                    name=name,
+                    capability_id=p.get("capability_id", ""),
+                    template=template,
+                    description=p.get("description"),
+                    arguments=arguments,
+                ))
+        return specs
+
+    def resource_specs(self) -> list[ResourceSpec]:
+        """Return resource assets from all installed packages.
+
+        Discovery only — resources are NOT auto-loaded or injected.
+        URI is identity, not a load instruction (S10).
+        """
+        lockfile = read_lockfile()
+        packages = lockfile.get("packages", {})
+        specs: list[ResourceSpec] = []
+        for slug, info in packages.items():
+            for r in info.get("resources", []):
+                name = r.get("name")
+                uri = r.get("uri")
+                if not name or not uri:
+                    continue
+                specs.append(ResourceSpec(
+                    name=name,
+                    capability_id=r.get("capability_id", ""),
+                    uri=uri,
+                    description=r.get("description"),
+                    mime_type=r.get("mime_type"),
+                ))
+        return specs
 
     def as_openai_tools(self) -> list[dict]:
         """Tool definitions in OpenAI function-calling format."""

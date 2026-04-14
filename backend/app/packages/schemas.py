@@ -39,6 +39,43 @@ class CapabilityBlock(BaseModel):
     output_schema: dict | None = None
 
 
+class PromptArgumentBlock(BaseModel):
+    name: str
+    description: str | None = None
+    required: bool = False
+
+
+class PromptBlock(BaseModel):
+    """Non-executable prompt template asset."""
+
+    name: str
+    capability_id: str
+    template: str
+    description: str | None = None
+    arguments: list[PromptArgumentBlock] | None = None
+
+
+class ResourceBlock(BaseModel):
+    """Non-executable resource asset."""
+
+    name: str
+    capability_id: str
+    uri: str
+    description: str | None = None
+    mime_type: str | None = None
+
+
+class ConnectorBlock(BaseModel):
+    """Connector metadata visible in API/UI — no secrets."""
+
+    provider: str
+    auth_type: str | None = None
+    scopes: list[str] = []
+    token_refresh: bool = False
+    health_check_endpoint: str | None = None
+    rate_limit_rpm: int | None = None
+
+
 class RecommendedForBlock(BaseModel):
     agent_type: str | None = None
     missing_capability: str | None = None
@@ -146,6 +183,9 @@ class VerificationInfo(BaseModel):
 
 class PackageBlocks(BaseModel):
     capabilities: list[CapabilityBlock]
+    prompts: list[PromptBlock] = []
+    resources: list[ResourceBlock] = []
+    connector: ConnectorBlock | None = None
     recommended_for: list[RecommendedForBlock]
     install: InstallBlock
     compatibility: CompatibilityBlock

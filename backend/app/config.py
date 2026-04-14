@@ -125,6 +125,9 @@ class Settings(BaseSettings):
     STRIPE_TAX_ENABLED: bool = True
     AGENTNODE_BASE_URL: str = "https://agentnode.net"
 
+    # Credential encryption (Fernet key — generate with Fernet.generate_key())
+    CREDENTIAL_ENCRYPTION_KEY: str = ""
+
     # Publish limits
     MAX_ARTIFACT_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB
 

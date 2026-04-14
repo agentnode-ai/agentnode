@@ -35,7 +35,17 @@ from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import (
+    GetPromptResult,
+    Prompt,
+    PromptArgument,
+    PromptMessage,
+    ReadResourceResult,
+    Resource,
+    TextContent,
+    TextResourceContents,
+    Tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +253,188 @@ def create_server(pack_slugs: list[str]) -> Server:
                 logger.info(f"Loaded tool: {t['tool_name']}")
         except Exception as e:
             logger.error(f"Error loading {slug}: {e}")
+
+    # Load prompt specs from lockfile (discovery only, not executable)
+    loaded_prompts: dict[str, dict] = {}  # prompt_name → prompt dict
+    for slug in pack_slugs:
+        entry = _read_lock_entry(slug)
+        for p in entry.get("prompts", []):
+            name = p.get("name")
+            if not name or not p.get("template"):
+                continue
+            prompt_key = f"{slug}/{name}" if len(entry.get("prompts", [])) > 1 else name
+            loaded_prompts[prompt_key] = {
+                "slug": slug,
+                "name": name,
+                "template": p["template"],
+                "description": p.get("description"),
+                "arguments": p.get("arguments", []),
+            }
+            logger.info(f"Loaded prompt: {prompt_key}")
+
+    @app.list_prompts()
+    async def list_prompts() -> list[Prompt]:
+        prompts = []
+        for prompt_key, p in loaded_prompts.items():
+            args = None
+            if p["arguments"]:
+                args = [
+                    PromptArgument(
+                        name=a["name"],
+                        description=a.get("description"),
+                        required=a.get("required", False),
+                    )
+                    for a in p["arguments"]
+                ]
+            prompts.append(Prompt(
+                name=prompt_key,
+                description=p.get("description"),
+                arguments=args,
+            ))
+        return prompts
+
+    @app.get_prompt()
+    async def get_prompt(name: str, arguments: dict[str, str] | None = None) -> GetPromptResult:
+        if name not in loaded_prompts:
+            raise ValueError(f"Unknown prompt: {name}. Available: {list(loaded_prompts.keys())}")
+
+        p = loaded_prompts[name]
+        template = p["template"]
+
+        # Validate required arguments are present
+        declared_args = {a["name"]: a for a in p.get("arguments", [])}
+        for arg_name, arg_spec in declared_args.items():
+            if arg_spec.get("required") and (not arguments or arg_name not in arguments):
+                raise ValueError(
+                    f"Missing required argument '{arg_name}' for prompt '{name}'"
+                )
+
+        # Substitute arguments into template (only declared arguments)
+        if arguments:
+            for key, value in arguments.items():
+                if key not in declared_args:
+                    raise ValueError(
+                        f"Unknown argument '{key}' for prompt '{name}'. "
+                        f"Valid arguments: {sorted(declared_args.keys())}"
+                    )
+                template = template.replace("{{" + key + "}}", str(value))
+
+        return GetPromptResult(
+            description=p.get("description"),
+            messages=[
+                PromptMessage(
+                    role="user",
+                    content=TextContent(type="text", text=template),
+                ),
+            ],
+        )
+
+    # Load resource specs from lockfile (discovery only, no implicit fetching)
+    loaded_resources: dict[str, dict] = {}  # resource_key → resource dict
+    for slug in pack_slugs:
+        entry = _read_lock_entry(slug)
+        for r in entry.get("resources", []):
+            name = r.get("name")
+            uri = r.get("uri")
+            if not name or not uri:
+                continue
+            resource_key = f"{slug}/{name}" if len(entry.get("resources", [])) > 1 else name
+            loaded_resources[resource_key] = {
+                "slug": slug,
+                "name": name,
+                "uri": uri,
+                "description": r.get("description"),
+                "mime_type": r.get("mime_type"),
+            }
+            logger.info(f"Loaded resource: {resource_key}")
+
+    @app.list_resources()
+    async def list_resources() -> list[Resource]:
+        resources = []
+        for resource_key, r in loaded_resources.items():
+            resources.append(Resource(
+                name=resource_key,
+                uri=r["uri"],
+                description=r.get("description"),
+                mimeType=r.get("mime_type"),
+            ))
+        return resources
+
+    @app.read_resource()
+    async def read_resource(uri: str) -> ReadResourceResult:
+        """Read a resource by URI.
+
+        S7 semantics — v0.4 supports:
+        - resource:// URIs with local content → inline_content
+        - resource:// URIs without content → metadata_only
+        - https:// URIs → uri_reference (no implicit fetching)
+
+        No binary, no chunked_content, no file:// in v0.4.
+        """
+        # Find the resource by URI
+        matched = None
+        for r in loaded_resources.values():
+            if r["uri"] == uri:
+                matched = r
+                break
+
+        if matched is None:
+            raise ValueError(
+                f"Unknown resource URI: {uri}. "
+                f"Available: {[r['uri'] for r in loaded_resources.values()]}"
+            )
+
+        # Try content delivery via resource_provider
+        if uri.startswith("resource://"):
+            try:
+                from agentnode_sdk.resource_provider import read_content
+                rc = read_content(uri)
+                if rc.type == "inline" and rc.content is not None:
+                    text = json.dumps({
+                        "type": "inline_content",
+                        "name": matched["name"],
+                        "uri": matched["uri"],
+                        "description": matched.get("description"),
+                        "mime_type": rc.mime_type or matched.get("mime_type"),
+                        "content": rc.content,
+                    })
+                else:
+                    text = json.dumps({
+                        "type": "metadata_only",
+                        "name": matched["name"],
+                        "uri": matched["uri"],
+                        "description": matched.get("description"),
+                        "mime_type": matched.get("mime_type"),
+                    })
+            except Exception:
+                # Fallback to metadata_only
+                text = json.dumps({
+                    "type": "metadata_only",
+                    "name": matched["name"],
+                    "uri": matched["uri"],
+                    "description": matched.get("description"),
+                    "mime_type": matched.get("mime_type"),
+                })
+        else:
+            # https:// — return as uri_reference, NO implicit fetching
+            text = json.dumps({
+                "type": "uri_reference",
+                "name": matched["name"],
+                "uri": matched["uri"],
+                "description": matched.get("description"),
+                "mime_type": matched.get("mime_type"),
+                "note": "External resource — fetch is host responsibility.",
+            })
+
+        return ReadResourceResult(
+            contents=[
+                TextResourceContents(
+                    uri=uri,
+                    mimeType=matched.get("mime_type") or "application/json",
+                    text=text,
+                ),
+            ],
+        )
 
     @app.list_tools()
     async def list_tools() -> list[Tool]:

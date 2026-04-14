@@ -3,6 +3,7 @@ from app.packages.models import Package, PackageVersion
 from app.packages.schemas import (
     CapabilityBlock,
     CompatibilityBlock,
+    ConnectorBlock,
     EnvironmentInfo,
     EnvRequirement,
     Example,
@@ -12,8 +13,11 @@ from app.packages.schemas import (
     PackageDetailResponse,
     PerformanceBlock,
     PermissionsBlock,
+    PromptArgumentBlock,
+    PromptBlock,
     PublisherInfo,
     RecommendedForBlock,
+    ResourceBlock,
     TrustBlock,
     VerificationInfo,
     VerificationStepInfo,
@@ -88,6 +92,9 @@ def assemble_package_detail(
 
     version_info = None
     blocks_caps = []
+    blocks_prompts: list[PromptBlock] = []
+    blocks_resources: list[ResourceBlock] = []
+    blocks_connector: ConnectorBlock | None = None
     blocks_recommended = []
     blocks_install = InstallBlock(
         cli_command=f"agentnode install {pkg.slug}",
@@ -140,6 +147,57 @@ def assemble_package_detail(
                 input_schema=cap.input_schema,
                 output_schema=cap.output_schema,
             ))
+
+        # Prompts block — extract from manifest_raw (template + arguments live there)
+        raw_prompts = (version.manifest_raw or {}).get("capabilities", {}).get("prompts", [])
+        for p in raw_prompts:
+            if not p.get("name") or not p.get("template"):
+                continue
+            args = None
+            if p.get("arguments"):
+                args = [
+                    PromptArgumentBlock(
+                        name=a["name"],
+                        description=a.get("description"),
+                        required=a.get("required", False),
+                    )
+                    for a in p["arguments"]
+                    if a.get("name")
+                ]
+            blocks_prompts.append(PromptBlock(
+                name=p["name"],
+                capability_id=p.get("capability_id", ""),
+                template=p["template"],
+                description=p.get("description"),
+                arguments=args,
+            ))
+
+        # Resources block — extract from manifest_raw (uri + mime_type live there)
+        raw_resources = (version.manifest_raw or {}).get("capabilities", {}).get("resources", [])
+        for r in raw_resources:
+            if not r.get("name") or not r.get("uri"):
+                continue
+            blocks_resources.append(ResourceBlock(
+                name=r["name"],
+                capability_id=r.get("capability_id", ""),
+                uri=r["uri"],
+                description=r.get("description"),
+                mime_type=r.get("mime_type"),
+            ))
+
+        # Connector block — extract from manifest_raw
+        raw_connector = (version.manifest_raw or {}).get("connector")
+        if raw_connector and isinstance(raw_connector, dict) and raw_connector.get("provider"):
+            health = raw_connector.get("health_check", {})
+            rate = raw_connector.get("rate_limits", {})
+            blocks_connector = ConnectorBlock(
+                provider=raw_connector["provider"],
+                auth_type=raw_connector.get("auth_type"),
+                scopes=raw_connector.get("scopes", []),
+                token_refresh=raw_connector.get("token_refresh", False),
+                health_check_endpoint=health.get("endpoint") if isinstance(health, dict) else None,
+                rate_limit_rpm=rate.get("requests_per_minute") if isinstance(rate, dict) else None,
+            )
 
         # Recommended for block
         if version.upgrade_metadata and version.upgrade_metadata.recommended_for:
@@ -221,6 +279,9 @@ def assemble_package_detail(
         quarantine_status=quarantine_status,
         blocks=PackageBlocks(
             capabilities=blocks_caps,
+            prompts=blocks_prompts,
+            resources=blocks_resources,
+            connector=blocks_connector,
             recommended_for=blocks_recommended,
             install=blocks_install,
             compatibility=blocks_compat,

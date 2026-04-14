@@ -174,12 +174,31 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
   const version = latestVersion?.version_number ?? "unknown";
   const publishedAt = latestVersion?.published_at;
   const capabilities = blocks.capabilities ?? [];
+  const prompts = blocks.prompts ?? [];
+  const resources = blocks.resources ?? [];
+  const connector = blocks.connector;
   const recommendedFor = blocks.recommended_for ?? [];
   const install = blocks.install ?? {};
   const compat = blocks.compatibility ?? {};
   const perms = blocks.permissions;
   const trust = blocks.trust ?? {};
   const verification = pkg.verification;
+
+  // Derive UI category from package_type + tags
+  const pkgTags: string[] = pkg.tags ?? [];
+  const uiCategory = pkg.package_type === "agent"
+    ? "agent"
+    : pkgTags.some((t: string) => t === "character" || t === "persona")
+      ? "character"
+      : connector
+        ? "connector"
+        : null;
+
+  const CATEGORY_BADGE: Record<string, { bg: string; border: string; text: string; label: string }> = {
+    agent: { bg: "bg-blue-500/10", border: "border-blue-500/20", text: "text-blue-400", label: "Agent" },
+    character: { bg: "bg-purple-500/10", border: "border-purple-500/20", text: "text-purple-400", label: "Character" },
+    connector: { bg: "bg-orange-500/10", border: "border-orange-500/20", text: "text-orange-400", label: "Connector" },
+  };
 
   return (
     <div className="mx-auto max-w-6xl px-4 sm:px-6 py-10">
@@ -242,6 +261,11 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                 </span>
               )}
               <VerificationBadge verification={verification} />
+              {uiCategory && CATEGORY_BADGE[uiCategory] && (
+                <span className={`inline-flex items-center rounded-full ${CATEGORY_BADGE[uiCategory].bg} border ${CATEGORY_BADGE[uiCategory].border} px-3 py-1 text-xs font-medium ${CATEGORY_BADGE[uiCategory].text}`}>
+                  {CATEGORY_BADGE[uiCategory].label}
+                </span>
+              )}
             </div>
 
             {/* Review badges (per-version) */}
@@ -433,7 +457,167 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
             )}
           </section>
 
-          {/* 7. Permissions */}
+          {/* 7. Prompts */}
+          {prompts.length > 0 && (
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+              <h2 className="mb-4 text-lg font-semibold text-foreground">
+                Prompt Templates
+              </h2>
+              <div className="space-y-3">
+                {prompts.map((prompt: any) => (
+                  <div
+                    key={prompt.name}
+                    className="rounded-lg border border-border bg-background p-4"
+                  >
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className="text-sm font-medium text-foreground">
+                        {prompt.name}
+                      </span>
+                      <span className="rounded bg-purple-500/10 px-2 py-0.5 text-xs text-purple-400 border border-purple-500/20">
+                        prompt
+                      </span>
+                      {prompt.capability_id && (
+                        <span className="rounded-md border border-primary/20 bg-primary/5 px-2.5 py-0.5 text-xs font-mono text-primary">
+                          {prompt.capability_id}
+                        </span>
+                      )}
+                    </div>
+                    {prompt.description && (
+                      <p className="text-sm text-muted mt-2">
+                        {prompt.description}
+                      </p>
+                    )}
+                    <pre className="mt-3 rounded-md bg-card border border-border p-3 text-xs font-mono text-muted overflow-x-auto whitespace-pre-wrap">
+                      {prompt.template}
+                    </pre>
+                    {prompt.arguments && prompt.arguments.length > 0 && (
+                      <div className="mt-3">
+                        <p className="text-xs font-medium text-muted mb-1.5">Arguments:</p>
+                        <div className="space-y-1">
+                          {prompt.arguments.map((arg: any) => (
+                            <div key={arg.name} className="flex items-center gap-2 text-xs">
+                              <code className="font-mono text-foreground">{arg.name}</code>
+                              {arg.required && (
+                                <span className="text-red-400 text-[10px]">required</span>
+                              )}
+                              {arg.description && (
+                                <span className="text-muted">&mdash; {arg.description}</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* 8. Resources */}
+          {resources.length > 0 && (
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+              <h2 className="mb-4 text-lg font-semibold text-foreground">
+                Resources
+              </h2>
+              <div className="space-y-3">
+                {resources.map((resource: any) => (
+                  <div
+                    key={resource.name}
+                    className="rounded-lg border border-border bg-background p-4"
+                  >
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className="text-sm font-medium text-foreground">
+                        {resource.name}
+                      </span>
+                      <span className="rounded bg-blue-500/10 px-2 py-0.5 text-xs text-blue-400 border border-blue-500/20">
+                        resource
+                      </span>
+                      {resource.mime_type && (
+                        <span className="rounded bg-card px-2 py-0.5 text-xs text-muted border border-border font-mono">
+                          {resource.mime_type}
+                        </span>
+                      )}
+                      {resource.capability_id && (
+                        <span className="rounded-md border border-primary/20 bg-primary/5 px-2.5 py-0.5 text-xs font-mono text-primary">
+                          {resource.capability_id}
+                        </span>
+                      )}
+                    </div>
+                    {resource.description && (
+                      <p className="text-sm text-muted mt-2">
+                        {resource.description}
+                      </p>
+                    )}
+                    <div className="mt-2 flex items-center gap-2">
+                      <code className="text-xs font-mono text-muted bg-card border border-border rounded px-2 py-1 break-all">
+                        {resource.uri}
+                      </code>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* 9. Connector */}
+          {connector && (
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+              <h2 className="mb-4 text-lg font-semibold text-foreground">
+                Connector
+              </h2>
+              <div className="rounded-lg border border-border bg-background p-4 space-y-3">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="text-sm font-medium text-foreground">
+                    {connector.provider}
+                  </span>
+                  <span className="rounded bg-orange-500/10 px-2 py-0.5 text-xs text-orange-400 border border-orange-500/20">
+                    connector
+                  </span>
+                  {connector.auth_type && (
+                    <span className="rounded bg-card px-2 py-0.5 text-xs text-muted border border-border font-mono">
+                      {connector.auth_type}
+                    </span>
+                  )}
+                  {connector.token_refresh && (
+                    <span className="rounded bg-green-500/10 px-2 py-0.5 text-xs text-green-400 border border-green-500/20">
+                      auto-refresh
+                    </span>
+                  )}
+                </div>
+                {connector.scopes && connector.scopes.length > 0 && (
+                  <div>
+                    <span className="text-xs text-muted">Scopes:</span>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {connector.scopes.map((scope: string) => (
+                        <code
+                          key={scope}
+                          className="text-xs font-mono text-muted bg-card border border-border rounded px-1.5 py-0.5"
+                        >
+                          {scope}
+                        </code>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {connector.health_check_endpoint && (
+                  <div className="text-xs text-muted">
+                    Health check:{" "}
+                    <code className="font-mono text-muted bg-card border border-border rounded px-1.5 py-0.5">
+                      {connector.health_check_endpoint}
+                    </code>
+                  </div>
+                )}
+                {connector.rate_limit_rpm && (
+                  <div className="text-xs text-muted">
+                    Rate limit: {connector.rate_limit_rpm} req/min
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* 10. Permissions */}
           {perms && (
             <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
               <h2 className="mb-4 text-lg font-semibold text-foreground">
