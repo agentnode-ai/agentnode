@@ -79,6 +79,7 @@ agentnode install pdf-reader-pack --version 1.0.0
 | Flag | Description |
 |------|-------------|
 | `--version <ver>` | Install a specific version |
+| `--pkg-version <ver>` | Alias for `--version` (avoids conflicts with commander's built-in `--version`) |
 
 **What happens:**
 1. Fetches install metadata from the API
@@ -132,9 +133,16 @@ Validate an ANP manifest before publishing.
 
 ```bash
 agentnode validate ./my-pack
+agentnode validate ./my-pack --no-network
 ```
 
 Checks `agentnode.yaml` against all validation rules.
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `--no-network` | Offline validation only (checks manifest shape without calling the API) |
+| `--timeout <ms>` | Request timeout in milliseconds (default: 30000) |
 
 ---
 
@@ -235,6 +243,70 @@ agentnode policy-check --package browser-pack --no-shell --no-network
 | `--min-trust <level>` | Minimum trust level |
 | `--no-shell` | Disallow shell execution |
 | `--no-network` | Disallow unrestricted network |
+
+---
+
+### `agentnode import <path>`
+
+Import a tool from another platform and convert it to an ANP package.
+
+```bash
+agentnode import tool.py --from langchain
+agentnode import manifest.json --from mcp --out ./my-pack
+agentnode import tool.py --from openai --force
+```
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `--from <platform>` | Source platform: `mcp`, `langchain`, `openai`, `crewai`, `clawhub`, `skillssh` |
+| `--out <dir>` | Output directory (default: current directory) |
+| `--force` | Overwrite existing files in the output directory |
+
+---
+
+### `agentnode doctor`
+
+Diagnose environment problems (Python, pip, lockfile, config).
+
+```bash
+agentnode doctor
+```
+
+Checks: Python availability, pip version, config file validity, lockfile integrity, API reachability.
+
+---
+
+### `agentnode explain <slug>`
+
+Explain why a package was selected by the resolution engine.
+
+```bash
+agentnode explain pdf-reader-pack
+```
+
+Shows: score breakdown, capability match, trust level, framework compatibility.
+
+---
+
+### `agentnode api-keys`
+
+Manage API keys for programmatic access.
+
+```bash
+agentnode api-keys list
+agentnode api-keys create <label>
+agentnode api-keys set <key>
+agentnode api-keys remove <key>
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `create <label>` | Create a new API key (requires Bearer token from login) |
+| `list` | List all API keys for your account |
+| `set <key>` | Set the active API key in local config |
+| `remove <key>` | Remove an API key from local config |
 
 ---
 

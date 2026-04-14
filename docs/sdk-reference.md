@@ -87,6 +87,22 @@ result = an.validate({"package_id": "my-pack", "version": "1.0.0", ...})
 # result["valid"], result["errors"], result["warnings"]
 ```
 
+##### `install(package_slug, version, source, event_type) -> dict`
+
+Create an installation record and get artifact URL.
+
+```python
+result = an.install("pdf-reader-pack")
+```
+
+##### `recommend(missing_capabilities, framework, runtime) -> dict`
+
+Get package recommendations for missing capabilities.
+
+```python
+result = an.recommend(["pdf_extraction", "web_search"], framework="langchain")
+```
+
 ---
 
 ### `AgentNodeClient` (typed)
@@ -149,6 +165,158 @@ Track download and get artifact URL.
 ```python
 url = client.download("pdf-reader-pack")
 ```
+
+##### `install(slug, version, ...) -> InstallResult`
+
+Download, verify, and pip-install a package locally. Also records the install event on the server.
+
+```python
+result = client.install("pdf-reader-pack")
+print(result.installed, result.hash_verified)
+```
+
+##### `can_install(slug, version, ...) -> CanInstallResult`
+
+Pre-flight check — evaluates trust level, permissions, and deprecation status without performing any installation.
+
+```python
+check = client.can_install("pdf-reader-pack", require_verified=True)
+if check.allowed:
+    client.install("pdf-reader-pack")
+```
+
+##### `resolve_and_install(capabilities, framework, ...) -> InstallResult`
+
+Resolve capability gaps and install the best match.
+
+```python
+result = client.resolve_and_install(["pdf_extraction", "web_search"])
+print(result.slug, result.installed)  # "pdf-reader-pack", True
+```
+
+##### `detect_and_install(error, *, auto_upgrade_policy, ...) -> DetectAndInstallResult`
+
+Detect a missing capability from a runtime exception and optionally install the best match.
+
+```python
+try:
+    process_pdf("report.pdf")
+except Exception as e:
+    result = client.detect_and_install(e, auto_upgrade_policy="safe")
+    print(result.detected, result.capability, result.installed)
+```
+
+##### `smart_run(fn, *, auto_upgrade_policy, ...) -> SmartRunResult`
+
+Wrap a callable with automatic capability gap detection, installation, and retry.
+
+```python
+result = client.smart_run(
+    lambda: process_pdf("report.pdf"),
+    auto_upgrade_policy="safe",
+)
+print(result.success)         # True
+print(result.installed_slug)  # "pdf-reader-pack" (or None if no install needed)
+print(result.duration_ms)     # Total wall time including detection + install + retry
+```
+
+**Parameters:**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `fn` | Callable | required | The function to execute |
+| `auto_upgrade_policy` | str | `"safe"` | `"off"`, `"safe"`, or `"strict"` |
+
+**Policies:**
+- `"off"` — never auto-install; raise on missing capability
+- `"safe"` — install only verified+ packages automatically
+- `"strict"` — install only trusted+ packages automatically
+
+---
+
+### `AsyncAgentNode` (async dict-based)
+
+Async version of `AgentNode`. Same API, but all methods are `async`.
+
+```python
+from agentnode_sdk import AsyncAgentNode
+
+async with AsyncAgentNode(api_key="ank_...") as an:
+    results = await an.search("pdf extraction")
+```
+
+---
+
+## AgentNodeRuntime
+
+Zero-config LLM agent integration. Provides tool definitions, system prompts, and an auto-loop engine for any LLM provider.
+
+```python
+from agentnode_sdk import AgentNodeRuntime
+
+runtime = AgentNodeRuntime()
+```
+
+**Constructor:**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `client` | AgentNodeClient \| None | None | Optional pre-configured client |
+| `api_key` | str \| None | None | API key (creates client internally) |
+| `minimum_trust_level` | str | `"verified"` | Minimum trust for installs |
+
+### Tool Bundle
+
+```python
+bundle = runtime.tool_bundle()
+# {"tools": [...], "system_prompt": "..."}
+```
+
+### Provider-Specific Tool Formats
+
+```python
+runtime.as_openai_tools()     # OpenAI function-calling format
+runtime.as_anthropic_tools()  # Anthropic format
+runtime.as_gemini_tools()     # Gemini format
+runtime.as_generic_tools()    # Generic format
+```
+
+### Auto-Loop (`run`)
+
+Runs a full tool-calling loop with automatic dispatch:
+
+```python
+from openai import OpenAI
+
+result = runtime.run(
+    provider="openai",        # "openai", "anthropic", or "gemini"
+    client=OpenAI(),
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Find PDF tools on AgentNode"}],
+)
+print(result.content)
+```
+
+Supported providers: `"openai"` (including OpenRouter), `"anthropic"`, `"gemini"`.
+
+### Manual Dispatch (`handle`)
+
+For custom tool-calling loops:
+
+```python
+result = runtime.handle("agentnode_search", {"query": "pdf extraction"})
+# {"success": true, "result": {"total": 5, "results": [...]}}
+```
+
+### Meta-Tools
+
+The runtime registers 5 meta-tools automatically:
+
+| Tool | Description |
+|------|-------------|
+| `agentnode_capabilities` | List installed packages (local, no API call) |
+| `agentnode_search` | Search the registry (max 5 results) |
+| `agentnode_install` | Install a package by slug |
+| `agentnode_run` | Execute an installed tool |
+| `agentnode_acquire` | Search + install in one step |
 
 ---
 
@@ -337,6 +505,7 @@ except AgentNodeError as e:
 | `NotFoundError` | 404 | Resource not found |
 | `AuthError` | 401, 403 | Authentication/authorization failure |
 | `ValidationError` | 422 | Invalid input or manifest |
+| `RateLimitError` | 429 | Too many requests |
 
 ---
 
