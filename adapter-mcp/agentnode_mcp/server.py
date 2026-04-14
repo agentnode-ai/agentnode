@@ -230,6 +230,7 @@ def create_server(pack_slugs: list[str]) -> Server:
     loaded_tools: dict[str, Any] = {}  # tool_name → func
     tool_schemas: dict[str, dict] = {}  # tool_name → schema
     tool_descriptions: dict[str, str] = {}  # tool_name → description
+    tool_slugs: dict[str, str] = {}  # tool_name → pack slug (for policy)
 
     for slug in pack_slugs:
         try:
@@ -238,6 +239,7 @@ def create_server(pack_slugs: list[str]) -> Server:
                 loaded_tools[t["tool_name"]] = t["func"]
                 tool_schemas[t["tool_name"]] = t["schema"]
                 tool_descriptions[t["tool_name"]] = t["description"]
+                tool_slugs[t["tool_name"]] = slug
                 logger.info(f"Loaded tool: {t['tool_name']}")
         except Exception as e:
             logger.error(f"Error loading {slug}: {e}")
@@ -259,6 +261,43 @@ def create_server(pack_slugs: list[str]) -> Server:
             return [TextContent(
                 type="text",
                 text=json.dumps({"error": f"Unknown tool: {name}. Available: {list(loaded_tools.keys())}"}),
+            )]
+
+        # Policy check — MCP is non-interactive (BD-3)
+        slug = tool_slugs.get(name, name)
+        try:
+            from agentnode_sdk.policy import check_run, audit_decision
+            entry = _read_lock_entry(slug)
+            decision = check_run(slug, name, {}, entry, interactive=False)
+            audit_decision(
+                decision, "mcp_run", slug,
+                tool_name=name,
+                trust_level=entry.get("trust_level"),
+            )
+            if decision.action == "deny":
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"error": decision.reason}),
+                )]
+            if decision.action == "prompt":
+                # MCP has no interactive prompt — deny with hint
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "error": f"Policy requires approval: {decision.reason}. "
+                        "Configure permissions in ~/.agentnode/config.json"
+                    }),
+                )]
+        except Exception as exc:
+            # BD-7: fail-closed — policy check failure in non-interactive
+            # MCP path must deny, not silently allow execution.
+            logger.warning("Policy check failed in MCP, denying execution: %s", exc)
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "error": f"Policy check failed: {exc}. "
+                    "Ensure agentnode_sdk is installed and config is valid."
+                }),
             )]
 
         func = loaded_tools[name]

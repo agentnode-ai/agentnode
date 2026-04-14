@@ -528,6 +528,42 @@ class AgentNodeClient:
         except Exception:
             pass
 
+        # 2b. Policy check (BD-10, PHASE-A: temporary double-check, see Phase B)
+        try:
+            from agentnode_sdk.policy import check_install as _policy_check_install
+            from agentnode_sdk.policy import audit_decision as _policy_audit
+            policy_entry = {
+                "trust_level": trust_level or "unverified",
+                "permissions": _permissions_to_dict(meta.permissions),
+            }
+            decision = _policy_check_install(slug, policy_entry, interactive=True)
+            _policy_audit(
+                decision, "client_install", slug,
+                trust_level=policy_entry["trust_level"],
+            )
+            if decision.action == "deny":
+                return InstallResult(
+                    slug=slug,
+                    version=meta.version,
+                    installed=False,
+                    already_installed=False,
+                    message=decision.reason,
+                    trust_level=trust_level,
+                    verification_tier=verification_tier,
+                )
+            if decision.action == "prompt":
+                return InstallResult(
+                    slug=slug,
+                    version=meta.version,
+                    installed=False,
+                    already_installed=False,
+                    message=f"Approval required: {decision.reason}",
+                    trust_level=trust_level,
+                    verification_tier=verification_tier,
+                )
+        except Exception:
+            pass  # Policy check is additive in Phase A
+
         # 3. Trust check
         if require_trusted or require_verified:
             pkg = self.get_package(slug)

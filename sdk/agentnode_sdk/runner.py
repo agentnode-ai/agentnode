@@ -11,7 +11,7 @@ from typing import Any
 
 from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.models import RunToolResult
-from agentnode_sdk.policy import resolve_runtime
+from agentnode_sdk.policy import resolve_runtime, check_run, audit_decision
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,24 @@ def run_tool(
 
     # Read lockfile entry
     entry = _get_lockfile_entry(slug, lockfile_path)
+
+    # Pre-execution policy check
+    decision = check_run(slug, tool_name, kwargs, entry, interactive=True)
+    audit_decision(
+        decision, "run_tool", slug,
+        tool_name=tool_name,
+        trust_level=entry.get("trust_level"),
+    )
+    if decision.action == "deny":
+        return RunToolResult(
+            success=False, error=decision.reason, mode_used="policy_denied",
+        )
+    if decision.action == "prompt":
+        return RunToolResult(
+            success=False,
+            error=f"Policy requires approval: {decision.reason}",
+            mode_used="policy_prompt",
+        )
 
     # Resolve runtime (default: python for backward compat)
     runtime = resolve_runtime(entry) if entry else "python"

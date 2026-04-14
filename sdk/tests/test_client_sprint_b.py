@@ -30,7 +30,7 @@ def _install_info_payload(slug: str = "pdf-reader", version: str = "1.0.0") -> d
         "dependencies": [],
         "permissions": {
             "network_level": "none",
-            "filesystem_level": "temp",
+            "filesystem_level": "read",
             "code_execution_level": "none",
             "data_access_level": "input_only",
             "user_approval_level": "never",

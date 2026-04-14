@@ -80,12 +80,29 @@ def _mock_resolve_result(total=3):
 
 
 def _lockfile_with(packages=None):
-    """Create a lockfile dict."""
+    """Create a lockfile dict.
+
+    Entries should include trust_level and permissions to pass policy checks.
+    Use _pkg() to create well-formed entries.
+    """
     return {
         "lockfile_version": "0.1",
         "updated_at": "2026-01-01T00:00:00+00:00",
         "packages": packages or {},
     }
+
+
+def _pkg(version="1.0", trust_level="verified", tools=None, **extra):
+    """Build a lockfile package entry with policy-valid defaults."""
+    entry = {
+        "version": version,
+        "trust_level": trust_level,
+        "permissions": {"network_level": "none", "filesystem_level": "none",
+                        "code_execution_level": "none"},
+        "tools": tools or [],
+    }
+    entry.update(extra)
+    return entry
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +297,7 @@ class TestHandleRouting:
     @patch("agentnode_sdk.runtime.read_lockfile")
     def test_routes_run(self, mock_lf):
         mock_lf.return_value = _lockfile_with({
-            "test-pack": {"version": "1.0", "tools": [{"name": "run"}]},
+            "test-pack": _pkg(tools=[{"name": "run"}]),
         })
         mock_client = MagicMock()
         mock_client.run_tool.return_value = _mock_run_tool_result(result={"ok": True})
@@ -520,10 +537,7 @@ class TestHandleRun:
     @patch("agentnode_sdk.runtime.read_lockfile")
     def test_slug_tool_name_arguments(self, mock_lf):
         mock_lf.return_value = _lockfile_with({
-            "my-pack": {
-                "version": "1.0",
-                "tools": [{"name": "tool_a"}, {"name": "tool_b"}],
-            },
+            "my-pack": _pkg(tools=[{"name": "tool_a"}, {"name": "tool_b"}]),
         })
         mock_client = MagicMock()
         mock_client.run_tool.return_value = _mock_run_tool_result(result={"answer": 42})
@@ -542,10 +556,7 @@ class TestHandleRun:
     @patch("agentnode_sdk.runtime.read_lockfile")
     def test_multi_tool_error_with_available_tools(self, mock_lf):
         mock_lf.return_value = _lockfile_with({
-            "multi-pack": {
-                "version": "1.0",
-                "tools": [{"name": "extract_text"}, {"name": "summarize_pdf"}],
-            },
+            "multi-pack": _pkg(tools=[{"name": "extract_text"}, {"name": "summarize_pdf"}]),
         })
         rt = _make_runtime()
 
@@ -557,10 +568,7 @@ class TestHandleRun:
     @patch("agentnode_sdk.runtime.read_lockfile")
     def test_single_tool_auto_select(self, mock_lf):
         mock_lf.return_value = _lockfile_with({
-            "single-pack": {
-                "version": "1.0",
-                "tools": [{"name": "the_tool"}],
-            },
+            "single-pack": _pkg(tools=[{"name": "the_tool"}]),
         })
         mock_client = MagicMock()
         mock_client.run_tool.return_value = _mock_run_tool_result(result="ok")
@@ -573,7 +581,7 @@ class TestHandleRun:
     @patch("agentnode_sdk.runtime.read_lockfile")
     def test_args_default_empty(self, mock_lf):
         mock_lf.return_value = _lockfile_with({
-            "pack": {"version": "1.0", "tools": [{"name": "t"}]},
+            "pack": _pkg(tools=[{"name": "t"}]),
         })
         mock_client = MagicMock()
         mock_client.run_tool.return_value = _mock_run_tool_result(result="ok")
@@ -601,7 +609,7 @@ class TestHandleRun:
     @patch("agentnode_sdk.runtime.read_lockfile")
     def test_run_failure(self, mock_lf):
         mock_lf.return_value = _lockfile_with({
-            "pack": {"version": "1.0", "tools": [{"name": "t"}]},
+            "pack": _pkg(tools=[{"name": "t"}]),
         })
         mock_client = MagicMock()
         mock_client.run_tool.return_value = _mock_run_tool_result(

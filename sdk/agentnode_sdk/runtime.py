@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from agentnode_sdk.installer import read_lockfile
+from agentnode_sdk.policy import check_run as _policy_check_run
+from agentnode_sdk.policy import check_install as _policy_check_install
+from agentnode_sdk.policy import audit_decision as _policy_audit
 
 
 # ---------------------------------------------------------------------------
@@ -1102,9 +1105,13 @@ class AgentNodeRuntime:
                 },
             )
 
+        # Policy check deferred to client.install() which has real metadata
+        # (trust_level, permissions from API). We only audit the install
+        # intent here. The actual check_install() runs in client.install()
+        # with real data — see BD-10, PHASE-A.
+
         require_trusted = self._minimum_trust_level in ("trusted", "curated")
         require_verified = self._minimum_trust_level == "verified"
-
         install_result = self._client.install(
             slug,
             require_trusted=require_trusted,
@@ -1204,6 +1211,27 @@ class AgentNodeRuntime:
         # Auto-select single tool
         if len(tools) == 1 and not tool_name:
             tool_name = tools[0].get("name")
+
+        # Policy check (pre-execution)
+        decision = _policy_check_run(slug, tool_name, arguments, entry, interactive=True)
+        _policy_audit(
+            decision, "runtime_run", slug,
+            tool_name=tool_name,
+            trust_level=entry.get("trust_level"),
+        )
+        if decision.action == "deny":
+            return ToolResult(
+                success=False,
+                error=ToolError("policy_denied", decision.reason),
+            )
+        if decision.action == "prompt":
+            return ToolResult(
+                success=False,
+                error=ToolError(
+                    "policy_prompt",
+                    f"Policy requires approval: {decision.reason}",
+                ),
+            )
 
         run_result = self._client.run_tool(slug, tool_name, **arguments)
         if not run_result.success:

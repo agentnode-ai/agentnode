@@ -28,6 +28,7 @@ from agentnode_sdk.models import (
     SmartRunResult,
 )
 from agentnode_sdk.compatibility import recommend_model
+from agentnode_sdk.policy import PolicyResult, check_install, check_run
 from agentnode_sdk.runner import run_tool
 from agentnode_sdk.runtime import AgentNodeRuntime
 
@@ -35,7 +36,7 @@ from agentnode_sdk.runtime import AgentNodeRuntime
 Client = AgentNodeClient
 ToolError = AgentNodeToolError
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 __all__ = [
     "AgentNode",
     "AsyncAgentNode",
@@ -67,5 +68,8 @@ __all__ = [
     "DetectAndInstallResult",
     "SmartRunResult",
     "AgentNodeRuntime",
+    "PolicyResult",
+    "check_install",
+    "check_run",
     "recommend_model",
 ]

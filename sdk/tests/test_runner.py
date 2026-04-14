@@ -140,7 +140,7 @@ class TestRunToolDirect:
         mock_fn.assert_called_once_with(x=1)
 
     @patch("agentnode_sdk.runtimes.python_runner.load_tool", side_effect=ImportError("not installed"))
-    def test_error_wraps_in_result(self, mock_load, tmp_path):
+    def test_error_wraps_in_result(self, mock_load, tmp_path, bypass_policy):
         lf = _write_lockfile(tmp_path, {})
         result = run_tool("missing-pack", mode="direct", lockfile_path=lf)
 
@@ -160,7 +160,9 @@ class TestRunToolSubprocess:
             "json-pack": {
                 "version": "1.0",
                 "entrypoint": "json",
-                "trust_level": "unverified",
+                "trust_level": "verified",
+                "permissions": {"network_level": "none", "filesystem_level": "none",
+                                "code_execution_level": "none"},
             },
         })
         # json.loads is a real callable — call it via subprocess
@@ -181,7 +183,9 @@ class TestRunToolSubprocess:
     def test_timeout(self, tmp_path):
         """Subprocess that hangs gets killed."""
         lf = _write_lockfile(tmp_path, {
-            "hang-pack": {"version": "1.0", "entrypoint": "time", "trust_level": "unverified"},
+            "hang-pack": {"version": "1.0", "entrypoint": "time", "trust_level": "verified",
+                          "permissions": {"network_level": "none", "filesystem_level": "none",
+                                          "code_execution_level": "none"}},
         })
         # time.run doesn't exist so it'll error, but let's test with a real timeout
         # by using a very short timeout with a script that we know takes time
@@ -193,7 +197,9 @@ class TestRunToolSubprocess:
     def test_nonzero_exit(self, tmp_path, monkeypatch):
         """Non-zero exit code from subprocess produces error."""
         lf = _write_lockfile(tmp_path, {
-            "bad-pack": {"version": "1.0", "entrypoint": "bad_module", "trust_level": "unverified"},
+            "bad-pack": {"version": "1.0", "entrypoint": "bad_module", "trust_level": "verified",
+                         "permissions": {"network_level": "none", "filesystem_level": "none",
+                                         "code_execution_level": "none"}},
         })
         result = run_tool("bad-pack", mode="subprocess", timeout=10.0, lockfile_path=lf)
         assert isinstance(result, RunToolResult)
@@ -243,7 +249,7 @@ class TestRunToolAuto:
         result = run_tool("t-pack", mode="auto", timeout=5.0, lockfile_path=lf)
         assert result.mode_used == "subprocess"
 
-    def test_missing_trust_falls_to_subprocess(self, tmp_path):
+    def test_missing_trust_falls_to_subprocess(self, tmp_path, bypass_policy):
         lf = _write_lockfile(tmp_path, {
             "old-pack": {"version": "1.0", "entrypoint": "old_pack.tool"},
         })

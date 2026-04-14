@@ -10,6 +10,66 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest import mock
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# Policy bypass fixture — explicit opt-in via @pytest.mark.bypass_policy.
+#
+# WHY THIS EXISTS: Phase A added policy checks (check_run/check_install) to
+# runner.py, runtime.py, and client.py. Pre-existing tests were written
+# before policy enforcement and don't set up trust/permission entries that
+# satisfy the new checks. Rather than modifying 100+ existing lockfile
+# fixtures, tests that don't exercise policy can opt in to bypass it.
+#
+# WHEN TO USE: Only on pre-existing tests that test non-policy behavior
+# (subprocess isolation, tool dispatch, client API calls, etc.).
+# New tests MUST NOT use this unless they genuinely don't test policy.
+#
+# WHEN NOT TO USE: test_policy.py and test_policy_integration.py provide
+# their own explicit config mocks and must never use this fixture.
+# ---------------------------------------------------------------------------
+
+_ALLOW_RESULT = None  # Lazy-initialized to avoid import ordering issues
+
+
+def _get_allow_result():
+    global _ALLOW_RESULT
+    if _ALLOW_RESULT is None:
+        from agentnode_sdk.policy import PolicyResult
+        _ALLOW_RESULT = PolicyResult(action="allow", reason="test bypass", source="default")
+    return _ALLOW_RESULT
+
+
+@pytest.fixture
+def bypass_policy():
+    """Bypass all policy checks. Opt-in only — use @pytest.mark.bypass_policy
+    or request this fixture explicitly in tests that don't exercise policy.
+
+    Mocks check_run, check_install, and audit_decision at all import sites
+    (policy.py, runner.py, runtime.py) so tool dispatch proceeds without
+    trust/permission enforcement.
+    """
+    allow = _get_allow_result()
+    patches = [
+        mock.patch("agentnode_sdk.policy.check_run", return_value=allow),
+        mock.patch("agentnode_sdk.policy.check_install", return_value=allow),
+        mock.patch("agentnode_sdk.policy.audit_decision"),
+        # runner.py imports
+        mock.patch("agentnode_sdk.runner.check_run", return_value=allow),
+        mock.patch("agentnode_sdk.runner.audit_decision"),
+        # runtime.py imports (aliased)
+        mock.patch("agentnode_sdk.runtime._policy_check_run", return_value=allow),
+        mock.patch("agentnode_sdk.runtime._policy_check_install", return_value=allow),
+        mock.patch("agentnode_sdk.runtime._policy_audit"),
+    ]
+    for p in patches:
+        p.start()
+    yield
+    for p in reversed(patches):
+        p.stop()
 
 
 # ---------------------------------------------------------------------------
