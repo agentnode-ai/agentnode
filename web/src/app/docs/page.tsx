@@ -215,7 +215,7 @@ API key stored in ~/.agentnode/credentials`}</CodeBlock>
 
 Results for "pdf extraction":
 
-  pdf-reader-pack          v1.2.0  trusted   Extract text, tables, and metadata from PDFs
+  pdf-reader-pack          v1.0.0  trusted   Extract text, tables, and metadata from PDFs
   pdf-extractor-pack       v1.0.0  verified  High-fidelity PDF text extraction
   ocr-reader-pack          v1.1.0  trusted   OCR-based document reading including PDFs
 
@@ -235,10 +235,10 @@ Installed pdf-reader-pack@1.2.0`}</CodeBlock>
             <SubHeading>5. Run it in your code</SubHeading>
             <CodeBlock title="agent.py" language="python">{`from agentnode_sdk import run_tool
 
-# v0.3: Run with trust-aware isolation (auto = safe default)
+# Run with automatic subprocess isolation (all trust levels)
 result = run_tool("pdf-reader-pack", file_path="quarterly-report.pdf")
 print(result.result["text"])
-print(result.mode_used)  # "direct" for trusted, "subprocess" for others
+print(result.mode_used)  # "subprocess" (default) or "direct" (explicit opt-in)
 
 # Multi-tool packs: specify the tool name
 result = run_tool("csv-analyzer-pack", tool_name="describe", file_path="data.csv")`}</CodeBlock>
@@ -291,8 +291,8 @@ print(result.result["text"])`}</CodeBlock>
                 <C>resolve_and_install()</C> handles resolution, trust
                 verification, download, hash check, extraction, dependency
                 install, and lockfile update.{" "}
-                <C>run_tool()</C> then executes with automatic isolation —
-                trusted tools run direct, others in a subprocess.
+                <C>run_tool()</C> then executes with automatic subprocess
+                isolation for all trust levels.
               </p>
             </div>
 
@@ -354,7 +354,7 @@ print(f"Ran in {data.mode_used} mode ({data.duration_ms}ms)")`}</CodeBlock>
                 ["resolve()", "Scores packages by capability match (40%), framework fit (20%), runtime compatibility (15%), trust level (15%), permissions (10%)"],
                 ["can_install()", "Pre-flight check — verifies trust level, permissions, deprecation status without downloading anything"],
                 ["install()", "Downloads artifact, verifies SHA-256 hash, extracts to ~/.agentnode/packages/, runs pip install for dependencies, writes agentnode.lock with trust metadata"],
-                ["run_tool()", "Reads trust level from lockfile → routes to direct (in-process) or subprocess (isolated) execution → returns RunToolResult with output, timing, and mode used"],
+                ["run_tool()", "Always runs in subprocess isolation by default (mode='auto'). Pass mode='direct' to opt into in-process execution. Returns RunToolResult with output, timing, and mode used"],
                 ["smart_run()", "Full loop: run → detect gap → resolve → install → retry once. Returns SmartRunResult with complete transparency"],
               ]}
             />
@@ -599,7 +599,7 @@ result = runtime.handle("agentnode_search", {"query": "pdf extraction"})
               Verify the installation:
             </p>
             <CodeBlock title="terminal">{`$ agentnode --version
-agentnode/0.3.0
+agentnode/0.3.1
 
 $ agentnode --help
 Usage: agentnode <command> [options]
@@ -777,7 +777,7 @@ pdf-reader-pack@1.2.0
 Resolving 2 capabilities for langchain...
 
   pdf_extraction:
-    1. pdf-reader-pack       v1.2.0  score: 0.94  trusted
+    1. pdf-reader-pack       v1.0.0  score: 0.94  trusted
     2. pdf-extractor-pack    v1.0.0  score: 0.81  verified
 
   web_search:
@@ -960,7 +960,7 @@ Rolling back pdf-reader-pack 1.3.0 -> 1.2.0... done
 # List all installed packs
 $ agentnode list
 Installed packages:
-  pdf-reader-pack    v1.2.0  trusted
+  pdf-reader-pack    v1.0.0  trusted
   web-search-pack    v1.0.0  trusted`}</CodeBlock>
           </section>
 
@@ -1420,7 +1420,7 @@ Checking environment...
               </p>
               <CodeBlock title="terminal">{`$ agentnode list
 Installed packages:
-  pdf-reader-pack    v1.2.0  trusted
+  pdf-reader-pack    v1.0.0  trusted
   web-search-pack    v1.0.0  trusted
   email-drafter-pack v1.0.0  verified`}</CodeBlock>
             </div>

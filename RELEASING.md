@@ -14,10 +14,10 @@ This document describes how to publish new versions of the SDK, adapters, and de
 3. Commit and push to `main`
 4. Create a GitHub Release:
    ```bash
-   gh release create sdk-v0.3.0 --target main --title "SDK v0.3.0" --notes "Release notes here"
+   gh release create sdk-v0.4.1 --target main --title "SDK v0.4.1" --notes "Release notes here"
    ```
 5. The workflow will: checkout → install → test → build → upload to PyPI
-6. Verify: `pip install agentnode-sdk==0.3.0`
+6. Verify: `pip install agentnode-sdk==0.4.1`
 
 ### What the workflow does
 

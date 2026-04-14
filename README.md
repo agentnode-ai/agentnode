@@ -53,7 +53,7 @@ Every capability is:
 ```
 $ agentnode search "pdf extraction"
 
-  pdf-reader-pack  v1.2.0  ★ trusted  ✓ verified
+  pdf-reader-pack  v1.0.0  ★ trusted  ✓ verified
   Extract text, tables, and metadata from PDF documents.
   Capabilities: pdf_extraction · Frameworks: langchain, crewai, generic
 ```
@@ -72,7 +72,7 @@ client = AgentNodeClient()
 # Find and install the best PDF tool
 client.resolve_and_install(["pdf_extraction"])
 
-# Run with automatic isolation — trusted tools run direct, others in subprocess
+# Run with automatic subprocess isolation (all trust levels)
 result = run_tool("pdf-reader-pack", file_path="report.pdf")
 print(result.result["pages"])
 ```

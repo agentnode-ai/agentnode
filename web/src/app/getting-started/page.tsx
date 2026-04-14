@@ -314,9 +314,9 @@ print(result.content)`}
           </div>
 
           <p className="mt-6 text-sm text-muted">
-            Trusted and curated skills run directly in your process for speed.
-            Verified and unverified skills run in an isolated subprocess with a
-            restricted environment.
+            All skills run in an isolated subprocess by default, regardless of
+            trust level. Pass <code className="font-mono text-xs">mode=&quot;direct&quot;</code> to
+            opt into in-process execution for trusted tools when you need shared state.
           </p>
         </div>
       </section>
