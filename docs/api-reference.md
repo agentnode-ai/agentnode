@@ -441,6 +441,77 @@ Valid reasons: `malware`, `typosquatting`, `spam`, `misleading`, `policy_violati
 
 ---
 
+## Credentials
+
+### `POST /v1/credentials/{id}/test`
+
+Auth required. Test connectivity for a stored credential.
+
+**Response:** `200`
+```json
+{ "reachable": true, "status_code": 200, "latency_ms": 142.5, "message": "Connection successful" }
+```
+
+### `POST /v1/credentials/oauth/initiate`
+
+Auth required. Start an OAuth2 PKCE authorization flow.
+
+```json
+{ "connector_package_slug": "slack-connector", "scopes": ["chat:write", "channels:read"] }
+```
+
+**Response:** `200`
+```json
+{ "auth_url": "https://slack.com/oauth/v2/authorize?client_id=...&code_challenge=...&state=..." }
+```
+
+Supported providers: GitHub, Slack. Provider is determined from the connector manifest.
+
+### `GET /v1/credentials/oauth/callback`
+
+OAuth2 callback. Exchanges authorization code for tokens, encrypts and stores them.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `code` | string | Authorization code from provider |
+| `state` | string | State token (must match initiate) |
+
+Redirects to frontend with success/error status.
+
+### `GET /v1/credentials/resolve/{provider}`
+
+Auth required. Get a short-lived resolve token for credential proxy access.
+
+**Response:** `200`
+```json
+{ "resolve_token": "eyJhbGc...", "expires_in": 60 }
+```
+
+The token is a JWT with 60-second TTL. Use it with the proxy endpoint below.
+
+### `POST /v1/credentials/proxy`
+
+Auth required. Execute an HTTP request with server-side credential injection.
+
+```json
+{
+  "resolve_token": "eyJhbGc...",
+  "method": "GET",
+  "url": "https://api.github.com/user",
+  "json": null
+}
+```
+
+**Response:** `200`
+```json
+{ "status_code": 200, "body": { "login": "octocat", "id": 1 } }
+```
+
+Domain validation applies — the URL must match the connector's `allowed_domains`.
+No credential secrets appear in the response.
+
+---
+
 ## Error Format
 
 All errors follow this format:

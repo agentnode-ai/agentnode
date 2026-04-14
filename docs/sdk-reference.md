@@ -463,6 +463,7 @@ All models are Python dataclasses in `agentnode_sdk.models`.
 | `mode_used` | str |
 | `duration_ms` | float |
 | `timed_out` | bool |
+| `run_id` | str \| None |
 
 ### `ArtifactInfo`
 | Field | Type |
@@ -479,6 +480,125 @@ All models are Python dataclasses in `agentnode_sdk.models`.
 | `code_execution_level` | str |
 | `data_access_level` | str |
 | `user_approval_level` | str |
+
+---
+
+---
+
+## Agent Run Observability
+
+Every agent execution produces a structured run log for debugging and audit.
+
+### Run Logs
+
+```python
+from agentnode_sdk.run_log import RunLog, read_run, list_runs
+
+# Run logs are created automatically during run_agent()
+# Stored at ~/.agentnode/runs/{run_id}.jsonl
+
+# Read all events for a specific run
+events = read_run("550e8400-e29b-41d4-a716-446655440000")
+for event in events:
+    print(event["event"], event["ts"], event.get("tool_name"))
+
+# List recent runs
+run_ids = list_runs(limit=10)
+```
+
+**Event types:**
+| Event | Fields |
+|-------|--------|
+| `run_start` | `slug`, `run_id` |
+| `tool_call` | `slug`, `tool_name`, `run_id` |
+| `tool_result` | `slug`, `tool_name`, `duration_ms`, `success`, `error?` |
+| `iteration` | `iteration`, `run_id` |
+| `step_start` | `step_name`, `slug` |
+| `step_result` | `step_name`, `success`, `duration_ms` |
+| `run_end` | `slug`, `success`, `duration_ms` |
+| `truncated` | Emitted when max entries (1000) reached |
+
+Run logs contain only metadata — no tool inputs, outputs, or secrets.
+
+---
+
+## Agent Isolation
+
+Agent execution can run in a thread (default) or a separate process.
+
+```yaml
+# In agentnode.yaml manifest
+agent:
+  isolation: "thread"    # default — daemon thread with timeout
+  # or
+  isolation: "process"   # multiprocessing.Process with terminate→kill
+```
+
+**Thread (default):** Daemon thread with timeout. Sufficient for most use cases. The default because `AgentContext` contains closures that are not trivially picklable.
+
+**Process (opt-in):** Separate `multiprocessing.Process` with escalating termination (SIGTERM → grace period → SIGKILL). Use when the entrypoint is pickle-safe and hard isolation is required.
+
+---
+
+## Credential Resolution
+
+The SDK resolves credentials through a configurable chain.
+
+```python
+from agentnode_sdk.credential_resolver import resolve_handle
+
+# Resolution order (mode="auto"): env var → API → None
+handle = resolve_handle(provider="github", auth_type="oauth2")
+```
+
+**Configuration** (`~/.agentnode/config.json`):
+```json
+{
+  "credentials": {
+    "resolve_mode": "auto"
+  }
+}
+```
+
+| Mode | Behavior |
+|------|----------|
+| `"env"` | Only check `AGENTNODE_CRED_{PROVIDER}` env vars |
+| `"api"` | Only call the backend resolve endpoint |
+| `"auto"` | Try env var first, then API if available (default) |
+
+When resolving via API, the SDK receives a `ProxyCredentialHandle` that routes `authorized_request()` calls through the backend's proxy endpoint. Secrets never leave the server.
+
+---
+
+## Resource Content Provider
+
+Read content from resource URIs.
+
+```python
+from agentnode_sdk.resource_provider import read_content
+
+# Local package resource → inline content
+rc = read_content("resource://my-pack/api_spec", installed_packages_dir="~/.agentnode/packages")
+print(rc.type)       # "inline"
+print(rc.content)    # '{"openapi": "3.0.0"}'
+print(rc.mime_type)  # "application/json"
+
+# HTTPS resource → URI reference (no fetch)
+rc = read_content("https://example.com/schema.json")
+print(rc.type)  # "uri_reference"
+print(rc.uri)   # "https://example.com/schema.json"
+```
+
+**Behavior by scheme:**
+| URI scheme | Result type | Notes |
+|------------|-------------|-------|
+| `resource://` | `inline` | Reads from `{package}/resources/{name}.{ext}` |
+| `resource://` (no file) | `metadata_only` | Fallback when file not found |
+| `https://` | `uri_reference` | No implicit fetching |
+
+Content limit: 100KB. Files larger than this return `metadata_only` with a description.
+
+Supported extensions: `.json`, `.txt`, `.md`, `.yaml`, `.yml`, `.csv`, `.xml`, or exact name match.
 
 ---
 

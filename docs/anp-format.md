@@ -22,8 +22,9 @@ An ANP package consists of:
 
 | Version | Status | Notes |
 |---------|--------|-------|
-| `0.2`   | **Current** | Multi-tool entrypoints, compact manifests with server-side defaults, richer metadata (`use_cases`, `examples`, `env_requirements`) |
-| `0.1`   | Legacy (accepted) | Single-tool entrypoint, all fields explicit. New manifests should prefer v0.2. |
+| `0.3`   | **Current** | Capability taxonomy (tools/resources/prompts), agent runtime, connector metadata, sequential orchestration, conditional steps, resource content delivery |
+| `0.2`   | Supported | Multi-tool entrypoints, compact manifests with server-side defaults, richer metadata (`use_cases`, `examples`, `env_requirements`) |
+| `0.1`   | Legacy (accepted) | Single-tool entrypoint, all fields explicit. New manifests should prefer v0.3. |
 
 The backend validates both. For v0.2 manifests, the server applies
 `normalize_manifest()` which fills MVP defaults (runtime, install_mode,
@@ -214,6 +215,88 @@ examples:
 - Each tool's `input_schema` / `output_schema` must be valid JSON Schema
 - v0.2 multi-tool packs must declare a per-tool `entrypoint`
 - `pyproject.toml` version must match manifest version
+
+## Agent Configuration (v0.4)
+
+Packages with `package_type: agent` can configure agent runtime behavior:
+
+```yaml
+agent:
+  isolation: "thread"         # "thread" (default) or "process"
+  entrypoint: "my_agent:run"  # Agent entrypoint function
+  timeout: 60                 # Max execution time in seconds
+  max_iterations: 10          # Max ReAct loop iterations
+  allowed_tools:              # S4 allowlist
+    - "pdf-reader-pack"
+    - "web-search-pack"
+```
+
+### Agent Isolation
+
+| Value | Behavior |
+|-------|----------|
+| `"thread"` | Daemon thread with timeout (default). Safe for all entrypoints. |
+| `"process"` | `multiprocessing.Process` with terminate→kill escalation. Requires pickle-safe entrypoint. |
+
+The default is `"thread"` because `AgentContext` contains closures that
+cannot be trivially serialized across process boundaries. Opt into
+`"process"` only when hard isolation is needed and the entrypoint supports it.
+
+## Resource Content (v0.4)
+
+Resources can include local content files in the package:
+
+```yaml
+capabilities:
+  resources:
+    - name: "api_spec"
+      uri: "resource://my-pack/api_spec"
+      description: "OpenAPI specification"
+      content_path: "resources/api_spec.json"   # optional, relative to package root
+```
+
+**Rules for `content_path`:**
+- Must be a relative path (no leading `/`)
+- No directory traversal (`..` is rejected)
+- File must exist in the package at publish time
+- Max content size: 100KB
+
+When installed, `resource://` URIs resolve to inline content from these files.
+Without `content_path`, resources return metadata only.
+
+## Conditional Orchestration Steps (v0.4)
+
+Sequential orchestration steps can include a `when` condition:
+
+```yaml
+orchestration:
+  mode: sequential
+  steps:
+    - name: "extract"
+      tool: "pdf-reader-pack"
+      input:
+        file: "$input.file_path"
+
+    - name: "translate"
+      tool: "translation-pack"
+      when: "$steps.extract.result is not null"
+      input:
+        text: "$steps.extract.result"
+        target_lang: "$input.lang"
+```
+
+**Supported expressions:**
+| Syntax | Meaning |
+|--------|---------|
+| `$ref == value` | Equality check |
+| `$ref != value` | Inequality check |
+| `$ref is null` | Reference is null or unresolvable |
+| `$ref is not null` | Reference exists and is not null |
+
+- Only single comparisons — no `and`/`or`
+- Unresolvable `$ref` → step is skipped (not an error)
+- Skipped steps are tracked in `step_details` with `skipped: true`
+- Subsequent steps cannot reference results from skipped steps
 
 ## Slug vs. Entrypoint
 
