@@ -464,6 +464,7 @@ def check_run(
 
 _VALID_EVENTS = frozenset({
     "run_tool", "runtime_run", "runtime_install", "client_install", "mcp_run",
+    "agent_run",
 })
 
 
@@ -474,6 +475,7 @@ def audit_decision(
     *,
     tool_name: str | None = None,
     trust_level: str | None = None,
+    run_id: str | None = None,
 ) -> None:
     """Log a policy decision to ``~/.agentnode/audit.jsonl``.
 
@@ -500,7 +502,7 @@ def audit_decision(
         "reason": decision.reason,
         "trust": trust_level or "unknown",
         "env": env_str,
-        "request_id": None,  # Phase A: placeholder for future correlation
+        "request_id": run_id,  # Correlates with agent run_id when available
     }
 
     try:

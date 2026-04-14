@@ -5,6 +5,48 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# ---------------------------------------------------------------------------
+# Capability spec models — non-executable assets (ANP v0.3 taxonomy)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PromptArgumentSpec:
+    """Typed argument for a prompt template."""
+
+    name: str
+    description: str | None = None
+    required: bool = False
+
+
+@dataclass
+class PromptSpec:
+    """Non-executable prompt template asset.
+
+    Prompts are discoverable assets — no entrypoint, no input_schema.
+    """
+
+    name: str
+    capability_id: str
+    template: str  # required — a prompt without template has no substance
+    description: str | None = None
+    arguments: list[PromptArgumentSpec] | None = None
+
+
+@dataclass
+class ResourceSpec:
+    """Non-executable resource asset.
+
+    Resources are discoverable assets — no entrypoint, no input_schema.
+    URI is identity, not a load instruction (S10).
+    """
+
+    name: str
+    capability_id: str
+    uri: str  # required — identity per S10
+    description: str | None = None
+    mime_type: str | None = None
+
+
 @dataclass
 class SearchHit:
     slug: str
@@ -149,6 +191,7 @@ class RunToolResult:
     mode_used: str = "direct"
     duration_ms: float = 0.0
     timed_out: bool = False
+    run_id: str | None = None
 
 
 @dataclass
