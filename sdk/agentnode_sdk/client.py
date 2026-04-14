@@ -668,6 +668,9 @@ class AgentNodeClient:
         Evaluates trust level, permissions, and deprecation status
         without performing any installation.
 
+        Phase B: delegates trust and permission checks to
+        ``policy.check_install()`` as Single Source of Truth.
+
         Args:
             require_trusted: Require 'trusted' or 'curated' trust level.
             require_verified: Require 'verified', 'trusted', or 'curated'.
@@ -676,7 +679,7 @@ class AgentNodeClient:
         meta = self.get_install_metadata(slug, version)
         pkg = self.get_package(slug)
 
-        # Check deprecation
+        # Check deprecation (install-specific, not policy)
         if pkg.is_deprecated:
             return CanInstallResult(
                 allowed=False,
@@ -687,7 +690,7 @@ class AgentNodeClient:
                 permissions=meta.permissions,
             )
 
-        # Check artifact availability
+        # Check artifact availability (install-specific, not policy)
         if not meta.artifact or not meta.artifact.url:
             return CanInstallResult(
                 allowed=False,
@@ -698,9 +701,7 @@ class AgentNodeClient:
                 permissions=meta.permissions,
             )
 
-        # Check trust — P1-SDK9: canonical default is "unverified",
-        # never "unknown". Everything downstream expects the trust-level
-        # vocabulary from models.py (unverified/verified/trusted/curated).
+        # Fetch trust level — P1-SDK9: canonical default is "unverified"
         trust_level = "unverified"
         try:
             detail = self._request("GET", f"/packages/{slug}")
@@ -708,6 +709,7 @@ class AgentNodeClient:
         except Exception:
             pass
 
+        # Caller-specified trust constraints (require_trusted / require_verified)
         if require_trusted and trust_level not in TRUST_LEVELS_TRUSTED:
             return CanInstallResult(
                 allowed=False,
@@ -728,7 +730,33 @@ class AgentNodeClient:
                 permissions=meta.permissions,
             )
 
-        # Check permissions
+        # Policy check via check_install() — Single Source of Truth
+        from agentnode_sdk.policy import check_install as _policy_check
+        policy_entry = {
+            "trust_level": trust_level,
+            "permissions": _permissions_to_dict(meta.permissions),
+        }
+        decision = _policy_check(slug, policy_entry, interactive=True)
+        if decision.action == "deny":
+            return CanInstallResult(
+                allowed=False,
+                slug=slug,
+                version=meta.version,
+                trust_level=trust_level,
+                reason=decision.reason,
+                permissions=meta.permissions,
+            )
+        if decision.action == "prompt":
+            return CanInstallResult(
+                allowed=False,
+                slug=slug,
+                version=meta.version,
+                trust_level=trust_level,
+                reason=f"Approval required: {decision.reason}",
+                permissions=meta.permissions,
+            )
+
+        # Caller-specified permission deny-list (kept for backward compat)
         if meta.permissions and denied_permissions:
             perm_map = {
                 "network": meta.permissions.network_level,
