@@ -27,7 +27,7 @@ from typing import Any
 
 from agentnode_sdk.models import RunToolResult
 from agentnode_sdk.policy import PolicyResult, _trust_meets_minimum, audit_decision
-from agentnode_sdk.run_log import RunLog
+from agentnode_sdk.run_log import RunLog, cleanup_old_runs
 
 logger = logging.getLogger("agentnode.agent_runner")
 
@@ -351,6 +351,7 @@ def run_agent(
         max_tool_calls, max_iterations, isolation,
     )
 
+    run_result: RunToolResult
     try:
         if isolation == "process":
             result = _execute_with_process(
@@ -372,7 +373,7 @@ def run_agent(
         )
         run_log.run_end(success=True, duration_ms=elapsed)
 
-        return RunToolResult(
+        run_result = RunToolResult(
             success=True,
             result=result,
             mode_used="agent",
@@ -389,7 +390,7 @@ def run_agent(
             run_id=run_id,
         )
         run_log.run_end(success=False, duration_ms=elapsed, error=str(exc))
-        return RunToolResult(
+        run_result = RunToolResult(
             success=False,
             error=str(exc),
             mode_used="agent",
@@ -406,7 +407,7 @@ def run_agent(
             run_id=run_id,
         )
         run_log.run_end(success=False, duration_ms=elapsed, error=str(exc))
-        return RunToolResult(
+        run_result = RunToolResult(
             success=False,
             error=str(exc),
             mode_used="agent",
@@ -423,7 +424,7 @@ def run_agent(
             run_id=run_id,
         )
         run_log.run_end(success=False, duration_ms=elapsed, error="timeout")
-        return RunToolResult(
+        run_result = RunToolResult(
             success=False,
             error=(
                 f"Agent '{slug}' timed out after {effective_timeout}s "
@@ -443,7 +444,7 @@ def run_agent(
             run_id=run_id,
         )
         run_log.run_end(success=False, duration_ms=elapsed, error=str(exc))
-        return RunToolResult(
+        run_result = RunToolResult(
             success=False,
             error=str(exc),
             mode_used="agent",
@@ -460,13 +461,21 @@ def run_agent(
             run_id=run_id,
         )
         run_log.run_end(success=False, duration_ms=elapsed, error=str(exc))
-        return RunToolResult(
+        run_result = RunToolResult(
             success=False,
             error=f"{type(exc).__name__}: {exc}",
             mode_used="agent",
             duration_ms=round(elapsed, 1),
             run_id=run_id,
         )
+
+    # Run log retention cleanup (once per agent run, non-blocking)
+    try:
+        cleanup_old_runs()
+    except Exception:
+        logger.debug("Run log cleanup failed", exc_info=True)
+
+    return run_result
 
 
 # ---------------------------------------------------------------------------

@@ -171,3 +171,79 @@ def list_runs(limit: int = 20) -> list[str]:
 
     files = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
     return [f.stem for f in files[:limit]]
+
+
+# ---------------------------------------------------------------------------
+# Retention / cleanup
+# ---------------------------------------------------------------------------
+
+def _load_retention_config() -> tuple[int, int]:
+    """Load retention config from ~/.agentnode/config.json.
+
+    Returns (max_age_days, max_count). Reads the raw JSON to access
+    the 'run_log' section which is not part of the SDK config defaults.
+    """
+    import json as _json
+    from agentnode_sdk.config import config_path
+
+    try:
+        raw = _json.loads(config_path().read_text(encoding="utf-8"))
+    except Exception:
+        return 30, 500
+
+    run_log_cfg = raw.get("run_log", {})
+    if not isinstance(run_log_cfg, dict):
+        run_log_cfg = {}
+    max_age_days = run_log_cfg.get("max_age_days", 30)
+    max_count = run_log_cfg.get("max_count", 500)
+    return int(max_age_days), int(max_count)
+
+
+def cleanup_old_runs(
+    max_age_days: int | None = None,
+    max_count: int | None = None,
+) -> int:
+    """Delete old run logs based on age and count limits.
+
+    Returns the number of files deleted.
+    """
+    cfg_age, cfg_count = _load_retention_config()
+    effective_age = max_age_days if max_age_days is not None else cfg_age
+    effective_count = max_count if max_count is not None else cfg_count
+
+    try:
+        d = _runs_dir()
+    except Exception:
+        return 0
+
+    files = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    if not files:
+        return 0
+
+    deleted = 0
+    now = time.time()
+    cutoff = now - (effective_age * 86400)
+
+    # Keep at most effective_count files; among those, delete files older than cutoff
+    for i, f in enumerate(files):
+        should_delete = False
+
+        # Over count limit — delete (oldest first, so index >= effective_count)
+        if i >= effective_count:
+            should_delete = True
+        # Over age limit
+        elif f.stat().st_mtime < cutoff:
+            should_delete = True
+
+        if should_delete:
+            try:
+                f.unlink()
+                deleted += 1
+            except Exception:
+                logger.debug("Failed to delete run log: %s", f, exc_info=True)
+
+    if deleted:
+        logger.info("run_log_cleanup: deleted %d old run logs", deleted)
+
+    return deleted

@@ -1,10 +1,12 @@
-"""Tests for the structured run log (PR 1 — Agent Run Observability)."""
+"""Tests for the structured run log — write, read, limits, and cleanup."""
 import json
+import os
+import time
 import uuid
 
 import pytest
 
-from agentnode_sdk.run_log import MAX_ENTRIES_PER_RUN, RunLog, list_runs, read_run
+from agentnode_sdk.run_log import MAX_ENTRIES_PER_RUN, RunLog, cleanup_old_runs, list_runs, read_run
 
 
 @pytest.fixture
@@ -173,3 +175,71 @@ class TestListRuns:
 
         result = list_runs(limit=2)
         assert len(result) == 2
+
+
+class TestCleanupOldRuns:
+    def test_no_cleanup_when_under_limits(self):
+        for _ in range(3):
+            log = RunLog(str(uuid.uuid4()))
+            log.run_start("test", "goal")
+
+        deleted = cleanup_old_runs(max_age_days=30, max_count=500)
+        assert deleted == 0
+        assert len(list_runs(limit=100)) == 3
+
+    def test_max_count_enforced(self):
+        for _ in range(5):
+            log = RunLog(str(uuid.uuid4()))
+            log.run_start("test", "goal")
+
+        deleted = cleanup_old_runs(max_age_days=30, max_count=3)
+        assert deleted == 2
+        assert len(list_runs(limit=100)) == 3
+
+    def test_max_age_enforced(self, tmp_path):
+        # Create some run files with old timestamps
+        runs_dir = tmp_path / "runs"
+        runs_dir.mkdir(exist_ok=True)
+
+        # Create 3 "old" files by backdating their mtime
+        old_ids = []
+        for _ in range(3):
+            rid = str(uuid.uuid4())
+            old_ids.append(rid)
+            log = RunLog(rid)
+            log.run_start("test", "old goal")
+            path = runs_dir / f"{rid}.jsonl"
+            # Set mtime to 60 days ago
+            old_time = time.time() - 60 * 86400
+            os.utime(path, (old_time, old_time))
+
+        # Create 2 "new" files (current time)
+        for _ in range(2):
+            log = RunLog(str(uuid.uuid4()))
+            log.run_start("test", "new goal")
+
+        deleted = cleanup_old_runs(max_age_days=30, max_count=500)
+        assert deleted == 3
+        remaining = list_runs(limit=100)
+        assert len(remaining) == 2
+        for old_id in old_ids:
+            assert old_id not in remaining
+
+    def test_config_values_used(self, monkeypatch, tmp_path):
+        """Cleanup reads max_age_days and max_count from config."""
+        from agentnode_sdk import config
+
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps({
+            "version": "1",
+            "run_log": {"max_age_days": 1, "max_count": 2},
+        }))
+        monkeypatch.setattr(config, "config_path", lambda: cfg_path)
+
+        for _ in range(5):
+            log = RunLog(str(uuid.uuid4()))
+            log.run_start("test", "goal")
+
+        deleted = cleanup_old_runs()
+        assert deleted == 3
+        assert len(list_runs(limit=100)) == 2

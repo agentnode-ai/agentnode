@@ -22,6 +22,8 @@ import { doctorCommand } from "./commands/doctor.js";
 import { explainCommand } from "./commands/explain.js";
 import { apiKeysCommand } from "./commands/api-keys.js";
 import { importCommand } from "./commands/import.js";
+import { runsCommand } from "./commands/runs.js";
+import { credentialsCommand } from "./commands/credentials.js";
 
 // Read version from package.json so the --version output stays in sync
 // with the published npm package instead of drifting against a hardcoded
@@ -64,5 +66,7 @@ program.addCommand(doctorCommand);
 program.addCommand(explainCommand);
 program.addCommand(apiKeysCommand);
 program.addCommand(importCommand);
+program.addCommand(runsCommand);
+program.addCommand(credentialsCommand);
 
 program.parse();
