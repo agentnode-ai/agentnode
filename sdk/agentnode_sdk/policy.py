@@ -158,7 +158,7 @@ def _trust_meets_minimum(package_trust: str, minimum: str) -> bool:
 # ---------------------------------------------------------------------------
 
 _KNOWN_NETWORK_VALUES = {"unrestricted", "restricted", "none"}
-_KNOWN_FILESYSTEM_VALUES = {"full", "write", "read", "none"}
+_KNOWN_FILESYSTEM_VALUES = {"full", "write", "read", "temp", "none"}
 _KNOWN_CODE_EXECUTION_VALUES = {"unrestricted", "subprocess", "none"}
 
 

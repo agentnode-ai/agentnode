@@ -522,7 +522,13 @@ class AgentNodeClient:
         verification_tier = None
         try:
             detail = self._request("GET", f"/packages/{slug}")
-            trust_level = detail.get("trust_level", "unverified")
+            # trust_level lives in publisher.trust_level or blocks.trust.publisher_trust_level,
+            # NOT as a top-level field (which is None/missing in the API response).
+            trust_level = (
+                detail.get("publisher", {}).get("trust_level")
+                or detail.get("blocks", {}).get("trust", {}).get("publisher_trust_level")
+                or "unverified"
+            )
             lv = detail.get("latest_version") or {}
             verification_tier = lv.get("verification_tier")
         except Exception:
