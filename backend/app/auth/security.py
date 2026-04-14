@@ -265,9 +265,13 @@ async def bump_user_session_gen(redis, user_id: str) -> int:
 
 # --- Account Lockout (Redis) ---
 
-async def check_login_lockout(redis, email: str) -> None:
-    """Raise if account is locked out due to too many failed attempts."""
-    key = f"lockout:{email}"
+async def check_login_lockout(redis, email: str, client_ip: str = "") -> None:
+    """Raise if account is locked out due to too many failed attempts.
+
+    Lockout is keyed per email+IP so an attacker cannot lock out a victim
+    by spraying bad passwords from a different IP.
+    """
+    key = f"lockout:{email}:{client_ip}" if client_ip else f"lockout:{email}"
     locked = await redis.get(key)
     if locked:
         ttl = await redis.ttl(key)
@@ -280,19 +284,21 @@ async def check_login_lockout(redis, email: str) -> None:
         )
 
 
-async def record_failed_login(redis, email: str) -> None:
+async def record_failed_login(redis, email: str, client_ip: str = "") -> None:
     """Increment failed login counter. Lock account after threshold."""
-    counter_key = f"login_fails:{email}"
+    suffix = f"{email}:{client_ip}" if client_ip else email
+    counter_key = f"login_fails:{suffix}"
     count = await redis.incr(counter_key)
     if count == 1:
         await redis.expire(counter_key, settings.LOGIN_LOCKOUT_SECONDS)
 
     if count >= settings.LOGIN_MAX_ATTEMPTS:
-        lockout_key = f"lockout:{email}"
+        lockout_key = f"lockout:{suffix}"
         await redis.set(lockout_key, "1", ex=settings.LOGIN_LOCKOUT_SECONDS)
         await redis.delete(counter_key)
 
 
-async def clear_failed_logins(redis, email: str) -> None:
+async def clear_failed_logins(redis, email: str, client_ip: str = "") -> None:
     """Clear failed login counter on successful login."""
-    await redis.delete(f"login_fails:{email}")
+    suffix = f"{email}:{client_ip}" if client_ip else email
+    await redis.delete(f"login_fails:{suffix}")

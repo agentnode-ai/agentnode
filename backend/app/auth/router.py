@@ -106,13 +106,13 @@ async def register(body: RegisterRequest, background_tasks: BackgroundTasks, ses
 async def login(body: LoginRequest, request: Request, response: Response, background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)):
     await check_login_rate_limits(request, response, body.email)
     redis = request.app.state.redis
-    result = await login_user(session, body.email, body.password, body.totp_code, redis=redis)
+    forwarded = request.headers.get("x-forwarded-for")
+    ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+    result = await login_user(session, body.email, body.password, body.totp_code, redis=redis, client_ip=ip)
     # Set httpOnly cookies for web clients
     set_auth_cookies(response, result["access_token"], result["refresh_token"], is_admin=result.get("is_admin", False))
 
     # New login alert (background — don't block login response)
-    forwarded = request.headers.get("x-forwarded-for")
-    ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
     ua = request.headers.get("user-agent", "unknown")
     from app.shared.email import send_new_login_alert_email
     background_tasks.add_task(send_new_login_alert_email, body.email, ip, ua)
@@ -167,10 +167,16 @@ async def refresh(body: RefreshRequest, request: Request, response: Response, se
     new_refresh, new_jti = create_refresh_token(user_id, gen=current_gen)
     await store_refresh_token(redis, user_id, new_jti)
 
-    # Check admin status for cookie
+    # Check ban + admin status before issuing new tokens
     from app.auth.models import User
-    user_result = await session.execute(select(User.is_admin).where(User.id == user_id))
-    is_admin = user_result.scalar() or False
+    user_result = await session.execute(
+        select(User.is_admin, User.is_banned).where(User.id == user_id)
+    )
+    row = user_result.one_or_none()
+    if not row or row.is_banned:
+        clear_auth_cookies(response)
+        raise AppError("AUTH_ACCOUNT_BANNED", "Your account has been suspended", 403)
+    is_admin = row.is_admin or False
 
     # Set new cookies for web clients
     set_auth_cookies(response, new_access, new_refresh, is_admin=is_admin)

@@ -1,6 +1,6 @@
 # AgentNode Full Audit Backlog (2026-04-02)
 
-171+ findings from 8 parallel audit agents. **166 resolved, 5 deferred.**
+171+ findings from 8 parallel audit agents. **171 resolved, 5 deferred.**
 
 ---
 
@@ -317,13 +317,20 @@ Post-launch follow-up (Sprint J addition):
 
 See `docs/internal/audit-2026-04/MERGED.md` for the full themed list. High-value clusters:
 
-- Security polish: lockout keyed only by email; `COOKIE_SECURE=False` default; banned users receive tokens on first refresh after ban; API-key timing sidechannel.
+- Security polish: ~~lockout keyed only by email~~; `COOKIE_SECURE=False` default; ~~banned users receive tokens on first refresh after ban~~; ~~API-key timing sidechannel~~.
 - API polish: untyped `dict` bodies; manual `UUID(str)`; 14 missing `response_model`s; webhook `DELETE` shape drift.
 - SEO polish: sitemap no `lastmod`; silent empty-sitemap 200; `robots.txt` missing `/i/` `/invite/`; OG images missing on 12 routes; `next/image` not used anywhere.
 - SDK polish: missing type hints on 11 public functions; shallow exception hierarchy; stale compatibility matrix.
-- CLI polish: help text drift (`install --pin` ghost flag); Windows PowerShell 5.1 color leak; `rollback` double prompt.
-- Deploy polish: no cron jitter (all tasks start together); CORS missing `PATCH`; no Redis client limits/timeouts; `[dev]` extras in production install; unpinned CI `ruff`.
+- CLI polish: help text drift (`install --pin` ghost flag); Windows PowerShell 5.1 color leak; `rollback` double prompt; ~~`doctor` serialized API calls~~.
+- Deploy polish: no cron jitter (all tasks start together); ~~CORS missing `PATCH`~~; no Redis client limits/timeouts; `[dev]` extras in production install; unpinned CI `ruff`.
 - Docs polish: CLI README command order drift; error-codes drift (docs 12, code 17); `docker-compose` vs `docker compose`; hardcoded `0.3.0` in `cli/src/index.ts:28`.
+
+Sprint K progress (2026-04-14):
+- [x] **P2-S1** Lockout keyed per email+IP — `backend/app/auth/security.py` lockout/record/clear functions now key on `{email}:{client_ip}` so an attacker cannot lock out a victim by spraying bad passwords from a different IP. `login_user` and `login` router pass `client_ip` through the full chain.
+- [x] **P2-S2** Banned user refresh check — `backend/app/auth/router.py` `/refresh` now queries `User.is_admin, User.is_banned` before issuing new tokens. Banned users get cookies cleared + 403.
+- [x] **P2-S3** API-key constant-time comparison — `backend/app/auth/dependencies.py` `_authenticate_api_key` uses `hmac.compare_digest()` instead of `==` for hash comparison, closing the timing sidechannel.
+- [x] **P2-D1** CORS missing PATCH — `backend/app/main.py` `allow_methods` now includes `PATCH`.
+- [x] **P2-C1** Doctor serialized API calls — `cli/src/commands/doctor.ts` uses `Promise.allSettled` for parallel package fetches instead of sequential loop.
 
 ### Adapter follow-up (P2)
 

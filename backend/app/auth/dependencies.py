@@ -103,6 +103,8 @@ async def _authenticate_jwt(session: AsyncSession, token: str, expected_type: st
 
 
 async def _authenticate_api_key(session: AsyncSession, key: str) -> User | None:
+    import hmac as _hmac
+
     prefix = key[:8]
     result = await session.execute(
         select(ApiKey).where(ApiKey.key_prefix == prefix)
@@ -111,7 +113,7 @@ async def _authenticate_api_key(session: AsyncSession, key: str) -> User | None:
 
     key_hash = hash_api_key(key)
     for candidate in candidates:
-        if candidate.key_hash_sha256 == key_hash:
+        if _hmac.compare_digest(candidate.key_hash_sha256, key_hash):
             if candidate.revoked_at is not None:
                 raise AppError("AUTH_API_KEY_REVOKED", "API key has been revoked", 401)
             # Update last_used_at

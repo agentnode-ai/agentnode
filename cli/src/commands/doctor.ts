@@ -27,49 +27,54 @@ export const doctorCommand = new Command("doctor")
       const issues: { type: string; slug: string; message: string }[] = [];
       const installedCapabilities: string[] = [];
 
-      // Check each installed package
-      for (const slug of slugs) {
-        const entry = lockfile.packages[slug];
-        try {
-          const pkg = await getPackage(slug);
+      // Fetch all package details in parallel instead of sequentially
+      const pkgResults = await Promise.allSettled(
+        slugs.map((slug) => getPackage(slug).then((pkg) => ({ slug, pkg })))
+      );
 
-          // Collect capabilities
-          const caps = pkg.blocks?.capabilities || [];
-          for (const cap of caps) {
-            if (cap.capability_id && !installedCapabilities.includes(cap.capability_id)) {
-              installedCapabilities.push(cap.capability_id);
-            }
-          }
+      for (const result of pkgResults) {
+        if (result.status === "rejected") continue;
+        const { slug, pkg } = result.value;
 
-          // Check deprecation
-          if (pkg.is_deprecated) {
-            issues.push({ type: "warning", slug, message: "Package is deprecated" });
+        // Collect capabilities
+        const caps = pkg.blocks?.capabilities || [];
+        for (const cap of caps) {
+          if (cap.capability_id && !installedCapabilities.includes(cap.capability_id)) {
+            installedCapabilities.push(cap.capability_id);
           }
+        }
 
-          // Check trust
-          const trust = pkg.blocks?.trust || {};
-          if (trust.security_findings_count > 0) {
-            issues.push({
-              type: "error",
-              slug,
-              message: `${trust.security_findings_count} open security finding(s)`,
-            });
-          }
+        if (pkg.is_deprecated) {
+          issues.push({ type: "warning", slug, message: "Package is deprecated" });
+        }
 
-          // Check permissions
-          const perms = pkg.blocks?.permissions || {};
-          if (perms.code_execution_level === "shell") {
-            issues.push({ type: "warning", slug, message: "Has shell execution permission" });
-          }
-          if (perms.network_level === "unrestricted") {
-            issues.push({ type: "warning", slug, message: "Has unrestricted network access" });
-          }
-        } catch {
-          issues.push({ type: "error", slug, message: "Could not fetch package details (may be removed)" });
+        const trust = pkg.blocks?.trust || {};
+        if (trust.security_findings_count > 0) {
+          issues.push({
+            type: "error",
+            slug,
+            message: `${trust.security_findings_count} open security finding(s)`,
+          });
+        }
+
+        const perms = pkg.blocks?.permissions || {};
+        if (perms.code_execution_level === "shell") {
+          issues.push({ type: "warning", slug, message: "Has shell execution permission" });
+        }
+        if (perms.network_level === "unrestricted") {
+          issues.push({ type: "warning", slug, message: "Has unrestricted network access" });
         }
       }
 
-      // Check for updates
+      // Mark failed fetches
+      for (let i = 0; i < pkgResults.length; i++) {
+        if (pkgResults[i].status === "rejected") {
+          issues.push({ type: "error", slug: slugs[i], message: "Could not fetch package details (may be removed)" });
+        }
+      }
+
+      // Check for updates (runs in parallel with package fetches if possible,
+      // but we need installed caps first for recommendations)
       try {
         const packagesToCheck = slugs.map((s) => ({
           slug: s,

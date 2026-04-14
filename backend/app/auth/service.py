@@ -82,17 +82,17 @@ async def revoke_all_refresh_tokens(redis, user_id: UUID | str) -> int:
     return await bump_user_session_gen(redis, str(user_id))
 
 
-async def login_user(session: AsyncSession, email: str, password: str, totp_code: str | None = None, redis=None) -> dict:
+async def login_user(session: AsyncSession, email: str, password: str, totp_code: str | None = None, redis=None, client_ip: str = "") -> dict:
     # Check lockout before attempting authentication
     if redis:
-        await check_login_lockout(redis, email)
+        await check_login_lockout(redis, email, client_ip)
 
     result = await session.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(password, user.password_hash):
         if redis:
-            await record_failed_login(redis, email)
+            await record_failed_login(redis, email, client_ip)
         raise AppError("AUTH_INVALID_CREDENTIALS", "Invalid email or password", 401)
 
     # 2FA check
@@ -101,12 +101,12 @@ async def login_user(session: AsyncSession, email: str, password: str, totp_code
             raise AppError("AUTH_2FA_REQUIRED", "2FA code required", 403)
         if not verify_totp(user.two_factor_secret, totp_code):
             if redis:
-                await record_failed_login(redis, email)
+                await record_failed_login(redis, email, client_ip)
             raise AppError("AUTH_2FA_INVALID", "Invalid 2FA code", 403)
 
     # Clear failed login counter on success
     if redis:
-        await clear_failed_logins(redis, email)
+        await clear_failed_logins(redis, email, client_ip)
 
     access_token = create_access_token(str(user.id))
     gen = await get_user_session_gen(redis, str(user.id)) if redis else 0
