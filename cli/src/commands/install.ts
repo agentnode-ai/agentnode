@@ -35,6 +35,22 @@ export const installCommand = new Command("install")
       }
       const meta = await getInstallMetadata(slug, pinnedVersion);
 
+      // Check if artifact is available (before credential prompt — no point
+      // asking for tokens if the package has no downloadable artifact)
+      if (!meta.artifact?.url) {
+        // Fallback: no artifact, just show metadata
+        if (opts.json) {
+          console.log(JSON.stringify({ slug: meta.slug, version: meta.version, status: "no_artifact" }));
+        } else {
+          console.log(chalk.yellow(`\nNo artifact available for ${slug}@${meta.version}.`));
+          console.log(`This package is registered but has no downloadable artifact yet.`);
+          if (meta.entrypoint) {
+            console.log(`\nEntrypoint: ${chalk.cyan(meta.entrypoint)}`);
+          }
+        }
+        return;
+      }
+
       // Credential awareness: check if this package requires provider credentials
       const connectorProvider: string | undefined = meta.connector?.provider;
       if (connectorProvider && !opts.json) {
@@ -68,21 +84,6 @@ export const installCommand = new Command("install")
             );
           }
         }
-      }
-
-      // Check if artifact is available
-      if (!meta.artifact?.url) {
-        // Fallback: no artifact, just show metadata
-        if (opts.json) {
-          console.log(JSON.stringify({ slug: meta.slug, version: meta.version, status: "no_artifact" }));
-        } else {
-          console.log(chalk.yellow(`\nNo artifact available for ${slug}@${meta.version}.`));
-          console.log(`This package is registered but has no downloadable artifact yet.`);
-          if (meta.entrypoint) {
-            console.log(`\nEntrypoint: ${chalk.cyan(meta.entrypoint)}`);
-          }
-        }
-        return;
       }
 
       // 2. Track the install with backend

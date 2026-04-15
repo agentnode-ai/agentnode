@@ -152,6 +152,22 @@ class TestCredentialHandleMetadata:
         domains.append("evil.com")
         assert "evil.com" not in h.allowed_domains
 
+    def test_source_default_empty(self):
+        h = _make_handle()
+        assert h.source == ""
+
+    def test_source_set_on_construction(self):
+        h = _make_handle(source="local_file")
+        assert h.source == "local_file"
+
+    def test_source_in_repr(self):
+        h = _make_handle(source="env")
+        assert "source='env'" in repr(h)
+
+    def test_source_not_in_repr_when_empty(self):
+        h = _make_handle()
+        assert "source=" not in repr(h)
+
 
 class TestAuthorizedRequest:
     """authorized_request() — preferred interface, token stays inside."""

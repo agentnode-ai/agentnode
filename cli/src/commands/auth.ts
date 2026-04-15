@@ -224,7 +224,7 @@ async function validateToken(
  * `agentnode auth <provider>` — store a token for a provider.
  * Exported for inline use from install command.
  */
-export async function runAuthFlow(provider: string, opts: { noValidate?: boolean; json?: boolean } = {}): Promise<boolean> {
+export async function runAuthFlow(provider: string, opts: { noValidate?: boolean; validate?: boolean; json?: boolean } = {}): Promise<boolean> {
   provider = provider.toLowerCase();
   const config = PROVIDERS[provider];
 
@@ -256,8 +256,9 @@ export async function runAuthFlow(provider: string, opts: { noValidate?: boolean
     return false;
   }
 
-  // Validate unless --no-validate
-  if (!opts.noValidate) {
+  // Validate unless --no-validate (Commander: opts.validate=false) or noValidate=true
+  const skipValidation = opts.noValidate || opts.validate === false;
+  if (!skipValidation) {
     if (!opts.json) {
       process.stdout.write("Validating token... ");
     }
