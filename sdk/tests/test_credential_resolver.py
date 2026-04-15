@@ -187,3 +187,50 @@ class TestResolverChain:
 
         handle = resolve_handle("missing", "oauth2")
         assert handle is None
+
+
+class TestResolveMode:
+    """Test explicit resolve_mode settings."""
+
+    def test_local_mode_uses_only_local_file(self, _clean_env, _isolated_creds):
+        """resolve_mode='local' ignores env vars."""
+        from agentnode_sdk.credential_store import set_credential
+        from agentnode_sdk.config import save_config, load_config
+        set_credential("github", "ghp_local")
+
+        # Also set env var — should be ignored in local mode
+        os.environ["AGENTNODE_CRED_GITHUB"] = "ghp_env"
+        _clean_env.append("AGENTNODE_CRED_GITHUB")
+
+        cfg = load_config()
+        cfg.setdefault("credentials", {})["resolve_mode"] = "local"
+        save_config(cfg)
+
+        handle = resolve_handle("github", "oauth2")
+        assert handle is not None
+        assert handle.source == "local_file"
+
+    def test_local_mode_returns_none_when_no_local(self, _isolated_creds):
+        """resolve_mode='local' returns None when no local credential exists."""
+        from agentnode_sdk.config import save_config, load_config
+        cfg = load_config()
+        cfg.setdefault("credentials", {})["resolve_mode"] = "local"
+        save_config(cfg)
+
+        os.environ.pop("AGENTNODE_CRED_GITHUB", None)
+        handle = resolve_handle("github", "oauth2")
+        assert handle is None
+
+    def test_env_mode_ignores_local_file(self, _clean_env, _isolated_creds):
+        """resolve_mode='env' does not check local file."""
+        from agentnode_sdk.credential_store import set_credential
+        from agentnode_sdk.config import save_config, load_config
+        set_credential("github", "ghp_local")
+
+        cfg = load_config()
+        cfg.setdefault("credentials", {})["resolve_mode"] = "env"
+        save_config(cfg)
+
+        os.environ.pop("AGENTNODE_CRED_GITHUB", None)
+        handle = resolve_handle("github", "oauth2")
+        assert handle is None

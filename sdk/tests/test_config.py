@@ -40,6 +40,7 @@ def test_default_config_has_required_keys():
     assert cfg["permissions"]["network"] == "prompt"
     assert cfg["permissions"]["filesystem"] == "prompt"
     assert cfg["permissions"]["code_execution"] == "sandboxed"
+    assert cfg["credentials"]["require_before_auto_install"] is True
     assert cfg["created_at"]
     assert cfg["updated_at"]
 
@@ -84,6 +85,17 @@ def test_load_partial_config_fills_defaults(isolated_config):
     cfg = load_config()
     assert cfg["auto_upgrade_policy"] == "off"
     assert cfg["permissions"]["network"] == "prompt"  # filled from defaults
+    assert cfg["credentials"]["require_before_auto_install"] is True  # filled from defaults
+
+
+def test_load_preserves_credentials_config(isolated_config):
+    isolated_config.parent.mkdir(parents=True, exist_ok=True)
+    isolated_config.write_text(
+        json.dumps({"credentials": {"require_before_auto_install": False}}),
+        encoding="utf-8",
+    )
+    cfg = load_config()
+    assert cfg["credentials"]["require_before_auto_install"] is False
 
 
 # --- config_exists / delete ---
@@ -120,6 +132,7 @@ def test_get_value_nested():
     cfg = default_config()
     assert get_value(cfg, "trust.minimum_trust_level") == "verified"
     assert get_value(cfg, "permissions.network") == "prompt"
+    assert get_value(cfg, "credentials.require_before_auto_install") is True
 
 
 def test_get_value_unknown_key():
@@ -182,6 +195,17 @@ def test_set_value_validates_all_keys():
     set_value(cfg, "permissions.code_execution", "sandboxed")
     set_value(cfg, "permissions.code_execution", "prompt")
     set_value(cfg, "permissions.code_execution", "deny")
+
+    set_value(cfg, "credentials.require_before_auto_install", "true")
+    set_value(cfg, "credentials.require_before_auto_install", "false")
+
+
+def test_set_value_credentials_boolean():
+    cfg = default_config()
+    set_value(cfg, "credentials.require_before_auto_install", "false")
+    assert cfg["credentials"]["require_before_auto_install"] is False
+    set_value(cfg, "credentials.require_before_auto_install", "true")
+    assert cfg["credentials"]["require_before_auto_install"] is True
 
 
 # --- installation_behavior_label ---

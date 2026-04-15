@@ -1,10 +1,10 @@
 """Credential resolution — resolve secrets for connector packages.
 
-Resolution chain (configurable via ~/.agentnode/config.json):
-1. Environment variables: AGENTNODE_CRED_{PROVIDER_UPPER}
-2. Local file: ~/.agentnode/credentials.json (stored via `agentnode auth`)
-3. API-based: GET /v1/credentials/resolve/{provider} → proxy via resolve_token
-4. None if no source provides a credential
+Resolution chain (configurable via credentials.resolve_mode in config):
+- "auto" (default): env → local file → API
+- "env": environment variables only
+- "local": local file only (~/.agentnode/credentials.json)
+- "api": server-side only
 
 For api_key auth:   AGENTNODE_CRED_SLACK → api_key
 For oauth2 auth:    AGENTNODE_CRED_SLACK → access_token
@@ -56,6 +56,9 @@ def resolve_handle(
 
     if mode == "env":
         return _resolve_from_env(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
+
+    if mode == "local":
+        return _resolve_from_local_file(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
 
     if mode == "api":
         return _resolve_from_api(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
