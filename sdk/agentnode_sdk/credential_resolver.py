@@ -52,27 +52,34 @@ def resolve_handle(
 
     Returns None if no credential is found (caller decides whether to fail).
     """
+    provider = provider.lower()
     mode = _load_resolve_mode()
 
     if mode == "env":
-        return _resolve_from_env(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
+        handle = _resolve_from_env(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
+    elif mode == "local":
+        handle = _resolve_from_local_file(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
+    elif mode == "api":
+        handle = _resolve_from_api(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
+    else:
+        # auto: try env first, then local file, then API
+        handle = _resolve_from_env(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
+        if handle is None:
+            handle = _resolve_from_local_file(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
+        if handle is None:
+            handle = _resolve_from_api(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
 
-    if mode == "local":
-        return _resolve_from_local_file(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
-
-    if mode == "api":
-        return _resolve_from_api(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
-
-    # auto: try env first, then local file, then API
-    handle = _resolve_from_env(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
     if handle is not None:
-        return handle
+        logger.debug(
+            "Credential resolved for provider=%s via source=%s (mode=%s)",
+            provider, handle.source, mode,
+        )
+    else:
+        logger.debug(
+            "No credential found for provider=%s (mode=%s)", provider, mode,
+        )
 
-    handle = _resolve_from_local_file(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
-    if handle is not None:
-        return handle
-
-    return _resolve_from_api(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
+    return handle
 
 
 def _resolve_from_env(

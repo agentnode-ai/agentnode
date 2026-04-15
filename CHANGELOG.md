@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.5.1 — Local Credentials (2026-04-15)
+
+Use GitHub, Slack, and other connector packages **without an AgentNode account**.
+Store your own tokens locally — like `gh auth login` or `aws configure`.
+
+### Added
+
+**Local Credential Storage**
+- `agentnode auth <provider>` — store a Personal Access Token locally
+  - Hidden input (token never echoed)
+  - Validates token against provider API before saving
+  - `--no-validate` for offline storage
+- `agentnode auth list` — show stored credentials (never shows token values)
+- `agentnode auth remove <provider>` — remove with safety prompt (`--yes` to skip)
+- Credentials stored in `~/.agentnode/credentials.json` (plaintext + file permissions,
+  same approach as gh, docker, aws)
+
+**Credential Resolution Chain**
+- SDK now resolves credentials in order: env var → local file → server API
+- New `resolve_mode: "local"` config option (only check local file)
+- Each `CredentialHandle` carries a `source` field (`"env"`, `"local_file"`, `"server"`)
+  for debugging and logging
+
+**Credential-Aware Install**
+- `agentnode install <slug>`: if package needs credentials, prompts
+  "Set up now? [y/N]" with inline auth flow
+- Auto-install (`detect_and_install`/`smart_run`): skips packages without
+  configured credentials by default, searches alternatives
+- Config: `credentials.require_before_auto_install` (default: `true`)
+
+### Notes
+
+- **Existing server-side credentials continue to work unchanged**
+- `agentnode credentials` remains for server-side/team credentials
+- `agentnode auth` is the new default for personal/local use
+- Backend `credentials/*` endpoints: zero changes
+- Supported providers: GitHub, Slack
+
+### FAQ
+
+**I already use `agentnode credentials`. Do I need to change anything?**
+No. Server-side credentials continue to work. Use `agentnode auth` if you want
+local, account-free credentials for personal use.
+
+**What's the difference between `agentnode auth` and `agentnode credentials`?**
+- `agentnode auth` = local tokens, no account needed, stored on your machine
+- `agentnode credentials` = server-side OAuth, requires AgentNode account
+
+---
+
 ## v0.5.0 — Operational Completeness & Developer Surface (2026-04-14)
 
 v0.5 makes v0.4 features accessible to real users and operationally safe under
@@ -116,11 +166,11 @@ no new package types. The guiding principle: finish what exists.
 - Grace period between SIGTERM and SIGKILL
 
 **Vault-SDK Bridge**
-- SDK credential resolution chain: env var → API → None
+- SDK credential resolution chain: env var → local file → API → None (local file added in v0.5.1)
 - `GET /v1/credentials/resolve/{provider}` returns a short-lived JWT (60s TTL)
 - `POST /v1/credentials/proxy` executes requests server-side with injected credentials
 - Secrets never leave the server in plaintext
-- Configurable: `credentials.resolve_mode` in `~/.agentnode/config.json` (`"env"`, `"api"`, `"auto"`)
+- Configurable: `credentials.resolve_mode` in `~/.agentnode/config.json` (`"env"`, `"local"`, `"api"`, `"auto"`)
 
 **Resource Content Delivery**
 - `resource://` URIs can now serve inline content from installed package files

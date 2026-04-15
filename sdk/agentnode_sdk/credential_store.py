@@ -63,10 +63,17 @@ def load_credentials() -> dict[str, Any]:
             data["providers"] = {}
         return data
     except json.JSONDecodeError as exc:
-        logger.warning("credentials.json contains invalid JSON: %s", exc)
+        logger.warning(
+            "Local credentials file is invalid JSON: %s. "
+            "Fix or remove it, then retry: %s",
+            exc, path,
+        )
         return {"version": CURRENT_VERSION, "providers": {}}
     except OSError as exc:
-        logger.warning("Failed to read credentials.json: %s", exc)
+        logger.warning(
+            "Failed to read local credentials file %s: %s",
+            path, exc,
+        )
         return {"version": CURRENT_VERSION, "providers": {}}
 
 
