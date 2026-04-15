@@ -46,6 +46,7 @@ class CredentialHandle:
         "_scopes",
         "_allowed_domains",
         "_secret_data",
+        "_source",
     )
 
     def __init__(
@@ -56,6 +57,7 @@ class CredentialHandle:
         scopes: list[str],
         allowed_domains: list[str],
         secret_data: dict,
+        source: str = "",
     ) -> None:
         self._provider = provider
         self._auth_type = auth_type
@@ -63,6 +65,7 @@ class CredentialHandle:
         self._allowed_domains = [d.lower() for d in allowed_domains]
         # Secret data is stored internally — never exposed via properties
         self._secret_data = dict(secret_data)
+        self._source = source
 
     # --- Public metadata (safe to expose) ---
 
@@ -81,6 +84,11 @@ class CredentialHandle:
     @property
     def allowed_domains(self) -> list[str]:
         return list(self._allowed_domains)
+
+    @property
+    def source(self) -> str:
+        """How this credential was resolved: 'env', 'local_file', 'server', or ''."""
+        return self._source
 
     # --- Security: no secret access ---
 
@@ -225,11 +233,12 @@ class CredentialHandle:
         )
 
     def __repr__(self) -> str:
+        source_str = f", source={self._source!r}" if self._source else ""
         return (
             f"CredentialHandle(provider={self._provider!r}, "
             f"auth_type={self._auth_type!r}, "
             f"scopes={self._scopes!r}, "
-            f"domains={self._allowed_domains!r})"
+            f"domains={self._allowed_domains!r}{source_str})"
         )
 
     def __str__(self) -> str:

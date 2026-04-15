@@ -66,8 +66,8 @@ pip install agentnode-sdk
 ```python
 from agentnode_sdk import AgentNodeClient, run_tool
 
-# API key from arg, env var AGENTNODE_API_KEY, or ~/.agentnode/config.json
-client = AgentNodeClient(api_key="ank_your_key_here")
+# No API key needed for searching, browsing, and running installed tools.
+client = AgentNodeClient()
 
 # Search
 results = client.search("pdf extraction")
@@ -95,7 +95,7 @@ Agents can detect and install missing capabilities at runtime:
 ```python
 from agentnode_sdk import AgentNodeClient
 
-client = AgentNodeClient()  # uses AGENTNODE_API_KEY env var
+client = AgentNodeClient()  # no API key needed
 
 # Auto-detect and install a missing capability
 result = client.detect_and_install(["pdf_extraction"])
@@ -113,14 +113,59 @@ pip install agentnode-langchain
 ```python
 from agentnode_langchain import load_tool
 
-# Load an installed pack as a LangChain tool
-tool = load_tool("pdf-reader-pack", api_key="ank_your_key_here")
+# Load an installed pack as a LangChain tool (no API key needed)
+tool = load_tool("pdf-reader-pack")
 agent_tools = [tool]
 ```
 
 ## Authentication
 
-### Create an account
+**Searching, browsing, installing, and running packages requires no account or API key.** You can use the CLI and SDK immediately after installation.
+
+### Local credentials (default for personal use)
+
+Packages that connect to external services (e.g. GitHub, Slack) need your credentials. Store them locally — no AgentNode account required:
+
+```bash
+# Store a GitHub Personal Access Token
+agentnode auth github
+
+# Store a Slack Bot Token
+agentnode auth slack
+
+# List stored credentials (never shows token values)
+agentnode auth list
+
+# Remove a credential
+agentnode auth remove github
+```
+
+This works like `gh auth login` or `aws configure` — tokens are stored in `~/.agentnode/credentials.json` with file-level permissions.
+
+When you install a package that needs credentials, the CLI will prompt you to set them up:
+
+```
+$ agentnode install github-issues-pack
+This package requires GitHub credentials. Set up now? [y/N]
+```
+
+The SDK resolves credentials automatically in this order:
+1. Environment variable (`AGENTNODE_CRED_GITHUB`)
+2. Local file (`~/.agentnode/credentials.json`)
+3. Server-side (for hosted agents and teams)
+
+### Server-side credentials (optional, for teams and hosted agents)
+
+For hosted agents or team-managed credentials, use the server-side OAuth flow:
+
+```bash
+# Requires an AgentNode account
+agentnode credentials list
+agentnode credentials test <id>
+agentnode credentials delete <id>
+```
+
+### Create an account (publishers only)
 
 ```bash
 # Via CLI
@@ -129,9 +174,9 @@ agentnode login
 
 Or register at [agentnode.net/auth/register](https://agentnode.net/auth/register).
 
-### API Keys
+### API Keys (publishers only)
 
-After logging in, create an API key for SDK/programmatic use:
+After logging in, create an API key for publishing:
 
 ```bash
 curl -X POST https://agentnode.net/v1/auth/api-keys \

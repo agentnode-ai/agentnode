@@ -2,8 +2,9 @@
 
 Resolution chain (configurable via ~/.agentnode/config.json):
 1. Environment variables: AGENTNODE_CRED_{PROVIDER_UPPER}
-2. API-based: GET /v1/credentials/resolve/{provider} → proxy via resolve_token
-3. None if neither source provides a credential
+2. Local file: ~/.agentnode/credentials.json (stored via `agentnode auth`)
+3. API-based: GET /v1/credentials/resolve/{provider} → proxy via resolve_token
+4. None if no source provides a credential
 
 For api_key auth:   AGENTNODE_CRED_SLACK → api_key
 For oauth2 auth:    AGENTNODE_CRED_SLACK → access_token
@@ -59,8 +60,12 @@ def resolve_handle(
     if mode == "api":
         return _resolve_from_api(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
 
-    # auto: try env first, then API
+    # auto: try env first, then local file, then API
     handle = _resolve_from_env(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
+    if handle is not None:
+        return handle
+
+    handle = _resolve_from_local_file(provider, auth_type, scopes=scopes, allowed_domains=allowed_domains)
     if handle is not None:
         return handle
 
@@ -102,6 +107,53 @@ def _resolve_from_env(
         scopes=scopes or [],
         allowed_domains=allowed_domains or [],
         secret_data=secret_data,
+        source="env",
+    )
+
+
+def _resolve_from_local_file(
+    provider: str,
+    auth_type: str,
+    *,
+    scopes: list[str] | None = None,
+    allowed_domains: list[str] | None = None,
+) -> CredentialHandle | None:
+    """Resolve a CredentialHandle from ~/.agentnode/credentials.json.
+
+    Reads tokens stored via `agentnode auth <provider>`.
+    Returns None if no credential is found for the provider.
+    """
+    try:
+        from agentnode_sdk.credential_store import get_credential
+    except Exception:
+        logger.debug("credential_store not available, skipping local file resolution")
+        return None
+
+    entry = get_credential(provider)
+    if entry is None:
+        logger.debug("No local credential for provider=%s", provider)
+        return None
+
+    token = entry.get("access_token", "")
+    if not token:
+        logger.debug("Local credential for provider=%s has empty token", provider)
+        return None
+
+    stored_auth_type = entry.get("auth_type", auth_type)
+    stored_scopes = entry.get("scopes", [])
+
+    if stored_auth_type == "oauth2":
+        secret_data = {"access_token": token}
+    else:
+        secret_data = {"api_key": token}
+
+    return CredentialHandle(
+        provider=provider,
+        auth_type=stored_auth_type,
+        scopes=scopes or stored_scopes,
+        allowed_domains=allowed_domains or [],
+        secret_data=secret_data,
+        source="local_file",
     )
 
 
@@ -192,6 +244,7 @@ class ProxyCredentialHandle(CredentialHandle):
             scopes=scopes,
             allowed_domains=allowed_domains,
             secret_data={},  # No local secret
+            source="server",
         )
         self._resolve_token = resolve_token
         self._api_base = api_base
