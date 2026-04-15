@@ -5,8 +5,10 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { createInterface } from "node:readline";
 import { getInstallMetadata, trackInstall } from "../api.js";
 import { installPackage } from "../installer.js";
+import { hasLocalCredential, PROVIDERS, runAuthFlow } from "./auth.js";
 
 export const installCommand = new Command("install")
   .description("Install a package from the AgentNode registry")
@@ -32,6 +34,41 @@ export const installCommand = new Command("install")
         console.log(`Resolving ${slug}...`);
       }
       const meta = await getInstallMetadata(slug, pinnedVersion);
+
+      // Credential awareness: check if this package requires provider credentials
+      const connectorProvider: string | undefined = meta.connector?.provider;
+      if (connectorProvider && !opts.json) {
+        const providerLower = connectorProvider.toLowerCase();
+        const hasEnvCred = !!process.env[`AGENTNODE_CRED_${providerLower.toUpperCase().replace(/-/g, "_")}`];
+        const hasLocalCred = hasLocalCredential(providerLower);
+
+        if (!hasEnvCred && !hasLocalCred) {
+          const providerDisplay = PROVIDERS[providerLower]?.displayName ?? connectorProvider;
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          const setupNow = await new Promise<boolean>((resolve) => {
+            rl.question(
+              chalk.yellow(`This package requires ${providerDisplay} credentials. Set up now? [y/N] `),
+              (answer) => {
+                rl.close();
+                resolve(answer.trim().toLowerCase() === "y");
+              },
+            );
+          });
+
+          if (setupNow) {
+            const success = await runAuthFlow(providerLower);
+            if (!success) {
+              console.log(chalk.yellow(`\nContinuing install without ${providerDisplay} credentials.`));
+            }
+          } else {
+            console.log(
+              chalk.yellow(
+                `\nInstalling without credentials. Run ${chalk.cyan(`agentnode auth ${providerLower}`)} before using this package.`,
+              ),
+            );
+          }
+        }
+      }
 
       // Check if artifact is available
       if (!meta.artifact?.url) {

@@ -25,6 +25,9 @@ DEFAULTS: dict[str, Any] = {
         "filesystem": "prompt",
         "code_execution": "sandboxed",
     },
+    "credentials": {
+        "require_before_auto_install": True,
+    },
 }
 
 VALID_VALUES: dict[str, tuple[str, ...]] = {
@@ -35,6 +38,7 @@ VALID_VALUES: dict[str, tuple[str, ...]] = {
     "permissions.network": ("allow", "prompt", "deny"),
     "permissions.filesystem": ("allow", "prompt", "deny"),
     "permissions.code_execution": ("sandboxed", "prompt", "deny"),
+    "credentials.require_before_auto_install": ("true", "false"),
 }
 
 
@@ -76,6 +80,10 @@ def _merge_defaults(data: dict) -> dict[str, Any]:
         for k in ("network", "filesystem", "code_execution"):
             if k in data["permissions"]:
                 cfg["permissions"][k] = data["permissions"][k]
+    if isinstance(data.get("credentials"), dict):
+        for k in ("require_before_auto_install",):
+            if k in data["credentials"]:
+                cfg["credentials"][k] = data["credentials"][k]
     return cfg
 
 
@@ -138,7 +146,8 @@ def set_value(cfg: dict[str, Any], key: str, value: str) -> dict[str, Any]:
             f"Allowed: {', '.join(allowed)}"
         )
 
-    actual_value: Any = value.lower() == "true" if key == "trust.allow_unverified" else value.lower()
+    bool_keys = ("trust.allow_unverified", "credentials.require_before_auto_install")
+    actual_value: Any = value.lower() == "true" if key in bool_keys else value.lower()
 
     parts = key.split(".")
     current: Any = cfg

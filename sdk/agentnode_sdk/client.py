@@ -89,15 +89,16 @@ class AgentNode:
 
     def __init__(self, api_key: str | None = None, base_url: str = DEFAULT_BASE_URL):
         api_key = api_key or os.environ.get("AGENTNODE_API_KEY")
-        if not api_key:
-            raise ValueError("api_key is required (pass explicitly or set AGENTNODE_API_KEY)")
         # Ensure base_url ends with /v1 for API routing
         base = base_url.rstrip("/")
         if not base.endswith("/v1"):
             base = f"{base}/v1"
+        headers: dict[str, str] = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
         self._client = httpx.Client(
             base_url=base,
-            headers={"X-API-Key": api_key},
+            headers=headers,
             timeout=30,
         )
 
@@ -234,6 +235,37 @@ class AgentNode:
             return response.json()
         except ValueError as exc:
             raise AgentNodeError("UNKNOWN", f"Invalid JSON response: {exc}") from exc
+
+
+def _check_credential_available(provider: str) -> bool:
+    """Check if a credential is available for a provider (env, local file, or API)."""
+    # Check env var
+    env_key = f"AGENTNODE_CRED_{provider.upper().replace('-', '_')}"
+    if os.environ.get(env_key):
+        return True
+    # Check local file
+    try:
+        from agentnode_sdk.credential_store import has_credential
+        if has_credential(provider):
+            return True
+    except Exception:
+        pass
+    # Check if API credentials are configured (session token)
+    if os.environ.get("AGENTNODE_SESSION_TOKEN") and os.environ.get("AGENTNODE_API_URL"):
+        return True
+    return False
+
+
+def _get_package_connector_provider(slug: str, client: "AgentNodeClient") -> str | None:
+    """Get the connector provider from package metadata, if any."""
+    try:
+        meta = client._request("GET", f"/packages/{slug}/install-info")
+        connector = meta.get("connector")
+        if isinstance(connector, dict):
+            return connector.get("provider")
+    except Exception:
+        pass
+    return None
 
 
 class AgentNodeClient:
@@ -856,30 +888,77 @@ class AgentNodeClient:
                 message=f"No packages found for capabilities: {capabilities}",
             )
 
-        # Pick the highest-scored result
-        best = result.results[0]
+        # Check credential availability for auto-install
+        from agentnode_sdk.config import load_config as _load_cfg
+        cfg = _load_cfg()
+        require_creds = cfg.get("credentials", {}).get("require_before_auto_install", True)
 
-        # Trust filter
-        if require_trusted and best.trust_level not in TRUST_LEVELS_TRUSTED:
+        # Filter candidates: skip packages that need credentials we don't have
+        candidates = list(result.results)
+        best = None
+        skipped_for_creds: str | None = None
+
+        for candidate in candidates:
+            # Trust filter
+            if require_trusted and candidate.trust_level not in TRUST_LEVELS_TRUSTED:
+                continue
+            if (
+                not require_trusted
+                and require_verified
+                and candidate.trust_level not in TRUST_LEVELS_VERIFIED
+            ):
+                continue
+
+            # Credential check for auto-install
+            connector_provider = _get_package_connector_provider(candidate.slug, self)
+            if connector_provider and require_creds:
+                if not _check_credential_available(connector_provider):
+                    skipped_for_creds = skipped_for_creds or candidate.slug
+                    import logging as _logging
+                    _logging.getLogger("agentnode.client").info(
+                        "Skipping %s: requires %s credentials (not configured)",
+                        candidate.slug, connector_provider,
+                    )
+                    continue
+            elif connector_provider and not require_creds:
+                import logging as _logging
+                _logging.getLogger("agentnode.client").warning(
+                    "Warning: %s requires %s credentials that are not configured",
+                    candidate.slug, connector_provider,
+                )
+
+            best = candidate
+            break
+
+        if best is None:
+            # All candidates were filtered out
+            if skipped_for_creds:
+                return InstallResult(
+                    slug=skipped_for_creds,
+                    version="",
+                    installed=False,
+                    already_installed=False,
+                    message=(
+                        f"Package {skipped_for_creds} requires credentials that are not configured. "
+                        f"Run `agentnode auth <provider>` first. "
+                        f"No credential-free alternative found for capabilities: {capabilities}"
+                    ),
+                )
+            top = candidates[0] if candidates else None
+            if top:
+                return InstallResult(
+                    slug=top.slug,
+                    version=top.version,
+                    installed=False,
+                    already_installed=False,
+                    message=f"Best match '{top.slug}' has trust level '{top.trust_level}', but policy requirements not met.",
+                )
             return InstallResult(
-                slug=best.slug,
-                version=best.version,
+                slug="",
+                version="",
                 installed=False,
                 already_installed=False,
-                message=f"Best match '{best.slug}' has trust level '{best.trust_level}', but 'trusted' required.",
-            )
-
-        if (
-            not require_trusted
-            and require_verified
-            and best.trust_level not in TRUST_LEVELS_VERIFIED
-        ):
-            return InstallResult(
-                slug=best.slug,
-                version=best.version,
-                installed=False,
-                already_installed=False,
-                message=f"Best match '{best.slug}' has trust level '{best.trust_level}', but 'verified' required.",
+                message=f"No packages found for capabilities: {capabilities}",
             )
 
         return self.install(best.slug, verbose=verbose)
