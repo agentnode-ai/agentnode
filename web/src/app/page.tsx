@@ -569,13 +569,17 @@ result = runtime.run(
                 Broken tools are quarantined. Verified tools earn higher trust tiers.
               </p>
             </div>
-            <div className="rounded-xl border border-border bg-card p-6 transition-all hover:border-primary/30">
+            <div className="rounded-xl border border-primary/30 bg-primary/5 p-6">
               <h3 className="mb-2 text-base font-semibold text-foreground">
-                Permission declarations
+                AgentNode Guard
               </h3>
               <p className="text-sm leading-relaxed text-muted">
-                Every package declares network, filesystem, code execution,
-                and data access levels. No hidden behavior.
+                Pre-execution policy gateway. Every install and run is checked
+                against trust levels, permissions, and environment context.
+                Fail-closed.{" "}
+                <a href="/docs#guard" className="text-primary hover:underline">
+                  Learn more
+                </a>
               </p>
             </div>
             {/* Row 3: Platform */}
