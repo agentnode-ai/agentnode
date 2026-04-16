@@ -1,6 +1,6 @@
 {
   "lockfile_version": "0.1",
-  "updated_at": "2026-03-18T02:18:53.827839+00:00",
+  "updated_at": "2026-04-15T23:53:44.342553+00:00",
   "packages": {
     "word-counter-pack": {
       "version": "1.0.0",
@@ -18,6 +18,31 @@
       "artifact_hash": "sha256:445388c86aa2b20c3e748f58b2d221548f1f3f71ff5c715a64cdc80966fab03c",
       "installed_at": "2026-03-18T02:18:53.827396+00:00",
       "source": "sdk"
+    },
+    "pdf-reader-pack": {
+      "version": "1.0.0",
+      "package_type": "toolpack",
+      "runtime": "python",
+      "entrypoint": "pdf_reader_pack.tool",
+      "capability_ids": [
+        "pdf_extraction"
+      ],
+      "tools": [],
+      "artifact_hash": "sha256:4635316cb5f8ee477f41ccad570c3bcd5026fc7cd1fbf402a12df575be54ae20",
+      "installed_at": "2026-04-15T23:53:44.341323+00:00",
+      "source": "sdk",
+      "trust_level": "trusted",
+      "permissions": {
+        "network_level": "none",
+        "filesystem_level": "temp",
+        "code_execution_level": "none",
+        "data_access_level": "input_only",
+        "user_approval_level": "never"
+      },
+      "prompts": [],
+      "resources": [],
+      "connector": null,
+      "agent": null
     }
   }
 }
