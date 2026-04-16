@@ -2856,26 +2856,15 @@ $ agentnode policy-check pdf-reader-pack --trust trusted --no-network`}</CodeBlo
               Data Sovereignty
             </SectionHeading>
             <p className="mb-4 text-sm leading-relaxed text-muted">
-              AgentNode is designed so that <strong>your data stays
-              yours</strong>. The platform is a registry and policy engine, not
-              a data processor. We do not collect, store, or process the data
-              that flows through your tools.
+              AgentNode is a registry and policy engine &mdash; not a data
+              processor. <strong>Your data never touches our
+              servers.</strong> Tools run locally in your environment. The
+              backend only stores what&apos;s needed for the registry catalog
+              (package metadata, account credentials). Everything else stays
+              on your machine.
             </p>
 
-            <SubHeading>What AgentNode stores</SubHeading>
-            <DocTable
-              headers={["Data", "Where", "Purpose"]}
-              rows={[
-                ["Account info", "Server (PostgreSQL)", "Email, username, hashed password — for authentication only"],
-                ["API key hashes", "Server (PostgreSQL)", "SHA-256 hashes of your API keys — the plaintext is never stored"],
-                ["Package metadata", "Server (PostgreSQL)", "Manifests, descriptions, trust levels — the registry catalog"],
-                ["Package artifacts", "Server (filesystem)", "Published package bundles, verified by SHA-256 hash + Ed25519 signature"],
-                ["OAuth tokens (server-side)", "Server (encrypted)", "Only when you use server-side credentials — proxied, never sent to clients"],
-                ["Install statistics", "Server (PostgreSQL)", "Anonymous install counts per package — no per-user tracking"],
-              ]}
-            />
-
-            <SubHeading>What AgentNode does NOT store</SubHeading>
+            <SubHeading>Your data stays local</SubHeading>
             <ul className="mb-4 list-inside list-disc space-y-2 text-sm text-muted">
               <li>
                 <span className="font-medium text-foreground/80">
