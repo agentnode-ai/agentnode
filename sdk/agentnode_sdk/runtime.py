@@ -1137,6 +1137,18 @@ class AgentNodeRuntime:
         lockfile = read_lockfile()
         existing = lockfile.get("packages", {}).get(slug)
         if existing:
+            pkg_trust = existing.get("trust_level", "unverified")
+            if not _trust_meets_minimum(pkg_trust, self._minimum_trust_level):
+                return ToolResult(
+                    success=False,
+                    error=ToolError(
+                        code="trust_blocked",
+                        message=(
+                            f"Package '{slug}' is installed but trust level "
+                            f"'{pkg_trust}' does not meet minimum '{self._minimum_trust_level}'."
+                        ),
+                    ),
+                )
             tools = [t.get("name", "") for t in existing.get("tools", [])]
             return ToolResult(
                 success=True,
@@ -1147,7 +1159,7 @@ class AgentNodeRuntime:
                         f"Package '{slug}' is already installed. "
                         "Use agentnode_run to execute it — do not install again."
                     ),
-                    "trust_level": existing.get("trust_level", "unverified"),  # P1-SDK9
+                    "trust_level": pkg_trust,
                     "already_installed": True,
                     "available_tools": tools,
                 },
