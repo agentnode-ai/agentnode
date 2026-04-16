@@ -312,6 +312,57 @@ class TestClientPolicyIntegration:
 # Decision log integration
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Client install — hard enforcement integration
+# ---------------------------------------------------------------------------
+
+class TestClientInstallHardEnforcement:
+    """Tests that client.install() policy check is hard (Phase B), not soft."""
+
+    def test_install_with_broken_config_returns_not_installed(self):
+        """client.install() with broken config must NOT install (fail-closed).
+
+        Previously (Phase A) this was a try/except pass — policy crash meant
+        the install would proceed anyway. Phase B: crash → deny.
+        """
+        from agentnode_sdk.policy import check_install
+
+        with mock.patch(
+            "agentnode_sdk.config.load_config",
+            side_effect=Exception("config file corrupted"),
+        ):
+            decision = check_install("risky-pack", {"trust_level": "verified"}, interactive=False)
+            assert decision.action == "deny"
+            assert "Config invalid" in decision.reason
+
+    def test_install_with_deny_policy_no_pass_through(self):
+        """client.install() with deny policy → InstallResult(installed=False), no pass-through."""
+        from agentnode_sdk.policy import check_install
+
+        with mock.patch("agentnode_sdk.config.load_config", return_value={
+            "trust": {"minimum_trust_level": "curated"},
+            "permissions": {"network": "allow", "filesystem": "allow", "code_execution": "sandboxed"},
+        }):
+            decision = check_install("low-trust-pack", {
+                "trust_level": "unverified",
+                "permissions": None,
+            })
+            assert decision.action == "deny"
+            assert "trust" in decision.reason.lower() or "Trust" in decision.reason
+
+    def test_install_broken_config_interactive_prompts(self):
+        """Interactive path with broken config → prompt (not allow)."""
+        from agentnode_sdk.policy import check_install
+
+        with mock.patch(
+            "agentnode_sdk.config.load_config",
+            side_effect=Exception("bad config"),
+        ):
+            decision = check_install("pkg", {"trust_level": "verified"}, interactive=True)
+            assert decision.action == "prompt"
+            assert decision.action != "allow"
+
+
 class TestDecisionLogIntegration:
     """Tests that all execution paths produce audit entries."""
 

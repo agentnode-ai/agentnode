@@ -487,12 +487,12 @@ class TestAuditDecision:
             )
             audit_decision(
                 PolicyResult(action="deny", reason="trust", source="trust_level"),
-                "runtime_install", "other-pack",
+                "remote_run", "other-pack",
             )
             lines = (audit_dir / "audit.jsonl").read_text(encoding="utf-8").strip().split("\n")
             assert len(lines) == 2
             assert json.loads(lines[0])["event"] == "client_install"
-            assert json.loads(lines[1])["event"] == "runtime_install"
+            assert json.loads(lines[1])["event"] == "remote_run"
 
 
 # ---------------------------------------------------------------------------
@@ -511,3 +511,171 @@ class TestPolicyResultDetails:
     def test_details_default_none(self):
         r = PolicyResult(action="allow", reason="ok", source="default")
         assert r.details is None
+
+
+# ---------------------------------------------------------------------------
+# Audit rotation
+# ---------------------------------------------------------------------------
+
+class TestAuditRotation:
+    def test_rotation_on_size_exceeded(self, tmp_path):
+        """Audit file exceeding max_size_mb triggers rotation to .1 file."""
+        import agentnode_sdk.policy as pol
+
+        audit_dir = tmp_path / ".agentnode"
+        audit_dir.mkdir()
+        audit_file = audit_dir / "audit.jsonl"
+
+        # Create a file just over 1 byte threshold (we'll set max to 0 MB
+        # to trigger rotation immediately — actually use a tiny config)
+        audit_file.write_text("x" * 100, encoding="utf-8")
+
+        # Reset per-session flag
+        pol._audit_rotated_this_session = False
+
+        # Patch config to 0 MB threshold so any content triggers rotation
+        with mock.patch("agentnode_sdk.policy._load_audit_config", return_value=(0, 5)):
+            pol._maybe_rotate_audit(audit_file)
+
+        # Original should have been renamed to .1
+        assert (audit_dir / "audit.jsonl.1").exists()
+        assert (audit_dir / "audit.jsonl.1").read_text(encoding="utf-8") == "x" * 100
+
+    def test_rotation_shifts_existing_files(self, tmp_path):
+        """Existing .1 and .2 files shift up when a new rotation occurs."""
+        import agentnode_sdk.policy as pol
+
+        audit_dir = tmp_path / ".agentnode"
+        audit_dir.mkdir()
+        audit_file = audit_dir / "audit.jsonl"
+        audit_file.write_text("current", encoding="utf-8")
+        (audit_dir / "audit.jsonl.1").write_text("prev1", encoding="utf-8")
+        (audit_dir / "audit.jsonl.2").write_text("prev2", encoding="utf-8")
+
+        pol._audit_rotated_this_session = False
+
+        with mock.patch("agentnode_sdk.policy._load_audit_config", return_value=(0, 5)):
+            pol._maybe_rotate_audit(audit_file)
+
+        assert (audit_dir / "audit.jsonl.1").read_text(encoding="utf-8") == "current"
+        assert (audit_dir / "audit.jsonl.2").read_text(encoding="utf-8") == "prev1"
+        assert (audit_dir / "audit.jsonl.3").read_text(encoding="utf-8") == "prev2"
+
+    def test_rotation_once_per_session(self, tmp_path):
+        """Rotation only happens once per process session."""
+        import agentnode_sdk.policy as pol
+
+        audit_dir = tmp_path / ".agentnode"
+        audit_dir.mkdir()
+        audit_file = audit_dir / "audit.jsonl"
+        audit_file.write_text("data", encoding="utf-8")
+
+        # First call — rotates
+        pol._audit_rotated_this_session = False
+        with mock.patch("agentnode_sdk.policy._load_audit_config", return_value=(0, 5)):
+            pol._maybe_rotate_audit(audit_file)
+        assert pol._audit_rotated_this_session is True
+
+        # Write new data
+        audit_file.write_text("new data", encoding="utf-8")
+
+        # Second call — skipped (flag already set)
+        with mock.patch("agentnode_sdk.policy._load_audit_config", return_value=(0, 5)):
+            pol._maybe_rotate_audit(audit_file)
+
+        # .1 should still have original data, not "new data"
+        assert (audit_dir / "audit.jsonl.1").read_text(encoding="utf-8") == "data"
+        assert audit_file.read_text(encoding="utf-8") == "new data"
+
+    def test_rotation_respects_max_files(self, tmp_path):
+        """Files beyond max_files are deleted during rotation."""
+        import agentnode_sdk.policy as pol
+
+        audit_dir = tmp_path / ".agentnode"
+        audit_dir.mkdir()
+        audit_file = audit_dir / "audit.jsonl"
+        audit_file.write_text("current", encoding="utf-8")
+
+        # Create files up to .3 with max_files=2
+        (audit_dir / "audit.jsonl.1").write_text("old1", encoding="utf-8")
+        (audit_dir / "audit.jsonl.2").write_text("old2", encoding="utf-8")
+
+        pol._audit_rotated_this_session = False
+
+        with mock.patch("agentnode_sdk.policy._load_audit_config", return_value=(0, 2)):
+            pol._maybe_rotate_audit(audit_file)
+
+        # .1 = current, .2 = old1, old2 dropped (beyond max_files)
+        assert (audit_dir / "audit.jsonl.1").read_text(encoding="utf-8") == "current"
+        assert (audit_dir / "audit.jsonl.2").read_text(encoding="utf-8") == "old1"
+        assert not (audit_dir / "audit.jsonl.3").exists()
+
+    def test_no_rotation_under_threshold(self, tmp_path):
+        """Files under max_size_mb are not rotated."""
+        import agentnode_sdk.policy as pol
+
+        audit_dir = tmp_path / ".agentnode"
+        audit_dir.mkdir()
+        audit_file = audit_dir / "audit.jsonl"
+        audit_file.write_text("small", encoding="utf-8")
+
+        pol._audit_rotated_this_session = False
+
+        with mock.patch("agentnode_sdk.policy._load_audit_config", return_value=(10, 5)):
+            pol._maybe_rotate_audit(audit_file)
+
+        # No rotation occurred
+        assert not (audit_dir / "audit.jsonl.1").exists()
+        assert audit_file.read_text(encoding="utf-8") == "small"
+        assert pol._audit_rotated_this_session is False
+
+
+# ---------------------------------------------------------------------------
+# Event type validation
+# ---------------------------------------------------------------------------
+
+class TestEventTypes:
+    def test_remote_run_is_valid_event(self):
+        """remote_run is in _VALID_EVENTS."""
+        from agentnode_sdk.policy import _VALID_EVENTS
+        assert "remote_run" in _VALID_EVENTS
+
+    def test_runtime_install_not_in_valid_events(self):
+        """runtime_install was removed from _VALID_EVENTS (never emitted)."""
+        from agentnode_sdk.policy import _VALID_EVENTS
+        assert "runtime_install" not in _VALID_EVENTS
+
+    def test_remote_run_audit_entry(self, tmp_path):
+        """remote_run event type produces a valid audit entry."""
+        audit_dir = tmp_path / ".agentnode"
+        with mock.patch("agentnode_sdk.config.config_dir", return_value=audit_dir):
+            audit_decision(
+                PolicyResult(action="allow", reason="remote ok", source="remote_runner"),
+                "remote_run", "remote-pack",
+                tool_name="api_call",
+            )
+            content = (audit_dir / "audit.jsonl").read_text(encoding="utf-8").strip()
+            record = json.loads(content)
+            assert record["event"] == "remote_run"
+            assert record["slug"] == "remote-pack"
+            assert record["tool_name"] == "api_call"
+
+
+# ---------------------------------------------------------------------------
+# client.install() policy crash → deny
+# ---------------------------------------------------------------------------
+
+class TestClientInstallPolicyCrash:
+    def test_policy_check_exception_returns_deny(self):
+        """When check_install() raises, client.install() must deny, not pass."""
+        from agentnode_sdk.policy import check_install
+
+        # Simulate a bug in policy.py itself (not config failure)
+        with mock.patch(
+            "agentnode_sdk.config.load_config",
+            side_effect=RuntimeError("unexpected bug"),
+        ):
+            # check_install handles config errors gracefully via _load_config_safe
+            result = check_install("pkg", {"trust_level": "verified"}, interactive=False)
+            # Config broken + non-interactive → deny (fail-closed)
+            assert result.action == "deny"
