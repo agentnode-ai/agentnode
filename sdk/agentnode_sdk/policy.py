@@ -463,8 +463,8 @@ def check_run(
 # ---------------------------------------------------------------------------
 
 _VALID_EVENTS = frozenset({
-    "run_tool", "runtime_run", "runtime_install", "client_install", "mcp_run",
-    "agent_run",
+    "run_tool", "runtime_run", "client_install", "mcp_run",
+    "agent_run", "remote_run",
 })
 
 
@@ -512,8 +512,92 @@ def audit_decision(
         audit_path = audit_dir / "audit.jsonl"
         with open(audit_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        _maybe_rotate_audit(audit_path)
     except Exception as exc:
         logger.warning("Failed to write audit entry: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Audit rotation (BD-4 extension)
+# ---------------------------------------------------------------------------
+
+_audit_rotated_this_session: bool = False
+
+
+def _load_audit_config() -> tuple[int, int]:
+    """Load audit rotation config from ~/.agentnode/config.json.
+
+    Returns (max_size_mb, max_files).
+    """
+    try:
+        from agentnode_sdk.config import config_path
+        raw = json.loads(config_path().read_text(encoding="utf-8"))
+    except Exception:
+        return 10, 5
+
+    audit_cfg = raw.get("audit", {})
+    if not isinstance(audit_cfg, dict):
+        audit_cfg = {}
+    max_size_mb = audit_cfg.get("max_size_mb", 10)
+    max_files = audit_cfg.get("max_files", 5)
+    return int(max_size_mb), int(max_files)
+
+
+def _maybe_rotate_audit(audit_path: Path) -> None:
+    """Rotate audit.jsonl if it exceeds max_size_mb. Once per process session."""
+    global _audit_rotated_this_session
+    if _audit_rotated_this_session:
+        return
+
+    try:
+        size_bytes = audit_path.stat().st_size
+    except OSError:
+        return
+
+    max_size_mb, max_files = _load_audit_config()
+    if size_bytes <= max_size_mb * 1024 * 1024:
+        return
+
+    _audit_rotated_this_session = True
+
+    parent = audit_path.parent
+    name = audit_path.name
+
+    # Delete files beyond max_files limit
+    for i in range(max_files + 1, max_files + 10):
+        old = parent / f"{name}.{i}"
+        if old.exists():
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        else:
+            break
+
+    # Delete the oldest kept file (it will be overwritten by the shift)
+    oldest_kept = parent / f"{name}.{max_files}"
+    if oldest_kept.exists():
+        try:
+            oldest_kept.unlink()
+        except OSError:
+            pass
+
+    # Shift existing rotated files: .N-1 → .N, ... .1 → .2
+    for i in range(max_files - 1, 0, -1):
+        src = parent / f"{name}.{i}"
+        dst = parent / f"{name}.{i + 1}"
+        if src.exists():
+            try:
+                src.rename(dst)
+            except OSError:
+                pass
+
+    # Rotate current → .1
+    rotated = parent / f"{name}.1"
+    try:
+        audit_path.rename(rotated)
+    except OSError:
+        logger.warning("Failed to rotate audit log: %s", audit_path)
 
 
 # ---------------------------------------------------------------------------

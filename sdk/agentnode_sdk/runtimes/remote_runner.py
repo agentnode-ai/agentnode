@@ -289,10 +289,11 @@ def _audit_remote_call(
             action="allow" if success else "deny",
             reason=f"remote_call status={status_code}" if status_code else "remote_call_failed",
             source="remote_runner",
+            details={"mode": "remote", "provider": provider},
         )
         audit_decision(
             result,
-            "run_tool",
+            "remote_run",
             slug,
             tool_name=tool_name,
         )

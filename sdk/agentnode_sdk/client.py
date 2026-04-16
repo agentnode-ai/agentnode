@@ -566,41 +566,59 @@ class AgentNodeClient:
         except Exception:
             pass
 
-        # 2b. Policy check (BD-10, PHASE-A: temporary double-check, see Phase B)
+        # 2b. Policy check — authoritative (Phase B: hard enforcement)
+        from agentnode_sdk.policy import check_install as _policy_check_install
+        from agentnode_sdk.policy import audit_decision as _policy_audit
+        policy_entry = {
+            "trust_level": trust_level or "unverified",
+            "permissions": _permissions_to_dict(meta.permissions),
+        }
         try:
-            from agentnode_sdk.policy import check_install as _policy_check_install
-            from agentnode_sdk.policy import audit_decision as _policy_audit
-            policy_entry = {
-                "trust_level": trust_level or "unverified",
-                "permissions": _permissions_to_dict(meta.permissions),
-            }
             decision = _policy_check_install(slug, policy_entry, interactive=True)
+        except Exception as exc:
+            # Policy check itself crashed (bug in policy.py, not config issue).
+            # Translate to a clean deny — never silently proceed.
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Policy check raised for %s: %s", slug, exc,
+            )
+            return InstallResult(
+                slug=slug,
+                version=meta.version,
+                installed=False,
+                already_installed=False,
+                message=f"Policy check failed: internal error. Install denied.",
+                trust_level=trust_level,
+                verification_tier=verification_tier,
+            )
+        # Audit is best-effort — must never block the policy decision
+        try:
             _policy_audit(
                 decision, "client_install", slug,
                 trust_level=policy_entry["trust_level"],
             )
-            if decision.action == "deny":
-                return InstallResult(
-                    slug=slug,
-                    version=meta.version,
-                    installed=False,
-                    already_installed=False,
-                    message=decision.reason,
-                    trust_level=trust_level,
-                    verification_tier=verification_tier,
-                )
-            if decision.action == "prompt":
-                return InstallResult(
-                    slug=slug,
-                    version=meta.version,
-                    installed=False,
-                    already_installed=False,
-                    message=f"Approval required: {decision.reason}",
-                    trust_level=trust_level,
-                    verification_tier=verification_tier,
-                )
         except Exception:
-            pass  # Policy check is additive in Phase A
+            pass  # Audit write failure is non-fatal
+        if decision.action == "deny":
+            return InstallResult(
+                slug=slug,
+                version=meta.version,
+                installed=False,
+                already_installed=False,
+                message=decision.reason,
+                trust_level=trust_level,
+                verification_tier=verification_tier,
+            )
+        if decision.action == "prompt":
+            return InstallResult(
+                slug=slug,
+                version=meta.version,
+                installed=False,
+                already_installed=False,
+                message=f"Approval required: {decision.reason}",
+                trust_level=trust_level,
+                verification_tier=verification_tier,
+            )
 
         # 3. Trust check
         if require_trusted or require_verified:
@@ -699,6 +717,11 @@ class AgentNodeClient:
         require_trusted: bool = False,
         require_verified: bool = False,
         allowed_permissions: list[str] | None = None,
+        # NOTE: Legacy path — require_trusted, require_verified,
+        # allowed_permissions, denied_permissions are pre-policy params.
+        # policy.check_install() is now the Single Source of Truth for
+        # trust and permission decisions. These params remain for backward
+        # compat only. Cleanup sprint: consolidate through policy.py.
         denied_permissions: list[str] | None = None,
     ) -> CanInstallResult:
         """Check whether a package can be installed under given constraints.
