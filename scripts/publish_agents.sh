@@ -139,6 +139,11 @@ print(d.get('package_id', ''))
   artifact_size=$(du -k "${artifact}" | cut -f1)
   echo "  Artifact: ${artifact_size} KB"
 
+  # Rate-limit guard: wait 7s between publishes
+  if [[ ${total} -gt 1 ]]; then
+    sleep 7
+  fi
+
   # ── POST to publish endpoint ────────────────────────────────────────────
   http_response="${WORK_DIR}/${slug}_response.json"
   http_code=$(curl -s -o "${http_response}" -w "%{http_code}" \
@@ -156,6 +161,27 @@ print(d.get('package_id', ''))
   elif [[ "${http_code}" == "409" ]]; then
     echo "  SKIP  Version already exists (409)"
     skipped=$((skipped + 1))
+
+  elif [[ "${http_code}" == "429" ]]; then
+    echo "  RATE LIMITED — waiting 60s and retrying..."
+    sleep 60
+    http_code=$(curl -s -o "${http_response}" -w "%{http_code}" \
+      -X POST "${PUBLISH_URL}" \
+      -H "Authorization: Bearer ${AUTH_TOKEN}" \
+      -F "manifest=<${manifest_json}" \
+      -F "artifact=@${artifact};type=application/gzip" \
+      --max-time 120)
+    if [[ "${http_code}" == "201" ]]; then
+      echo "  OK    Published ${slug} (retry)"
+      published=$((published + 1))
+    elif [[ "${http_code}" == "409" ]]; then
+      echo "  SKIP  Version already exists (409)"
+      skipped=$((skipped + 1))
+    else
+      echo "  FAIL  HTTP ${http_code} (retry)"
+      failed=$((failed + 1))
+      failures+=("${slug}: HTTP ${http_code} on retry")
+    fi
 
   else
     error_msg=$(python3 -c "
