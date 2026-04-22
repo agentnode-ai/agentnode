@@ -3,13 +3,13 @@ package_id: "log-investigator-agent"
 package_type: "agent"
 name: "Log Investigator Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Parse log files, identify errors and anomalies, correlate events, and produce an incident report."
+version: "2.0.0"
+summary: "Parse log files, identify errors and anomalies, correlate events, and produce a report."
 description: |
-  Investigate log files by parsing entries, identifying error patterns and anomalies, correlating events across sources, and generating an incident investigation report.
+  Investigate logs by parsing entries, identifying error patterns, and generating an incident report.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "log_investigator_agent.agent"
 
 capabilities:
   tools:
-    - name: "log_investigation"
-      capability_id: "log_investigation"
-      description: "Parse log files, identify errors and anomalies, correlate events, and produce an incident report."
+    - name: "log_investigator"
+      capability_id: "log_investigator"
+      description: "Parse log files, identify errors and anomalies, correlate events, and produce a report."
       entrypoint: "log_investigator_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "log_investigator_agent.agent:run"
-  goal: "Investigate log files by parsing entries, identifying error patterns and anomalies, correlating events across sources, and generating an incident investigation report."
+  goal: "Investigate logs by parsing entries, identifying error patterns, and generating an incident report."
   tool_access:
     allowed_packages: []
   limits:
@@ -67,7 +62,7 @@ compatibility:
 
 permissions:
   network:
-    level: "none"
+    level: "unrestricted"
   filesystem:
     level: "workspace_read"
   code_execution:

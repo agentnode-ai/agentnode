@@ -3,13 +3,13 @@ package_id: "api-design-agent"
 package_type: "agent"
 name: "API Design Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Generate an OpenAPI specification from requirements, validate it, and produce API documentation."
+version: "2.0.0"
+summary: "Generate an OpenAPI specification from requirements, validate it, and produce docs."
 description: |
-  Design an API by converting requirements into an OpenAPI spec, validating the schema, generating documentation with examples, and checking for REST best practices.
+  Design an API by converting requirements into a spec, validating, and generating docs.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -20,7 +20,7 @@ capabilities:
   tools:
     - name: "api_design"
       capability_id: "api_design"
-      description: "Generate an OpenAPI specification from requirements, validate it, and produce API documentation."
+      description: "Generate an OpenAPI specification from requirements, validate it, and produce docs."
       entrypoint: "api_design_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "api_design_agent.agent:run"
-  goal: "Design an API by converting requirements into an OpenAPI spec, validating the schema, generating documentation with examples, and checking for REST best practices."
+  goal: "Design an API by converting requirements into a spec, validating, and generating docs."
   tool_access:
     allowed_packages: []
   limits:

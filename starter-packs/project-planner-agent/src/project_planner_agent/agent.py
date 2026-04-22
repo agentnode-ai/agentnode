@@ -1,108 +1,63 @@
-"""project_planner_agent — AgentNode agent (ANP v0.2)
+"""project_planner_agent — AgentNode agent v2
 
-Project Planner Agent: Break down a project goal into user stories, tasks, and milestones with time estimates.
+Project Planner Agent: Break down a project goal into user stories, tasks, and milestones.
 """
-
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Workflow steps: (capability_id, param_key, description)
-STEPS = [
-        ("task_management", "goal", "Decompose project into user stories"),
-        ("task_management", "stories", "Break stories into tasks with estimates"),
-        ("task_management", "tasks", "Organize into milestones"),
-]
+
+def _call(ctx, slug, tool_name=None, **kw):
+    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
+    r = ctx.run_tool(slug, tool_name, **kw)
+    if r.success:
+        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
+    return False, {"error": r.error or "unknown"}
 
 
-class ProjectPlannerAgent:
-    """
-    Plan a project by decomposing the goal into user stories with acceptance criteria, breaking stories into tasks, estimating effort, and organizing into milestones.
-
-    Uses AgentNode SDK's detect_and_install + run_tool pattern to dynamically
-    discover and use capabilities from the full skill registry.
-    """
-
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("AGENTNODE_API_KEY", "")
-
-    async def execute(self, goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run the agent workflow.
-
-        Args:
-            goal: The objective to accomplish.
-            context: Optional parameters and context.
-
-        Returns:
-            Dict with result, done status, and metadata.
-        """
-        findings: list[dict[str, Any]] = []
-        consecutive_errors = 0
-
-        try:
-            from agentnode_sdk import AgentNodeClient
-            client = AgentNodeClient(api_key=self._api_key)
-        except ImportError:
-            logger.warning("agentnode_sdk not installed, returning stub result")
-            return {"result": None, "done": False, "error": "agentnode_sdk not installed"}
-
-        try:
-            for capability, param_key, description in STEPS:
-                step_result = await self._use_capability(client, capability, {
-                    param_key: goal,
-                    **(context or {}),
-                })
-                findings.append({"step": description, "result": step_result})
-                if step_result.get("error"):
-                    consecutive_errors += 1
-                    if consecutive_errors >= 3:
-                        break
-                else:
-                    consecutive_errors = 0
-        finally:
-            client.close()
-
-        return {
-            "result": findings,
-            "done": True,
-            "goal": goal,
-            "steps_completed": len(findings),
-        }
-
-    async def _use_capability(
-        self,
-        client: Any,
-        capability: str,
-        params: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Use a capability via smart_run with auto-detection and install."""
-        try:
-            result = client.smart_run(
-                lambda: client.run_tool(capability, **params),
-                auto_upgrade_policy="safe",
-            )
-            if result.success:
-                return result.result if isinstance(result.result, dict) else {"output": result.result}
-            return {"error": result.error or "Unknown error"}
-        except Exception as exc:
-            logger.warning("Capability %s failed: %s", capability, exc)
-            return {"error": str(exc)}
-
-
-async def run(goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Agent entrypoint for AgentNode agent runner.
+def run(context: Any, **kwargs: Any) -> dict:
+    """Agent entrypoint — AgentContext contract v1.
 
     Args:
-        goal: The objective for this agent.
-        context: Optional context with parameters and configuration.
+        context: AgentContext with goal, run_tool(), next_iteration().
+        **kwargs: Additional parameters from the caller.
 
     Returns:
-        Structured result with findings and metadata.
+        Structured result dict.
     """
-    ctx = context or {}
-    agent = ProjectPlannerAgent(api_key=ctx.get("api_key"))
-    return await agent.execute(goal=goal, context=ctx)
+    project = kwargs.get("project", "") or context.goal
+
+    # Step 1: Summarize the project scope
+    context.next_iteration()
+    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+                        text=project, max_sentences=5)
+    scope = summary.get("summary", project[:500]) if ok else project[:500]
+
+    # Step 2: Generate user stories via copywriting framework
+    context.next_iteration()
+    ok, stories = _call(context, "copywriting-pack", "tone_adjustment",
+                        product=f"User stories for: {scope}",
+                        audience="development team",
+                        framework="aida", tone="technical")
+    user_stories = stories.get("copy", stories.get("output", "")) if ok else ""
+
+    # Step 3: Structure the plan
+    context.next_iteration()
+    plan_text = f"Project: {project}\nScope: {scope}\nStories: {user_stories}"
+    ok, plan_summary = _call(context, "document-summarizer-pack", "document_summary",
+                             text=plan_text, max_sentences=8)
+
+    # Build structured plan
+    plan = f"# Project Plan\n\n## Scope\n{scope}\n\n"
+    if user_stories:
+        plan += f"## User Stories\n{user_stories}\n\n"
+    plan += "## Milestones\n"
+    plan += "1. Planning & Setup\n2. Core Implementation\n3. Testing & QA\n4. Deployment\n"
+
+    return {"plan": plan, "scope": scope,
+            "user_stories": user_stories,
+            "summary": plan_summary.get("summary", "") if ok else "",
+            "done": True}

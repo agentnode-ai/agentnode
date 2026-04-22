@@ -3,13 +3,13 @@ package_id: "seo-research-agent"
 package_type: "agent"
 name: "SEO Research Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Audit a website's SEO by analyzing content, keywords, meta tags, and competitor rankings."
+version: "2.0.0"
+summary: "Audit a website's SEO by analyzing content, keywords, and competitor rankings."
 description: |
-  Perform SEO analysis on a target URL by extracting page content, analyzing keywords and meta tags, checking competitor rankings, and producing an SEO audit report.
+  Perform SEO analysis by extracting page content, analyzing SEO factors, and checking competitor rankings.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -20,7 +20,7 @@ capabilities:
   tools:
     - name: "seo_research"
       capability_id: "seo_research"
-      description: "Audit a website's SEO by analyzing content, keywords, meta tags, and competitor rankings."
+      description: "Audit a website's SEO by analyzing content, keywords, and competitor rankings."
       entrypoint: "seo_research_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "seo_research_agent.agent:run"
-  goal: "Perform SEO analysis on a target URL by extracting page content, analyzing keywords and meta tags, checking competitor rankings, and producing an SEO audit report."
+  goal: "Perform SEO analysis by extracting page content, analyzing SEO factors, and checking competitor rankings."
   tool_access:
     allowed_packages: []
   limits:

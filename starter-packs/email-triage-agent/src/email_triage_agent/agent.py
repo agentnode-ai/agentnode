@@ -1,108 +1,64 @@
-"""email_triage_agent — AgentNode agent (ANP v0.2)
+"""email_triage_agent — AgentNode agent v2
 
-Email Triage Agent: Prioritize incoming emails, draft responses for routine messages, and create tasks from action items.
+Email Triage Agent: Prioritize incoming emails, draft responses for routine messages, extract action items.
 """
-
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Workflow steps: (capability_id, param_key, description)
-STEPS = [
-        ("email_summary", "emails", "Summarize and categorize emails by priority"),
-        ("email_drafting", "context", "Draft responses for routine emails"),
-        ("task_management", "items", "Create tasks from action items"),
-]
+
+def _call(ctx, slug, tool_name=None, **kw):
+    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
+    r = ctx.run_tool(slug, tool_name, **kw)
+    if r.success:
+        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
+    return False, {"error": r.error or "unknown"}
 
 
-class EmailTriageAgent:
-    """
-    Triage emails by categorizing priority, drafting responses for routine messages, extracting action items, and creating tasks in the task management system.
-
-    Uses AgentNode SDK's detect_and_install + run_tool pattern to dynamically
-    discover and use capabilities from the full skill registry.
-    """
-
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("AGENTNODE_API_KEY", "")
-
-    async def execute(self, goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run the agent workflow.
-
-        Args:
-            goal: The objective to accomplish.
-            context: Optional parameters and context.
-
-        Returns:
-            Dict with result, done status, and metadata.
-        """
-        findings: list[dict[str, Any]] = []
-        consecutive_errors = 0
-
-        try:
-            from agentnode_sdk import AgentNodeClient
-            client = AgentNodeClient(api_key=self._api_key)
-        except ImportError:
-            logger.warning("agentnode_sdk not installed, returning stub result")
-            return {"result": None, "done": False, "error": "agentnode_sdk not installed"}
-
-        try:
-            for capability, param_key, description in STEPS:
-                step_result = await self._use_capability(client, capability, {
-                    param_key: goal,
-                    **(context or {}),
-                })
-                findings.append({"step": description, "result": step_result})
-                if step_result.get("error"):
-                    consecutive_errors += 1
-                    if consecutive_errors >= 3:
-                        break
-                else:
-                    consecutive_errors = 0
-        finally:
-            client.close()
-
-        return {
-            "result": findings,
-            "done": True,
-            "goal": goal,
-            "steps_completed": len(findings),
-        }
-
-    async def _use_capability(
-        self,
-        client: Any,
-        capability: str,
-        params: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Use a capability via smart_run with auto-detection and install."""
-        try:
-            result = client.smart_run(
-                lambda: client.run_tool(capability, **params),
-                auto_upgrade_policy="safe",
-            )
-            if result.success:
-                return result.result if isinstance(result.result, dict) else {"output": result.result}
-            return {"error": result.error or "Unknown error"}
-        except Exception as exc:
-            logger.warning("Capability %s failed: %s", capability, exc)
-            return {"error": str(exc)}
-
-
-async def run(goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Agent entrypoint for AgentNode agent runner.
+def run(context: Any, **kwargs: Any) -> dict:
+    """Agent entrypoint — AgentContext contract v1.
 
     Args:
-        goal: The objective for this agent.
-        context: Optional context with parameters and configuration.
+        context: AgentContext with goal, run_tool(), next_iteration().
+        **kwargs: Additional parameters from the caller.
 
     Returns:
-        Structured result with findings and metadata.
+        Structured result dict.
     """
-    ctx = context or {}
-    agent = EmailTriageAgent(api_key=ctx.get("api_key"))
-    return await agent.execute(goal=goal, context=ctx)
+    emails_text = kwargs.get("emails", "") or context.goal
+
+    # Step 1: Summarize the emails
+    context.next_iteration()
+    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+                        text=emails_text[:5000], max_sentences=10)
+    email_summary = summary.get("summary", emails_text[:500]) if ok else emails_text[:500]
+
+    # Step 2: Draft response for the email
+    context.next_iteration()
+    ok, response = _call(context, "email-drafter-pack", "email_drafting",
+                         intent=f"Reply to: {email_summary[:500]}",
+                         tone="professional")
+    draft = response.get("email", response.get("output", "")) if ok else ""
+
+    # Step 3: Extract action items by summarizing again with focus
+    context.next_iteration()
+    ok, actions = _call(context, "document-summarizer-pack", "document_summary",
+                        text=f"Extract action items from: {emails_text[:3000]}",
+                        max_sentences=5)
+
+    # Simple priority classification based on keywords
+    text_lower = emails_text.lower()
+    if any(w in text_lower for w in ["urgent", "asap", "critical", "deadline"]):
+        priority = "high"
+    elif any(w in text_lower for w in ["important", "please review", "action required"]):
+        priority = "medium"
+    else:
+        priority = "low"
+
+    return {"summary": email_summary, "priority": priority,
+            "draft_response": draft,
+            "action_items": actions.get("summary", "") if ok else "",
+            "done": True}

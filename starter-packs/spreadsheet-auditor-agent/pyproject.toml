@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spreadsheet-auditor-agent"
-version = "1.0.0"
-description = "Audit Excel/CSV spreadsheets for errors, duplicates, formula issues, and data inconsistencies."
+version = "2.0.0"
+description = "Audit CSV/Excel spreadsheets for errors, duplicates, and data inconsistencies."
 requires-python = ">=3.10"
 dependencies = []
 

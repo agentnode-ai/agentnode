@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "website-monitor-agent"
-version = "1.0.0"
-description = "Monitor websites for content changes, downtime, and visual regressions, and send alerts via Slack or email."
+version = "2.0.0"
+description = "Monitor websites for content changes, downtime, and extract current state."
 requires-python = ">=3.10"
 dependencies = []
 

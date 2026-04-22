@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dependency-audit-agent"
-version = "1.0.0"
-description = "Scan project dependencies for known vulnerabilities, outdated versions, license issues, and leaked secrets."
+version = "2.0.0"
+description = "Scan project dependencies for vulnerabilities, outdated versions, and leaked secrets."
 requires-python = ">=3.10"
 dependencies = []
 

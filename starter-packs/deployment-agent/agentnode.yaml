@@ -3,13 +3,13 @@ package_id: "deployment-agent"
 package_type: "agent"
 name: "Deployment Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Orchestrate application deployments: build, test, push images, deploy to cloud, verify health, and notify the team."
+version: "2.0.0"
+summary: "Orchestrate deployments: verify code quality, run checks, and produce a deployment checklist."
 description: |
-  Deploy an application by building the project, running tests, pushing container images, deploying to the target environment, verifying health checks, and sending team notifications.
+  Deploy by verifying build quality, running tests, and producing a deployment checklist.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "deployment_agent.agent"
 
 capabilities:
   tools:
-    - name: "deployment_orchestration"
-      capability_id: "deployment_orchestration"
-      description: "Orchestrate application deployments: build, test, push images, deploy to cloud, verify health, and notify the team."
+    - name: "deployment"
+      capability_id: "deployment"
+      description: "Orchestrate deployments: verify code quality, run checks, and produce a deployment checklist."
       entrypoint: "deployment_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "deployment_agent.agent:run"
-  goal: "Deploy an application by building the project, running tests, pushing container images, deploying to the target environment, verifying health checks, and sending team notifications."
+  goal: "Deploy by verifying build quality, running tests, and producing a deployment checklist."
   tool_access:
     allowed_packages: []
   limits:

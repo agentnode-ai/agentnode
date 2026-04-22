@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "social-media-agent"
-version = "1.0.0"
-description = "Create platform-optimized social media posts with copy, hashtags, and image suggestions from a topic or URL."
+version = "2.0.0"
+description = "Create platform-optimized social media posts with copy, hashtags, and suggestions."
 requires-python = ">=3.10"
 dependencies = []
 

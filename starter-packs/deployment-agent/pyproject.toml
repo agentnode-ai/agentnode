@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deployment-agent"
-version = "1.0.0"
-description = "Orchestrate application deployments: build, test, push images, deploy to cloud, verify health, and notify the team."
+version = "2.0.0"
+description = "Orchestrate deployments: verify code quality, run checks, and produce a deployment checklist."
 requires-python = ">=3.10"
 dependencies = []
 

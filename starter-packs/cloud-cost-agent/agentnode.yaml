@@ -3,13 +3,13 @@ package_id: "cloud-cost-agent"
 package_type: "agent"
 name: "Cloud Cost Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Analyze cloud infrastructure costs across AWS/Azure, identify waste, and recommend optimization strategies."
+version: "2.0.0"
+summary: "Analyze cloud infrastructure costs, identify waste, and recommend optimizations."
 description: |
-  Analyze cloud costs by fetching billing data, identifying underutilized resources and waste, benchmarking against best practices, and recommending cost optimizations.
+  Analyze cloud costs by examining billing data and recommending optimizations.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "cloud_cost_agent.agent"
 
 capabilities:
   tools:
-    - name: "cloud_cost_optimization"
-      capability_id: "cloud_cost_optimization"
-      description: "Analyze cloud infrastructure costs across AWS/Azure, identify waste, and recommend optimization strategies."
+    - name: "cloud_cost"
+      capability_id: "cloud_cost"
+      description: "Analyze cloud infrastructure costs, identify waste, and recommend optimizations."
       entrypoint: "cloud_cost_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "cloud_cost_agent.agent:run"
-  goal: "Analyze cloud costs by fetching billing data, identifying underutilized resources and waste, benchmarking against best practices, and recommending cost optimizations."
+  goal: "Analyze cloud costs by examining billing data and recommending optimizations."
   tool_access:
     allowed_packages: []
   limits:

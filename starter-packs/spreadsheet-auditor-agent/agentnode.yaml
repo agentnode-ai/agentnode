@@ -3,13 +3,13 @@ package_id: "spreadsheet-auditor-agent"
 package_type: "agent"
 name: "Spreadsheet Auditor Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Audit Excel/CSV spreadsheets for errors, duplicates, formula issues, and data inconsistencies."
+version: "2.0.0"
+summary: "Audit CSV/Excel spreadsheets for errors, duplicates, and data inconsistencies."
 description: |
-  Audit a spreadsheet by checking for duplicates, data type mismatches, formula errors, missing values, and inconsistencies, then produce an audit report with fix suggestions.
+  Audit a spreadsheet by checking for duplicates, type mismatches, and missing values.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "spreadsheet_auditor_agent.agent"
 
 capabilities:
   tools:
-    - name: "spreadsheet_audit"
-      capability_id: "spreadsheet_audit"
-      description: "Audit Excel/CSV spreadsheets for errors, duplicates, formula issues, and data inconsistencies."
+    - name: "spreadsheet_auditor"
+      capability_id: "spreadsheet_auditor"
+      description: "Audit CSV/Excel spreadsheets for errors, duplicates, and data inconsistencies."
       entrypoint: "spreadsheet_auditor_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "spreadsheet_auditor_agent.agent:run"
-  goal: "Audit a spreadsheet by checking for duplicates, data type mismatches, formula errors, missing values, and inconsistencies, then produce an audit report with fix suggestions."
+  goal: "Audit a spreadsheet by checking for duplicates, type mismatches, and missing values."
   tool_access:
     allowed_packages: []
   limits:

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meeting-prep-agent"
-version = "1.0.0"
-description = "Prepare for meetings by researching attendees, summarizing relevant docs, and generating an agenda with talking points."
+version = "2.0.0"
+description = "Prepare for meetings by researching attendees, summarizing docs, and generating an agenda."
 requires-python = ">=3.10"
 dependencies = []
 

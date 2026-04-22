@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deep-research-agent"
-version = "1.0.0"
-description = "Conduct deep multi-source research on any topic, synthesize findings from web and documents into a structured report."
+version = "2.0.0"
+description = "Conduct deep multi-source research on any topic, synthesize findings into a structured report."
 requires-python = ">=3.10"
 dependencies = []
 

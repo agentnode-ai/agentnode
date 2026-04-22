@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sql-report-agent"
-version = "1.0.0"
-description = "Answer natural language questions about a database by generating SQL queries, executing them, and visualizing results."
+version = "2.0.0"
+description = "Answer natural language questions about data by generating SQL queries."
 requires-python = ">=3.10"
 dependencies = []
 

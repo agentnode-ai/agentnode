@@ -1,108 +1,73 @@
-"""competitive_intel_agent — AgentNode agent (ANP v0.2)
+"""competitive_intel_agent — AgentNode agent v2
 
-Competitive Intelligence Agent: Analyze competitors by scraping their web presence, monitoring news, and producing a competitive analysis report.
+Competitive Intelligence Agent: Analyze competitors by scraping web presence, monitoring news, and producing a competitive report.
 """
-
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Workflow steps: (capability_id, param_key, description)
-STEPS = [
-        ("web_search", "company", "Search for competitor information"),
-        ("webpage_extraction", "urls", "Extract content from competitor websites"),
-        ("document_summary", "text", "Produce competitive analysis report"),
-]
+
+def _call(ctx, slug, tool_name=None, **kw):
+    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
+    r = ctx.run_tool(slug, tool_name, **kw)
+    if r.success:
+        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
+    return False, {"error": r.error or "unknown"}
 
 
-class CompetitiveIntelAgent:
-    """
-    Gather competitive intelligence by searching the web, extracting content from competitor pages, aggregating news, and summarizing into a competitive analysis.
-
-    Uses AgentNode SDK's detect_and_install + run_tool pattern to dynamically
-    discover and use capabilities from the full skill registry.
-    """
-
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("AGENTNODE_API_KEY", "")
-
-    async def execute(self, goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run the agent workflow.
-
-        Args:
-            goal: The objective to accomplish.
-            context: Optional parameters and context.
-
-        Returns:
-            Dict with result, done status, and metadata.
-        """
-        findings: list[dict[str, Any]] = []
-        consecutive_errors = 0
-
-        try:
-            from agentnode_sdk import AgentNodeClient
-            client = AgentNodeClient(api_key=self._api_key)
-        except ImportError:
-            logger.warning("agentnode_sdk not installed, returning stub result")
-            return {"result": None, "done": False, "error": "agentnode_sdk not installed"}
-
-        try:
-            for capability, param_key, description in STEPS:
-                step_result = await self._use_capability(client, capability, {
-                    param_key: goal,
-                    **(context or {}),
-                })
-                findings.append({"step": description, "result": step_result})
-                if step_result.get("error"):
-                    consecutive_errors += 1
-                    if consecutive_errors >= 3:
-                        break
-                else:
-                    consecutive_errors = 0
-        finally:
-            client.close()
-
-        return {
-            "result": findings,
-            "done": True,
-            "goal": goal,
-            "steps_completed": len(findings),
-        }
-
-    async def _use_capability(
-        self,
-        client: Any,
-        capability: str,
-        params: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Use a capability via smart_run with auto-detection and install."""
-        try:
-            result = client.smart_run(
-                lambda: client.run_tool(capability, **params),
-                auto_upgrade_policy="safe",
-            )
-            if result.success:
-                return result.result if isinstance(result.result, dict) else {"output": result.result}
-            return {"error": result.error or "Unknown error"}
-        except Exception as exc:
-            logger.warning("Capability %s failed: %s", capability, exc)
-            return {"error": str(exc)}
-
-
-async def run(goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Agent entrypoint for AgentNode agent runner.
+def run(context: Any, **kwargs: Any) -> dict:
+    """Agent entrypoint — AgentContext contract v1.
 
     Args:
-        goal: The objective for this agent.
-        context: Optional context with parameters and configuration.
+        context: AgentContext with goal, run_tool(), next_iteration().
+        **kwargs: Additional parameters from the caller.
 
     Returns:
-        Structured result with findings and metadata.
+        Structured result dict.
     """
-    ctx = context or {}
-    agent = CompetitiveIntelAgent(api_key=ctx.get("api_key"))
-    return await agent.execute(goal=goal, context=ctx)
+    company = kwargs.get("company", "") or context.goal
+
+    # Step 1: Search for company information
+    context.next_iteration()
+    ok, search = _call(context, "web-search-pack", "search_web",
+                       query=f"{company} company overview products services competitors",
+                       max_results=8)
+    if not ok:
+        return {"error": f"Search failed: {search.get('error')}", "done": False}
+
+    hits = search.get("results", [])
+    sources = []
+    texts = []
+
+    # Step 2: Extract content from top results
+    for item in hits[:4]:
+        url = item.get("url", "")
+        if not url:
+            continue
+        context.next_iteration()
+        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+        if ok and page.get("text"):
+            texts.append(page["text"][:2000])
+            sources.append({"title": item.get("title", url), "url": url})
+
+    # Step 3: Search for recent news
+    context.next_iteration()
+    ok, news_search = _call(context, "web-search-pack", "search_web",
+                            query=f"{company} news latest developments 2026",
+                            max_results=5)
+    news_items = news_search.get("results", []) if ok else []
+
+    # Step 4: Summarize findings
+    context.next_iteration()
+    combined = "\n\n".join(texts) if texts else f"Company: {company}"
+    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+                        text=combined, max_sentences=8)
+    analysis = summary.get("summary", combined[:800]) if ok else combined[:800]
+
+    return {"analysis": analysis, "company": company, "sources": sources,
+            "recent_news": [{"title": n.get("title", ""), "url": n.get("url", "")}
+                            for n in news_items],
+            "done": True}

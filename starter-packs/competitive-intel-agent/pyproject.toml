@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "competitive-intel-agent"
-version = "1.0.0"
-description = "Analyze competitors by scraping their web presence, monitoring news, and producing a competitive analysis report."
+version = "2.0.0"
+description = "Analyze competitors by scraping web presence, monitoring news, and producing a competitive report."
 requires-python = ">=3.10"
 dependencies = []
 

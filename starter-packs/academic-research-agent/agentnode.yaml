@@ -3,13 +3,13 @@ package_id: "academic-research-agent"
 package_type: "agent"
 name: "Academic Research Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Search academic papers on arXiv and Google Scholar, extract citations, and produce a literature review."
+version: "2.0.0"
+summary: "Search academic papers on arXiv, extract content, and produce a literature review."
 description: |
-  Conduct academic literature research by searching paper databases, extracting PDFs, collecting citations, and summarizing findings into a literature review.
+  Conduct academic research by searching paper databases, extracting PDFs, and summarizing into a review.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -20,7 +20,7 @@ capabilities:
   tools:
     - name: "academic_research"
       capability_id: "academic_research"
-      description: "Search academic papers on arXiv and Google Scholar, extract citations, and produce a literature review."
+      description: "Search academic papers on arXiv, extract content, and produce a literature review."
       entrypoint: "academic_research_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "academic_research_agent.agent:run"
-  goal: "Conduct academic literature research by searching paper databases, extracting PDFs, collecting citations, and summarizing findings into a literature review."
+  goal: "Conduct academic research by searching paper databases, extracting PDFs, and summarizing into a review."
   tool_access:
     allowed_packages: []
   limits:

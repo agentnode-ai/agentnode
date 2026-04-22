@@ -3,13 +3,13 @@ package_id: "website-monitor-agent"
 package_type: "agent"
 name: "Website Monitor Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Monitor websites for content changes, downtime, and visual regressions, and send alerts via Slack or email."
+version: "2.0.0"
+summary: "Monitor websites for content changes, downtime, and extract current state."
 description: |
-  Monitor target websites by periodically checking for content changes, downtime, and visual regressions, then send alerts with diff details via configured channels.
+  Monitor target websites by checking content, comparing snapshots, and reporting status.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "website_monitor_agent.agent"
 
 capabilities:
   tools:
-    - name: "website_monitoring"
-      capability_id: "website_monitoring"
-      description: "Monitor websites for content changes, downtime, and visual regressions, and send alerts via Slack or email."
+    - name: "website_monitor"
+      capability_id: "website_monitor"
+      description: "Monitor websites for content changes, downtime, and extract current state."
       entrypoint: "website_monitor_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "website_monitor_agent.agent:run"
-  goal: "Monitor target websites by periodically checking for content changes, downtime, and visual regressions, then send alerts with diff details via configured channels."
+  goal: "Monitor target websites by checking content, comparing snapshots, and reporting status."
   tool_access:
     allowed_packages: []
   limits:

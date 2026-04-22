@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cloud-cost-agent"
-version = "1.0.0"
-description = "Analyze cloud infrastructure costs across AWS/Azure, identify waste, and recommend optimization strategies."
+version = "2.0.0"
+description = "Analyze cloud infrastructure costs, identify waste, and recommend optimizations."
 requires-python = ">=3.10"
 dependencies = []
 

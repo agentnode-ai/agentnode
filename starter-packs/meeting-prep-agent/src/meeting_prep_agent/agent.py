@@ -1,108 +1,83 @@
-"""meeting_prep_agent — AgentNode agent (ANP v0.2)
+"""meeting_prep_agent — AgentNode agent v2
 
-Meeting Prep Agent: Prepare for meetings by researching attendees, summarizing relevant docs, and generating an agenda with talking points.
+Meeting Prep Agent: Prepare for meetings by researching attendees, summarizing docs, and generating an agenda.
 """
-
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Workflow steps: (capability_id, param_key, description)
-STEPS = [
-        ("web_search", "attendees", "Research meeting attendees and topics"),
-        ("document_summary", "text", "Summarize relevant documents"),
-        ("scheduling", "meeting", "Generate agenda and talking points"),
-]
+
+def _call(ctx, slug, tool_name=None, **kw):
+    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
+    r = ctx.run_tool(slug, tool_name, **kw)
+    if r.success:
+        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
+    return False, {"error": r.error or "unknown"}
 
 
-class MeetingPrepAgent:
-    """
-    Prepare for a meeting by researching attendees and topics, summarizing relevant documents, and generating a structured agenda with talking points and action items.
-
-    Uses AgentNode SDK's detect_and_install + run_tool pattern to dynamically
-    discover and use capabilities from the full skill registry.
-    """
-
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("AGENTNODE_API_KEY", "")
-
-    async def execute(self, goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run the agent workflow.
-
-        Args:
-            goal: The objective to accomplish.
-            context: Optional parameters and context.
-
-        Returns:
-            Dict with result, done status, and metadata.
-        """
-        findings: list[dict[str, Any]] = []
-        consecutive_errors = 0
-
-        try:
-            from agentnode_sdk import AgentNodeClient
-            client = AgentNodeClient(api_key=self._api_key)
-        except ImportError:
-            logger.warning("agentnode_sdk not installed, returning stub result")
-            return {"result": None, "done": False, "error": "agentnode_sdk not installed"}
-
-        try:
-            for capability, param_key, description in STEPS:
-                step_result = await self._use_capability(client, capability, {
-                    param_key: goal,
-                    **(context or {}),
-                })
-                findings.append({"step": description, "result": step_result})
-                if step_result.get("error"):
-                    consecutive_errors += 1
-                    if consecutive_errors >= 3:
-                        break
-                else:
-                    consecutive_errors = 0
-        finally:
-            client.close()
-
-        return {
-            "result": findings,
-            "done": True,
-            "goal": goal,
-            "steps_completed": len(findings),
-        }
-
-    async def _use_capability(
-        self,
-        client: Any,
-        capability: str,
-        params: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Use a capability via smart_run with auto-detection and install."""
-        try:
-            result = client.smart_run(
-                lambda: client.run_tool(capability, **params),
-                auto_upgrade_policy="safe",
-            )
-            if result.success:
-                return result.result if isinstance(result.result, dict) else {"output": result.result}
-            return {"error": result.error or "Unknown error"}
-        except Exception as exc:
-            logger.warning("Capability %s failed: %s", capability, exc)
-            return {"error": str(exc)}
-
-
-async def run(goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Agent entrypoint for AgentNode agent runner.
+def run(context: Any, **kwargs: Any) -> dict:
+    """Agent entrypoint — AgentContext contract v1.
 
     Args:
-        goal: The objective for this agent.
-        context: Optional context with parameters and configuration.
+        context: AgentContext with goal, run_tool(), next_iteration().
+        **kwargs: Additional parameters from the caller.
 
     Returns:
-        Structured result with findings and metadata.
+        Structured result dict.
     """
-    ctx = context or {}
-    agent = MeetingPrepAgent(api_key=ctx.get("api_key"))
-    return await agent.execute(goal=goal, context=ctx)
+    topic = kwargs.get("topic", "") or context.goal
+    attendees = kwargs.get("attendees", "")
+
+    # Step 1: Research the meeting topic
+    context.next_iteration()
+    ok, topic_search = _call(context, "web-search-pack", "search_web",
+                             query=topic, max_results=5)
+    topic_results = topic_search.get("results", []) if ok else []
+
+    # Step 2: Research attendees if provided
+    attendee_info = []
+    if attendees:
+        for person in attendees.split(",")[:3]:
+            person = person.strip()
+            if not person:
+                continue
+            context.next_iteration()
+            ok, search = _call(context, "web-search-pack", "search_web",
+                               query=f"{person} professional background", max_results=3)
+            if ok:
+                snippets = [r.get("snippet", "") for r in search.get("results", [])]
+                attendee_info.append({"name": person, "background": " ".join(snippets)[:300]})
+
+    # Step 3: Extract key content from topic results
+    context.next_iteration()
+    topic_texts = []
+    for item in topic_results[:3]:
+        url = item.get("url", "")
+        if url:
+            ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+            if ok and page.get("text"):
+                topic_texts.append(page["text"][:1500])
+
+    # Step 4: Summarize into agenda
+    context.next_iteration()
+    prep_text = f"Meeting topic: {topic}\n"
+    if topic_texts:
+        prep_text += "Background: " + "\n".join(topic_texts)[:2000]
+    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+                        text=prep_text, max_sentences=8)
+
+    agenda = f"# Meeting: {topic}\n\n"
+    agenda += "## Key Points\n"
+    agenda += (summary.get("summary", "") if ok else prep_text[:500]) + "\n\n"
+    if attendee_info:
+        agenda += "## Attendees\n"
+        for a in attendee_info:
+            agenda += f"- **{a['name']}**: {a['background']}\n"
+
+    return {"agenda": agenda, "topic": topic,
+            "attendee_research": attendee_info,
+            "background_sources": [r.get("url", "") for r in topic_results],
+            "done": True}

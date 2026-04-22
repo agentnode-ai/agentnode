@@ -3,13 +3,13 @@ package_id: "competitive-intel-agent"
 package_type: "agent"
 name: "Competitive Intelligence Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Analyze competitors by scraping their web presence, monitoring news, and producing a competitive analysis report."
+version: "2.0.0"
+summary: "Analyze competitors by scraping web presence, monitoring news, and producing a competitive report."
 description: |
-  Gather competitive intelligence by searching the web, extracting content from competitor pages, aggregating news, and summarizing into a competitive analysis.
+  Gather competitive intelligence by searching the web, extracting content, and summarizing into an analysis.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "competitive_intel_agent.agent"
 
 capabilities:
   tools:
-    - name: "competitive_intelligence"
-      capability_id: "competitive_intelligence"
-      description: "Analyze competitors by scraping their web presence, monitoring news, and producing a competitive analysis report."
+    - name: "competitive_intel"
+      capability_id: "competitive_intel"
+      description: "Analyze competitors by scraping web presence, monitoring news, and producing a competitive report."
       entrypoint: "competitive_intel_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "competitive_intel_agent.agent:run"
-  goal: "Gather competitive intelligence by searching the web, extracting content from competitor pages, aggregating news, and summarizing into a competitive analysis."
+  goal: "Gather competitive intelligence by searching the web, extracting content, and summarizing into an analysis."
   tool_access:
     allowed_packages: []
   limits:

@@ -3,13 +3,13 @@ package_id: "test-writer-agent"
 package_type: "agent"
 name: "Test Writer Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Analyze source code and generate comprehensive test suites with unit tests, edge cases, and mocks."
+version: "2.0.0"
+summary: "Analyze source code and generate comprehensive test suites with unit tests."
 description: |
-  Generate tests for source code by analyzing function signatures and logic, identifying edge cases, creating unit tests with assertions, and validating they compile.
+  Generate tests by analyzing function signatures, creating unit tests, and validating them.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "test_writer_agent.agent"
 
 capabilities:
   tools:
-    - name: "test_generation"
-      capability_id: "test_generation"
-      description: "Analyze source code and generate comprehensive test suites with unit tests, edge cases, and mocks."
+    - name: "test_writer"
+      capability_id: "test_writer"
+      description: "Analyze source code and generate comprehensive test suites with unit tests."
       entrypoint: "test_writer_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "test_writer_agent.agent:run"
-  goal: "Generate tests for source code by analyzing function signatures and logic, identifying edge cases, creating unit tests with assertions, and validating they compile."
+  goal: "Generate tests by analyzing function signatures, creating unit tests, and validating them."
   tool_access:
     allowed_packages: []
   limits:

@@ -1,108 +1,81 @@
-"""crm_enrichment_agent — AgentNode agent (ANP v0.2)
+"""crm_enrichment_agent — AgentNode agent v2
 
-CRM Enrichment Agent: Enrich CRM contacts with public web data: company info, social profiles, recent news, and role details.
+CRM Enrichment Agent: Enrich CRM contacts with web data: company info, social profiles, and news.
 """
-
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Workflow steps: (capability_id, param_key, description)
-STEPS = [
-        ("web_search", "contact", "Search for contact and company information"),
-        ("webpage_extraction", "urls", "Extract detailed profile data"),
-        ("web_search", "company", "Find recent news and updates"),
-]
+
+def _call(ctx, slug, tool_name=None, **kw):
+    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
+    r = ctx.run_tool(slug, tool_name, **kw)
+    if r.success:
+        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
+    return False, {"error": r.error or "unknown"}
 
 
-class CrmEnrichmentAgent:
-    """
-    Enrich CRM contact records by searching the web for company information, social profiles, recent news mentions, and role details, then update the CRM records.
-
-    Uses AgentNode SDK's detect_and_install + run_tool pattern to dynamically
-    discover and use capabilities from the full skill registry.
-    """
-
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("AGENTNODE_API_KEY", "")
-
-    async def execute(self, goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run the agent workflow.
-
-        Args:
-            goal: The objective to accomplish.
-            context: Optional parameters and context.
-
-        Returns:
-            Dict with result, done status, and metadata.
-        """
-        findings: list[dict[str, Any]] = []
-        consecutive_errors = 0
-
-        try:
-            from agentnode_sdk import AgentNodeClient
-            client = AgentNodeClient(api_key=self._api_key)
-        except ImportError:
-            logger.warning("agentnode_sdk not installed, returning stub result")
-            return {"result": None, "done": False, "error": "agentnode_sdk not installed"}
-
-        try:
-            for capability, param_key, description in STEPS:
-                step_result = await self._use_capability(client, capability, {
-                    param_key: goal,
-                    **(context or {}),
-                })
-                findings.append({"step": description, "result": step_result})
-                if step_result.get("error"):
-                    consecutive_errors += 1
-                    if consecutive_errors >= 3:
-                        break
-                else:
-                    consecutive_errors = 0
-        finally:
-            client.close()
-
-        return {
-            "result": findings,
-            "done": True,
-            "goal": goal,
-            "steps_completed": len(findings),
-        }
-
-    async def _use_capability(
-        self,
-        client: Any,
-        capability: str,
-        params: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Use a capability via smart_run with auto-detection and install."""
-        try:
-            result = client.smart_run(
-                lambda: client.run_tool(capability, **params),
-                auto_upgrade_policy="safe",
-            )
-            if result.success:
-                return result.result if isinstance(result.result, dict) else {"output": result.result}
-            return {"error": result.error or "Unknown error"}
-        except Exception as exc:
-            logger.warning("Capability %s failed: %s", capability, exc)
-            return {"error": str(exc)}
-
-
-async def run(goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Agent entrypoint for AgentNode agent runner.
+def run(context: Any, **kwargs: Any) -> dict:
+    """Agent entrypoint — AgentContext contract v1.
 
     Args:
-        goal: The objective for this agent.
-        context: Optional context with parameters and configuration.
+        context: AgentContext with goal, run_tool(), next_iteration().
+        **kwargs: Additional parameters from the caller.
 
     Returns:
-        Structured result with findings and metadata.
+        Structured result dict.
     """
-    ctx = context or {}
-    agent = CrmEnrichmentAgent(api_key=ctx.get("api_key"))
-    return await agent.execute(goal=goal, context=ctx)
+    contact = kwargs.get("contact", "") or context.goal
+    company = kwargs.get("company", "")
+
+    # Step 1: Search for the contact/person
+    context.next_iteration()
+    ok, person_search = _call(context, "web-search-pack", "search_web",
+                              query=f"{contact} professional profile linkedin",
+                              max_results=5)
+    person_results = person_search.get("results", []) if ok else []
+
+    # Step 2: Search for company info
+    context.next_iteration()
+    company_info = {}
+    if company:
+        ok, company_search = _call(context, "web-search-pack", "search_web",
+                                   query=f"{company} company about products",
+                                   max_results=5)
+        if ok:
+            company_info = {"results": company_search.get("results", [])}
+
+    # Step 3: Extract details from top results
+    profile_texts = []
+    for item in person_results[:3]:
+        url = item.get("url", "")
+        if not url:
+            continue
+        context.next_iteration()
+        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+        if ok and page.get("text"):
+            profile_texts.append(page["text"][:1500])
+
+    # Step 4: Search for recent news
+    context.next_iteration()
+    search_name = f"{contact} {company}" if company else contact
+    ok, news = _call(context, "web-search-pack", "search_web",
+                     query=f"{search_name} news recent", max_results=5)
+    news_items = news.get("results", []) if ok else []
+
+    # Step 5: Summarize profile
+    context.next_iteration()
+    combined = "\n".join(profile_texts) if profile_texts else contact
+    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+                        text=combined, max_sentences=5)
+
+    return {"contact": contact, "company": company,
+            "profile_summary": summary.get("summary", "") if ok else "",
+            "social_links": [r.get("url", "") for r in person_results[:3]],
+            "company_info": company_info,
+            "recent_news": [{"title": n.get("title", ""), "url": n.get("url", "")}
+                            for n in news_items],
+            "done": True}

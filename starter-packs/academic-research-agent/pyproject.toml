@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "academic-research-agent"
-version = "1.0.0"
-description = "Search academic papers on arXiv and Google Scholar, extract citations, and produce a literature review."
+version = "2.0.0"
+description = "Search academic papers on arXiv, extract content, and produce a literature review."
 requires-python = ">=3.10"
 dependencies = []
 

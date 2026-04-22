@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fact-check-agent"
-version = "1.0.0"
-description = "Verify claims against multiple web sources and produce a fact-check verdict with supporting evidence."
+version = "2.0.0"
+description = "Verify claims against multiple web sources and produce a fact-check verdict with evidence."
 requires-python = ">=3.10"
 dependencies = []
 

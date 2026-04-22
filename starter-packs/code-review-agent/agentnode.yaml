@@ -3,13 +3,13 @@ package_id: "code-review-agent"
 package_type: "agent"
 name: "Code Review Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Perform comprehensive code review: lint, security audit, refactoring suggestions, and best practices check."
+version: "2.0.0"
+summary: "Perform comprehensive code review: lint, security audit, and refactoring suggestions."
 description: |
-  Review code by running linting, checking for security vulnerabilities, suggesting refactorings, and verifying adherence to best practices, then produce a review report.
+  Review code by running linting, security checks, and suggesting refactorings.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -20,7 +20,7 @@ capabilities:
   tools:
     - name: "code_review"
       capability_id: "code_review"
-      description: "Perform comprehensive code review: lint, security audit, refactoring suggestions, and best practices check."
+      description: "Perform comprehensive code review: lint, security audit, and refactoring suggestions."
       entrypoint: "code_review_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "code_review_agent.agent:run"
-  goal: "Review code by running linting, checking for security vulnerabilities, suggesting refactorings, and verifying adherence to best practices, then produce a review report."
+  goal: "Review code by running linting, security checks, and suggesting refactorings."
   tool_access:
     allowed_packages: []
   limits:

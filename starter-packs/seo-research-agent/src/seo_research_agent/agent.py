@@ -1,108 +1,70 @@
-"""seo_research_agent — AgentNode agent (ANP v0.2)
+"""seo_research_agent — AgentNode agent v2
 
-SEO Research Agent: Audit a website's SEO by analyzing content, keywords, meta tags, and competitor rankings.
+SEO Research Agent: Audit a website's SEO by analyzing content, keywords, and competitor rankings.
 """
-
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Workflow steps: (capability_id, param_key, description)
-STEPS = [
-        ("webpage_extraction", "url", "Extract page content and meta tags"),
-        ("web_search", "keywords", "Check keyword rankings and competitors"),
-        ("document_summary", "text", "Produce SEO audit report"),
-]
+
+def _call(ctx, slug, tool_name=None, **kw):
+    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
+    r = ctx.run_tool(slug, tool_name, **kw)
+    if r.success:
+        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
+    return False, {"error": r.error or "unknown"}
 
 
-class SeoResearchAgent:
-    """
-    Perform SEO analysis on a target URL by extracting page content, analyzing keywords and meta tags, checking competitor rankings, and producing an SEO audit report.
-
-    Uses AgentNode SDK's detect_and_install + run_tool pattern to dynamically
-    discover and use capabilities from the full skill registry.
-    """
-
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("AGENTNODE_API_KEY", "")
-
-    async def execute(self, goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run the agent workflow.
-
-        Args:
-            goal: The objective to accomplish.
-            context: Optional parameters and context.
-
-        Returns:
-            Dict with result, done status, and metadata.
-        """
-        findings: list[dict[str, Any]] = []
-        consecutive_errors = 0
-
-        try:
-            from agentnode_sdk import AgentNodeClient
-            client = AgentNodeClient(api_key=self._api_key)
-        except ImportError:
-            logger.warning("agentnode_sdk not installed, returning stub result")
-            return {"result": None, "done": False, "error": "agentnode_sdk not installed"}
-
-        try:
-            for capability, param_key, description in STEPS:
-                step_result = await self._use_capability(client, capability, {
-                    param_key: goal,
-                    **(context or {}),
-                })
-                findings.append({"step": description, "result": step_result})
-                if step_result.get("error"):
-                    consecutive_errors += 1
-                    if consecutive_errors >= 3:
-                        break
-                else:
-                    consecutive_errors = 0
-        finally:
-            client.close()
-
-        return {
-            "result": findings,
-            "done": True,
-            "goal": goal,
-            "steps_completed": len(findings),
-        }
-
-    async def _use_capability(
-        self,
-        client: Any,
-        capability: str,
-        params: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Use a capability via smart_run with auto-detection and install."""
-        try:
-            result = client.smart_run(
-                lambda: client.run_tool(capability, **params),
-                auto_upgrade_policy="safe",
-            )
-            if result.success:
-                return result.result if isinstance(result.result, dict) else {"output": result.result}
-            return {"error": result.error or "Unknown error"}
-        except Exception as exc:
-            logger.warning("Capability %s failed: %s", capability, exc)
-            return {"error": str(exc)}
-
-
-async def run(goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Agent entrypoint for AgentNode agent runner.
+def run(context: Any, **kwargs: Any) -> dict:
+    """Agent entrypoint — AgentContext contract v1.
 
     Args:
-        goal: The objective for this agent.
-        context: Optional context with parameters and configuration.
+        context: AgentContext with goal, run_tool(), next_iteration().
+        **kwargs: Additional parameters from the caller.
 
     Returns:
-        Structured result with findings and metadata.
+        Structured result dict.
     """
-    ctx = context or {}
-    agent = SeoResearchAgent(api_key=ctx.get("api_key"))
-    return await agent.execute(goal=goal, context=ctx)
+    target_url = kwargs.get("url", "") or context.goal
+    keyword = kwargs.get("keyword", "")
+
+    # Step 1: Extract target page content
+    context.next_iteration()
+    ok, page = _call(context, "webpage-extractor-pack", "extract_webpage",
+                     url=target_url, include_links=True)
+    page_text = page.get("text", "") if ok else ""
+    page_title = page.get("title", "") if ok else ""
+
+    # Step 2: Run SEO analysis on the page
+    context.next_iteration()
+    ok, seo = _call(context, "seo-optimizer-pack", "webpage_extraction",
+                    html=page_text, url=target_url, keyword=keyword)
+    seo_findings = seo if ok else {}
+
+    # Step 3: Check competitor rankings for the keyword
+    context.next_iteration()
+    search_query = keyword if keyword else page_title
+    ok, competitors = _call(context, "web-search-pack", "search_web",
+                            query=search_query, max_results=10)
+    competitor_urls = []
+    if ok:
+        for r in competitors.get("results", []):
+            competitor_urls.append({"title": r.get("title", ""), "url": r.get("url", ""),
+                                    "snippet": r.get("snippet", "")})
+
+    # Step 4: Summarize findings
+    context.next_iteration()
+    findings_text = f"Page: {target_url}\nTitle: {page_title}\n"
+    if seo_findings:
+        findings_text += f"SEO Analysis: {seo_findings}\n"
+    findings_text += f"Content length: {len(page_text)} chars"
+    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+                        text=findings_text, max_sentences=6)
+
+    return {"url": target_url, "page_title": page_title,
+            "seo_analysis": seo_findings, "competitor_rankings": competitor_urls,
+            "summary": summary.get("summary", "") if ok else findings_text[:500],
+            "content_length": len(page_text), "done": True}

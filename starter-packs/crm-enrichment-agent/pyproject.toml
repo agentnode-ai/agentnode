@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crm-enrichment-agent"
-version = "1.0.0"
-description = "Enrich CRM contacts with public web data: company info, social profiles, recent news, and role details."
+version = "2.0.0"
+description = "Enrich CRM contacts with web data: company info, social profiles, and news."
 requires-python = ">=3.10"
 dependencies = []
 

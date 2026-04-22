@@ -1,108 +1,56 @@
-"""csv_analyst_agent — AgentNode agent (ANP v0.2)
+"""csv_analyst_agent — AgentNode agent v2
 
-CSV Analyst Agent: Upload a CSV, detect patterns and anomalies, generate visualizations, and produce an analysis report.
+CSV Analyst Agent: Upload a CSV, detect patterns and anomalies, and produce an analysis report.
 """
-
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Workflow steps: (capability_id, param_key, description)
-STEPS = [
-        ("csv_analysis", "file_path", "Parse CSV and detect column types"),
-        ("statistics_analysis", "data", "Compute statistics and find patterns"),
-        ("chart_generation", "data", "Generate charts for key metrics"),
-]
+
+def _call(ctx, slug, tool_name=None, **kw):
+    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
+    r = ctx.run_tool(slug, tool_name, **kw)
+    if r.success:
+        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
+    return False, {"error": r.error or "unknown"}
 
 
-class CsvAnalystAgent:
-    """
-    Analyze a CSV file by detecting data types, finding patterns and anomalies, generating visualizations, and producing a structured analysis report.
-
-    Uses AgentNode SDK's detect_and_install + run_tool pattern to dynamically
-    discover and use capabilities from the full skill registry.
-    """
-
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("AGENTNODE_API_KEY", "")
-
-    async def execute(self, goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run the agent workflow.
-
-        Args:
-            goal: The objective to accomplish.
-            context: Optional parameters and context.
-
-        Returns:
-            Dict with result, done status, and metadata.
-        """
-        findings: list[dict[str, Any]] = []
-        consecutive_errors = 0
-
-        try:
-            from agentnode_sdk import AgentNodeClient
-            client = AgentNodeClient(api_key=self._api_key)
-        except ImportError:
-            logger.warning("agentnode_sdk not installed, returning stub result")
-            return {"result": None, "done": False, "error": "agentnode_sdk not installed"}
-
-        try:
-            for capability, param_key, description in STEPS:
-                step_result = await self._use_capability(client, capability, {
-                    param_key: goal,
-                    **(context or {}),
-                })
-                findings.append({"step": description, "result": step_result})
-                if step_result.get("error"):
-                    consecutive_errors += 1
-                    if consecutive_errors >= 3:
-                        break
-                else:
-                    consecutive_errors = 0
-        finally:
-            client.close()
-
-        return {
-            "result": findings,
-            "done": True,
-            "goal": goal,
-            "steps_completed": len(findings),
-        }
-
-    async def _use_capability(
-        self,
-        client: Any,
-        capability: str,
-        params: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Use a capability via smart_run with auto-detection and install."""
-        try:
-            result = client.smart_run(
-                lambda: client.run_tool(capability, **params),
-                auto_upgrade_policy="safe",
-            )
-            if result.success:
-                return result.result if isinstance(result.result, dict) else {"output": result.result}
-            return {"error": result.error or "Unknown error"}
-        except Exception as exc:
-            logger.warning("Capability %s failed: %s", capability, exc)
-            return {"error": str(exc)}
-
-
-async def run(goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Agent entrypoint for AgentNode agent runner.
+def run(context: Any, **kwargs: Any) -> dict:
+    """Agent entrypoint — AgentContext contract v1.
 
     Args:
-        goal: The objective for this agent.
-        context: Optional context with parameters and configuration.
+        context: AgentContext with goal, run_tool(), next_iteration().
+        **kwargs: Additional parameters from the caller.
 
     Returns:
-        Structured result with findings and metadata.
+        Structured result dict.
     """
-    ctx = context or {}
-    agent = CsvAnalystAgent(api_key=ctx.get("api_key"))
-    return await agent.execute(goal=goal, context=ctx)
+    file_path = kwargs.get("file_path", "") or context.goal
+
+    # Step 1: Describe the dataset
+    context.next_iteration()
+    ok, desc = _call(context, "csv-analyzer-pack", "describe_csv", file_path=file_path)
+    statistics = desc if ok else {"error": "Could not describe dataset"}
+
+    # Step 2: Inspect columns
+    context.next_iteration()
+    ok, cols = _call(context, "csv-analyzer-pack", "columns_csv", file_path=file_path)
+    columns = cols if ok else {}
+
+    # Step 3: Sample first rows
+    context.next_iteration()
+    ok, head = _call(context, "csv-analyzer-pack", "head_csv", file_path=file_path, n=10)
+    sample = head if ok else {}
+
+    # Step 4: Summarize findings
+    context.next_iteration()
+    findings = f"File: {file_path}\nStats: {statistics}\nColumns: {columns}"
+    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+                        text=findings, max_sentences=6)
+
+    return {"analysis": summary.get("summary", findings[:500]) if ok else findings[:500],
+            "statistics": statistics, "columns": columns,
+            "sample_data": sample, "file": file_path, "done": True}

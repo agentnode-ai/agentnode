@@ -1,108 +1,98 @@
-"""fact_check_agent — AgentNode agent (ANP v0.2)
+"""fact_check_agent — AgentNode agent v2
 
-Fact Check Agent: Verify claims against multiple web sources and produce a fact-check verdict with supporting evidence.
+Fact Check Agent: Verify claims against multiple web sources and produce a fact-check verdict with evidence.
 """
-
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Workflow steps: (capability_id, param_key, description)
-STEPS = [
-        ("web_search", "claim", "Search for evidence supporting and contradicting the claim"),
-        ("webpage_extraction", "urls", "Extract full content from source pages"),
-        ("semantic_search", "query", "Find semantically relevant evidence"),
-]
+
+def _call(ctx, slug, tool_name=None, **kw):
+    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
+    r = ctx.run_tool(slug, tool_name, **kw)
+    if r.success:
+        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
+    return False, {"error": r.error or "unknown"}
 
 
-class FactCheckAgent:
-    """
-    Verify a given claim by searching multiple sources, extracting relevant evidence, cross-referencing facts, and producing a verdict with confidence level.
-
-    Uses AgentNode SDK's detect_and_install + run_tool pattern to dynamically
-    discover and use capabilities from the full skill registry.
-    """
-
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("AGENTNODE_API_KEY", "")
-
-    async def execute(self, goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run the agent workflow.
-
-        Args:
-            goal: The objective to accomplish.
-            context: Optional parameters and context.
-
-        Returns:
-            Dict with result, done status, and metadata.
-        """
-        findings: list[dict[str, Any]] = []
-        consecutive_errors = 0
-
-        try:
-            from agentnode_sdk import AgentNodeClient
-            client = AgentNodeClient(api_key=self._api_key)
-        except ImportError:
-            logger.warning("agentnode_sdk not installed, returning stub result")
-            return {"result": None, "done": False, "error": "agentnode_sdk not installed"}
-
-        try:
-            for capability, param_key, description in STEPS:
-                step_result = await self._use_capability(client, capability, {
-                    param_key: goal,
-                    **(context or {}),
-                })
-                findings.append({"step": description, "result": step_result})
-                if step_result.get("error"):
-                    consecutive_errors += 1
-                    if consecutive_errors >= 3:
-                        break
-                else:
-                    consecutive_errors = 0
-        finally:
-            client.close()
-
-        return {
-            "result": findings,
-            "done": True,
-            "goal": goal,
-            "steps_completed": len(findings),
-        }
-
-    async def _use_capability(
-        self,
-        client: Any,
-        capability: str,
-        params: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Use a capability via smart_run with auto-detection and install."""
-        try:
-            result = client.smart_run(
-                lambda: client.run_tool(capability, **params),
-                auto_upgrade_policy="safe",
-            )
-            if result.success:
-                return result.result if isinstance(result.result, dict) else {"output": result.result}
-            return {"error": result.error or "Unknown error"}
-        except Exception as exc:
-            logger.warning("Capability %s failed: %s", capability, exc)
-            return {"error": str(exc)}
-
-
-async def run(goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Agent entrypoint for AgentNode agent runner.
+def run(context: Any, **kwargs: Any) -> dict:
+    """Agent entrypoint — AgentContext contract v1.
 
     Args:
-        goal: The objective for this agent.
-        context: Optional context with parameters and configuration.
+        context: AgentContext with goal, run_tool(), next_iteration().
+        **kwargs: Additional parameters from the caller.
 
     Returns:
-        Structured result with findings and metadata.
+        Structured result dict.
     """
-    ctx = context or {}
-    agent = FactCheckAgent(api_key=ctx.get("api_key"))
-    return await agent.execute(goal=goal, context=ctx)
+    claim = kwargs.get("claim", "") or context.goal
+
+    # Step 1: Search for supporting evidence
+    context.next_iteration()
+    ok, support_search = _call(context, "web-search-pack", "search_web",
+                               query=f"evidence supporting \"{claim}\"",
+                               max_results=5)
+    supporting = support_search.get("results", []) if ok else []
+
+    # Step 2: Search for contradicting evidence
+    context.next_iteration()
+    ok, contra_search = _call(context, "web-search-pack", "search_web",
+                              query=f"evidence against debunk \"{claim}\"",
+                              max_results=5)
+    contradicting = contra_search.get("results", []) if ok else []
+
+    # Step 3: Extract content from top sources
+    all_sources = []
+    support_texts = []
+    contra_texts = []
+
+    for item in supporting[:3]:
+        url = item.get("url", "")
+        if not url:
+            continue
+        context.next_iteration()
+        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+        if ok and page.get("text"):
+            support_texts.append(page["text"][:1500])
+            all_sources.append({"title": item.get("title", ""), "url": url, "stance": "supporting"})
+
+    for item in contradicting[:3]:
+        url = item.get("url", "")
+        if not url:
+            continue
+        context.next_iteration()
+        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+        if ok and page.get("text"):
+            contra_texts.append(page["text"][:1500])
+            all_sources.append({"title": item.get("title", ""), "url": url, "stance": "contradicting"})
+
+    # Step 4: Synthesize verdict
+    support_count = len(support_texts)
+    contra_count = len(contra_texts)
+    total = support_count + contra_count
+
+    if total == 0:
+        verdict = "unverifiable"
+        confidence = 0.0
+    elif contra_count == 0:
+        verdict = "likely_true"
+        confidence = min(0.9, 0.5 + support_count * 0.15)
+    elif support_count == 0:
+        verdict = "likely_false"
+        confidence = min(0.9, 0.5 + contra_count * 0.15)
+    else:
+        ratio = support_count / total
+        if ratio > 0.7:
+            verdict = "likely_true"
+        elif ratio < 0.3:
+            verdict = "likely_false"
+        else:
+            verdict = "disputed"
+        confidence = round(abs(ratio - 0.5) * 2, 2)
+
+    return {"claim": claim, "verdict": verdict, "confidence": confidence,
+            "supporting_sources": support_count, "contradicting_sources": contra_count,
+            "sources": all_sources, "done": True}

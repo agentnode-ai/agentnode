@@ -3,13 +3,13 @@ package_id: "security-scanner-agent"
 package_type: "agent"
 name: "Security Scanner Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Run a comprehensive security scan on a codebase: SAST, dependency vulnerabilities, secret detection, and compliance check."
+version: "2.0.0"
+summary: "Run comprehensive security scan: SAST, dependency vulnerabilities, secret detection."
 description: |
-  Perform a security scan by running static analysis, checking dependencies for CVEs, detecting leaked secrets, verifying compliance, and producing a consolidated security report.
+  Perform security scan by running static analysis, checking for CVEs, and detecting secrets.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "security_scanner_agent.agent"
 
 capabilities:
   tools:
-    - name: "security_scanning"
-      capability_id: "security_scanning"
-      description: "Run a comprehensive security scan on a codebase: SAST, dependency vulnerabilities, secret detection, and compliance check."
+    - name: "security_scanner"
+      capability_id: "security_scanner"
+      description: "Run comprehensive security scan: SAST, dependency vulnerabilities, secret detection."
       entrypoint: "security_scanner_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "security_scanner_agent.agent:run"
-  goal: "Perform a security scan by running static analysis, checking dependencies for CVEs, detecting leaked secrets, verifying compliance, and producing a consolidated security report."
+  goal: "Perform security scan by running static analysis, checking for CVEs, and detecting secrets."
   tool_access:
     allowed_packages: []
   limits:

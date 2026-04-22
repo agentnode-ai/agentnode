@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "csv-analyst-agent"
-version = "1.0.0"
-description = "Upload a CSV, detect patterns and anomalies, generate visualizations, and produce an analysis report."
+version = "2.0.0"
+description = "Upload a CSV, detect patterns and anomalies, and produce an analysis report."
 requires-python = ">=3.10"
 dependencies = []
 

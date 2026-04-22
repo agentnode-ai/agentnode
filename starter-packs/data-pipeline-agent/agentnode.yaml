@@ -3,13 +3,13 @@ package_id: "data-pipeline-agent"
 package_type: "agent"
 name: "Data Pipeline Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Build and run a data pipeline: load from CSV/JSON, clean and transform, then output to a target format."
+version: "2.0.0"
+summary: "Build and run a data pipeline: load from CSV/JSON, clean and transform, then output."
 description: |
-  Execute a data pipeline by loading data from source files, cleaning and transforming it according to rules, and writing the results to the target format or database.
+  Execute a data pipeline by loading, cleaning, and transforming data to a target format.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -20,7 +20,7 @@ capabilities:
   tools:
     - name: "data_pipeline"
       capability_id: "data_pipeline"
-      description: "Build and run a data pipeline: load from CSV/JSON, clean and transform, then output to a target format."
+      description: "Build and run a data pipeline: load from CSV/JSON, clean and transform, then output."
       entrypoint: "data_pipeline_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "data_pipeline_agent.agent:run"
-  goal: "Execute a data pipeline by loading data from source files, cleaning and transforming it according to rules, and writing the results to the target format or database."
+  goal: "Execute a data pipeline by loading, cleaning, and transforming data to a target format."
   tool_access:
     allowed_packages: []
   limits:

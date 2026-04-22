@@ -3,13 +3,13 @@ package_id: "social-media-agent"
 package_type: "agent"
 name: "Social Media Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Create platform-optimized social media posts with copy, hashtags, and image suggestions from a topic or URL."
+version: "2.0.0"
+summary: "Create platform-optimized social media posts with copy, hashtags, and suggestions."
 description: |
-  Generate social media content by researching the topic, writing platform-optimized copy with hashtags, and suggesting or generating accompanying images.
+  Generate social media content by researching trending angles and writing platform-specific copy.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "social_media_agent.agent"
 
 capabilities:
   tools:
-    - name: "social_media_content"
-      capability_id: "social_media_content"
-      description: "Create platform-optimized social media posts with copy, hashtags, and image suggestions from a topic or URL."
+    - name: "social_media"
+      capability_id: "social_media"
+      description: "Create platform-optimized social media posts with copy, hashtags, and suggestions."
       entrypoint: "social_media_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "social_media_agent.agent:run"
-  goal: "Generate social media content by researching the topic, writing platform-optimized copy with hashtags, and suggesting or generating accompanying images."
+  goal: "Generate social media content by researching trending angles and writing platform-specific copy."
   tool_access:
     allowed_packages: []
   limits:

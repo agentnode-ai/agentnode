@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "security-scanner-agent"
-version = "1.0.0"
-description = "Run a comprehensive security scan on a codebase: SAST, dependency vulnerabilities, secret detection, and compliance chec"
+version = "2.0.0"
+description = "Run comprehensive security scan: SAST, dependency vulnerabilities, secret detection."
 requires-python = ">=3.10"
 dependencies = []
 

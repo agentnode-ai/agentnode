@@ -3,13 +3,13 @@ package_id: "contract-review-agent"
 package_type: "agent"
 name: "Contract Review Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Analyze legal contracts, flag risky clauses, compare against templates, and suggest amendments."
+version: "2.0.0"
+summary: "Analyze legal contracts, flag risky clauses, compare against templates."
 description: |
-  Review a legal contract by extracting key clauses, identifying risks and unusual terms, comparing against standard templates, and suggesting amendments.
+  Review a contract by extracting text, identifying risks, and suggesting amendments.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -20,7 +20,7 @@ capabilities:
   tools:
     - name: "contract_review"
       capability_id: "contract_review"
-      description: "Analyze legal contracts, flag risky clauses, compare against templates, and suggest amendments."
+      description: "Analyze legal contracts, flag risky clauses, compare against templates."
       entrypoint: "contract_review_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "contract_review_agent.agent:run"
-  goal: "Review a legal contract by extracting key clauses, identifying risks and unusual terms, comparing against standard templates, and suggesting amendments."
+  goal: "Review a contract by extracting text, identifying risks, and suggesting amendments."
   tool_access:
     allowed_packages: []
   limits:

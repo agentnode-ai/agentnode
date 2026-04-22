@@ -3,13 +3,13 @@ package_id: "deep-research-agent"
 package_type: "agent"
 name: "Deep Research Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Conduct deep multi-source research on any topic, synthesize findings from web and documents into a structured report."
+version: "2.0.0"
+summary: "Conduct deep multi-source research on any topic, synthesize findings into a structured report."
 description: |
-  Research a topic thoroughly using web search, webpage extraction, and document summarization, then produce a structured report with sources and key findings.
+  Research a topic using web search, page extraction, and summarization to produce a report with sources.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -20,7 +20,7 @@ capabilities:
   tools:
     - name: "deep_research"
       capability_id: "deep_research"
-      description: "Conduct deep multi-source research on any topic, synthesize findings from web and documents into a structured report."
+      description: "Conduct deep multi-source research on any topic, synthesize findings into a structured report."
       entrypoint: "deep_research_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "deep_research_agent.agent:run"
-  goal: "Research a topic thoroughly using web search, webpage extraction, and document summarization, then produce a structured report with sources and key findings."
+  goal: "Research a topic using web search, page extraction, and summarization to produce a report with sources."
   tool_access:
     allowed_packages: []
   limits:

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "blog-writer-agent"
-version = "1.0.0"
-description = "Research a topic and write an SEO-optimized blog post with proper structure, keywords, and meta description."
+version = "2.0.0"
+description = "Research a topic and write an SEO-optimized blog post with structure and keywords."
 requires-python = ">=3.10"
 dependencies = []
 

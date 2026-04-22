@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "test-writer-agent"
-version = "1.0.0"
-description = "Analyze source code and generate comprehensive test suites with unit tests, edge cases, and mocks."
+version = "2.0.0"
+description = "Analyze source code and generate comprehensive test suites with unit tests."
 requires-python = ">=3.10"
 dependencies = []
 

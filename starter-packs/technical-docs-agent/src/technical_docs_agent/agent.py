@@ -1,108 +1,74 @@
-"""technical_docs_agent — AgentNode agent (ANP v0.2)
+"""technical_docs_agent — AgentNode agent v2
 
-Technical Documentation Agent: Generate API documentation and developer guides from source code, including examples and type signatures.
+Technical Documentation Agent: Generate API documentation and developer guides from source code.
 """
-
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Workflow steps: (capability_id, param_key, description)
-STEPS = [
-        ("code_analysis", "file_path", "Analyze source code structure and signatures"),
-        ("document_parsing", "text", "Parse existing documentation"),
-        ("tone_adjustment", "text", "Format and polish documentation"),
-]
+
+def _call(ctx, slug, tool_name=None, **kw):
+    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
+    r = ctx.run_tool(slug, tool_name, **kw)
+    if r.success:
+        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
+    return False, {"error": r.error or "unknown"}
 
 
-class TechnicalDocsAgent:
-    """
-    Generate comprehensive technical documentation from source code by analyzing code structure, extracting docstrings and type signatures, and producing formatted developer guides.
-
-    Uses AgentNode SDK's detect_and_install + run_tool pattern to dynamically
-    discover and use capabilities from the full skill registry.
-    """
-
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("AGENTNODE_API_KEY", "")
-
-    async def execute(self, goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run the agent workflow.
-
-        Args:
-            goal: The objective to accomplish.
-            context: Optional parameters and context.
-
-        Returns:
-            Dict with result, done status, and metadata.
-        """
-        findings: list[dict[str, Any]] = []
-        consecutive_errors = 0
-
-        try:
-            from agentnode_sdk import AgentNodeClient
-            client = AgentNodeClient(api_key=self._api_key)
-        except ImportError:
-            logger.warning("agentnode_sdk not installed, returning stub result")
-            return {"result": None, "done": False, "error": "agentnode_sdk not installed"}
-
-        try:
-            for capability, param_key, description in STEPS:
-                step_result = await self._use_capability(client, capability, {
-                    param_key: goal,
-                    **(context or {}),
-                })
-                findings.append({"step": description, "result": step_result})
-                if step_result.get("error"):
-                    consecutive_errors += 1
-                    if consecutive_errors >= 3:
-                        break
-                else:
-                    consecutive_errors = 0
-        finally:
-            client.close()
-
-        return {
-            "result": findings,
-            "done": True,
-            "goal": goal,
-            "steps_completed": len(findings),
-        }
-
-    async def _use_capability(
-        self,
-        client: Any,
-        capability: str,
-        params: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Use a capability via smart_run with auto-detection and install."""
-        try:
-            result = client.smart_run(
-                lambda: client.run_tool(capability, **params),
-                auto_upgrade_policy="safe",
-            )
-            if result.success:
-                return result.result if isinstance(result.result, dict) else {"output": result.result}
-            return {"error": result.error or "Unknown error"}
-        except Exception as exc:
-            logger.warning("Capability %s failed: %s", capability, exc)
-            return {"error": str(exc)}
-
-
-async def run(goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Agent entrypoint for AgentNode agent runner.
+def run(context: Any, **kwargs: Any) -> dict:
+    """Agent entrypoint — AgentContext contract v1.
 
     Args:
-        goal: The objective for this agent.
-        context: Optional context with parameters and configuration.
+        context: AgentContext with goal, run_tool(), next_iteration().
+        **kwargs: Additional parameters from the caller.
 
     Returns:
-        Structured result with findings and metadata.
+        Structured result dict.
     """
-    ctx = context or {}
-    agent = TechnicalDocsAgent(api_key=ctx.get("api_key"))
-    return await agent.execute(goal=goal, context=ctx)
+    code = kwargs.get("code", "") or context.goal
+
+    # Step 1: Analyze code structure
+    context.next_iteration()
+    ok, analysis = _call(context, "code-refactor-pack", "code_analysis",
+                         code=code, operation="analyze")
+    code_structure = analysis if ok else {}
+
+    # Step 2: Generate test stubs to understand function signatures
+    context.next_iteration()
+    ok, tests = _call(context, "test-generator-pack", "code_analysis",
+                      code=code, framework="pytest")
+    test_stubs = tests if ok else {}
+
+    # Step 3: Lint code to find documentation gaps
+    context.next_iteration()
+    ok, lint = _call(context, "code-linter-pack", "code_analysis",
+                     code=code, language="python")
+    lint_issues = lint if ok else {}
+
+    # Assemble documentation
+    doc = "# API Documentation\n\n"
+
+    if code_structure:
+        doc += "## Code Structure\n\n"
+        for key, val in code_structure.items():
+            if key != "error":
+                doc += f"- **{key}**: {val}\n"
+        doc += "\n"
+
+    if test_stubs:
+        doc += "## Function Signatures\n\n"
+        test_code = test_stubs.get("tests", test_stubs.get("output", ""))
+        if isinstance(test_code, str):
+            doc += f"```python\n{test_code[:2000]}\n```\n\n"
+
+    if lint_issues:
+        doc += "## Quality Notes\n\n"
+        issues = lint_issues.get("issues", lint_issues.get("output", ""))
+        if isinstance(issues, (list, str)):
+            doc += f"{issues}\n"
+
+    return {"documentation": doc, "code_structure": code_structure,
+            "test_stubs": test_stubs, "done": True}

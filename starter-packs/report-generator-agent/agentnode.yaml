@@ -3,13 +3,13 @@ package_id: "report-generator-agent"
 package_type: "agent"
 name: "Report Generator Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Transform raw data (CSV, JSON) into a formatted report with charts, tables, and executive summary."
+version: "2.0.0"
+summary: "Transform raw data (CSV, JSON) into a formatted report with statistics and summary."
 description: |
-  Generate a business report from raw data by analyzing datasets, creating visualizations, computing statistics, and writing an executive summary.
+  Generate a business report from raw data by analyzing datasets and writing an executive summary.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "report_generator_agent.agent"
 
 capabilities:
   tools:
-    - name: "report_generation"
-      capability_id: "report_generation"
-      description: "Transform raw data (CSV, JSON) into a formatted report with charts, tables, and executive summary."
+    - name: "report_generator"
+      capability_id: "report_generator"
+      description: "Transform raw data (CSV, JSON) into a formatted report with statistics and summary."
       entrypoint: "report_generator_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "report_generator_agent.agent:run"
-  goal: "Generate a business report from raw data by analyzing datasets, creating visualizations, computing statistics, and writing an executive summary."
+  goal: "Generate a business report from raw data by analyzing datasets and writing an executive summary."
   tool_access:
     allowed_packages: []
   limits:

@@ -3,13 +3,13 @@ package_id: "email-triage-agent"
 package_type: "agent"
 name: "Email Triage Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Prioritize incoming emails, draft responses for routine messages, and create tasks from action items."
+version: "2.0.0"
+summary: "Prioritize incoming emails, draft responses for routine messages, extract action items."
 description: |
-  Triage emails by categorizing priority, drafting responses for routine messages, extracting action items, and creating tasks in the task management system.
+  Triage emails by categorizing priority, drafting responses, and extracting action items.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -20,7 +20,7 @@ capabilities:
   tools:
     - name: "email_triage"
       capability_id: "email_triage"
-      description: "Prioritize incoming emails, draft responses for routine messages, and create tasks from action items."
+      description: "Prioritize incoming emails, draft responses for routine messages, extract action items."
       entrypoint: "email_triage_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "email_triage_agent.agent:run"
-  goal: "Triage emails by categorizing priority, drafting responses for routine messages, extracting action items, and creating tasks in the task management system."
+  goal: "Triage emails by categorizing priority, drafting responses, and extracting action items."
   tool_access:
     allowed_packages: []
   limits:

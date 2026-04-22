@@ -3,13 +3,13 @@ package_id: "newsletter-agent"
 package_type: "agent"
 name: "Newsletter Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Curate top stories on a topic, summarize them, and draft a ready-to-send newsletter email."
+version: "2.0.0"
+summary: "Curate top stories on a topic, summarize them, and draft a newsletter email."
 description: |
-  Create a newsletter by aggregating top stories on a topic, summarizing each article, and drafting a formatted newsletter email ready for distribution.
+  Create a newsletter by aggregating stories, summarizing articles, and drafting an email.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "newsletter_agent.agent"
 
 capabilities:
   tools:
-    - name: "newsletter_creation"
-      capability_id: "newsletter_creation"
-      description: "Curate top stories on a topic, summarize them, and draft a ready-to-send newsletter email."
+    - name: "newsletter"
+      capability_id: "newsletter"
+      description: "Curate top stories on a topic, summarize them, and draft a newsletter email."
       entrypoint: "newsletter_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "newsletter_agent.agent:run"
-  goal: "Create a newsletter by aggregating top stories on a topic, summarizing each article, and drafting a formatted newsletter email ready for distribution."
+  goal: "Create a newsletter by aggregating stories, summarizing articles, and drafting an email."
   tool_access:
     allowed_packages: []
   limits:

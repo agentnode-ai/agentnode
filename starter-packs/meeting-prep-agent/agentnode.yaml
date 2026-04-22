@@ -3,13 +3,13 @@ package_id: "meeting-prep-agent"
 package_type: "agent"
 name: "Meeting Prep Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Prepare for meetings by researching attendees, summarizing relevant docs, and generating an agenda with talking points."
+version: "2.0.0"
+summary: "Prepare for meetings by researching attendees, summarizing docs, and generating an agenda."
 description: |
-  Prepare for a meeting by researching attendees and topics, summarizing relevant documents, and generating a structured agenda with talking points and action items.
+  Prepare for a meeting by researching topics and attendees, then generating an agenda.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "meeting_prep_agent.agent"
 
 capabilities:
   tools:
-    - name: "meeting_preparation"
-      capability_id: "meeting_preparation"
-      description: "Prepare for meetings by researching attendees, summarizing relevant docs, and generating an agenda with talking points."
+    - name: "meeting_prep"
+      capability_id: "meeting_prep"
+      description: "Prepare for meetings by researching attendees, summarizing docs, and generating an agenda."
       entrypoint: "meeting_prep_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "meeting_prep_agent.agent:run"
-  goal: "Prepare for a meeting by researching attendees and topics, summarizing relevant documents, and generating a structured agenda with talking points and action items."
+  goal: "Prepare for a meeting by researching topics and attendees, then generating an agenda."
   tool_access:
     allowed_packages: []
   limits:

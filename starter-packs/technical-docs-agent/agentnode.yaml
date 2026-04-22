@@ -3,13 +3,13 @@ package_id: "technical-docs-agent"
 package_type: "agent"
 name: "Technical Documentation Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Generate API documentation and developer guides from source code, including examples and type signatures."
+version: "2.0.0"
+summary: "Generate API documentation and developer guides from source code."
 description: |
-  Generate comprehensive technical documentation from source code by analyzing code structure, extracting docstrings and type signatures, and producing formatted developer guides.
+  Generate documentation by analyzing code structure, extracting signatures, and formatting guides.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "technical_docs_agent.agent"
 
 capabilities:
   tools:
-    - name: "technical_documentation"
-      capability_id: "technical_documentation"
-      description: "Generate API documentation and developer guides from source code, including examples and type signatures."
+    - name: "technical_docs"
+      capability_id: "technical_docs"
+      description: "Generate API documentation and developer guides from source code."
       entrypoint: "technical_docs_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "technical_docs_agent.agent:run"
-  goal: "Generate comprehensive technical documentation from source code by analyzing code structure, extracting docstrings and type signatures, and producing formatted developer guides."
+  goal: "Generate documentation by analyzing code structure, extracting signatures, and formatting guides."
   tool_access:
     allowed_packages: []
   limits:

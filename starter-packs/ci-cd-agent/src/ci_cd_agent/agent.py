@@ -1,108 +1,73 @@
-"""ci_cd_agent — AgentNode agent (ANP v0.2)
+"""ci_cd_agent — AgentNode agent v2
 
-CI/CD Agent: Set up and manage CI/CD pipelines: configure builds, run tests, build containers, and deploy.
+CI/CD Agent: Analyze project structure and generate CI/CD pipeline configuration.
 """
-
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Workflow steps: (capability_id, param_key, description)
-STEPS = [
-        ("code_analysis", "file_path", "Analyze project structure for build config"),
-        ("code_analysis", "file_path", "Run test suite"),
-        ("code_analysis", "file_path", "Build and deploy"),
-]
+
+def _call(ctx, slug, tool_name=None, **kw):
+    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
+    r = ctx.run_tool(slug, tool_name, **kw)
+    if r.success:
+        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
+    return False, {"error": r.error or "unknown"}
 
 
-class CiCdAgent:
-    """
-    Orchestrate a CI/CD pipeline by configuring build steps, running tests, building Docker containers, pushing images, and triggering deployments.
-
-    Uses AgentNode SDK's detect_and_install + run_tool pattern to dynamically
-    discover and use capabilities from the full skill registry.
-    """
-
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("AGENTNODE_API_KEY", "")
-
-    async def execute(self, goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run the agent workflow.
-
-        Args:
-            goal: The objective to accomplish.
-            context: Optional parameters and context.
-
-        Returns:
-            Dict with result, done status, and metadata.
-        """
-        findings: list[dict[str, Any]] = []
-        consecutive_errors = 0
-
-        try:
-            from agentnode_sdk import AgentNodeClient
-            client = AgentNodeClient(api_key=self._api_key)
-        except ImportError:
-            logger.warning("agentnode_sdk not installed, returning stub result")
-            return {"result": None, "done": False, "error": "agentnode_sdk not installed"}
-
-        try:
-            for capability, param_key, description in STEPS:
-                step_result = await self._use_capability(client, capability, {
-                    param_key: goal,
-                    **(context or {}),
-                })
-                findings.append({"step": description, "result": step_result})
-                if step_result.get("error"):
-                    consecutive_errors += 1
-                    if consecutive_errors >= 3:
-                        break
-                else:
-                    consecutive_errors = 0
-        finally:
-            client.close()
-
-        return {
-            "result": findings,
-            "done": True,
-            "goal": goal,
-            "steps_completed": len(findings),
-        }
-
-    async def _use_capability(
-        self,
-        client: Any,
-        capability: str,
-        params: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Use a capability via smart_run with auto-detection and install."""
-        try:
-            result = client.smart_run(
-                lambda: client.run_tool(capability, **params),
-                auto_upgrade_policy="safe",
-            )
-            if result.success:
-                return result.result if isinstance(result.result, dict) else {"output": result.result}
-            return {"error": result.error or "Unknown error"}
-        except Exception as exc:
-            logger.warning("Capability %s failed: %s", capability, exc)
-            return {"error": str(exc)}
-
-
-async def run(goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Agent entrypoint for AgentNode agent runner.
+def run(context: Any, **kwargs: Any) -> dict:
+    """Agent entrypoint — AgentContext contract v1.
 
     Args:
-        goal: The objective for this agent.
-        context: Optional context with parameters and configuration.
+        context: AgentContext with goal, run_tool(), next_iteration().
+        **kwargs: Additional parameters from the caller.
 
     Returns:
-        Structured result with findings and metadata.
+        Structured result dict.
     """
-    ctx = context or {}
-    agent = CiCdAgent(api_key=ctx.get("api_key"))
-    return await agent.execute(goal=goal, context=ctx)
+    code = kwargs.get("code", "") or context.goal
+
+    # Step 1: Analyze project structure
+    context.next_iteration()
+    ok, analysis = _call(context, "code-refactor-pack", "code_analysis",
+                         code=code, operation="analyze")
+    project_info = analysis if ok else {}
+
+    # Step 2: Lint the code
+    context.next_iteration()
+    ok, lint = _call(context, "code-linter-pack", "code_analysis",
+                     code=code, language="python", fix=False)
+    lint_result = lint if ok else {}
+
+    # Step 3: Generate test stubs
+    context.next_iteration()
+    ok, tests = _call(context, "test-generator-pack", "code_analysis",
+                      code=code, framework="pytest")
+    test_info = tests if ok else {}
+
+    # Step 4: Generate pipeline recommendation
+    context.next_iteration()
+    pipeline_text = f"Project analysis: {project_info}\nLint status: {lint_result}"
+    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+                        text=pipeline_text, max_sentences=5)
+
+    has_issues = bool(lint_result.get("issues", []))
+    has_tests = bool(test_info.get("tests", test_info.get("output", "")))
+
+    pipeline_steps = ["checkout", "install_dependencies"]
+    if has_tests:
+        pipeline_steps.append("run_tests")
+    pipeline_steps.append("lint")
+    if not has_issues:
+        pipeline_steps.extend(["build", "deploy"])
+
+    return {"pipeline_steps": pipeline_steps,
+            "code_analysis": project_info,
+            "lint_status": lint_result,
+            "test_status": test_info,
+            "recommendation": summary.get("summary", "") if ok else "",
+            "ready_to_deploy": not has_issues,
+            "done": True}

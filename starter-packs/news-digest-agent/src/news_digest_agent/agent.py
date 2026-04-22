@@ -1,109 +1,80 @@
-"""news_digest_agent — AgentNode agent (ANP v0.2)
+"""news_digest_agent — AgentNode agent v2
 
-News Digest Agent: Aggregate news from multiple sources on a topic, summarize key stories, and optionally translate for multilingual digests.
+News Digest Agent: Aggregate news from multiple sources on a topic, summarize stories, and optionally translate.
 """
-
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Workflow steps: (capability_id, param_key, description)
-STEPS = [
-        ("web_search", "topic", "Search for recent news on the topic"),
-        ("webpage_extraction", "urls", "Extract article content"),
-        ("document_summary", "text", "Summarize each article"),
-        ("translation", "text", "Translate digest if target language specified"),
-]
+
+def _call(ctx, slug, tool_name=None, **kw):
+    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
+    r = ctx.run_tool(slug, tool_name, **kw)
+    if r.success:
+        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
+    return False, {"error": r.error or "unknown"}
 
 
-class NewsDigestAgent:
-    """
-    Create a news digest by aggregating articles from multiple sources, summarizing key stories, and optionally translating content for multilingual audiences.
-
-    Uses AgentNode SDK's detect_and_install + run_tool pattern to dynamically
-    discover and use capabilities from the full skill registry.
-    """
-
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("AGENTNODE_API_KEY", "")
-
-    async def execute(self, goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run the agent workflow.
-
-        Args:
-            goal: The objective to accomplish.
-            context: Optional parameters and context.
-
-        Returns:
-            Dict with result, done status, and metadata.
-        """
-        findings: list[dict[str, Any]] = []
-        consecutive_errors = 0
-
-        try:
-            from agentnode_sdk import AgentNodeClient
-            client = AgentNodeClient(api_key=self._api_key)
-        except ImportError:
-            logger.warning("agentnode_sdk not installed, returning stub result")
-            return {"result": None, "done": False, "error": "agentnode_sdk not installed"}
-
-        try:
-            for capability, param_key, description in STEPS:
-                step_result = await self._use_capability(client, capability, {
-                    param_key: goal,
-                    **(context or {}),
-                })
-                findings.append({"step": description, "result": step_result})
-                if step_result.get("error"):
-                    consecutive_errors += 1
-                    if consecutive_errors >= 3:
-                        break
-                else:
-                    consecutive_errors = 0
-        finally:
-            client.close()
-
-        return {
-            "result": findings,
-            "done": True,
-            "goal": goal,
-            "steps_completed": len(findings),
-        }
-
-    async def _use_capability(
-        self,
-        client: Any,
-        capability: str,
-        params: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Use a capability via smart_run with auto-detection and install."""
-        try:
-            result = client.smart_run(
-                lambda: client.run_tool(capability, **params),
-                auto_upgrade_policy="safe",
-            )
-            if result.success:
-                return result.result if isinstance(result.result, dict) else {"output": result.result}
-            return {"error": result.error or "Unknown error"}
-        except Exception as exc:
-            logger.warning("Capability %s failed: %s", capability, exc)
-            return {"error": str(exc)}
-
-
-async def run(goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Agent entrypoint for AgentNode agent runner.
+def run(context: Any, **kwargs: Any) -> dict:
+    """Agent entrypoint — AgentContext contract v1.
 
     Args:
-        goal: The objective for this agent.
-        context: Optional context with parameters and configuration.
+        context: AgentContext with goal, run_tool(), next_iteration().
+        **kwargs: Additional parameters from the caller.
 
     Returns:
-        Structured result with findings and metadata.
+        Structured result dict.
     """
-    ctx = context or {}
-    agent = NewsDigestAgent(api_key=ctx.get("api_key"))
-    return await agent.execute(goal=goal, context=ctx)
+    topic = kwargs.get("topic", "") or context.goal
+    target_language = kwargs.get("target_language", "")
+
+    # Step 1: Aggregate news
+    context.next_iteration()
+    ok, news = _call(context, "news-aggregator-pack", "web_search",
+                     topic=topic, limit=10)
+    articles_raw = news.get("results", news.get("articles", [])) if ok else []
+
+    # Fallback to web search if aggregator returns nothing
+    if not articles_raw:
+        context.next_iteration()
+        ok, search = _call(context, "web-search-pack", "search_web",
+                           query=f"{topic} news latest", max_results=10)
+        articles_raw = search.get("results", []) if ok else []
+
+    # Step 2: Extract and summarize each article
+    digest_items = []
+    for item in articles_raw[:6]:
+        url = item.get("url", item.get("link", ""))
+        title = item.get("title", "")
+        if not url:
+            continue
+        context.next_iteration()
+        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+        text = page.get("text", "") if ok else ""
+
+        summary_text = ""
+        if text:
+            ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+                                text=text[:3000], max_sentences=3)
+            summary_text = summary.get("summary", text[:200]) if ok else text[:200]
+
+        digest_items.append({"title": title, "url": url, "summary": summary_text})
+
+    # Step 3: Optional translation
+    if target_language and digest_items:
+        context.next_iteration()
+        full_digest = "\n\n".join(
+            f"## {d['title']}\n{d['summary']}" for d in digest_items
+        )
+        ok, translated = _call(context, "text-translator-pack", "translation",
+                               text=full_digest, target_language=target_language)
+        if ok:
+            return {"digest": translated.get("translated_text", translated.get("output", full_digest)),
+                    "articles": digest_items, "topic": topic,
+                    "language": target_language, "done": True}
+
+    return {"digest": digest_items, "topic": topic,
+            "article_count": len(digest_items), "done": True}

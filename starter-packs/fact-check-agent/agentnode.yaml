@@ -3,13 +3,13 @@ package_id: "fact-check-agent"
 package_type: "agent"
 name: "Fact Check Agent"
 publisher: "agentnode"
-version: "1.0.0"
-summary: "Verify claims against multiple web sources and produce a fact-check verdict with supporting evidence."
+version: "2.0.0"
+summary: "Verify claims against multiple web sources and produce a fact-check verdict with evidence."
 description: |
-  Verify a given claim by searching multiple sources, extracting relevant evidence, cross-referencing facts, and producing a verdict with confidence level.
+  Verify a claim by searching for supporting and contradicting evidence, then producing a verdict.
 
-  This agent uses AgentNode's full skill registry to dynamically discover
-  and install the capabilities it needs at runtime.
+  Uses AgentContext contract v1: calls tools via context.run_tool()
+  with real data flow between steps and structured output synthesis.
 
 runtime: "python"
 install_mode: "package"
@@ -18,9 +18,9 @@ entrypoint: "fact_check_agent.agent"
 
 capabilities:
   tools:
-    - name: "fact_checking"
-      capability_id: "fact_checking"
-      description: "Verify claims against multiple web sources and produce a fact-check verdict with supporting evidence."
+    - name: "fact_check"
+      capability_id: "fact_check"
+      description: "Verify claims against multiple web sources and produce a fact-check verdict with evidence."
       entrypoint: "fact_check_agent.agent:run"
       input_schema:
         type: "object"
@@ -28,9 +28,6 @@ capabilities:
           goal:
             type: "string"
             description: "The objective for the agent"
-          context:
-            type: "object"
-            description: "Optional context and parameters"
         required: ["goal"]
       output_schema:
         type: "object"
@@ -39,14 +36,12 @@ capabilities:
             type: "object"
           done:
             type: "boolean"
-          error:
-            type: "string"
   resources: []
   prompts: []
 
 agent:
   entrypoint: "fact_check_agent.agent:run"
-  goal: "Verify a given claim by searching multiple sources, extracting relevant evidence, cross-referencing facts, and producing a verdict with confidence level."
+  goal: "Verify a claim by searching for supporting and contradicting evidence, then producing a verdict."
   tool_access:
     allowed_packages: []
   limits:
