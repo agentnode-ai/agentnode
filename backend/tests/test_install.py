@@ -3,6 +3,8 @@ import json
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import select, update
+from app.publishers.models import Publisher
 
 TEST_USER = {
     "email": "installer@agentnode.dev",
@@ -66,7 +68,7 @@ async def publish_test_package(client, token, manifest=None, artifact=None):
     )
 
 
-async def get_auth_token(client):
+async def get_auth_token(client, session):
     await client.post("/v1/auth/register", json=TEST_USER)
     login = await client.post("/v1/auth/login", json={
         "email": TEST_USER["email"],
@@ -78,17 +80,24 @@ async def get_auth_token(client):
         json=TEST_PUBLISHER,
         headers={"Authorization": f"Bearer {token}"},
     )
+    # Make publisher trusted to bypass new-publisher quarantine
+    await session.execute(
+        update(Publisher)
+        .where(Publisher.slug == TEST_PUBLISHER["slug"])
+        .values(trust_level="trusted")
+    )
+    await session.commit()
     return token
 
 
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_get_install_metadata(mock_meili, mock_s3, client):
-    token = await get_auth_token(client)
+async def test_get_install_metadata(mock_meili, mock_s3, client, session):
+    token = await get_auth_token(client, session)
     await publish_test_package(client, token)
 
-    resp = await client.get("/v1/packages/install-test-pkg/install")
+    resp = await client.get("/v1/packages/install-test-pkg/install-info")
     assert resp.status_code == 200
     data = resp.json()
     assert data["slug"] == "install-test-pkg"
@@ -101,24 +110,55 @@ async def test_get_install_metadata(mock_meili, mock_s3, client):
     assert data["permissions"]["network_level"] == "none"
     assert data["permissions"]["filesystem_level"] == "temp"
     assert data["artifact"] is None  # No artifact uploaded
+    assert data["agent"] is None  # Not an agent package
 
 
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_get_install_metadata_specific_version(mock_meili, mock_s3, client):
-    token = await get_auth_token(client)
+async def test_install_metadata_agent_field(mock_meili, mock_s3, client, session):
+    """Agent packages should return the agent config from manifest."""
+    token = await get_auth_token(client, session)
+    agent_manifest = {
+        **TEST_MANIFEST,
+        "package_id": "test-agent-pkg",
+        "package_type": "agent",
+        "agent": {
+            "entrypoint": "agent_main.core:run",
+            "goal": "Test agent goal",
+            "tool_access": {"allowed_packages": ["test_tool"]},
+            "limits": {"max_iterations": 10, "max_tool_calls": 50},
+        },
+    }
+    pub_resp = await publish_test_package(client, token, manifest=agent_manifest)
+    assert pub_resp.status_code == 201, f"Publish failed: {pub_resp.json()}"
+
+    resp = await client.get("/v1/packages/test-agent-pkg/install-info")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["package_type"] == "agent"
+    assert data["agent"] is not None
+    assert data["agent"]["entrypoint"] == "agent_main.core:run"
+    assert data["agent"]["goal"] == "Test agent goal"
+    assert data["agent"]["tool_access"] == {"allowed_packages": ["test_tool"]}
+
+
+@pytest.mark.asyncio
+@patch("app.packages.service.upload_artifact")
+@patch("app.packages.service.sync_package_to_meilisearch")
+async def test_get_install_metadata_specific_version(mock_meili, mock_s3, client, session):
+    token = await get_auth_token(client, session)
     await publish_test_package(client, token)
     v2 = {**TEST_MANIFEST, "version": "2.0.0"}
     await publish_test_package(client, token, manifest=v2)
 
     # Request specific version 1.0.0
-    resp = await client.get("/v1/packages/install-test-pkg/install?version=1.0.0")
+    resp = await client.get("/v1/packages/install-test-pkg/install-info?version=1.0.0")
     assert resp.status_code == 200
     assert resp.json()["version"] == "1.0.0"
 
     # Default should be latest (2.0.0)
-    resp2 = await client.get("/v1/packages/install-test-pkg/install")
+    resp2 = await client.get("/v1/packages/install-test-pkg/install-info")
     assert resp2.status_code == 200
     assert resp2.json()["version"] == "2.0.0"
 
@@ -127,11 +167,11 @@ async def test_get_install_metadata_specific_version(mock_meili, mock_s3, client
 @patch("app.install.service.generate_presigned_url", return_value="https://s3.example.com/presigned")
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_get_install_with_artifact(mock_meili, mock_s3, mock_presign, client):
-    token = await get_auth_token(client)
+async def test_get_install_with_artifact(mock_meili, mock_s3, mock_presign, client, session):
+    token = await get_auth_token(client, session)
     await publish_test_package(client, token, artifact=b"fake-artifact-data")
 
-    resp = await client.get("/v1/packages/install-test-pkg/install")
+    resp = await client.get("/v1/packages/install-test-pkg/install-info")
     assert resp.status_code == 200
     data = resp.json()
     assert data["artifact"] is not None
@@ -142,15 +182,15 @@ async def test_get_install_with_artifact(mock_meili, mock_s3, mock_presign, clie
 
 @pytest.mark.asyncio
 async def test_install_not_found(client):
-    resp = await client.get("/v1/packages/nonexistent/install")
+    resp = await client.get("/v1/packages/nonexistent/install-info")
     assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_download_increments_count(mock_meili, mock_s3, client):
-    token = await get_auth_token(client)
+async def test_download_increments_count(mock_meili, mock_s3, client, session):
+    token = await get_auth_token(client, session)
     await publish_test_package(client, token)
 
     # First download
@@ -168,8 +208,8 @@ async def test_download_increments_count(mock_meili, mock_s3, client):
 @patch("app.install.service.generate_presigned_url", return_value="https://s3.example.com/presigned")
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_download_returns_url(mock_meili, mock_s3, mock_presign, client):
-    token = await get_auth_token(client)
+async def test_download_returns_url(mock_meili, mock_s3, mock_presign, client, session):
+    token = await get_auth_token(client, session)
     await publish_test_package(client, token, artifact=b"artifact-bytes")
 
     resp = await client.post("/v1/packages/install-test-pkg/download")
@@ -189,8 +229,8 @@ async def test_download_not_found(client):
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_download_count_reflected_in_detail(mock_meili, mock_s3, client):
-    token = await get_auth_token(client)
+async def test_download_count_reflected_in_detail(mock_meili, mock_s3, client, session):
+    token = await get_auth_token(client, session)
     await publish_test_package(client, token)
 
     # Three downloads from same IP — only the first increments due to dedup

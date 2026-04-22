@@ -56,7 +56,11 @@ async def download_artifact(object_key: str) -> bytes:
     response = await asyncio.to_thread(
         client.get_object, Bucket=settings.S3_BUCKET, Key=object_key
     )
-    return await asyncio.to_thread(response["Body"].read)
+    body = response["Body"]
+    try:
+        return await asyncio.to_thread(body.read)
+    finally:
+        body.close()
 
 
 async def delete_artifact(object_key: str) -> None:
@@ -127,4 +131,6 @@ async def download_preview_file(version_id: str, file_path: str) -> str | None:
     except client.exceptions.NoSuchKey:
         return None
     except Exception:
+        import logging
+        logging.getLogger(__name__).warning("download_preview_file failed for %s/%s", version_id, file_path, exc_info=True)
         return None

@@ -26,13 +26,21 @@ export function computeReadiness(
     { label: "Package name (min 3 characters)", ok: !!g.name && g.name.trim().length >= 3, required: true, target: "name" },
     { label: "Package ID", ok: SLUG_PATTERN.test(g.package_id), required: true, target: "name" },
     { label: "Version", ok: isValidSemver(g.version), required: true },
-    { label: "At least one tool with capability", ok: g.tools.some(t => t.name && t.capability_id), required: true, target: "tools" },
+    { label: "At least one tool with capability", ok: g.tools.some(t => t.name && t.capability_id), required: g.package_type === "toolpack", target: "tools" },
     { label: "Code or artifact", ok: hasContent, required: g.package_type !== "upgrade", target: "artifact" },
     { label: "Summary (20-200 characters)", ok: !!g.summary && g.summary.trim().length >= 20 && g.summary.trim().length <= 200, required: true, target: "name" },
     { label: "Description (min 50 characters)", ok: !!g.description && g.description.trim().length >= 50 && g.description !== g.summary, required: false },
     { label: "Tool descriptions", ok: g.tools.every(t => !!t.description?.trim()), required: false },
     { label: "Tags", ok: !!g.tags.trim(), required: false },
   ];
+
+  // Agent-specific required fields
+  if (g.package_type === "agent") {
+    items.push(
+      { label: "Agent entrypoint (module:function)", ok: !!g.agent_entrypoint.trim() && g.agent_entrypoint.includes(":"), required: true },
+      { label: "Agent goal", ok: !!g.agent_goal.trim(), required: true },
+    );
+  }
 
   // Upgrade-specific required fields
   if (g.package_type === "upgrade") {

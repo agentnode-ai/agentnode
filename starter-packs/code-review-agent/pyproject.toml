@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-review-agent"
+version = "1.0.0"
+description = "Perform comprehensive code review: lint, security audit, refactoring suggestions, and best practices check."
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -96,14 +96,47 @@ def _extract_json(text: str) -> dict:
     return json.loads(text)
 
 
-async def generate_with_ai(description: str) -> BuilderGenerateResponse:
+AGENT_PROMPT_SUPPLEMENT = """\
+
+IMPORTANT: The user has requested an AGENT package (package_type: "agent"), not a toolpack.
+Agents are orchestrators that coordinate other packages to accomplish goals.
+
+AGENT-SPECIFIC RULES:
+- package_type MUST be "agent"
+- The main code file is agent.py (not tool.py), with an async def run(goal, context) function
+- entrypoint format: module_name.agent:run
+- The manifest MUST include an "agent" block with: entrypoint, goal, tool_access, limits, termination, isolation, state
+- capabilities.tools should be an empty array (agents use other packages' tools)
+- The agent code should be async and implement a simple loop pattern
+- Include "agent" in tags
+
+The manifest "agent" block format:
+{
+  "agent": {
+    "entrypoint": "module_name.agent:run",
+    "goal": "description of what the agent does",
+    "tool_access": { "allowed_packages": [] },
+    "limits": { "max_iterations": 10, "max_tool_calls": 50, "max_runtime_seconds": 300 },
+    "termination": { "stop_on_final_answer": true, "stop_on_consecutive_errors": 3 },
+    "isolation": "thread",
+    "state": { "persistence": "none" }
+  }
+}
+"""
+
+
+async def generate_with_ai(description: str, package_type: str = "toolpack") -> BuilderGenerateResponse:
     """Generate a complete ANP v0.2 package using Claude Sonnet."""
     client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+    system_prompt = SYSTEM_PROMPT
+    if package_type == "agent":
+        system_prompt += AGENT_PROMPT_SUPPLEMENT
 
     message = await client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=16384,
-        system=SYSTEM_PROMPT,
+        system=system_prompt,
         messages=[
             {"role": "user", "content": USER_TEMPLATE.format(description=description)},
         ],
@@ -115,15 +148,24 @@ async def generate_with_ai(description: str) -> BuilderGenerateResponse:
 
     package_id = data["package_id"]
     module_name = data["module_name"]
-    tool_name = data["tool_name"]
+    tool_name = data.get("tool_name", "run")
     ai_manifest = data["manifest"]
 
-    code_files = [
-        CodeFile(path=f"src/{module_name}/tool.py", content=data["tool_code"]),
-        CodeFile(path=f"src/{module_name}/__init__.py", content=data.get("init_code", f'"""AgentNode package: {data["package_name"]}"""\n')),
-        CodeFile(path="pyproject.toml", content=data["pyproject"]),
-        CodeFile(path=f"tests/test_{tool_name}.py", content=data.get("test_code", "")),
-    ]
+    if package_type == "agent":
+        agent_code = data.get("tool_code") or data.get("agent_code", "")
+        code_files = [
+            CodeFile(path=f"src/{module_name}/agent.py", content=agent_code),
+            CodeFile(path=f"src/{module_name}/__init__.py", content=data.get("init_code", f'"""AgentNode agent package: {data["package_name"]}"""\n')),
+            CodeFile(path="pyproject.toml", content=data["pyproject"]),
+            CodeFile(path="tests/test_agent.py", content=data.get("test_code", "")),
+        ]
+    else:
+        code_files = [
+            CodeFile(path=f"src/{module_name}/tool.py", content=data["tool_code"]),
+            CodeFile(path=f"src/{module_name}/__init__.py", content=data.get("init_code", f'"""AgentNode package: {data["package_name"]}"""\n')),
+            CodeFile(path="pyproject.toml", content=data["pyproject"]),
+            CodeFile(path=f"tests/test_{tool_name}.py", content=data.get("test_code", "")),
+        ]
 
     # Add README if generated
     readme_code = data.get("readme_code")
@@ -142,7 +184,7 @@ async def generate_with_ai(description: str) -> BuilderGenerateResponse:
         cap_ids = data.get("capability_ids", [])
 
     tool_count = len(manifest.get("capabilities", {}).get("tools", []))
-    if tool_count == 0:
+    if tool_count == 0 and package_type != "agent":
         tool_count = 1
 
     # Build manifest YAML from the normalized JSON for display
@@ -258,6 +300,22 @@ def _normalize_manifest(ai: dict, data: dict, package_id: str, module_name: str,
     readme_code = data.get("readme_code")
     if readme_code:
         result["readme_md"] = readme_code
+
+    # Agent metadata: pass through the agent block from AI output
+    ai_agent = ai.get("agent")
+    if isinstance(ai_agent, dict):
+        result["agent"] = ai_agent
+    elif result.get("package_type") == "agent" and not isinstance(ai_agent, dict):
+        # AI didn't generate an agent block — provide default
+        result["agent"] = {
+            "entrypoint": f"{module_name}.agent:run",
+            "goal": description,
+            "tool_access": {"allowed_packages": []},
+            "limits": {"max_iterations": 10, "max_tool_calls": 50, "max_runtime_seconds": 300},
+            "termination": {"stop_on_final_answer": True, "stop_on_consecutive_errors": 3},
+            "isolation": "thread",
+            "state": {"persistence": "none"},
+        }
 
     return result
 

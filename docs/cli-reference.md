@@ -12,7 +12,7 @@ Config file: `~/.agentnode/config.json`
 
 ```json
 {
-  "api_url": "https://agentnode.net",
+  "api_url": "https://api.agentnode.net",
   "api_key": "ank_...",
   "username": "your-username"
 }
@@ -24,15 +24,74 @@ Environment variables (override config):
 
 ## Commands
 
+### `agentnode init [name]`
+
+Scaffold a new AgentNode package project.
+
+```bash
+agentnode init my-tool
+agentnode init my-agent --type agent
+agentnode init my-tool --publisher acme --dir ./packages/my-tool
+```
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `-t, --type <type>` | Package type: `toolpack`, `agent`, or `upgrade` (default: `toolpack`) |
+| `--publisher <slug>` | Publisher slug |
+| `--dir <path>` | Output directory (defaults to `./<name>`) |
+
+---
+
 ### `agentnode login`
 
-Authenticate with AgentNode.
+Authenticate with the AgentNode registry.
 
 ```bash
 agentnode login
+agentnode login --api-key ank_...
 ```
 
-Prompts for email and password. Stores credentials in `~/.agentnode/config.json`.
+Prompts for an API key (input is hidden). Verifies the key against the API and stores credentials in `~/.agentnode/config.json`.
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `--api-key <key>` | API key (or set `AGENTNODE_API_KEY` env var) |
+
+---
+
+### `agentnode auth [provider]`
+
+Manage local credentials for connector packages (no account needed).
+
+```bash
+agentnode auth github
+agentnode auth slack
+agentnode auth list
+agentnode auth remove github
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `<provider>` | Store a token for a provider (e.g. `github`, `slack`). Prompts for the token interactively. |
+| `list` | List locally stored credentials |
+| `remove <provider>` | Remove a locally stored credential |
+
+**Options (for `auth <provider>`):**
+| Flag | Description |
+|------|-------------|
+| `--no-validate` | Skip token validation |
+| `--json` | Output JSON |
+
+**Options (for `auth remove`):**
+| Flag | Description |
+|------|-------------|
+| `--yes` | Skip confirmation prompt |
+| `--json` | Output JSON |
+
+Supported providers: `github`, `slack`.
 
 ---
 
@@ -42,15 +101,18 @@ Search for packages by keyword or capability.
 
 ```bash
 agentnode search "pdf extraction"
-agentnode search "web search" --framework langchain
+agentnode search "web search" -f langchain
+agentnode search "browser" -t agent -l 5
+agentnode search "slack" -c slack_integration
 ```
 
 **Options:**
 | Flag | Description |
 |------|-------------|
-| `--framework <name>` | Filter by framework (langchain, crewai, generic) |
-| `--type <type>` | Filter by package type (toolpack, agent, upgrade) |
-| `--limit <n>` | Max results (default: 20) |
+| `-f, --framework <name>` | Filter by framework (langchain, crewai, generic) |
+| `-t, --type <type>` | Filter by package type (agent, toolpack, upgrade) |
+| `-c, --capability <id>` | Filter by capability ID |
+| `-l, --limit <n>` | Max results (default: 10) |
 
 ---
 
@@ -68,23 +130,27 @@ Displays: capabilities, compatibility, permissions, trust level, install command
 
 ### `agentnode install <slug>`
 
-Install a package into the local Python environment.
+Install a package from the AgentNode registry.
 
 ```bash
 agentnode install pdf-reader-pack
-agentnode install pdf-reader-pack --version 1.0.0
+agentnode install pdf-reader-pack -v 1.0.0
+agentnode install pdf-reader-pack --json
 ```
 
 **Options:**
 | Flag | Description |
 |------|-------------|
-| `--version <ver>` | Install a specific version |
+| `-v, --version <ver>` | Install a specific version |
 | `--pkg-version <ver>` | Alias for `--version` (avoids conflicts with commander's built-in `--version`) |
+| `--verbose` | Show detailed output |
+| `--json` | Output JSON |
+| `--allow-unhashed` | Proceed even when the server did not return an artifact hash (unsafe — only for local/dev testing) |
 
 **What happens:**
 1. Fetches install metadata from the API
 2. Downloads the artifact (.tar.gz)
-3. Verifies SHA-256 hash
+3. Verifies SHA-256 hash (fails closed if hash missing, unless `--allow-unhashed`)
 4. Runs `pip install` on the artifact
 5. Updates `agentnode.lock`
 
@@ -97,23 +163,33 @@ Update an installed package to the latest version.
 ```bash
 agentnode update pdf-reader-pack
 agentnode update --all
+agentnode update pdf-reader-pack --json
 ```
 
 **Options:**
 | Flag | Description |
 |------|-------------|
 | `--all` | Update all installed packages |
+| `--verbose` | Show detailed output |
+| `--json` | Output JSON |
 
 ---
 
-### `agentnode rollback <slug> [version]`
+### `agentnode rollback <slug@version>`
 
-Roll back a package to a previous version.
+Roll back a package to a specific version.
 
 ```bash
-agentnode rollback pdf-reader-pack
-agentnode rollback pdf-reader-pack@1.0.0
+agentnode rollback pdf-reader-pack@0.9.0
 ```
+
+The argument must be in `<slug>@<version>` format.
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `--verbose` | Show detailed output |
+| `--json` | Output JSON |
 
 ---
 
@@ -123,17 +199,24 @@ List all installed packages from `agentnode.lock`.
 
 ```bash
 agentnode list
+agentnode list --json
 ```
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `--json` | Output JSON |
 
 ---
 
-### `agentnode validate <path>`
+### `agentnode validate [dir]`
 
-Validate an ANP manifest before publishing.
+Validate an ANP package manifest.
 
 ```bash
 agentnode validate ./my-pack
 agentnode validate ./my-pack --no-network
+agentnode validate ./my-pack --json
 ```
 
 Checks `agentnode.yaml` against all validation rules.
@@ -142,7 +225,8 @@ Checks `agentnode.yaml` against all validation rules.
 | Flag | Description |
 |------|-------------|
 | `--no-network` | Offline validation only (checks manifest shape without calling the API) |
-| `--timeout <ms>` | Request timeout in milliseconds (default: 30000) |
+| `--timeout <seconds>` | Network timeout in seconds (default: 30) |
+| `--json` | Output JSON |
 
 ---
 
@@ -152,41 +236,95 @@ Publish a package to the AgentNode registry.
 
 ```bash
 agentnode publish ./my-pack
+agentnode publish ./my-pack --token ank_...
+agentnode publish ./my-pack --no-artifact
 ```
 
-Requires authentication and 2FA enabled.
+Requires authentication (via `--token`, stored API key, or `agentnode login`).
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `--token <token>` | Authentication token |
+| `--no-artifact` | Publish metadata only (skip artifact upload) |
 
 ---
 
-### `agentnode audit <slug>`
+### `agentnode audit`
 
-Run a security audit on a package.
+View and manage the policy decision audit trail.
+
+Reads `~/.agentnode/audit.jsonl` (append-only JSONL written by the SDK policy kernel) and presents it in human-readable or JSON format.
 
 ```bash
-agentnode audit pdf-reader-pack
+agentnode audit show
+agentnode audit show --limit 50 --json
+agentnode audit stats
+agentnode audit stats --json
+agentnode audit clear --yes
 ```
 
-Shows trust level, security findings, permissions, and provenance info.
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `show` | Display recent audit entries (tabular or JSON) |
+| `stats` | Show summary statistics (allow/deny/prompt counts, top slugs) |
+| `clear` | Delete the audit log file (requires `--yes` confirmation) |
+
+**Show options:**
+| Flag | Description |
+|------|-------------|
+| `-n, --limit <count>` | Number of entries to show (default: 20) |
+| `--json` | Output raw JSON lines |
+
+**Stats options:**
+| Flag | Description |
+|------|-------------|
+| `--json` | Output JSON |
+
+**Clear options:**
+| Flag | Description |
+|------|-------------|
+| `--yes` | Skip confirmation prompt |
+| `--json` | Output JSON |
 
 ---
 
 ### `agentnode report <slug>`
 
-Generate an installation/security report for a package.
+Report a package for policy violation or abuse.
 
 ```bash
-agentnode report pdf-reader-pack
+agentnode report suspicious-pack
+agentnode report suspicious-pack -r malware -d "Contains obfuscated code"
+agentnode report suspicious-pack --json
 ```
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `-r, --reason <reason>` | Reason: `malware`, `typosquatting`, `spam`, `misleading`, `policy_violation`, `other` |
+| `-d, --description <text>` | Description of the issue |
+| `--json` | Output JSON |
+
+If `--reason` or `--description` are omitted, you will be prompted interactively.
 
 ---
 
 ### `agentnode resolve <capabilities...>`
 
-Resolve capabilities to matching packages.
+Resolve capabilities to ranked packages.
 
 ```bash
 agentnode resolve pdf_extraction web_search
+agentnode resolve pdf_extraction -f langchain -l 10
 ```
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `-f, --framework <name>` | Preferred framework |
+| `-l, --limit <n>` | Max results (default: 5) |
 
 ---
 
@@ -196,17 +334,19 @@ Find upgrade packages for capabilities with policy filtering.
 
 ```bash
 agentnode resolve-upgrade --missing pdf_extraction --framework langchain
-agentnode resolve-upgrade --missing browser_automation --min-trust verified
+agentnode resolve-upgrade --missing pdf_extraction browser_automation --min-trust verified
+agentnode resolve-upgrade --missing browser_automation --runtime python --json
 ```
 
 **Options:**
 | Flag | Description |
 |------|-------------|
-| `--missing <cap>` | The missing capability to resolve |
+| `--missing <capabilities...>` | Missing capability IDs (space-separated, variadic) |
 | `--framework <name>` | Target framework |
+| `--runtime <runtime>` | Target runtime |
 | `--min-trust <level>` | Minimum trust level (unverified, verified, trusted, curated) |
 | `--no-shell` | Exclude packages requiring shell access |
-| `--no-network` | Exclude packages requiring unrestricted network |
+| `--json` | Output JSON |
 
 ---
 
@@ -215,15 +355,17 @@ agentnode resolve-upgrade --missing browser_automation --min-trust verified
 Get package recommendations for missing capabilities.
 
 ```bash
-agentnode recommend --missing pdf_extraction,web_search --framework langchain
+agentnode recommend --missing pdf_extraction web_search --framework langchain
+agentnode recommend --missing browser_automation --runtime python --json
 ```
 
 **Options:**
 | Flag | Description |
 |------|-------------|
-| `--missing <caps>` | Comma-separated list of missing capabilities |
+| `--missing <capabilities...>` | Missing capability IDs (space-separated, variadic) |
 | `--framework <name>` | Target framework |
-| `--runtime <rt>` | Target runtime |
+| `--runtime <runtime>` | Target runtime |
+| `--json` | Output JSON |
 
 ---
 
@@ -233,7 +375,7 @@ Check if a package meets your policy constraints before installing.
 
 ```bash
 agentnode policy-check --package pdf-reader-pack --min-trust verified
-agentnode policy-check --package browser-pack --no-shell --no-network
+agentnode policy-check --package browser-pack --no-shell --no-network --json
 ```
 
 **Options:**
@@ -243,49 +385,67 @@ agentnode policy-check --package browser-pack --no-shell --no-network
 | `--min-trust <level>` | Minimum trust level |
 | `--no-shell` | Disallow shell execution |
 | `--no-network` | Disallow unrestricted network |
+| `--json` | Output JSON |
 
 ---
 
-### `agentnode import <path>`
+### `agentnode import <file>`
 
-Import a tool from another platform and convert it to an ANP package.
+Import tools from other platforms and convert to ANP format.
 
 ```bash
 agentnode import tool.py --from langchain
-agentnode import manifest.json --from mcp --out ./my-pack
+agentnode import manifest.json --from mcp -o ./my-pack
 agentnode import tool.py --from openai --force
+agentnode import tool.py --from crewai --publisher acme --slug my-tool-pack --dry-run
 ```
 
 **Options:**
 | Flag | Description |
 |------|-------------|
-| `--from <platform>` | Source platform: `mcp`, `langchain`, `openai`, `crewai`, `clawhub`, `skillssh` |
-| `--out <dir>` | Output directory (default: current directory) |
+| `--from <platform>` | Source platform: `mcp`, `langchain`, `openai`, `crewai`, `clawhub`, `skillssh` (required) |
+| `-o, --output <dir>` | Output directory (default: `.`) |
+| `--publisher <name>` | Publisher name (default: `my-publisher`) |
+| `--slug <slug>` | Package slug (auto-generated from tool name if not provided) |
+| `--dry-run` | Show what would be generated without writing files |
+| `--json` | Output manifest as JSON instead of YAML |
 | `--force` | Overwrite existing files in the output directory |
 
 ---
 
 ### `agentnode doctor`
 
-Diagnose environment problems (Python, pip, lockfile, config).
+Analyze installed packages for deprecation, security findings, risky permissions, and available updates.
 
 ```bash
 agentnode doctor
+agentnode doctor --json
 ```
 
-Checks: Python availability, pip version, config file validity, lockfile integrity, API reachability.
+Checks all packages in `agentnode.lock` against the registry and reports: deprecated packages, open security findings, shell/unrestricted-network permissions, and available version updates.
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `--json` | Output JSON |
 
 ---
 
 ### `agentnode explain <slug>`
 
-Explain why a package was selected by the resolution engine.
+Explain what a package does, its capabilities, permissions, and use cases.
 
 ```bash
 agentnode explain pdf-reader-pack
+agentnode explain pdf-reader-pack --json
 ```
 
-Shows: score breakdown, capability match, trust level, framework compatibility.
+Shows: capabilities, compatibility, permissions, trust level, install command.
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `--json` | Output JSON |
 
 ---
 
@@ -295,18 +455,31 @@ Manage API keys for programmatic access.
 
 ```bash
 agentnode api-keys list
-agentnode api-keys create <label>
-agentnode api-keys set <key>
-agentnode api-keys remove <key>
+agentnode api-keys list --json
+agentnode api-keys create my-ci-key
+agentnode api-keys create my-ci-key --token ank_... --json
+agentnode api-keys set ank_...
+agentnode api-keys remove
 ```
 
 **Subcommands:**
 | Subcommand | Description |
 |------------|-------------|
 | `create <label>` | Create a new API key (requires Bearer token from login) |
-| `list` | List all API keys for your account |
-| `set <key>` | Set the active API key in local config |
-| `remove <key>` | Remove an API key from local config |
+| `list` | Show currently configured API key |
+| `set <key>` | Store an API key in local config |
+| `remove` | Remove stored API key from config (takes no argument) |
+
+**Create options:**
+| Flag | Description |
+|------|-------------|
+| `--token <token>` | Bearer token (or uses stored token) |
+| `--json` | Output JSON |
+
+**List options:**
+| Flag | Description |
+|------|-------------|
+| `--json` | Output JSON |
 
 ---
 
@@ -318,8 +491,9 @@ Manage agent run logs stored locally at `~/.agentnode/runs/`.
 agentnode runs list
 agentnode runs list --limit 5 --json
 agentnode runs show <run_id>
+agentnode runs show <run_id> --json
 agentnode runs clean --dry-run
-agentnode runs clean --max-age 7 --max-count 100
+agentnode runs clean --max-age 7 --max-count 100 --json
 ```
 
 **Subcommands:**
@@ -329,12 +503,24 @@ agentnode runs clean --max-age 7 --max-count 100
 | `show <run_id>` | Show events for a specific run (full or prefix ID) |
 | `clean [--dry-run]` | Remove old run logs based on retention policy |
 
+**List options:**
+| Flag | Description |
+|------|-------------|
+| `--limit <n>` | Max runs to show (default: 20) |
+| `--json` | Output JSON |
+
+**Show options:**
+| Flag | Description |
+|------|-------------|
+| `--json` | Output JSON |
+
 **Clean options:**
 | Flag | Description |
 |------|-------------|
 | `--dry-run` | Show what would be deleted without deleting |
 | `--max-age <days>` | Max age in days (default: 30) |
 | `--max-count <n>` | Max number of runs to keep (default: 500) |
+| `--json` | Output JSON |
 
 Runs are also automatically cleaned after each agent execution based on
 `~/.agentnode/config.json`:

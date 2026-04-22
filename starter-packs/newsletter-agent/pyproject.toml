@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "newsletter-agent"
+version = "1.0.0"
+description = "Curate top stories on a topic, summarize them, and draft a ready-to-send newsletter email."
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]

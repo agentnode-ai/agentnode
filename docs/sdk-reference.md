@@ -11,7 +11,7 @@ pip install agentnode-sdk
 ```python
 from agentnode_sdk import AgentNode
 
-an = AgentNode(api_key="ank_your_key_here")
+an = AgentNode(api_key="ank_your_key_here")  # or omit to use AGENTNODE_API_KEY env var
 
 results = an.search("pdf extraction")
 print(results)
@@ -26,21 +26,21 @@ Returns raw API response dicts. Recommended for simple use cases.
 ```python
 from agentnode_sdk import AgentNode
 
-an = AgentNode(api_key="ank_...", base_url="https://api.agentnode.net/v1")
+an = AgentNode(api_key="ank_...", base_url="https://api.agentnode.net")
 ```
 
 **Parameters:**
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `api_key` | str | required | API key (`ank_...`) |
-| `base_url` | str | `https://api.agentnode.net/v1` | API base URL |
+| `api_key` | str \| None | None | API key (`ank_...`). Falls back to `AGENTNODE_API_KEY` env var. |
+| `base_url` | str | `https://api.agentnode.net` | API base URL (`/v1` is appended internally) |
 
 #### Methods
 
 ##### `search(query, capability_id, framework, sort_by, page) -> dict`
 
 ```python
-results = an.search("pdf extraction", framework="langchain")
+results = an.search("pdf extraction", framework="langchain", page=1)
 ```
 
 ##### `resolve_upgrade(missing_capability, framework, runtime, current_capabilities, policy) -> dict`
@@ -112,34 +112,54 @@ Returns typed dataclass models. Recommended for larger applications.
 ```python
 from agentnode_sdk import AgentNodeClient
 
-client = AgentNodeClient(api_key="ank_...", base_url="https://api.agentnode.net/v1")
+client = AgentNodeClient(api_key="ank_...", base_url="https://api.agentnode.net")
 ```
 
 **Parameters:**
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `base_url` | str | `https://api.agentnode.net/v1` | API base URL |
-| `api_key` | str | None | API key authentication |
+| `base_url` | str | `https://api.agentnode.net` | API base URL (`/v1` is appended internally) |
+| `api_key` | str \| None | None | API key. Falls back to `AGENTNODE_API_KEY` env var. |
 | `token` | str | None | Bearer token authentication |
 | `timeout` | float | 30.0 | Request timeout in seconds |
 
 #### Methods
 
-##### `search(...) -> SearchResult`
+##### `search(query, package_type, capability_id, framework, sort_by, page, per_page) -> SearchResult`
 
 ```python
-result = client.search("pdf", framework="langchain", limit=10)
+result = client.search("pdf", framework="langchain", per_page=10)
 for hit in result.hits:
     print(f"{hit.slug} v{hit.latest_version} ({hit.trust_level})")
 ```
 
-##### `resolve(capabilities, framework, runtime, limit) -> ResolveResult`
+**Parameters:**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `query` | str | `""` | Search query string |
+| `package_type` | str \| None | None | Filter by package type |
+| `capability_id` | str \| None | None | Filter by capability ID |
+| `framework` | str \| None | None | Filter by framework |
+| `sort_by` | str \| None | None | Sort order (e.g. `"relevance"`) |
+| `page` | int | 1 | Page number for pagination |
+| `per_page` | int | 20 | Results per page |
+
+##### `resolve(capabilities, framework, runtime, package_type, limit) -> ResolveResult`
 
 ```python
 result = client.resolve(["pdf_extraction", "web_search"], framework="langchain")
 for pkg in result.results:
     print(f"{pkg.slug}: score={pkg.score}, trust={pkg.trust_level}")
 ```
+
+**Parameters:**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `capabilities` | list[str] | required | Capability IDs to resolve |
+| `framework` | str \| None | None | Preferred framework |
+| `runtime` | str \| None | None | Preferred runtime |
+| `package_type` | str \| None | None | Filter by package type |
+| `limit` | int | 10 | Maximum results to return |
 
 ##### `get_package(slug) -> PackageDetail`
 
@@ -166,7 +186,7 @@ Track download and get artifact URL.
 url = client.download("pdf-reader-pack")
 ```
 
-##### `install(slug, version, ...) -> InstallResult`
+##### `install(slug, version, require_trusted, require_verified, verbose) -> InstallResult`
 
 Download, verify, and pip-install a package locally. Also records the install event on the server.
 
@@ -175,7 +195,16 @@ result = client.install("pdf-reader-pack")
 print(result.installed, result.hash_verified)
 ```
 
-##### `can_install(slug, version, ...) -> CanInstallResult`
+**Parameters:**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `slug` | str | required | Package slug (e.g. `"pdf-reader-pack"`) |
+| `version` | str \| None | None | Pin to a specific version |
+| `require_trusted` | bool | False | Only install `trusted` or `curated` packages |
+| `require_verified` | bool | False | Only install `verified`+ packages |
+| `verbose` | bool | False | Enable verbose logging during install |
+
+##### `can_install(slug, version, require_trusted, require_verified, allowed_permissions, denied_permissions) -> CanInstallResult`
 
 Pre-flight check — evaluates trust level, permissions, and deprecation status without performing any installation.
 
@@ -184,6 +213,16 @@ check = client.can_install("pdf-reader-pack", require_verified=True)
 if check.allowed:
     client.install("pdf-reader-pack")
 ```
+
+**Parameters:**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `slug` | str | required | Package slug |
+| `version` | str \| None | None | Pin to a specific version |
+| `require_trusted` | bool | False | Require `trusted` or `curated` trust level |
+| `require_verified` | bool | False | Require `verified`+ trust level |
+| `allowed_permissions` | list[str] \| None | None | Allowed permission types |
+| `denied_permissions` | list[str] \| None | None | Denied permission types (e.g. `["network", "filesystem"]`) |
 
 ##### `resolve_and_install(capabilities, framework, ...) -> InstallResult`
 
@@ -194,7 +233,7 @@ result = client.resolve_and_install(["pdf_extraction", "web_search"])
 print(result.slug, result.installed)  # "pdf-reader-pack", True
 ```
 
-##### `detect_and_install(error, *, auto_upgrade_policy, ...) -> DetectAndInstallResult`
+##### `detect_and_install(error, *, auto_upgrade_policy, context, auto_install, require_verified, require_trusted, allow_low_confidence, on_detect, on_install) -> DetectAndInstallResult`
 
 Detect a missing capability from a runtime exception and optionally install the best match.
 
@@ -206,7 +245,20 @@ except Exception as e:
     print(result.detected, result.capability, result.installed)
 ```
 
-##### `smart_run(fn, *, auto_upgrade_policy, ...) -> SmartRunResult`
+**Parameters:**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `error` | BaseException | required | The exception that triggered gap detection |
+| `context` | dict[str, str] \| None | None | Optional context hints (e.g. `{"file": "report.pdf"}`) |
+| `auto_install` | bool | True | Whether to install on detection |
+| `require_verified` | bool | True | Only install `verified`+ packages |
+| `require_trusted` | bool | False | Only install `trusted`+ packages |
+| `allow_low_confidence` | bool | False | Allow install on low-confidence detections |
+| `auto_upgrade_policy` | str \| None | None | Named policy (`"off"`, `"safe"`, `"strict"`). Overrides individual params. |
+| `on_detect` | Callable \| None | None | Callback `(capability, confidence, error_msg)` on detection |
+| `on_install` | Callable \| None | None | Callback `(slug)` on successful install |
+
+##### `smart_run(fn, *, auto_upgrade_policy, auto_install, require_verified, require_trusted, allow_low_confidence, context, on_detect, on_install) -> SmartRunResult`
 
 Wrap a callable with automatic capability gap detection, installation, and retry.
 
@@ -223,13 +275,53 @@ print(result.duration_ms)     # Total wall time including detection + install + 
 **Parameters:**
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `fn` | Callable | required | The function to execute |
-| `auto_upgrade_policy` | str | `"safe"` | `"off"`, `"safe"`, or `"strict"` |
+| `fn` | Callable | required | Zero-argument callable to execute |
+| `auto_install` | bool | True | Whether to auto-install on detection |
+| `require_verified` | bool | True | Only install `verified`+ packages |
+| `require_trusted` | bool | False | Only install `trusted`+ packages |
+| `allow_low_confidence` | bool | False | Allow install on low-confidence detections |
+| `context` | dict[str, str] \| None | None | Optional context hints for detection |
+| `auto_upgrade_policy` | str \| None | None | Named policy (`"off"`, `"safe"`, `"strict"`). Overrides individual params. |
+| `on_detect` | Callable \| None | None | Callback `(capability, confidence, error_msg)` on detection |
+| `on_install` | Callable \| None | None | Callback `(slug)` on successful install |
 
 **Policies:**
 - `"off"` — never auto-install; raise on missing capability
 - `"safe"` — install only verified+ packages automatically
 - `"strict"` — install only trusted+ packages automatically
+
+##### `load_tool(slug, tool_name) -> Callable`
+
+Load an installed package's tool function. Returns a raw Python callable. The package must have been installed via `install()` first.
+
+```python
+extract = client.load_tool("pdf-reader-pack")
+result = extract(file_path="report.pdf")
+```
+
+**Parameters:**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `slug` | str | required | Package slug (e.g. `"pdf-reader-pack"`) |
+| `tool_name` | str \| None | None | Tool name for multi-tool packs |
+
+##### `run_tool(slug, tool_name, *, mode, timeout, **kwargs) -> RunToolResult`
+
+Run an installed tool with optional process isolation.
+
+```python
+result = client.run_tool("pdf-reader-pack", file_path="report.pdf")
+print(result.success, result.result)
+```
+
+**Parameters:**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `slug` | str | required | Package slug |
+| `tool_name` | str \| None | None | Tool name for multi-tool packs |
+| `mode` | str | `"auto"` | `"direct"`, `"subprocess"`, or `"auto"` |
+| `timeout` | float | 30.0 | Timeout in seconds (subprocess mode only) |
+| `**kwargs` | Any | — | Arguments forwarded to the tool function |
 
 ---
 
@@ -291,9 +383,21 @@ result = runtime.run(
     client=OpenAI(),
     model="gpt-4o",
     messages=[{"role": "user", "content": "Find PDF tools on AgentNode"}],
+    max_tool_rounds=8,
+    inject_system_prompt=True,
 )
 print(result.content)
 ```
+
+**Parameters:**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `provider` | str | required | `"openai"`, `"anthropic"`, or `"gemini"` |
+| `client` | Any | required | Provider SDK client instance |
+| `model` | str | `""` | Model name (auto-recommended if empty) |
+| `messages` | list[dict] | required | Conversation messages |
+| `max_tool_rounds` | int | 8 | Maximum tool-calling loop iterations |
+| `inject_system_prompt` | bool | True | Prepend AgentNode system prompt to messages |
 
 Supported providers: `"openai"` (including OpenRouter), `"anthropic"`, `"gemini"`.
 
@@ -317,6 +421,43 @@ The runtime registers 5 meta-tools automatically:
 | `agentnode_install` | Install a package by slug |
 | `agentnode_run` | Execute an installed tool |
 | `agentnode_acquire` | Search + install in one step |
+
+### Introspection Methods
+
+##### `tool_specs() -> list[ToolSpec]`
+
+Return internal typed tool specifications (the 5 meta-tools above).
+
+```python
+for spec in runtime.tool_specs():
+    print(spec.name, spec.description)
+```
+
+##### `prompt_specs() -> list[PromptSpec]`
+
+Return prompt assets from all installed packages (discovery only — prompts are not executable by the runtime).
+
+```python
+for prompt in runtime.prompt_specs():
+    print(prompt.name, prompt.capability_id)
+```
+
+##### `resource_specs() -> list[ResourceSpec]`
+
+Return resource assets from all installed packages (discovery only — resources are not auto-loaded).
+
+```python
+for resource in runtime.resource_specs():
+    print(resource.name, resource.uri)
+```
+
+##### `system_prompt() -> str`
+
+Return the AgentNode system prompt block. Append to your existing system prompts.
+
+```python
+prompt = runtime.system_prompt()
+```
 
 ---
 
@@ -412,10 +553,13 @@ All models are Python dataclasses in `agentnode_sdk.models`.
 |-------|------|
 | `slug` | str |
 | `name` | str |
+| `package_type` | str |
+| `summary` | str |
 | `version` | str |
+| `publisher_slug` | str |
+| `trust_level` | str |
 | `score` | float |
 | `breakdown` | ScoreBreakdown |
-| `trust_level` | str |
 | `matched_capabilities` | list[str] |
 
 ### `ScoreBreakdown`
@@ -453,6 +597,7 @@ All models are Python dataclasses in `agentnode_sdk.models`.
 | `capabilities` | list[CapabilityInfo] |
 | `dependencies` | list[DependencyInfo] |
 | `permissions` | PermissionsInfo \| None |
+| `agent` | dict \| None |
 
 ### `RunToolResult`
 | Field | Type |
@@ -481,7 +626,56 @@ All models are Python dataclasses in `agentnode_sdk.models`.
 | `data_access_level` | str |
 | `user_approval_level` | str |
 
----
+### `InstallResult`
+| Field | Type |
+|-------|------|
+| `slug` | str |
+| `version` | str |
+| `installed` | bool |
+| `already_installed` | bool |
+| `message` | str |
+| `hash_verified` | bool |
+| `entrypoint` | str \| None |
+| `lockfile_updated` | bool |
+| `previous_version` | str \| None |
+| `trust_level` | str \| None |
+| `verification_tier` | str \| None |
+
+### `CanInstallResult`
+| Field | Type |
+|-------|------|
+| `allowed` | bool |
+| `slug` | str |
+| `version` | str |
+| `trust_level` | str |
+| `reason` | str |
+| `permissions` | PermissionsInfo \| None |
+
+### `DetectAndInstallResult`
+| Field | Type |
+|-------|------|
+| `detected` | bool |
+| `capability` | str \| None |
+| `confidence` | str \| None |
+| `installed` | bool |
+| `install_result` | InstallResult \| None |
+| `auto_upgrade_policy` | str \| None |
+| `error` | str \| None |
+
+### `SmartRunResult`
+| Field | Type |
+|-------|------|
+| `success` | bool |
+| `result` | Any |
+| `error` | str \| None |
+| `upgraded` | bool |
+| `installed_slug` | str \| None |
+| `installed_version` | str \| None |
+| `detected_capability` | str \| None |
+| `detection_confidence` | str \| None |
+| `auto_upgrade_policy` | str \| None |
+| `duration_ms` | float |
+| `original_error` | str \| None |
 
 ---
 
@@ -513,8 +707,8 @@ run_ids = list_runs(limit=10)
 | `tool_call` | `slug`, `tool_name`, `run_id` |
 | `tool_result` | `slug`, `tool_name`, `duration_ms`, `success`, `error?` |
 | `iteration` | `iteration`, `run_id` |
-| `step_start` | `step_name`, `slug` |
-| `step_result` | `step_name`, `success`, `duration_ms` |
+| `step_start` | `step_name`, `tool` |
+| `step_result` | `step_name`, `success`, `duration_ms`, `skipped` |
 | `run_end` | `slug`, `success`, `duration_ms` |
 | `truncated` | Emitted when max entries (1000) reached |
 
@@ -652,6 +846,22 @@ except AgentNodeError as e:
 | `AuthError` | 401, 403 | Authentication/authorization failure |
 | `ValidationError` | 422 | Invalid input or manifest |
 | `RateLimitError` | 429 | Too many requests |
+
+### `AgentNodeToolError`
+
+Base error for tool execution failures. Pack authors should raise this instead of returning `{"error": ...}` dicts. Adapters (LangChain, MCP) catch this to propagate structured errors.
+
+```python
+from agentnode_sdk.exceptions import AgentNodeToolError
+
+raise AgentNodeToolError("PDF parsing failed", tool_name="extract_pdf", details={"page": 3})
+```
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `message` | str | Human-readable error message |
+| `tool_name` | str \| None | Tool that raised the error |
+| `details` | dict | Additional structured context |
 
 ---
 

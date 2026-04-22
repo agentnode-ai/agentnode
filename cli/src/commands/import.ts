@@ -14,7 +14,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
-import { stringify as toYAML } from "yaml";
+import { parse as parseYAML, stringify as toYAML } from "yaml";
 
 // Capability ID guessing from tool names/descriptions
 const CAPABILITY_KEYWORDS: Record<string, string> = {
@@ -284,8 +284,7 @@ function parseClawhub(content: string): ParsedTool[] {
   } catch {
     // If not JSON, try YAML
     try {
-      const { parse } = require("yaml");
-      const data = parse(content);
+      const data = parseYAML(content);
       const items = data.tools || data.skills || [data];
       for (const item of items) {
         tools.push({

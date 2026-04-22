@@ -1,0 +1,81 @@
+manifest_version: "0.2"
+package_id: "log-investigator-agent"
+package_type: "agent"
+name: "Log Investigator Agent"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Parse log files, identify errors and anomalies, correlate events, and produce an incident report."
+description: |
+  Investigate log files by parsing entries, identifying error patterns and anomalies, correlating events across sources, and generating an incident investigation report.
+
+  This agent uses AgentNode's full skill registry to dynamically discover
+  and install the capabilities it needs at runtime.
+
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "log_investigator_agent.agent"
+
+capabilities:
+  tools:
+    - name: "log_investigation"
+      capability_id: "log_investigation"
+      description: "Parse log files, identify errors and anomalies, correlate events, and produce an incident report."
+      entrypoint: "log_investigator_agent.agent:run"
+      input_schema:
+        type: "object"
+        properties:
+          goal:
+            type: "string"
+            description: "The objective for the agent"
+          context:
+            type: "object"
+            description: "Optional context and parameters"
+        required: ["goal"]
+      output_schema:
+        type: "object"
+        properties:
+          result:
+            type: "object"
+          done:
+            type: "boolean"
+          error:
+            type: "string"
+  resources: []
+  prompts: []
+
+agent:
+  entrypoint: "log_investigator_agent.agent:run"
+  goal: "Investigate log files by parsing entries, identifying error patterns and anomalies, correlating events across sources, and generating an incident investigation report."
+  tool_access:
+    allowed_packages: []
+  limits:
+    max_iterations: 10
+    max_tool_calls: 50
+    max_runtime_seconds: 300
+  termination:
+    stop_on_final_answer: true
+    stop_on_consecutive_errors: 3
+  isolation: "thread"
+  state:
+    persistence: "none"
+
+compatibility:
+  frameworks: ["generic"]
+  python: ">=3.10"
+  dependencies: []
+
+permissions:
+  network:
+    level: "none"
+  filesystem:
+    level: "workspace_read"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "never"
+
+tags: ["agent", "logs", "debugging", "incident", "devops"]
+categories: ["data"]

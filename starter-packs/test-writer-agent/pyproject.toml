@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "test-writer-agent"
+version = "1.0.0"
+description = "Analyze source code and generate comprehensive test suites with unit tests, edge cases, and mocks."
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]

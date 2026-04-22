@@ -456,6 +456,53 @@ async def send_auto_quarantine_email(to: str, package_slug: str, version: str, f
     return await send_email(to, f"{package_slug}@{version} auto-quarantined - AgentNode", html)
 
 
+async def send_verification_failed_email(to: str, package_slug: str, version: str, error_summary: str) -> bool:
+    """Notify publisher that their package verification failed (package-side error)."""
+    html = _wrap(f"""
+      <h1>Verification failed</h1>
+      <p>Version <strong>{version}</strong> of <strong>{package_slug}</strong> failed verification.</p>
+      <p><strong>Reason:</strong> {_esc(error_summary)}</p>
+      <p>This means your package has an issue that prevents it from being installed or imported correctly.</p>
+      <p><strong>What you can do:</strong></p>
+      <ul style="color:#a3a3a3; font-size:14px;">
+        <li>Check that all dependencies are correctly declared in <code>pyproject.toml</code></li>
+        <li>Verify that your entrypoint module imports without errors</li>
+        <li>Publish a new version with the fix</li>
+      </ul>
+      <p style="text-align:center; margin: 24px 0;">
+        <a href="{settings.FRONTEND_URL}/packages/{package_slug}" class="btn">View Package</a>
+      </p>
+    """)
+    return await send_email(to, f"{package_slug}@{version} verification failed - AgentNode", html)
+
+
+async def send_platform_error_admin_alert(package_slug: str, version: str, error_summary: str, error_log: str) -> bool:
+    """Alert admins about a platform-side verification error. Package status is NOT changed."""
+    admin_emails = await get_admin_emails()
+    if not admin_emails:
+        logger.error("PLATFORM ERROR but no admin emails configured: %s@%s: %s", package_slug, version, error_summary)
+        return False
+
+    log_preview = (_esc(error_log[:500]) + "...") if len(error_log) > 500 else _esc(error_log)
+    html = _wrap(f"""
+      <h1 style="color:#ef4444;">Platform Verification Error</h1>
+      <p>Verification for <strong>{package_slug}@{version}</strong> failed due to a <strong>platform-side issue</strong>.</p>
+      <p>The package status was <strong>NOT changed</strong>. This error is invisible to the publisher.</p>
+      <p><strong>Error:</strong> {_esc(error_summary)}</p>
+      <pre style="background:#1a1a2e; padding:12px; border-radius:6px; font-size:12px; color:#a3a3a3; overflow-x:auto; white-space:pre-wrap;">{log_preview}</pre>
+      <p class="warn">This requires immediate attention. The verification system may be misconfigured.</p>
+      <p style="text-align:center; margin: 24px 0;">
+        <a href="{settings.FRONTEND_URL}/admin/packages" class="btn">Open Admin Panel</a>
+      </p>
+    """)
+    subject = f"[PLATFORM ERROR] Verification failed: {package_slug}@{version}"
+    sent = False
+    for email in admin_emails:
+        if await send_email(email, subject, html):
+            sent = True
+    return sent
+
+
 # 17. Publisher created confirmation
 async def send_publisher_created_email(to: str, publisher_slug: str) -> bool:
     html = _wrap(f"""

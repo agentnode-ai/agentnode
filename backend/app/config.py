@@ -163,3 +163,45 @@ class Settings(BaseSettings):
 
 settings = Settings()
 settings._check_production_secrets()
+
+
+def check_verification_sandbox() -> None:
+    """Abort startup if container sandbox mode is configured but unavailable.
+
+    This prevents silent verification failures that get blamed on publishers
+    when the real problem is a missing container image or runtime.
+    """
+    if settings.VERIFICATION_SANDBOX_MODE != "container":
+        return
+    if not CONTAINER_RUNTIME:
+        print(
+            f"FATAL: VERIFICATION_SANDBOX_MODE=container but no container runtime "
+            f"(docker/podman) found. Either install a container runtime, or set "
+            f"VERIFICATION_SANDBOX_MODE=subprocess.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    # Check if the image exists
+    import subprocess as _sp
+    try:
+        result = _sp.run(
+            [CONTAINER_RUNTIME, "image", "inspect", settings.VERIFICATION_CONTAINER_IMAGE],
+            capture_output=True, timeout=10,
+        )
+        if result.returncode != 0:
+            print(
+                f"FATAL: VERIFICATION_SANDBOX_MODE=container but image "
+                f"'{settings.VERIFICATION_CONTAINER_IMAGE}' not found. "
+                f"Build the image or set VERIFICATION_SANDBOX_MODE=subprocess.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    except Exception as e:
+        print(
+            f"FATAL: Cannot verify container image availability: {e}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+check_verification_sandbox()

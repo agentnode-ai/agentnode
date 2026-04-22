@@ -1,0 +1,81 @@
+manifest_version: "0.2"
+package_id: "data-pipeline-agent"
+package_type: "agent"
+name: "Data Pipeline Agent"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Build and run a data pipeline: load from CSV/JSON, clean and transform, then output to a target format."
+description: |
+  Execute a data pipeline by loading data from source files, cleaning and transforming it according to rules, and writing the results to the target format or database.
+
+  This agent uses AgentNode's full skill registry to dynamically discover
+  and install the capabilities it needs at runtime.
+
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "data_pipeline_agent.agent"
+
+capabilities:
+  tools:
+    - name: "data_pipeline"
+      capability_id: "data_pipeline"
+      description: "Build and run a data pipeline: load from CSV/JSON, clean and transform, then output to a target format."
+      entrypoint: "data_pipeline_agent.agent:run"
+      input_schema:
+        type: "object"
+        properties:
+          goal:
+            type: "string"
+            description: "The objective for the agent"
+          context:
+            type: "object"
+            description: "Optional context and parameters"
+        required: ["goal"]
+      output_schema:
+        type: "object"
+        properties:
+          result:
+            type: "object"
+          done:
+            type: "boolean"
+          error:
+            type: "string"
+  resources: []
+  prompts: []
+
+agent:
+  entrypoint: "data_pipeline_agent.agent:run"
+  goal: "Execute a data pipeline by loading data from source files, cleaning and transforming it according to rules, and writing the results to the target format or database."
+  tool_access:
+    allowed_packages: []
+  limits:
+    max_iterations: 10
+    max_tool_calls: 50
+    max_runtime_seconds: 300
+  termination:
+    stop_on_final_answer: true
+    stop_on_consecutive_errors: 3
+  isolation: "thread"
+  state:
+    persistence: "none"
+
+compatibility:
+  frameworks: ["generic"]
+  python: ">=3.10"
+  dependencies: []
+
+permissions:
+  network:
+    level: "restricted"
+  filesystem:
+    level: "workspace_write"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "never"
+
+tags: ["agent", "etl", "data", "pipeline", "transformation"]
+categories: ["data"]

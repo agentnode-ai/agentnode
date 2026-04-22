@@ -6,7 +6,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { createInterface } from "node:readline";
-import { getInstallMetadata, trackInstall } from "../api.js";
+import { getInstallMetadata, getPackage, trackInstall } from "../api.js";
 import { installPackage } from "../installer.js";
 import { hasLocalCredential, PROVIDERS, runAuthFlow } from "./auth.js";
 
@@ -127,6 +127,22 @@ export const installCommand = new Command("install")
         }
       }
 
+      // Fetch trust_level from package detail (analogous to SDK client.py:554-567)
+      let trustLevel: string | undefined;
+      try {
+        const pkgDetail = await getPackage(slug);
+        trustLevel = pkgDetail?.publisher?.trust_level || undefined;
+      } catch { /* non-fatal */ }
+
+      // Extract permissions from install metadata
+      const permissionsInfo = meta.permissions ? {
+        network: meta.permissions.network_level,
+        filesystem: meta.permissions.filesystem_level,
+        code_execution: meta.permissions.code_execution_level,
+        data_access: meta.permissions.data_access_level,
+        user_approval: meta.permissions.user_approval_level,
+      } : undefined;
+
       const result = await installPackage(
         {
           artifact_url: meta.artifact.url,
@@ -137,6 +153,9 @@ export const installCommand = new Command("install")
           capability_ids: (meta.capabilities || []).map((c: any) => c.capability_id),
           tools,
           deprecated: false,
+          agent: meta.agent || undefined,
+          trust_level: trustLevel,
+          permissions: permissionsInfo,
         },
         slug,
         meta.version,

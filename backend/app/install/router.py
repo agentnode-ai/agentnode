@@ -119,6 +119,11 @@ async def get_install_metadata(
             external_integrations=p.external_integrations or [],
         )
 
+    # Extract agent config from manifest for agent packages
+    agent_config = None
+    if pkg.package_type == "agent" and pv.manifest_raw:
+        agent_config = pv.manifest_raw.get("agent")
+
     return InstallMetadataResponse(
         slug=pkg.slug,
         version=pv.version_number,
@@ -136,6 +141,7 @@ async def get_install_metadata(
         verification_tier=pv.verification_tier,
         verification_score=pv.verification_score,
         install_resolution=reason,
+        agent=agent_config,
     )
 
 
@@ -185,6 +191,11 @@ async def install_package(
         if c.entrypoint and c.capability_type == "tool"
     ]
 
+    # Extract agent config from manifest for agent packages
+    agent_config = None
+    if pkg.package_type == "agent" and pv.manifest_raw:
+        agent_config = pv.manifest_raw.get("agent")
+
     return InstallResponse(
         package_slug=pkg.slug,
         version=pv.version_number,
@@ -199,6 +210,7 @@ async def install_package(
         verification_tier=pv.verification_tier,
         verification_score=pv.verification_score,
         install_resolution=reason,
+        agent=agent_config,
     )
 
 

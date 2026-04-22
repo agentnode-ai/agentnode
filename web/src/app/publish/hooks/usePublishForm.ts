@@ -157,6 +157,12 @@ export function usePublishForm() {
           examples: Array.isArray(g.examples) ? g.examples as { title: string; language: string; code: string }[] : defaults.examples,
           env_requirements: Array.isArray(g.env_requirements) ? g.env_requirements as { name: string; required: boolean; description: string }[] : defaults.env_requirements,
           package_type: (typeof g.package_type === "string" ? g.package_type : defaults.package_type) as GuidedState["package_type"],
+          // Agent numeric/boolean fields (not captured by the string filter above)
+          agent_max_iterations: typeof g.agent_max_iterations === "number" ? g.agent_max_iterations : defaults.agent_max_iterations,
+          agent_max_tool_calls: typeof g.agent_max_tool_calls === "number" ? g.agent_max_tool_calls : defaults.agent_max_tool_calls,
+          agent_max_runtime_seconds: typeof g.agent_max_runtime_seconds === "number" ? g.agent_max_runtime_seconds : defaults.agent_max_runtime_seconds,
+          agent_stop_on_final_answer: typeof g.agent_stop_on_final_answer === "boolean" ? g.agent_stop_on_final_answer : defaults.agent_stop_on_final_answer,
+          agent_stop_on_consecutive_errors: typeof g.agent_stop_on_consecutive_errors === "number" ? g.agent_stop_on_consecutive_errors : defaults.agent_stop_on_consecutive_errors,
         };
       }
     }
@@ -396,7 +402,7 @@ export function usePublishForm() {
     setGenerating(true);
     setError("");
 
-    const res = await generateSkill(descriptionText);
+    const res = await generateSkill(descriptionText, guided.package_type === "agent" ? "agent" : "toolpack");
 
     if (res.status === 401) {
       saveDraft({

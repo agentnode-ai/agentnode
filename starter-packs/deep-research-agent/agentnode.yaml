@@ -1,0 +1,81 @@
+manifest_version: "0.2"
+package_id: "deep-research-agent"
+package_type: "agent"
+name: "Deep Research Agent"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Conduct deep multi-source research on any topic, synthesize findings from web and documents into a structured report."
+description: |
+  Research a topic thoroughly using web search, webpage extraction, and document summarization, then produce a structured report with sources and key findings.
+
+  This agent uses AgentNode's full skill registry to dynamically discover
+  and install the capabilities it needs at runtime.
+
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "deep_research_agent.agent"
+
+capabilities:
+  tools:
+    - name: "deep_research"
+      capability_id: "deep_research"
+      description: "Conduct deep multi-source research on any topic, synthesize findings from web and documents into a structured report."
+      entrypoint: "deep_research_agent.agent:run"
+      input_schema:
+        type: "object"
+        properties:
+          goal:
+            type: "string"
+            description: "The objective for the agent"
+          context:
+            type: "object"
+            description: "Optional context and parameters"
+        required: ["goal"]
+      output_schema:
+        type: "object"
+        properties:
+          result:
+            type: "object"
+          done:
+            type: "boolean"
+          error:
+            type: "string"
+  resources: []
+  prompts: []
+
+agent:
+  entrypoint: "deep_research_agent.agent:run"
+  goal: "Research a topic thoroughly using web search, webpage extraction, and document summarization, then produce a structured report with sources and key findings."
+  tool_access:
+    allowed_packages: []
+  limits:
+    max_iterations: 10
+    max_tool_calls: 50
+    max_runtime_seconds: 300
+  termination:
+    stop_on_final_answer: true
+    stop_on_consecutive_errors: 3
+  isolation: "thread"
+  state:
+    persistence: "none"
+
+compatibility:
+  frameworks: ["generic"]
+  python: ">=3.10"
+  dependencies: []
+
+permissions:
+  network:
+    level: "unrestricted"
+  filesystem:
+    level: "workspace_read"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "never"
+
+tags: ["agent", "research", "analysis"]
+categories: ["research"]

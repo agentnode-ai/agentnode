@@ -1,6 +1,6 @@
 manifest_version: "0.1"
 package_id: "research-agent-pack"
-package_type: "toolpack"
+package_type: "agent"
 name: "Research Agent Pack"
 publisher: "agentnode"
 version: "1.0.0"
@@ -74,6 +74,21 @@ capabilities:
             type: "string"
   resources: []
   prompts: []
+
+agent:
+  entrypoint: "research_agent_pack.agent:run"
+  goal: "Conduct multi-source research on a topic and produce a structured report with sources, findings, and summary."
+  tool_access:
+    allowed_packages:
+      - "web-search-pack"
+      - "pdf-reader-pack"
+      - "document-summarizer-pack"
+  limits:
+    max_iterations: 5
+    max_tool_calls: 20
+    max_runtime_seconds: 120
+  termination:
+    conditions: ["goal_reached", "max_iterations"]
 
 tags: ["research", "agent", "orchestration", "reference"]
 categories: ["agents", "research"]

@@ -131,11 +131,7 @@ def _optimize_image(data: bytes, ext: str, max_width: int = 1200, quality: int =
         # Attempt WebP conversion for best compression
         buf = BytesIO()
         try:
-            # Preserve alpha channel if present
-            if img.mode in ("RGBA", "LA", "PA"):
-                img.save(buf, format="WEBP", quality=quality)
-            else:
-                img.save(buf, format="WEBP", quality=quality)
+            img.save(buf, format="WEBP", quality=quality)
             return buf.getvalue(), "image/webp", "webp"
         except Exception:
             # WebP not available — fall back to original format

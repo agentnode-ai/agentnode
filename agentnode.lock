@@ -1,18 +1,86 @@
 {
   "lockfile_version": "0.1",
-  "updated_at": "2026-03-18T02:14:48.130497+00:00",
+  "updated_at": "2026-04-21T15:30:00.205033+00:00",
   "packages": {
     "word-counter-pack": {
       "version": "1.0.0",
       "package_type": "toolpack",
+      "runtime": "python",
       "entrypoint": "word_counter_pack.tool",
       "capability_ids": [
         "data_cleaning"
       ],
+      "tools": [
+        {
+          "name": "count_words",
+          "entrypoint": "word_counter_pack.tool:count_words"
+        }
+      ],
+      "artifact_hash": "sha256:0faa9ca7eb718a6dadb5032ababeedd112056c3ba4672cefd639a665ca3b929f",
+      "installed_at": "2026-04-21T15:21:04.201388+00:00",
+      "source": "sdk",
+      "trust_level": "trusted",
+      "permissions": {
+        "network_level": "none",
+        "filesystem_level": "none",
+        "code_execution_level": "none",
+        "data_access_level": "input_only",
+        "user_approval_level": "never"
+      },
+      "prompts": [],
+      "resources": [],
+      "connector": null,
+      "agent": null
+    },
+    "text-translator-pack": {
+      "version": "1.0.0",
+      "package_type": "toolpack",
+      "runtime": "python",
+      "entrypoint": "text_translator_pack.tool",
+      "capability_ids": [
+        "translation"
+      ],
       "tools": [],
-      "artifact_hash": "sha256:445388c86aa2b20c3e748f58b2d221548f1f3f71ff5c715a64cdc80966fab03c",
-      "installed_at": "2026-03-18T02:14:48.129908+00:00",
-      "source": "sdk"
+      "artifact_hash": "sha256:63667d89779aa810f3bc340b39e72c583cd6d43ef6586d754cd8246800769df8",
+      "installed_at": "2026-04-21T15:29:24.446225+00:00",
+      "source": "sdk",
+      "trust_level": "trusted",
+      "permissions": {
+        "network_level": "restricted",
+        "filesystem_level": "none",
+        "code_execution_level": "none",
+        "data_access_level": "input_only",
+        "user_approval_level": "never"
+      },
+      "prompts": [],
+      "resources": [],
+      "connector": null,
+      "agent": null
+    },
+    "csv-analyzer-pack": {
+      "version": "1.0.0",
+      "package_type": "toolpack",
+      "runtime": "python",
+      "entrypoint": "csv_analyzer_pack.tool",
+      "capability_ids": [
+        "csv_analysis"
+      ],
+      "tools": [],
+      "artifact_hash": "sha256:62cfe9be62e97174ab41eff190e356d1c512b11ac88cb566d7c75e5f5e0f8d42",
+      "installed_at": "2026-04-21T15:30:00.204115+00:00",
+      "source": "sdk",
+      "trust_level": "trusted",
+      "permissions": {
+        "network_level": "none",
+        "filesystem_level": "temp",
+        "code_execution_level": "none",
+        "data_access_level": "input_only",
+        "user_approval_level": "never"
+      },
+      "prompts": [],
+      "resources": [],
+      "connector": null,
+      "agent": null
     }
   }
 }

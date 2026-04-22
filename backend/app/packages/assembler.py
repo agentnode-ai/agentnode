@@ -1,6 +1,7 @@
 """Assembles the detail response for a package, including enrichment fields."""
 from app.packages.models import Package, PackageVersion
 from app.packages.schemas import (
+    AgentConfigBlock,
     CapabilityBlock,
     CompatibilityBlock,
     ConnectorBlock,
@@ -45,6 +46,12 @@ def _build_verification_info(version: PackageVersion) -> VerificationInfo | None
             installer=env_data.get("installer"),
         )
 
+    # Only expose error_summary for package-side failures (never platform errors)
+    error_summary = None
+    if vr and status == "failed" and vr.error_summary:
+        if not vr.error_summary.startswith("[PLATFORM]"):
+            error_summary = vr.error_summary
+
     info = VerificationInfo(
         status="verified" if status == "passed" else status,
         last_verified_at=version.last_verified_at,
@@ -56,6 +63,7 @@ def _build_verification_info(version: PackageVersion) -> VerificationInfo | None
         smoke_reason=vr.smoke_reason if vr else None,
         verification_mode=getattr(vr, "verification_mode", None) if vr else None,
         environment=env_info,
+        error_summary=error_summary,
     )
 
     if vr:
@@ -125,6 +133,7 @@ def assemble_package_detail(
     docs_url = None
     source_url = None
     verification_info = None
+    agent_config = None
 
     if version:
         version_info = VersionInfo(
@@ -265,6 +274,25 @@ def assemble_package_detail(
         # Verification info
         verification_info = _build_verification_info(version)
 
+        # Agent config block
+        raw_agent = (version.manifest_raw or {}).get("agent")
+        if raw_agent and isinstance(raw_agent, dict):
+            limits = raw_agent.get("limits", {})
+            if not isinstance(limits, dict):
+                limits = {}
+            tool_access = raw_agent.get("tool_access", {})
+            if not isinstance(tool_access, dict):
+                tool_access = {}
+            agent_config = AgentConfigBlock(
+                goal=raw_agent.get("goal"),
+                entrypoint=raw_agent.get("entrypoint"),
+                allowed_packages=tool_access.get("allowed_packages"),
+                max_iterations=limits.get("max_iterations"),
+                max_tool_calls=limits.get("max_tool_calls"),
+                max_runtime_seconds=limits.get("max_runtime_seconds"),
+                isolation=raw_agent.get("isolation"),
+            )
+
     return PackageDetailResponse(
         slug=pkg.slug,
         name=pkg.name,
@@ -300,4 +328,5 @@ def assemble_package_detail(
         docs_url=docs_url,
         source_url=source_url,
         verification=verification_info,
+        agent_config=agent_config,
     )

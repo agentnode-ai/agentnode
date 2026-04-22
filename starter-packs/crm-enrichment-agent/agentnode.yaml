@@ -1,0 +1,81 @@
+manifest_version: "0.2"
+package_id: "crm-enrichment-agent"
+package_type: "agent"
+name: "CRM Enrichment Agent"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Enrich CRM contacts with public web data: company info, social profiles, recent news, and role details."
+description: |
+  Enrich CRM contact records by searching the web for company information, social profiles, recent news mentions, and role details, then update the CRM records.
+
+  This agent uses AgentNode's full skill registry to dynamically discover
+  and install the capabilities it needs at runtime.
+
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "crm_enrichment_agent.agent"
+
+capabilities:
+  tools:
+    - name: "crm_enrichment"
+      capability_id: "crm_enrichment"
+      description: "Enrich CRM contacts with public web data: company info, social profiles, recent news, and role details."
+      entrypoint: "crm_enrichment_agent.agent:run"
+      input_schema:
+        type: "object"
+        properties:
+          goal:
+            type: "string"
+            description: "The objective for the agent"
+          context:
+            type: "object"
+            description: "Optional context and parameters"
+        required: ["goal"]
+      output_schema:
+        type: "object"
+        properties:
+          result:
+            type: "object"
+          done:
+            type: "boolean"
+          error:
+            type: "string"
+  resources: []
+  prompts: []
+
+agent:
+  entrypoint: "crm_enrichment_agent.agent:run"
+  goal: "Enrich CRM contact records by searching the web for company information, social profiles, recent news mentions, and role details, then update the CRM records."
+  tool_access:
+    allowed_packages: []
+  limits:
+    max_iterations: 10
+    max_tool_calls: 50
+    max_runtime_seconds: 300
+  termination:
+    stop_on_final_answer: true
+    stop_on_consecutive_errors: 3
+  isolation: "thread"
+  state:
+    persistence: "none"
+
+compatibility:
+  frameworks: ["generic"]
+  python: ">=3.10"
+  dependencies: []
+
+permissions:
+  network:
+    level: "unrestricted"
+  filesystem:
+    level: "none"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "never"
+
+tags: ["agent", "crm", "sales", "enrichment", "business"]
+categories: ["productivity"]

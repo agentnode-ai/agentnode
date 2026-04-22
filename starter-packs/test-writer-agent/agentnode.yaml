@@ -1,0 +1,81 @@
+manifest_version: "0.2"
+package_id: "test-writer-agent"
+package_type: "agent"
+name: "Test Writer Agent"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Analyze source code and generate comprehensive test suites with unit tests, edge cases, and mocks."
+description: |
+  Generate tests for source code by analyzing function signatures and logic, identifying edge cases, creating unit tests with assertions, and validating they compile.
+
+  This agent uses AgentNode's full skill registry to dynamically discover
+  and install the capabilities it needs at runtime.
+
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "test_writer_agent.agent"
+
+capabilities:
+  tools:
+    - name: "test_generation"
+      capability_id: "test_generation"
+      description: "Analyze source code and generate comprehensive test suites with unit tests, edge cases, and mocks."
+      entrypoint: "test_writer_agent.agent:run"
+      input_schema:
+        type: "object"
+        properties:
+          goal:
+            type: "string"
+            description: "The objective for the agent"
+          context:
+            type: "object"
+            description: "Optional context and parameters"
+        required: ["goal"]
+      output_schema:
+        type: "object"
+        properties:
+          result:
+            type: "object"
+          done:
+            type: "boolean"
+          error:
+            type: "string"
+  resources: []
+  prompts: []
+
+agent:
+  entrypoint: "test_writer_agent.agent:run"
+  goal: "Generate tests for source code by analyzing function signatures and logic, identifying edge cases, creating unit tests with assertions, and validating they compile."
+  tool_access:
+    allowed_packages: []
+  limits:
+    max_iterations: 10
+    max_tool_calls: 50
+    max_runtime_seconds: 300
+  termination:
+    stop_on_final_answer: true
+    stop_on_consecutive_errors: 3
+  isolation: "thread"
+  state:
+    persistence: "none"
+
+compatibility:
+  frameworks: ["generic"]
+  python: ">=3.10"
+  dependencies: []
+
+permissions:
+  network:
+    level: "none"
+  filesystem:
+    level: "workspace_read"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "never"
+
+tags: ["agent", "testing", "code", "quality", "developer"]
+categories: ["development"]

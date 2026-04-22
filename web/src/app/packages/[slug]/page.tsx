@@ -8,6 +8,7 @@ import CodeBlockWrapper from "./CodeBlockWrapper";
 import QuickStartWrapper from "./QuickStartWrapper";
 import ReadmeSection from "./ReadmeSection";
 import VerificationMainPanel from "./VerificationMainPanel";
+import AgentInfoPanel from "./AgentInfoPanel";
 import FileBrowserWrapper from "./FileBrowserWrapper";
 import VersionHistory from "./VersionHistory";
 import VersionSelector from "./VersionSelector";
@@ -376,7 +377,12 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
             latestVersion={latestVersion?.version_number}
           />
 
-          {/* 2. Verification (prominent, main column) */}
+          {/* 2. Agent Info (only for agents) */}
+          {pkg.agent_config && (
+            <AgentInfoPanel agentConfig={pkg.agent_config} />
+          )}
+
+          {/* 3. Verification (prominent, main column) */}
           <VerificationMainPanel slug={pkg.slug} verification={verification} publisherSlug={publisher.slug} />
 
           {/* 3. Use Cases */}

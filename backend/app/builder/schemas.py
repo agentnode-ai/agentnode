@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class BuilderGenerateRequest(BaseModel):
     description: str = Field(..., min_length=10, max_length=1000)
+    package_type: str = Field(default="toolpack", pattern=r'^(toolpack|agent)$')
 
 
 _SAFE_PATH_RE = re.compile(r'^[a-zA-Z0-9/_.\-]+$')

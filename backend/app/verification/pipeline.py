@@ -44,6 +44,32 @@ _NON_AUTO_CLEARING_TRIGGERS: frozenset[str] = frozenset({
     "admin_reverify",
 })
 
+# --- Platform error detection -------------------------------------------------
+# Errors matching these patterns are platform-side issues (misconfiguration,
+# missing infra) — NOT the publisher's fault. When detected:
+#   1. Package status is NOT changed
+#   2. Admin receives an alert
+#   3. Publisher sees nothing
+_PLATFORM_ERROR_PATTERNS: tuple[str, ...] = (
+    "Enforced sandbox unavailable",
+    "no container runtime",
+    "pull access denied",
+    "Unable to find image",
+    "Container execution error",
+    "docker: Error response from daemon",
+    "Internal verification error",
+)
+
+
+def _is_platform_error(step_results: dict) -> bool:
+    """Return True if the verification failure is caused by platform misconfiguration."""
+    for field in ("install_log", "import_log", "smoke_log", "error_summary"):
+        text = step_results.get(field) or ""
+        for pattern in _PLATFORM_ERROR_PATTERNS:
+            if pattern in text:
+                return True
+    return False
+
 
 async def _has_open_scanner_findings(session, version_id: UUID) -> bool:
     """Return True if the scanner recorded any unresolved medium/high/critical
@@ -497,6 +523,25 @@ async def run_verification(
                             "network_level": network_level,
                         })
 
+                # For agent packages, also verify the agent entrypoint
+                pkg_result = await session.execute(
+                    select(Package).where(Package.id == pv.package_id)
+                )
+                pkg = pkg_result.scalar_one_or_none()
+                if pkg and pkg.package_type == "agent":
+                    agent_section = manifest.get("agent", {})
+                    agent_ep = agent_section.get("entrypoint", "")
+                    if agent_ep and ":" in agent_ep and agent_ep not in seen_eps:
+                        seen_eps.add(agent_ep)
+                        tools.append({
+                            "name": "__agent_entrypoint__",
+                            "entrypoint": agent_ep,
+                            "input_schema": None,
+                            "env_requirements": pv.env_requirements,
+                            "examples": None,
+                            "network_level": network_level,
+                        })
+
                 # Run verification in thread pool (subprocess.run blocks)
                 start_time = time.monotonic()
                 loop = asyncio.get_running_loop()
@@ -507,6 +552,49 @@ async def run_verification(
                     timeout=settings.VERIFICATION_TIMEOUT,
                 )
                 duration_ms = int((time.monotonic() - start_time) * 1000)
+
+                # --- Platform error detection ---
+                # If the failure is caused by our infrastructure (missing container
+                # image, broken sandbox, etc.), do NOT blame the package.
+                if _is_platform_error(step_results):
+                    logger.error(
+                        "PLATFORM ERROR during verification of %s (trigger=%s): %s",
+                        version_id, triggered_by, step_results.get("error_summary"),
+                    )
+                    # Record the result for debugging but do NOT change package status
+                    vr.status = "error"
+                    vr.completed_at = datetime.now(timezone.utc)
+                    vr.duration_ms = duration_ms
+                    vr.install_status = step_results["install_status"]
+                    vr.import_status = step_results["import_status"]
+                    vr.smoke_status = step_results.get("smoke_status")
+                    vr.tests_status = step_results.get("tests_status")
+                    vr.install_log = step_results.get("install_log", "")
+                    vr.import_log = step_results.get("import_log", "")
+                    vr.smoke_log = step_results.get("smoke_log", "")
+                    vr.tests_log = step_results.get("tests_log", "")
+                    vr.error_summary = f"[PLATFORM] {step_results.get('error_summary', 'Unknown platform error')}"
+                    await session.commit()
+
+                    # Alert admins immediately
+                    try:
+                        from app.shared.email import send_platform_error_admin_alert
+                        error_log = step_results.get("import_log") or step_results.get("install_log") or ""
+                        pkg_result = await session.execute(
+                            select(Package).where(Package.id == pv.package_id)
+                        )
+                        pkg = pkg_result.scalar_one_or_none()
+                        slug_for_alert = pkg.slug if pkg else str(version_id)
+                        await send_platform_error_admin_alert(
+                            slug_for_alert,
+                            pv.version_number,
+                            step_results.get("error_summary", "Unknown"),
+                            error_log,
+                        )
+                    except Exception:
+                        logger.exception("Failed to send platform error admin alert")
+
+                    return  # EXIT — do not touch package verification_status
 
                 # Determine final status based on install/import (the hard gatekeeper steps)
                 install_status = step_results["install_status"]
@@ -738,7 +826,7 @@ async def run_verification(
                     f"in {duration_ms}ms"
                 )
 
-                # Send email on failure
+                # Send email on failure — different emails depending on context
                 if final_status == "failed":
                     try:
                         pkg_result = await session.execute(
@@ -746,12 +834,24 @@ async def run_verification(
                         )
                         pkg = pkg_result.scalar_one_or_none()
                         if pkg:
-                            from app.shared.email import get_publisher_email, send_auto_quarantine_email
+                            from app.shared.email import (
+                                get_publisher_email,
+                                send_auto_quarantine_email,
+                                send_verification_failed_email,
+                            )
                             pub_email = await get_publisher_email(pkg.publisher_id)
                             if pub_email:
-                                await send_auto_quarantine_email(
-                                    pub_email, pkg.slug, pv.version_number, 0
-                                )
+                                if triggered_by == "publish" and pv.quarantine_status == "quarantined":
+                                    # Actual quarantine happened — send quarantine email
+                                    await send_auto_quarantine_email(
+                                        pub_email, pkg.slug, pv.version_number, 0
+                                    )
+                                else:
+                                    # Re-verify or non-quarantine failure — send informative email
+                                    await send_verification_failed_email(
+                                        pub_email, pkg.slug, pv.version_number,
+                                        step_results.get("error_summary") or "Unknown error",
+                                    )
                     except Exception:
                         logger.exception("Failed to send verification failure email")
 

@@ -134,6 +134,9 @@ class MCPServerProcess:
         t.start()
         t.join(timeout)
         if t.is_alive():
+            # Check if the process died — if so, clean up to prevent resource leak
+            if self._process and self._process.poll() is not None:
+                self.stop()
             raise TimeoutError(f"MCP read timeout after {timeout}s")
         if error[0]:
             raise error[0]

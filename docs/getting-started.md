@@ -73,12 +73,7 @@ client = AgentNodeClient()
 results = client.search("pdf extraction")
 
 # Resolve a capability gap
-result = client.resolve_upgrade(
-    missing_capability="pdf_extraction",
-    framework="langchain",
-    runtime="python",
-    policy={"min_trust": "verified", "allow_shell": False}
-)
+result = client.resolve(capabilities=["pdf_extraction"])
 
 # Run an installed tool. mode="auto" (default) always runs in a
 # subprocess sandbox; mode="direct" opts into in-process execution for
@@ -98,10 +93,14 @@ from agentnode_sdk import AgentNodeClient
 client = AgentNodeClient()  # no API key needed
 
 # Auto-detect and install a missing capability
-result = client.detect_and_install(["pdf_extraction"])
+try:
+    # ... code that fails due to missing capability
+    pass
+except Exception as e:
+    result = client.detect_and_install(e)
 
 # Or use smart_run to auto-resolve + execute in one call
-result = client.smart_run("pdf_extraction", file_path="report.pdf")
+result = client.smart_run(lambda: some_function_that_might_fail())
 ```
 
 ## Using the LangChain Adapter
@@ -179,7 +178,7 @@ Or register at [agentnode.net/auth/register](https://agentnode.net/auth/register
 After logging in, create an API key for publishing:
 
 ```bash
-curl -X POST https://agentnode.net/v1/auth/api-keys \
+curl -X POST https://api.agentnode.net/v1/auth/api-keys \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"label": "my-project"}'
@@ -197,7 +196,7 @@ Or in the CLI config (`~/.agentnode/config.json`):
 
 ```json
 {
-  "api_url": "https://agentnode.net",
+  "api_url": "https://api.agentnode.net",
   "api_key": "ank_your_key_here"
 }
 ```

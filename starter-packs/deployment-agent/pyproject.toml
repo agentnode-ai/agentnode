@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deployment-agent"
+version = "1.0.0"
+description = "Orchestrate application deployments: build, test, push images, deploy to cloud, verify health, and notify the team."
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]

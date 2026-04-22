@@ -57,6 +57,8 @@ async def get_trust_info(
             prov_result = await verify_provenance(pv.source_repo_url, pv.source_commit)
             provenance_verified = prov_result.get("repo_exists")
         except Exception:
+            import logging as _logging
+            _logging.getLogger(__name__).warning("Provenance verification failed for %s", slug, exc_info=True)
             provenance_verified = None
 
     # Check if signature can be verified
@@ -71,7 +73,8 @@ async def get_trust_info(
                     pv.artifact_hash_sha256,
                 )
         except Exception:
-            pass
+            import logging as _logging
+            _logging.getLogger(__name__).warning("Signature verification failed for %s", slug, exc_info=True)
 
     return {
         "publisher_trust_level": publisher.trust_level if publisher else "unverified",

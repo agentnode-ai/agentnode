@@ -1,0 +1,81 @@
+manifest_version: "0.2"
+package_id: "fact-check-agent"
+package_type: "agent"
+name: "Fact Check Agent"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Verify claims against multiple web sources and produce a fact-check verdict with supporting evidence."
+description: |
+  Verify a given claim by searching multiple sources, extracting relevant evidence, cross-referencing facts, and producing a verdict with confidence level.
+
+  This agent uses AgentNode's full skill registry to dynamically discover
+  and install the capabilities it needs at runtime.
+
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "fact_check_agent.agent"
+
+capabilities:
+  tools:
+    - name: "fact_checking"
+      capability_id: "fact_checking"
+      description: "Verify claims against multiple web sources and produce a fact-check verdict with supporting evidence."
+      entrypoint: "fact_check_agent.agent:run"
+      input_schema:
+        type: "object"
+        properties:
+          goal:
+            type: "string"
+            description: "The objective for the agent"
+          context:
+            type: "object"
+            description: "Optional context and parameters"
+        required: ["goal"]
+      output_schema:
+        type: "object"
+        properties:
+          result:
+            type: "object"
+          done:
+            type: "boolean"
+          error:
+            type: "string"
+  resources: []
+  prompts: []
+
+agent:
+  entrypoint: "fact_check_agent.agent:run"
+  goal: "Verify a given claim by searching multiple sources, extracting relevant evidence, cross-referencing facts, and producing a verdict with confidence level."
+  tool_access:
+    allowed_packages: []
+  limits:
+    max_iterations: 10
+    max_tool_calls: 50
+    max_runtime_seconds: 300
+  termination:
+    stop_on_final_answer: true
+    stop_on_consecutive_errors: 3
+  isolation: "thread"
+  state:
+    persistence: "none"
+
+compatibility:
+  frameworks: ["generic"]
+  python: ">=3.10"
+  dependencies: []
+
+permissions:
+  network:
+    level: "unrestricted"
+  filesystem:
+    level: "none"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "never"
+
+tags: ["agent", "fact-check", "verification", "research"]
+categories: ["research"]

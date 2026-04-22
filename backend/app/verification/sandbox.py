@@ -409,8 +409,16 @@ class VerificationSandbox:
         for tool in valid:
             module_path, func_name = tool["entrypoint"].rsplit(":", 1)
             # Sanitize tool name to valid Python identifier chars only
-            from app.shared.validators import sanitize_to_identifier
+            from app.shared.validators import sanitize_to_identifier, is_safe_identifier
             safe_name = sanitize_to_identifier(tool.get("name", "unknown"))
+
+            # Validate module_path and func_name to prevent code injection
+            if not all(is_safe_identifier(part) for part in module_path.split(".")):
+                logger.warning("Skipping tool with unsafe module_path: %s", module_path)
+                continue
+            if not is_safe_identifier(func_name):
+                logger.warning("Skipping tool with unsafe func_name: %s", func_name)
+                continue
 
             lines.append(f'def test_{safe_name}_importable():')
             lines.append(f'    mod = importlib.import_module("{module_path}")')

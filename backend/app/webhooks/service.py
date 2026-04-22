@@ -127,7 +127,10 @@ async def fire_event(
         return
 
     # Step 3: reopen a short session to persist history.
-    async with async_session_factory() as session:
-        for d in deliveries:
-            session.add(WebhookDelivery(**d))
-        await session.commit()
+    try:
+        async with async_session_factory() as session:
+            for d in deliveries:
+                session.add(WebhookDelivery(**d))
+            await session.commit()
+    except Exception:
+        logger.exception("Failed to persist webhook delivery records")

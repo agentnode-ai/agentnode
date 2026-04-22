@@ -524,7 +524,8 @@ export default function AdminPackagesPage() {
         setTotal(d.total);
       }
       if (qRes.ok) {
-        setQuarantined(await qRes.json());
+        const qData = await qRes.json();
+        setQuarantined(Array.isArray(qData) ? qData : qData.items ?? []);
       }
     } catch {
       setError("Failed to load data");

@@ -43,13 +43,14 @@ export const BUILDER_EXAMPLES = [
 /* ------------------------------------------------------------------ */
 
 export async function generateSkill(
-  description: string
+  description: string,
+  packageType: string = "toolpack",
 ): Promise<{ ok: boolean; status: number; data?: BuilderResult; error?: string }> {
   try {
     const res = await fetchWithAuth("/builder/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ description: description.trim() }),
+      body: JSON.stringify({ description: description.trim(), package_type: packageType }),
     });
 
     if (res.ok) {

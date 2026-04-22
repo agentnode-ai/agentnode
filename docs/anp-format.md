@@ -22,9 +22,8 @@ An ANP package consists of:
 
 | Version | Status | Notes |
 |---------|--------|-------|
-| `0.3`   | **Current** | Capability taxonomy (tools/resources/prompts), agent runtime, connector metadata, sequential orchestration, conditional steps, resource content delivery |
-| `0.2`   | Supported | Multi-tool entrypoints, compact manifests with server-side defaults, richer metadata (`use_cases`, `examples`, `env_requirements`) |
-| `0.1`   | Legacy (accepted) | Single-tool entrypoint, all fields explicit. New manifests should prefer v0.3. |
+| `0.2`   | **Current** | Multi-tool entrypoints, compact manifests with server-side defaults, richer metadata (`use_cases`, `examples`, `env_requirements`), capability taxonomy, agent runtime, connector metadata, sequential orchestration, conditional steps, resource content delivery |
+| `0.1`   | Legacy (accepted) | Single-tool entrypoint, all fields explicit. New manifests should use v0.2. |
 
 The backend validates both. For v0.2 manifests, the server applies
 `normalize_manifest()` which fills MVP defaults (runtime, install_mode,
@@ -37,7 +36,7 @@ manifests and only override what they need.
 |-------|------|-------|
 | `manifest_version` | string | Must be `"0.2"` (or `"0.1"` for legacy) |
 | `package_id` | string | `[a-z0-9-]`, 3–60 chars, unique |
-| `package_type` | enum | `toolpack`, `upgrade` (legacy: `agent` accepted, treated as `toolpack`) |
+| `package_type` | enum | `toolpack`, `agent`, `upgrade` |
 | `name` | string | 3–100 chars |
 | `publisher` | string | Must match an existing publisher slug |
 | `version` | string | Valid semver (e.g. `1.0.0`) |
@@ -51,14 +50,17 @@ need to set them when overriding:
 
 | Field | Default |
 |-------|---------|
-| `runtime` | `"python"` |
-| `install_mode` | `"package"` |
+| `runtime` | `"python"` (also accepts `"mcp"`, `"remote"`) |
+| `install_mode` | `"package"` (also accepts `"remote_endpoint"`) |
 | `hosting_type` | `"agentnode_hosted"` |
 | `permissions.network` | `{ level: "none", allowed_domains: [] }` |
 | `permissions.filesystem` | `{ level: "none" }` |
 | `permissions.code_execution` | `{ level: "none" }` |
 | `permissions.data_access` | `{ level: "input_only" }` |
 | `permissions.user_approval` | `{ required: "never" }` |
+| `security` | `{ signature: "", provenance: { source_repo: "", commit: "", build_system: "manual" } }` |
+| `support` | `{ homepage: "", issues: "" }` |
+| `deprecation_policy` | `"6-months-notice"` |
 | `compatibility.frameworks` | `["generic"]` |
 | `dependencies` | `[]` |
 | `tags` | `[]` |
@@ -175,6 +177,35 @@ Signature verification is **required** for packages outside the
 `trusted`/`curated` tiers and **recommended** for trusted publishers.
 See the v0.2 engineering spec for the exact signature rules.
 
+## URL Fields (Optional)
+
+```yaml
+homepage_url: "https://example.com/my-tool"
+docs_url: "https://docs.example.com/my-tool"
+source_url: "https://github.com/example/my-tool"
+```
+
+All URL fields must start with `https://` or `http://`. Other schemes
+(e.g. `javascript:`, `file://`) are rejected to prevent XSS.
+
+## Connector Section (Optional)
+
+Toolpacks that integrate with external services can include a `connector:`
+section (only valid for `package_type: toolpack`):
+
+```yaml
+connector:
+  provider: "slack"                        # Required: service name
+  auth_type: "oauth2"                      # "api_key" or "oauth2" (no "custom")
+  scopes: ["chat:read", "chat:write"]      # Optional list of strings
+  token_refresh: true                      # Optional bool
+  health_check:                            # Optional
+    endpoint: "/api/health"                # Required if health_check present
+    interval_seconds: 60                   # Optional positive integer
+  rate_limits:                             # Optional
+    requests_per_minute: 100               # Optional positive integer
+```
+
 ## v0.2 Enrichment (Optional)
 
 v0.2 adds optional discoverability and UX fields:
@@ -208,28 +239,41 @@ examples:
 - `package_id` must match `[a-z0-9-]`, 3–60 chars
 - `version` must be valid semver
 - `summary` must be 20–200 chars
-- `runtime` must be `"python"` (MVP)
-- `install_mode` must be `"package"` (MVP)
+- `runtime` must be `"python"`, `"mcp"`, or `"remote"`
+- `install_mode` must be `"package"` or `"remote_endpoint"`
 - `hosting_type` must be `"agentnode_hosted"` (MVP)
+- Valid type combinations: `toolpack+python+package`, `toolpack+mcp+package`, `toolpack+remote+remote_endpoint`, `agent+python+package`, `upgrade+python+package`
 - Each tool's `capability_id` must exist in the capability taxonomy
 - Each tool's `input_schema` / `output_schema` must be valid JSON Schema
 - v0.2 multi-tool packs must declare a per-tool `entrypoint`
 - `pyproject.toml` version must match manifest version
 
-## Agent Configuration (v0.4)
+## Agent Configuration
 
-Packages with `package_type: agent` can configure agent runtime behavior:
+Packages with `package_type: agent` must include an `agent:` section:
 
 ```yaml
 agent:
-  isolation: "thread"         # "thread" (default) or "process"
-  entrypoint: "my_agent:run"  # Agent entrypoint function
-  timeout: 60                 # Max execution time in seconds
-  max_iterations: 10          # Max ReAct loop iterations
-  allowed_tools:              # S4 allowlist
-    - "pdf-reader-pack"
-    - "web-search-pack"
+  entrypoint: "my_agent.agent:run"  # module.path:function format (required)
+  goal: "What this agent does"      # Required
+  isolation: "thread"               # "thread" (default) or "process"
+  tool_access:
+    allowed_packages:               # Packages this agent may use
+      - "pdf-reader-pack"
+      - "web-search-pack"
+  limits:
+    max_iterations: 10              # 1-100
+    max_tool_calls: 50              # 1-500
+    max_runtime_seconds: 300        # 1-3600
+  termination:
+    stop_on_final_answer: true      # bool
+    stop_on_consecutive_errors: 3   # int, 1-10
+  state:
+    persistence: "none"             # "none" or "session"
 ```
+
+**Rejected fields:** `agent.max_tokens` and `agent.planning` are explicitly
+rejected by the validator and will produce errors if present.
 
 ### Agent Isolation
 

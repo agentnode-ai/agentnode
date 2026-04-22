@@ -25,7 +25,12 @@ All API errors follow this format:
 | `AUTH_2FA_NOT_SETUP` | 400 | Must call `/2fa/setup` before verifying |
 | `AUTH_2FA_ALREADY_ENABLED` | 400 | 2FA already enabled for user |
 | `PUBLISHER_REQUIRED` | 403 | Must create a publisher profile first |
-| `PUBLISHER_2FA_REQUIRED` | 403 | 2FA must be enabled for this action |
+| `AUTH_ACCOUNT_LOCKED` | 429 | Too many failed login attempts. Check `details.retry_after` |
+| `AUTH_ACCOUNT_BANNED` | 403 | Account has been banned |
+| `AUTH_REAUTH_REQUIRED` | 403 | Re-authentication required for sensitive operation |
+| `AUTH_TOKEN_INVALID` | 400 | Invalid or expired token (reset, verification) |
+| `API_KEY_NOT_FOUND` | 404 | API key not found |
+| `API_KEY_ALREADY_REVOKED` | 400 | API key was already revoked |
 | `ADMIN_REQUIRED` | 403 | Admin privileges required |
 
 ## Registration Errors (409)
@@ -49,6 +54,16 @@ All API errors follow this format:
 | `VERSION_QUARANTINED` | 403 | Version is under quarantine review |
 | `NO_VERSION_AVAILABLE` | 404 | No installable version available |
 | `MANIFEST_INVALID` | 422 | Manifest validation failed (see `details`) |
+| `INVALID_STATE` | 409 | Cannot perform action in current state |
+
+## Publishing Errors
+
+| Code | HTTP | Description |
+|------|------|-------------|
+| `QUALITY_GATE_FAILED` | 422 | Artifact missing required test files (see `details`) |
+| `PUBLISH_SIGNATURE_INVALID` | 400 | Package signature verification failed |
+| `ARTIFACT_INVALID_TYPE` | 400 | Artifact must be a `.tar.gz` archive |
+| `ARTIFACT_TOO_LARGE` | 413 | Artifact exceeds maximum size limit |
 
 ## Publisher Errors
 
@@ -58,6 +73,7 @@ All API errors follow this format:
 | `PUBLISHER_NOT_OWNED` | 403 | You are not the owner of this publisher |
 | `PUBLISHER_ALREADY_EXISTS` | 409 | User already has a publisher profile |
 | `PUBLISHER_SLUG_TAKEN` | 409 | Publisher slug is already in use |
+| `PUBLISHER_SUSPENDED` | 403 | Publisher account is suspended |
 
 ## Installation Errors
 
@@ -90,6 +106,22 @@ All API errors follow this format:
 | `ALREADY_SUSPENDED` | 409 | Publisher is already suspended |
 | `NOT_SUSPENDED` | 409 | Publisher is not currently suspended |
 | `REPORT_NOT_FOUND` | 404 | Report ID does not exist |
+
+## Credential Errors
+
+| Code | HTTP | Description |
+|------|------|-------------|
+| `CRED_NOT_FOUND` | 404 | Credential not found |
+| `CRED_TRUST_TOO_LOW` | 403 | Publisher trust level too low for credential storage |
+| `CRED_CONFIG_ERROR` | 500 | `CREDENTIAL_ENCRYPTION_KEY` not configured on server |
+
+## OAuth Errors
+
+| Code | HTTP | Description |
+|------|------|-------------|
+| `OAUTH_NOT_CONFIGURED` | 501 | OAuth provider not configured (missing client ID/secret) |
+| `OAUTH_UNSUPPORTED_PROVIDER` | 400 | Unsupported OAuth provider |
+| `OAUTH_INVALID_STATE` | 400 | Invalid or expired OAuth state parameter |
 
 ## Webhook Errors
 

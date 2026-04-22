@@ -172,16 +172,31 @@ export async function resolveUpgrade(
 
 export async function createApiKey(label: string, token: string): Promise<any> {
   const url = `${getBaseUrl()}/v1/auth/api-keys`;
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ label }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  const data = await resp.json();
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ label }),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (err: any) {
+    if (err.name === "TimeoutError") {
+      throw new Error("Request timed out. Please try again.");
+    }
+    throw new Error(`Network error: ${err.message}. Check your connection.`);
+  }
+  let data: any = {};
+  try {
+    data = await resp.json();
+  } catch {
+    if (!resp.ok) {
+      throw new Error(`Server error (${resp.status}): non-JSON response`);
+    }
+  }
   if (!resp.ok) {
     const err = data.error || {};
     throw new Error(`[${err.code || resp.status}] ${err.message || "Failed to create API key"}`);
@@ -204,13 +219,28 @@ export async function publishPackage(manifest: string, token: string, artifactBy
     formData.append("artifact", blob, "package.tar.gz");
   }
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: formData,
-    signal: AbortSignal.timeout(120_000),
-  });
-  const data = await resp.json();
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch (err: any) {
+    if (err.name === "TimeoutError") {
+      throw new Error("Publish request timed out. Please try again.");
+    }
+    throw new Error(`Network error: ${err.message}. Check your connection.`);
+  }
+  let data: any = {};
+  try {
+    data = await resp.json();
+  } catch {
+    if (!resp.ok) {
+      throw new Error(`Server error (${resp.status}): non-JSON response`);
+    }
+  }
   if (!resp.ok) {
     const err = data.error || {};
     throw new Error(`[${err.code || resp.status}] ${err.message || "Publish failed"}`);

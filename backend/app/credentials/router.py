@@ -317,7 +317,7 @@ async def oauth_callback(
     except Exception as exc:
         logger.error("OAuth callback failed: %s", exc)
         return RedirectResponse(
-            url=f"/dashboard/credentials?oauth=error&message={type(exc).__name__}",
+            url="/dashboard/credentials?oauth=error&message=oauth_exchange_failed",
             status_code=302,
         )
 
@@ -345,7 +345,9 @@ async def resolve_credential(
         raise AppError("CRED_NOT_FOUND", f"No active credential for provider '{provider}'", 404)
 
     # Generate short-lived JWT (60s TTL)
-    secret_key = os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "fallback-key")
+    secret_key = os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "")
+    if not secret_key:
+        raise AppError("CRED_CONFIG_ERROR", "CREDENTIAL_ENCRYPTION_KEY not configured", 500)
     resolve_token = jwt.encode(
         {
             "cred_id": str(cred.id),
@@ -384,7 +386,9 @@ async def proxy_request(
     json_body = body.json_body
 
     # Validate token
-    secret_key = os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "fallback-key")
+    secret_key = os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "")
+    if not secret_key:
+        raise AppError("CRED_CONFIG_ERROR", "CREDENTIAL_ENCRYPTION_KEY not configured", 500)
     try:
         payload = jwt.decode(resolve_token, secret_key, algorithms=["HS256"])
     except jwt.ExpiredSignatureError:

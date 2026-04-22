@@ -273,7 +273,7 @@ class Installation(Base, UUIDPrimaryKeyMixin):
         nullable=False,
         default="install",
     )
-    installation_context = Column(JSONB, default={})
+    installation_context = Column(JSONB, default=dict)
     installed_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default="now()")
     activated_at = Column(TIMESTAMP(timezone=True), nullable=True)
     uninstalled_at = Column(TIMESTAMP(timezone=True), nullable=True)

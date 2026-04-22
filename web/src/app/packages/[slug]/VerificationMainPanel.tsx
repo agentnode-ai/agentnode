@@ -52,6 +52,7 @@ interface VerificationInfo {
   smoke_reason?: string | null;
   verification_mode?: string | null;
   environment?: EnvironmentInfo | null;
+  error_summary?: string | null;
 }
 
 function StepCard({ step }: { step: VerificationStep }) {
@@ -325,9 +326,21 @@ export default function VerificationMainPanel({
         </p>
       )}
       {isFailed && (
-        <p className="text-xs text-red-400/70">
-          Verification failed. This package may have issues with installation or runtime behavior.
-        </p>
+        <div className="rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 mt-2">
+          <p className="text-xs text-red-400/70">
+            Verification failed. This package has issues that prevent it from being installed or imported correctly.
+          </p>
+          {verification.error_summary && (
+            <p className="mt-1.5 text-xs font-medium text-red-300">
+              Reason: {verification.error_summary}
+            </p>
+          )}
+          {isOwner && verification.error_summary && (
+            <p className="mt-1 text-[11px] text-zinc-500">
+              Publish a new version with the fix to resolve this.
+            </p>
+          )}
+        </div>
       )}
 
       {/* Verification mode badge */}

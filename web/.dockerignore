@@ -1,0 +1,11 @@
+node_modules
+.next
+.env*
+!.env.example
+coverage
+*.test.*
+*.spec.*
+__tests__
+.git
+.gitignore
+README.md

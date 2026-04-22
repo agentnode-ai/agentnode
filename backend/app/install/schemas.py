@@ -51,6 +51,7 @@ class InstallMetadataResponse(BaseModel):
     verification_tier: str | None = None
     verification_score: int | None = None
     install_resolution: str | None = None
+    agent: dict | None = None
 
 
 class DownloadResponse(BaseModel):
@@ -92,3 +93,4 @@ class InstallResponse(BaseModel):
     verification_tier: str | None = None
     verification_score: int | None = None
     install_resolution: str | None = None
+    agent: dict | None = None

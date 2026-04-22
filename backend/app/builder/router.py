@@ -48,12 +48,12 @@ async def builder_generate(
     if settings.ANTHROPIC_API_KEY:
         try:
             from app.builder.ai import generate_with_ai
-            result = await generate_with_ai(description=description)
+            result = await generate_with_ai(description=description, package_type=body.package_type)
         except Exception as exc:
             logger.warning("AI generation failed, falling back to heuristic: %s", exc)
 
     if result is None:
-        result = generate_capability(description=description)
+        result = generate_capability(description=description, package_type=body.package_type)
 
     # --- Output guardrails: scan generated code ---
     findings = scan_generated_code(result.code_files)
@@ -85,30 +85,52 @@ async def builder_artifact(
     user: User = Depends(get_current_user),
 ) -> StreamingResponse:
     """Build a .tar.gz artifact from builder output (manifest + code files)."""
-    # Detect tool function name from code files for test generation
+    # Detect package type and tool function name from code files for test generation
+    is_agent = body.manifest_json.get("package_type") == "agent"
     tool_func = "run"
     module_name = body.package_id.replace("-", "_")
-    for f in body.code_files:
-        if f.path.endswith("/tool.py"):
-            import re as _re
-            m = _re.search(r"^def (\w+)\(", f.content, _re.MULTILINE)
-            if m:
-                tool_func = m.group(1)
-            # Extract module name from path like src/my_pack/tool.py
-            parts = f.path.split("/")
-            if len(parts) >= 2:
-                module_name = parts[-2]
-            break
+
+    if is_agent:
+        # Agent packages: look for agent.py
+        for f in body.code_files:
+            if f.path.endswith("/agent.py"):
+                parts = f.path.split("/")
+                if len(parts) >= 2:
+                    module_name = parts[-2]
+                break
+    else:
+        # Tool packages: look for tool.py
+        for f in body.code_files:
+            if f.path.endswith("/tool.py"):
+                import re as _re
+                m = _re.search(r"^def (\w+)\(", f.content, _re.MULTILINE)
+                if m:
+                    tool_func = m.group(1)
+                parts = f.path.split("/")
+                if len(parts) >= 2:
+                    module_name = parts[-2]
+                break
 
     # Generate a basic test file
-    test_content = (
-        f'"""Tests for {body.package_id}."""\n'
-        f"import pytest\n\n"
-        f"from {module_name}.tool import {tool_func}\n\n\n"
-        f"def test_{tool_func}_exists():\n"
-        f'    """Verify the tool function is importable."""\n'
-        f"    assert callable({tool_func})\n"
-    )
+    if is_agent:
+        test_content = (
+            f'"""Tests for {body.package_id} agent."""\n'
+            f"import pytest\n"
+            f"import asyncio\n\n"
+            f"from {module_name}.agent import run\n\n\n"
+            f"def test_run_returns_result():\n"
+            f'    """Verify the agent run function is importable and callable."""\n'
+            f"    assert callable(run)\n"
+        )
+    else:
+        test_content = (
+            f'"""Tests for {body.package_id}."""\n'
+            f"import pytest\n\n"
+            f"from {module_name}.tool import {tool_func}\n\n\n"
+            f"def test_{tool_func}_exists():\n"
+            f'    """Verify the tool function is importable."""\n'
+            f"    assert callable({tool_func})\n"
+        )
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
@@ -139,7 +161,8 @@ async def builder_artifact(
         )
         if not has_test:
             test_bytes = test_content.encode()
-            info = tarfile.TarInfo(name=f"tests/test_{tool_func}.py")
+            test_filename = "tests/test_agent.py" if is_agent else f"tests/test_{tool_func}.py"
+            info = tarfile.TarInfo(name=test_filename)
             info.size = len(test_bytes)
             tar.addfile(info, io.BytesIO(test_bytes))
 

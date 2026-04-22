@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "log-investigator-agent"
+version = "1.0.0"
+description = "Parse log files, identify errors and anomalies, correlate events, and produce an incident report."
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]

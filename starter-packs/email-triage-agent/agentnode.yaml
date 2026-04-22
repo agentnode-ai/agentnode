@@ -1,0 +1,81 @@
+manifest_version: "0.2"
+package_id: "email-triage-agent"
+package_type: "agent"
+name: "Email Triage Agent"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Prioritize incoming emails, draft responses for routine messages, and create tasks from action items."
+description: |
+  Triage emails by categorizing priority, drafting responses for routine messages, extracting action items, and creating tasks in the task management system.
+
+  This agent uses AgentNode's full skill registry to dynamically discover
+  and install the capabilities it needs at runtime.
+
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "email_triage_agent.agent"
+
+capabilities:
+  tools:
+    - name: "email_triage"
+      capability_id: "email_triage"
+      description: "Prioritize incoming emails, draft responses for routine messages, and create tasks from action items."
+      entrypoint: "email_triage_agent.agent:run"
+      input_schema:
+        type: "object"
+        properties:
+          goal:
+            type: "string"
+            description: "The objective for the agent"
+          context:
+            type: "object"
+            description: "Optional context and parameters"
+        required: ["goal"]
+      output_schema:
+        type: "object"
+        properties:
+          result:
+            type: "object"
+          done:
+            type: "boolean"
+          error:
+            type: "string"
+  resources: []
+  prompts: []
+
+agent:
+  entrypoint: "email_triage_agent.agent:run"
+  goal: "Triage emails by categorizing priority, drafting responses for routine messages, extracting action items, and creating tasks in the task management system."
+  tool_access:
+    allowed_packages: []
+  limits:
+    max_iterations: 10
+    max_tool_calls: 50
+    max_runtime_seconds: 300
+  termination:
+    stop_on_final_answer: true
+    stop_on_consecutive_errors: 3
+  isolation: "thread"
+  state:
+    persistence: "none"
+
+compatibility:
+  frameworks: ["generic"]
+  python: ">=3.10"
+  dependencies: []
+
+permissions:
+  network:
+    level: "restricted"
+  filesystem:
+    level: "none"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "never"
+
+tags: ["agent", "email", "productivity", "triage"]
+categories: ["productivity"]

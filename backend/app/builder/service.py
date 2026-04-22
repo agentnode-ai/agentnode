@@ -307,10 +307,103 @@ def _build_code_scaffold(
 
 
 # ---------------------------------------------------------------------------
+# Agent scaffold builders
+# ---------------------------------------------------------------------------
+
+def _build_agent_manifest_yaml(
+    package_slug: str,
+    package_name: str,
+    module_name: str,
+    description: str,
+    permissions: dict,
+) -> str:
+    return (
+        f'manifest_version: "0.2"\n'
+        f'package_id: "{package_slug}"\n'
+        f'package_type: "agent"\n'
+        f'name: "{package_name}"\n'
+        f'summary: "{_escape_yaml(description[:120])}"\n'
+        f'description: "{_escape_yaml(description)}"\n'
+        f'version: "0.1.0"\n'
+        f'runtime: "python"\n'
+        f'install_mode: "package"\n'
+        f'hosting_type: "agentnode_hosted"\n'
+        f'entrypoint: "{module_name}.agent"\n'
+        f"\n"
+        f"capabilities:\n"
+        f"  tools: []\n"
+        f"  resources: []\n"
+        f"  prompts: []\n"
+        f"\n"
+        f"agent:\n"
+        f'  entrypoint: "{module_name}.agent:run"\n'
+        f'  goal: "{_escape_yaml(description[:200])}"\n'
+        f"  tool_access:\n"
+        f"    allowed_packages: []\n"
+        f"  limits:\n"
+        f"    max_iterations: 10\n"
+        f"    max_tool_calls: 50\n"
+        f"    max_runtime_seconds: 300\n"
+        f"  termination:\n"
+        f"    stop_on_final_answer: true\n"
+        f"    stop_on_consecutive_errors: 3\n"
+        f'  isolation: "thread"\n'
+        f"  state:\n"
+        f'    persistence: "none"\n'
+        f"\n"
+        f"compatibility:\n"
+        f'  frameworks: ["generic"]\n'
+        f'  python: ">=3.10"\n'
+        f"  dependencies: []\n"
+        f"\n"
+        f"permissions:\n"
+        f"  network:\n"
+        f'    level: "{permissions["network"]}"\n'
+        f"  filesystem:\n"
+        f'    level: "{permissions["filesystem"]}"\n'
+        f"  code_execution:\n"
+        f'    level: "{permissions["code_execution"]}"\n'
+        f"  data_access:\n"
+        f'    level: "{permissions["data_access"]}"\n'
+        f"  user_approval:\n"
+        f'    required: "{permissions["user_approval"]}"\n'
+        f"\n"
+        f'tags: ["agent"]'
+    )
+
+
+def _build_agent_code_scaffold(module_name: str, description: str) -> str:
+    return (
+        f'"""\n'
+        f"{module_name} — AgentNode agent (ANP v0.2)\n"
+        f"Auto-generated scaffold. Edit and extend as needed.\n"
+        f'"""\n'
+        f"\n"
+        f"\n"
+        f"async def run(goal: str, context: dict | None = None) -> dict:\n"
+        f'    """\n'
+        f"    {description}\n"
+        f"\n"
+        f"    Args:\n"
+        f"        goal: The objective for this agent to accomplish\n"
+        f"        context: Optional context dict with state from previous iterations\n"
+        f"\n"
+        f"    Returns:\n"
+        f'        dict with key "result" containing the agent\'s output\n'
+        f'    """\n'
+        f"    # TODO: Implement your agent logic here\n"
+        f'    raise NotImplementedError("Replace this with your agent implementation")\n'
+        f"\n"
+        f"    # Example return:\n"
+        f'    # return {{"result": "Agent completed the task", "done": True}}\n'
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main generation function
 # ---------------------------------------------------------------------------
 
-def generate_capability(description: str) -> BuilderGenerateResponse:
+def generate_capability(description: str, package_type: str = "toolpack") -> BuilderGenerateResponse:
     """Generate an ANP v0.2 manifest + code scaffold from a description."""
 
     core_action = _extract_core_action(description)
@@ -327,124 +420,206 @@ def generate_capability(description: str) -> BuilderGenerateResponse:
     output_key = _generate_output_key(description)
     output_array = _output_is_array(description)
 
-    manifest_yaml = _build_manifest_yaml(
-        package_slug=package_slug,
-        package_name=package_name,
-        module_name=module_name,
-        tool_name=tool_name,
-        description=description,
-        cap_ids=cap_ids,
-        permissions=permissions,
-        param_name=param_name,
-        param_desc=param_desc,
-        output_key=output_key,
-        output_array=output_array,
-    )
+    if package_type == "agent":
+        manifest_yaml = _build_agent_manifest_yaml(
+            package_slug=package_slug,
+            package_name=package_name,
+            module_name=module_name,
+            description=description,
+            permissions=permissions,
+        )
+    else:
+        manifest_yaml = _build_manifest_yaml(
+            package_slug=package_slug,
+            package_name=package_name,
+            module_name=module_name,
+            tool_name=tool_name,
+            description=description,
+            cap_ids=cap_ids,
+            permissions=permissions,
+            param_name=param_name,
+            param_desc=param_desc,
+            output_key=output_key,
+            output_array=output_array,
+        )
 
     # Build JSON manifest for the publish flow
-    if output_array:
-        output_schema = {
-            "type": "object",
-            "properties": {output_key: {"type": "array", "items": {"type": "string"}}},
+    if package_type == "agent":
+        manifest_json = {
+            "manifest_version": "0.2",
+            "package_id": package_slug,
+            "package_type": "agent",
+            "name": package_name,
+            "summary": description[:120],
+            "description": description,
+            "version": "0.1.0",
+            "runtime": "python",
+            "install_mode": "package",
+            "hosting_type": "agentnode_hosted",
+            "entrypoint": f"{module_name}.agent",
+            "capabilities": {"tools": [], "resources": [], "prompts": []},
+            "compatibility": {
+                "frameworks": ["generic"],
+                "python": ">=3.10",
+                "dependencies": [],
+            },
+            "permissions": {
+                "network": {"level": permissions["network"]},
+                "filesystem": {"level": permissions["filesystem"]},
+                "code_execution": {"level": permissions["code_execution"]},
+                "data_access": {"level": permissions["data_access"]},
+                "user_approval": {"required": permissions["user_approval"]},
+            },
+            "agent": {
+                "entrypoint": f"{module_name}.agent:run",
+                "goal": description[:200],
+                "tool_access": {"allowed_packages": []},
+                "limits": {
+                    "max_iterations": 10,
+                    "max_tool_calls": 50,
+                    "max_runtime_seconds": 300,
+                },
+                "termination": {
+                    "stop_on_final_answer": True,
+                    "stop_on_consecutive_errors": 3,
+                },
+                "isolation": "thread",
+                "state": {"persistence": "none"},
+            },
+            "tags": ["agent"],
         }
     else:
-        output_schema = {
-            "type": "object",
-            "properties": {output_key: {"type": "string"}},
+        if output_array:
+            output_schema = {
+                "type": "object",
+                "properties": {output_key: {"type": "array", "items": {"type": "string"}}},
+            }
+        else:
+            output_schema = {
+                "type": "object",
+                "properties": {output_key: {"type": "string"}},
+            }
+
+        manifest_json = {
+            "manifest_version": "0.2",
+            "package_id": package_slug,
+            "package_type": "toolpack",
+            "name": package_name,
+            "summary": description[:120],
+            "description": description,
+            "version": "0.1.0",
+            "runtime": "python",
+            "install_mode": "package",
+            "hosting_type": "agentnode_hosted",
+            "entrypoint": f"{module_name}.tool",
+            "capabilities": {
+                "tools": [
+                    {
+                        "name": tool_name,
+                        "capability_id": cap_ids[0],
+                        "description": description[:200],
+                        "entrypoint": f"{module_name}.tool:{tool_name}",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {param_name: {"type": "string", "description": param_desc}},
+                            "required": [param_name],
+                        },
+                        "output_schema": output_schema,
+                    }
+                ],
+                "resources": [],
+                "prompts": [],
+            },
+            "compatibility": {
+                "frameworks": ["generic"],
+                "python": ">=3.10",
+                "dependencies": [],
+            },
+            "permissions": {
+                "network": {"level": permissions["network"]},
+                "filesystem": {"level": permissions["filesystem"]},
+                "code_execution": {"level": permissions["code_execution"]},
+                "data_access": {"level": permissions["data_access"]},
+                "user_approval": {"required": permissions["user_approval"]},
+            },
+            "tags": cap_ids[:1],  # Only the primary capability as tag
+            "categories": [cap_ids[0].rsplit("_", 1)[0] if "_" in cap_ids[0] else "general"],
         }
 
-    manifest_json = {
-        "manifest_version": "0.2",
-        "package_id": package_slug,
-        "package_type": "toolpack",
-        "name": package_name,
-        "summary": description[:120],
-        "description": description,
-        "version": "0.1.0",
-        "runtime": "python",
-        "install_mode": "package",
-        "hosting_type": "agentnode_hosted",
-        "entrypoint": f"{module_name}.tool",
-        "capabilities": {
-            "tools": [
-                {
-                    "name": tool_name,
-                    "capability_id": cap_ids[0],
-                    "description": description[:200],
-                    "entrypoint": f"{module_name}.tool:{tool_name}",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {param_name: {"type": "string", "description": param_desc}},
-                        "required": [param_name],
-                    },
-                    "output_schema": output_schema,
-                }
-            ],
-            "resources": [],
-            "prompts": [],
-        },
-        "compatibility": {
-            "frameworks": ["generic"],
-            "python": ">=3.10",
-            "dependencies": [],
-        },
-        "permissions": {
-            "network": {"level": permissions["network"]},
-            "filesystem": {"level": permissions["filesystem"]},
-            "code_execution": {"level": permissions["code_execution"]},
-            "data_access": {"level": permissions["data_access"]},
-            "user_approval": {"required": permissions["user_approval"]},
-        },
-        "tags": cap_ids[:1],  # Only the primary capability as tag
-        "categories": [cap_ids[0].rsplit("_", 1)[0] if "_" in cap_ids[0] else "general"],
-    }
-
-    code = _build_code_scaffold(
-        tool_name=tool_name,
-        module_name=module_name,
-        description=description,
-        param_name=param_name,
-        param_desc=param_desc,
-        output_key=output_key,
-    )
-
-    code_files = [
-        CodeFile(path=f"src/{module_name}/tool.py", content=code),
-        CodeFile(path=f"src/{module_name}/__init__.py", content=f'"""AgentNode package: {package_name}"""\n'),
-        CodeFile(
-            path="pyproject.toml",
-            content=(
-                "[build-system]\n"
-                'requires = ["setuptools>=68.0"]\n'
-                'build-backend = "setuptools.build_meta"\n'
-                "\n"
-                "[project]\n"
-                f'name = "{package_slug}"\n'
-                'version = "0.1.0"\n'
-                f'description = "{_escape_yaml(description[:120])}"\n'
-                'requires-python = ">=3.10"\n'
-                "dependencies = []\n"
-                "\n"
-                "[tool.setuptools.packages.find]\n"
-                'where = ["src"]\n'
+    if package_type == "agent":
+        code = _build_agent_code_scaffold(module_name=module_name, description=description)
+        code_files = [
+            CodeFile(path=f"src/{module_name}/agent.py", content=code),
+            CodeFile(path=f"src/{module_name}/__init__.py", content=f'"""AgentNode agent package: {package_name}"""\n'),
+            CodeFile(
+                path="pyproject.toml",
+                content=(
+                    "[build-system]\n"
+                    'requires = ["setuptools>=68.0"]\n'
+                    'build-backend = "setuptools.build_meta"\n'
+                    "\n"
+                    "[project]\n"
+                    f'name = "{package_slug}"\n'
+                    'version = "0.1.0"\n'
+                    f'description = "{_escape_yaml(description[:120])}"\n'
+                    'requires-python = ">=3.10"\n'
+                    "dependencies = []\n"
+                    "\n"
+                    "[tool.setuptools.packages.find]\n"
+                    'where = ["src"]\n'
+                ),
             ),
-        ),
-    ]
+        ]
+    else:
+        code = _build_code_scaffold(
+            tool_name=tool_name,
+            module_name=module_name,
+            description=description,
+            param_name=param_name,
+            param_desc=param_desc,
+            output_key=output_key,
+        )
+        code_files = [
+            CodeFile(path=f"src/{module_name}/tool.py", content=code),
+            CodeFile(path=f"src/{module_name}/__init__.py", content=f'"""AgentNode package: {package_name}"""\n'),
+            CodeFile(
+                path="pyproject.toml",
+                content=(
+                    "[build-system]\n"
+                    'requires = ["setuptools>=68.0"]\n'
+                    'build-backend = "setuptools.build_meta"\n'
+                    "\n"
+                    "[project]\n"
+                    f'name = "{package_slug}"\n'
+                    'version = "0.1.0"\n'
+                    f'description = "{_escape_yaml(description[:120])}"\n'
+                    'requires-python = ">=3.10"\n'
+                    "dependencies = []\n"
+                    "\n"
+                    "[tool.setuptools.packages.find]\n"
+                    'where = ["src"]\n'
+                ),
+            ),
+        ]
 
     warnings: list[str] = []
-    if tool_name == "process_input":
+    if package_type != "agent" and tool_name == "process_input":
         warnings.append("Could not infer a specific tool name — consider renaming.")
-    if cap_ids == ["code_analysis"]:
+    if package_type != "agent" and cap_ids == ["code_analysis"]:
         warnings.append("No specific capability matched — defaulted to code_analysis.")
 
     metadata = BuilderMetadata(
         package_id=package_slug,
         package_name=package_name,
-        tool_count=1,
-        detected_capability_ids=cap_ids,
+        tool_count=0 if package_type == "agent" else 1,
+        detected_capability_ids=cap_ids if package_type != "agent" else [],
         detected_framework="generic",
         publish_ready=False,
-        warnings=warnings + ["This is a scaffold — implement the tool logic before publishing."],
+        warnings=warnings + [
+            "This is a scaffold — implement the agent logic before publishing."
+            if package_type == "agent"
+            else "This is a scaffold — implement the tool logic before publishing."
+        ],
     )
 
     return BuilderGenerateResponse(

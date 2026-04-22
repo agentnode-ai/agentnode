@@ -25,6 +25,7 @@ import { importCommand } from "./commands/import.js";
 import { runsCommand } from "./commands/runs.js";
 import { credentialsCommand } from "./commands/credentials.js";
 import { authCommand } from "./commands/auth.js";
+import { initCommand } from "./commands/init.js";
 
 // Read version from package.json so the --version output stays in sync
 // with the published npm package instead of drifting against a hardcoded
@@ -70,5 +71,6 @@ program.addCommand(importCommand);
 program.addCommand(runsCommand);
 program.addCommand(credentialsCommand);
 program.addCommand(authCommand);
+program.addCommand(initCommand);
 
 program.parse();

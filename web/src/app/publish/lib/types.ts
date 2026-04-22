@@ -21,7 +21,7 @@ export interface CodeFile {
 export interface GuidedState {
   name: string;
   package_id: string;
-  package_type: "toolpack" | "upgrade";
+  package_type: "toolpack" | "agent" | "upgrade";
   version: string;
   summary: string;
   description: string;
@@ -44,6 +44,17 @@ export interface GuidedState {
   homepage_url: string;
   docs_url: string;
   source_url: string;
+  // Agent-specific fields (only used when package_type === "agent")
+  agent_entrypoint: string;
+  agent_goal: string;
+  agent_allowed_packages: string;
+  agent_max_iterations: number;
+  agent_max_tool_calls: number;
+  agent_max_runtime_seconds: number;
+  agent_stop_on_final_answer: boolean;
+  agent_stop_on_consecutive_errors: number;
+  agent_isolation: string;
+  agent_persistence: string;
   // Upgrade-specific fields (only used when package_type === "upgrade")
   upgrade_recommended_for: string;
   upgrade_replaces: string;

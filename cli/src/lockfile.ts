@@ -21,6 +21,11 @@ export interface LockEntry {
   artifact_hash: string;
   installed_at: string;
   source: string;
+  // Agent config (when package_type === "agent")
+  agent?: Record<string, unknown>;
+  // Trust and permissions (for policy checks)
+  trust_level?: string;
+  permissions?: Record<string, unknown>;
 }
 
 export interface Lockfile {
@@ -46,6 +51,7 @@ export function readLockfile(): Lockfile {
     const raw = readFileSync(path, "utf-8");
     return JSON.parse(raw) as Lockfile;
   } catch {
+    console.warn("Warning: agentnode.lock contains invalid JSON, treating as empty");
     return {
       lockfile_version: "0.1",
       updated_at: new Date().toISOString(),
@@ -56,7 +62,11 @@ export function readLockfile(): Lockfile {
 
 export function writeLockfile(lockfile: Lockfile): void {
   lockfile.updated_at = new Date().toISOString();
-  writeFileSync(lockfilePath(), JSON.stringify(lockfile, null, 2), "utf-8");
+  try {
+    writeFileSync(lockfilePath(), JSON.stringify(lockfile, null, 2), "utf-8");
+  } catch (err: any) {
+    throw new Error(`Failed to write lockfile: ${err.message}. Check disk space and permissions.`);
+  }
 }
 
 /**

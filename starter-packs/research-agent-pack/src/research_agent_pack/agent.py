@@ -341,3 +341,23 @@ class ResearchAgent:
             return True
         except ImportError:
             return False
+
+
+async def run(goal: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Agent entrypoint for AgentNode agent runner.
+
+    Args:
+        goal: The research query or topic.
+        context: Optional context with pdf_path, max_sources, api_key, etc.
+
+    Returns:
+        Structured research report with query, sources, findings, and summary.
+    """
+    ctx = context or {}
+    agent = ResearchAgent(api_key=ctx.get("api_key"))
+    report = agent.research(
+        query=goal,
+        pdf_path=ctx.get("pdf_path"),
+        max_sources=ctx.get("max_sources", 5),
+    )
+    return report

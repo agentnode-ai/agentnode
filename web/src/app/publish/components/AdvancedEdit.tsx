@@ -278,6 +278,26 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
             </div>
 
             <div>
+              <label className="mb-1 block text-sm font-medium text-foreground">Package Type</label>
+              <div className="flex gap-3">
+                {(["toolpack", "agent", "upgrade"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => updateGuided("package_type", t)}
+                    className={`px-3 py-1.5 rounded-md text-sm border transition-colors ${
+                      guided.package_type === t
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border text-muted hover:text-foreground"
+                    }`}
+                  >
+                    {t === "toolpack" ? "Tool Pack" : t === "agent" ? "Agent" : "Upgrade"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
               <label className="mb-1 flex items-center justify-between text-sm font-medium text-foreground">
                 <span>Summary <span className="text-danger">*</span> <span className="text-xs text-muted font-normal">(min 20 characters)</span></span>
                 <span className={`text-xs font-normal ${guided.summary.length > 200 ? "text-danger" : guided.summary.length > 0 && guided.summary.trim().length < 20 ? "text-warning" : "text-muted"}`}>
@@ -571,11 +591,16 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
         <div data-panel="tools">
           <CollapsiblePanel
             title="Tools"
-            subtitle={toolSummary}
+            subtitle={guided.package_type === "agent" ? "Optional for agents" : toolSummary}
             open={openPanels.has("tools")}
             onToggle={() => togglePanel("tools")}
-            status={panelStatuses.tools}
+            status={guided.package_type === "agent" ? (panelStatuses.tools === "incomplete" ? "warning" : panelStatuses.tools) : panelStatuses.tools}
           >
+            {guided.package_type === "agent" && (
+              <div className="rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-blue-400 mb-3">
+                Agents orchestrate other packages. Tool declarations are optional for agent packages.
+              </div>
+            )}
             {guided.tools.map((tool, i) => (
               <div key={i} className="rounded-lg border border-border bg-card/50 p-4 space-y-3">
                 <div className="flex items-center justify-between">
@@ -699,6 +724,136 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
             </button>
           </CollapsiblePanel>
         </div>
+
+        {/* === AGENT CONFIGURATION === */}
+        {guided.package_type === "agent" && (
+          <div data-panel="agent">
+            <CollapsiblePanel
+              title="Agent Configuration"
+              subtitle={guided.agent_goal ? guided.agent_goal.slice(0, 60) : "Configure agent behavior"}
+              open={openPanels.has("agent")}
+              onToggle={() => togglePanel("agent")}
+              status={guided.agent_entrypoint && guided.agent_goal ? "complete" : "incomplete"}
+            >
+              <div className="space-y-4">
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-foreground">
+                    Entrypoint <span className="text-danger">*</span>
+                    <span className="text-xs text-muted font-normal ml-1">(module.path:function)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={guided.agent_entrypoint}
+                    onChange={(e) => updateGuided("agent_entrypoint", e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2.5 font-mono text-foreground focus:border-primary focus:outline-none"
+                    placeholder="my_agent.agent:run"
+                  />
+                  {guided.agent_entrypoint && !guided.agent_entrypoint.includes(":") && (
+                    <p className="mt-1 text-xs text-danger">Must be in module.path:function format</p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-foreground">
+                    Goal <span className="text-danger">*</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={guided.agent_goal}
+                    onChange={(e) => updateGuided("agent_goal", e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none resize-none"
+                    placeholder="What does this agent do?"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-foreground">
+                    Allowed Packages
+                    <span className="text-xs text-muted font-normal ml-1">(comma-separated)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={guided.agent_allowed_packages}
+                    onChange={(e) => updateGuided("agent_allowed_packages", e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none"
+                    placeholder="web-search-pack, pdf-reader-pack"
+                  />
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div>
+                    <label className="mb-1 block text-xs text-muted">Max Iterations</label>
+                    <input
+                      type="number"
+                      value={guided.agent_max_iterations}
+                      onChange={(e) => updateGuided("agent_max_iterations", parseInt(e.target.value) || 1)}
+                      min={1}
+                      max={100}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-muted">Max Tool Calls</label>
+                    <input
+                      type="number"
+                      value={guided.agent_max_tool_calls}
+                      onChange={(e) => updateGuided("agent_max_tool_calls", parseInt(e.target.value) || 1)}
+                      min={1}
+                      max={500}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-muted">Max Runtime (seconds)</label>
+                    <input
+                      type="number"
+                      value={guided.agent_max_runtime_seconds}
+                      onChange={(e) => updateGuided("agent_max_runtime_seconds", parseInt(e.target.value) || 1)}
+                      min={1}
+                      max={3600}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-xs text-muted">Stop on consecutive errors</label>
+                    <input
+                      type="number"
+                      value={guided.agent_stop_on_consecutive_errors}
+                      onChange={(e) => updateGuided("agent_stop_on_consecutive_errors", parseInt(e.target.value) || 1)}
+                      min={1}
+                      max={10}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-muted">Isolation</label>
+                    <select
+                      value={guided.agent_isolation}
+                      onChange={(e) => updateGuided("agent_isolation", e.target.value)}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                    >
+                      <option value="thread">Thread (default)</option>
+                      <option value="process">Process</option>
+                    </select>
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-2 text-sm text-foreground">
+                  <input
+                    type="checkbox"
+                    checked={guided.agent_stop_on_final_answer}
+                    onChange={(e) => updateGuided("agent_stop_on_final_answer", e.target.checked)}
+                    className="rounded border-border"
+                  />
+                  Stop when final answer is reached
+                </label>
+              </div>
+            </CollapsiblePanel>
+          </div>
+        )}
 
         {/* === PERMISSIONS === */}
         <div data-panel="permissions">

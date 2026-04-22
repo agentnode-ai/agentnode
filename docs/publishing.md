@@ -33,7 +33,7 @@ package_type: "toolpack"
 name: "My Tool Pack"
 publisher: "your-publisher-slug"
 version: "1.0.0"
-summary: "Short description of what this pack does."  # max 200 chars
+summary: "Short description of what this pack does."  # 20-200 chars
 description: |
   Longer description with markdown support.
 
@@ -106,6 +106,10 @@ support:
   issues: ""
 
 deprecation_policy: "6-months-notice"
+
+homepage_url: ""                       # Must be https:// or http://
+docs_url: ""                           # Must be https:// or http://
+source_url: ""                         # Must be https:// or http://
 ```
 
 ### The Tool Code (`tool.py`)
@@ -166,6 +170,10 @@ tar -czf ../my-tool-pack-1.0.0.tar.gz .
 
 The archive must contain `pyproject.toml` at the root.
 
+> **Required:** The artifact must include a `tests/` directory with at least
+> one `test_*.py` file. The quality gate (`validate_artifact_quality()`) will
+> reject the publish if no tests are found.
+
 ## Step 4: Publish
 
 ```bash
@@ -173,19 +181,26 @@ agentnode publish ./my-tool-pack
 ```
 
 This will:
-1. Validate the manifest
-2. Upload the artifact to the AgentNode registry
-3. Run security scans (async)
-4. Index the package for search
+1. Validate the manifest (schema, field ranges, type combinations)
+2. Run the quality gate (tests required in artifact)
+3. Check for typosquatting against existing package slugs
+4. Verify artifact signature (if signing key is registered)
+5. Check ownership (existing packages must belong to you)
+6. Check version uniqueness (duplicate `(package_id, version)` is rejected)
+7. Upload the artifact to the AgentNode registry
+8. Index the package for search (unless quarantined)
 
 ### Quarantine
 
-New publishers (< 3 cleared packages) have their packages auto-quarantined. Quarantined packages:
+First-time publishers (0 cleared packages) have their packages auto-quarantined.
+Quarantined packages:
 - Are not visible in search
 - Cannot be installed by others
 - Need manual clearance by AgentNode admins
 
-After 3 packages are cleared, future publishes skip quarantine.
+After your first package is cleared, future publishes skip quarantine.
+Publishers with `trusted` or `curated` trust level skip quarantine entirely
+(including typosquatting quarantine).
 
 ## Step 5: Verify
 
@@ -194,6 +209,95 @@ agentnode info my-tool-pack
 ```
 
 Or visit `https://agentnode.net/packages/my-tool-pack`.
+
+## Publishing Agent Packages
+
+Agent packages (`package_type: "agent"`) are autonomous agents that orchestrate tools to accomplish goals. They require an additional `agent:` section in the manifest.
+
+### Quick Start
+
+```bash
+agentnode init --type agent my-agent
+cd my-agent
+# Edit agentnode.yaml and implement your agent
+agentnode validate agentnode.yaml
+agentnode publish
+```
+
+### Agent Manifest
+
+The `agent:` section defines how the agent operates:
+
+```yaml
+package_type: "agent"
+
+agent:
+  entrypoint: "my_agent.agent:run"          # module.path:function format (required)
+  goal: "What this agent does in one sentence"  # required
+  isolation: "thread"                        # "thread" (default) or "process"
+  tool_access:
+    allowed_packages:                        # Packages this agent may use
+      - "web-search-pack"
+      - "document-summarizer-pack"
+  limits:
+    max_iterations: 10                       # 1-100
+    max_tool_calls: 50                       # 1-500
+    max_runtime_seconds: 300                 # 1-3600
+  termination:
+    stop_on_final_answer: true               # bool
+    stop_on_consecutive_errors: 3            # int, 1-10
+  state:
+    persistence: "none"                      # "none" or "session"
+```
+
+> **Note:** `agent.max_tokens` and `agent.planning` are explicitly rejected
+> by the validator and will produce errors if included.
+
+### Connector Metadata (toolpack only)
+
+Toolpacks that wrap external services can declare a `connector:` section:
+
+```yaml
+connector:
+  provider: "slack"
+  auth_type: "oauth2"                # "api_key" or "oauth2"
+  scopes: ["chat:read", "chat:write"]
+  health_check:
+    endpoint: "/api/health"
+    interval_seconds: 60
+```
+
+### Agent Entrypoint
+
+Your agent must expose an async `run()` function:
+
+```python
+async def run(goal: str, context: dict | None = None) -> dict:
+    """Agent entrypoint.
+
+    Args:
+        goal: The task/goal for the agent.
+        context: Optional dict with prior state, tool references, etc.
+
+    Returns:
+        Dict with at least a 'result' key.
+    """
+    # Your agent logic here
+    return {"result": "...", "steps_taken": 0}
+```
+
+### Validation
+
+The validator checks:
+- `agent.entrypoint` is in `module.path:function` format
+- `agent.goal` is present
+- `agent.tool_access.allowed_packages` entries are strings
+- `agent.limits` values are within valid ranges
+- The verification pipeline imports and tests the agent entrypoint
+
+### Example
+
+See [`research-agent-pack`](../starter-packs/research-agent-pack/) for a complete working example that orchestrates web search, PDF extraction, and summarization.
 
 ## Updating a Package
 

@@ -189,7 +189,12 @@ async function validateToken(
 
     // Slack's auth.test returns 200 with { ok: false } for bad tokens
     if (provider === "slack") {
-      const body = await resp.json() as { ok?: boolean };
+      let body: { ok?: boolean };
+      try {
+        body = await resp.json() as { ok?: boolean };
+      } catch {
+        return { valid: false, error: "Token validation failed (invalid response)" };
+      }
       if (!body.ok) {
         return { valid: false, error: "Token validation failed (invalid token)" };
       }

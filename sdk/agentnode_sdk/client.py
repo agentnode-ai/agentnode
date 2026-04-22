@@ -264,7 +264,8 @@ def _get_package_connector_provider(slug: str, client: "AgentNodeClient") -> str
         if isinstance(connector, dict):
             return connector.get("provider")
     except Exception:
-        pass
+        import logging as _logging
+        _logging.getLogger(__name__).debug("Failed to fetch connector provider for %s", slug, exc_info=True)
     return None
 
 
@@ -488,6 +489,7 @@ class AgentNodeClient:
             capabilities=caps,
             dependencies=deps,
             permissions=perms,
+            agent=data.get("agent"),
         )
 
     # --- Download ---
@@ -564,7 +566,8 @@ class AgentNodeClient:
             lv = detail.get("latest_version") or {}
             verification_tier = lv.get("verification_tier")
         except Exception:
-            pass
+            import logging as _logging
+            _logging.getLogger(__name__).warning("Failed to fetch trust info for %s, defaulting to unverified", slug, exc_info=True)
 
         # 2b. Policy check — authoritative (Phase B: hard enforcement)
         from agentnode_sdk.policy import check_install as _policy_check_install
@@ -694,6 +697,7 @@ class AgentNodeClient:
             verbose=verbose,
             trust_level=trust_level,
             permissions=_permissions_to_dict(meta.permissions),
+            agent=meta.agent,
         )
 
         return InstallResult(

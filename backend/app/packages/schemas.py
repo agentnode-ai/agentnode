@@ -76,6 +76,18 @@ class ConnectorBlock(BaseModel):
     rate_limit_rpm: int | None = None
 
 
+class AgentConfigBlock(BaseModel):
+    """Agent-specific configuration extracted from the manifest agent section."""
+
+    goal: str | None = None
+    entrypoint: str | None = None
+    allowed_packages: list[str] | None = None
+    max_iterations: int | None = None
+    max_tool_calls: int | None = None
+    max_runtime_seconds: int | None = None
+    isolation: str | None = None
+
+
 class RecommendedForBlock(BaseModel):
     agent_type: str | None = None
     missing_capability: str | None = None
@@ -179,6 +191,7 @@ class VerificationInfo(BaseModel):
     smoke_reason: str | None = None
     verification_mode: str | None = None  # "real", "mock", "limited"
     environment: EnvironmentInfo | None = None
+    error_summary: str | None = None   # Human-readable failure reason (only for package errors)
 
 
 class PackageBlocks(BaseModel):
@@ -219,6 +232,7 @@ class PackageDetailResponse(BaseModel):
     docs_url: str | None = None
     source_url: str | None = None
     verification: VerificationInfo | None = None
+    agent_config: AgentConfigBlock | None = None
 
 
 class VersionListItem(BaseModel):

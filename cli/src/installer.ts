@@ -35,6 +35,9 @@ interface ArtifactMeta {
   capability_ids: string[];
   tools: ToolMeta[];
   deprecated: boolean;
+  agent?: Record<string, unknown>;
+  trust_level?: string;
+  permissions?: Record<string, unknown>;
 }
 
 /**
@@ -126,6 +129,9 @@ export async function installPackage(
       artifact_hash: `sha256:${localHash}`,
       installed_at: new Date().toISOString(),
       source: "cli",
+      ...(meta.agent ? { agent: meta.agent } : {}),
+      ...(meta.trust_level ? { trust_level: meta.trust_level } : {}),
+      ...(meta.permissions ? { permissions: meta.permissions } : {}),
     });
 
     return {

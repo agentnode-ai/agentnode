@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seo-research-agent"
+version = "1.0.0"
+description = "Audit a website's SEO by analyzing content, keywords, meta tags, and competitor rankings."
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]

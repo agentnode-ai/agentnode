@@ -97,7 +97,7 @@ async def register(body: RegisterRequest, background_tasks: BackgroundTasks, ses
                 }, actor_user_id=user.id)
                 await session.commit()
         except Exception:
-            pass  # Never break registration for tracking
+            logging.getLogger("agentnode.auth").warning("Failed to track invite registration event", exc_info=True)
 
     return RegisterResponse(id=user.id, email=user.email, username=user.username)
 
@@ -107,7 +107,7 @@ async def login(body: LoginRequest, request: Request, response: Response, backgr
     await check_login_rate_limits(request, response, body.email)
     redis = request.app.state.redis
     forwarded = request.headers.get("x-forwarded-for")
-    ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+    ip = forwarded.split(",")[-1].strip() if forwarded else (request.client.host if request.client else "unknown")
     result = await login_user(session, body.email, body.password, body.totp_code, redis=redis, client_ip=ip)
     # Set httpOnly cookies for web clients
     set_auth_cookies(response, result["access_token"], result["refresh_token"], is_admin=result.get("is_admin", False))

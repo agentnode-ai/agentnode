@@ -43,7 +43,7 @@ cd backend
 cp .env.example .env
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.lock
+pip install -e .
 alembic upgrade head
 python scripts/seed_capabilities.py
 uvicorn app.main:app --host 0.0.0.0 --port 8001
@@ -54,6 +54,12 @@ cp .env.example .env.local
 npm install
 npm run dev
 ```
+
+> **Note:** The default `docker-compose.yml` binds all services to `127.0.0.1`
+> (not `0.0.0.0`) to avoid exposing dev credentials on public networks. It also
+> references a `coolify` external Docker network. If you are not using Coolify,
+> either create the network (`docker network create coolify`) or remove the
+> `networks.coolify` block and the `networks` entry on the `minio` service.
 
 ## Production Deployment
 
@@ -147,7 +153,7 @@ cd agentnode/backend
 # Create virtual environment
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.lock
+pip install .
 
 # Configure
 cp .env.example .env
@@ -158,6 +164,16 @@ cp .env.example .env
 #   S3_SECRET_KEY=YOUR_SECRET_KEY
 #   S3_PUBLIC_ENDPOINT=https://s3.yourdomain.com
 #   ENVIRONMENT=production
+#   CREDENTIAL_ENCRYPTION_KEY=<generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
+#   COOKIE_SECURE=true
+
+# IMPORTANT: Production mode (ENVIRONMENT=production) enforces startup checks.
+# The server will refuse to start if any of these have insecure defaults:
+#   - JWT_SECRET (must not be "change-me-in-production")
+#   - S3_ACCESS_KEY / S3_SECRET_KEY (must not be "minioadmin")
+#   - MEILISEARCH_KEY (must not be "masterKey")
+#   - COOKIE_SECURE (must be true)
+#   - CREDENTIAL_ENCRYPTION_KEY (must be set)
 
 # Run migrations and seed
 alembic upgrade head
@@ -281,7 +297,68 @@ asyncio.run(make_admin('admin@yourdomain.com'))
 
 ## Environment Variables Reference
 
-See `backend/.env.example` for all available variables with descriptions.
+See `backend/.env.example` for all available variables. Key settings are listed below.
+
+### Core Infrastructure
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | `postgresql+asyncpg://agentnode:agentnode@localhost:5432/agentnode` | PostgreSQL connection string |
+| `REDIS_URL` | `redis://localhost:6379` | Redis connection string |
+| `MEILISEARCH_URL` | `http://localhost:7700` | Meilisearch endpoint |
+| `MEILISEARCH_KEY` | `masterKey` | Meilisearch admin key |
+| `MEILISEARCH_SEARCH_KEY` | *(empty)* | Read-only search key (for frontend) |
+| `S3_ENDPOINT` | `http://localhost:9000` | S3/MinIO endpoint |
+| `S3_PUBLIC_ENDPOINT` | *(empty)* | Public-facing S3 URL |
+| `S3_ACCESS_KEY` | `minioadmin` | S3 access key |
+| `S3_SECRET_KEY` | `minioadmin` | S3 secret key |
+| `S3_BUCKET` | `agentnode-artifacts` | Artifact bucket name |
+| `S3_REGION` | `auto` | S3 region |
+| `ENVIRONMENT` | `development` | Set to `production` to enable startup safety checks |
+
+### Authentication & Security
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JWT_SECRET` | `change-me-in-production` | **Must change in production.** Secret for JWT signing |
+| `JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Access token lifetime |
+| `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `30` | Refresh token lifetime |
+| `COOKIE_DOMAIN` | *(empty)* | Cookie domain scope |
+| `COOKIE_SECURE` | `false` | **Must be `true` in production.** Sets Secure flag on cookies |
+| `COOKIE_SAMESITE` | `lax` | Cookie SameSite policy |
+| `LOGIN_MAX_ATTEMPTS` | `5` | Failed logins before account lockout |
+| `LOGIN_LOCKOUT_SECONDS` | `900` | Lockout duration (15 minutes) |
+| `CREDENTIAL_ENCRYPTION_KEY` | *(empty)* | **Required in production.** Fernet key for encrypting stored credentials. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+
+### Verification Pipeline
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VERIFICATION_ENABLED` | `true` | Enable/disable the verification pipeline |
+| `VERIFICATION_TIMEOUT` | `240` | Total verification timeout (seconds) |
+| `VERIFICATION_MAX_ARTIFACT_MB` | `50` | Maximum artifact size for verification (MB) |
+| `VERIFICATION_MAX_CONCURRENT` | `2` | Max concurrent verification jobs |
+| `VERIFICATION_SANDBOX_MODE` | `subprocess` | Sandbox mode: `subprocess` or `container` |
+| `VERIFICATION_USE_UV` | `true` | Use uv instead of pip for faster installs |
+
+### OAuth (Credential Connectors)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OAUTH_GITHUB_CLIENT_ID` | *(empty)* | GitHub OAuth app client ID |
+| `OAUTH_GITHUB_CLIENT_SECRET` | *(empty)* | GitHub OAuth app client secret |
+| `OAUTH_SLACK_CLIENT_ID` | *(empty)* | Slack OAuth app client ID |
+| `OAUTH_SLACK_CLIENT_SECRET` | *(empty)* | Slack OAuth app client secret |
+| `OAUTH_REDIRECT_URI` | `http://localhost:8000/v1/credentials/oauth/callback` | OAuth callback URL |
+
+### Other
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANTHROPIC_API_KEY` | *(empty)* | For AI-powered features (builder, smoke tests) |
+| `MAX_ARTIFACT_SIZE_BYTES` | `10485760` (10 MB) | Maximum upload size for published artifacts |
+| `FRONTEND_URL` | `https://agentnode.net` | Frontend URL (used in emails) |
 
 ## Monitoring
 
@@ -305,7 +382,7 @@ git pull origin main
 
 # Backend
 cd backend && source .venv/bin/activate
-pip install -r requirements.lock
+pip install .
 alembic upgrade head
 sudo systemctl restart agentnode-api
 

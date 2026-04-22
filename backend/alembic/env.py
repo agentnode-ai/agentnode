@@ -24,6 +24,8 @@ from app.admin.models import AdminAuditLog, SystemSetting  # noqa: F401
 from app.billing.models import ReviewRequest, ProcessedStripeEvent  # noqa: F401
 from app.webhooks.models import Webhook, WebhookDelivery  # noqa: F401
 from app.invites.models import ImportCandidate, InviteCode, CandidateEvent  # noqa: F401
+from app.credentials.models import CredentialStore  # noqa: F401
+from app.support.models import SupportTicket, SupportMessage  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)

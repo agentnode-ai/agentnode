@@ -54,9 +54,13 @@ export function buildManifestFromGuided(g: GuidedState, publisherSlug: string): 
     },
   };
 
-  // Package-level entrypoint (explicit or auto-derived from first tool)
+  // Package-level entrypoint (explicit or auto-derived from first tool / agent entrypoint)
   if (g.entrypoint) {
     manifest.entrypoint = g.entrypoint;
+  } else if (g.package_type === "agent" && g.agent_entrypoint) {
+    // Derive module-level entrypoint from agent entrypoint (strip :function)
+    const parts = g.agent_entrypoint.split(":");
+    manifest.entrypoint = parts[0];
   } else if (g.tools.length > 0 && g.tools[0].entrypoint) {
     const parts = g.tools[0].entrypoint.split(":");
     if (parts.length === 2) manifest.entrypoint = parts[0];
@@ -78,6 +82,29 @@ export function buildManifestFromGuided(g: GuidedState, publisherSlug: string): 
   if (g.homepage_url?.trim()) manifest.homepage_url = g.homepage_url;
   if (g.docs_url?.trim()) manifest.docs_url = g.docs_url;
   if (g.source_url?.trim()) manifest.source_url = g.source_url;
+
+  // Agent metadata
+  if (g.package_type === "agent") {
+    manifest.agent = {
+      entrypoint: g.agent_entrypoint,
+      goal: g.agent_goal,
+      tool_access: {
+        allowed_packages: g.agent_allowed_packages
+          .split(",").map((s) => s.trim()).filter(Boolean),
+      },
+      limits: {
+        max_iterations: g.agent_max_iterations,
+        max_tool_calls: g.agent_max_tool_calls,
+        max_runtime_seconds: g.agent_max_runtime_seconds,
+      },
+      termination: {
+        stop_on_final_answer: g.agent_stop_on_final_answer,
+        stop_on_consecutive_errors: g.agent_stop_on_consecutive_errors,
+      },
+      isolation: g.agent_isolation,
+      state: { persistence: g.agent_persistence },
+    };
+  }
 
   // Upgrade metadata
   if (g.package_type === "upgrade") {
@@ -107,10 +134,10 @@ export function parseManifestToGuided(json: Record<string, unknown>): GuidedStat
   else if (typeof json.display_name === "string" && json.display_name) g.name = json.display_name;
 
   if (typeof json.package_id === "string") g.package_id = json.package_id;
-  if (json.package_type === "toolpack") {
+  if (json.package_type === "toolpack" || json.package_type === "agent") {
     g.package_type = json.package_type;
-  } else if (json.package_type === "agent" || json.package_type === "upgrade") {
-    g.package_type = "toolpack"; // Legacy/upgrade: force to toolpack on main publish page
+  } else if (json.package_type === "upgrade") {
+    g.package_type = "upgrade";
   }
   if (typeof json.version === "string") g.version = json.version;
 
@@ -186,6 +213,31 @@ export function parseManifestToGuided(json: Record<string, unknown>): GuidedStat
   if (typeof json.homepage_url === "string") g.homepage_url = json.homepage_url;
   if (typeof json.docs_url === "string") g.docs_url = json.docs_url;
   if (typeof json.source_url === "string") g.source_url = json.source_url;
+
+  // Agent metadata
+  const agentSection = json.agent as Record<string, unknown> | undefined;
+  if (agentSection) {
+    if (typeof agentSection.entrypoint === "string") g.agent_entrypoint = agentSection.entrypoint;
+    if (typeof agentSection.goal === "string") g.agent_goal = agentSection.goal;
+    const toolAccess = agentSection.tool_access as Record<string, unknown> | undefined;
+    if (toolAccess && Array.isArray(toolAccess.allowed_packages)) {
+      g.agent_allowed_packages = toolAccess.allowed_packages.join(", ");
+    }
+    const limits = agentSection.limits as Record<string, unknown> | undefined;
+    if (limits) {
+      if (typeof limits.max_iterations === "number") g.agent_max_iterations = limits.max_iterations;
+      if (typeof limits.max_tool_calls === "number") g.agent_max_tool_calls = limits.max_tool_calls;
+      if (typeof limits.max_runtime_seconds === "number") g.agent_max_runtime_seconds = limits.max_runtime_seconds;
+    }
+    const termination = agentSection.termination as Record<string, unknown> | undefined;
+    if (termination) {
+      if (typeof termination.stop_on_final_answer === "boolean") g.agent_stop_on_final_answer = termination.stop_on_final_answer;
+      if (typeof termination.stop_on_consecutive_errors === "number") g.agent_stop_on_consecutive_errors = termination.stop_on_consecutive_errors;
+    }
+    if (typeof agentSection.isolation === "string") g.agent_isolation = agentSection.isolation;
+    const state = agentSection.state as Record<string, unknown> | undefined;
+    if (state && typeof state.persistence === "string") g.agent_persistence = state.persistence;
+  }
 
   // Upgrade metadata
   const upgrade = json.upgrade_metadata as Record<string, unknown> | undefined;

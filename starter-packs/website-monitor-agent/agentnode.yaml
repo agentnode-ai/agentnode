@@ -1,0 +1,81 @@
+manifest_version: "0.2"
+package_id: "website-monitor-agent"
+package_type: "agent"
+name: "Website Monitor Agent"
+publisher: "agentnode"
+version: "1.0.0"
+summary: "Monitor websites for content changes, downtime, and visual regressions, and send alerts via Slack or email."
+description: |
+  Monitor target websites by periodically checking for content changes, downtime, and visual regressions, then send alerts with diff details via configured channels.
+
+  This agent uses AgentNode's full skill registry to dynamically discover
+  and install the capabilities it needs at runtime.
+
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "website_monitor_agent.agent"
+
+capabilities:
+  tools:
+    - name: "website_monitoring"
+      capability_id: "website_monitoring"
+      description: "Monitor websites for content changes, downtime, and visual regressions, and send alerts via Slack or email."
+      entrypoint: "website_monitor_agent.agent:run"
+      input_schema:
+        type: "object"
+        properties:
+          goal:
+            type: "string"
+            description: "The objective for the agent"
+          context:
+            type: "object"
+            description: "Optional context and parameters"
+        required: ["goal"]
+      output_schema:
+        type: "object"
+        properties:
+          result:
+            type: "object"
+          done:
+            type: "boolean"
+          error:
+            type: "string"
+  resources: []
+  prompts: []
+
+agent:
+  entrypoint: "website_monitor_agent.agent:run"
+  goal: "Monitor target websites by periodically checking for content changes, downtime, and visual regressions, then send alerts with diff details via configured channels."
+  tool_access:
+    allowed_packages: []
+  limits:
+    max_iterations: 10
+    max_tool_calls: 50
+    max_runtime_seconds: 300
+  termination:
+    stop_on_final_answer: true
+    stop_on_consecutive_errors: 3
+  isolation: "thread"
+  state:
+    persistence: "none"
+
+compatibility:
+  frameworks: ["generic"]
+  python: ">=3.10"
+  dependencies: []
+
+permissions:
+  network:
+    level: "unrestricted"
+  filesystem:
+    level: "workspace_write"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "never"
+
+tags: ["agent", "monitoring", "website", "alerts", "devops"]
+categories: ["ops"]

@@ -14,8 +14,13 @@ const REVALIDATE_SECRET = process.env.REVALIDATE_SECRET || "";
  */
 export async function POST(req: NextRequest) {
   try {
-    // Require secret in production to prevent cache-busting abuse
-    if (REVALIDATE_SECRET) {
+    // Require secret to prevent cache-busting abuse
+    if (!REVALIDATE_SECRET) {
+      if (process.env.NODE_ENV === "production") {
+        return NextResponse.json({ error: "REVALIDATE_SECRET not configured" }, { status: 500 });
+      }
+      // In development, allow without secret
+    } else {
       const secret = req.headers.get("x-revalidate-secret");
       if (secret !== REVALIDATE_SECRET) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
