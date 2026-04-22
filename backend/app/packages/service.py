@@ -168,7 +168,8 @@ async def publish_package(
     publish_warnings = list(warnings)
     if artifact_bytes:
         qg_errors, qg_warnings = validate_artifact_quality(
-            artifact_bytes, manifest.get("package_id", "")
+            artifact_bytes, manifest.get("package_id", ""),
+            package_type=manifest.get("package_type", "package"),
         )
         publish_warnings.extend(qg_warnings)
         if qg_errors:

@@ -870,10 +870,11 @@ def _validate_enrichment_fields(manifest: dict, errors: list[str], warnings: lis
                 errors.append(f"{url_field} must start with https:// or http://")
 
 
-def validate_artifact_quality(artifact_bytes: bytes, slug: str) -> tuple[list[str], list[str]]:
+def validate_artifact_quality(artifact_bytes: bytes, slug: str, *, package_type: str = "package") -> tuple[list[str], list[str]]:
     """Quality Gate — validate artifact contains tests and required structure.
 
     Returns (errors, warnings). Errors block publishing.
+    Agents are exempt from the test-file requirement (verification generates auto-tests).
     """
     import io
     import tarfile
@@ -894,7 +895,7 @@ def validate_artifact_quality(artifact_bytes: bytes, slug: str) -> tuple[list[st
         parts = n.split("/", 1)
         normalized.append(parts[1] if len(parts) > 1 else parts[0])
 
-    # Check for test files
+    # Check for test files (agents exempt — verification generates auto-tests)
     test_files = [
         f for f in normalized
         if (f.startswith("tests/") or f.startswith("test/") or f.startswith("test_"))
@@ -902,7 +903,7 @@ def validate_artifact_quality(artifact_bytes: bytes, slug: str) -> tuple[list[st
         and not f.endswith("__init__.py")
     ]
 
-    if not test_files:
+    if not test_files and package_type != "agent":
         errors.append(
             "Quality Gate: No test files found. "
             "Add a tests/ directory with at least one test_*.py file."
