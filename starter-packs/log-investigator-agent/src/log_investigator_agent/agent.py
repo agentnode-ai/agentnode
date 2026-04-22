@@ -48,6 +48,8 @@ def run(context: Any, **kwargs: Any) -> dict:
         import json
         try:
             data = json.loads(log_text) if isinstance(log_text, str) else log_text
+            if isinstance(data, dict):
+                data = [data]
             if isinstance(data, list):
                 ok, processed = _call(context, "json-processor-pack", "json_processing",
                                       data=data, query="[?level=='ERROR' || level=='error']")
