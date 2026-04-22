@@ -61,14 +61,38 @@ async function fetchNewest(): Promise<SearchResponse | null> {
   }
 }
 
+async function fetchAgents(): Promise<SearchResponse | null> {
+  try {
+    const baseUrl = BACKEND_URL;
+    const res = await fetch(`${baseUrl}/v1/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        q: "",
+        package_type: "agent",
+        sort_by: "published_at:desc",
+        per_page: 12,
+        page: 1,
+      }),
+      next: { revalidate: 60 },
+    });
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
 export default async function DiscoverPage() {
-  const [trending, newest] = await Promise.all([
+  const [trending, newest, agents] = await Promise.all([
     fetchTrending(),
     fetchNewest(),
+    fetchAgents(),
   ]);
 
   const trendingHits = trending?.hits ?? [];
   const newestHits = newest?.hits ?? [];
+  const agentHits = agents?.hits ?? [];
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-12">
@@ -114,6 +138,48 @@ export default async function DiscoverPage() {
           </div>
         )}
       </section>
+
+      {/* Featured Agents */}
+      {agentHits.length > 0 && (
+        <section className="mb-14">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <h2 className="text-2xl font-bold text-foreground">
+                Agents
+              </h2>
+              <span className="rounded-full bg-blue-500/10 border border-blue-500/20 px-2.5 py-0.5 text-xs font-medium text-blue-400">
+                {agentHits.length} available
+              </span>
+            </div>
+            <a
+              href="/search?package_type=agent"
+              className="text-sm text-primary hover:text-foreground transition-colors"
+            >
+              View all &rarr;
+            </a>
+          </div>
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {agentHits.map((pkg) => (
+              <PackageCard
+                key={pkg.slug}
+                slug={pkg.slug}
+                name={pkg.name}
+                summary={pkg.summary}
+                trust_level={pkg.trust_level}
+                frameworks={pkg.frameworks}
+                version={pkg.latest_version ?? undefined}
+                download_count={pkg.download_count}
+                install_count={pkg.install_count}
+                verification_status={pkg.verification_status}
+                verification_tier={pkg.verification_tier}
+                verification_score={pkg.verification_score}
+                package_type={pkg.package_type}
+                publisher_name={pkg.publisher_name}
+              />
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Recently Published */}
       <section>

@@ -52,6 +52,36 @@ const starterPacks = [
   },
 ];
 
+const featuredAgents = [
+  {
+    slug: "deep-research-agent",
+    name: "Deep Research Agent",
+    summary: "Conduct deep multi-source research on any topic, synthesize findings into a structured report.",
+    trust_level: "trusted" as const,
+    frameworks: ["generic"],
+    version: "1.0.0",
+    package_type: "agent",
+  },
+  {
+    slug: "code-review-agent",
+    name: "Code Review Agent",
+    summary: "Analyze code for quality issues, security vulnerabilities, and suggest improvements.",
+    trust_level: "trusted" as const,
+    frameworks: ["generic"],
+    version: "1.0.0",
+    package_type: "agent",
+  },
+  {
+    slug: "data-pipeline-agent",
+    name: "Data Pipeline Agent",
+    summary: "Build and validate data pipelines with schema inference, quality checks, and transformation.",
+    trust_level: "trusted" as const,
+    frameworks: ["generic"],
+    version: "1.0.0",
+    package_type: "agent",
+  },
+];
+
 export default function HomePage() {
   return (
     <div className="flex flex-col">
@@ -737,6 +767,38 @@ result = runtime.run(
               className="text-sm text-primary transition-colors hover:text-foreground"
             >
               Browse all capabilities &rarr;
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* ============================================================ */}
+      {/*  FEATURED AGENTS                                             */}
+      {/* ============================================================ */}
+      <section className="border-b border-border bg-card/30">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
+          <div className="flex items-center justify-center gap-3 mb-4">
+            <h2 className="text-2xl font-bold text-foreground sm:text-3xl">
+              Featured Agents
+            </h2>
+            <span className="rounded-full bg-blue-500/10 border border-blue-500/20 px-3 py-1 text-xs font-medium text-blue-400">
+              New
+            </span>
+          </div>
+          <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
+            Pre-built AI agents that orchestrate tools from the registry to accomplish complex tasks autonomously.
+          </p>
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {featuredAgents.map((agent) => (
+              <PackageCard key={agent.slug} {...agent} />
+            ))}
+          </div>
+          <div className="mt-8 text-center">
+            <Link
+              href="/search?package_type=agent"
+              className="text-sm text-primary transition-colors hover:text-foreground"
+            >
+              Browse all agents &rarr;
             </Link>
           </div>
         </div>
