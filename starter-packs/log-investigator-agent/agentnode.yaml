@@ -3,7 +3,7 @@ package_id: "log-investigator-agent"
 package_type: "agent"
 name: "Log Investigator Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.0.1"
 summary: "Parse log files, identify errors and anomalies, correlate events, and produce a report."
 description: |
   Investigate logs by parsing entries, identifying error patterns, and generating an incident report.
