@@ -85,9 +85,10 @@ export function buildManifestFromGuided(g: GuidedState, publisherSlug: string): 
 
   // Agent metadata
   if (g.package_type === "agent") {
-    manifest.agent = {
+    const agentBlock: Record<string, unknown> = {
       entrypoint: g.agent_entrypoint,
       goal: g.agent_goal,
+      llm: { required: g.agent_llm_required },
       tool_access: {
         allowed_packages: g.agent_allowed_packages
           .split(",").map((s) => s.trim()).filter(Boolean),
@@ -104,6 +105,9 @@ export function buildManifestFromGuided(g: GuidedState, publisherSlug: string): 
       isolation: g.agent_isolation,
       state: { persistence: g.agent_persistence },
     };
+    if (g.agent_tier) agentBlock.tier = g.agent_tier;
+    if (g.agent_system_prompt.trim()) agentBlock.system_prompt = g.agent_system_prompt;
+    manifest.agent = agentBlock;
   }
 
   // Upgrade metadata
@@ -219,6 +223,10 @@ export function parseManifestToGuided(json: Record<string, unknown>): GuidedStat
   if (agentSection) {
     if (typeof agentSection.entrypoint === "string") g.agent_entrypoint = agentSection.entrypoint;
     if (typeof agentSection.goal === "string") g.agent_goal = agentSection.goal;
+    if (typeof agentSection.system_prompt === "string") g.agent_system_prompt = agentSection.system_prompt;
+    if (typeof agentSection.tier === "string") g.agent_tier = agentSection.tier;
+    const llmBlock = agentSection.llm as Record<string, unknown> | undefined;
+    if (llmBlock && typeof llmBlock.required === "boolean") g.agent_llm_required = llmBlock.required;
     const toolAccess = agentSection.tool_access as Record<string, unknown> | undefined;
     if (toolAccess && Array.isArray(toolAccess.allowed_packages)) {
       g.agent_allowed_packages = toolAccess.allowed_packages.join(", ");

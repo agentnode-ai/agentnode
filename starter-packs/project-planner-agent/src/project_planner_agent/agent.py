@@ -1,6 +1,6 @@
-"""project_planner_agent — AgentNode agent v2
+"""project_planner_agent — AgentNode agent v3
 
-Project Planner Agent: Break down a project goal into user stories, tasks, and milestones.
+Project Planner Agent: Break down project goals into user stories, tasks, and milestones, using LLM reasoning.
 """
 from __future__ import annotations
 
@@ -10,54 +10,42 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def _call(ctx, slug, tool_name=None, **kw):
-    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
-    r = ctx.run_tool(slug, tool_name, **kw)
-    if r.success:
-        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
-    return False, {"error": r.error or "unknown"}
-
-
 def run(context: Any, **kwargs: Any) -> dict:
-    """Agent entrypoint — AgentContext contract v1.
+    """Agent entrypoint — LLM-only agent (tier: llm_only).
+
+    Uses context.call_llm_text() for LLM reasoning.
+    System prompt is injected automatically from the manifest.
 
     Args:
-        context: AgentContext with goal, run_tool(), next_iteration().
+        context: AgentContext with goal and LLM/tool access.
         **kwargs: Additional parameters from the caller.
 
     Returns:
         Structured result dict.
     """
     project = kwargs.get("project", "") or context.goal
+    methodology = kwargs.get("methodology", "agile")
+    team_size = kwargs.get("team_size", "")
 
-    # Step 1: Summarize the project scope
-    context.next_iteration()
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
-                        text=project, max_sentences=5)
-    scope = summary.get("summary", project[:500]) if ok else project[:500]
+    prompt = (
+        f"Create a project plan for: {project}\n\n"
+        f"Methodology: {methodology}\n"
+    )
+    if team_size:
+        prompt += f"Team size: {team_size}\n"
+    prompt += (
+        "\nInclude:\n"
+        "1. Scope definition\n"
+        "2. User stories\n"
+        "3. Task breakdown with effort estimates\n"
+        "4. Milestones and timeline\n"
+        "5. Risk assessment\n"
+        "6. Definition of Done\n\n"
+        "Format as a structured markdown document."
+    )
 
-    # Step 2: Generate user stories via copywriting framework
-    context.next_iteration()
-    ok, stories = _call(context, "copywriting-pack", "tone_adjustment",
-                        product=f"User stories for: {scope}",
-                        audience="development team",
-                        framework="aida", tone="technical")
-    user_stories = stories.get("copy", stories.get("output", "")) if ok else ""
+    plan = context.call_llm_text([
+        {"role": "user", "content": prompt}
+    ])
 
-    # Step 3: Structure the plan
-    context.next_iteration()
-    plan_text = f"Project: {project}\nScope: {scope}\nStories: {user_stories}"
-    ok, plan_summary = _call(context, "document-summarizer-pack", "document_summary",
-                             text=plan_text, max_sentences=8)
-
-    # Build structured plan
-    plan = f"# Project Plan\n\n## Scope\n{scope}\n\n"
-    if user_stories:
-        plan += f"## User Stories\n{user_stories}\n\n"
-    plan += "## Milestones\n"
-    plan += "1. Planning & Setup\n2. Core Implementation\n3. Testing & QA\n4. Deployment\n"
-
-    return {"plan": plan, "scope": scope,
-            "user_stories": user_stories,
-            "summary": plan_summary.get("summary", "") if ok else "",
-            "done": True}
+    return {"plan": plan, "project": project, "done": True}

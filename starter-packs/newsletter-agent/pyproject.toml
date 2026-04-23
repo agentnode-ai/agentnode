@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "newsletter-agent"
-version = "2.0.0"
-description = "Curate top stories on a topic, summarize them, and draft a newsletter email."
+version = "3.0.0"
+description = "Draft engaging newsletter emails on any topic, using LLM reasoning."
 requires-python = ">=3.10"
 dependencies = []
 

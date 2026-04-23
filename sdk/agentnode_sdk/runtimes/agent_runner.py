@@ -14,6 +14,13 @@ v0.4 additions:
 - Structured RunLog (JSONL) for observability
 - Process-based isolation with configurable fallback to threads
 - Conditional orchestration steps (when expressions)
+
+v0.5 additions:
+- LLM binding: AgentContext.llm for agent packages that use LLM reasoning
+- call_llm() / call_llm_text() — structured LLM interface for agents
+- allowed_tool_context() — policy-filtered tool context for LLM tool calls
+- system_prompt injection from manifest
+- Agent tiers: llm_only, llm_plus_tools, llm_plus_credentials
 """
 from __future__ import annotations
 
@@ -23,6 +30,7 @@ import multiprocessing
 import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any
 
 from agentnode_sdk.models import RunToolResult
@@ -44,6 +52,41 @@ class AgentLimitExceeded(RuntimeError):
 class AgentTerminated(RuntimeError):
     """Raised when an agent is stopped by a termination condition."""
     pass
+
+
+# ---------------------------------------------------------------------------
+# LLM result types
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LLMResult:
+    """Structured result from an LLM call.
+
+    Returned by ``AgentContext.call_llm()``.
+    """
+
+    content: str
+    tool_calls: list[dict] | None = None
+    usage: dict | None = None
+    model: str | None = None
+    finish_reason: str | None = None
+
+
+@dataclass
+class ToolContext:
+    """Policy-filtered tool context for LLM tool calls.
+
+    Contains the list of packages the agent is allowed to use,
+    formatted for passing to an LLM as available tools.
+    Empty when tier is ``llm_only`` (allowed_packages=[]).
+    """
+
+    allowed_packages: list[str] = field(default_factory=list)
+    tool_specs: list[dict] = field(default_factory=list)
+
+    @property
+    def has_tools(self) -> bool:
+        return len(self.tool_specs) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -69,27 +112,33 @@ class AgentContext:
         self,
         *,
         goal: str,
-        allowed_packages: list[str],
+        allowed_packages: list[str] | None,
         max_tool_calls: int,
         max_iterations: int,
         stop_on_consecutive_errors: int,
         _agent_slug: str,
         _run_id: str | None = None,
         _run_log: RunLog | None = None,
+        llm: Any | None = None,
+        system_prompt: str | None = None,
     ) -> None:
         self._goal = goal
-        self._allowed_packages = list(allowed_packages)
+        # None = unrestricted tool access; [] = no tool access (llm_only)
+        self._allowed_packages = list(allowed_packages) if allowed_packages is not None else None
         self._max_tool_calls = max_tool_calls
         self._max_iterations = max_iterations
         self._stop_on_consecutive_errors = stop_on_consecutive_errors
         self._agent_slug = _agent_slug
         self._run_id = _run_id
         self._run_log = _run_log
+        self._llm = llm
+        self._system_prompt = system_prompt
 
         # Mutable tracking state
         self._tool_calls_made = 0
         self._consecutive_errors = 0
         self._iteration = 0
+        self._llm_calls_made = 0
 
     # --- Public properties ---
 
@@ -98,8 +147,8 @@ class AgentContext:
         return self._goal
 
     @property
-    def allowed_packages(self) -> list[str]:
-        return list(self._allowed_packages)
+    def allowed_packages(self) -> list[str] | None:
+        return list(self._allowed_packages) if self._allowed_packages is not None else None
 
     @property
     def tool_calls_made(self) -> int:
@@ -125,6 +174,364 @@ class AgentContext:
     def run_id(self) -> str | None:
         return self._run_id
 
+    @property
+    def llm(self) -> Any | None:
+        return self._llm
+
+    @property
+    def system_prompt(self) -> str | None:
+        return self._system_prompt
+
+    @property
+    def llm_calls_made(self) -> int:
+        return self._llm_calls_made
+
+    # --- LLM access ---
+
+    def call_llm(
+        self,
+        messages: list[dict],
+        *,
+        tool_context: ToolContext | None = None,
+    ) -> LLMResult:
+        """Call the bound LLM with messages and optional tool context.
+
+        System prompt from manifest is automatically prepended.
+        The LLM must be bound via the constructor (passed by run_agent).
+
+        Args:
+            messages: Chat messages in [{role, content}] format.
+            tool_context: Optional tool context from allowed_tool_context().
+
+        Returns:
+            LLMResult with content, tool_calls, usage, model, finish_reason.
+
+        Raises:
+            RuntimeError: If no LLM is bound to this context.
+        """
+        if self._llm is None:
+            raise RuntimeError(
+                f"Agent '{self._agent_slug}' requires an LLM but none is bound. "
+                "Ensure the runtime provides an LLM when starting this agent."
+            )
+
+        # Prepend system prompt if present
+        effective_messages = list(messages)
+        if self._system_prompt:
+            # Check if there's already a system message
+            has_system = any(m.get("role") == "system" for m in effective_messages)
+            if not has_system:
+                effective_messages.insert(
+                    0, {"role": "system", "content": self._system_prompt}
+                )
+
+        t0 = time.monotonic()
+        try:
+            result = self._dispatch_llm_call(effective_messages, tool_context)
+        except Exception as exc:
+            duration_ms = (time.monotonic() - t0) * 1000
+            if self._run_log:
+                self._run_log.llm_call(
+                    duration_ms=duration_ms,
+                    error=str(exc),
+                )
+            raise
+
+        duration_ms = (time.monotonic() - t0) * 1000
+        self._llm_calls_made += 1
+
+        # Log the LLM call
+        if self._run_log:
+            self._run_log.llm_call(
+                model=result.model,
+                duration_ms=duration_ms,
+                usage=result.usage,
+                finish_reason=result.finish_reason,
+                tool_calls_count=len(result.tool_calls) if result.tool_calls else 0,
+            )
+
+        return result
+
+    def call_llm_text(
+        self,
+        messages: list[dict],
+        **kwargs: Any,
+    ) -> str:
+        """Convenience: call_llm() but return only content string."""
+        return self.call_llm(messages, **kwargs).content
+
+    def _dispatch_llm_call(
+        self,
+        messages: list[dict],
+        tool_context: ToolContext | None,
+    ) -> LLMResult:
+        """Dispatch LLM call to the appropriate provider.
+
+        The LLM object is expected to be one of:
+        - An OpenAI-compatible client (has chat.completions.create)
+        - An Anthropic client (has messages.create)
+        - A callable (duck-typing: called with messages, returns LLMResult)
+        - A dict with {client, provider, model} for explicit provider routing
+        """
+        llm = self._llm
+
+        # Dict-style LLM binding: {client, provider, model}
+        if isinstance(llm, dict):
+            if "client" not in llm:
+                raise RuntimeError(
+                    "Dict-style LLM binding must include a 'client' key. "
+                    "Expected: {client: <api_client>, provider: 'openai'|'anthropic', model: '...'}"
+                )
+            return self._call_llm_via_provider(
+                client=llm["client"],
+                provider=llm.get("provider", "openai"),
+                model=llm.get("model", ""),
+                messages=messages,
+                tool_context=tool_context,
+            )
+
+        # Callable LLM (e.g. mock, custom wrapper)
+        if callable(llm):
+            raw = llm(messages, tool_context=tool_context)
+            if isinstance(raw, LLMResult):
+                return raw
+            if isinstance(raw, str):
+                return LLMResult(content=raw)
+            if isinstance(raw, dict):
+                return LLMResult(
+                    content=raw.get("content", ""),
+                    tool_calls=raw.get("tool_calls"),
+                    usage=raw.get("usage"),
+                    model=raw.get("model"),
+                    finish_reason=raw.get("finish_reason"),
+                )
+            return LLMResult(content=str(raw))
+
+        # OpenAI-compatible client (has chat.completions.create)
+        if hasattr(llm, "chat") and hasattr(llm.chat, "completions"):
+            return self._call_llm_via_provider(
+                client=llm,
+                provider="openai",
+                model="",
+                messages=messages,
+                tool_context=tool_context,
+            )
+
+        # Anthropic client (has messages.create)
+        if hasattr(llm, "messages") and hasattr(llm.messages, "create"):
+            return self._call_llm_via_provider(
+                client=llm,
+                provider="anthropic",
+                model="",
+                messages=messages,
+                tool_context=tool_context,
+            )
+
+        raise RuntimeError(
+            f"Cannot use LLM of type {type(llm).__name__}. "
+            "Provide a dict with {client, provider, model}, "
+            "an OpenAI/Anthropic client, or a callable."
+        )
+
+    def _call_llm_via_provider(
+        self,
+        *,
+        client: Any,
+        provider: str,
+        model: str,
+        messages: list[dict],
+        tool_context: ToolContext | None,
+    ) -> LLMResult:
+        """Call LLM through a known provider SDK."""
+        if not model:
+            try:
+                from agentnode_sdk.compatibility import recommend_model
+                rec = recommend_model(provider)
+                if rec:
+                    model = rec
+            except Exception:
+                pass
+
+        if provider == "openai":
+            return self._call_openai(client, model, messages, tool_context)
+        elif provider == "anthropic":
+            return self._call_anthropic(client, model, messages, tool_context)
+        else:
+            raise RuntimeError(f"Unsupported provider for call_llm: {provider}")
+
+    def _call_openai(
+        self,
+        client: Any,
+        model: str,
+        messages: list[dict],
+        tool_context: ToolContext | None,
+    ) -> LLMResult:
+        """OpenAI-compatible single LLM call (no tool loop)."""
+        create_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+        }
+        if tool_context and tool_context.has_tools:
+            create_kwargs["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": ts["name"],
+                        "description": ts.get("description", ""),
+                        "parameters": ts.get("input_schema", {}),
+                    },
+                }
+                for ts in tool_context.tool_specs
+            ]
+            create_kwargs["parallel_tool_calls"] = False
+
+        response = client.chat.completions.create(**create_kwargs)
+        choice = response.choices[0] if response.choices else None
+        if not choice or not choice.message:
+            return LLMResult(content="")
+
+        msg = choice.message
+        tool_calls = None
+        if msg.tool_calls:
+            tool_calls = [
+                {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                }
+                for tc in msg.tool_calls
+            ]
+
+        usage = None
+        if hasattr(response, "usage") and response.usage:
+            usage = {
+                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(response.usage, "completion_tokens", 0),
+            }
+
+        return LLMResult(
+            content=msg.content or "",
+            tool_calls=tool_calls,
+            usage=usage,
+            model=getattr(response, "model", model),
+            finish_reason=getattr(choice, "finish_reason", None),
+        )
+
+    def _call_anthropic(
+        self,
+        client: Any,
+        model: str,
+        messages: list[dict],
+        tool_context: ToolContext | None,
+    ) -> LLMResult:
+        """Anthropic single LLM call (no tool loop)."""
+        # Extract system from messages (Anthropic uses separate param)
+        system = None
+        filtered: list[dict] = []
+        for m in messages:
+            if m.get("role") == "system":
+                system = m.get("content", "")
+            else:
+                filtered.append(m)
+
+        create_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": filtered,
+            "max_tokens": 4096,
+        }
+        if system:
+            create_kwargs["system"] = system
+        if tool_context and tool_context.has_tools:
+            create_kwargs["tools"] = [
+                {
+                    "name": ts["name"],
+                    "description": ts.get("description", ""),
+                    "input_schema": ts.get("input_schema", {}),
+                }
+                for ts in tool_context.tool_specs
+            ]
+
+        response = client.messages.create(**create_kwargs)
+
+        # Extract content text
+        content_parts = []
+        tool_calls = None
+        for block in response.content:
+            if hasattr(block, "type"):
+                if block.type == "text":
+                    content_parts.append(block.text)
+                elif block.type == "tool_use":
+                    if tool_calls is None:
+                        tool_calls = []
+                    tool_calls.append({
+                        "name": block.name,
+                        "arguments": block.input,
+                    })
+
+        usage = None
+        if hasattr(response, "usage") and response.usage:
+            usage = {
+                "prompt_tokens": getattr(response.usage, "input_tokens", 0),
+                "completion_tokens": getattr(response.usage, "output_tokens", 0),
+            }
+
+        return LLMResult(
+            content="\n".join(content_parts),
+            tool_calls=tool_calls,
+            usage=usage,
+            model=getattr(response, "model", model),
+            finish_reason=getattr(response, "stop_reason", None),
+        )
+
+    # --- Tool context ---
+
+    def allowed_tool_context(self) -> ToolContext:
+        """Return a policy-filtered tool context for LLM tool calls.
+
+        Builds tool specs from allowed packages in the lockfile.
+        Returns an empty ToolContext when no packages are allowed (llm_only)
+        or when allowed_packages is None (unrestricted — loads all installed).
+        Always returns a ToolContext object, never None.
+        """
+        if self._allowed_packages is not None and len(self._allowed_packages) == 0:
+            return ToolContext()
+
+        # Load tool specs from lockfile for allowed packages
+        tool_specs: list[dict] = []
+        # None = unrestricted, iterate all installed; list = only those slugs
+        slugs_to_check = self._allowed_packages
+        try:
+            from agentnode_sdk.installer import read_lockfile
+            lockfile = read_lockfile()
+            packages = lockfile.get("packages", {})
+
+            if slugs_to_check is None:
+                slugs_to_check = list(packages.keys())
+
+            for slug in slugs_to_check:
+                pkg_info = packages.get(slug)
+                if not pkg_info:
+                    continue
+                # Check trust level
+                trust = pkg_info.get("trust_level", "unverified")
+                if not _trust_meets_minimum(trust, "verified"):
+                    continue
+                for tool in pkg_info.get("tools", []):
+                    tool_specs.append({
+                        "name": f"{slug}:{tool.get('name', '')}",
+                        "description": tool.get("description", ""),
+                        "input_schema": tool.get("input_schema", {}),
+                    })
+        except Exception:
+            logger.debug(
+                "Failed to load tool specs for allowed_tool_context",
+                exc_info=True,
+            )
+
+        return ToolContext(
+            allowed_packages=list(slugs_to_check) if slugs_to_check else [],
+            tool_specs=tool_specs,
+        )
+
     # --- Tool access (S4: strict allowlist) ---
 
     def run_tool(
@@ -149,7 +556,9 @@ class AgentContext:
             AgentTerminated: If consecutive error limit is exceeded.
         """
         # S4: Strict allowlist — no free tool search
-        if self._allowed_packages and slug not in self._allowed_packages:
+        # Empty list means "no tool access" (e.g. llm_only tier),
+        # not "unrestricted". Use None or omit for unrestricted.
+        if self._allowed_packages is not None and slug not in self._allowed_packages:
             raise PermissionError(
                 f"Agent '{self._agent_slug}' is not allowed to use package "
                 f"'{slug}'. Allowed: {self._allowed_packages}"
@@ -224,6 +633,7 @@ def run_agent(
     entry: dict,
     goal: str | None = None,
     timeout: float | None = None,
+    llm: Any | None = None,
     **kwargs: Any,
 ) -> RunToolResult:
     """Execute an agent package.
@@ -285,7 +695,9 @@ def run_agent(
     effective_timeout = timeout if timeout is not None else max_runtime_seconds
 
     tool_access = agent_config.get("tool_access") or {}
-    allowed_packages = tool_access.get("allowed_packages", [])
+    # None = unrestricted (no tool_access section or no allowed_packages key)
+    # []   = no tool access (explicit empty list, e.g. llm_only tier)
+    allowed_packages = tool_access.get("allowed_packages")
 
     termination = agent_config.get("termination") or {}
     stop_on_consecutive_errors = termination.get("stop_on_consecutive_errors", 3)
@@ -308,6 +720,7 @@ def run_agent(
         )
 
     # --- 6. Build AgentContext ---
+    system_prompt = agent_config.get("system_prompt")
     context = AgentContext(
         goal=effective_goal,
         allowed_packages=allowed_packages,
@@ -317,6 +730,8 @@ def run_agent(
         _agent_slug=slug,
         _run_id=run_id,
         _run_log=run_log,
+        llm=llm,
+        system_prompt=system_prompt,
     )
 
     # --- 7. Load entrypoint ---
@@ -337,18 +752,21 @@ def run_agent(
     # --- 8. Execute ---
     isolation = agent_config.get("isolation", "thread")
 
+    tier = agent_config.get("tier", "")
     run_log.run_start(
         slug, effective_goal,
         max_tool_calls=max_tool_calls,
         max_iterations=max_iterations,
         timeout=effective_timeout,
         isolation=isolation,
+        tier=tier,
+        has_llm=llm is not None,
     )
 
     logger.info(
-        "agent_run: slug=%s run_id=%s goal=%r timeout=%.1fs max_tools=%d max_iter=%d isolation=%s",
+        "agent_run: slug=%s run_id=%s goal=%r timeout=%.1fs max_tools=%d max_iter=%d isolation=%s tier=%s has_llm=%s",
         slug, run_id, effective_goal[:80], effective_timeout,
-        max_tool_calls, max_iterations, isolation,
+        max_tool_calls, max_iterations, isolation, tier, llm is not None,
     )
 
     run_result: RunToolResult
@@ -670,7 +1088,7 @@ def _run_sequential(
         )
 
     tool_access = agent_config.get("tool_access") or {}
-    allowed_packages = tool_access.get("allowed_packages", [])
+    allowed_packages = tool_access.get("allowed_packages")
 
     if run_log:
         run_log.run_start(slug, agent_config.get("goal", ""), mode="sequential", steps=len(steps))
@@ -739,8 +1157,8 @@ def _run_sequential(
         # Parse tool reference: "slug:tool_name" or "slug"
         tool_slug, tool_name = _parse_tool_reference(tool_ref)
 
-        # Allowlist check (S4)
-        if allowed_packages and tool_slug not in allowed_packages:
+        # Allowlist check (S4) — empty list = no access, not unrestricted
+        if allowed_packages is not None and tool_slug not in allowed_packages:
             _audit_agent_run(
                 slug, success=False,
                 reason=f"step '{step_name}': '{tool_slug}' not in allowlist",

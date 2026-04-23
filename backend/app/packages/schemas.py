@@ -86,6 +86,8 @@ class AgentConfigBlock(BaseModel):
     max_tool_calls: int | None = None
     max_runtime_seconds: int | None = None
     isolation: str | None = None
+    system_prompt: str | None = None
+    tier: str | None = None  # llm_only | llm_plus_tools | llm_plus_credentials
 
 
 class RecommendedForBlock(BaseModel):

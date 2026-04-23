@@ -389,61 +389,48 @@ AGENTS = [
     {
         "slug": "blog-writer-agent",
         "name": "Blog Writer Agent",
-        "summary": "Research a topic and write an SEO-optimized blog post with structure and keywords.",
-        "goal": "Write a blog post by researching the topic, analyzing competitors, and generating content.",
+        "summary": "Write SEO-optimized blog posts with compelling structure, using LLM reasoning.",
+        "goal": "Write SEO-optimized blog posts",
         "tags": ["agent", "content", "blog", "seo", "writing"],
         "category": "content",
-        "permissions": {"network": "unrestricted", "filesystem": "workspace_write"},
+        "tier": "llm_only",
+        "permissions": {"network": "none", "filesystem": "none"},
+        "system_prompt": """\
+You are an expert blog writer and content strategist.
+Create engaging, well-structured blog posts with:
+- Compelling headline
+- Hook introduction that draws readers in
+- Clear H2/H3 structure for scanability
+- Actionable takeaways backed by reasoning
+- Conclusion with call-to-action
+- SEO considerations: natural keyword usage, meta description suggestion
+
+Write in a professional but approachable tone. Use concrete examples.
+Format output as markdown.""",
         "run_code": """\
     topic = kwargs.get("topic", "") or context.goal
     audience = kwargs.get("audience", "general readers")
+    tone = kwargs.get("tone", "professional but approachable")
 
-    # Step 1: Research the topic
-    context.next_iteration()
-    ok, search = _call(context, "web-search-pack", "search_web",
-                       query=topic, max_results=8)
-    hits = search.get("results", []) if ok else []
+    prompt = (
+        f"Write a comprehensive blog post about: {topic}\\n\\n"
+        f"Target audience: {audience}\\n"
+        f"Tone: {tone}\\n\\n"
+        "Include:\\n"
+        "1. A compelling headline\\n"
+        "2. An engaging introduction\\n"
+        "3. 3-5 main sections with H2 headers\\n"
+        "4. Actionable takeaways\\n"
+        "5. A conclusion with call-to-action\\n"
+        "6. A suggested meta description (1 sentence)\\n\\n"
+        "Format as markdown."
+    )
 
-    # Step 2: Extract top articles for reference
-    reference_texts = []
-    sources = []
-    for item in hits[:3]:
-        url = item.get("url", "")
-        if not url:
-            continue
-        context.next_iteration()
-        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
-        if ok and page.get("text"):
-            reference_texts.append(page["text"][:2000])
-            sources.append({"title": item.get("title", ""), "url": url})
+    article = context.call_llm_text([
+        {"role": "user", "content": prompt}
+    ])
 
-    # Step 3: Summarize reference material
-    context.next_iteration()
-    combined = "\\n\\n".join(reference_texts) if reference_texts else topic
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
-                        text=combined, max_sentences=8)
-    key_points = summary.get("summary", combined[:500]) if ok else combined[:500]
-
-    # Step 4: Generate blog copy
-    context.next_iteration()
-    ok, copy = _call(context, "copywriting-pack", "tone_adjustment",
-                     product=f"Blog post about: {topic}",
-                     audience=audience, framework="aida", tone="informative")
-    blog_body = copy.get("copy", copy.get("output", "")) if ok else ""
-
-    # Assemble the blog post
-    blog_post = f"# {topic}\\n\\n"
-    if blog_body:
-        blog_post += blog_body + "\\n\\n"
-    blog_post += f"## Key Points\\n\\n{key_points}\\n\\n"
-    if sources:
-        blog_post += "## Sources\\n\\n"
-        for s in sources:
-            blog_post += f"- [{s['title']}]({s['url']})\\n"
-
-    return {"article": blog_post, "title": topic,
-            "key_points": key_points, "sources": sources,
-            "done": True}
+    return {"article": article, "title": topic, "done": True}
 """,
     },
     {
@@ -504,143 +491,151 @@ AGENTS = [
     {
         "slug": "newsletter-agent",
         "name": "Newsletter Agent",
-        "summary": "Curate top stories on a topic, summarize them, and draft a newsletter email.",
-        "goal": "Create a newsletter by aggregating stories, summarizing articles, and drafting an email.",
+        "summary": "Draft engaging newsletter emails on any topic, using LLM reasoning.",
+        "goal": "Create engaging newsletter content",
         "tags": ["agent", "newsletter", "email", "content", "curation"],
         "category": "content",
-        "permissions": {"network": "unrestricted", "filesystem": "none"},
+        "tier": "llm_only",
+        "permissions": {"network": "none", "filesystem": "none"},
+        "system_prompt": """\
+You are a newsletter editor and content curator.
+Create engaging, scannable newsletter emails that:
+- Open with a compelling hook or key insight
+- Present 3-5 story sections with clear headlines
+- Keep each section concise (2-3 sentences)
+- Use a conversational, informed tone
+- End with a call-to-action or teaser for next issue
+- Include suggested subject line
+
+Write content based on your knowledge. Be specific and informative.
+Format the newsletter as a professional email.""",
         "run_code": """\
     topic = kwargs.get("topic", "") or context.goal
     sender_name = kwargs.get("sender_name", "Newsletter Bot")
+    audience = kwargs.get("audience", "subscribers")
 
-    # Step 1: Find top stories
-    context.next_iteration()
-    ok, search = _call(context, "web-search-pack", "search_web",
-                       query=f"{topic} latest news highlights", max_results=8)
-    hits = search.get("results", []) if ok else []
-
-    # Step 2: Summarize each story
-    stories = []
-    for item in hits[:5]:
-        url = item.get("url", "")
-        title = item.get("title", "")
-        if not url:
-            continue
-        context.next_iteration()
-        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
-        text = page.get("text", "") if ok else ""
-
-        summary_text = item.get("snippet", "")
-        if text:
-            ok, summary = _call(context, "document-summarizer-pack", "document_summary",
-                                text=text[:2000], max_sentences=2)
-            summary_text = summary.get("summary", text[:150]) if ok else text[:150]
-
-        stories.append({"title": title, "url": url, "summary": summary_text})
-
-    # Step 3: Draft the newsletter email
-    context.next_iteration()
-    stories_text = "\\n".join(
-        f"- {s['title']}: {s['summary']}" for s in stories
+    prompt = (
+        f"Write a newsletter email about: {topic}\\n\\n"
+        f"Sender name: {sender_name}\\n"
+        f"Target audience: {audience}\\n\\n"
+        "Include:\\n"
+        "1. A catchy subject line\\n"
+        "2. An opening hook\\n"
+        "3. 3-5 story sections with headlines and brief descriptions\\n"
+        "4. A closing with call-to-action\\n\\n"
+        "Write based on your knowledge of the topic. Be specific and current."
     )
-    intent = f"Weekly newsletter about {topic}. Stories:\\n{stories_text}"
 
-    ok, email = _call(context, "email-drafter-pack", "email_drafting",
-                      intent=intent, tone="friendly", sender_name=sender_name)
-    email_body = email.get("email", email.get("output", "")) if ok else ""
+    newsletter = context.call_llm_text([
+        {"role": "user", "content": prompt}
+    ])
 
-    return {"newsletter": email_body, "stories": stories,
-            "topic": topic, "story_count": len(stories), "done": True}
+    return {"newsletter": newsletter, "topic": topic, "done": True}
 """,
     },
     {
         "slug": "social-media-agent",
         "name": "Social Media Agent",
-        "summary": "Create platform-optimized social media posts with copy, hashtags, and suggestions.",
-        "goal": "Generate social media content by researching trending angles and writing platform-specific copy.",
+        "summary": "Create platform-optimized social media posts with copy and hashtags, using LLM reasoning.",
+        "goal": "Generate platform-specific social media content",
         "tags": ["agent", "social-media", "content", "marketing"],
         "category": "content",
-        "permissions": {"network": "unrestricted", "filesystem": "none"},
+        "tier": "llm_only",
+        "permissions": {"network": "none", "filesystem": "none"},
+        "system_prompt": """\
+You are a social media content strategist and copywriter.
+Create platform-optimized posts that:
+- Match each platform's tone and constraints
+- Twitter/X: witty, concise, max 280 chars, relevant hashtags
+- LinkedIn: professional, insightful, thought-leadership angle
+- Instagram: visual-friendly caption, casual tone, hashtag groups
+- Include engagement hooks (questions, CTAs)
+- Focus on value and shareability
+
+Respond with a JSON object containing posts for each platform.""",
         "run_code": """\
+    import json as _json
+
     topic = kwargs.get("topic", "") or context.goal
-    url = kwargs.get("url", "")
+    platforms = kwargs.get("platforms", "twitter,linkedin,instagram")
 
-    # Step 1: Research or extract content
-    context.next_iteration()
-    source_text = ""
-    if url:
-        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
-        source_text = page.get("text", "")[:2000] if ok else ""
-    else:
-        ok, search = _call(context, "web-search-pack", "search_web",
-                           query=f"{topic} trending", max_results=5)
-        if ok:
-            snippets = [r.get("snippet", "") for r in search.get("results", [])]
-            source_text = " ".join(snippets)[:2000]
+    prompt = (
+        f"Create social media posts about: {topic}\\n\\n"
+        f"Platforms: {platforms}\\n\\n"
+        "For each platform, write an optimized post.\\n"
+        "Respond with a JSON object like:\\n"
+        '{\\n'
+        '  "key_message": "one-sentence summary",\\n'
+        '  "posts": {\\n'
+        '    "twitter": "tweet text with #hashtags",\\n'
+        '    "linkedin": "professional post...",\\n'
+        '    "instagram": "caption with #hashtags"\\n'
+        '  }\\n'
+        '}\\n'
+        "Only output the JSON, no other text."
+    )
 
-    # Step 2: Summarize source material
-    context.next_iteration()
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
-                        text=source_text or topic, max_sentences=3)
-    key_message = summary.get("summary", source_text[:200]) if ok else source_text[:200]
+    raw = context.call_llm_text([
+        {"role": "user", "content": prompt}
+    ])
 
-    # Step 3: Generate copy for each platform
-    posts = {}
-    for platform, tone, max_len in [
-        ("twitter", "witty", 280),
-        ("linkedin", "professional", 600),
-        ("instagram", "casual", 400),
-    ]:
-        context.next_iteration()
-        ok, copy = _call(context, "copywriting-pack", "tone_adjustment",
-                         product=f"{platform} post about: {key_message[:100]}",
-                         audience=f"{platform} users", tone=tone)
-        text = copy.get("copy", copy.get("output", key_message)) if ok else key_message
-        posts[platform] = text[:max_len] if isinstance(text, str) else str(text)[:max_len]
+    # Parse JSON response, fall back to raw text
+    try:
+        data = _json.loads(raw)
+        posts = data.get("posts", {})
+        key_message = data.get("key_message", topic)
+    except (_json.JSONDecodeError, TypeError):
+        posts = {"raw": raw}
+        key_message = topic
 
-    return {"posts": posts, "key_message": key_message, "topic": topic, "done": True}
+    return {"posts": posts, "key_message": key_message,
+            "topic": topic, "done": True}
 """,
     },
     {
         "slug": "report-generator-agent",
         "name": "Report Generator Agent",
-        "summary": "Transform raw data (CSV, JSON) into a formatted report with statistics and summary.",
-        "goal": "Generate a business report from raw data by analyzing datasets and writing an executive summary.",
-        "tags": ["agent", "report", "data", "visualization", "analytics"],
+        "summary": "Generate structured business reports with executive summary from provided data, using LLM reasoning.",
+        "goal": "Generate structured business reports",
+        "tags": ["agent", "report", "data", "analytics", "business"],
         "category": "content",
-        "permissions": {"network": "none", "filesystem": "workspace_read"},
+        "tier": "llm_only",
+        "permissions": {"network": "none", "filesystem": "none"},
+        "system_prompt": """\
+You are a business analyst and report writer.
+Generate clear, structured reports that include:
+- Executive summary (2-3 key takeaways)
+- Data analysis and insights
+- Key metrics and trends
+- Recommendations
+- Conclusion
+
+Use professional business language. Support claims with reasoning.
+Structure reports with clear headers and bullet points.
+Format as markdown.""",
         "run_code": """\
-    file_path = kwargs.get("file_path", "") or context.goal
+    data = kwargs.get("data", "") or kwargs.get("text", "") or context.goal
+    report_type = kwargs.get("report_type", "business analysis")
+    audience = kwargs.get("audience", "stakeholders")
 
-    # Step 1: Get dataset description
-    context.next_iteration()
-    ok, desc = _call(context, "csv-analyzer-pack", "describe_csv", file_path=file_path)
-    statistics = desc if ok else {}
+    prompt = (
+        f"Generate a {report_type} report based on the following information:\\n\\n"
+        f"{data}\\n\\n"
+        f"Target audience: {audience}\\n\\n"
+        "Include:\\n"
+        "1. Executive summary with key takeaways\\n"
+        "2. Detailed analysis\\n"
+        "3. Key findings and insights\\n"
+        "4. Recommendations\\n"
+        "5. Conclusion\\n\\n"
+        "Format as a professional markdown report."
+    )
 
-    # Step 2: Get column information
-    context.next_iteration()
-    ok, cols = _call(context, "csv-analyzer-pack", "columns_csv", file_path=file_path)
-    column_info = cols if ok else {}
+    report = context.call_llm_text([
+        {"role": "user", "content": prompt}
+    ])
 
-    # Step 3: Get sample data
-    context.next_iteration()
-    ok, head = _call(context, "csv-analyzer-pack", "head_csv", file_path=file_path, n=5)
-    sample_data = head if ok else {}
-
-    # Step 4: Generate executive summary
-    context.next_iteration()
-    report_text = f"Dataset: {file_path}\\n"
-    if statistics:
-        report_text += f"Statistics: {statistics}\\n"
-    if column_info:
-        report_text += f"Columns: {column_info}\\n"
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
-                        text=report_text, max_sentences=5)
-    exec_summary = summary.get("summary", report_text[:500]) if ok else report_text[:500]
-
-    return {"executive_summary": exec_summary, "statistics": statistics,
-            "column_info": column_info, "sample_data": sample_data,
-            "file": file_path, "done": True}
+    return {"report": report, "report_type": report_type, "done": True}
 """,
     },
 
@@ -1262,45 +1257,51 @@ AGENTS = [
     {
         "slug": "project-planner-agent",
         "name": "Project Planner Agent",
-        "summary": "Break down a project goal into user stories, tasks, and milestones.",
-        "goal": "Plan a project by decomposing into user stories, tasks, and milestones.",
+        "summary": "Break down project goals into user stories, tasks, and milestones, using LLM reasoning.",
+        "goal": "Plan projects with structured breakdown",
         "tags": ["agent", "project", "planning", "agile", "productivity"],
         "category": "productivity",
-        "permissions": {"network": "none", "filesystem": "workspace_write"},
+        "tier": "llm_only",
+        "permissions": {"network": "none", "filesystem": "none"},
+        "system_prompt": """\
+You are a senior project manager and agile coach.
+Create detailed, actionable project plans that include:
+- Clear scope definition
+- User stories in "As a [role], I want [feature], so that [benefit]" format
+- Task breakdown with effort estimates (S/M/L)
+- Milestones with dependencies
+- Risk assessment
+- Definition of Done for each milestone
+
+Use agile methodology. Be specific and practical.
+Format as markdown.""",
         "run_code": """\
     project = kwargs.get("project", "") or context.goal
+    methodology = kwargs.get("methodology", "agile")
+    team_size = kwargs.get("team_size", "")
 
-    # Step 1: Summarize the project scope
-    context.next_iteration()
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
-                        text=project, max_sentences=5)
-    scope = summary.get("summary", project[:500]) if ok else project[:500]
+    prompt = (
+        f"Create a project plan for: {project}\\n\\n"
+        f"Methodology: {methodology}\\n"
+    )
+    if team_size:
+        prompt += f"Team size: {team_size}\\n"
+    prompt += (
+        "\\nInclude:\\n"
+        "1. Scope definition\\n"
+        "2. User stories\\n"
+        "3. Task breakdown with effort estimates\\n"
+        "4. Milestones and timeline\\n"
+        "5. Risk assessment\\n"
+        "6. Definition of Done\\n\\n"
+        "Format as a structured markdown document."
+    )
 
-    # Step 2: Generate user stories via copywriting framework
-    context.next_iteration()
-    ok, stories = _call(context, "copywriting-pack", "tone_adjustment",
-                        product=f"User stories for: {scope}",
-                        audience="development team",
-                        framework="aida", tone="technical")
-    user_stories = stories.get("copy", stories.get("output", "")) if ok else ""
+    plan = context.call_llm_text([
+        {"role": "user", "content": prompt}
+    ])
 
-    # Step 3: Structure the plan
-    context.next_iteration()
-    plan_text = f"Project: {project}\\nScope: {scope}\\nStories: {user_stories}"
-    ok, plan_summary = _call(context, "document-summarizer-pack", "document_summary",
-                             text=plan_text, max_sentences=8)
-
-    # Build structured plan
-    plan = f"# Project Plan\\n\\n## Scope\\n{scope}\\n\\n"
-    if user_stories:
-        plan += f"## User Stories\\n{user_stories}\\n\\n"
-    plan += "## Milestones\\n"
-    plan += "1. Planning & Setup\\n2. Core Implementation\\n3. Testing & QA\\n4. Deployment\\n"
-
-    return {"plan": plan, "scope": scope,
-            "user_stories": user_stories,
-            "summary": plan_summary.get("summary", "") if ok else "",
-            "done": True}
+    return {"plan": plan, "project": project, "done": True}
 """,
     },
     {
@@ -1635,8 +1636,12 @@ def _class_name(slug: str) -> str:
 
 def _generate_agent_code(agent: dict) -> str:
     mod = _module_name(agent["slug"])
+    tier = agent.get("tier", "")
+    is_llm_only = tier == "llm_only"
+    version = "v3" if is_llm_only else "v2"
+
     lines = []
-    lines.append(f'"""{mod} — AgentNode agent v2')
+    lines.append(f'"""{mod} — AgentNode agent {version}')
     lines.append(f'')
     lines.append(f'{agent["name"]}: {agent["summary"]}')
     lines.append(f'"""')
@@ -1648,13 +1653,25 @@ def _generate_agent_code(agent: dict) -> str:
     lines.append(f'logger = logging.getLogger(__name__)')
     lines.append(f'')
     lines.append(f'')
-    lines.append(_HELPER)
-    lines.append(f'')
+
+    # Only include _HELPER for tool-using agents
+    if not is_llm_only:
+        lines.append(_HELPER)
+        lines.append(f'')
+
     lines.append(f'def run(context: Any, **kwargs: Any) -> dict:')
-    lines.append(f'    """Agent entrypoint — AgentContext contract v1.')
+    if is_llm_only:
+        lines.append(f'    """Agent entrypoint — LLM-only agent (tier: llm_only).')
+        lines.append(f'')
+        lines.append(f'    Uses context.call_llm_text() for LLM reasoning.')
+        lines.append(f'    System prompt is injected automatically from the manifest.')
+    else:
+        lines.append(f'    """Agent entrypoint — AgentContext contract v1.')
+        lines.append(f'')
+        lines.append(f'    Uses context.run_tool() for tool access.')
     lines.append(f'')
     lines.append(f'    Args:')
-    lines.append(f'        context: AgentContext with goal, run_tool(), next_iteration().')
+    lines.append(f'        context: AgentContext with goal and LLM/tool access.')
     lines.append(f'        **kwargs: Additional parameters from the caller.')
     lines.append(f'')
     lines.append(f'    Returns:')
@@ -1672,19 +1689,79 @@ def _generate_manifest(agent: dict) -> str:
     code_exec = perms.get("code_execution", "none")
     tags_str = ", ".join(f'"{t}"' for t in agent["tags"])
 
+    tier = agent.get("tier", "")
+    is_llm_only = tier == "llm_only"
+    version = "3.0.0" if is_llm_only else "2.0.0"
+    system_prompt = agent.get("system_prompt", "")
+
+    if is_llm_only:
+        description_detail = (
+            "  LLM-only agent (tier: llm_only). Uses the user's LLM for reasoning.\n"
+            "  System prompt defines the agent's role and behavior.\n"
+            "  No external tools or data sources required."
+        )
+    else:
+        description_detail = (
+            "  Uses AgentContext contract v1: calls tools via context.run_tool()\n"
+            "  with real data flow between steps and structured output synthesis."
+        )
+
+    # Agent section
+    agent_section = f'''\
+agent:
+  entrypoint: "{mod}.agent:run"
+  goal: "{agent["goal"][:250]}"'''
+
+    if tier:
+        agent_section += f'\n  tier: "{tier}"'
+
+    if system_prompt:
+        # Indent the system prompt for YAML block scalar
+        sp_lines = system_prompt.strip().split("\n")
+        sp_indented = "\n    ".join(sp_lines)
+        agent_section += f'\n  system_prompt: |\n    {sp_indented}'
+
+    if is_llm_only:
+        agent_section += '''
+  llm:
+    required: true
+  tool_access:
+    allowed_packages: []
+  limits:
+    max_iterations: 10
+    max_tool_calls: 0
+    max_runtime_seconds: 300
+  termination:
+    stop_on_final_answer: true
+    stop_on_consecutive_errors: 3
+  isolation: "thread"'''
+    else:
+        agent_section += '''
+  tool_access:
+    allowed_packages: []
+  limits:
+    max_iterations: 10
+    max_tool_calls: 50
+    max_runtime_seconds: 300
+  termination:
+    stop_on_final_answer: true
+    stop_on_consecutive_errors: 3
+  isolation: "thread"
+  state:
+    persistence: "none"'''
+
     return f'''\
 manifest_version: "0.2"
 package_id: "{agent["slug"]}"
 package_type: "agent"
 name: "{agent["name"]}"
 publisher: "agentnode"
-version: "2.0.0"
+version: "{version}"
 summary: "{agent["summary"][:200]}"
 description: |
   {agent["goal"]}
 
-  Uses AgentContext contract v1: calls tools via context.run_tool()
-  with real data flow between steps and structured output synthesis.
+{description_detail}
 
 runtime: "python"
 install_mode: "package"
@@ -1714,21 +1791,7 @@ capabilities:
   resources: []
   prompts: []
 
-agent:
-  entrypoint: "{mod}.agent:run"
-  goal: "{agent["goal"][:250]}"
-  tool_access:
-    allowed_packages: []
-  limits:
-    max_iterations: 10
-    max_tool_calls: 50
-    max_runtime_seconds: 300
-  termination:
-    stop_on_final_answer: true
-    stop_on_consecutive_errors: 3
-  isolation: "thread"
-  state:
-    persistence: "none"
+{agent_section}
 
 compatibility:
   frameworks: ["generic"]
@@ -1757,6 +1820,8 @@ def _generate_init(agent: dict) -> str:
 
 
 def _generate_pyproject(agent: dict) -> str:
+    tier = agent.get("tier", "")
+    version = "3.0.0" if tier == "llm_only" else "2.0.0"
     return f'''\
 [build-system]
 requires = ["setuptools>=68.0"]
@@ -1764,7 +1829,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "{agent["slug"]}"
-version = "2.0.0"
+version = "{version}"
 description = "{agent["summary"][:120]}"
 requires-python = ">=3.10"
 dependencies = []

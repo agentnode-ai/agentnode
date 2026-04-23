@@ -78,7 +78,9 @@ export function DraftReview({ form }: { form: PublishFormState }) {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">
-            {canPublish ? "Your skill is ready to publish" : "Review your skill"}
+            {canPublish
+              ? `Your ${guided.package_type === "agent" ? "agent" : "skill"} is ready to publish`
+              : `Review your ${guided.package_type === "agent" ? "agent" : "skill"}`}
           </h1>
           {user?.publisher && (
             <p className="text-sm text-muted">
@@ -208,7 +210,7 @@ export function DraftReview({ form }: { form: PublishFormState }) {
       {/* ---- Preview Card ---- */}
       <div className="mb-6 rounded-xl border border-border bg-card p-6">
         <h2 className="text-lg font-bold text-foreground truncate">
-          {guided.name || "Untitled skill"}
+          {guided.name || `Untitled ${guided.package_type === "agent" ? "agent" : "skill"}`}
         </h2>
         <div className="mt-0.5 font-mono text-xs text-muted">
           {guided.package_id || "no-package-id"} &middot; v{guided.version}
@@ -266,7 +268,7 @@ export function DraftReview({ form }: { form: PublishFormState }) {
           return (
             <div className="rounded-lg border border-primary/30 bg-primary/5 px-5 py-4 text-center">
               <p className="text-sm font-medium text-foreground mb-1">Add your code</p>
-              <p className="text-xs text-muted mb-3">Upload files or write code to make your skill installable</p>
+              <p className="text-xs text-muted mb-3">Upload files or write code to make your {guided.package_type === "agent" ? "agent" : "skill"} installable</p>
               <button
                 type="button"
                 onClick={() => navigateToIssue("artifact")}

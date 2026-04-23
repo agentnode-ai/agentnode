@@ -47,6 +47,9 @@ export interface GuidedState {
   // Agent-specific fields (only used when package_type === "agent")
   agent_entrypoint: string;
   agent_goal: string;
+  agent_system_prompt: string;
+  agent_tier: string; // "llm_only" | "llm_plus_tools" | "llm_plus_credentials"
+  agent_llm_required: boolean;
   agent_allowed_packages: string;
   agent_max_iterations: number;
   agent_max_tool_calls: number;

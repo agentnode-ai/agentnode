@@ -21,6 +21,8 @@ from agentnode_sdk.runtimes.agent_runner import (
     AgentContext,
     AgentLimitExceeded,
     AgentTerminated,
+    LLMResult,
+    ToolContext,
     _evaluate_condition,
     _load_agent_entrypoint,
     _parse_tool_reference,
@@ -136,15 +138,21 @@ class TestAgentContextAllowlist:
         with pytest.raises(PermissionError, match="my-agent"):
             ctx.run_tool("evil-pack")
 
-    def test_empty_allowlist_does_not_block(self, monkeypatch):
-        """Empty allowlist means no restriction (for testing / unrestricted agents)."""
+    def test_empty_allowlist_blocks_all(self, monkeypatch):
+        """Empty allowlist means no tool access (llm_only tier)."""
+        ctx = _make_context(allowed_packages=[])
+        with pytest.raises(PermissionError, match="not allowed"):
+            ctx.run_tool("any-pack")
+
+    def test_none_allowlist_allows_all(self, monkeypatch):
+        """None allowlist means unrestricted (for testing / unrestricted agents)."""
         from agentnode_sdk import runner
         monkeypatch.setattr(
             runner, "run_tool",
             lambda *a, **kw: RunToolResult(success=True, result="ok"),
         )
-        ctx = _make_context(allowed_packages=[])
-        # Should NOT raise PermissionError — empty allowlist allows all
+        ctx = _make_context(allowed_packages=None)
+        # Should NOT raise PermissionError — None allowlist allows all
         result = ctx.run_tool("any-pack")
         assert result.success is True
 
@@ -902,7 +910,20 @@ class TestSequentialAllowlist:
         assert result.success is False
         assert "not in allowed_packages" in result.error
 
-    def test_empty_allowlist_allows(self, monkeypatch):
+    def test_empty_allowlist_blocks_all(self, monkeypatch):
+        """Empty allowlist blocks all tools in sequential mode (llm_only)."""
+        entry = _sequential_entry()
+        entry["agent"]["tool_access"]["allowed_packages"] = []
+        entry["agent"]["orchestration"]["steps"] = [
+            {"name": "any", "tool": "any-pack:run"},
+        ]
+        result = run_agent("empty-allowlist", entry=entry)
+
+        assert result.success is False
+        assert "not in allowed_packages" in result.error
+
+    def test_none_allowlist_allows(self, monkeypatch):
+        """No allowed_packages key = unrestricted in sequential mode."""
         from agentnode_sdk import runner
 
         mock, _ = _mock_run_tool([
@@ -911,7 +932,8 @@ class TestSequentialAllowlist:
         monkeypatch.setattr(runner, "run_tool", mock)
 
         entry = _sequential_entry()
-        entry["agent"]["tool_access"]["allowed_packages"] = []
+        # Remove allowed_packages entirely → None → unrestricted
+        del entry["agent"]["tool_access"]["allowed_packages"]
         entry["agent"]["orchestration"]["steps"] = [
             {"name": "any", "tool": "any-pack:run"},
         ]
@@ -1244,3 +1266,262 @@ class TestConditionalSteps:
 
         assert result.success is True
         assert len(calls) == 0  # Step was skipped
+
+
+# ---------------------------------------------------------------------------
+# LLM Result
+# ---------------------------------------------------------------------------
+
+
+class TestLLMResult:
+    def test_defaults(self):
+        r = LLMResult(content="hello")
+        assert r.content == "hello"
+        assert r.tool_calls is None
+        assert r.usage is None
+        assert r.model is None
+        assert r.finish_reason is None
+
+    def test_full(self):
+        r = LLMResult(
+            content="hi",
+            tool_calls=[{"name": "t", "arguments": "{}"}],
+            usage={"prompt_tokens": 10, "completion_tokens": 5},
+            model="gpt-4",
+            finish_reason="stop",
+        )
+        assert r.tool_calls == [{"name": "t", "arguments": "{}"}]
+        assert r.usage["prompt_tokens"] == 10
+        assert r.model == "gpt-4"
+        assert r.finish_reason == "stop"
+
+
+# ---------------------------------------------------------------------------
+# ToolContext
+# ---------------------------------------------------------------------------
+
+
+class TestToolContext:
+    def test_empty_has_no_tools(self):
+        tc = ToolContext()
+        assert not tc.has_tools
+        assert tc.allowed_packages == []
+        assert tc.tool_specs == []
+
+    def test_with_tools(self):
+        tc = ToolContext(
+            allowed_packages=["pack-a"],
+            tool_specs=[{"name": "pack-a:run", "description": "test", "input_schema": {}}],
+        )
+        assert tc.has_tools
+        assert tc.allowed_packages == ["pack-a"]
+
+
+# ---------------------------------------------------------------------------
+# AgentContext LLM binding
+# ---------------------------------------------------------------------------
+
+
+class TestAgentContextLLM:
+    def test_no_llm_raises_on_call(self):
+        ctx = _make_context()
+        with pytest.raises(RuntimeError, match="requires an LLM"):
+            ctx.call_llm([{"role": "user", "content": "hi"}])
+
+    def test_no_llm_raises_on_call_text(self):
+        ctx = _make_context()
+        with pytest.raises(RuntimeError, match="requires an LLM"):
+            ctx.call_llm_text([{"role": "user", "content": "hi"}])
+
+    def test_callable_llm_returns_string(self):
+        def mock_llm(messages, **kwargs):
+            return "mock response"
+
+        ctx = _make_context(llm=mock_llm)
+        result = ctx.call_llm([{"role": "user", "content": "hi"}])
+        assert isinstance(result, LLMResult)
+        assert result.content == "mock response"
+
+    def test_call_llm_text_returns_string(self):
+        def mock_llm(messages, **kwargs):
+            return "text response"
+
+        ctx = _make_context(llm=mock_llm)
+        text = ctx.call_llm_text([{"role": "user", "content": "hi"}])
+        assert text == "text response"
+
+    def test_callable_llm_returns_llm_result(self):
+        def mock_llm(messages, **kwargs):
+            return LLMResult(
+                content="structured",
+                model="test-model",
+                finish_reason="stop",
+                usage={"prompt_tokens": 5, "completion_tokens": 10},
+            )
+
+        ctx = _make_context(llm=mock_llm)
+        result = ctx.call_llm([{"role": "user", "content": "hi"}])
+        assert result.content == "structured"
+        assert result.model == "test-model"
+        assert result.finish_reason == "stop"
+
+    def test_callable_llm_returns_dict(self):
+        def mock_llm(messages, **kwargs):
+            return {"content": "from dict", "model": "dict-model"}
+
+        ctx = _make_context(llm=mock_llm)
+        result = ctx.call_llm([{"role": "user", "content": "hi"}])
+        assert result.content == "from dict"
+        assert result.model == "dict-model"
+
+    def test_llm_calls_counter(self):
+        def mock_llm(messages, **kwargs):
+            return "ok"
+
+        ctx = _make_context(llm=mock_llm)
+        assert ctx.llm_calls_made == 0
+        ctx.call_llm([{"role": "user", "content": "1"}])
+        assert ctx.llm_calls_made == 1
+        ctx.call_llm([{"role": "user", "content": "2"}])
+        assert ctx.llm_calls_made == 2
+
+    def test_system_prompt_prepended(self):
+        captured_messages = []
+
+        def mock_llm(messages, **kwargs):
+            captured_messages.extend(messages)
+            return "ok"
+
+        ctx = _make_context(llm=mock_llm, system_prompt="You are a helper.")
+        ctx.call_llm([{"role": "user", "content": "hi"}])
+        assert captured_messages[0]["role"] == "system"
+        assert captured_messages[0]["content"] == "You are a helper."
+        assert captured_messages[1]["role"] == "user"
+
+    def test_system_prompt_not_doubled(self):
+        captured_messages = []
+
+        def mock_llm(messages, **kwargs):
+            captured_messages.extend(messages)
+            return "ok"
+
+        ctx = _make_context(llm=mock_llm, system_prompt="You are a helper.")
+        ctx.call_llm([
+            {"role": "system", "content": "Existing system prompt."},
+            {"role": "user", "content": "hi"},
+        ])
+        # Should not add a second system message
+        system_msgs = [m for m in captured_messages if m["role"] == "system"]
+        assert len(system_msgs) == 1
+        assert system_msgs[0]["content"] == "Existing system prompt."
+
+    def test_llm_property(self):
+        ctx = _make_context(llm="my_llm")
+        assert ctx.llm == "my_llm"
+
+    def test_system_prompt_property(self):
+        ctx = _make_context(system_prompt="test prompt")
+        assert ctx.system_prompt == "test prompt"
+
+    def test_llm_error_raises(self):
+        def broken_llm(messages, **kwargs):
+            raise ValueError("API error")
+
+        ctx = _make_context(llm=broken_llm)
+        with pytest.raises(ValueError, match="API error"):
+            ctx.call_llm([{"role": "user", "content": "hi"}])
+
+
+# ---------------------------------------------------------------------------
+# allowed_tool_context
+# ---------------------------------------------------------------------------
+
+
+class TestAllowedToolContext:
+    def test_empty_allowed_packages_returns_empty(self):
+        ctx = _make_context(allowed_packages=[])
+        tc = ctx.allowed_tool_context()
+        assert isinstance(tc, ToolContext)
+        assert not tc.has_tools
+        assert tc.allowed_packages == []
+
+    def test_returns_tool_context_always(self):
+        ctx = _make_context(allowed_packages=["nonexistent"])
+        tc = ctx.allowed_tool_context()
+        assert isinstance(tc, ToolContext)
+        # Packages not found in lockfile, so no tool_specs
+        assert tc.allowed_packages == ["nonexistent"]
+
+
+# ---------------------------------------------------------------------------
+# run_agent with LLM binding
+# ---------------------------------------------------------------------------
+
+
+class TestRunAgentLLMBinding:
+    def test_llm_passed_to_context(self, tmp_path, monkeypatch):
+        """run_agent passes llm and system_prompt to AgentContext."""
+        code = """\
+            def agent_func(context, **kwargs):
+                return {
+                    "has_llm": context.llm is not None,
+                    "has_system_prompt": context.system_prompt is not None,
+                    "system_prompt_value": context.system_prompt,
+                    "done": True,
+                }
+        """
+        _write_agent_module(tmp_path, "llm_bind_test", code)
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        def mock_llm(messages, **kwargs):
+            return "hello"
+
+        entry = _agent_entry()
+        entry["agent"]["entrypoint"] = "llm_bind_test.core:agent_func"
+        entry["agent"]["system_prompt"] = "Be helpful"
+
+        result = run_agent("llm-bind", entry=entry, llm=mock_llm)
+        assert result.success is True
+        assert result.result["has_llm"] is True
+        assert result.result["has_system_prompt"] is True
+        assert result.result["system_prompt_value"] == "Be helpful"
+
+    def test_no_llm_still_works_for_tool_agents(self, tmp_path, monkeypatch):
+        """Agents that don't use call_llm work fine without LLM binding."""
+        code = """\
+            def agent_func(context, **kwargs):
+                return {"result": "no llm needed", "done": True}
+        """
+        _write_agent_module(tmp_path, "no_llm_test", code)
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        entry = _agent_entry()
+        entry["agent"]["entrypoint"] = "no_llm_test.core:agent_func"
+
+        result = run_agent("no-llm", entry=entry)
+        assert result.success is True
+        assert result.result["done"] is True
+
+    def test_llm_only_agent_calls_llm(self, tmp_path, monkeypatch):
+        """LLM-only agent can use call_llm_text() via bound LLM."""
+        code = """\
+            def agent_func(context, **kwargs):
+                text = context.call_llm_text([
+                    {"role": "user", "content": "hello"}
+                ])
+                return {"response": text, "done": True}
+        """
+        _write_agent_module(tmp_path, "llm_only_test", code)
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        def mock_llm(messages, **kwargs):
+            return "LLM says hi"
+
+        entry = _agent_entry()
+        entry["agent"]["entrypoint"] = "llm_only_test.core:agent_func"
+        entry["agent"]["tier"] = "llm_only"
+        entry["agent"]["system_prompt"] = "You are a helper."
+
+        result = run_agent("llm-only", entry=entry, llm=mock_llm)
+        assert result.success is True
+        assert result.result["response"] == "LLM says hi"

@@ -110,7 +110,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
               Publishing as <span className="text-primary font-medium">@{user.publisher.slug}</span>
             </p>
           ) : (
-            <p className="text-sm text-muted">Review and edit your skill details</p>
+            <p className="text-sm text-muted">Review and edit your {guided.package_type === "agent" ? "agent" : "skill"} details</p>
           )}
         </div>
         <button
@@ -150,7 +150,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h2 className="text-lg font-bold text-foreground truncate">
-              {guided.name || "Untitled skill"}
+              {guided.name || `Untitled ${guided.package_type === "agent" ? "agent" : "skill"}`}
             </h2>
             <div className="mt-0.5 font-mono text-xs text-muted">
               {guided.package_id || "no-package-id"} &middot; v{guided.version}
@@ -280,7 +280,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
             <div>
               <label className="mb-1 block text-sm font-medium text-foreground">Package Type</label>
               <div className="flex gap-3">
-                {(["toolpack", "agent", "upgrade"] as const).map((t) => (
+                {(["toolpack", "agent"] as const).map((t) => (
                   <button
                     key={t}
                     type="button"
@@ -291,7 +291,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
                         : "border-border text-muted hover:text-foreground"
                     }`}
                   >
-                    {t === "toolpack" ? "Tool Pack" : t === "agent" ? "Agent" : "Upgrade"}
+                    {t === "toolpack" ? "Skill" : "Agent"}
                   </button>
                 ))}
               </div>
@@ -733,9 +733,30 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
               subtitle={guided.agent_goal ? guided.agent_goal.slice(0, 60) : "Configure agent behavior"}
               open={openPanels.has("agent")}
               onToggle={() => togglePanel("agent")}
-              status={guided.agent_entrypoint && guided.agent_goal ? "complete" : "incomplete"}
+              status={guided.agent_entrypoint && guided.agent_goal && guided.agent_tier && guided.agent_system_prompt.trim().length >= 20 ? "complete" : "incomplete"}
             >
               <div className="space-y-4">
+                {/* Tier */}
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-foreground">
+                    Tier <span className="text-danger">*</span>
+                  </label>
+                  <select
+                    value={guided.agent_tier}
+                    onChange={(e) => updateGuided("agent_tier", e.target.value)}
+                    className={`w-full rounded-md border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none ${!guided.agent_tier ? "border-danger/50" : "border-border"}`}
+                  >
+                    <option value="">Select tier...</option>
+                    <option value="llm_only">LLM Only &mdash; pure reasoning, no tools</option>
+                    <option value="llm_plus_tools">LLM + Tools &mdash; can use allowed packages</option>
+                    <option value="llm_plus_credentials">LLM + Credentials &mdash; external API access</option>
+                  </select>
+                  {!guided.agent_tier && (
+                    <p className="mt-1 text-xs text-muted">Determines what capabilities the agent has access to</p>
+                  )}
+                </div>
+
+                {/* Entrypoint */}
                 <div>
                   <label className="mb-1 block text-sm font-medium text-foreground">
                     Entrypoint <span className="text-danger">*</span>
@@ -753,6 +774,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
                   )}
                 </div>
 
+                {/* Goal */}
                 <div>
                   <label className="mb-1 block text-sm font-medium text-foreground">
                     Goal <span className="text-danger">*</span>
@@ -766,20 +788,53 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
                   />
                 </div>
 
+                {/* System Prompt */}
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-foreground">
-                    Allowed Packages
-                    <span className="text-xs text-muted font-normal ml-1">(comma-separated)</span>
+                  <label className="mb-1 flex items-center justify-between text-sm font-medium text-foreground">
+                    <span>System Prompt <span className="text-danger">*</span></span>
+                    <span className={`text-xs font-normal ${guided.agent_system_prompt.trim().length > 0 && guided.agent_system_prompt.trim().length < 20 ? "text-danger" : "text-muted"}`}>
+                      {guided.agent_system_prompt.length} chars
+                    </span>
                   </label>
-                  <input
-                    type="text"
-                    value={guided.agent_allowed_packages}
-                    onChange={(e) => updateGuided("agent_allowed_packages", e.target.value)}
-                    className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none"
-                    placeholder="web-search-pack, pdf-reader-pack"
+                  <textarea
+                    rows={6}
+                    value={guided.agent_system_prompt}
+                    onChange={(e) => updateGuided("agent_system_prompt", e.target.value)}
+                    className={`w-full rounded-md border bg-background px-3 py-2.5 font-mono text-sm text-foreground focus:border-primary focus:outline-none resize-y ${guided.agent_system_prompt.trim().length > 0 && guided.agent_system_prompt.trim().length < 20 ? "border-danger/50" : "border-border"}`}
+                    placeholder="You are an expert... Define the agent's role, personality, and behavior guidelines."
                   />
+                  <p className="mt-1 text-xs text-muted">Defines the agent&apos;s role and behavior. Automatically prepended to every LLM call.</p>
                 </div>
 
+                {/* LLM Required */}
+                <label className="flex items-center gap-2 text-sm text-foreground">
+                  <input
+                    type="checkbox"
+                    checked={guided.agent_llm_required}
+                    onChange={(e) => updateGuided("agent_llm_required", e.target.checked)}
+                    className="rounded border-border"
+                  />
+                  Requires LLM binding at runtime
+                </label>
+
+                {/* Allowed Packages (hidden for llm_only) */}
+                {guided.agent_tier !== "llm_only" && (
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-foreground">
+                      Allowed Packages
+                      <span className="text-xs text-muted font-normal ml-1">(comma-separated, empty = full registry)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={guided.agent_allowed_packages}
+                      onChange={(e) => updateGuided("agent_allowed_packages", e.target.value)}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-foreground focus:border-primary focus:outline-none"
+                      placeholder="web-search-pack, pdf-reader-pack"
+                    />
+                  </div>
+                )}
+
+                {/* Limits */}
                 <div className="grid gap-3 sm:grid-cols-3">
                   <div>
                     <label className="mb-1 block text-xs text-muted">Max Iterations</label>
@@ -792,17 +847,19 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
                       className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
                     />
                   </div>
-                  <div>
-                    <label className="mb-1 block text-xs text-muted">Max Tool Calls</label>
-                    <input
-                      type="number"
-                      value={guided.agent_max_tool_calls}
-                      onChange={(e) => updateGuided("agent_max_tool_calls", parseInt(e.target.value) || 1)}
-                      min={1}
-                      max={500}
-                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
-                    />
-                  </div>
+                  {guided.agent_tier !== "llm_only" && (
+                    <div>
+                      <label className="mb-1 block text-xs text-muted">Max Tool Calls</label>
+                      <input
+                        type="number"
+                        value={guided.agent_max_tool_calls}
+                        onChange={(e) => updateGuided("agent_max_tool_calls", parseInt(e.target.value) || 1)}
+                        min={1}
+                        max={500}
+                        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none"
+                      />
+                    </div>
+                  )}
                   <div>
                     <label className="mb-1 block text-xs text-muted">Max Runtime (seconds)</label>
                     <input
@@ -816,6 +873,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
                   </div>
                 </div>
 
+                {/* Termination */}
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div>
                     <label className="mb-1 block text-xs text-muted">Stop on consecutive errors</label>

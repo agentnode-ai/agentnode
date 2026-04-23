@@ -1,6 +1,6 @@
-"""newsletter_agent — AgentNode agent v2
+"""newsletter_agent — AgentNode agent v3
 
-Newsletter Agent: Curate top stories on a topic, summarize them, and draft a newsletter email.
+Newsletter Agent: Draft engaging newsletter emails on any topic, using LLM reasoning.
 """
 from __future__ import annotations
 
@@ -10,19 +10,14 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def _call(ctx, slug, tool_name=None, **kw):
-    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
-    r = ctx.run_tool(slug, tool_name, **kw)
-    if r.success:
-        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
-    return False, {"error": r.error or "unknown"}
-
-
 def run(context: Any, **kwargs: Any) -> dict:
-    """Agent entrypoint — AgentContext contract v1.
+    """Agent entrypoint — LLM-only agent (tier: llm_only).
+
+    Uses context.call_llm_text() for LLM reasoning.
+    System prompt is injected automatically from the manifest.
 
     Args:
-        context: AgentContext with goal, run_tool(), next_iteration().
+        context: AgentContext with goal and LLM/tool access.
         **kwargs: Additional parameters from the caller.
 
     Returns:
@@ -30,42 +25,22 @@ def run(context: Any, **kwargs: Any) -> dict:
     """
     topic = kwargs.get("topic", "") or context.goal
     sender_name = kwargs.get("sender_name", "Newsletter Bot")
+    audience = kwargs.get("audience", "subscribers")
 
-    # Step 1: Find top stories
-    context.next_iteration()
-    ok, search = _call(context, "web-search-pack", "search_web",
-                       query=f"{topic} latest news highlights", max_results=8)
-    hits = search.get("results", []) if ok else []
-
-    # Step 2: Summarize each story
-    stories = []
-    for item in hits[:5]:
-        url = item.get("url", "")
-        title = item.get("title", "")
-        if not url:
-            continue
-        context.next_iteration()
-        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
-        text = page.get("text", "") if ok else ""
-
-        summary_text = item.get("snippet", "")
-        if text:
-            ok, summary = _call(context, "document-summarizer-pack", "document_summary",
-                                text=text[:2000], max_sentences=2)
-            summary_text = summary.get("summary", text[:150]) if ok else text[:150]
-
-        stories.append({"title": title, "url": url, "summary": summary_text})
-
-    # Step 3: Draft the newsletter email
-    context.next_iteration()
-    stories_text = "\n".join(
-        f"- {s['title']}: {s['summary']}" for s in stories
+    prompt = (
+        f"Write a newsletter email about: {topic}\n\n"
+        f"Sender name: {sender_name}\n"
+        f"Target audience: {audience}\n\n"
+        "Include:\n"
+        "1. A catchy subject line\n"
+        "2. An opening hook\n"
+        "3. 3-5 story sections with headlines and brief descriptions\n"
+        "4. A closing with call-to-action\n\n"
+        "Write based on your knowledge of the topic. Be specific and current."
     )
-    intent = f"Weekly newsletter about {topic}. Stories:\n{stories_text}"
 
-    ok, email = _call(context, "email-drafter-pack", "email_drafting",
-                      intent=intent, tone="friendly", sender_name=sender_name)
-    email_body = email.get("email", email.get("output", "")) if ok else ""
+    newsletter = context.call_llm_text([
+        {"role": "user", "content": prompt}
+    ])
 
-    return {"newsletter": email_body, "stories": stories,
-            "topic": topic, "story_count": len(stories), "done": True}
+    return {"newsletter": newsletter, "topic": topic, "done": True}

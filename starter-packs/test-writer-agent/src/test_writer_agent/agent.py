@@ -21,8 +21,10 @@ def _call(ctx, slug, tool_name=None, **kw):
 def run(context: Any, **kwargs: Any) -> dict:
     """Agent entrypoint — AgentContext contract v1.
 
+    Uses context.run_tool() for tool access.
+
     Args:
-        context: AgentContext with goal, run_tool(), next_iteration().
+        context: AgentContext with goal and LLM/tool access.
         **kwargs: Additional parameters from the caller.
 
     Returns:

@@ -112,6 +112,31 @@ class RunLog:
     def iteration(self, iteration_num: int) -> None:
         self._write("iteration", iteration=iteration_num)
 
+    def llm_call(
+        self,
+        *,
+        model: str | None = None,
+        duration_ms: float = 0.0,
+        usage: dict | None = None,
+        finish_reason: str | None = None,
+        tool_calls_count: int = 0,
+        error: str | None = None,
+    ) -> None:
+        fields: dict[str, Any] = {
+            "duration_ms": round(duration_ms, 1),
+        }
+        if model:
+            fields["model"] = model
+        if usage:
+            fields["usage"] = usage
+        if finish_reason:
+            fields["finish_reason"] = finish_reason
+        if tool_calls_count:
+            fields["tool_calls_count"] = tool_calls_count
+        if error:
+            fields["error"] = error[:500]
+        self._write("llm_call", **fields)
+
     def step_start(self, step_name: str, tool: str) -> None:
         self._write("step_start", step_name=step_name, tool=tool)
 

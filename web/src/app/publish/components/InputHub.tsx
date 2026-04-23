@@ -12,6 +12,7 @@ export function InputHub({ form }: { form: PublishFormState }) {
   const {
     activeTab,
     setActiveTab,
+    guided,
     descriptionText,
     setDescriptionText,
     generating,
@@ -32,6 +33,8 @@ export function InputHub({ form }: { form: PublishFormState }) {
     handleStartFresh,
   } = form;
 
+  const typeLabel = guided.package_type === "agent" ? "agent" : "skill";
+
   const loginReturnTo = `/publish?tab=${activeTab}`;
 
   return (
@@ -40,7 +43,7 @@ export function InputHub({ form }: { form: PublishFormState }) {
       {/* Header */}
       <div className="text-center mb-10">
         <h1 className="text-3xl font-bold tracking-tight text-foreground">
-          Publish your skill
+          Publish your {typeLabel}
         </h1>
         <p className="mt-3 text-muted">
           Describe, import, or paste &mdash; we&apos;ll handle the rest.
@@ -100,7 +103,7 @@ export function InputHub({ form }: { form: PublishFormState }) {
         <div className="space-y-6">
           <div>
             <label className="mb-2 block text-sm font-medium text-foreground">
-              Describe what your skill does in plain English
+              Describe what your {typeLabel} does in plain English
             </label>
             <textarea
               rows={4}

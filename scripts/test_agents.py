@@ -204,10 +204,11 @@ TOOL_RESPONSES: dict[tuple[str, str | None], dict] = {
 
 @dataclass
 class MockAgentContext:
-    """Mock AgentContext that tracks tool calls and returns mock data."""
+    """Mock AgentContext that tracks tool calls and LLM calls, returns mock data."""
     _goal: str = "Test objective for validation"
     _iteration: int = 0
     _tool_calls: list = field(default_factory=list)
+    _llm_calls: list = field(default_factory=list)
     _data_flow: list = field(default_factory=list)  # Track what data passes between calls
 
     @property
@@ -218,6 +219,54 @@ class MockAgentContext:
         self._iteration += 1
         if self._iteration > 15:
             raise RuntimeError("Too many iterations (>15)")
+
+    def call_llm(self, messages: list, **kwargs: Any) -> Any:
+        """Mock LLM call that returns a structured result."""
+        self._llm_calls.append({
+            "messages_count": len(messages),
+            "last_role": messages[-1].get("role", "?") if messages else "?",
+            "kwargs_keys": sorted(kwargs.keys()),
+        })
+        # Return a mock LLMResult-like object
+        content = self._generate_mock_llm_response(messages)
+        return type("MockLLMResult", (), {
+            "content": content,
+            "tool_calls": None,
+            "usage": {"prompt_tokens": 100, "completion_tokens": 200},
+            "model": "mock-model",
+            "finish_reason": "stop",
+        })()
+
+    def call_llm_text(self, messages: list, **kwargs: Any) -> str:
+        """Mock LLM call that returns text content."""
+        result = self.call_llm(messages, **kwargs)
+        return result.content
+
+    def _generate_mock_llm_response(self, messages: list) -> str:
+        """Generate a plausible mock response based on the last user message."""
+        last_msg = ""
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                last_msg = m.get("content", "")
+                break
+
+        # For social-media agent, return JSON
+        if "social media" in last_msg.lower() or "platforms" in last_msg.lower():
+            return '{"key_message": "Mock key insight about the topic", "posts": {"twitter": "Mock tweet about the topic #trending", "linkedin": "Mock LinkedIn post with professional insight.", "instagram": "Mock Instagram caption with vibes #content"}}'
+
+        # Default: return a markdown-formatted response
+        return (
+            "# Mock LLM Response\n\n"
+            "## Overview\n"
+            "This is a mock response generated for testing purposes. "
+            "It covers the key aspects of the requested topic.\n\n"
+            "## Key Points\n"
+            "- First important insight with supporting detail\n"
+            "- Second finding backed by reasoning\n"
+            "- Third actionable recommendation\n\n"
+            "## Conclusion\n"
+            "Based on the analysis, the recommended next steps are clear and actionable."
+        )
 
     def run_tool(self, slug: str, tool_name: str | None = None, **kwargs: Any) -> MockRunToolResult:
         self._tool_calls.append({
@@ -286,8 +335,9 @@ AGENT_SPECS = {
     },
     "blog-writer-agent": {
         "kwargs": {"topic": "remote work best practices", "audience": "managers"},
-        "expected_keys": ["article", "title", "sources", "done"],
-        "expected_tools": ["web-search-pack", "copywriting-pack"],
+        "expected_keys": ["article", "title", "done"],
+        "expected_tools": [],
+        "is_llm_only": True,
     },
     "technical-docs-agent": {
         "kwargs": {"code": "def process(data: list) -> dict:\n    return {'count': len(data)}\n"},
@@ -296,19 +346,22 @@ AGENT_SPECS = {
     },
     "newsletter-agent": {
         "kwargs": {"topic": "cybersecurity updates"},
-        "expected_keys": ["newsletter", "stories", "topic", "done"],
-        "expected_tools": ["web-search-pack", "email-drafter-pack"],
+        "expected_keys": ["newsletter", "topic", "done"],
+        "expected_tools": [],
+        "is_llm_only": True,
     },
     "social-media-agent": {
         "kwargs": {"topic": "sustainable fashion"},
         "expected_keys": ["posts", "key_message", "topic", "done"],
-        "expected_tools": ["copywriting-pack"],
-        "extra_checks": lambda r: isinstance(r["posts"], dict) and len(r["posts"]) >= 2,
+        "expected_tools": [],
+        "is_llm_only": True,
+        "extra_checks": lambda r: isinstance(r["posts"], dict) and len(r["posts"]) >= 1,
     },
     "report-generator-agent": {
-        "kwargs": {"file_path": "/data/sales.csv"},
-        "expected_keys": ["executive_summary", "statistics", "column_info", "done"],
-        "expected_tools": ["csv-analyzer-pack"],
+        "kwargs": {"data": "Q3 revenue: $2.1M (+15%), costs: $1.4M, headcount: 45, churn: 3%"},
+        "expected_keys": ["report", "report_type", "done"],
+        "expected_tools": [],
+        "is_llm_only": True,
     },
     "csv-analyst-agent": {
         "kwargs": {"file_path": "/data/metrics.csv"},
@@ -377,8 +430,9 @@ AGENT_SPECS = {
     },
     "project-planner-agent": {
         "kwargs": {"project": "Build a REST API for inventory management with authentication and reporting"},
-        "expected_keys": ["plan", "scope", "done"],
-        "expected_tools": ["document-summarizer-pack", "copywriting-pack"],
+        "expected_keys": ["plan", "project", "done"],
+        "expected_tools": [],
+        "is_llm_only": True,
     },
     "contract-review-agent": {
         "kwargs": {"text": "AGREEMENT between Party A and Party B. Section 1: Party A shall pay $10,000 monthly. Section 5.2: Liability is unlimited. Section 8.1: Auto-renews annually."},
@@ -471,6 +525,7 @@ def test_agent(slug: str, spec: dict) -> tuple[bool, list[str]]:
             errors.append(f"done={result['done']} but no error field")
 
     # 7. Check expected tool calls
+    is_llm_only = spec.get("is_llm_only", False)
     tools_called = [tc["slug"] for tc in ctx._tool_calls]
     for expected_tool in spec.get("expected_tools", []):
         if expected_tool not in tools_called:
@@ -485,17 +540,22 @@ def test_agent(slug: str, spec: dict) -> tuple[bool, list[str]]:
             elif isinstance(val, str) and len(val) == 0 and key not in ("error",):
                 errors.append(f"Key '{key}' is empty string")
 
-    # 9. Check data flow (data from one tool feeds into the next)
-    if spec.get("must_have_data_flow"):
-        if not ctx._data_flow:
-            errors.append("No data flow detected — steps may not be chaining data")
+    # 9. LLM-only agents: check call_llm was used
+    if is_llm_only:
+        if not ctx._llm_calls:
+            errors.append("LLM-only agent did not call call_llm() or call_llm_text()")
+    else:
+        # 9b. Check data flow (data from one tool feeds into the next)
+        if spec.get("must_have_data_flow"):
+            if not ctx._data_flow:
+                errors.append("No data flow detected — steps may not be chaining data")
 
-    # 10. Check tool call count (should be > 1 for multi-step agents)
-    if len(ctx._tool_calls) < 2:
-        errors.append(f"Only {len(ctx._tool_calls)} tool call(s) — expected multi-step agent")
+        # 10. Check tool call count (should be > 1 for multi-step agents)
+        if len(ctx._tool_calls) < 2:
+            errors.append(f"Only {len(ctx._tool_calls)} tool call(s) — expected multi-step agent")
 
-    # 11. Check iterations (should use next_iteration())
-    if ctx._iteration == 0:
+    # 11. Check iterations (should use next_iteration()) — only for tool-using agents
+    if not is_llm_only and ctx._iteration == 0:
         errors.append("next_iteration() never called — agent doesn't track iterations")
 
     # 12. Run extra checks

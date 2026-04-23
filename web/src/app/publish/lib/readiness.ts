@@ -37,8 +37,10 @@ export function computeReadiness(
   // Agent-specific required fields
   if (g.package_type === "agent") {
     items.push(
+      { label: "Agent tier", ok: !!g.agent_tier, required: true },
       { label: "Agent entrypoint (module:function)", ok: !!g.agent_entrypoint.trim() && g.agent_entrypoint.includes(":"), required: true },
       { label: "Agent goal", ok: !!g.agent_goal.trim(), required: true },
+      { label: "System prompt (min 20 characters)", ok: !!g.agent_system_prompt.trim() && g.agent_system_prompt.trim().length >= 20, required: true },
     );
   }
 

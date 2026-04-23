@@ -1,6 +1,6 @@
-"""blog_writer_agent — AgentNode agent v2
+"""blog_writer_agent — AgentNode agent v3
 
-Blog Writer Agent: Research a topic and write an SEO-optimized blog post with structure and keywords.
+Blog Writer Agent: Write SEO-optimized blog posts with compelling structure, using LLM reasoning.
 """
 from __future__ import annotations
 
@@ -10,19 +10,14 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def _call(ctx, slug, tool_name=None, **kw):
-    """Call a tool via AgentContext. Returns (success: bool, data: dict)."""
-    r = ctx.run_tool(slug, tool_name, **kw)
-    if r.success:
-        return True, (r.result if isinstance(r.result, dict) else {"output": r.result})
-    return False, {"error": r.error or "unknown"}
-
-
 def run(context: Any, **kwargs: Any) -> dict:
-    """Agent entrypoint — AgentContext contract v1.
+    """Agent entrypoint — LLM-only agent (tier: llm_only).
+
+    Uses context.call_llm_text() for LLM reasoning.
+    System prompt is injected automatically from the manifest.
 
     Args:
-        context: AgentContext with goal, run_tool(), next_iteration().
+        context: AgentContext with goal and LLM/tool access.
         **kwargs: Additional parameters from the caller.
 
     Returns:
@@ -30,50 +25,24 @@ def run(context: Any, **kwargs: Any) -> dict:
     """
     topic = kwargs.get("topic", "") or context.goal
     audience = kwargs.get("audience", "general readers")
+    tone = kwargs.get("tone", "professional but approachable")
 
-    # Step 1: Research the topic
-    context.next_iteration()
-    ok, search = _call(context, "web-search-pack", "search_web",
-                       query=topic, max_results=8)
-    hits = search.get("results", []) if ok else []
+    prompt = (
+        f"Write a comprehensive blog post about: {topic}\n\n"
+        f"Target audience: {audience}\n"
+        f"Tone: {tone}\n\n"
+        "Include:\n"
+        "1. A compelling headline\n"
+        "2. An engaging introduction\n"
+        "3. 3-5 main sections with H2 headers\n"
+        "4. Actionable takeaways\n"
+        "5. A conclusion with call-to-action\n"
+        "6. A suggested meta description (1 sentence)\n\n"
+        "Format as markdown."
+    )
 
-    # Step 2: Extract top articles for reference
-    reference_texts = []
-    sources = []
-    for item in hits[:3]:
-        url = item.get("url", "")
-        if not url:
-            continue
-        context.next_iteration()
-        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
-        if ok and page.get("text"):
-            reference_texts.append(page["text"][:2000])
-            sources.append({"title": item.get("title", ""), "url": url})
+    article = context.call_llm_text([
+        {"role": "user", "content": prompt}
+    ])
 
-    # Step 3: Summarize reference material
-    context.next_iteration()
-    combined = "\n\n".join(reference_texts) if reference_texts else topic
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
-                        text=combined, max_sentences=8)
-    key_points = summary.get("summary", combined[:500]) if ok else combined[:500]
-
-    # Step 4: Generate blog copy
-    context.next_iteration()
-    ok, copy = _call(context, "copywriting-pack", "tone_adjustment",
-                     product=f"Blog post about: {topic}",
-                     audience=audience, framework="aida", tone="informative")
-    blog_body = copy.get("copy", copy.get("output", "")) if ok else ""
-
-    # Assemble the blog post
-    blog_post = f"# {topic}\n\n"
-    if blog_body:
-        blog_post += blog_body + "\n\n"
-    blog_post += f"## Key Points\n\n{key_points}\n\n"
-    if sources:
-        blog_post += "## Sources\n\n"
-        for s in sources:
-            blog_post += f"- [{s['title']}]({s['url']})\n"
-
-    return {"article": blog_post, "title": topic,
-            "key_points": key_points, "sources": sources,
-            "done": True}
+    return {"article": article, "title": topic, "done": True}

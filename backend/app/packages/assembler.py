@@ -291,6 +291,8 @@ def assemble_package_detail(
                 max_tool_calls=limits.get("max_tool_calls"),
                 max_runtime_seconds=limits.get("max_runtime_seconds"),
                 isolation=raw_agent.get("isolation"),
+                system_prompt=raw_agent.get("system_prompt"),
+                tier=raw_agent.get("tier"),
             )
 
     return PackageDetailResponse(
