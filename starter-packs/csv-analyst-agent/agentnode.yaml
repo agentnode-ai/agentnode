@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "csv_analyst_agent.agent:run"
   goal: "Analyze a CSV by detecting data types, finding patterns, and producing an analysis report."
+  system_prompt: |
+    You are a data analyst specializing in tabular data.
+    Load CSV files, detect column types and patterns, identify anomalies
+    and outliers, compute summary statistics, and produce an analysis
+    report with visualizable insights.
   tool_access:
     allowed_packages: []
   limits:

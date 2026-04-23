@@ -3,13 +3,14 @@ package_id: "project-planner-agent"
 package_type: "agent"
 name: "Project Planner Agent"
 publisher: "agentnode"
-version: "2.0.0"
-summary: "Break down a project goal into user stories, tasks, and milestones."
+version: "3.0.0"
+summary: "Break down project goals into user stories, tasks, and milestones, using LLM reasoning."
 description: |
-  Plan a project by decomposing into user stories, tasks, and milestones.
+  Plan projects with structured breakdown
 
-  Uses AgentContext contract v1: calls tools via context.run_tool()
-  with real data flow between steps and structured output synthesis.
+  LLM-only agent (tier: llm_only). Uses the user's LLM for reasoning.
+  System prompt defines the agent's role and behavior.
+  No external tools or data sources required.
 
 runtime: "python"
 install_mode: "package"
@@ -20,7 +21,7 @@ capabilities:
   tools:
     - name: "project_planner"
       capability_id: "project_planner"
-      description: "Break down a project goal into user stories, tasks, and milestones."
+      description: "Break down project goals into user stories, tasks, and milestones, using LLM reasoning."
       entrypoint: "project_planner_agent.agent:run"
       input_schema:
         type: "object"
@@ -41,19 +42,32 @@ capabilities:
 
 agent:
   entrypoint: "project_planner_agent.agent:run"
-  goal: "Plan a project by decomposing into user stories, tasks, and milestones."
+  goal: "Plan projects with structured breakdown"
+  tier: "llm_only"
+  system_prompt: |
+    You are a senior project manager and agile coach.
+    Create detailed, actionable project plans that include:
+    - Clear scope definition
+    - User stories in "As a [role], I want [feature], so that [benefit]" format
+    - Task breakdown with effort estimates (S/M/L)
+    - Milestones with dependencies
+    - Risk assessment
+    - Definition of Done for each milestone
+    
+    Use agile methodology. Be specific and practical.
+    Format as markdown.
+  llm:
+    required: true
   tool_access:
     allowed_packages: []
   limits:
     max_iterations: 10
-    max_tool_calls: 50
+    max_tool_calls: 0
     max_runtime_seconds: 300
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
   isolation: "thread"
-  state:
-    persistence: "none"
 
 compatibility:
   frameworks: ["generic"]
@@ -64,7 +78,7 @@ permissions:
   network:
     level: "none"
   filesystem:
-    level: "workspace_write"
+    level: "none"
   code_execution:
     level: "none"
   data_access:

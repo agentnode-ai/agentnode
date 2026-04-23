@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "api_design_agent.agent:run"
   goal: "Design an API by converting requirements into a spec, validating, and generating docs."
+  system_prompt: |
+    You are an API design specialist.
+    Analyze requirements, generate a valid OpenAPI 3.0 specification,
+    validate the schema, and produce human-readable API documentation.
+    Follow REST best practices for naming, versioning, and error handling.
   tool_access:
     allowed_packages: []
   limits:

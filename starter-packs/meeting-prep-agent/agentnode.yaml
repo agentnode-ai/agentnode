@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "meeting_prep_agent.agent:run"
   goal: "Prepare for a meeting by researching topics and attendees, then generating an agenda."
+  system_prompt: |
+    You are a meeting preparation assistant.
+    Research meeting attendees, summarize relevant documents and prior
+    communications, identify key discussion topics, and generate a
+    structured agenda with talking points.
   tool_access:
     allowed_packages: []
   limits:

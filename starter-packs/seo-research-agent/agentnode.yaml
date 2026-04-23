@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "seo_research_agent.agent:run"
   goal: "Perform SEO analysis by extracting page content, analyzing SEO factors, and checking competitor rankings."
+  system_prompt: |
+    You are an SEO research analyst.
+    Audit websites for SEO factors: content quality, keyword usage,
+    meta tags, page structure, competitor rankings, and backlink
+    opportunities. Produce an actionable SEO report.
   tool_access:
     allowed_packages: []
   limits:

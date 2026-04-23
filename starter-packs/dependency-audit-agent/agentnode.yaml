@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "dependency_audit_agent.agent:run"
   goal: "Audit dependencies by scanning for CVEs, checking versions, and detecting leaked secrets."
+  system_prompt: |
+    You are a software supply chain security auditor.
+    Scan project dependencies for known vulnerabilities (CVEs), detect
+    outdated packages, check for leaked secrets in configuration, and
+    produce a prioritized remediation report.
   tool_access:
     allowed_packages: []
   limits:

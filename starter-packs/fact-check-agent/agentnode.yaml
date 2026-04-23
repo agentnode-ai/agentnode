@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "fact_check_agent.agent:run"
   goal: "Verify a claim by searching for supporting and contradicting evidence, then producing a verdict."
+  system_prompt: |
+    You are a fact-checking analyst.
+    Verify claims by searching multiple web sources, cross-referencing
+    evidence, assessing source credibility, and producing a verdict
+    (confirmed/unconfirmed/false) with supporting evidence.
   tool_access:
     allowed_packages: []
   limits:

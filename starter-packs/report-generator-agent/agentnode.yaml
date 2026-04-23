@@ -3,13 +3,14 @@ package_id: "report-generator-agent"
 package_type: "agent"
 name: "Report Generator Agent"
 publisher: "agentnode"
-version: "2.0.0"
-summary: "Transform raw data (CSV, JSON) into a formatted report with statistics and summary."
+version: "3.0.0"
+summary: "Generate structured business reports with executive summary from provided data, using LLM reasoning."
 description: |
-  Generate a business report from raw data by analyzing datasets and writing an executive summary.
+  Generate structured business reports
 
-  Uses AgentContext contract v1: calls tools via context.run_tool()
-  with real data flow between steps and structured output synthesis.
+  LLM-only agent (tier: llm_only). Uses the user's LLM for reasoning.
+  System prompt defines the agent's role and behavior.
+  No external tools or data sources required.
 
 runtime: "python"
 install_mode: "package"
@@ -20,7 +21,7 @@ capabilities:
   tools:
     - name: "report_generator"
       capability_id: "report_generator"
-      description: "Transform raw data (CSV, JSON) into a formatted report with statistics and summary."
+      description: "Generate structured business reports with executive summary from provided data, using LLM reasoning."
       entrypoint: "report_generator_agent.agent:run"
       input_schema:
         type: "object"
@@ -41,19 +42,32 @@ capabilities:
 
 agent:
   entrypoint: "report_generator_agent.agent:run"
-  goal: "Generate a business report from raw data by analyzing datasets and writing an executive summary."
+  goal: "Generate structured business reports"
+  tier: "llm_only"
+  system_prompt: |
+    You are a business analyst and report writer.
+    Generate clear, structured reports that include:
+    - Executive summary (2-3 key takeaways)
+    - Data analysis and insights
+    - Key metrics and trends
+    - Recommendations
+    - Conclusion
+    
+    Use professional business language. Support claims with reasoning.
+    Structure reports with clear headers and bullet points.
+    Format as markdown.
+  llm:
+    required: true
   tool_access:
     allowed_packages: []
   limits:
     max_iterations: 10
-    max_tool_calls: 50
+    max_tool_calls: 0
     max_runtime_seconds: 300
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
   isolation: "thread"
-  state:
-    persistence: "none"
 
 compatibility:
   frameworks: ["generic"]
@@ -64,7 +78,7 @@ permissions:
   network:
     level: "none"
   filesystem:
-    level: "workspace_read"
+    level: "none"
   code_execution:
     level: "none"
   data_access:
@@ -72,5 +86,5 @@ permissions:
   user_approval:
     required: "never"
 
-tags: ["agent", "report", "data", "visualization", "analytics"]
+tags: ["agent", "report", "data", "analytics", "business"]
 categories: ["content"]

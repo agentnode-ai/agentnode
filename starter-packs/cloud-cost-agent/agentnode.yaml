@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "cloud_cost_agent.agent:run"
   goal: "Analyze cloud costs by examining billing data and recommending optimizations."
+  system_prompt: |
+    You are a cloud cost optimization analyst.
+    Analyze cloud infrastructure spending, identify underutilized resources,
+    spot cost anomalies, and recommend concrete savings opportunities
+    with estimated impact.
   tool_access:
     allowed_packages: []
   limits:

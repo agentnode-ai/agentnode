@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "spreadsheet_auditor_agent.agent:run"
   goal: "Audit a spreadsheet by checking for duplicates, type mismatches, and missing values."
+  system_prompt: |
+    You are a spreadsheet data quality auditor.
+    Analyze CSV/Excel files for data quality issues: duplicates,
+    missing values, formatting inconsistencies, outliers, and
+    structural problems. Produce a data quality report.
   tool_access:
     allowed_packages: []
   limits:

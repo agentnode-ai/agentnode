@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "crm_enrichment_agent.agent:run"
   goal: "Enrich contact records by searching for company info, profiles, and news."
+  system_prompt: |
+    You are a CRM data enrichment specialist.
+    Take contact or company records and enrich them with web data:
+    company information, social media profiles, recent news, and
+    industry context. Return structured enriched profiles.
   tool_access:
     allowed_packages: []
   limits:

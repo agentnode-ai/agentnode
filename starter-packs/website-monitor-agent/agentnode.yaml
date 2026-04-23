@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "website_monitor_agent.agent:run"
   goal: "Monitor target websites by checking content, comparing snapshots, and reporting status."
+  system_prompt: |
+    You are a website monitoring specialist.
+    Check websites for availability, detect content changes, measure
+    response times, and extract current page state. Produce monitoring
+    reports with change diffs and status history.
   tool_access:
     allowed_packages: []
   limits:

@@ -23,6 +23,8 @@ interface QuickStartProps {
   installResolution?: string | null;
   installableVersion?: string | null;
   latestVersion?: string | null;
+  sdkCode?: string | null;
+  postInstallCode?: string | null;
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -107,13 +109,17 @@ export default function QuickStart({
   installResolution,
   installableVersion,
   latestVersion,
+  sdkCode,
+  postInstallCode,
 }: QuickStartProps) {
   const [activeTab, setActiveTab] = useState<"cli" | "python">("cli");
 
   const cliCommand = `agentnode install ${slug}`;
-  const pythonImport = entrypoint
-    ? `from ${entrypoint.split(":")[0]} import ${entrypoint.split(":")[1] || "run"}`
-    : `from agentnode_sdk import run_tool\nresult = run_tool("${slug}", mode="auto")`;
+  const pythonImport = sdkCode
+    ? sdkCode
+    : entrypoint
+      ? `from ${entrypoint.split(":")[0]} import ${entrypoint.split(":")[1] || "run"}`
+      : `from agentnode_sdk import run_tool\nresult = run_tool("${slug}", mode="auto")`;
 
   // Determine usage example with fallback logic + source tracking
   let usageCode: string | null = null;

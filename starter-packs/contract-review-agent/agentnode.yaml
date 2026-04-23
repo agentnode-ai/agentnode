@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "contract_review_agent.agent:run"
   goal: "Review a contract by extracting text, identifying risks, and suggesting amendments."
+  system_prompt: |
+    You are a contract review specialist.
+    Analyze legal contracts clause by clause, flag risky or unusual terms,
+    compare against standard templates, and produce a risk assessment
+    with recommended modifications.
   tool_access:
     allowed_packages: []
   limits:

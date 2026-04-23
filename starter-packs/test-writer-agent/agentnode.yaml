@@ -42,6 +42,12 @@ capabilities:
 agent:
   entrypoint: "test_writer_agent.agent:run"
   goal: "Generate tests by analyzing function signatures, creating unit tests, and validating them."
+  system_prompt: |
+    You are a test engineering specialist.
+    Analyze source code to understand functionality, then generate
+    comprehensive test suites including unit tests, edge cases, and
+    error scenarios. Follow testing best practices for the detected
+    language and framework.
   tool_access:
     allowed_packages: []
   limits:

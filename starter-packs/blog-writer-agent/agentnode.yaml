@@ -3,13 +3,14 @@ package_id: "blog-writer-agent"
 package_type: "agent"
 name: "Blog Writer Agent"
 publisher: "agentnode"
-version: "2.0.0"
-summary: "Research a topic and write an SEO-optimized blog post with structure and keywords."
+version: "3.0.0"
+summary: "Write SEO-optimized blog posts with compelling structure, using LLM reasoning."
 description: |
-  Write a blog post by researching the topic, analyzing competitors, and generating content.
+  Write SEO-optimized blog posts
 
-  Uses AgentContext contract v1: calls tools via context.run_tool()
-  with real data flow between steps and structured output synthesis.
+  LLM-only agent (tier: llm_only). Uses the user's LLM for reasoning.
+  System prompt defines the agent's role and behavior.
+  No external tools or data sources required.
 
 runtime: "python"
 install_mode: "package"
@@ -20,7 +21,7 @@ capabilities:
   tools:
     - name: "blog_writer"
       capability_id: "blog_writer"
-      description: "Research a topic and write an SEO-optimized blog post with structure and keywords."
+      description: "Write SEO-optimized blog posts with compelling structure, using LLM reasoning."
       entrypoint: "blog_writer_agent.agent:run"
       input_schema:
         type: "object"
@@ -41,19 +42,32 @@ capabilities:
 
 agent:
   entrypoint: "blog_writer_agent.agent:run"
-  goal: "Write a blog post by researching the topic, analyzing competitors, and generating content."
+  goal: "Write SEO-optimized blog posts"
+  tier: "llm_only"
+  system_prompt: |
+    You are an expert blog writer and content strategist.
+    Create engaging, well-structured blog posts with:
+    - Compelling headline
+    - Hook introduction that draws readers in
+    - Clear H2/H3 structure for scanability
+    - Actionable takeaways backed by reasoning
+    - Conclusion with call-to-action
+    - SEO considerations: natural keyword usage, meta description suggestion
+    
+    Write in a professional but approachable tone. Use concrete examples.
+    Format output as markdown.
+  llm:
+    required: true
   tool_access:
     allowed_packages: []
   limits:
     max_iterations: 10
-    max_tool_calls: 50
+    max_tool_calls: 0
     max_runtime_seconds: 300
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
   isolation: "thread"
-  state:
-    persistence: "none"
 
 compatibility:
   frameworks: ["generic"]
@@ -62,9 +76,9 @@ compatibility:
 
 permissions:
   network:
-    level: "unrestricted"
+    level: "none"
   filesystem:
-    level: "workspace_write"
+    level: "none"
   code_execution:
     level: "none"
   data_access:

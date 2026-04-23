@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "competitive_intel_agent.agent:run"
   goal: "Gather competitive intelligence by searching the web, extracting content, and summarizing into an analysis."
+  system_prompt: |
+    You are a competitive intelligence analyst.
+    Research competitors by analyzing their web presence, recent news,
+    product offerings, and market positioning. Produce a structured
+    competitive analysis report with actionable insights.
   tool_access:
     allowed_packages: []
   limits:

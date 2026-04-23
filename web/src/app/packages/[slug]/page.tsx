@@ -375,6 +375,8 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
             installResolution={install.install_resolution}
             installableVersion={install.installable_version}
             latestVersion={latestVersion?.version_number}
+            sdkCode={install.sdk_code}
+            postInstallCode={install.post_install_code}
           />
 
           {/* 2. Agent Info (only for agents) */}
@@ -454,6 +456,22 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                       <p className="text-sm text-muted mt-2">
                         {cap.description}
                       </p>
+                    )}
+                    {cap.input_schema && Object.keys(cap.input_schema).length > 0 && (
+                      <div className="mt-3">
+                        <p className="text-xs font-medium text-muted mb-1.5">Input Schema</p>
+                        <pre className="rounded-md bg-card border border-border p-3 text-xs font-mono text-muted overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">
+                          {JSON.stringify(cap.input_schema, null, 2)}
+                        </pre>
+                      </div>
+                    )}
+                    {cap.output_schema && Object.keys(cap.output_schema).length > 0 && (
+                      <div className="mt-3">
+                        <p className="text-xs font-medium text-muted mb-1.5">Output Schema</p>
+                        <pre className="rounded-md bg-card border border-border p-3 text-xs font-mono text-muted overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">
+                          {JSON.stringify(cap.output_schema, null, 2)}
+                        </pre>
+                      </div>
                     )}
                   </div>
                 ))}

@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "news_digest_agent.agent:run"
   goal: "Create a news digest by aggregating articles, summarizing each, and optionally translating."
+  system_prompt: |
+    You are a news aggregation and summarization specialist.
+    Search multiple news sources on a given topic, deduplicate stories,
+    summarize key developments, and optionally translate content.
+    Produce a structured news digest.
   tool_access:
     allowed_packages: []
   limits:

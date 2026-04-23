@@ -3,13 +3,14 @@ package_id: "social-media-agent"
 package_type: "agent"
 name: "Social Media Agent"
 publisher: "agentnode"
-version: "2.0.0"
-summary: "Create platform-optimized social media posts with copy, hashtags, and suggestions."
+version: "3.0.0"
+summary: "Create platform-optimized social media posts with copy and hashtags, using LLM reasoning."
 description: |
-  Generate social media content by researching trending angles and writing platform-specific copy.
+  Generate platform-specific social media content
 
-  Uses AgentContext contract v1: calls tools via context.run_tool()
-  with real data flow between steps and structured output synthesis.
+  LLM-only agent (tier: llm_only). Uses the user's LLM for reasoning.
+  System prompt defines the agent's role and behavior.
+  No external tools or data sources required.
 
 runtime: "python"
 install_mode: "package"
@@ -20,7 +21,7 @@ capabilities:
   tools:
     - name: "social_media"
       capability_id: "social_media"
-      description: "Create platform-optimized social media posts with copy, hashtags, and suggestions."
+      description: "Create platform-optimized social media posts with copy and hashtags, using LLM reasoning."
       entrypoint: "social_media_agent.agent:run"
       input_schema:
         type: "object"
@@ -41,19 +42,31 @@ capabilities:
 
 agent:
   entrypoint: "social_media_agent.agent:run"
-  goal: "Generate social media content by researching trending angles and writing platform-specific copy."
+  goal: "Generate platform-specific social media content"
+  tier: "llm_only"
+  system_prompt: |
+    You are a social media content strategist and copywriter.
+    Create platform-optimized posts that:
+    - Match each platform's tone and constraints
+    - Twitter/X: witty, concise, max 280 chars, relevant hashtags
+    - LinkedIn: professional, insightful, thought-leadership angle
+    - Instagram: visual-friendly caption, casual tone, hashtag groups
+    - Include engagement hooks (questions, CTAs)
+    - Focus on value and shareability
+    
+    Respond with a JSON object containing posts for each platform.
+  llm:
+    required: true
   tool_access:
     allowed_packages: []
   limits:
     max_iterations: 10
-    max_tool_calls: 50
+    max_tool_calls: 0
     max_runtime_seconds: 300
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
   isolation: "thread"
-  state:
-    persistence: "none"
 
 compatibility:
   frameworks: ["generic"]
@@ -62,7 +75,7 @@ compatibility:
 
 permissions:
   network:
-    level: "unrestricted"
+    level: "none"
   filesystem:
     level: "none"
   code_execution:

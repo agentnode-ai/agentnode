@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "deployment_agent.agent:run"
   goal: "Deploy by verifying build quality, running tests, and producing a deployment checklist."
+  system_prompt: |
+    You are a deployment operations engineer.
+    Orchestrate deployments by verifying code quality, running pre-deploy
+    checks, validating configurations, and producing a deployment
+    checklist with go/no-go recommendation.
   tool_access:
     allowed_packages: []
   limits:

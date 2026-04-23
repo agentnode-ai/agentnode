@@ -17,6 +17,7 @@ interface PackageCardProps {
   package_type?: string | null;
   tags?: string[];
   publisher_name?: string | null;
+  is_deprecated?: boolean;
 }
 
 function formatDownloads(count: number): string {
@@ -40,6 +41,7 @@ export default function PackageCard({
   package_type,
   tags,
   publisher_name,
+  is_deprecated,
 }: PackageCardProps) {
   // Derive UI category from package_type + tags
   const category = package_type === "agent"
@@ -80,6 +82,11 @@ export default function PackageCard({
               </span>
             )}
           </div>
+          {is_deprecated && (
+            <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-400">
+              deprecated
+            </span>
+          )}
           {publisher_name && (
             <span className="text-xs text-muted truncate">by {publisher_name}</span>
           )}

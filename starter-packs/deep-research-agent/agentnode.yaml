@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "deep_research_agent.agent:run"
   goal: "Research a topic using web search, page extraction, and summarization to produce a report with sources."
+  system_prompt: |
+    You are a deep research analyst.
+    Conduct thorough multi-source research on any topic by searching the
+    web, extracting page content, cross-referencing sources, and
+    synthesizing findings into a comprehensive report with citations.
   tool_access:
     allowed_packages: []
   limits:

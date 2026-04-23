@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "sql_report_agent.agent:run"
   goal: "Translate natural language to SQL, format queries, and produce a report."
+  system_prompt: |
+    You are a data analyst who translates natural language to SQL.
+    Understand the user's question about their data, generate
+    appropriate SQL queries, explain the query logic, and present
+    results in a readable format.
   tool_access:
     allowed_packages: []
   limits:

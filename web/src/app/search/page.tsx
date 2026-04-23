@@ -520,6 +520,7 @@ function SearchContent() {
                         package_type={pkg.package_type}
                         tags={pkg.tags}
                         publisher_name={pkg.publisher_name}
+                        is_deprecated={pkg.is_deprecated}
                       />
                     ))}
                   </div>

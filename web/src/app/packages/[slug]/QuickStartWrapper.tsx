@@ -11,6 +11,8 @@ interface QuickStartWrapperProps {
   installResolution?: string | null;
   installableVersion?: string | null;
   latestVersion?: string | null;
+  sdkCode?: string | null;
+  postInstallCode?: string | null;
 }
 
 export default function QuickStartWrapper(props: QuickStartWrapperProps) {

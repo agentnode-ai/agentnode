@@ -357,6 +357,19 @@ def _validate_agent(agent: dict, errors: list[str], warnings: list[str]) -> None
     if not agent.get("goal"):
         errors.append("agent.goal is required")
 
+    # Required: system_prompt (agent behavior description)
+    system_prompt = agent.get("system_prompt")
+    if not system_prompt:
+        warnings.append(
+            "agent.system_prompt is recommended: describe the agent's role and behavior"
+        )
+    elif not isinstance(system_prompt, str):
+        errors.append("agent.system_prompt must be a string")
+    elif len(system_prompt.strip()) < 20:
+        warnings.append(
+            "agent.system_prompt should be descriptive (at least a few sentences)"
+        )
+
     # Optional: tool_access
     tool_access = agent.get("tool_access")
     if tool_access is not None:

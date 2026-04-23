@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "academic_research_agent.agent:run"
   goal: "Conduct academic research by searching paper databases, extracting PDFs, and summarizing into a review."
+  system_prompt: |
+    You are an academic research assistant.
+    Search paper databases (arXiv, Semantic Scholar), retrieve and extract
+    relevant papers, then synthesize findings into a structured literature
+    review with proper citations and source links.
   tool_access:
     allowed_packages: []
   limits:

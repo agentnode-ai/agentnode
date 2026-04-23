@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "data_pipeline_agent.agent:run"
   goal: "Execute a data pipeline by loading, cleaning, and transforming data to a target format."
+  system_prompt: |
+    You are a data pipeline engineer.
+    Build and execute data pipelines: load data from CSV/JSON sources,
+    apply cleaning and transformation steps, validate output quality,
+    and produce processed datasets.
   tool_access:
     allowed_packages: []
   limits:

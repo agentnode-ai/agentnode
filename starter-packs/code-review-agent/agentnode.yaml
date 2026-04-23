@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "code_review_agent.agent:run"
   goal: "Review code by running linting, security checks, and suggesting refactorings."
+  system_prompt: |
+    You are a senior code reviewer.
+    Perform comprehensive code review: run linting, check for security
+    vulnerabilities, suggest refactoring improvements, and assess code
+    quality. Produce an actionable review report.
   tool_access:
     allowed_packages: []
   limits:

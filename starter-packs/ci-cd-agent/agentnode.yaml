@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "ci_cd_agent.agent:run"
   goal: "Orchestrate a CI/CD pipeline by analyzing code, running checks, and generating config."
+  system_prompt: |
+    You are a CI/CD pipeline engineer.
+    Analyze the project structure, detect the language/framework, and
+    generate appropriate CI/CD configuration (GitHub Actions, GitLab CI,
+    etc.). Include build, test, lint, and deploy stages.
   tool_access:
     allowed_packages: []
   limits:

@@ -3,13 +3,14 @@ package_id: "newsletter-agent"
 package_type: "agent"
 name: "Newsletter Agent"
 publisher: "agentnode"
-version: "2.0.0"
-summary: "Curate top stories on a topic, summarize them, and draft a newsletter email."
+version: "3.0.0"
+summary: "Draft engaging newsletter emails on any topic, using LLM reasoning."
 description: |
-  Create a newsletter by aggregating stories, summarizing articles, and drafting an email.
+  Create engaging newsletter content
 
-  Uses AgentContext contract v1: calls tools via context.run_tool()
-  with real data flow between steps and structured output synthesis.
+  LLM-only agent (tier: llm_only). Uses the user's LLM for reasoning.
+  System prompt defines the agent's role and behavior.
+  No external tools or data sources required.
 
 runtime: "python"
 install_mode: "package"
@@ -20,7 +21,7 @@ capabilities:
   tools:
     - name: "newsletter"
       capability_id: "newsletter"
-      description: "Curate top stories on a topic, summarize them, and draft a newsletter email."
+      description: "Draft engaging newsletter emails on any topic, using LLM reasoning."
       entrypoint: "newsletter_agent.agent:run"
       input_schema:
         type: "object"
@@ -41,19 +42,32 @@ capabilities:
 
 agent:
   entrypoint: "newsletter_agent.agent:run"
-  goal: "Create a newsletter by aggregating stories, summarizing articles, and drafting an email."
+  goal: "Create engaging newsletter content"
+  tier: "llm_only"
+  system_prompt: |
+    You are a newsletter editor and content curator.
+    Create engaging, scannable newsletter emails that:
+    - Open with a compelling hook or key insight
+    - Present 3-5 story sections with clear headlines
+    - Keep each section concise (2-3 sentences)
+    - Use a conversational, informed tone
+    - End with a call-to-action or teaser for next issue
+    - Include suggested subject line
+    
+    Write content based on your knowledge. Be specific and informative.
+    Format the newsletter as a professional email.
+  llm:
+    required: true
   tool_access:
     allowed_packages: []
   limits:
     max_iterations: 10
-    max_tool_calls: 50
+    max_tool_calls: 0
     max_runtime_seconds: 300
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
   isolation: "thread"
-  state:
-    persistence: "none"
 
 compatibility:
   frameworks: ["generic"]
@@ -62,7 +76,7 @@ compatibility:
 
 permissions:
   network:
-    level: "unrestricted"
+    level: "none"
   filesystem:
     level: "none"
   code_execution:

@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "security_scanner_agent.agent:run"
   goal: "Perform security scan by running static analysis, checking for CVEs, and detecting secrets."
+  system_prompt: |
+    You are a security scanning engineer.
+    Run comprehensive security analysis: static code analysis (SAST),
+    dependency vulnerability scanning, secret detection, and
+    configuration review. Produce a prioritized findings report.
   tool_access:
     allowed_packages: []
   limits:

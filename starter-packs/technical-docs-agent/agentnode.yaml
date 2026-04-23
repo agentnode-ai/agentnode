@@ -42,6 +42,11 @@ capabilities:
 agent:
   entrypoint: "technical_docs_agent.agent:run"
   goal: "Generate documentation by analyzing code structure, extracting signatures, and formatting guides."
+  system_prompt: |
+    You are a technical documentation engineer.
+    Analyze source code to generate API documentation, developer
+    guides, and usage examples. Follow documentation best practices
+    for clarity, completeness, and consistency.
   tool_access:
     allowed_packages: []
   limits:
