@@ -1429,6 +1429,167 @@ def _execute_with_timeout(
     return result_box[0]
 
 
+class _ProxyAgentContext:
+    """Picklable proxy for AgentContext that communicates via IPC queues.
+
+    The child process gets this instead of the real AgentContext.
+    Tool calls, LLM calls, and iteration tracking are forwarded
+    to the parent process which holds the real AgentContext.
+    """
+
+    def __init__(
+        self,
+        *,
+        goal: str,
+        system_prompt: str | None,
+        allowed_packages: list[str] | None,
+        max_tool_calls: int,
+        max_iterations: int,
+        agent_slug: str,
+        request_queue: multiprocessing.Queue,
+        response_queue: multiprocessing.Queue,
+    ):
+        self._goal = goal
+        self._system_prompt = system_prompt
+        self._allowed_packages = allowed_packages
+        self._max_tool_calls = max_tool_calls
+        self._max_iterations = max_iterations
+        self._agent_slug = agent_slug
+        self._request_q = request_queue
+        self._response_q = response_queue
+        self._iteration = 0
+
+    @property
+    def goal(self) -> str:
+        return self._goal
+
+    @property
+    def system_prompt(self) -> str | None:
+        return self._system_prompt
+
+    @property
+    def allowed_packages(self) -> list[str] | None:
+        return list(self._allowed_packages) if self._allowed_packages is not None else None
+
+    @property
+    def iteration(self) -> int:
+        return self._iteration
+
+    def _send_request(self, msg: dict) -> dict:
+        self._request_q.put(msg)
+        return self._response_q.get(timeout=300)
+
+    def run_tool(self, slug: str, tool_name: str | None = None, **kwargs: Any) -> RunToolResult:
+        resp = self._send_request({
+            "type": "run_tool",
+            "slug": slug,
+            "tool_name": tool_name,
+            "kwargs": kwargs,
+        })
+        if resp.get("type") == "error":
+            exc_type = resp.get("exc_type", "RuntimeError")
+            if exc_type == "PermissionError":
+                raise PermissionError(resp["message"])
+            if exc_type == "AgentLimitExceeded":
+                raise AgentLimitExceeded(resp["message"])
+            if exc_type == "AgentTerminated":
+                raise AgentTerminated(resp["message"])
+            raise RuntimeError(resp["message"])
+        return RunToolResult(
+            success=resp.get("success", False),
+            result=resp.get("result"),
+            error=resp.get("error"),
+            mode_used=resp.get("mode_used", "proxy"),
+        )
+
+    def try_tool(self, slug: str, tool_name: str | None = None, **kwargs: Any) -> RunToolResult | None:
+        try:
+            return self.run_tool(slug, tool_name, **kwargs)
+        except (PermissionError, AgentLimitExceeded):
+            return None
+
+    def next_iteration(self) -> None:
+        resp = self._send_request({"type": "next_iteration"})
+        if resp.get("type") == "error":
+            raise AgentLimitExceeded(resp["message"])
+        self._iteration = resp.get("iteration", self._iteration + 1)
+
+    def is_tool_available(self, slug: str) -> bool:
+        resp = self._send_request({"type": "is_tool_available", "slug": slug})
+        return resp.get("available", False)
+
+
+def _ipc_parent_loop(
+    context: AgentContext,
+    request_queue: multiprocessing.Queue,
+    response_queue: multiprocessing.Queue,
+    stop_event: threading.Event,
+) -> None:
+    """Parent-side IPC loop: receive requests from child, dispatch to real AgentContext."""
+    while not stop_event.is_set():
+        try:
+            msg = request_queue.get(timeout=1.0)
+        except Exception:
+            continue
+
+        msg_type = msg.get("type", "")
+        try:
+            if msg_type == "run_tool":
+                result = context.run_tool(
+                    msg["slug"], msg.get("tool_name"),
+                    **msg.get("kwargs", {}),
+                )
+                response_queue.put({
+                    "type": "result",
+                    "success": result.success,
+                    "result": result.result,
+                    "error": result.error,
+                    "mode_used": result.mode_used,
+                })
+            elif msg_type == "next_iteration":
+                context.next_iteration()
+                response_queue.put({
+                    "type": "ok",
+                    "iteration": context.iteration,
+                })
+            elif msg_type == "is_tool_available":
+                response_queue.put({
+                    "type": "ok",
+                    "available": context.is_tool_available(msg["slug"]),
+                })
+            else:
+                response_queue.put({
+                    "type": "error",
+                    "message": f"Unknown IPC message type: {msg_type}",
+                })
+        except (PermissionError, AgentLimitExceeded, AgentTerminated) as exc:
+            response_queue.put({
+                "type": "error",
+                "exc_type": type(exc).__name__,
+                "message": str(exc),
+            })
+        except Exception as exc:
+            response_queue.put({
+                "type": "error",
+                "exc_type": "RuntimeError",
+                "message": str(exc),
+            })
+
+
+def _child_worker(
+    func,
+    proxy_context: _ProxyAgentContext,
+    kwargs: dict,
+    result_queue: multiprocessing.Queue,
+) -> None:
+    """Child process entry point — runs the agent function with the proxy context."""
+    try:
+        result = func(proxy_context, **kwargs)
+        result_queue.put(("ok", result))
+    except BaseException as exc:
+        result_queue.put(("error", str(exc)))
+
+
 def _execute_with_process(
     func,
     context: AgentContext,
@@ -1437,26 +1598,48 @@ def _execute_with_process(
     timeout: float,
     grace_period: float = 5.0,
 ) -> Any:
-    """Run the agent function in a separate process with hard kill on timeout.
+    """Run the agent function in a separate process with full IPC.
 
-    Unlike thread-based execution, processes CAN be force-killed.
-    Result is returned via a multiprocessing.Queue.
+    Architecture:
+    - Parent holds the real AgentContext and handles tool calls
+    - Child gets a ProxyAgentContext that forwards calls via queues
+    - Parent runs an IPC loop in a thread to service child requests
+    - Child runs the agent function and puts the result in result_queue
     """
+    request_queue: multiprocessing.Queue = multiprocessing.Queue()
+    response_queue: multiprocessing.Queue = multiprocessing.Queue()
     result_queue: multiprocessing.Queue = multiprocessing.Queue()
 
-    def _wrapper():
-        try:
-            result = func(context, **kwargs)
-            result_queue.put(("ok", result))
-        except BaseException as exc:
-            result_queue.put(("error", exc))
+    proxy = _ProxyAgentContext(
+        goal=context.goal,
+        system_prompt=context.system_prompt,
+        allowed_packages=context.allowed_packages,
+        max_tool_calls=context.max_tool_calls,
+        max_iterations=context.max_iterations,
+        agent_slug=context._agent_slug,
+        request_queue=request_queue,
+        response_queue=response_queue,
+    )
 
-    proc = multiprocessing.Process(target=_wrapper, daemon=True)
+    stop_event = threading.Event()
+    ipc_thread = threading.Thread(
+        target=_ipc_parent_loop,
+        args=(context, request_queue, response_queue, stop_event),
+        daemon=True,
+    )
+    ipc_thread.start()
+
+    proc = multiprocessing.Process(
+        target=_child_worker,
+        args=(func, proxy, kwargs, result_queue),
+        daemon=True,
+    )
     proc.start()
     proc.join(timeout=timeout)
 
+    stop_event.set()
+
     if proc.is_alive():
-        # Graceful termination attempt
         proc.terminate()
         proc.join(timeout=grace_period)
         if proc.is_alive():
@@ -1464,13 +1647,14 @@ def _execute_with_process(
             proc.join(timeout=2)
         raise _TimeoutReached()
 
-    # Process finished — read result
+    ipc_thread.join(timeout=2)
+
     if result_queue.empty():
         raise RuntimeError("Agent process ended without producing a result")
 
     status, payload = result_queue.get_nowait()
     if status == "error":
-        raise payload
+        raise RuntimeError(payload)
     return payload
 
 
