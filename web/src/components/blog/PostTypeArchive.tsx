@@ -30,17 +30,25 @@ interface Post {
 }
 
 async function getPostType(slug: string): Promise<PostType | null> {
-  const res = await fetch(`${BACKEND_URL}/v1/blog/post-types`, { next: { revalidate: 60 } });
-  if (!res.ok) return null;
-  const types: PostType[] = await res.json();
-  return types.find((t) => t.slug === slug) || null;
+  try {
+    const res = await fetch(`${BACKEND_URL}/v1/blog/post-types`, { next: { revalidate: 60 } });
+    if (!res.ok) return null;
+    const types: PostType[] = await res.json();
+    return types.find((t) => t.slug === slug) || null;
+  } catch {
+    return null;
+  }
 }
 
 async function getPosts(postTypeSlug: string, page = 1) {
-  const url = `${BACKEND_URL}/v1/blog/posts?post_type=${postTypeSlug}&page=${page}&per_page=50`;
-  const res = await fetch(url, { next: { revalidate: 60 } });
-  if (!res.ok) return { posts: [], total: 0, page: 1, per_page: 50 };
-  return res.json();
+  try {
+    const url = `${BACKEND_URL}/v1/blog/posts?post_type=${postTypeSlug}&page=${page}&per_page=50`;
+    const res = await fetch(url, { next: { revalidate: 60 } });
+    if (!res.ok) return { posts: [], total: 0, page: 1, per_page: 50 };
+    return res.json();
+  } catch {
+    return { posts: [], total: 0, page: 1, per_page: 50 };
+  }
 }
 
 export async function generateArchiveMetadata(postTypeSlug: string): Promise<Metadata> {

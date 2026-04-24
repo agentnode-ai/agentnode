@@ -42,17 +42,25 @@ interface Category {
 }
 
 async function getPosts(page = 1) {
-  const url = `${BACKEND_URL}/v1/blog/posts?page=${page}&per_page=50&post_type=post`;
-  const res = await fetch(url, { next: { revalidate: 60 } });
-  if (!res.ok) return { posts: [], total: 0, page: 1, per_page: 20 };
-  return res.json();
+  try {
+    const url = `${BACKEND_URL}/v1/blog/posts?page=${page}&per_page=50&post_type=post`;
+    const res = await fetch(url, { next: { revalidate: 60 } });
+    if (!res.ok) return { posts: [], total: 0, page: 1, per_page: 20 };
+    return res.json();
+  } catch {
+    return { posts: [], total: 0, page: 1, per_page: 20 };
+  }
 }
 
 async function getCategories() {
-  const url = `${BACKEND_URL}/v1/blog/categories`;
-  const res = await fetch(url, { next: { revalidate: 60 } });
-  if (!res.ok) return [];
-  return res.json();
+  try {
+    const url = `${BACKEND_URL}/v1/blog/categories`;
+    const res = await fetch(url, { next: { revalidate: 60 } });
+    if (!res.ok) return [];
+    return res.json();
+  } catch {
+    return [];
+  }
 }
 
 export default async function BlogPage() {
