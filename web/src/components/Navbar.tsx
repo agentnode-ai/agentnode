@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { refreshSession } from "@/lib/api";
 
 const navLinks = [
+  { href: "/agents", label: "Agents" },
   { href: "/import", label: "Import" },
   { href: "/builder", label: "Builder" },
   { href: "/search", label: "Search" },
