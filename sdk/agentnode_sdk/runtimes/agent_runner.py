@@ -116,6 +116,46 @@ class RetryConfig:
 
 
 # ---------------------------------------------------------------------------
+# LLM auto-detection from environment
+# ---------------------------------------------------------------------------
+
+def _auto_detect_llm() -> dict | None:
+    """Try to create an LLM client from environment variables.
+
+    Resolution order:
+    1. OPENAI_API_KEY -> OpenAI client
+    2. ANTHROPIC_API_KEY -> Anthropic client
+
+    Returns a dict-style LLM binding {client, provider, model} or None.
+    """
+    import os
+
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if openai_key:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=openai_key)
+            return {"client": client, "provider": "openai", "model": ""}
+        except ImportError:
+            logger.debug("OPENAI_API_KEY set but openai package not installed")
+        except Exception as exc:
+            logger.debug("Failed to create OpenAI client: %s", exc)
+
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    if anthropic_key:
+        try:
+            from anthropic import Anthropic
+            client = Anthropic(api_key=anthropic_key)
+            return {"client": client, "provider": "anthropic", "model": ""}
+        except ImportError:
+            logger.debug("ANTHROPIC_API_KEY set but anthropic package not installed")
+        except Exception as exc:
+            logger.debug("Failed to create Anthropic client: %s", exc)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # LLM result types
 # ---------------------------------------------------------------------------
 
@@ -324,6 +364,87 @@ class AgentContext:
     ) -> str:
         """Convenience: call_llm() but return only content string."""
         return self.call_llm(messages, **kwargs).content
+
+    def run_llm_tool_loop(
+        self,
+        messages: list[dict],
+        *,
+        max_rounds: int = 8,
+    ) -> LLMResult:
+        """Run a full LLM tool-calling loop using the agent's allowed tools.
+
+        The LLM sees the agent's allowed tool packs as callable tools.
+        When it calls a tool, the result is fed back and the loop continues
+        until the LLM responds without tool calls or max_rounds is reached.
+        Tool calls count against max_tool_calls.
+
+        Args:
+            messages: Initial chat messages.
+            max_rounds: Maximum tool-call rounds.
+
+        Returns:
+            Final LLMResult after the loop completes.
+        """
+        if self._llm is None:
+            raise RuntimeError(
+                f"Agent '{self._agent_slug}' requires an LLM for tool loop."
+            )
+
+        tool_ctx = self.allowed_tool_context()
+        working_messages = list(messages)
+
+        if self._system_prompt:
+            has_system = any(m.get("role") == "system" for m in working_messages)
+            if not has_system:
+                working_messages.insert(
+                    0, {"role": "system", "content": self._system_prompt}
+                )
+
+        import json as _json
+
+        for _round in range(max_rounds):
+            result = self.call_llm(working_messages, tool_context=tool_ctx)
+
+            if not result.tool_calls:
+                return result
+
+            # Process tool calls
+            working_messages.append({
+                "role": "assistant",
+                "content": result.content or "",
+                "tool_calls": result.tool_calls,
+            })
+
+            for tc in result.tool_calls:
+                tc_name = tc.get("name", "")
+                tc_args = tc.get("arguments", {})
+                if isinstance(tc_args, str):
+                    try:
+                        tc_args = _json.loads(tc_args)
+                    except (ValueError, TypeError):
+                        tc_args = {}
+
+                # Parse slug:tool_name from the tool call name
+                if ":" in tc_name:
+                    slug, tool_name = tc_name.split(":", 1)
+                else:
+                    slug, tool_name = tc_name, None
+
+                tool_result = self.try_tool(slug, tool_name, **tc_args)
+
+                if tool_result and tool_result.success:
+                    content = _json.dumps(tool_result.result) if isinstance(tool_result.result, (dict, list)) else str(tool_result.result)
+                else:
+                    error = tool_result.error if tool_result else "Tool not available"
+                    content = _json.dumps({"error": error})
+
+                working_messages.append({
+                    "role": "tool",
+                    "name": tc_name,
+                    "content": content,
+                })
+
+        return result
 
     def _dispatch_llm_call(
         self,
@@ -1034,6 +1155,22 @@ def run_agent(
 
     # --- 6. Build AgentContext ---
     system_prompt = agent_config.get("system_prompt")
+
+    # Auto-detect LLM from environment if not provided and agent needs one
+    effective_llm = llm
+    if effective_llm is None:
+        llm_config = agent_config.get("llm") or {}
+        tier = agent_config.get("tier", "")
+        needs_llm = llm_config.get("required", False) or tier == "llm_only"
+        if needs_llm:
+            effective_llm = _auto_detect_llm()
+            if effective_llm is None:
+                logger.warning(
+                    "Agent '%s' requires LLM (tier=%s) but no LLM provider "
+                    "found. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.",
+                    slug, tier,
+                )
+
     context = AgentContext(
         goal=effective_goal,
         allowed_packages=allowed_packages,
@@ -1043,7 +1180,7 @@ def run_agent(
         _agent_slug=slug,
         _run_id=run_id,
         _run_log=run_log,
-        llm=llm,
+        llm=effective_llm,
         system_prompt=system_prompt,
         retry_config=retry_config,
     )
