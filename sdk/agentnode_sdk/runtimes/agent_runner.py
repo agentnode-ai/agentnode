@@ -604,6 +604,36 @@ class AgentContext:
             self._circuit_breakers[slug] = _CircuitBreaker()
         return self._circuit_breakers[slug]
 
+    # --- Auto-install (lazy) ---
+
+    def _ensure_installed(self, slug: str) -> bool:
+        """Check if a package is in the lockfile; if not, auto-install it.
+
+        Returns True if the package is available (already installed or
+        successfully auto-installed), False if auto-install failed.
+        """
+        from agentnode_sdk.installer import read_lockfile
+        lockfile = read_lockfile()
+        if slug in lockfile.get("packages", {}):
+            return True
+
+        logger.info("auto_install: %s not in lockfile, attempting install", slug)
+        if self._run_log:
+            self._run_log._write("auto_install", slug=slug)
+
+        try:
+            from agentnode_sdk.client import AgentNodeClient
+            client = AgentNodeClient()
+            result = client.install(slug)
+            if result.installed:
+                logger.info("auto_install: %s@%s installed successfully", slug, result.version)
+                return True
+            logger.warning("auto_install: %s failed: %s", slug, result.message)
+            return False
+        except Exception as exc:
+            logger.warning("auto_install: %s failed with exception: %s", slug, exc)
+            return False
+
     # --- Core tool dispatch (internal) ---
 
     def _dispatch_tool(
@@ -613,6 +643,8 @@ class AgentContext:
         **kwargs: Any,
     ) -> RunToolResult:
         """Single tool dispatch — no retry, no circuit breaker. Used by public methods."""
+        self._ensure_installed(slug)
+
         t0 = time.monotonic()
         from agentnode_sdk.runner import run_tool
         result = run_tool(slug, tool_name, **kwargs)
@@ -986,6 +1018,10 @@ def run_agent(
     if isinstance(orchestration, dict) and orchestration.get("mode") == "sequential":
         return _run_sequential(slug, agent_config, kwargs, effective_timeout, run_id=run_id, run_log=run_log)
 
+    # --- 4b. Eager dependency installation ---
+    if allowed_packages:
+        _eager_install_deps(allowed_packages, run_log)
+
     # --- 5. Entrypoint validation (not needed for sequential) ---
     entrypoint = agent_config.get("entrypoint", "")
     if not entrypoint:
@@ -1299,6 +1335,44 @@ def _execute_with_process(
     if status == "error":
         raise payload
     return payload
+
+
+def _eager_install_deps(
+    allowed_packages: list[str],
+    run_log: RunLog | None = None,
+) -> None:
+    """Pre-install all declared tool dependencies before agent execution."""
+    from agentnode_sdk.installer import read_lockfile
+    lockfile = read_lockfile()
+    installed_slugs = set(lockfile.get("packages", {}).keys())
+    missing = [s for s in allowed_packages if s not in installed_slugs]
+
+    if not missing:
+        return
+
+    logger.info("eager_install: %d dependencies to install: %s", len(missing), missing)
+    if run_log:
+        run_log._write("eager_install_start", slugs=missing)
+
+    try:
+        from agentnode_sdk.client import AgentNodeClient
+        client = AgentNodeClient()
+    except Exception as exc:
+        logger.warning("eager_install: cannot create client: %s", exc)
+        return
+
+    for slug in missing:
+        try:
+            result = client.install(slug)
+            if result.installed:
+                logger.info("eager_install: %s@%s installed", slug, result.version)
+            else:
+                logger.warning("eager_install: %s failed: %s", slug, result.message)
+        except Exception as exc:
+            logger.warning("eager_install: %s failed: %s", slug, exc)
+
+    if run_log:
+        run_log._write("eager_install_end", slugs=missing)
 
 
 def _audit_agent_run(
