@@ -21,6 +21,12 @@ v0.5 additions:
 - allowed_tool_context() — policy-filtered tool context for LLM tool calls
 - system_prompt injection from manifest
 - Agent tiers: llm_only, llm_plus_tools, llm_plus_credentials
+
+v0.6 additions:
+- Transparent retry with exponential backoff in run_tool()
+- Circuit breaker per tool slug (prevents cascading failures)
+- Explicit helpers: run_tool_with_retry(), run_tool_with_fallback(), try_tool()
+- Tool health introspection: is_tool_available(), tool_health()
 """
 from __future__ import annotations
 
@@ -52,6 +58,61 @@ class AgentLimitExceeded(RuntimeError):
 class AgentTerminated(RuntimeError):
     """Raised when an agent is stopped by a termination condition."""
     pass
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker (per-tool resilience)
+# ---------------------------------------------------------------------------
+
+class _CircuitBreaker:
+    """Per-slug circuit breaker: CLOSED -> OPEN -> HALF_OPEN -> CLOSED."""
+
+    __slots__ = ("_failure_count", "_failure_threshold", "_cooldown",
+                 "_state", "_last_failure_time")
+
+    def __init__(self, failure_threshold: int = 3, cooldown: float = 30.0):
+        self._failure_threshold = failure_threshold
+        self._cooldown = cooldown
+        self._failure_count = 0
+        self._state = "closed"
+        self._last_failure_time = 0.0
+
+    @property
+    def state(self) -> str:
+        if self._state == "open" and (time.monotonic() - self._last_failure_time) >= self._cooldown:
+            return "half_open"
+        return self._state
+
+    @property
+    def is_open(self) -> bool:
+        return self.state == "open"
+
+    def record_success(self) -> None:
+        self._failure_count = 0
+        self._state = "closed"
+
+    def record_failure(self) -> None:
+        self._failure_count += 1
+        self._last_failure_time = time.monotonic()
+        if self._failure_count >= self._failure_threshold:
+            self._state = "open"
+
+    def to_dict(self) -> dict:
+        return {
+            "state": self.state,
+            "failure_count": self._failure_count,
+            "failure_threshold": self._failure_threshold,
+            "cooldown": self._cooldown,
+        }
+
+
+@dataclass
+class RetryConfig:
+    """Retry configuration for transparent tool-call retries."""
+    max_retries: int = 2
+    backoff_base: float = 1.0
+    backoff_max: float = 10.0
+    enabled: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +182,7 @@ class AgentContext:
         _run_log: RunLog | None = None,
         llm: Any | None = None,
         system_prompt: str | None = None,
+        retry_config: RetryConfig | None = None,
     ) -> None:
         self._goal = goal
         # None = unrestricted tool access; [] = no tool access (llm_only)
@@ -133,12 +195,15 @@ class AgentContext:
         self._run_log = _run_log
         self._llm = llm
         self._system_prompt = system_prompt
+        self._retry_config = retry_config or RetryConfig()
 
         # Mutable tracking state
         self._tool_calls_made = 0
         self._consecutive_errors = 0
         self._iteration = 0
         self._llm_calls_made = 0
+        self._circuit_breakers: dict[str, _CircuitBreaker] = {}
+        self._total_retries = 0
 
     # --- Public properties ---
 
@@ -532,19 +597,80 @@ class AgentContext:
             tool_specs=tool_specs,
         )
 
+    # --- Circuit breaker helpers ---
+
+    def _get_breaker(self, slug: str) -> _CircuitBreaker:
+        if slug not in self._circuit_breakers:
+            self._circuit_breakers[slug] = _CircuitBreaker()
+        return self._circuit_breakers[slug]
+
+    # --- Core tool dispatch (internal) ---
+
+    def _dispatch_tool(
+        self,
+        slug: str,
+        tool_name: str | None,
+        **kwargs: Any,
+    ) -> RunToolResult:
+        """Single tool dispatch — no retry, no circuit breaker. Used by public methods."""
+        t0 = time.monotonic()
+        from agentnode_sdk.runner import run_tool
+        result = run_tool(slug, tool_name, **kwargs)
+        duration_ms = (time.monotonic() - t0) * 1000
+
+        if self._run_log:
+            self._run_log.tool_result(
+                slug, tool_name,
+                success=result.success,
+                duration_ms=duration_ms,
+                error=result.error,
+            )
+
+        breaker = self._get_breaker(slug)
+        if result.success:
+            breaker.record_success()
+            self._consecutive_errors = 0
+        else:
+            breaker.record_failure()
+            self._consecutive_errors += 1
+            if self._consecutive_errors >= self._stop_on_consecutive_errors:
+                raise AgentTerminated(
+                    f"Agent '{self._agent_slug}' stopped after "
+                    f"{self._consecutive_errors} consecutive tool errors"
+                )
+
+        return result
+
+    def _check_allowlist(self, slug: str) -> None:
+        if self._allowed_packages is not None and slug not in self._allowed_packages:
+            raise PermissionError(
+                f"Agent '{self._agent_slug}' is not allowed to use package "
+                f"'{slug}'. Allowed: {self._allowed_packages}"
+            )
+
+    def _check_tool_limit(self) -> None:
+        if self._tool_calls_made >= self._max_tool_calls:
+            raise AgentLimitExceeded(
+                f"Agent '{self._agent_slug}' exceeded max_tool_calls "
+                f"({self._max_tool_calls})"
+            )
+
     # --- Tool access (S4: strict allowlist) ---
 
     def run_tool(
         self,
         slug: str,
         tool_name: str | None = None,
+        *,
+        retry: bool | None = None,
         **kwargs: Any,
     ) -> RunToolResult:
-        """Run an allowed tool. Enforces allowlist (S4) and limits.
+        """Run an allowed tool with transparent retry and circuit breaker.
 
         Args:
             slug: Package slug to run.
             tool_name: Tool name for multi-tool packages.
+            retry: Override transparent retry (None = use config default).
             **kwargs: Tool arguments.
 
         Returns:
@@ -555,55 +681,196 @@ class AgentContext:
             AgentLimitExceeded: If max_tool_calls is exceeded.
             AgentTerminated: If consecutive error limit is exceeded.
         """
-        # S4: Strict allowlist — no free tool search
-        # Empty list means "no tool access" (e.g. llm_only tier),
-        # not "unrestricted". Use None or omit for unrestricted.
-        if self._allowed_packages is not None and slug not in self._allowed_packages:
-            raise PermissionError(
-                f"Agent '{self._agent_slug}' is not allowed to use package "
-                f"'{slug}'. Allowed: {self._allowed_packages}"
-            )
-
-        # Tool call limit
-        if self._tool_calls_made >= self._max_tool_calls:
-            raise AgentLimitExceeded(
-                f"Agent '{self._agent_slug}' exceeded max_tool_calls "
-                f"({self._max_tool_calls})"
-            )
-
+        self._check_allowlist(slug)
+        self._check_tool_limit()
         self._tool_calls_made += 1
 
-        # Log tool_call event
         if self._run_log:
             self._run_log.tool_call(slug, tool_name)
 
-        # Delegate to the main runner (lazy import to avoid circular dep)
-        t0 = time.monotonic()
-        from agentnode_sdk.runner import run_tool
-        result = run_tool(slug, tool_name, **kwargs)
-        duration_ms = (time.monotonic() - t0) * 1000
-
-        # Log tool_result event
-        if self._run_log:
-            self._run_log.tool_result(
-                slug, tool_name,
-                success=result.success,
-                duration_ms=duration_ms,
-                error=result.error,
+        breaker = self._get_breaker(slug)
+        if breaker.is_open:
+            return RunToolResult(
+                success=False,
+                error=f"Circuit breaker open for '{slug}' — tool is temporarily unavailable after repeated failures.",
+                mode_used="circuit_breaker",
             )
 
-        # Track consecutive errors for termination
-        if not result.success:
-            self._consecutive_errors += 1
-            if self._consecutive_errors >= self._stop_on_consecutive_errors:
-                raise AgentTerminated(
-                    f"Agent '{self._agent_slug}' stopped after "
-                    f"{self._consecutive_errors} consecutive tool errors"
-                )
-        else:
-            self._consecutive_errors = 0
+        result = self._dispatch_tool(slug, tool_name, **kwargs)
+
+        should_retry = retry if retry is not None else self._retry_config.enabled
+        if not result.success and should_retry:
+            result = self._retry_loop(slug, tool_name, result, **kwargs)
 
         return result
+
+    def _retry_loop(
+        self,
+        slug: str,
+        tool_name: str | None,
+        last_result: RunToolResult,
+        **kwargs: Any,
+    ) -> RunToolResult:
+        """Retry a failed tool call with exponential backoff."""
+        cfg = self._retry_config
+        for attempt in range(1, cfg.max_retries + 1):
+            if self._tool_calls_made >= self._max_tool_calls:
+                break
+
+            breaker = self._get_breaker(slug)
+            if breaker.is_open:
+                break
+
+            delay = min(cfg.backoff_base * (2 ** (attempt - 1)), cfg.backoff_max)
+            time.sleep(delay)
+
+            self._tool_calls_made += 1
+            self._total_retries += 1
+
+            if self._run_log:
+                self._run_log._write(
+                    "tool_retry",
+                    slug=slug, tool_name=tool_name,
+                    attempt=attempt, delay=round(delay, 2),
+                )
+
+            logger.info(
+                "agent_retry: slug=%s tool=%s attempt=%d/%d delay=%.1fs",
+                slug, tool_name, attempt, cfg.max_retries, delay,
+            )
+
+            result = self._dispatch_tool(slug, tool_name, **kwargs)
+            if result.success:
+                return result
+            last_result = result
+
+        return last_result
+
+    # --- Explicit retry/fallback helpers ---
+
+    def run_tool_with_retry(
+        self,
+        slug: str,
+        tool_name: str | None = None,
+        *,
+        max_retries: int = 3,
+        backoff_base: float = 1.0,
+        backoff_max: float = 15.0,
+        **kwargs: Any,
+    ) -> RunToolResult:
+        """Run a tool with explicit retry control.
+
+        Unlike the transparent retry in run_tool(), this gives the agent
+        full control over retry parameters per call.
+        """
+        self._check_allowlist(slug)
+        self._check_tool_limit()
+        self._tool_calls_made += 1
+
+        if self._run_log:
+            self._run_log.tool_call(slug, tool_name)
+
+        result = self._dispatch_tool(slug, tool_name, **kwargs)
+        if result.success:
+            return result
+
+        for attempt in range(1, max_retries + 1):
+            if self._tool_calls_made >= self._max_tool_calls:
+                break
+
+            breaker = self._get_breaker(slug)
+            if breaker.is_open:
+                break
+
+            delay = min(backoff_base * (2 ** (attempt - 1)), backoff_max)
+            time.sleep(delay)
+
+            self._tool_calls_made += 1
+            self._total_retries += 1
+
+            if self._run_log:
+                self._run_log._write(
+                    "tool_retry", slug=slug, tool_name=tool_name,
+                    attempt=attempt, delay=round(delay, 2),
+                )
+
+            result = self._dispatch_tool(slug, tool_name, **kwargs)
+            if result.success:
+                return result
+
+        return result
+
+    def run_tool_with_fallback(
+        self,
+        slug: str,
+        tool_name: str | None = None,
+        *,
+        fallbacks: list[str] | None = None,
+        **kwargs: Any,
+    ) -> RunToolResult:
+        """Try the primary tool, then fall back to alternatives on failure.
+
+        Args:
+            slug: Primary package slug.
+            tool_name: Tool name for multi-tool packages.
+            fallbacks: Alternative package slugs to try in order.
+            **kwargs: Tool arguments passed to each attempt.
+        """
+        result = self.run_tool(slug, tool_name, retry=False, **kwargs)
+        if result.success or not fallbacks:
+            return result
+
+        for fb_slug in fallbacks:
+            try:
+                self._check_allowlist(fb_slug)
+            except PermissionError:
+                continue
+
+            if self._run_log:
+                self._run_log._write(
+                    "tool_fallback",
+                    primary=slug, fallback=fb_slug,
+                )
+
+            logger.info("agent_fallback: %s -> %s", slug, fb_slug)
+            result = self.run_tool(fb_slug, tool_name, retry=True, **kwargs)
+            if result.success:
+                return result
+
+        return result
+
+    def try_tool(
+        self,
+        slug: str,
+        tool_name: str | None = None,
+        **kwargs: Any,
+    ) -> RunToolResult | None:
+        """Run a tool, returning None on permission/limit errors instead of raising.
+
+        Useful for optional tool calls where the agent can continue without the result.
+        """
+        try:
+            return self.run_tool(slug, tool_name, **kwargs)
+        except (PermissionError, AgentLimitExceeded):
+            return None
+
+    # --- Tool health introspection ---
+
+    def is_tool_available(self, slug: str) -> bool:
+        """Check if a tool is in the allowlist and its circuit breaker is not open."""
+        if self._allowed_packages is not None and slug not in self._allowed_packages:
+            return False
+        breaker = self._get_breaker(slug)
+        return not breaker.is_open
+
+    def tool_health(self, slug: str) -> dict:
+        """Return circuit breaker state and stats for a tool slug."""
+        breaker = self._get_breaker(slug)
+        return {
+            "slug": slug,
+            "allowed": self._allowed_packages is None or slug in (self._allowed_packages or []),
+            "circuit_breaker": breaker.to_dict(),
+        }
 
     # --- Iteration tracking ---
 
@@ -702,6 +969,16 @@ def run_agent(
     termination = agent_config.get("termination") or {}
     stop_on_consecutive_errors = termination.get("stop_on_consecutive_errors", 3)
 
+    # Error handling / retry config from manifest
+    error_handling = agent_config.get("error_handling") or {}
+    retry_raw = error_handling.get("retry") or {}
+    retry_config = RetryConfig(
+        max_retries=retry_raw.get("max_retries", 2),
+        backoff_base=retry_raw.get("backoff_base", 1.0),
+        backoff_max=retry_raw.get("backoff_max", 10.0),
+        enabled=retry_raw.get("enabled", True),
+    )
+
     effective_goal = goal or agent_config.get("goal", "")
 
     # --- 4. Sequential orchestration dispatch ---
@@ -732,6 +1009,7 @@ def run_agent(
         _run_log=run_log,
         llm=llm,
         system_prompt=system_prompt,
+        retry_config=retry_config,
     )
 
     # --- 7. Load entrypoint ---

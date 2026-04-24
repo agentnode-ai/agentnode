@@ -22,7 +22,9 @@ from agentnode_sdk.runtimes.agent_runner import (
     AgentLimitExceeded,
     AgentTerminated,
     LLMResult,
+    RetryConfig,
     ToolContext,
+    _CircuitBreaker,
     _evaluate_condition,
     _load_agent_entrypoint,
     _parse_tool_reference,
@@ -1525,3 +1527,199 @@ class TestRunAgentLLMBinding:
         result = run_agent("llm-only", entry=entry, llm=mock_llm)
         assert result.success is True
         assert result.result["response"] == "LLM says hi"
+
+
+# ---------------------------------------------------------------------------
+# Circuit Breaker
+# ---------------------------------------------------------------------------
+
+class TestCircuitBreaker:
+    def test_starts_closed(self):
+        cb = _CircuitBreaker(failure_threshold=3)
+        assert cb.state == "closed"
+        assert not cb.is_open
+
+    def test_opens_after_threshold(self):
+        cb = _CircuitBreaker(failure_threshold=2)
+        cb.record_failure()
+        assert cb.state == "closed"
+        cb.record_failure()
+        assert cb.state == "open"
+        assert cb.is_open
+
+    def test_success_resets(self):
+        cb = _CircuitBreaker(failure_threshold=3)
+        cb.record_failure()
+        cb.record_failure()
+        cb.record_success()
+        assert cb.state == "closed"
+        assert not cb.is_open
+
+    def test_half_open_after_cooldown(self):
+        cb = _CircuitBreaker(failure_threshold=1, cooldown=0.0)
+        cb.record_failure()
+        assert cb.state == "half_open"
+
+    def test_to_dict(self):
+        cb = _CircuitBreaker(failure_threshold=3, cooldown=30.0)
+        d = cb.to_dict()
+        assert d["state"] == "closed"
+        assert d["failure_count"] == 0
+        assert d["failure_threshold"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Retry in run_tool()
+# ---------------------------------------------------------------------------
+
+class TestRunToolRetry:
+    def test_transparent_retry_on_failure(self, monkeypatch):
+        from agentnode_sdk import runner
+        call_count = 0
+        def mock_run_tool(*a, **kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                return RunToolResult(success=False, error="transient")
+            return RunToolResult(success=True, result="ok")
+
+        monkeypatch.setattr(runner, "run_tool", mock_run_tool)
+        ctx = _make_context(
+            allowed_packages=None,
+            max_tool_calls=20,
+            retry_config=RetryConfig(max_retries=3, backoff_base=0.01, backoff_max=0.02),
+        )
+        result = ctx.run_tool("some-pack")
+        assert result.success is True
+        assert call_count == 3
+
+    def test_retry_disabled(self, monkeypatch):
+        from agentnode_sdk import runner
+        call_count = 0
+        def mock_run_tool(*a, **kw):
+            nonlocal call_count
+            call_count += 1
+            return RunToolResult(success=False, error="fail")
+
+        monkeypatch.setattr(runner, "run_tool", mock_run_tool)
+        ctx = _make_context(
+            allowed_packages=None,
+            retry_config=RetryConfig(enabled=False),
+        )
+        result = ctx.run_tool("some-pack")
+        assert result.success is False
+        assert call_count == 1
+
+    def test_retry_per_call_override(self, monkeypatch):
+        from agentnode_sdk import runner
+        call_count = 0
+        def mock_run_tool(*a, **kw):
+            nonlocal call_count
+            call_count += 1
+            return RunToolResult(success=False, error="fail")
+
+        monkeypatch.setattr(runner, "run_tool", mock_run_tool)
+        ctx = _make_context(
+            allowed_packages=None,
+            retry_config=RetryConfig(max_retries=5, backoff_base=0.01),
+        )
+        result = ctx.run_tool("some-pack", retry=False)
+        assert call_count == 1
+
+    def test_retry_respects_tool_limit(self, monkeypatch):
+        from agentnode_sdk import runner
+        monkeypatch.setattr(
+            runner, "run_tool",
+            lambda *a, **kw: RunToolResult(success=False, error="fail"),
+        )
+        ctx = _make_context(
+            allowed_packages=None, max_tool_calls=2,
+            retry_config=RetryConfig(max_retries=5, backoff_base=0.01),
+        )
+        result = ctx.run_tool("some-pack")
+        assert result.success is False
+        assert ctx.tool_calls_made == 2
+
+    def test_circuit_breaker_blocks_call(self, monkeypatch):
+        from agentnode_sdk import runner
+        monkeypatch.setattr(
+            runner, "run_tool",
+            lambda *a, **kw: RunToolResult(success=True, result="ok"),
+        )
+        ctx = _make_context(allowed_packages=None, max_tool_calls=20)
+        breaker = ctx._get_breaker("some-pack")
+        breaker._state = "open"
+        breaker._last_failure_time = 99999999999.0
+        result = ctx.run_tool("some-pack")
+        assert result.success is False
+        assert "circuit breaker" in result.error.lower()
+
+
+# ---------------------------------------------------------------------------
+# Explicit helpers
+# ---------------------------------------------------------------------------
+
+class TestExplicitHelpers:
+    def test_run_tool_with_retry(self, monkeypatch):
+        from agentnode_sdk import runner
+        call_count = 0
+        def mock_run_tool(*a, **kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                return RunToolResult(success=False, error="oops")
+            return RunToolResult(success=True, result="yay")
+
+        monkeypatch.setattr(runner, "run_tool", mock_run_tool)
+        ctx = _make_context(allowed_packages=None, max_tool_calls=20)
+        result = ctx.run_tool_with_retry("pack", max_retries=3, backoff_base=0.01)
+        assert result.success is True
+        assert call_count == 2
+
+    def test_run_tool_with_fallback(self, monkeypatch):
+        from agentnode_sdk import runner
+        calls = []
+        def mock_run_tool(slug, *a, **kw):
+            calls.append(slug)
+            if slug == "primary":
+                return RunToolResult(success=False, error="down")
+            return RunToolResult(success=True, result="fallback ok")
+
+        monkeypatch.setattr(runner, "run_tool", mock_run_tool)
+        ctx = _make_context(
+            allowed_packages=None, max_tool_calls=20,
+            retry_config=RetryConfig(enabled=False),
+        )
+        result = ctx.run_tool_with_fallback(
+            "primary", fallbacks=["backup-a", "backup-b"]
+        )
+        assert result.success is True
+        assert "primary" in calls
+        assert "backup-a" in calls
+
+    def test_try_tool_returns_none_on_permission(self):
+        ctx = _make_context(allowed_packages=["safe"])
+        result = ctx.try_tool("evil")
+        assert result is None
+
+    def test_try_tool_returns_result_on_success(self, monkeypatch):
+        from agentnode_sdk import runner
+        monkeypatch.setattr(
+            runner, "run_tool",
+            lambda *a, **kw: RunToolResult(success=True, result="ok"),
+        )
+        ctx = _make_context(allowed_packages=None)
+        result = ctx.try_tool("any-pack")
+        assert result is not None
+        assert result.success is True
+
+    def test_is_tool_available(self):
+        ctx = _make_context(allowed_packages=["pack-a"])
+        assert ctx.is_tool_available("pack-a") is True
+        assert ctx.is_tool_available("pack-c") is False
+
+    def test_tool_health(self):
+        ctx = _make_context(allowed_packages=["pack-a"])
+        health = ctx.tool_health("pack-a")
+        assert health["allowed"] is True
+        assert health["circuit_breaker"]["state"] == "closed"
