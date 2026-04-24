@@ -48,7 +48,10 @@ agent:
     response times, and extract current page state. Produce monitoring
     reports with change diffs and status history.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "document-summarizer-pack"
+      - "web-search-pack"
+      - "webpage-extractor-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

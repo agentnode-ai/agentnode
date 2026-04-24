@@ -48,7 +48,10 @@ agent:
     validate the schema, and produce human-readable API documentation.
     Follow REST best practices for naming, versioning, and error handling.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "code-linter-pack"
+      - "document-summarizer-pack"
+      - "sql-generator-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

@@ -48,7 +48,8 @@ agent:
     apply cleaning and transformation steps, validate output quality,
     and produce processed datasets.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "csv-analyzer-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

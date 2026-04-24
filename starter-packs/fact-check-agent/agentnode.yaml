@@ -48,7 +48,9 @@ agent:
     evidence, assessing source credibility, and producing a verdict
     (confirmed/unconfirmed/false) with supporting evidence.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "web-search-pack"
+      - "webpage-extractor-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

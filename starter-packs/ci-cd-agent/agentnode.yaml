@@ -48,7 +48,11 @@ agent:
     generate appropriate CI/CD configuration (GitHub Actions, GitLab CI,
     etc.). Include build, test, lint, and deploy stages.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "code-linter-pack"
+      - "code-refactor-pack"
+      - "document-summarizer-pack"
+      - "test-generator-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

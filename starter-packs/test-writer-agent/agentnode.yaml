@@ -49,7 +49,10 @@ agent:
     error scenarios. Follow testing best practices for the detected
     language and framework.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "code-linter-pack"
+      - "code-refactor-pack"
+      - "test-generator-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

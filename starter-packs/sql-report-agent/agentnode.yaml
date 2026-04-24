@@ -48,7 +48,9 @@ agent:
     appropriate SQL queries, explain the query logic, and present
     results in a readable format.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "document-summarizer-pack"
+      - "sql-generator-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

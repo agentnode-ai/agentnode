@@ -48,7 +48,10 @@ agent:
     spot cost anomalies, and recommend concrete savings opportunities
     with estimated impact.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "csv-analyzer-pack"
+      - "document-summarizer-pack"
+      - "web-search-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

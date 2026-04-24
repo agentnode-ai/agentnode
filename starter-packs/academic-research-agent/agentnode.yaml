@@ -48,7 +48,11 @@ agent:
     relevant papers, then synthesize findings into a structured literature
     review with proper citations and source links.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "document-summarizer-pack"
+      - "pdf-extractor-pack"
+      - "web-search-pack"
+      - "webpage-extractor-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

@@ -48,7 +48,10 @@ agent:
     web, extracting page content, cross-referencing sources, and
     synthesizing findings into a comprehensive report with citations.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "document-summarizer-pack"
+      - "web-search-pack"
+      - "webpage-extractor-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

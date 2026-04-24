@@ -120,9 +120,9 @@ const ADVANTAGES = [
       "The agent's behavior description, tool access, system prompt, and permission levels are all visible on the package page. Nothing is hidden.",
   },
   {
-    title: "Framework Agnostic",
+    title: "Any LLM Provider",
     description:
-      "Agents work with any LLM provider (OpenAI, Anthropic, Gemini, OpenRouter) and any framework (LangChain, CrewAI, or standalone).",
+      "Agents work with any LLM provider — OpenAI, Anthropic, Gemini, or OpenRouter. The agent uses the same model that invokes it, auto-detected from your API key.",
   },
   {
     title: "Declared Permissions",

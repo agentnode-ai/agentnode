@@ -48,7 +48,10 @@ agent:
     guides, and usage examples. Follow documentation best practices
     for clarity, completeness, and consistency.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "code-linter-pack"
+      - "code-refactor-pack"
+      - "test-generator-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

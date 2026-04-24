@@ -48,7 +48,10 @@ agent:
     communications, identify key discussion topics, and generate a
     structured agenda with talking points.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "document-summarizer-pack"
+      - "web-search-pack"
+      - "webpage-extractor-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

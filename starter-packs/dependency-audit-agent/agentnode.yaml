@@ -48,7 +48,10 @@ agent:
     outdated packages, check for leaked secrets in configuration, and
     produce a prioritized remediation report.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "code-refactor-pack"
+      - "secret-scanner-pack"
+      - "web-search-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

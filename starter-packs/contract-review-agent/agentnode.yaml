@@ -48,7 +48,10 @@ agent:
     compare against standard templates, and produce a risk assessment
     with recommended modifications.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "contract-review-pack"
+      - "document-summarizer-pack"
+      - "pdf-extractor-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

@@ -48,7 +48,11 @@ agent:
     vulnerabilities, suggest refactoring improvements, and assess code
     quality. Produce an actionable review report.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "code-linter-pack"
+      - "code-refactor-pack"
+      - "secret-scanner-pack"
+      - "security-audit-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

@@ -48,7 +48,9 @@ agent:
     missing values, formatting inconsistencies, outliers, and
     structural problems. Produce a data quality report.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "csv-analyzer-pack"
+      - "document-summarizer-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

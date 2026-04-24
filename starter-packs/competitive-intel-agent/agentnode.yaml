@@ -48,7 +48,10 @@ agent:
     product offerings, and market positioning. Produce a structured
     competitive analysis report with actionable insights.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "document-summarizer-pack"
+      - "web-search-pack"
+      - "webpage-extractor-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

@@ -48,7 +48,11 @@ agent:
     correlate events across time windows, and produce a root cause
     analysis report with timeline.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "csv-analyzer-pack"
+      - "document-summarizer-pack"
+      - "json-processor-pack"
+      - "web-search-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50

@@ -48,7 +48,9 @@ agent:
     extract action items and deadlines, draft responses for routine
     messages, and produce a prioritized summary.
   tool_access:
-    allowed_packages: []
+    allowed_packages:
+      - "document-summarizer-pack"
+      - "email-drafter-pack"
   limits:
     max_iterations: 10
     max_tool_calls: 50
