@@ -478,6 +478,21 @@ def load_tool(slug: str, tool_name: str | None = None) -> Any:
                             f"for tool '{tool_name}' in package '{slug}'."
                         )
                     return func
+        # Fallback: tool_name given but not in tools list — try package-level entrypoint
+        # This handles packages where capability-level entrypoints are not published
+        entrypoint = pkg.get("entrypoint")
+        if entrypoint:
+            module_path, func_name = _resolve_entrypoint(entrypoint)
+            mod = _import_module(module_path, slug)
+            # Try tool_name as function name in the module
+            func = getattr(mod, tool_name, None)
+            if func and callable(func):
+                return func
+            # Try default function from entrypoint
+            func = getattr(mod, func_name, None)
+            if func and callable(func):
+                return func
+
         raise ImportError(
             f"Tool '{tool_name}' not found in package '{slug}'. "
             f"Available tools: {[t.get('name') for t in pkg.get('tools', [])]}"
