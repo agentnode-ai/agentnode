@@ -3,7 +3,7 @@ package_id: "api-design-agent"
 package_type: "agent"
 name: "API Design Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.1.0"
 summary: "Generate an OpenAPI specification from requirements, validate it, and produce docs."
 description: |
   Design an API by converting requirements into a spec, validating, and generating docs.

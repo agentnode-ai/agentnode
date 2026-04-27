@@ -3,7 +3,7 @@ package_id: "test-writer-agent"
 package_type: "agent"
 name: "Test Writer Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.1.0"
 summary: "Analyze source code and generate comprehensive test suites with unit tests."
 description: |
   Generate tests by analyzing function signatures, creating unit tests, and validating them.

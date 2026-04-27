@@ -3,7 +3,7 @@ package_id: "code-review-agent"
 package_type: "agent"
 name: "Code Review Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.1.0"
 summary: "Perform comprehensive code review: lint, security audit, and refactoring suggestions."
 description: |
   Review code by running linting, security checks, and suggesting refactorings.

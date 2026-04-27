@@ -3,7 +3,7 @@ package_id: "ci-cd-agent"
 package_type: "agent"
 name: "CI/CD Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.1.0"
 summary: "Analyze project structure and generate CI/CD pipeline configuration."
 description: |
   Orchestrate a CI/CD pipeline by analyzing code, running checks, and generating config.

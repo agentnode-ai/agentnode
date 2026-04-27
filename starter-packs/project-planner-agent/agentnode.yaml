@@ -3,7 +3,7 @@ package_id: "project-planner-agent"
 package_type: "agent"
 name: "Project Planner Agent"
 publisher: "agentnode"
-version: "3.0.0"
+version: "3.1.0"
 summary: "Break down project goals into user stories, tasks, and milestones, using LLM reasoning."
 description: |
   Plan projects with structured breakdown

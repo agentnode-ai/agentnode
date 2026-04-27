@@ -3,7 +3,7 @@ package_id: "cloud-cost-agent"
 package_type: "agent"
 name: "Cloud Cost Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.1.0"
 summary: "Analyze cloud infrastructure costs, identify waste, and recommend optimizations."
 description: |
   Analyze cloud costs by examining billing data and recommending optimizations.

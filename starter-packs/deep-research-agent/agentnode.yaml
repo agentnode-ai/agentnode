@@ -3,7 +3,7 @@ package_id: "deep-research-agent"
 package_type: "agent"
 name: "Deep Research Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.1.0"
 summary: "Conduct deep multi-source research on any topic, synthesize findings into a structured report."
 description: |
   Research a topic using web search, page extraction, and summarization to produce a report with sources.

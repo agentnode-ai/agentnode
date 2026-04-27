@@ -3,7 +3,7 @@ package_id: "social-media-agent"
 package_type: "agent"
 name: "Social Media Agent"
 publisher: "agentnode"
-version: "3.0.0"
+version: "3.1.0"
 summary: "Create platform-optimized social media posts with copy and hashtags, using LLM reasoning."
 description: |
   Generate platform-specific social media content

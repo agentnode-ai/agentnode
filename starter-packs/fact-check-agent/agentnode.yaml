@@ -3,7 +3,7 @@ package_id: "fact-check-agent"
 package_type: "agent"
 name: "Fact Check Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.1.0"
 summary: "Verify claims against multiple web sources and produce a fact-check verdict with evidence."
 description: |
   Verify a claim by searching for supporting and contradicting evidence, then producing a verdict.

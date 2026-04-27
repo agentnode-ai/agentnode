@@ -3,7 +3,7 @@ package_id: "contract-review-agent"
 package_type: "agent"
 name: "Contract Review Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.1.0"
 summary: "Analyze legal contracts, flag risky clauses, compare against templates."
 description: |
   Review a contract by extracting text, identifying risks, and suggesting amendments.

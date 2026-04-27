@@ -3,7 +3,7 @@ package_id: "dependency-audit-agent"
 package_type: "agent"
 name: "Dependency Audit Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.1.0"
 summary: "Scan project dependencies for vulnerabilities, outdated versions, and leaked secrets."
 description: |
   Audit dependencies by scanning for CVEs, checking versions, and detecting leaked secrets.

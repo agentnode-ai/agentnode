@@ -3,7 +3,7 @@ package_id: "meeting-prep-agent"
 package_type: "agent"
 name: "Meeting Prep Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.1.0"
 summary: "Prepare for meetings by researching attendees, summarizing docs, and generating an agenda."
 description: |
   Prepare for a meeting by researching topics and attendees, then generating an agenda.

@@ -390,7 +390,8 @@ def _validate_agent(agent: dict, errors: list[str], warnings: list[str]) -> None
             errors.append("agent.limits must be an object")
         else:
             _validate_int_range(limits, "max_iterations", 1, 100, "agent.limits", errors)
-            _validate_int_range(limits, "max_tool_calls", 1, 500, "agent.limits", errors)
+            # Allow 0 for llm_only agents that don't use tools
+            _validate_int_range(limits, "max_tool_calls", 0, 500, "agent.limits", errors)
             _validate_int_range(limits, "max_runtime_seconds", 1, 3600, "agent.limits", errors)
 
     # Optional: termination

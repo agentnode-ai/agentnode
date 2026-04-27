@@ -3,7 +3,7 @@ package_id: "spreadsheet-auditor-agent"
 package_type: "agent"
 name: "Spreadsheet Auditor Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.1.0"
 summary: "Audit CSV/Excel spreadsheets for errors, duplicates, and data inconsistencies."
 description: |
   Audit a spreadsheet by checking for duplicates, type mismatches, and missing values.

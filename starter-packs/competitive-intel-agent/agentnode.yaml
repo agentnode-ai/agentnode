@@ -3,7 +3,7 @@ package_id: "competitive-intel-agent"
 package_type: "agent"
 name: "Competitive Intelligence Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.1.0"
 summary: "Analyze competitors by scraping web presence, monitoring news, and producing a competitive report."
 description: |
   Gather competitive intelligence by searching the web, extracting content, and summarizing into an analysis.

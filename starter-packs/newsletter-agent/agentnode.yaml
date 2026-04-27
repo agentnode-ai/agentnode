@@ -3,7 +3,7 @@ package_id: "newsletter-agent"
 package_type: "agent"
 name: "Newsletter Agent"
 publisher: "agentnode"
-version: "3.0.0"
+version: "3.1.0"
 summary: "Draft engaging newsletter emails on any topic, using LLM reasoning."
 description: |
   Create engaging newsletter content

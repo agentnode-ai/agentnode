@@ -3,7 +3,7 @@ package_id: "news-digest-agent"
 package_type: "agent"
 name: "News Digest Agent"
 publisher: "agentnode"
-version: "2.0.0"
+version: "2.1.0"
 summary: "Aggregate news from multiple sources on a topic, summarize stories, and optionally translate."
 description: |
   Create a news digest by aggregating articles, summarizing each, and optionally translating.
