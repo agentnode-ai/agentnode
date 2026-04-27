@@ -10,6 +10,35 @@ import { getInstallMetadata, getPackage, trackInstall } from "../api.js";
 import { installPackage } from "../installer.js";
 import { hasLocalCredential, PROVIDERS, runAuthFlow } from "./auth.js";
 
+function showAgentInfo(slug: string, meta: any): void {
+  const agentConfig = meta.agent;
+  if (!agentConfig) return;
+
+  const tier = agentConfig.tier || "";
+  const allowedPkgs: string[] = agentConfig.tool_access?.allowed_packages || [];
+  const goal = agentConfig.goal || "";
+
+  console.log("");
+  console.log(chalk.dim("  Agent info:"));
+  if (tier) {
+    console.log(chalk.dim(`    Tier: ${tier}`));
+  }
+  if (goal) {
+    console.log(chalk.dim(`    Goal: ${goal.length > 80 ? goal.slice(0, 77) + "..." : goal}`));
+  }
+  if (allowedPkgs.length > 0) {
+    console.log(chalk.dim(`    Tools: ${allowedPkgs.join(", ")}`));
+  }
+
+  const needsLlm = tier === "llm_only" || agentConfig.llm?.required === true;
+  if (needsLlm) {
+    console.log("");
+    console.log(chalk.dim("  This agent uses LLM reasoning."));
+    console.log(chalk.dim("  Default: uses the LLM that invokes it."));
+    console.log(chalk.dim(`  Custom:  ${chalk.cyan(`agentnode agent llm ${slug} --provider openai`)}`));
+  }
+}
+
 export const installCommand = new Command("install")
   .description("Install a package from the AgentNode registry")
   .argument("<slug>", "Package slug")
@@ -181,6 +210,11 @@ export const installCommand = new Command("install")
 
         console.log(chalk.dim(`\nFiles updated:`));
         console.log(`  agentnode.lock`);
+
+        // 5. Agent-specific: show info
+        if (meta.package_type === "agent") {
+          showAgentInfo(slug, meta);
+        }
 
         if (result.entrypoint) {
           const moduleName = result.entrypoint.split(".")[0];

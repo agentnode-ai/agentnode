@@ -119,16 +119,108 @@ class RetryConfig:
 # LLM auto-detection from environment
 # ---------------------------------------------------------------------------
 
-def _auto_detect_llm() -> dict | None:
-    """Try to create an LLM client from environment variables.
+def _load_agentnode_env() -> None:
+    """Load ~/.agentnode/.env into os.environ if it exists (no overwrite)."""
+    import os
+    from pathlib import Path
+    env_path = Path.home() / ".agentnode" / ".env"
+    if not env_path.is_file():
+        return
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            eq = line.find("=")
+            if eq > 0:
+                key, val = line[:eq].strip(), line[eq + 1:].strip()
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except Exception:
+        pass
+
+
+def _read_agent_llm_config(slug: str) -> dict | None:
+    """Read per-agent LLM config from ~/.agentnode/agent-config.json."""
+    import json
+    from pathlib import Path
+    config_path = Path.home() / ".agentnode" / "agent-config.json"
+    if not config_path.is_file():
+        return None
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        return data.get("agents", {}).get(slug, {}).get("llm")
+    except Exception:
+        return None
+
+
+def _create_llm_from_config(llm_config: dict) -> dict | None:
+    """Create an LLM client from agent-config.json entry."""
+    import os
+    _load_agentnode_env()
+
+    provider = llm_config.get("provider", "")
+    model = llm_config.get("model", "")
+    env_var = llm_config.get("api_key_env", "")
+    api_key = os.environ.get(env_var, "") if env_var else ""
+
+    if not api_key:
+        logger.warning("agent_llm_config: %s not set, cannot create %s client", env_var, provider)
+        return None
+
+    if provider == "openai" or provider == "openrouter":
+        try:
+            from openai import OpenAI
+            kwargs: dict = {"api_key": api_key}
+            if provider == "openrouter":
+                kwargs["base_url"] = "https://openrouter.ai/api/v1"
+            return {"client": OpenAI(**kwargs), "provider": "openai", "model": model}
+        except ImportError:
+            logger.debug("openai package not installed")
+        except Exception as exc:
+            logger.debug("Failed to create OpenAI client: %s", exc)
+    elif provider == "anthropic":
+        try:
+            from anthropic import Anthropic
+            return {"client": Anthropic(api_key=api_key), "provider": "anthropic", "model": model}
+        except ImportError:
+            logger.debug("anthropic package not installed")
+        except Exception as exc:
+            logger.debug("Failed to create Anthropic client: %s", exc)
+    elif provider == "gemini":
+        try:
+            from google import genai
+            return {"client": genai.Client(api_key=api_key), "provider": "gemini", "model": model}
+        except ImportError:
+            logger.debug("google-genai package not installed")
+        except Exception as exc:
+            logger.debug("Failed to create Gemini client: %s", exc)
+
+    return None
+
+
+def _auto_detect_llm(slug: str = "") -> dict | None:
+    """Try to create an LLM client.
 
     Resolution order:
-    1. OPENAI_API_KEY -> OpenAI client
-    2. ANTHROPIC_API_KEY -> Anthropic client
+    1. Per-agent config from ~/.agentnode/agent-config.json
+    2. ~/.agentnode/.env (loaded into env, no overwrite)
+    3. OPENAI_API_KEY -> OpenAI client
+    4. ANTHROPIC_API_KEY -> Anthropic client
 
     Returns a dict-style LLM binding {client, provider, model} or None.
     """
+    # Check per-agent config first
+    if slug:
+        agent_llm = _read_agent_llm_config(slug)
+        if agent_llm:
+            result = _create_llm_from_config(agent_llm)
+            if result:
+                logger.info("Using custom LLM for agent '%s': %s/%s", slug, agent_llm.get("provider"), agent_llm.get("model"))
+                return result
+
     import os
+    _load_agentnode_env()
 
     openai_key = os.environ.get("OPENAI_API_KEY")
     if openai_key:
@@ -1163,7 +1255,7 @@ def run_agent(
         tier = agent_config.get("tier", "")
         needs_llm = llm_config.get("required", False) or tier == "llm_only"
         if needs_llm:
-            effective_llm = _auto_detect_llm()
+            effective_llm = _auto_detect_llm(slug)
             if effective_llm is None:
                 logger.warning(
                     "Agent '%s' requires LLM (tier=%s) but no LLM provider "
