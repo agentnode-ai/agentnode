@@ -3,7 +3,7 @@ package_id: "deployment-agent"
 package_type: "agent"
 name: "Deployment Agent"
 publisher: "agentnode"
-version: "2.1.0"
+version: "2.1.1"
 summary: "Orchestrate deployments: verify code quality, run checks, and produce a deployment checklist."
 description: |
   Deploy by verifying build quality, running tests, and producing a deployment checklist.

@@ -3,7 +3,7 @@ package_id: "report-generator-agent"
 package_type: "agent"
 name: "Report Generator Agent"
 publisher: "agentnode"
-version: "3.1.0"
+version: "3.1.1"
 summary: "Generate structured business reports with executive summary from provided data, using LLM reasoning."
 description: |
   Generate structured business reports

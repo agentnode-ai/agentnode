@@ -3,7 +3,7 @@ package_id: "sql-report-agent"
 package_type: "agent"
 name: "SQL Report Agent"
 publisher: "agentnode"
-version: "2.1.0"
+version: "2.1.1"
 summary: "Answer natural language questions about data by generating SQL queries."
 description: |
   Translate natural language to SQL, format queries, and produce a report.

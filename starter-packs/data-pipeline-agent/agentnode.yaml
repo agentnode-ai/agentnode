@@ -3,7 +3,7 @@ package_id: "data-pipeline-agent"
 package_type: "agent"
 name: "Data Pipeline Agent"
 publisher: "agentnode"
-version: "2.1.0"
+version: "2.1.1"
 summary: "Build and run a data pipeline: load from CSV/JSON, clean and transform, then output."
 description: |
   Execute a data pipeline by loading, cleaning, and transforming data to a target format.

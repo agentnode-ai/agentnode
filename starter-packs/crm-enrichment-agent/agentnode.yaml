@@ -3,7 +3,7 @@ package_id: "crm-enrichment-agent"
 package_type: "agent"
 name: "CRM Enrichment Agent"
 publisher: "agentnode"
-version: "2.1.0"
+version: "2.1.1"
 summary: "Enrich CRM contacts with web data: company info, social profiles, and news."
 description: |
   Enrich contact records by searching for company info, profiles, and news.

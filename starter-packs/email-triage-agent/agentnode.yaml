@@ -3,7 +3,7 @@ package_id: "email-triage-agent"
 package_type: "agent"
 name: "Email Triage Agent"
 publisher: "agentnode"
-version: "2.1.0"
+version: "2.1.1"
 summary: "Prioritize incoming emails, draft responses for routine messages, extract action items."
 description: |
   Triage emails by categorizing priority, drafting responses, and extracting action items.

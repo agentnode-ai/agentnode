@@ -3,7 +3,7 @@ package_id: "csv-analyst-agent"
 package_type: "agent"
 name: "CSV Analyst Agent"
 publisher: "agentnode"
-version: "2.1.0"
+version: "2.1.1"
 summary: "Upload a CSV, detect patterns and anomalies, and produce an analysis report."
 description: |
   Analyze a CSV by detecting data types, finding patterns, and producing an analysis report.

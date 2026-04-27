@@ -3,7 +3,7 @@ package_id: "security-scanner-agent"
 package_type: "agent"
 name: "Security Scanner Agent"
 publisher: "agentnode"
-version: "2.1.0"
+version: "2.1.1"
 summary: "Run comprehensive security scan: SAST, dependency vulnerabilities, secret detection."
 description: |
   Perform security scan by running static analysis, checking for CVEs, and detecting secrets.
