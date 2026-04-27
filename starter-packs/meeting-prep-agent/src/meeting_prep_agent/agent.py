@@ -35,7 +35,7 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Research the meeting topic
     context.next_iteration()
-    ok, topic_search = _call(context, "web-search-pack", "search_web",
+    ok, topic_search = _call(context, "web-search-pack", None,
                              query=topic, max_results=5)
     topic_results = topic_search.get("results", []) if ok else []
 
@@ -47,7 +47,7 @@ def run(context: Any, **kwargs: Any) -> dict:
             if not person:
                 continue
             context.next_iteration()
-            ok, search = _call(context, "web-search-pack", "search_web",
+            ok, search = _call(context, "web-search-pack", None,
                                query=f"{person} professional background", max_results=3)
             if ok:
                 snippets = [r.get("snippet", "") for r in search.get("results", [])]
@@ -59,7 +59,7 @@ def run(context: Any, **kwargs: Any) -> dict:
     for item in topic_results[:3]:
         url = item.get("url", "")
         if url:
-            ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+            ok, page = _call(context, "webpage-extractor-pack", None, url=url)
             if ok and page.get("text"):
                 topic_texts.append(page["text"][:1500])
 
@@ -68,7 +68,7 @@ def run(context: Any, **kwargs: Any) -> dict:
     prep_text = f"Meeting topic: {topic}\n"
     if topic_texts:
         prep_text += "Background: " + "\n".join(topic_texts)[:2000]
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=prep_text, max_sentences=8)
 
     agenda = f"# Meeting: {topic}\n\n"

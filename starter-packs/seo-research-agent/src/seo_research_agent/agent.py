@@ -35,21 +35,21 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Extract target page content
     context.next_iteration()
-    ok, page = _call(context, "webpage-extractor-pack", "extract_webpage",
-                     url=target_url, include_links=True)
+    ok, page = _call(context, "webpage-extractor-pack", None,
+                     url=target_url)
     page_text = page.get("text", "") if ok else ""
     page_title = page.get("title", "") if ok else ""
 
     # Step 2: Run SEO analysis on the page
     context.next_iteration()
-    ok, seo = _call(context, "seo-optimizer-pack", "webpage_extraction",
+    ok, seo = _call(context, "seo-optimizer-pack", None,
                     html=page_text, url=target_url, keyword=keyword)
     seo_findings = seo if ok else {}
 
     # Step 3: Check competitor rankings for the keyword
     context.next_iteration()
     search_query = keyword if keyword else page_title
-    ok, competitors = _call(context, "web-search-pack", "search_web",
+    ok, competitors = _call(context, "web-search-pack", None,
                             query=search_query, max_results=10)
     competitor_urls = []
     if ok:
@@ -63,7 +63,7 @@ def run(context: Any, **kwargs: Any) -> dict:
     if seo_findings:
         findings_text += f"SEO Analysis: {seo_findings}\n"
     findings_text += f"Content length: {len(page_text)} chars"
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=findings_text, max_sentences=6)
 
     return {"url": target_url, "page_title": page_title,

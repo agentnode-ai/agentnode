@@ -35,35 +35,26 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Generate SQL for data models
     context.next_iteration()
-    ok, sql = _call(context, "sql-generator-pack", "generate_sql",
+    ok, sql = _call(context, "sql-generator-pack", None,
                     description=f"Create tables for: {requirements}",
                     dialect=dialect)
     data_model_sql = sql.get("sql", sql.get("output", "")) if ok else ""
 
-    # Step 2: Format the SQL
-    context.next_iteration()
-    formatted_sql = data_model_sql
-    if data_model_sql:
-        ok, fmt = _call(context, "sql-generator-pack", "format_sql",
-                        sql=data_model_sql, dialect=dialect)
-        if ok:
-            formatted_sql = fmt.get("formatted_sql", fmt.get("output", data_model_sql))
-
-    # Step 3: Analyze for best practices
+    # Step 2: Analyze for best practices
     context.next_iteration()
     if data_model_sql:
-        ok, lint = _call(context, "code-linter-pack", "code_analysis",
+        ok, lint = _call(context, "code-linter-pack", None,
                          code=data_model_sql, language="python")
     else:
         lint = {}
 
-    # Step 4: Summarize the design
+    # Step 3: Summarize the design
     context.next_iteration()
-    design_text = f"Requirements: {requirements}\nData Model SQL: {formatted_sql}"
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    design_text = f"Requirements: {requirements}\nData Model SQL: {data_model_sql}"
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=design_text, max_sentences=5)
 
     return {"requirements": requirements,
-            "data_model_sql": formatted_sql,
+            "data_model_sql": data_model_sql,
             "design_summary": summary.get("summary", "") if ok else "",
             "done": True}

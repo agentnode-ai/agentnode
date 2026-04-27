@@ -35,8 +35,8 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Extract current page content
     context.next_iteration()
-    ok, page = _call(context, "webpage-extractor-pack", "extract_webpage",
-                     url=url, include_links=True)
+    ok, page = _call(context, "webpage-extractor-pack", None,
+                     url=url)
     if not ok:
         return {"url": url, "status": "down",
                 "error": page.get("error", "Could not reach site"), "done": True}
@@ -51,13 +51,13 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 3: Summarize current content
     context.next_iteration()
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=current_text[:3000], max_sentences=5)
     content_summary = summary.get("summary", current_text[:300]) if ok else current_text[:300]
 
     # Step 4: Check for common issues via search
     context.next_iteration()
-    ok, uptime = _call(context, "web-search-pack", "search_web",
+    ok, uptime = _call(context, "web-search-pack", None,
                        query=f"is {url} down today", max_results=3)
     uptime_reports = [r.get("title", "") for r in uptime.get("results", [])] if ok else []
 

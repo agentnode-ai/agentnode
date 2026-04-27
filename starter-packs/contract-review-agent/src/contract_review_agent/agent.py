@@ -37,7 +37,7 @@ def run(context: Any, **kwargs: Any) -> dict:
     context.next_iteration()
     contract_text = text
     if file_path and not text:
-        ok, pdf = _call(context, "pdf-extractor-pack", "pdf_extraction",
+        ok, pdf = _call(context, "pdf-extractor-pack", None,
                         file_path=file_path, extract_tables=True)
         if ok:
             contract_text = pdf.get("text", "")
@@ -47,13 +47,13 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 2: Analyze contract for risks
     context.next_iteration()
-    ok, review = _call(context, "contract-review-pack", "document_parsing",
+    ok, review = _call(context, "contract-review-pack", None,
                        text=contract_text[:5000], check_risks=True, extract_terms=True)
     contract_analysis = review if ok else {}
 
     # Step 3: Summarize the contract
     context.next_iteration()
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=contract_text[:5000], max_sentences=8)
     contract_summary = summary.get("summary", contract_text[:500]) if ok else contract_text[:500]
 

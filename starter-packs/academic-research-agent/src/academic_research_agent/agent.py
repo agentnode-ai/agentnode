@@ -34,7 +34,7 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Search for academic papers
     context.next_iteration()
-    ok, search = _call(context, "web-search-pack", "search_web",
+    ok, search = _call(context, "web-search-pack", None,
                        query=f"site:arxiv.org OR site:scholar.google.com {topic}",
                        max_results=10)
     if not ok:
@@ -53,14 +53,14 @@ def run(context: Any, **kwargs: Any) -> dict:
 
         if "arxiv.org" in url and "/abs/" in url:
             pdf_url = url.replace("/abs/", "/pdf/") + ".pdf"
-            ok, pdf = _call(context, "pdf-extractor-pack", "pdf_extraction",
+            ok, pdf = _call(context, "pdf-extractor-pack", None,
                             file_path=pdf_url, pages="1-5")
             if ok and pdf.get("text"):
                 texts.append(pdf["text"][:3000])
                 papers.append({"title": item.get("title", ""), "url": url, "type": "pdf"})
                 continue
 
-        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+        ok, page = _call(context, "webpage-extractor-pack", None, url=url)
         if ok and page.get("text"):
             texts.append(page["text"][:3000])
             papers.append({"title": item.get("title", url), "url": url, "type": "webpage"})
@@ -71,7 +71,7 @@ def run(context: Any, **kwargs: Any) -> dict:
     # Step 3: Summarize into a literature review
     context.next_iteration()
     combined = "\n\n---\n\n".join(texts)
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=combined, max_sentences=12)
 
     review = summary.get("summary", combined[:1000]) if ok else combined[:1000]

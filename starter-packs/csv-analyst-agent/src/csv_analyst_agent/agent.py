@@ -30,29 +30,40 @@ def run(context: Any, **kwargs: Any) -> dict:
     Returns:
         Structured result dict.
     """
-    file_path = kwargs.get("file_path", "") or context.goal
+    file_path = kwargs.get("file_path", "")
+    goal = context.goal
+    has_file = bool(file_path and not file_path.startswith("Analyze"))
 
     # Step 1: Describe the dataset
     context.next_iteration()
-    ok, desc = _call(context, "csv-analyzer-pack", "describe_csv", file_path=file_path)
-    statistics = desc if ok else {"error": "Could not describe dataset"}
+    if has_file:
+        ok, desc = _call(context, "csv-analyzer-pack", None, file_path=file_path, operation="describe")
+        statistics = desc if ok else {"error": "Could not describe dataset"}
+    else:
+        statistics = {"note": "No CSV file provided — analysis based on goal text"}
 
     # Step 2: Inspect columns
     context.next_iteration()
-    ok, cols = _call(context, "csv-analyzer-pack", "columns_csv", file_path=file_path)
-    columns = cols if ok else {}
+    if has_file:
+        ok, cols = _call(context, "csv-analyzer-pack", None, file_path=file_path, operation="columns")
+        columns = cols if ok else {}
+    else:
+        columns = {}
 
     # Step 3: Sample first rows
     context.next_iteration()
-    ok, head = _call(context, "csv-analyzer-pack", "head_csv", file_path=file_path, n=10)
-    sample = head if ok else {}
+    if has_file:
+        ok, head = _call(context, "csv-analyzer-pack", None, file_path=file_path, operation="head", n=10)
+        sample = head if ok else {}
+    else:
+        sample = {}
 
     # Step 4: Summarize findings
     context.next_iteration()
-    findings = f"File: {file_path}\nStats: {statistics}\nColumns: {columns}"
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    findings = f"File: {file_path or goal}\nStats: {statistics}\nColumns: {columns}"
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=findings, max_sentences=6)
 
     return {"analysis": summary.get("summary", findings[:500]) if ok else findings[:500],
             "statistics": statistics, "columns": columns,
-            "sample_data": sample, "file": file_path, "done": True}
+            "sample_data": sample, "file": file_path or goal, "done": True}

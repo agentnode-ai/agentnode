@@ -35,7 +35,7 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Search for the contact/person
     context.next_iteration()
-    ok, person_search = _call(context, "web-search-pack", "search_web",
+    ok, person_search = _call(context, "web-search-pack", None,
                               query=f"{contact} professional profile linkedin",
                               max_results=5)
     person_results = person_search.get("results", []) if ok else []
@@ -44,7 +44,7 @@ def run(context: Any, **kwargs: Any) -> dict:
     context.next_iteration()
     company_info = {}
     if company:
-        ok, company_search = _call(context, "web-search-pack", "search_web",
+        ok, company_search = _call(context, "web-search-pack", None,
                                    query=f"{company} company about products",
                                    max_results=5)
         if ok:
@@ -57,21 +57,21 @@ def run(context: Any, **kwargs: Any) -> dict:
         if not url:
             continue
         context.next_iteration()
-        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+        ok, page = _call(context, "webpage-extractor-pack", None, url=url)
         if ok and page.get("text"):
             profile_texts.append(page["text"][:1500])
 
     # Step 4: Search for recent news
     context.next_iteration()
     search_name = f"{contact} {company}" if company else contact
-    ok, news = _call(context, "web-search-pack", "search_web",
+    ok, news = _call(context, "web-search-pack", None,
                      query=f"{search_name} news recent", max_results=5)
     news_items = news.get("results", []) if ok else []
 
     # Step 5: Summarize profile
     context.next_iteration()
     combined = "\n".join(profile_texts) if profile_texts else contact
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=combined, max_sentences=5)
 
     return {"contact": contact, "company": company,

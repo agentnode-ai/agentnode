@@ -34,26 +34,26 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Analyze project structure
     context.next_iteration()
-    ok, analysis = _call(context, "code-refactor-pack", "code_analysis",
+    ok, analysis = _call(context, "code-refactor-pack", None,
                          code=code, operation="analyze")
     project_info = analysis if ok else {}
 
     # Step 2: Lint the code
     context.next_iteration()
-    ok, lint = _call(context, "code-linter-pack", "code_analysis",
+    ok, lint = _call(context, "code-linter-pack", None,
                      code=code, language="python", fix=False)
     lint_result = lint if ok else {}
 
     # Step 3: Generate test stubs
     context.next_iteration()
-    ok, tests = _call(context, "test-generator-pack", "code_analysis",
+    ok, tests = _call(context, "test-generator-pack", None,
                       code=code, framework="pytest")
     test_info = tests if ok else {}
 
     # Step 4: Generate pipeline recommendation
     context.next_iteration()
     pipeline_text = f"Project analysis: {project_info}\nLint status: {lint_result}"
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=pipeline_text, max_sentences=5)
 
     has_issues = bool(lint_result.get("issues", []))

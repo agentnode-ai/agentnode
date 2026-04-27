@@ -34,14 +34,14 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Search for supporting evidence
     context.next_iteration()
-    ok, support_search = _call(context, "web-search-pack", "search_web",
+    ok, support_search = _call(context, "web-search-pack", None,
                                query=f"evidence supporting \"{claim}\"",
                                max_results=5)
     supporting = support_search.get("results", []) if ok else []
 
     # Step 2: Search for contradicting evidence
     context.next_iteration()
-    ok, contra_search = _call(context, "web-search-pack", "search_web",
+    ok, contra_search = _call(context, "web-search-pack", None,
                               query=f"evidence against debunk \"{claim}\"",
                               max_results=5)
     contradicting = contra_search.get("results", []) if ok else []
@@ -56,7 +56,7 @@ def run(context: Any, **kwargs: Any) -> dict:
         if not url:
             continue
         context.next_iteration()
-        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+        ok, page = _call(context, "webpage-extractor-pack", None, url=url)
         if ok and page.get("text"):
             support_texts.append(page["text"][:1500])
             all_sources.append({"title": item.get("title", ""), "url": url, "stance": "supporting"})
@@ -66,7 +66,7 @@ def run(context: Any, **kwargs: Any) -> dict:
         if not url:
             continue
         context.next_iteration()
-        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+        ok, page = _call(context, "webpage-extractor-pack", None, url=url)
         if ok and page.get("text"):
             contra_texts.append(page["text"][:1500])
             all_sources.append({"title": item.get("title", ""), "url": url, "stance": "contradicting"})

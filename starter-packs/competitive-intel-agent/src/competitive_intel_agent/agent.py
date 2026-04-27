@@ -34,7 +34,7 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Search for company information
     context.next_iteration()
-    ok, search = _call(context, "web-search-pack", "search_web",
+    ok, search = _call(context, "web-search-pack", None,
                        query=f"{company} company overview products services competitors",
                        max_results=8)
     if not ok:
@@ -50,14 +50,14 @@ def run(context: Any, **kwargs: Any) -> dict:
         if not url:
             continue
         context.next_iteration()
-        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+        ok, page = _call(context, "webpage-extractor-pack", None, url=url)
         if ok and page.get("text"):
             texts.append(page["text"][:2000])
             sources.append({"title": item.get("title", url), "url": url})
 
     # Step 3: Search for recent news
     context.next_iteration()
-    ok, news_search = _call(context, "web-search-pack", "search_web",
+    ok, news_search = _call(context, "web-search-pack", None,
                             query=f"{company} news latest developments 2026",
                             max_results=5)
     news_items = news_search.get("results", []) if ok else []
@@ -65,7 +65,7 @@ def run(context: Any, **kwargs: Any) -> dict:
     # Step 4: Summarize findings
     context.next_iteration()
     combined = "\n\n".join(texts) if texts else f"Company: {company}"
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=combined, max_sentences=8)
     analysis = summary.get("summary", combined[:800]) if ok else combined[:800]
 

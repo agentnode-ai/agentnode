@@ -35,13 +35,13 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Analyze code structure
     context.next_iteration()
-    ok, analysis = _call(context, "code-refactor-pack", "code_analysis",
+    ok, analysis = _call(context, "code-refactor-pack", None,
                          code=code, operation="analyze")
     code_structure = analysis if ok else {}
 
     # Step 2: Generate tests
     context.next_iteration()
-    ok, tests = _call(context, "test-generator-pack", "code_analysis",
+    ok, tests = _call(context, "test-generator-pack", None,
                       code=code, framework=framework)
     generated_tests = tests if ok else {"error": "Test generation failed"}
 
@@ -51,7 +51,7 @@ def run(context: Any, **kwargs: Any) -> dict:
         test_code = tests.get("tests", tests.get("output", tests.get("code", "")))
         if isinstance(test_code, str) and test_code:
             context.next_iteration()
-            ok, lint = _call(context, "code-linter-pack", "code_analysis",
+            ok, lint = _call(context, "code-linter-pack", None,
                              code=test_code, language="python")
             if ok and lint.get("issues"):
                 generated_tests["lint_issues"] = lint["issues"]

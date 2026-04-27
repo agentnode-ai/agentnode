@@ -37,10 +37,10 @@ def run(context: Any, **kwargs: Any) -> dict:
     context.next_iteration()
     log_entries = []
     if file_path:
-        ok, desc = _call(context, "csv-analyzer-pack", "describe_csv", file_path=file_path)
+        ok, desc = _call(context, "csv-analyzer-pack", None, file_path=file_path, operation="describe")
         if ok:
             log_entries.append(f"Log statistics: {desc}")
-        ok, head = _call(context, "csv-analyzer-pack", "head_csv", file_path=file_path, n=20)
+        ok, head = _call(context, "csv-analyzer-pack", None, file_path=file_path, operation="head", n=20)
         if ok:
             log_entries.append(f"Recent entries: {head}")
 
@@ -53,7 +53,7 @@ def run(context: Any, **kwargs: Any) -> dict:
             if isinstance(data, dict):
                 data = [data]
             if isinstance(data, list):
-                ok, processed = _call(context, "json-processor-pack", "json_processing",
+                ok, processed = _call(context, "json-processor-pack", None,
                                       data=data, query="[?level=='ERROR' || level=='error']")
                 if ok:
                     log_entries.append(f"Error entries: {processed}")
@@ -71,7 +71,7 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     if error_lines:
         sample_error = error_lines[0][:100]
-        ok, web = _call(context, "web-search-pack", "search_web",
+        ok, web = _call(context, "web-search-pack", None,
                         query=f"how to fix {sample_error}", max_results=3)
         remediation = [r.get("title", "") for r in web.get("results", [])] if ok else []
     else:
@@ -79,7 +79,7 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 4: Summarize
     context.next_iteration()
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=combined[:4000], max_sentences=6)
 
     return {"findings": summary.get("summary", combined[:500]) if ok else combined[:500],

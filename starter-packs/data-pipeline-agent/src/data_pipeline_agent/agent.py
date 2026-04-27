@@ -30,41 +30,53 @@ def run(context: Any, **kwargs: Any) -> dict:
     Returns:
         Structured result dict.
     """
-    file_path = kwargs.get("file_path", "") or context.goal
+    file_path = kwargs.get("file_path", "")
+    goal = context.goal
+    has_file = bool(file_path and not file_path.startswith("Build"))
     filter_column = kwargs.get("filter_column", "")
     filter_value = kwargs.get("filter_value", "")
     filter_operator = kwargs.get("filter_operator", "==")
 
     # Step 1: Describe the source data
     context.next_iteration()
-    ok, desc = _call(context, "csv-analyzer-pack", "describe_csv", file_path=file_path)
-    source_stats = desc if ok else {}
+    if has_file:
+        ok, desc = _call(context, "csv-analyzer-pack", None, file_path=file_path, operation="describe")
+        source_stats = desc if ok else {}
+    else:
+        source_stats = {"note": "No source file provided — pipeline design based on goal text"}
 
     # Step 2: Inspect columns
     context.next_iteration()
-    ok, cols = _call(context, "csv-analyzer-pack", "columns_csv", file_path=file_path)
-    column_info = cols if ok else {}
+    if has_file:
+        ok, cols = _call(context, "csv-analyzer-pack", None, file_path=file_path, operation="columns")
+        column_info = cols if ok else {}
+    else:
+        column_info = {}
 
     # Step 3: Apply filter if specified
     context.next_iteration()
     filtered_data = None
-    if filter_column and filter_value:
-        ok, filtered = _call(context, "csv-analyzer-pack", "filter_csv",
-                             file_path=file_path, column=filter_column,
+    if has_file and filter_column and filter_value:
+        ok, filtered = _call(context, "csv-analyzer-pack", None,
+                             file_path=file_path, operation="filter",
+                             column=filter_column,
                              value=filter_value, operator=filter_operator)
         if ok:
             filtered_data = filtered
 
     # Step 4: Get processed data sample
     context.next_iteration()
-    ok, head = _call(context, "csv-analyzer-pack", "head_csv", file_path=file_path, n=20)
-    sample = head if ok else {}
+    if has_file:
+        ok, head = _call(context, "csv-analyzer-pack", None, file_path=file_path, operation="head", n=20)
+        sample = head if ok else {}
+    else:
+        sample = {}
 
     records_note = "all records"
     if filtered_data:
         records_note = f"filtered by {filter_column} {filter_operator} {filter_value}"
 
-    return {"source_file": file_path, "source_stats": source_stats,
+    return {"source_file": file_path or goal, "source_stats": source_stats,
             "columns": column_info, "filter_applied": records_note,
             "filtered_data": filtered_data, "sample": sample,
             "done": True}

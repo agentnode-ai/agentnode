@@ -34,20 +34,20 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Summarize the emails
     context.next_iteration()
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=emails_text[:5000], max_sentences=10)
     email_summary = summary.get("summary", emails_text[:500]) if ok else emails_text[:500]
 
     # Step 2: Draft response for the email
     context.next_iteration()
-    ok, response = _call(context, "email-drafter-pack", "email_drafting",
+    ok, response = _call(context, "email-drafter-pack", None,
                          intent=f"Reply to: {email_summary[:500]}",
                          tone="professional")
     draft = response.get("email", response.get("output", "")) if ok else ""
 
     # Step 3: Extract action items by summarizing again with focus
     context.next_iteration()
-    ok, actions = _call(context, "document-summarizer-pack", "document_summary",
+    ok, actions = _call(context, "document-summarizer-pack", None,
                         text=f"Extract action items from: {emails_text[:3000]}",
                         max_sentences=5)
 

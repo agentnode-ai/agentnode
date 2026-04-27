@@ -34,19 +34,19 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Static analysis (lint)
     context.next_iteration()
-    ok, lint = _call(context, "code-linter-pack", "code_analysis",
+    ok, lint = _call(context, "code-linter-pack", None,
                      code=code, language="python")
     lint_findings = lint if ok else {}
 
     # Step 2: Security-specific audit (bandit)
     context.next_iteration()
-    ok, security = _call(context, "security-audit-pack", "code_analysis",
+    ok, security = _call(context, "security-audit-pack", None,
                          code=code, severity="LOW")
     security_findings = security if ok else {}
 
     # Step 3: Secret scanning
     context.next_iteration()
-    ok, secrets = _call(context, "secret-scanner-pack", "code_analysis", code=code)
+    ok, secrets = _call(context, "secret-scanner-pack", None, code=code)
     secrets_findings = secrets if ok else {}
 
     # Step 4: Search for known issues
@@ -57,7 +57,7 @@ def run(context: Any, **kwargs: Any) -> dict:
     vuln_info = []
     if import_lines:
         pkgs = " ".join(import_lines[:5])
-        ok, search = _call(context, "web-search-pack", "search_web",
+        ok, search = _call(context, "web-search-pack", None,
                            query=f"python security vulnerability {pkgs[:100]}",
                            max_results=3)
         if ok:

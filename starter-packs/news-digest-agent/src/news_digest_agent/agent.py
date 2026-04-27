@@ -35,14 +35,14 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Aggregate news
     context.next_iteration()
-    ok, news = _call(context, "news-aggregator-pack", "web_search",
+    ok, news = _call(context, "news-aggregator-pack", None,
                      topic=topic, limit=10)
     articles_raw = news.get("results", news.get("articles", [])) if ok else []
 
     # Fallback to web search if aggregator returns nothing
     if not articles_raw:
         context.next_iteration()
-        ok, search = _call(context, "web-search-pack", "search_web",
+        ok, search = _call(context, "web-search-pack", None,
                            query=f"{topic} news latest", max_results=10)
         articles_raw = search.get("results", []) if ok else []
 
@@ -54,12 +54,12 @@ def run(context: Any, **kwargs: Any) -> dict:
         if not url:
             continue
         context.next_iteration()
-        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+        ok, page = _call(context, "webpage-extractor-pack", None, url=url)
         text = page.get("text", "") if ok else ""
 
         summary_text = ""
         if text:
-            ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+            ok, summary = _call(context, "document-summarizer-pack", None,
                                 text=text[:3000], max_sentences=3)
             summary_text = summary.get("summary", text[:200]) if ok else text[:200]
 
@@ -71,7 +71,7 @@ def run(context: Any, **kwargs: Any) -> dict:
         full_digest = "\n\n".join(
             f"## {d['title']}\n{d['summary']}" for d in digest_items
         )
-        ok, translated = _call(context, "text-translator-pack", "translation",
+        ok, translated = _call(context, "text-translator-pack", None,
                                text=full_digest, target_language=target_language)
         if ok:
             return {"digest": translated.get("translated_text", translated.get("output", full_digest)),

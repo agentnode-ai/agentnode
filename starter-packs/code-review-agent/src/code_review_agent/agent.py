@@ -34,25 +34,25 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Lint the code
     context.next_iteration()
-    ok, lint = _call(context, "code-linter-pack", "code_analysis",
+    ok, lint = _call(context, "code-linter-pack", None,
                      code=code, language="python")
     lint_result = lint if ok else {"error": "Linting failed"}
 
     # Step 2: Security audit
     context.next_iteration()
-    ok, security = _call(context, "security-audit-pack", "code_analysis",
+    ok, security = _call(context, "security-audit-pack", None,
                          code=code, severity="LOW")
     security_result = security if ok else {"error": "Security audit failed"}
 
     # Step 3: Refactoring analysis
     context.next_iteration()
-    ok, refactor = _call(context, "code-refactor-pack", "code_analysis",
+    ok, refactor = _call(context, "code-refactor-pack", None,
                          code=code, operation="analyze")
     refactor_result = refactor if ok else {"error": "Refactoring analysis failed"}
 
     # Step 4: Scan for secrets
     context.next_iteration()
-    ok, secrets = _call(context, "secret-scanner-pack", "code_analysis", code=code)
+    ok, secrets = _call(context, "secret-scanner-pack", None, code=code)
     secrets_result = secrets if ok else {}
 
     # Compile review

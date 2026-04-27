@@ -34,19 +34,19 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Analyze code structure
     context.next_iteration()
-    ok, analysis = _call(context, "code-refactor-pack", "code_analysis",
+    ok, analysis = _call(context, "code-refactor-pack", None,
                          code=code, operation="analyze")
     code_structure = analysis if ok else {}
 
     # Step 2: Generate test stubs to understand function signatures
     context.next_iteration()
-    ok, tests = _call(context, "test-generator-pack", "code_analysis",
+    ok, tests = _call(context, "test-generator-pack", None,
                       code=code, framework="pytest")
     test_stubs = tests if ok else {}
 
     # Step 3: Lint code to find documentation gaps
     context.next_iteration()
-    ok, lint = _call(context, "code-linter-pack", "code_analysis",
+    ok, lint = _call(context, "code-linter-pack", None,
                      code=code, language="python")
     lint_issues = lint if ok else {}
 

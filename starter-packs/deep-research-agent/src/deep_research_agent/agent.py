@@ -34,7 +34,7 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Search the web
     context.next_iteration()
-    ok, search = _call(context, "web-search-pack", "search_web",
+    ok, search = _call(context, "web-search-pack", None,
                        query=topic, max_results=10)
     if not ok:
         return {"error": f"Search failed: {search.get('error')}", "done": False}
@@ -49,7 +49,7 @@ def run(context: Any, **kwargs: Any) -> dict:
         if not url:
             continue
         context.next_iteration()
-        ok, page = _call(context, "webpage-extractor-pack", "extract_webpage", url=url)
+        ok, page = _call(context, "webpage-extractor-pack", None, url=url)
         if ok and page.get("text"):
             texts.append(page["text"][:3000])
             sources.append({"title": item.get("title", url), "url": url})
@@ -62,7 +62,7 @@ def run(context: Any, **kwargs: Any) -> dict:
     # Step 3: Summarize combined content
     context.next_iteration()
     combined = "\n\n---\n\n".join(texts)
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=combined, max_sentences=10)
 
     report = summary.get("summary", combined[:1000]) if ok else combined[:1000]

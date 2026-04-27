@@ -34,7 +34,7 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Analyze the dependency file
     context.next_iteration()
-    ok, analysis = _call(context, "code-refactor-pack", "code_analysis",
+    ok, analysis = _call(context, "code-refactor-pack", None,
                          code=code, operation="analyze")
     deps_info = analysis if ok else {}
 
@@ -53,7 +53,7 @@ def run(context: Any, **kwargs: Any) -> dict:
     vulnerabilities = []
     for pkg in packages[:5]:
         context.next_iteration()
-        ok, search = _call(context, "web-search-pack", "search_web",
+        ok, search = _call(context, "web-search-pack", None,
                            query=f"{pkg} python CVE vulnerability 2025 2026",
                            max_results=3)
         if ok:
@@ -67,7 +67,7 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 3: Scan for leaked secrets
     context.next_iteration()
-    ok, secrets = _call(context, "secret-scanner-pack", "code_analysis", code=code)
+    ok, secrets = _call(context, "secret-scanner-pack", None, code=code)
     secrets_found = secrets if ok else {}
 
     return {"packages_scanned": packages, "vulnerabilities": vulnerabilities,

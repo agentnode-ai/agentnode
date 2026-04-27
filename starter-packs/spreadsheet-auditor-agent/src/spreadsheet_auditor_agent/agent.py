@@ -30,22 +30,33 @@ def run(context: Any, **kwargs: Any) -> dict:
     Returns:
         Structured result dict.
     """
-    file_path = kwargs.get("file_path", "") or context.goal
+    file_path = kwargs.get("file_path", "")
+    goal = context.goal
+    has_file = bool(file_path and not file_path.startswith("Audit"))
 
     # Step 1: Describe to get overall statistics
     context.next_iteration()
-    ok, desc = _call(context, "csv-analyzer-pack", "describe_csv", file_path=file_path)
-    statistics = desc if ok else {}
+    if has_file:
+        ok, desc = _call(context, "csv-analyzer-pack", None, file_path=file_path, operation="describe")
+        statistics = desc if ok else {}
+    else:
+        statistics = {"note": "No spreadsheet file provided — audit based on goal text"}
 
     # Step 2: Column-level analysis
     context.next_iteration()
-    ok, cols = _call(context, "csv-analyzer-pack", "columns_csv", file_path=file_path)
-    columns = cols if ok else {}
+    if has_file:
+        ok, cols = _call(context, "csv-analyzer-pack", None, file_path=file_path, operation="columns")
+        columns = cols if ok else {}
+    else:
+        columns = {}
 
     # Step 3: Inspect sample data for issues
     context.next_iteration()
-    ok, head = _call(context, "csv-analyzer-pack", "head_csv", file_path=file_path, n=20)
-    sample = head if ok else {}
+    if has_file:
+        ok, head = _call(context, "csv-analyzer-pack", None, file_path=file_path, operation="head", n=20)
+        sample = head if ok else {}
+    else:
+        sample = {}
 
     # Step 4: Identify potential issues from statistics
     issues = []
@@ -62,7 +73,7 @@ def run(context: Any, **kwargs: Any) -> dict:
     context.next_iteration()
     audit_text = f"File: {file_path}\nIssues found: {len(issues)}\n"
     audit_text += "\n".join(issues[:20]) if issues else "No obvious issues detected."
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=audit_text, max_sentences=5)
 
     quality_score = max(0, 100 - len(issues) * 10)
@@ -70,4 +81,4 @@ def run(context: Any, **kwargs: Any) -> dict:
     return {"audit_summary": summary.get("summary", audit_text) if ok else audit_text,
             "issues": issues, "quality_score": quality_score,
             "statistics": statistics, "columns": columns,
-            "file": file_path, "done": True}
+            "file": file_path or goal, "done": True}

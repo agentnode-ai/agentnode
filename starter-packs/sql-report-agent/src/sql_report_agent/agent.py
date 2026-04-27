@@ -36,28 +36,19 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Generate SQL from natural language
     context.next_iteration()
-    ok, gen = _call(context, "sql-generator-pack", "generate_sql",
+    ok, gen = _call(context, "sql-generator-pack", None,
                     description=question, schema=schema, dialect=dialect)
     if not ok:
         return {"error": f"SQL generation failed: {gen.get('error')}", "done": False}
 
     raw_sql = gen.get("sql", gen.get("output", ""))
 
-    # Step 2: Format the SQL
-    context.next_iteration()
-    formatted_sql = raw_sql
-    if raw_sql:
-        ok, fmt = _call(context, "sql-generator-pack", "format_sql",
-                        sql=raw_sql, dialect=dialect)
-        if ok:
-            formatted_sql = fmt.get("formatted_sql", fmt.get("output", raw_sql))
-
-    # Step 3: Summarize what the query does
+    # Step 2: Summarize what the query does
     context.next_iteration()
     explanation_text = f"Question: {question}\nGenerated SQL: {raw_sql}"
-    ok, summary = _call(context, "document-summarizer-pack", "document_summary",
+    ok, summary = _call(context, "document-summarizer-pack", None,
                         text=explanation_text, max_sentences=3)
 
-    return {"question": question, "sql": formatted_sql,
+    return {"question": question, "sql": raw_sql,
             "explanation": summary.get("summary", "") if ok else "",
             "dialect": dialect, "done": True}

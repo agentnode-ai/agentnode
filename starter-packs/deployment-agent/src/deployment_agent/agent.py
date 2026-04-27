@@ -34,27 +34,27 @@ def run(context: Any, **kwargs: Any) -> dict:
 
     # Step 1: Lint code quality
     context.next_iteration()
-    ok, lint = _call(context, "code-linter-pack", "code_analysis",
+    ok, lint = _call(context, "code-linter-pack", None,
                      code=code, language="python")
     lint_ok = ok and not lint.get("issues", [])
     lint_result = lint if ok else {"error": "Lint failed"}
 
     # Step 2: Security audit
     context.next_iteration()
-    ok, security = _call(context, "security-audit-pack", "code_analysis",
+    ok, security = _call(context, "security-audit-pack", None,
                          code=code, severity="MEDIUM")
     security_ok = ok and not security.get("issues", [])
     security_result = security if ok else {"error": "Security audit failed"}
 
     # Step 3: Secret scan
     context.next_iteration()
-    ok, secrets = _call(context, "secret-scanner-pack", "code_analysis", code=code)
+    ok, secrets = _call(context, "secret-scanner-pack", None, code=code)
     secrets_ok = ok and not secrets.get("findings", secrets.get("secrets", []))
     secrets_result = secrets if ok else {}
 
     # Step 4: Generate test status
     context.next_iteration()
-    ok, tests = _call(context, "test-generator-pack", "code_analysis",
+    ok, tests = _call(context, "test-generator-pack", None,
                       code=code, framework="pytest")
     tests_result = tests if ok else {}
 
