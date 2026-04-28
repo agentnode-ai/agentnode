@@ -3,32 +3,30 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
+from agentnode_sdk.exceptions import AgentNodeToolError
 from browser_automation_pack.tool import run
 
 
 # -- Input validation --
 
 def test_unknown_action():
-    from agentnode_sdk.exceptions import AgentNodeToolError
     with pytest.raises(AgentNodeToolError, match="Unknown action"):
         run(url="https://example.com", action="hack")
 
 
 def test_click_missing_selector():
-    from agentnode_sdk.exceptions import AgentNodeToolError
     with pytest.raises(AgentNodeToolError, match="selector is required"):
         run(url="https://example.com", action="click", selector="")
 
 
 def test_fill_missing_selector():
-    from agentnode_sdk.exceptions import AgentNodeToolError
     with pytest.raises(AgentNodeToolError, match="selector is required"):
         run(url="https://example.com", action="fill", selector="")
 
 
 # -- Mocked screenshot --
 
-@patch("browser_automation_pack.tool.sync_playwright")
+@patch("playwright.sync_api.sync_playwright")
 def test_screenshot(mock_pw_fn, tmp_path):
     mock_pw = MagicMock()
     mock_pw_fn.return_value.start.return_value = mock_pw
@@ -51,7 +49,7 @@ def test_screenshot(mock_pw_fn, tmp_path):
 
 # -- Mocked extract_text --
 
-@patch("browser_automation_pack.tool.sync_playwright")
+@patch("playwright.sync_api.sync_playwright")
 def test_extract_text(mock_pw_fn):
     mock_pw = MagicMock()
     mock_pw_fn.return_value.start.return_value = mock_pw
@@ -72,7 +70,7 @@ def test_extract_text(mock_pw_fn):
 
 # -- Mocked get_links --
 
-@patch("browser_automation_pack.tool.sync_playwright")
+@patch("playwright.sync_api.sync_playwright")
 def test_get_links(mock_pw_fn):
     mock_pw = MagicMock()
     mock_pw_fn.return_value.start.return_value = mock_pw

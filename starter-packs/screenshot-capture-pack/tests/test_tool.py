@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 # -- Mocked run --
 
-@patch("screenshot_capture_pack.tool.sync_playwright")
+@patch("playwright.sync_api.sync_playwright")
 def test_screenshot_success(mock_pw_fn, tmp_path):
     mock_pw = MagicMock()
     mock_pw_fn.return_value.__enter__ = MagicMock(return_value=mock_pw)
@@ -29,7 +29,7 @@ def test_screenshot_success(mock_pw_fn, tmp_path):
     mock_page.goto.assert_called_once()
 
 
-@patch("screenshot_capture_pack.tool.sync_playwright")
+@patch("playwright.sync_api.sync_playwright")
 def test_viewport_only(mock_pw_fn, tmp_path):
     mock_pw = MagicMock()
     mock_pw_fn.return_value.__enter__ = MagicMock(return_value=mock_pw)
@@ -50,7 +50,7 @@ def test_viewport_only(mock_pw_fn, tmp_path):
     assert result["height"] == 600
 
 
-@patch("screenshot_capture_pack.tool.sync_playwright")
+@patch("playwright.sync_api.sync_playwright")
 def test_auto_output_path(mock_pw_fn):
     mock_pw = MagicMock()
     mock_pw_fn.return_value.__enter__ = MagicMock(return_value=mock_pw)

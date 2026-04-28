@@ -36,9 +36,9 @@ def test_matches_topic_not_found():
 
 # -- Mocked run --
 
-@patch("news_aggregator_pack.tool.feedparser")
-@patch("news_aggregator_pack.tool.httpx.Client")
-def test_run_success(mock_client_cls, mock_feedparser):
+@patch("feedparser.parse")
+@patch("httpx.Client")
+def test_run_success(mock_client_cls, mock_fp_parse):
     mock_client = MagicMock()
     mock_client_cls.return_value = mock_client
 
@@ -58,7 +58,7 @@ def test_run_success(mock_client_cls, mock_feedparser):
     mock_feed.feed.title = "Test News"
     mock_feed.entries = [mock_entry]
 
-    mock_feedparser.parse.return_value = mock_feed
+    mock_fp_parse.return_value = mock_feed
 
     result = run(feeds=["https://example.com/feed"], limit=10)
     assert result["total"] == 1
@@ -66,9 +66,9 @@ def test_run_success(mock_client_cls, mock_feedparser):
     assert result["articles"][0]["source"] == "Test News"
 
 
-@patch("news_aggregator_pack.tool.feedparser")
-@patch("news_aggregator_pack.tool.httpx.Client")
-def test_run_with_topic_filter(mock_client_cls, mock_feedparser):
+@patch("feedparser.parse")
+@patch("httpx.Client")
+def test_run_with_topic_filter(mock_client_cls, mock_fp_parse):
     mock_client = MagicMock()
     mock_client_cls.return_value = mock_client
     mock_resp = MagicMock()
@@ -93,7 +93,7 @@ def test_run_with_topic_filter(mock_client_cls, mock_feedparser):
     mock_feed = MagicMock()
     mock_feed.feed.title = "Mixed News"
     mock_feed.entries = [entry1, entry2]
-    mock_feedparser.parse.return_value = mock_feed
+    mock_fp_parse.return_value = mock_feed
 
     result = run(feeds=["https://example.com/feed"], topic="AI", limit=10)
     assert result["total"] == 1

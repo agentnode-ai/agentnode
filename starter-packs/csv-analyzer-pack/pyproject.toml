@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Analyze CSV files with pandas: statistics, filtering, and column inspection."
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["pandas>=2.0"]
+dependencies = ["pandas>=2.0", "agentnode-sdk>=0.1.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

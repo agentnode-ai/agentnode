@@ -1,6 +1,15 @@
 """Tests for azure-toolkit-pack."""
 
+import sys
 from unittest.mock import MagicMock, patch
+
+# Pre-mock azure modules so tool.py can be imported without azure SDK installed
+for mod_name in [
+    "azure", "azure.identity", "azure.mgmt", "azure.mgmt.compute",
+    "azure.mgmt.resource",
+]:
+    if mod_name not in sys.modules:
+        sys.modules[mod_name] = MagicMock()
 
 from azure_toolkit_pack.tool import run
 

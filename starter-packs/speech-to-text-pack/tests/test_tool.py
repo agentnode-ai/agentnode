@@ -15,11 +15,11 @@ def test_file_not_found():
 
 # -- Mocked local Whisper --
 
-@patch("speech_to_text_pack.tool.whisper")
+@patch("whisper.load_model")
 @patch("os.path.isfile", return_value=True)
-def test_local_transcribe(mock_isfile, mock_whisper):
+def test_local_transcribe(mock_isfile, mock_load_model):
     mock_model = MagicMock()
-    mock_whisper.load_model.return_value = mock_model
+    mock_load_model.return_value = mock_model
     mock_model.transcribe.return_value = {
         "text": "Hello world, this is a test.",
         "language": "en",
@@ -34,14 +34,14 @@ def test_local_transcribe(mock_isfile, mock_whisper):
     assert result["language"] == "en"
     assert result["duration"] == 5.0
     assert len(result["segments"]) == 2
-    mock_whisper.load_model.assert_called_once_with("base")
+    mock_load_model.assert_called_once_with("base")
 
 
-@patch("speech_to_text_pack.tool.whisper")
+@patch("whisper.load_model")
 @patch("os.path.isfile", return_value=True)
-def test_local_transcribe_with_language(mock_isfile, mock_whisper):
+def test_local_transcribe_with_language(mock_isfile, mock_load_model):
     mock_model = MagicMock()
-    mock_whisper.load_model.return_value = mock_model
+    mock_load_model.return_value = mock_model
     mock_model.transcribe.return_value = {
         "text": "Bonjour le monde.",
         "language": "fr",
@@ -55,7 +55,7 @@ def test_local_transcribe_with_language(mock_isfile, mock_whisper):
 
 # -- Mocked API Whisper --
 
-@patch("speech_to_text_pack.tool.httpx.Client")
+@patch("httpx.Client")
 @patch("builtins.open", create=True)
 @patch("os.path.isfile", return_value=True)
 @patch("os.path.basename", return_value="test.mp3")

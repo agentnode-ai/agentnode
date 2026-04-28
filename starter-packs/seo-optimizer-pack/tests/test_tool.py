@@ -20,7 +20,7 @@ GOOD_HTML = """<!DOCTYPE html>
     <a href="https://python.org">Python</a>
     <img src="logo.png" alt="Python logo">
 </body>
-</html>""".format(body=" ".join(["Python is great."] * 60))
+</html>""".format(body=" ".join(["Python programming is a great skill to learn for modern software development."] * 60))
 
 MINIMAL_HTML = "<html><body><p>Short.</p></body></html>"
 

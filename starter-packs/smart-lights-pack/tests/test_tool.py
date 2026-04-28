@@ -50,7 +50,7 @@ def test_set_scene_missing_name():
 
 # -- Mocked list_lights --
 
-@patch("smart_lights_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_list_lights(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -72,7 +72,7 @@ def test_list_lights(mock_cls):
 
 # -- Mocked turn_on --
 
-@patch("smart_lights_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_turn_on(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)

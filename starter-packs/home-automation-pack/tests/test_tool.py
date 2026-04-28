@@ -30,7 +30,7 @@ def test_call_service_missing_domain():
 
 # -- Mocked list_entities --
 
-@patch("home_automation_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_list_entities(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -51,7 +51,7 @@ def test_list_entities(mock_cls):
 
 # -- Mocked turn_on --
 
-@patch("home_automation_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_turn_on(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -69,7 +69,7 @@ def test_turn_on(mock_cls):
 
 # -- Mocked get_state --
 
-@patch("home_automation_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_get_state(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)

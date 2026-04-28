@@ -53,7 +53,7 @@ MOCK_ARXIV_RESPONSE = f"""<?xml version="1.0" encoding="UTF-8"?>
 </feed>"""
 
 
-@patch("arxiv_search_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_run_success(mock_client_cls):
     mock_resp = MagicMock()
     mock_resp.text = MOCK_ARXIV_RESPONSE

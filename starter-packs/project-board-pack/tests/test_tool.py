@@ -40,7 +40,7 @@ def test_move_card_missing_card_id():
 
 # -- Mocked list_boards --
 
-@patch("project_board_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_list_boards(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -62,7 +62,7 @@ def test_list_boards(mock_cls):
 
 # -- Mocked create_card --
 
-@patch("project_board_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_create_card(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)

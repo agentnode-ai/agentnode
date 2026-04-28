@@ -22,7 +22,7 @@ def test_unsupported_provider():
 
 # -- Mocked Stability AI --
 
-@patch("ai_image_generator_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_stability_success(mock_cls, tmp_path):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -48,7 +48,7 @@ def test_stability_success(mock_cls, tmp_path):
 
 # -- Mocked Stability AI no artifacts --
 
-@patch("ai_image_generator_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_stability_no_artifacts(mock_cls, tmp_path):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -66,7 +66,7 @@ def test_stability_no_artifacts(mock_cls, tmp_path):
 
 # -- Mocked Replicate --
 
-@patch("ai_image_generator_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_replicate_success(mock_cls, tmp_path):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)

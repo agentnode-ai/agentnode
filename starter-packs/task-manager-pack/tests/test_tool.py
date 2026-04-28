@@ -40,7 +40,7 @@ def test_update_issue_no_fields():
 
 # -- Mocked list_issues --
 
-@patch("task_manager_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_list_issues(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -69,7 +69,7 @@ def test_list_issues(mock_cls):
 
 # -- Mocked create_issue --
 
-@patch("task_manager_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_create_issue(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)

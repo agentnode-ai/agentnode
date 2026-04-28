@@ -12,7 +12,7 @@ def _get_credential(**kwargs):
     return DefaultAzureCredential()
 
 
-def _list_resource_groups(credential, subscription_id: str, **kwargs) -> dict:
+def _list_resource_groups(credential, subscription_id: str, resource_group: str = "", **kwargs) -> dict:
     """List all resource groups in the subscription."""
     rm_client = ResourceManagementClient(credential, subscription_id)
     groups = []

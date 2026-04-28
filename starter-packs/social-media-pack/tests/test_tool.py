@@ -40,7 +40,7 @@ def test_linkedin_share_missing_text():
 
 # -- Mocked Twitter post --
 
-@patch("social_media_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_twitter_post_tweet(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -59,7 +59,7 @@ def test_twitter_post_tweet(mock_cls):
 
 # -- Mocked Twitter get_timeline --
 
-@patch("social_media_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_twitter_get_timeline(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)

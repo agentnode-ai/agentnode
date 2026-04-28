@@ -21,7 +21,7 @@ def test_whitespace_only():
 
 # -- Mocked translation --
 
-@patch("text_translator_pack.tool.GoogleTranslator")
+@patch("deep_translator.GoogleTranslator")
 def test_translate_en_to_fr(mock_translator_cls):
     mock_translator = MagicMock()
     mock_translator.translate.return_value = "Bonjour le monde"
@@ -34,7 +34,7 @@ def test_translate_en_to_fr(mock_translator_cls):
     mock_translator_cls.assert_called_once_with(source="auto", target="fr")
 
 
-@patch("text_translator_pack.tool.GoogleTranslator")
+@patch("deep_translator.GoogleTranslator")
 def test_translate_with_source_language(mock_translator_cls):
     mock_translator = MagicMock()
     mock_translator.translate.return_value = "Hola mundo"
@@ -46,7 +46,7 @@ def test_translate_with_source_language(mock_translator_cls):
     mock_translator_cls.assert_called_once_with(source="en", target="es")
 
 
-@patch("text_translator_pack.tool.GoogleTranslator")
+@patch("deep_translator.GoogleTranslator")
 def test_translate_preserves_original_params(mock_translator_cls):
     mock_translator = MagicMock()
     mock_translator.translate.return_value = "Test"
@@ -59,7 +59,7 @@ def test_translate_preserves_original_params(mock_translator_cls):
 
 # -- Return structure --
 
-@patch("text_translator_pack.tool.GoogleTranslator")
+@patch("deep_translator.GoogleTranslator")
 def test_return_keys(mock_translator_cls):
     mock_translator = MagicMock()
     mock_translator.translate.return_value = "X"

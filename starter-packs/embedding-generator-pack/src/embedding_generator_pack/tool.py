@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from sentence_transformers import SentenceTransformer
-
 
 def run(
     texts: list[str] | str,
@@ -18,6 +16,8 @@ def run(
     Returns:
         A dict with embeddings, model name, and dimensions.
     """
+    from sentence_transformers import SentenceTransformer
+
     if isinstance(texts, str):
         texts = [texts]
 

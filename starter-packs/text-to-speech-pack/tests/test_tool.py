@@ -21,7 +21,7 @@ def test_unsupported_provider():
 
 # -- Mocked OpenAI TTS --
 
-@patch("text_to_speech_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_openai_tts_success(mock_cls, tmp_path):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -53,7 +53,7 @@ def test_duration_estimate():
     assert expected == 60.0
 
 
-@patch("text_to_speech_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_auto_generates_output_path(mock_cls, tmp_path, monkeypatch):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)

@@ -35,7 +35,7 @@ def _auto_output(file_path: str, output_path: str, suffix: str = "_out", fmt: st
     return f"{base}{suffix}{ext}"
 
 
-def _info(file_path: str, **kwargs) -> dict:
+def _info(file_path: str, output_path: str = "", **kwargs) -> dict:
     """Get audio file metadata."""
     audio = _load_audio(file_path)
     info = {

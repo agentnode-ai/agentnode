@@ -30,7 +30,7 @@ def test_get_contact_missing_id():
 
 # -- Mocked list_contacts --
 
-@patch("crm_connector_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_list_contacts(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -54,7 +54,7 @@ def test_list_contacts(mock_cls):
 
 # -- Mocked create_contact --
 
-@patch("crm_connector_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_create_contact(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -73,7 +73,7 @@ def test_create_contact(mock_cls):
 
 # -- Mocked list_deals --
 
-@patch("crm_connector_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_list_deals(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)

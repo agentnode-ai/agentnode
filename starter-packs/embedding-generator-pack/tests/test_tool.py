@@ -8,7 +8,7 @@ from embedding_generator_pack.tool import run
 
 # -- Mocked single text --
 
-@patch("embedding_generator_pack.tool.SentenceTransformer")
+@patch("sentence_transformers.SentenceTransformer")
 def test_single_text(mock_st_cls):
     mock_model = MagicMock()
     mock_st_cls.return_value = mock_model
@@ -26,7 +26,7 @@ def test_single_text(mock_st_cls):
 
 # -- Mocked multiple texts --
 
-@patch("embedding_generator_pack.tool.SentenceTransformer")
+@patch("sentence_transformers.SentenceTransformer")
 def test_multiple_texts(mock_st_cls):
     mock_model = MagicMock()
     mock_st_cls.return_value = mock_model
@@ -46,7 +46,7 @@ def test_multiple_texts(mock_st_cls):
 
 # -- String input converts to list --
 
-@patch("embedding_generator_pack.tool.SentenceTransformer")
+@patch("sentence_transformers.SentenceTransformer")
 def test_string_becomes_list(mock_st_cls):
     mock_model = MagicMock()
     mock_st_cls.return_value = mock_model
@@ -59,7 +59,7 @@ def test_string_becomes_list(mock_st_cls):
 
 # -- Custom model --
 
-@patch("embedding_generator_pack.tool.SentenceTransformer")
+@patch("sentence_transformers.SentenceTransformer")
 def test_custom_model(mock_st_cls):
     mock_model = MagicMock()
     mock_st_cls.return_value = mock_model
@@ -72,7 +72,7 @@ def test_custom_model(mock_st_cls):
 
 # -- Return structure --
 
-@patch("embedding_generator_pack.tool.SentenceTransformer")
+@patch("sentence_transformers.SentenceTransformer")
 def test_return_keys(mock_st_cls):
     mock_model = MagicMock()
     mock_st_cls.return_value = mock_model

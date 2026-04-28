@@ -35,7 +35,7 @@ def test_comments_missing_id():
 
 # -- Mocked search --
 
-@patch("youtube_analyzer_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_search_success(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -63,7 +63,7 @@ def test_search_success(mock_cls):
 
 # -- Mocked video_info --
 
-@patch("youtube_analyzer_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_video_info_success(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -89,7 +89,7 @@ def test_video_info_success(mock_cls):
 
 # -- video_info not found --
 
-@patch("youtube_analyzer_pack.tool.httpx.Client")
+@patch("httpx.Client")
 def test_video_info_not_found(mock_cls):
     mock_client = MagicMock()
     mock_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
