@@ -442,10 +442,115 @@ def _validate_agent(agent: dict, errors: list[str], warnings: list[str]) -> None
             f"agent.isolation must be 'process' or 'thread' (got '{isolation}')"
         )
 
+    # Optional: tier validation
+    tier = agent.get("tier")
+    if tier is not None and tier not in ("llm_only", "llm_plus_tools", "llm_plus_credentials"):
+        errors.append(
+            f"agent.tier must be 'llm_only', 'llm_plus_tools', or 'llm_plus_credentials' (got '{tier}')"
+        )
+
+    # Optional: llm.required (recommended for manifest completeness scoring)
+    llm_config = agent.get("llm")
+    if llm_config is not None:
+        if not isinstance(llm_config, dict):
+            errors.append("agent.llm must be an object")
+    else:
+        warnings.append(
+            "agent.llm.required is missing. Agent packages should explicitly "
+            "declare whether an LLM is required. This will become required in "
+            "a future manifest version."
+        )
+
+    # Optional: verification cases (for Gold tier)
+    verification = agent.get("verification")
+    if verification is not None:
+        if not isinstance(verification, dict):
+            errors.append("agent.verification must be an object")
+        else:
+            _validate_agent_verification_cases(verification, errors, warnings)
+
     # DEFERRED fields — reject if present
     for deferred in ("max_tokens", "planning"):
         if deferred in agent:
             errors.append(f"agent.{deferred} is not supported in v0.3")
+
+
+def _validate_agent_verification_cases(
+    verification: dict, errors: list[str], warnings: list[str],
+) -> None:
+    """Validate agent.verification section with test cases for Gold tier."""
+    cases = verification.get("cases")
+    if cases is None:
+        return
+
+    if not isinstance(cases, list):
+        errors.append("agent.verification.cases must be a list")
+        return
+
+    if len(cases) > 10:
+        errors.append("agent.verification.cases: maximum 10 cases allowed")
+
+    if len(cases) == 1:
+        warnings.append(
+            "agent.verification.cases: at least 2 cases recommended for Gold tier"
+        )
+
+    seen_names: set[str] = set()
+    seen_goals: set[str] = set()
+
+    for i, case in enumerate(cases):
+        prefix = f"agent.verification.cases[{i}]"
+        if not isinstance(case, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+
+        name = case.get("name", "")
+        if not name or not isinstance(name, str) or len(name) < 3:
+            errors.append(f"{prefix}.name is required (min 3 characters)")
+        elif name in seen_names:
+            errors.append(f"{prefix}.name '{name}' is duplicate")
+        else:
+            seen_names.add(name)
+
+        goal = case.get("goal", "")
+        if not goal or not isinstance(goal, str) or len(goal) < 20:
+            errors.append(f"{prefix}.goal is required (min 20 characters)")
+        elif goal in seen_goals:
+            errors.append(f"{prefix}.goal must be unique across cases")
+        else:
+            seen_goals.add(goal)
+
+        expected = case.get("expected")
+        if expected is not None:
+            if not isinstance(expected, dict):
+                errors.append(f"{prefix}.expected must be an object")
+                continue
+
+            req_keys = expected.get("required_keys")
+            if req_keys is not None:
+                if not isinstance(req_keys, list) or not all(isinstance(k, str) for k in req_keys):
+                    errors.append(f"{prefix}.expected.required_keys must be a list of strings")
+                elif req_keys == ["done"]:
+                    warnings.append(
+                        f"{prefix}.expected.required_keys should include at least one "
+                        "content key besides 'done' for meaningful verification"
+                    )
+
+            done = expected.get("done")
+            if done is not None and not isinstance(done, bool):
+                errors.append(f"{prefix}.expected.done must be a boolean")
+
+            min_lengths = expected.get("min_lengths")
+            if min_lengths is not None:
+                if not isinstance(min_lengths, dict):
+                    errors.append(f"{prefix}.expected.min_lengths must be an object")
+                elif not all(isinstance(v, int) and v > 0 for v in min_lengths.values()):
+                    errors.append(f"{prefix}.expected.min_lengths values must be positive integers")
+
+            prompt_contains = expected.get("llm_prompt_contains")
+            if prompt_contains is not None:
+                if not isinstance(prompt_contains, list) or not all(isinstance(s, str) for s in prompt_contains):
+                    errors.append(f"{prefix}.expected.llm_prompt_contains must be a list of strings")
 
 
 def _validate_orchestration_steps(

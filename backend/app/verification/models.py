@@ -85,6 +85,14 @@ class VerificationResult(Base, UUIDPrimaryKeyMixin):
     # Phase 7A: Smoke confidence (high/medium for credential boundary)
     smoke_confidence = Column(Text, nullable=True)
 
+    # Agent verification system (v0.6)
+    is_agent_package = Column(Boolean, nullable=True)
+    manifest_completeness = Column(JSONB, nullable=True)
+    agent_cases_results = Column(JSONB, nullable=True)
+    agent_cases_passed = Column(Integer, nullable=True)
+    agent_cases_total = Column(Integer, nullable=True)
+    agent_gold_blockers = Column(JSONB, nullable=True)
+
     # Runner metadata for audit/forensics
     runner_version = Column(Text, nullable=True)
     python_version = Column(Text, nullable=True)
