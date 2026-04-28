@@ -34,6 +34,120 @@ from app.verification.smoke_context import (
 
 logger = logging.getLogger(__name__)
 
+
+def _build_mock_agent_context_code(goal: str) -> str:
+    """Generate Python code string for MockAgentContext with smart MockLLM.
+
+    The mock tracks LLM calls, tool calls, and prompt history for
+    verification case assertions. Returns goal-aware LLM responses.
+    """
+    goal_literal = json.dumps(goal)
+    return f"""
+class _MockToolResult:
+    def __init__(self, success=True, result=None, error=None):
+        self.success = success
+        self.result = result or {{"output": "mock result"}}
+        self.error = error
+
+class _MockAgentContext:
+    def __init__(self):
+        self._goal = {goal_literal}
+        self._iteration = 0
+        self._llm_call_count = 0
+        self._tool_call_count = 0
+        self._tool_context_used = False
+        self._prompt_history = []
+
+    @property
+    def goal(self):
+        return self._goal
+    @property
+    def iteration(self):
+        return self._iteration
+    @property
+    def llm_calls_made(self):
+        return self._llm_call_count
+    @property
+    def tool_calls_made(self):
+        return self._tool_call_count
+    @property
+    def tools_remaining(self):
+        return 50
+    @property
+    def max_tool_calls(self):
+        return 50
+    @property
+    def max_iterations(self):
+        return 10
+    @property
+    def run_id(self):
+        return None
+    @property
+    def llm(self):
+        return None
+    @property
+    def system_prompt(self):
+        return None
+    @property
+    def allowed_packages(self):
+        return None
+
+    def run_tool(self, slug, tool_name=None, **kw):
+        self._tool_call_count += 1
+        return _MockToolResult()
+    def try_tool(self, slug, tool_name=None, **kw):
+        self._tool_call_count += 1
+        return _MockToolResult()
+    def next_iteration(self):
+        self._iteration += 1
+    def is_tool_available(self, slug):
+        return True
+
+    def _smart_llm_response(self, text):
+        t = text.lower()
+        if any(w in t for w in ("blog", "article", "write", "post")):
+            return "# Mock Article\\n\\n" + ("This is a comprehensive article about the topic. " * 20) + "\\n\\nIn conclusion, this topic is important for modern development."
+        if any(w in t for w in ("summarize", "summary", "digest")):
+            return "Summary: The key findings indicate significant developments in this area. Multiple sources confirm the trend. Further investigation is recommended."
+        if any(w in t for w in ("analyze", "review", "audit", "scan", "check")):
+            return "Analysis Report:\\n- Finding 1: No critical issues detected\\n- Finding 2: Code quality is acceptable\\n- Finding 3: Security review passed\\n\\nOverall assessment: satisfactory."
+        if any(w in t for w in ("plan", "schedule", "sprint")):
+            return "Project Plan:\\n1. Phase 1: Requirements gathering (3 days)\\n2. Phase 2: Implementation (5 days)\\n3. Phase 3: Testing (2 days)\\n\\nTotal duration: 10 days"
+        if any(w in t for w in ("sql", "query", "database")):
+            return "SELECT id, name, revenue FROM customers ORDER BY revenue DESC LIMIT 10;"
+        if any(w in t for w in ("email", "draft", "respond")):
+            return "Subject: Re: Your inquiry\\n\\nThank you for reaching out. We have reviewed your request and will proceed accordingly."
+        return "Mock response for: " + text[:200]
+
+    def call_llm(self, messages, **kw):
+        self._llm_call_count += 1
+        if kw.get("tool_context"):
+            self._tool_context_used = True
+        text = " ".join(m.get("content", "") for m in messages if isinstance(m, dict))
+        self._prompt_history.append(text)
+        content = self._smart_llm_response(text)
+        class _R:
+            pass
+        r = _R()
+        r.content = content
+        r.tool_calls = None
+        r.usage = None
+        r.model = "mock"
+        r.finish_reason = "stop"
+        return r
+
+    def call_llm_text(self, messages, **kw):
+        self._llm_call_count += 1
+        if kw.get("tool_context"):
+            self._tool_context_used = True
+        text = " ".join(m.get("content", "") for m in messages if isinstance(m, dict))
+        self._prompt_history.append(text)
+        return self._smart_llm_response(text)
+
+_agent_ctx = _MockAgentContext()
+"""
+
+
 # ── Stub file support for smoke tests ──
 # Only input/source paths — NOT output paths (those just need a valid target dir)
 _FILE_PATH_PARAMS = frozenset({
@@ -535,74 +649,7 @@ for _stub_path in json.loads({binary_literal}):
         agent_section = tool.get("_agent_section", {})
         agent_goal = agent_section.get("goal", "Verification smoke test")
 
-    agent_context_block = ""
-    if is_agent:
-        agent_goal_literal = json.dumps(agent_goal)
-        agent_context_block = f"""
-class _MockToolResult:
-    def __init__(self, success=True, result=None, error=None):
-        self.success = success
-        self.result = result or {{"output": "mock result"}}
-        self.error = error
-
-class _MockAgentContext:
-    def __init__(self):
-        self._goal = {agent_goal_literal}
-        self._iteration = 0
-    @property
-    def goal(self):
-        return self._goal
-    @property
-    def iteration(self):
-        return self._iteration
-    def run_tool(self, slug, tool_name=None, **kw):
-        return _MockToolResult()
-    def try_tool(self, slug, tool_name=None, **kw):
-        return _MockToolResult()
-    def next_iteration(self):
-        self._iteration += 1
-    def is_tool_available(self, slug):
-        return True
-    def call_llm(self, messages, **kw):
-        class _R:
-            content = "Mock LLM response for verification."
-            tool_calls = None
-            usage = None
-            model = "mock"
-            finish_reason = "stop"
-        return _R()
-    def call_llm_text(self, messages, **kw):
-        return "Mock LLM response for verification."
-    @property
-    def llm(self):
-        return None
-    @property
-    def system_prompt(self):
-        return None
-    @property
-    def allowed_packages(self):
-        return None
-    @property
-    def tool_calls_made(self):
-        return 0
-    @property
-    def tools_remaining(self):
-        return 50
-    @property
-    def max_tool_calls(self):
-        return 50
-    @property
-    def max_iterations(self):
-        return 10
-    @property
-    def run_id(self):
-        return None
-    @property
-    def llm_calls_made(self):
-        return 0
-
-_agent_ctx = _MockAgentContext()
-"""
+    agent_context_block = _build_mock_agent_context_code(agent_goal) if is_agent else ""
 
     call_expr = "fn(_agent_ctx)" if is_agent else "fn(**test_input)"
     async_call_expr = f"asyncio.run({call_expr})" if not is_agent else call_expr
@@ -632,7 +679,7 @@ try:
         pass
     return_keys = list(result.keys())[:20] if isinstance(result, dict) else None
     return_length = len(result) if hasattr(result, '__len__') else None
-    print('SMOKE_JSON:' + json.dumps({{
+    _smoke_data = {{
         "status": "ok",
         "return_type": type(result).__name__,
         "return_hash": result_hash,
@@ -640,7 +687,14 @@ try:
         "is_serializable": is_serializable,
         "return_keys": return_keys,
         "return_length": return_length,
-    }}))
+    }}
+    {"" if not is_agent else """
+    _smoke_data["llm_calls_made"] = _agent_ctx._llm_call_count
+    _smoke_data["tool_calls_made"] = _agent_ctx._tool_call_count
+    _smoke_data["tool_context_used"] = _agent_ctx._tool_context_used
+    _smoke_data["prompt_history"] = _agent_ctx._prompt_history[:5]
+"""}
+    print('SMOKE_JSON:' + json.dumps(_smoke_data))
 except Exception as e:
     print('SMOKE_JSON:' + json.dumps({{"status": "error", "error_type": type(e).__name__, "message": str(e)[:500]}}))
 """
@@ -748,72 +802,7 @@ for _stub_path in json.loads({stub_literal}):
         if is_agent:
             agent_section = tool.get("_agent_section", {})
             agent_goal = agent_section.get("goal", "Verification stability test")
-            agent_goal_literal = json.dumps(agent_goal)
-            agent_block = f"""
-class _MockToolResult:
-    def __init__(self, success=True, result=None, error=None):
-        self.success = success
-        self.result = result or {{"output": "mock result"}}
-        self.error = error
-
-class _MockAgentContext:
-    def __init__(self):
-        self._goal = {agent_goal_literal}
-        self._iteration = 0
-    @property
-    def goal(self):
-        return self._goal
-    @property
-    def iteration(self):
-        return self._iteration
-    def run_tool(self, slug, tool_name=None, **kw):
-        return _MockToolResult()
-    def try_tool(self, slug, tool_name=None, **kw):
-        return _MockToolResult()
-    def next_iteration(self):
-        self._iteration += 1
-    def is_tool_available(self, slug):
-        return True
-    def call_llm(self, messages, **kw):
-        class _R:
-            content = "Mock LLM response for verification."
-            tool_calls = None
-            usage = None
-            model = "mock"
-            finish_reason = "stop"
-        return _R()
-    def call_llm_text(self, messages, **kw):
-        return "Mock LLM response for verification."
-    @property
-    def llm(self):
-        return None
-    @property
-    def system_prompt(self):
-        return None
-    @property
-    def allowed_packages(self):
-        return None
-    @property
-    def tool_calls_made(self):
-        return 0
-    @property
-    def tools_remaining(self):
-        return 50
-    @property
-    def max_tool_calls(self):
-        return 50
-    @property
-    def max_iterations(self):
-        return 10
-    @property
-    def run_id(self):
-        return None
-    @property
-    def llm_calls_made(self):
-        return 0
-
-_agent_ctx = _MockAgentContext()
-"""
+            agent_block = _build_mock_agent_context_code(agent_goal)
             call_line = "fn(_agent_ctx)"
         else:
             agent_block = ""
