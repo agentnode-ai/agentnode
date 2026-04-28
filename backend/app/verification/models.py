@@ -7,7 +7,7 @@ from app.shared.models import Base, UUIDPrimaryKeyMixin
 
 # Step-level status enum (shared across all 4 steps)
 _step_status_enum = Enum(
-    "passed", "failed", "skipped", "error", "not_present", "inconclusive",
+    "passed", "failed", "skipped", "error", "not_present", "inconclusive", "not_executed",
     name="step_status",
     create_type=False,
 )

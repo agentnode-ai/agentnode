@@ -189,6 +189,7 @@ def _run_verification_sync(
     tools: list[dict],
     is_agent: bool = False,
     agent_section: dict | None = None,
+    publisher_trusted: bool = False,
 ) -> dict:
     """Run all verification steps synchronously (called in thread pool).
 
@@ -402,15 +403,21 @@ def _run_verification_sync(
                     result["agent_gold_blockers"] = cases_result["gold_blockers"]
         else:
             tests_auto_generated = False
-            if not sandbox.has_tests():
+            has_user_tests = sandbox.has_tests()
+            if not has_user_tests:
                 sandbox.generate_auto_tests(tools)
                 tests_auto_generated = True
-            if sandbox.has_tests():
+
+            can_run_tests = publisher_trusted or tests_auto_generated
+            if sandbox.has_tests() and can_run_tests:
                 t0 = time.monotonic()
                 ok, log = step_tests(sandbox)
                 result["tests_duration_ms"] = int((time.monotonic() - t0) * 1000)
                 result["tests_status"] = "passed" if ok else "failed"
                 result["tests_log"] = log
+            elif has_user_tests and not publisher_trusted:
+                result["tests_status"] = "not_executed"
+                result["tests_log"] = "User tests present but not executed: publisher not trusted. Container sandbox required for untrusted code."
             else:
                 result["tests_status"] = "not_present"
                 result["tests_log"] = "No test directory found"
@@ -592,11 +599,20 @@ async def run_verification(
                 # Build normalized tool dicts for smoke context
                 # For agents: skip capability-level tools (they share the agent entrypoint
                 # and expect AgentContext). Only test the __agent_entrypoint__ with MockContext.
+                from app.publishers.models import Publisher
                 pkg_result_pre = await session.execute(
                     select(Package).where(Package.id == pv.package_id)
                 )
                 pkg_pre = pkg_result_pre.scalar_one_or_none()
                 is_agent_pkg = pkg_pre and pkg_pre.package_type == "agent"
+
+                publisher_trusted = False
+                if pkg_pre:
+                    pub_result = await session.execute(
+                        select(Publisher.trust_level).where(Publisher.id == pkg_pre.publisher_id)
+                    )
+                    trust_level = pub_result.scalar_one_or_none()
+                    publisher_trusted = trust_level in ("trusted", "curated")
 
                 tools = []
                 seen_eps = set()
@@ -645,6 +661,7 @@ async def run_verification(
                             artifact_bytes, tools,
                             is_agent=bool(is_agent_pkg),
                             agent_section=agent_section_for_sync,
+                            publisher_trusted=publisher_trusted,
                         ),
                     ),
                     timeout=settings.VERIFICATION_TIMEOUT,

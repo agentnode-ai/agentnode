@@ -333,6 +333,13 @@ class TestToolPackRegression:
         assert result.breakdown["smoke"].points == 15
         assert result.tier == "partial"
 
+    def test_toolpack_not_executed_tests(self):
+        """Untrusted publisher tests present but not run get same credit as not_present."""
+        vr = _make_vr(tests_status="not_executed")
+        result = compute_score_result(vr)
+        assert result.breakdown["tests"].points == 3
+        assert "untrusted" in result.breakdown["tests"].reason.lower()
+
     def test_toolpack_is_not_agent(self):
         """Tool-pack VR must NOT be routed to agent scoring."""
         vr = _make_vr(is_agent_package=False)

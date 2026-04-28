@@ -26,7 +26,7 @@ class VerificationResponse(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     duration_ms: int | None = None
-    # Step statuses: passed/failed/skipped/error/not_present/inconclusive
+    # Step statuses: passed/failed/skipped/error/not_present/inconclusive/not_executed
     install_status: str | None = None
     import_status: str | None = None
     smoke_status: str | None = None
