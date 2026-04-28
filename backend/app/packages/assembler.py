@@ -74,7 +74,7 @@ def _build_verification_info(version: PackageVersion) -> VerificationInfo | None
             ("tests", vr.tests_status, vr.tests_duration_ms),
         ]
         for name, step_status, duration in step_fields:
-            if step_status:
+            if step_status and step_status not in ("skipped", "not_present"):
                 info.steps.append(VerificationStepInfo(
                     name=name,
                     status=step_status,

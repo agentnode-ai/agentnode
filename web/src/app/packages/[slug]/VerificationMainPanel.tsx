@@ -255,7 +255,9 @@ export default function VerificationMainPanel({
             </div>
           </div>
           <div className="space-y-1">
-            {Object.entries(breakdownItems).map(([key, item]) => (
+            {Object.entries(breakdownItems)
+            .filter(([, item]) => item.max > 0)
+            .map(([key, item]) => (
               <div key={key} className="flex items-center justify-between text-[11px]">
                 <div className="flex items-center gap-2">
                   <span className="text-zinc-500 capitalize w-20">{key}</span>
@@ -303,7 +305,12 @@ export default function VerificationMainPanel({
 
       {/* Step cards */}
       {verification.steps.length > 0 && (
-        <div className="grid grid-cols-4 gap-2 mb-4">
+        <div className={`grid gap-2 mb-4 ${
+          verification.steps.length >= 4 ? "grid-cols-4"
+            : verification.steps.length === 3 ? "grid-cols-3"
+            : verification.steps.length === 2 ? "grid-cols-2"
+            : "grid-cols-1"
+        }`}>
           {verification.steps.map((step) => (
             <StepCard key={step.name} step={step} />
           ))}
