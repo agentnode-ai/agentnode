@@ -3,7 +3,7 @@ package_id: "dependency-audit-agent"
 package_type: "agent"
 name: "Dependency Audit Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Scan project dependencies for vulnerabilities, outdated versions, and leaked secrets."
 description: |
   Audit dependencies by scanning for CVEs, checking versions, and detecting leaked secrets.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "dependency_audit_agent.agent:run"
   goal: "Audit dependencies by scanning for CVEs, checking versions, and detecting leaked secrets."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a software supply chain security auditor.
     Scan project dependencies for known vulnerabilities (CVEs), detect
@@ -59,6 +62,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: python_deps
+        goal: "Audit Python package dependencies for known vulnerabilities"
+        expected:
+          required_keys: ['packages_scanned', 'done']
+          done: true
+      - name: node_deps
+        goal: "Scan Node.js project dependencies for security issues"
+        expected:
+          required_keys: ['packages_scanned', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

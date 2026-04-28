@@ -3,7 +3,7 @@ package_id: "contract-review-agent"
 package_type: "agent"
 name: "Contract Review Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Analyze legal contracts, flag risky clauses, compare against templates."
 description: |
   Review a contract by extracting text, identifying risks, and suggesting amendments.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "contract_review_agent.agent:run"
   goal: "Review a contract by extracting text, identifying risks, and suggesting amendments."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a contract review specialist.
     Analyze legal contracts clause by clause, flag risky or unusual terms,
@@ -59,6 +62,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: nda_review
+        goal: "Review a non-disclosure agreement for potential risks"
+        expected:
+          required_keys: ['summary', 'done']
+          done: true
+      - name: saas_contract
+        goal: "Analyze a SaaS subscription agreement for unfavorable terms"
+        expected:
+          required_keys: ['summary', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

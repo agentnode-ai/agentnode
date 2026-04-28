@@ -3,7 +3,7 @@ package_id: "competitive-intel-agent"
 package_type: "agent"
 name: "Competitive Intelligence Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Analyze competitors by scraping web presence, monitoring news, and producing a competitive report."
 description: |
   Gather competitive intelligence by searching the web, extracting content, and summarizing into an analysis.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "competitive_intel_agent.agent:run"
   goal: "Gather competitive intelligence by searching the web, extracting content, and summarizing into an analysis."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a competitive intelligence analyst.
     Research competitors by analyzing their web presence, recent news,
@@ -59,6 +62,23 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: tech_company
+        goal: "Analyze competitive landscape for a cloud computing startup"
+        expected:
+          required_keys: ['analysis', 'done']
+          done: true
+          min_lengths:
+            analysis: 30
+      - name: saas_market
+        goal: "Research competitors in the project management SaaS market"
+        expected:
+          required_keys: ['analysis', 'done']
+          done: true
+          min_lengths:
+            analysis: 30
+
   isolation: "thread"
   state:
     persistence: "none"

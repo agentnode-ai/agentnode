@@ -3,7 +3,7 @@ package_id: "news-digest-agent"
 package_type: "agent"
 name: "News Digest Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Aggregate news from multiple sources on a topic, summarize stories, and optionally translate."
 description: |
   Create a news digest by aggregating articles, summarizing each, and optionally translating.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "news_digest_agent.agent:run"
   goal: "Create a news digest by aggregating articles, summarizing each, and optionally translating."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a news aggregation and summarization specialist.
     Search multiple news sources on a given topic, deduplicate stories,
@@ -61,6 +64,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: tech_news
+        goal: "Create a digest of the latest artificial intelligence news"
+        expected:
+          required_keys: ['digest', 'done']
+          done: true
+      - name: finance_news
+        goal: "Compile a news digest about cryptocurrency market developments"
+        expected:
+          required_keys: ['digest', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

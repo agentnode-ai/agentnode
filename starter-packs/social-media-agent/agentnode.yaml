@@ -3,7 +3,7 @@ package_id: "social-media-agent"
 package_type: "agent"
 name: "Social Media Agent"
 publisher: "agentnode"
-version: "3.1.1"
+version: "3.1.2"
 summary: "Create platform-optimized social media posts with copy and hashtags, using LLM reasoning."
 description: |
   Generate platform-specific social media content
@@ -66,6 +66,23 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: product_launch
+        goal: "Create social media posts for a new product launch campaign"
+        expected:
+          required_keys: ['posts', 'done']
+          done: true
+          min_lengths:
+            posts: 50
+      - name: brand_awareness
+        goal: "Write social media content to increase brand awareness for a tech startup"
+        expected:
+          required_keys: ['posts', 'done']
+          done: true
+          min_lengths:
+            posts: 50
+
   isolation: "thread"
 
 compatibility:

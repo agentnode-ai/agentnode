@@ -3,7 +3,7 @@ package_id: "security-scanner-agent"
 package_type: "agent"
 name: "Security Scanner Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Run comprehensive security scan: SAST, dependency vulnerabilities, secret detection."
 description: |
   Perform security scan by running static analysis, checking for CVEs, and detecting secrets.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "security_scanner_agent.agent:run"
   goal: "Perform security scan by running static analysis, checking for CVEs, and detecting secrets."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a security scanning engineer.
     Run comprehensive security analysis: static code analysis (SAST),
@@ -60,6 +63,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: python_scan
+        goal: "Scan a Python web application for security vulnerabilities"
+        expected:
+          required_keys: ['scan_results', 'done']
+          done: true
+      - name: api_scan
+        goal: "Perform a security audit on a REST API codebase"
+        expected:
+          required_keys: ['scan_results', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

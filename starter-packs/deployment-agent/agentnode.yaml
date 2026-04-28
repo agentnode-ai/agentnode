@@ -3,7 +3,7 @@ package_id: "deployment-agent"
 package_type: "agent"
 name: "Deployment Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Orchestrate deployments: verify code quality, run checks, and produce a deployment checklist."
 description: |
   Deploy by verifying build quality, running tests, and producing a deployment checklist.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "deployment_agent.agent:run"
   goal: "Deploy by verifying build quality, running tests, and producing a deployment checklist."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a deployment operations engineer.
     Orchestrate deployments by verifying code quality, running pre-deploy
@@ -60,6 +63,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: deploy_check
+        goal: "Run pre-deployment checks for a Python web application"
+        expected:
+          required_keys: ['ready_to_deploy', 'checklist', 'done']
+          done: true
+      - name: staging_check
+        goal: "Verify staging environment readiness for a microservice deployment"
+        expected:
+          required_keys: ['ready_to_deploy', 'checklist', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

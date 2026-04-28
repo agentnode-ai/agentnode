@@ -3,7 +3,7 @@ package_id: "api-design-agent"
 package_type: "agent"
 name: "API Design Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Generate an OpenAPI specification from requirements, validate it, and produce docs."
 description: |
   Design an API by converting requirements into a spec, validating, and generating docs.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "api_design_agent.agent:run"
   goal: "Design an API by converting requirements into a spec, validating, and generating docs."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are an API design specialist.
     Analyze requirements, generate a valid OpenAPI 3.0 specification,
@@ -59,6 +62,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: rest_api
+        goal: "Design a REST API for a task management application"
+        expected:
+          required_keys: ['requirements', 'done']
+          done: true
+      - name: ecommerce_api
+        goal: "Design an API for an e-commerce product catalog"
+        expected:
+          required_keys: ['requirements', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

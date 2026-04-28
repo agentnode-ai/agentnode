@@ -3,7 +3,7 @@ package_id: "academic-research-agent"
 package_type: "agent"
 name: "Academic Research Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Search academic papers on arXiv, extract content, and produce a literature review."
 description: |
   Conduct academic research by searching paper databases, extracting PDFs, and summarizing into a review.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "academic_research_agent.agent:run"
   goal: "Conduct academic research by searching paper databases, extracting PDFs, and summarizing into a review."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are an academic research assistant.
     Search paper databases (arXiv, Semantic Scholar), retrieve and extract
@@ -60,6 +63,23 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: research_ml
+        goal: "Research recent advances in machine learning for drug discovery"
+        expected:
+          required_keys: ['review', 'done']
+          done: true
+          min_lengths:
+            review: 30
+      - name: research_physics
+        goal: "Review academic literature on gravitational wave detection methods"
+        expected:
+          required_keys: ['review', 'done']
+          done: true
+          min_lengths:
+            review: 30
+
   isolation: "thread"
   state:
     persistence: "none"

@@ -3,7 +3,7 @@ package_id: "spreadsheet-auditor-agent"
 package_type: "agent"
 name: "Spreadsheet Auditor Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Audit CSV/Excel spreadsheets for errors, duplicates, and data inconsistencies."
 description: |
   Audit a spreadsheet by checking for duplicates, type mismatches, and missing values.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "spreadsheet_auditor_agent.agent:run"
   goal: "Audit a spreadsheet by checking for duplicates, type mismatches, and missing values."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a spreadsheet data quality auditor.
     Analyze CSV/Excel files for data quality issues: duplicates,
@@ -58,6 +61,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: financial_audit
+        goal: "Audit a financial spreadsheet for data quality issues"
+        expected:
+          required_keys: ['audit_summary', 'done']
+          done: true
+      - name: hr_data_audit
+        goal: "Check an HR data spreadsheet for inconsistencies and missing values"
+        expected:
+          required_keys: ['audit_summary', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

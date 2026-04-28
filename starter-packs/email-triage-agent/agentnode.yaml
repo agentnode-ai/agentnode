@@ -3,7 +3,7 @@ package_id: "email-triage-agent"
 package_type: "agent"
 name: "Email Triage Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Prioritize incoming emails, draft responses for routine messages, extract action items."
 description: |
   Triage emails by categorizing priority, drafting responses, and extracting action items.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "email_triage_agent.agent:run"
   goal: "Triage emails by categorizing priority, drafting responses, and extracting action items."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are an email triage assistant.
     Analyze incoming emails, classify priority (urgent/normal/low),
@@ -58,6 +61,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: support_email
+        goal: "Triage and prioritize incoming customer support emails"
+        expected:
+          required_keys: ['summary', 'priority', 'done']
+          done: true
+      - name: sales_email
+        goal: "Classify and draft responses for sales inquiry emails"
+        expected:
+          required_keys: ['summary', 'priority', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

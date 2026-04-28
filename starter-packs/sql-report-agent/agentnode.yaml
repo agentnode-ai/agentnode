@@ -3,7 +3,7 @@ package_id: "sql-report-agent"
 package_type: "agent"
 name: "SQL Report Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Answer natural language questions about data by generating SQL queries."
 description: |
   Translate natural language to SQL, format queries, and produce a report.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "sql_report_agent.agent:run"
   goal: "Translate natural language to SQL, format queries, and produce a report."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a data analyst who translates natural language to SQL.
     Understand the user's question about their data, generate
@@ -58,6 +61,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: revenue_query
+        goal: "Generate a SQL query to analyze monthly revenue by product category"
+        expected:
+          required_keys: ['question', 'sql', 'done']
+          done: true
+      - name: user_query
+        goal: "Write a SQL report query for user retention analysis"
+        expected:
+          required_keys: ['question', 'sql', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

@@ -3,7 +3,7 @@ package_id: "website-monitor-agent"
 package_type: "agent"
 name: "Website Monitor Agent"
 publisher: "agentnode"
-version: "2.1.2"
+version: "2.1.3"
 summary: "Monitor websites for content changes, downtime, and extract current state."
 description: |
   Monitor target websites by checking content, comparing snapshots, and reporting status.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "website_monitor_agent.agent:run"
   goal: "Monitor target websites by checking content, comparing snapshots, and reporting status."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a website monitoring specialist.
     Check websites for availability, detect content changes, measure
@@ -59,6 +62,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: monitor_site
+        goal: "Monitor a website for uptime and content changes"
+        expected:
+          required_keys: ['url', 'status', 'done']
+          done: true
+      - name: check_status
+        goal: "Check website availability and detect any downtime"
+        expected:
+          required_keys: ['url', 'status', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

@@ -3,7 +3,7 @@ package_id: "meeting-prep-agent"
 package_type: "agent"
 name: "Meeting Prep Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Prepare for meetings by researching attendees, summarizing docs, and generating an agenda."
 description: |
   Prepare for a meeting by researching topics and attendees, then generating an agenda.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "meeting_prep_agent.agent:run"
   goal: "Prepare for a meeting by researching topics and attendees, then generating an agenda."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a meeting preparation assistant.
     Research meeting attendees, summarize relevant documents and prior
@@ -59,6 +62,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: board_meeting
+        goal: "Prepare materials for a quarterly board meeting on company strategy"
+        expected:
+          required_keys: ['agenda', 'done']
+          done: true
+      - name: client_call
+        goal: "Prepare briefing notes for a client discovery call about cloud migration"
+        expected:
+          required_keys: ['agenda', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

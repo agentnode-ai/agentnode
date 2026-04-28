@@ -3,7 +3,7 @@ package_id: "log-investigator-agent"
 package_type: "agent"
 name: "Log Investigator Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Parse log files, identify errors and anomalies, correlate events, and produce a report."
 description: |
   Investigate logs by parsing entries, identifying error patterns, and generating an incident report.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "log_investigator_agent.agent:run"
   goal: "Investigate logs by parsing entries, identifying error patterns, and generating an incident report."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a log analysis and incident investigation specialist.
     Parse log files across formats, identify errors and anomalies,
@@ -60,6 +63,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: server_logs
+        goal: "Investigate server error logs to identify the root cause of 500 errors"
+        expected:
+          required_keys: ['findings', 'done']
+          done: true
+      - name: app_logs
+        goal: "Analyze application logs for performance bottlenecks"
+        expected:
+          required_keys: ['findings', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

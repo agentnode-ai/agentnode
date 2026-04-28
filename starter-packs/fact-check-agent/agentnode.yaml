@@ -3,7 +3,7 @@ package_id: "fact-check-agent"
 package_type: "agent"
 name: "Fact Check Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Verify claims against multiple web sources and produce a fact-check verdict with evidence."
 description: |
   Verify a claim by searching for supporting and contradicting evidence, then producing a verdict.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "fact_check_agent.agent:run"
   goal: "Verify a claim by searching for supporting and contradicting evidence, then producing a verdict."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a fact-checking analyst.
     Verify claims by searching multiple web sources, cross-referencing
@@ -58,6 +61,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: tech_claim
+        goal: "Fact-check the claim that quantum computers can break all encryption"
+        expected:
+          required_keys: ['claim', 'verdict', 'done']
+          done: true
+      - name: health_claim
+        goal: "Verify the claim that intermittent fasting extends lifespan by 30 percent"
+        expected:
+          required_keys: ['claim', 'verdict', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

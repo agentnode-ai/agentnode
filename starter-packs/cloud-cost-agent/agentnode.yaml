@@ -3,7 +3,7 @@ package_id: "cloud-cost-agent"
 package_type: "agent"
 name: "Cloud Cost Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Analyze cloud infrastructure costs, identify waste, and recommend optimizations."
 description: |
   Analyze cloud costs by examining billing data and recommending optimizations.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "cloud_cost_agent.agent:run"
   goal: "Analyze cloud costs by examining billing data and recommending optimizations."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a cloud cost optimization analyst.
     Analyze cloud infrastructure spending, identify underutilized resources,
@@ -59,6 +62,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: aws_costs
+        goal: "Analyze AWS cloud spending and identify cost optimization opportunities"
+        expected:
+          required_keys: ['cost_analysis', 'done']
+          done: true
+      - name: azure_costs
+        goal: "Review Azure resource costs and suggest budget reductions"
+        expected:
+          required_keys: ['cost_analysis', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

@@ -3,7 +3,7 @@ package_id: "newsletter-agent"
 package_type: "agent"
 name: "Newsletter Agent"
 publisher: "agentnode"
-version: "3.1.1"
+version: "3.1.2"
 summary: "Draft engaging newsletter emails on any topic, using LLM reasoning."
 description: |
   Create engaging newsletter content
@@ -67,6 +67,23 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: tech_newsletter
+        goal: "Write a weekly newsletter about DevOps best practices"
+        expected:
+          required_keys: ['newsletter', 'topic', 'done']
+          done: true
+          min_lengths:
+            newsletter: 200
+      - name: marketing_newsletter
+        goal: "Create a monthly newsletter about digital marketing trends"
+        expected:
+          required_keys: ['newsletter', 'topic', 'done']
+          done: true
+          min_lengths:
+            newsletter: 200
+
   isolation: "thread"
 
 compatibility:

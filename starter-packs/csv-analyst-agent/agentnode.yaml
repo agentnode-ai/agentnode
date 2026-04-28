@@ -3,7 +3,7 @@ package_id: "csv-analyst-agent"
 package_type: "agent"
 name: "CSV Analyst Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Upload a CSV, detect patterns and anomalies, and produce an analysis report."
 description: |
   Analyze a CSV by detecting data types, finding patterns, and producing an analysis report.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "csv_analyst_agent.agent:run"
   goal: "Analyze a CSV by detecting data types, finding patterns, and producing an analysis report."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a data analyst specializing in tabular data.
     Load CSV files, detect column types and patterns, identify anomalies
@@ -58,6 +61,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: sales_data
+        goal: "Analyze a CSV file of quarterly sales data and identify trends"
+        expected:
+          required_keys: ['analysis', 'done']
+          done: true
+      - name: survey_data
+        goal: "Analyze survey response data from a CSV file"
+        expected:
+          required_keys: ['analysis', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

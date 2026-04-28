@@ -3,7 +3,7 @@ package_id: "data-pipeline-agent"
 package_type: "agent"
 name: "Data Pipeline Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Build and run a data pipeline: load from CSV/JSON, clean and transform, then output."
 description: |
   Execute a data pipeline by loading, cleaning, and transforming data to a target format.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "data_pipeline_agent.agent:run"
   goal: "Execute a data pipeline by loading, cleaning, and transforming data to a target format."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a data pipeline engineer.
     Build and execute data pipelines: load data from CSV/JSON sources,
@@ -57,6 +60,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: etl_pipeline
+        goal: "Build a data pipeline to process customer transaction logs"
+        expected:
+          required_keys: ['source_file', 'done']
+          done: true
+      - name: log_pipeline
+        goal: "Create a pipeline to transform and filter server access logs"
+        expected:
+          required_keys: ['source_file', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

@@ -3,7 +3,7 @@ package_id: "project-planner-agent"
 package_type: "agent"
 name: "Project Planner Agent"
 publisher: "agentnode"
-version: "3.1.1"
+version: "3.1.2"
 summary: "Break down project goals into user stories, tasks, and milestones, using LLM reasoning."
 description: |
   Plan projects with structured breakdown
@@ -67,6 +67,23 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: mobile_app
+        goal: "Create a project plan for building a mobile fitness tracking app"
+        expected:
+          required_keys: ['plan', 'project', 'done']
+          done: true
+          min_lengths:
+            plan: 200
+      - name: website_redesign
+        goal: "Plan a website redesign project for an e-commerce platform"
+        expected:
+          required_keys: ['plan', 'project', 'done']
+          done: true
+          min_lengths:
+            plan: 200
+
   isolation: "thread"
 
 compatibility:

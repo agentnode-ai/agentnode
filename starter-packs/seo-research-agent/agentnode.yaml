@@ -3,7 +3,7 @@ package_id: "seo-research-agent"
 package_type: "agent"
 name: "SEO Research Agent"
 publisher: "agentnode"
-version: "2.1.2"
+version: "2.1.3"
 summary: "Audit a website's SEO by analyzing content, keywords, and competitor rankings."
 description: |
   Perform SEO analysis by extracting page content, analyzing SEO factors, and checking competitor rankings.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "seo_research_agent.agent:run"
   goal: "Perform SEO analysis by extracting page content, analyzing SEO factors, and checking competitor rankings."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are an SEO research analyst.
     Audit websites for SEO factors: content quality, keyword usage,
@@ -60,6 +63,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: website_seo
+        goal: "Analyze SEO performance for a SaaS product landing page"
+        expected:
+          required_keys: ['seo_analysis', 'done']
+          done: true
+      - name: content_seo
+        goal: "Research SEO opportunities for a technology blog"
+        expected:
+          required_keys: ['seo_analysis', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"

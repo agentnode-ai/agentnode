@@ -3,7 +3,7 @@ package_id: "code-review-agent"
 package_type: "agent"
 name: "Code Review Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Perform comprehensive code review: lint, security audit, and refactoring suggestions."
 description: |
   Review code by running linting, security checks, and suggesting refactorings.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "code_review_agent.agent:run"
   goal: "Review code by running linting, security checks, and suggesting refactorings."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a senior code reviewer.
     Perform comprehensive code review: run linting, check for security
@@ -60,6 +63,23 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: python_review
+        goal: "Review a Python REST API codebase for quality and security issues"
+        expected:
+          required_keys: ['review', 'done']
+          done: true
+          min_lengths:
+            review: 30
+      - name: js_review
+        goal: "Review a JavaScript frontend application for code quality"
+        expected:
+          required_keys: ['review', 'done']
+          done: true
+          min_lengths:
+            review: 30
+
   isolation: "thread"
   state:
     persistence: "none"

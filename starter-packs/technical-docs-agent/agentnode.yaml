@@ -3,7 +3,7 @@ package_id: "technical-docs-agent"
 package_type: "agent"
 name: "Technical Documentation Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Generate API documentation and developer guides from source code."
 description: |
   Generate documentation by analyzing code structure, extracting signatures, and formatting guides.
@@ -42,6 +42,9 @@ capabilities:
 agent:
   entrypoint: "technical_docs_agent.agent:run"
   goal: "Generate documentation by analyzing code structure, extracting signatures, and formatting guides."
+  tier: "llm_plus_tools"
+  llm:
+    required: true
   system_prompt: |
     You are a technical documentation engineer.
     Analyze source code to generate API documentation, developer
@@ -59,6 +62,19 @@ agent:
   termination:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
+  verification:
+    cases:
+      - name: api_docs
+        goal: "Generate technical documentation for a REST API service"
+        expected:
+          required_keys: ['documentation', 'done']
+          done: true
+      - name: library_docs
+        goal: "Write developer documentation for a Python utility library"
+        expected:
+          required_keys: ['documentation', 'done']
+          done: true
+
   isolation: "thread"
   state:
     persistence: "none"
