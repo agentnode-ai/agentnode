@@ -877,3 +877,268 @@ def step_tests(sandbox: VerificationSandbox) -> tuple[bool, str]:
         return False, "No test directory found"
 
     return sandbox.run_pytest()
+
+
+# ── Stop words for goal-in-prompt heuristic ──
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+    "being", "have", "has", "had", "do", "does", "did", "will", "would",
+    "could", "should", "may", "might", "shall", "can", "need", "must",
+    "it", "its", "this", "that", "these", "those", "what", "which", "who",
+    "whom", "how", "when", "where", "why", "all", "each", "every", "both",
+    "few", "more", "most", "other", "some", "such", "no", "not", "only",
+    "into", "about", "up", "out", "if", "then", "than", "so", "as", "any",
+    "using", "use", "create", "make", "write", "generate", "based",
+})
+
+_ERROR_MARKERS = ("not implemented", "todo", "traceback", "exception")
+
+
+def run_agent_verification_cases(
+    sandbox: VerificationSandbox,
+    module_path: str,
+    func_name: str,
+    cases: list[dict],
+    timeout: int,
+    agent_section: dict,
+) -> dict:
+    """Run agent verification cases and validate outputs.
+
+    For each case:
+    1. Build MockAgentContext with the case goal
+    2. Execute agent function
+    3. Validate output against expected assertions
+    4. Check goal-in-prompt heuristic
+
+    Returns {"total": N, "passed": M, "results": [...], "gold_blockers": [...]}.
+    """
+    tier = agent_section.get("tier", "")
+    results = []
+    gold_blockers = []
+
+    for case in cases:
+        case_name = case.get("name", "unnamed")
+        goal = case.get("goal", "")
+        expected = case.get("expected", {})
+
+        case_result = {
+            "name": case_name,
+            "goal": goal,
+            "passed": False,
+            "checks": [],
+            "error": None,
+        }
+
+        agent_block = _build_mock_agent_context_code(goal)
+
+        code = f"""
+import importlib, json, sys, inspect, asyncio
+{agent_block}
+mod = importlib.import_module("{module_path}")
+fn = getattr(mod, "{func_name}")
+
+try:
+    if inspect.iscoroutinefunction(fn):
+        result = asyncio.run(fn(_agent_ctx))
+    else:
+        result = fn(_agent_ctx)
+
+    output = {{
+        "status": "ok",
+        "result": result if isinstance(result, dict) else {{"raw": repr(result)[:500]}},
+        "return_type": type(result).__name__,
+        "llm_calls_made": _agent_ctx._llm_call_count,
+        "tool_calls_made": _agent_ctx._tool_call_count,
+        "tool_context_used": _agent_ctx._tool_context_used,
+        "prompt_history": _agent_ctx._prompt_history[:10],
+    }}
+    print('CASE_JSON:' + json.dumps(output, default=str))
+except Exception as e:
+    print('CASE_JSON:' + json.dumps({{
+        "status": "error",
+        "error_type": type(e).__name__,
+        "message": str(e)[:500],
+    }}))
+"""
+
+        ok, log = sandbox.run_python_code(code, timeout=timeout, restrict_network=True)
+
+        parsed = _parse_case_json(log)
+        if not parsed or parsed.get("status") == "error":
+            err_msg = "Subprocess failed" if not parsed else parsed.get("message", "Unknown error")
+            case_result["error"] = err_msg
+            case_result["checks"].append({"check": "execution", "passed": False, "detail": err_msg})
+            results.append(case_result)
+            continue
+
+        agent_output = parsed.get("result", {})
+        llm_calls = parsed.get("llm_calls_made", 0)
+        tool_calls = parsed.get("tool_calls_made", 0)
+        tool_context = parsed.get("tool_context_used", False)
+        prompt_history = parsed.get("prompt_history", [])
+
+        all_checks_passed = True
+
+        # Check: required_keys
+        required_keys = expected.get("required_keys", [])
+        if required_keys:
+            missing = [k for k in required_keys if k not in agent_output]
+            check_passed = len(missing) == 0
+            case_result["checks"].append({
+                "check": "required_keys",
+                "passed": check_passed,
+                "detail": f"missing: {missing}" if missing else "all present",
+            })
+            if not check_passed:
+                all_checks_passed = False
+
+        # Check: done == true
+        if expected.get("done") is True:
+            done_val = agent_output.get("done")
+            check_passed = done_val is True
+            case_result["checks"].append({
+                "check": "done",
+                "passed": check_passed,
+                "detail": f"done={done_val}",
+            })
+            if not check_passed:
+                all_checks_passed = False
+                if "agent did not return done: true" not in gold_blockers:
+                    gold_blockers.append("agent did not return done: true")
+
+        # Check: min_lengths
+        min_lengths = expected.get("min_lengths", {})
+        for key, min_len in min_lengths.items():
+            val = agent_output.get(key, "")
+            actual_len = len(str(val)) if val else 0
+            check_passed = actual_len >= min_len
+            case_result["checks"].append({
+                "check": f"min_length:{key}",
+                "passed": check_passed,
+                "detail": f"len={actual_len}, min={min_len}",
+            })
+            if not check_passed:
+                all_checks_passed = False
+
+        # Check: error markers in output values (NOT "error" in content text, NOT "mock")
+        for key, val in agent_output.items():
+            if not isinstance(val, str):
+                continue
+            val_lower = val.lower()
+            for marker in _ERROR_MARKERS:
+                if marker in val_lower:
+                    case_result["checks"].append({
+                        "check": f"error_marker:{marker}",
+                        "passed": False,
+                        "detail": f"found '{marker}' in output key '{key}'",
+                    })
+                    all_checks_passed = False
+                    break
+
+        # Check: "error" only as dict key / status, not blanket content search
+        if isinstance(agent_output.get("error"), str) and agent_output["error"]:
+            case_result["checks"].append({
+                "check": "error_key",
+                "passed": False,
+                "detail": f"error key present: {agent_output['error'][:100]}",
+            })
+            all_checks_passed = False
+
+        # Check: goal-in-prompt
+        llm_prompt_contains = expected.get("llm_prompt_contains")
+        if llm_prompt_contains:
+            check_words = [w.lower() for w in llm_prompt_contains]
+        else:
+            check_words = [
+                w.lower() for w in goal.split()
+                if len(w) > 3 and w.lower() not in _STOP_WORDS
+            ]
+        if check_words and prompt_history:
+            all_prompts = " ".join(prompt_history).lower()
+            matched = [w for w in check_words if w in all_prompts]
+            threshold = min(2, len(check_words)) if len(check_words) >= 2 else 1
+            alt_threshold = int(len(check_words) * 0.5)
+            required_matches = min(threshold, alt_threshold) if alt_threshold > 0 else threshold
+            check_passed = len(matched) >= required_matches
+            case_result["checks"].append({
+                "check": "goal_in_prompt",
+                "passed": check_passed,
+                "detail": f"matched {len(matched)}/{len(check_words)} words (need {required_matches})",
+            })
+            if not check_passed:
+                all_checks_passed = False
+                if "goal not passed to LLM prompt" not in gold_blockers:
+                    gold_blockers.append("goal not passed to LLM prompt")
+        elif not prompt_history and llm_calls == 0 and tier == "llm_only":
+            case_result["checks"].append({
+                "check": "goal_in_prompt",
+                "passed": False,
+                "detail": "llm_only agent made 0 LLM calls",
+            })
+            all_checks_passed = False
+            if "llm_only agent made no LLM calls" not in gold_blockers:
+                gold_blockers.append("llm_only agent made no LLM calls")
+
+        # Check: llm_only tier constraints
+        if tier == "llm_only":
+            if llm_calls < 1:
+                case_result["checks"].append({
+                    "check": "llm_only:llm_calls",
+                    "passed": False,
+                    "detail": f"llm_calls_made={llm_calls}, expected >= 1",
+                })
+                all_checks_passed = False
+                if "llm_only: no LLM calls made" not in gold_blockers:
+                    gold_blockers.append("llm_only: no LLM calls made")
+            if tool_context:
+                case_result["checks"].append({
+                    "check": "llm_only:tool_context",
+                    "passed": False,
+                    "detail": "tool_context_used should be False for llm_only",
+                })
+                all_checks_passed = False
+            if tool_calls > 0:
+                case_result["checks"].append({
+                    "check": "llm_only:tool_calls",
+                    "passed": False,
+                    "detail": f"tool_calls_made={tool_calls}, expected 0 for llm_only",
+                })
+                all_checks_passed = False
+
+        case_result["passed"] = all_checks_passed
+        case_result["llm_calls_made"] = llm_calls
+        case_result["tool_calls_made"] = tool_calls
+        results.append(case_result)
+
+    passed_count = sum(1 for r in results if r["passed"])
+
+    if len(cases) < 2:
+        gold_blockers.append("fewer than 2 verification cases")
+    if passed_count < len(cases):
+        gold_blockers.append(f"{len(cases) - passed_count}/{len(cases)} cases failed")
+
+    has_content_key = any(
+        k not in ("done",) for case in cases
+        for k in case.get("expected", {}).get("required_keys", [])
+    )
+    if not has_content_key:
+        gold_blockers.append("cases only check 'done', no content keys")
+
+    return {
+        "total": len(cases),
+        "passed": passed_count,
+        "results": results,
+        "gold_blockers": gold_blockers,
+    }
+
+
+def _parse_case_json(log: str) -> dict | None:
+    """Extract the CASE_JSON:{...} payload from subprocess output."""
+    for line in log.splitlines():
+        if line.startswith("CASE_JSON:"):
+            try:
+                return json.loads(line[10:])
+            except (json.JSONDecodeError, ValueError):
+                pass
+    return None

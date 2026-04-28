@@ -42,11 +42,14 @@ capabilities:
 agent:
   entrypoint: "deep_research_agent.agent:run"
   goal: "Research a topic using web search, page extraction, and summarization to produce a report with sources."
+  tier: "llm_plus_tools"
   system_prompt: |
     You are a deep research analyst.
     Conduct thorough multi-source research on any topic by searching the
     web, extracting page content, cross-referencing sources, and
     synthesizing findings into a comprehensive report with citations.
+  llm:
+    required: true
   tool_access:
     allowed_packages:
       - "document-summarizer-pack"
@@ -60,6 +63,22 @@ agent:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
   isolation: "thread"
+  verification:
+    cases:
+      - name: research_ai
+        goal: "Create a research report about quantum computing trends in 2025"
+        expected:
+          required_keys: ["report", "done"]
+          done: true
+          min_lengths:
+            report: 100
+      - name: research_tech
+        goal: "Research the adoption of Rust programming language in enterprise software"
+        expected:
+          required_keys: ["report", "done"]
+          done: true
+          min_lengths:
+            report: 100
   state:
     persistence: "none"
 

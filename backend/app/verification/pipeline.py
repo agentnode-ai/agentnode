@@ -132,16 +132,70 @@ def _get_semaphore() -> asyncio.Semaphore:
     return _verification_semaphore
 
 
+def _compute_manifest_completeness(agent_section: dict) -> dict:
+    """Score how complete the agent manifest is (0-10 points)."""
+    score = 0
+    details = {}
+
+    # tier present: 2 pts
+    tier = agent_section.get("tier", "")
+    if tier:
+        score += 2
+        details["tier"] = {"present": True, "points": 2}
+    else:
+        details["tier"] = {"present": False, "points": 0}
+
+    # system_prompt >= 100 chars: 2 pts
+    sp = agent_section.get("system_prompt", "")
+    sp_len = len(sp.strip()) if sp else 0
+    if sp_len >= 100:
+        score += 2
+        details["system_prompt"] = {"length": sp_len, "points": 2}
+    else:
+        details["system_prompt"] = {"length": sp_len, "points": 0}
+
+    # goal >= 20 chars: 2 pts
+    goal = agent_section.get("goal", "")
+    goal_len = len(goal.strip()) if goal else 0
+    if goal_len >= 20:
+        score += 2
+        details["goal"] = {"length": goal_len, "points": 2}
+    else:
+        details["goal"] = {"length": goal_len, "points": 0}
+
+    # llm.required set: 2 pts
+    llm_section = agent_section.get("llm", {})
+    llm_required = llm_section.get("required") if isinstance(llm_section, dict) else None
+    if llm_required is not None:
+        score += 2
+        details["llm_required"] = {"set": True, "points": 2}
+    else:
+        details["llm_required"] = {"set": False, "points": 0}
+
+    # limits + tool_access set: 2 pts
+    has_limits = bool(agent_section.get("limits"))
+    has_tool_access = bool(agent_section.get("tool_access"))
+    if has_limits and has_tool_access:
+        score += 2
+        details["limits_and_tool_access"] = {"present": True, "points": 2}
+    else:
+        details["limits_and_tool_access"] = {"present": False, "points": 0}
+
+    return {"score": score, "details": details}
+
+
 def _run_verification_sync(
     artifact_bytes: bytes,
     tools: list[dict],
+    is_agent: bool = False,
+    agent_section: dict | None = None,
 ) -> dict:
     """Run all verification steps synchronously (called in thread pool).
 
     Returns a dict with all step results using status strings, not booleans.
     """
     from app.verification.sandbox import IsolationLevel, VerificationSandbox
-    from app.verification.steps import step_import, step_install, step_smoke, step_tests, run_stability_check
+    from app.verification.steps import step_import, step_install, step_smoke, step_tests, run_stability_check, run_agent_verification_cases
     from app.verification.smoke_context import (
         build_smoke_context, classify_credential_boundary, REASON_VERDICTS,
     )
@@ -171,6 +225,13 @@ def _run_verification_sync(
         "smoke_confidence": None,
         # Isolation levels per step — determined dynamically from sandbox capabilities
         "isolation": None,  # populated after sandbox creation
+        # Agent verification fields
+        "is_agent_package": is_agent,
+        "manifest_completeness": None,
+        "agent_cases_results": None,
+        "agent_cases_passed": None,
+        "agent_cases_total": None,
+        "agent_gold_blockers": None,
     }
 
     try:
@@ -315,21 +376,45 @@ def _run_verification_sync(
                 except Exception:
                     logger.exception("Stability check failed (non-fatal)")
 
-        # Step 4: Tests (auto-generate if none exist)
-        tests_auto_generated = False
-        if not sandbox.has_tests():
-            sandbox.generate_auto_tests(tools)
-            tests_auto_generated = True
-        if sandbox.has_tests():
-            t0 = time.monotonic()
-            ok, log = step_tests(sandbox)
-            result["tests_duration_ms"] = int((time.monotonic() - t0) * 1000)
-            result["tests_status"] = "passed" if ok else "failed"
-            result["tests_log"] = log
+        # Step 4: Tests — skip pytest for agents, run verification cases instead
+        if is_agent and agent_section:
+            result["tests_status"] = "skipped"
+            result["tests_log"] = "Skipped: agent packages use verification cases instead of pytest"
+            result["tests_auto_generated"] = False
+
+            # Manifest completeness scoring
+            result["manifest_completeness"] = _compute_manifest_completeness(agent_section)
+
+            # Run verification cases if defined
+            cases = (agent_section.get("verification") or {}).get("cases", [])
+            if cases:
+                first_tool = tools[0] if tools else {}
+                ep = first_tool.get("entrypoint", "")
+                if ep and ":" in ep:
+                    module_path, func_name = ep.rsplit(":", 1)
+                    cases_result = run_agent_verification_cases(
+                        sandbox, module_path, func_name,
+                        cases, timeout=15, agent_section=agent_section,
+                    )
+                    result["agent_cases_results"] = cases_result["results"]
+                    result["agent_cases_passed"] = cases_result["passed"]
+                    result["agent_cases_total"] = cases_result["total"]
+                    result["agent_gold_blockers"] = cases_result["gold_blockers"]
         else:
-            result["tests_status"] = "not_present"
-            result["tests_log"] = "No test directory found"
-        result["tests_auto_generated"] = tests_auto_generated
+            tests_auto_generated = False
+            if not sandbox.has_tests():
+                sandbox.generate_auto_tests(tools)
+                tests_auto_generated = True
+            if sandbox.has_tests():
+                t0 = time.monotonic()
+                ok, log = step_tests(sandbox)
+                result["tests_duration_ms"] = int((time.monotonic() - t0) * 1000)
+                result["tests_status"] = "passed" if ok else "failed"
+                result["tests_log"] = log
+            else:
+                result["tests_status"] = "not_present"
+                result["tests_log"] = "No test directory found"
+            result["tests_auto_generated"] = tests_auto_generated
 
         # Collect warnings from all logs
         warnings = []
@@ -548,11 +633,19 @@ async def run_verification(
                         })
 
                 # Run verification in thread pool (subprocess.run blocks)
+                import functools
+                agent_section_for_sync = manifest.get("agent", {}) if is_agent_pkg else None
                 start_time = time.monotonic()
                 loop = asyncio.get_running_loop()
                 step_results = await asyncio.wait_for(
                     loop.run_in_executor(
-                        None, _run_verification_sync, artifact_bytes, tools
+                        None,
+                        functools.partial(
+                            _run_verification_sync,
+                            artifact_bytes, tools,
+                            is_agent=bool(is_agent_pkg),
+                            agent_section=agent_section_for_sync,
+                        ),
                     ),
                     timeout=settings.VERIFICATION_TIMEOUT,
                 )
@@ -659,6 +752,14 @@ async def run_verification(
 
                 # Phase 7A: Smoke confidence
                 vr.smoke_confidence = step_results.get("smoke_confidence")
+
+                # Agent verification fields
+                vr.is_agent_package = step_results.get("is_agent_package", False)
+                vr.manifest_completeness = step_results.get("manifest_completeness")
+                vr.agent_cases_results = step_results.get("agent_cases_results")
+                vr.agent_cases_passed = step_results.get("agent_cases_passed")
+                vr.agent_cases_total = step_results.get("agent_cases_total")
+                vr.agent_gold_blockers = step_results.get("agent_gold_blockers")
 
                 # Compute score (Phase 6B: full ScoreResult)
                 from app.verification.scoring import compute_score_result

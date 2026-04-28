@@ -68,6 +68,22 @@ agent:
     stop_on_final_answer: true
     stop_on_consecutive_errors: 3
   isolation: "thread"
+  verification:
+    cases:
+      - name: tech_blog
+        goal: "Write a blog post about Python decorators and their practical uses"
+        expected:
+          required_keys: ["article", "title", "done"]
+          done: true
+          min_lengths:
+            article: 200
+      - name: marketing_blog
+        goal: "Write a blog post about the benefits of cloud computing for small businesses"
+        expected:
+          required_keys: ["article", "title", "done"]
+          done: true
+          min_lengths:
+            article: 200
 
 compatibility:
   frameworks: ["generic"]

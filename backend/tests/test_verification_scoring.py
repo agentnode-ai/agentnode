@@ -1,12 +1,12 @@
-"""Tests for the verification score engine (Phase 4A)."""
+"""Tests for the verification score engine (Phase 4A + Agent Scoring)."""
 
 from unittest.mock import MagicMock
 
-from app.verification.scoring import compute_tool_score
+from app.verification.scoring import compute_tool_score, compute_score_result
 
 
 def _make_vr(**kwargs):
-    """Create a mock VerificationResult with defaults."""
+    """Create a mock VerificationResult with defaults for TOOL-PACKS."""
     vr = MagicMock()
     defaults = {
         "install_status": "passed",
@@ -25,8 +25,47 @@ def _make_vr(**kwargs):
         "stability_log": None,
         "install_duration_ms": None,
         "smoke_confidence": None,
+        # Agent fields — False/None for tool-packs
+        "is_agent_package": False,
+        "manifest_completeness": None,
+        "agent_cases_results": None,
+        "agent_cases_passed": None,
+        "agent_cases_total": None,
+        "agent_gold_blockers": None,
     }
     defaults.update(kwargs)
+    for k, v in defaults.items():
+        setattr(vr, k, v)
+    return vr
+
+
+def _make_agent_vr(**kwargs):
+    """Create a mock VerificationResult for AGENTS."""
+    defaults = {
+        "is_agent_package": True,
+        "install_status": "passed",
+        "import_status": "passed",
+        "smoke_status": "passed",
+        "smoke_reason": "ok",
+        "tests_status": "skipped",
+        "tests_auto_generated": False,
+        "reliability": None,
+        "determinism_score": None,
+        "contract_valid": None,
+        "warnings_count": 0,
+        "contract_details": None,
+        "verification_mode": "real",
+        "stability_log": None,
+        "install_duration_ms": None,
+        "smoke_confidence": None,
+        "manifest_completeness": None,
+        "agent_cases_results": None,
+        "agent_cases_passed": None,
+        "agent_cases_total": None,
+        "agent_gold_blockers": None,
+    }
+    defaults.update(kwargs)
+    vr = MagicMock()
     for k, v in defaults.items():
         setattr(vr, k, v)
     return vr
@@ -253,3 +292,150 @@ class TestComputeToolScore:
         )
         _, tier, _ = compute_tool_score(vr)
         assert tier == "unverified"
+
+
+class TestToolPackRegression:
+    """Regression suite: tool-pack scoring MUST NOT change with agent scoring addition."""
+
+    def test_toolpack_perfect_exact_scores(self):
+        vr = _make_vr(
+            smoke_status="passed", tests_status="passed", tests_auto_generated=False,
+            reliability=1.0, determinism_score=1.0, contract_valid=True,
+        )
+        result = compute_score_result(vr)
+        assert result.score == 95
+        assert result.tier == "gold"
+        b = result.breakdown
+        assert b["install"].points == 15
+        assert b["import"].points == 15
+        assert b["smoke"].points == 25
+        assert b["tests"].points == 15
+        assert b["reliability"].points == 10
+        assert b["determinism"].points == 5
+        assert b["contract"].points == 10
+
+    def test_toolpack_no_tests_exact(self):
+        vr = _make_vr(tests_status="not_present")
+        result = compute_score_result(vr)
+        assert result.breakdown["tests"].points == 3
+
+    def test_toolpack_auto_tests_exact(self):
+        vr = _make_vr(tests_status="passed", tests_auto_generated=True)
+        result = compute_score_result(vr)
+        assert result.breakdown["tests"].points == 8
+
+    def test_toolpack_credential_boundary_exact(self):
+        vr = _make_vr(
+            smoke_status="inconclusive", smoke_reason="credential_boundary_reached",
+            smoke_confidence="high",
+        )
+        result = compute_score_result(vr)
+        assert result.breakdown["smoke"].points == 15
+        assert result.tier == "partial"
+
+    def test_toolpack_is_not_agent(self):
+        """Tool-pack VR must NOT be routed to agent scoring."""
+        vr = _make_vr(is_agent_package=False)
+        result = compute_score_result(vr)
+        assert "manifest" not in result.breakdown
+        assert "tests" in result.breakdown
+
+
+class TestAgentScoring:
+    """Agent-specific scoring (Phase 6: bifurcation)."""
+
+    def test_agent_perfect_score(self):
+        vr = _make_agent_vr(
+            reliability=1.0, determinism_score=1.0, contract_valid=True,
+            manifest_completeness={"score": 10},
+            agent_cases_total=2, agent_cases_passed=2,
+            agent_gold_blockers=[],
+        )
+        result = compute_score_result(vr)
+        # install(15) + import(15) + smoke(20) + contract(15) + reliability(15) + determinism(10) + manifest(10) = 100
+        assert result.score == 100
+        assert result.tier == "gold"
+
+    def test_agent_scoring_table(self):
+        vr = _make_agent_vr(
+            reliability=1.0, determinism_score=1.0, contract_valid=True,
+            manifest_completeness={"score": 10},
+            agent_cases_total=2, agent_cases_passed=2,
+            agent_gold_blockers=[],
+        )
+        result = compute_score_result(vr)
+        b = result.breakdown
+        assert b["install"].max_points == 15
+        assert b["import"].max_points == 15
+        assert b["smoke"].max_points == 20
+        assert b["contract"].max_points == 15
+        assert b["reliability"].max_points == 15
+        assert b["determinism"].max_points == 10
+        assert b["manifest"].max_points == 10
+
+    def test_agent_no_tests_category(self):
+        """Agent scoring has 'manifest' instead of 'tests'."""
+        vr = _make_agent_vr()
+        result = compute_score_result(vr)
+        assert "manifest" in result.breakdown
+        assert "tests" not in result.breakdown
+
+    def test_agent_without_cases_max_verified(self):
+        vr = _make_agent_vr(
+            reliability=1.0, determinism_score=1.0, contract_valid=True,
+            manifest_completeness={"score": 10},
+            agent_cases_total=0, agent_cases_passed=0,
+        )
+        result = compute_score_result(vr)
+        assert result.score >= 90
+        assert result.tier == "verified"
+
+    def test_agent_gold_requires_cases(self):
+        vr = _make_agent_vr(
+            reliability=1.0, determinism_score=1.0, contract_valid=True,
+            manifest_completeness={"score": 10},
+            agent_cases_total=1, agent_cases_passed=1,
+            agent_gold_blockers=[],
+        )
+        result = compute_score_result(vr)
+        assert result.tier == "verified"
+
+    def test_agent_gold_with_blockers(self):
+        vr = _make_agent_vr(
+            reliability=1.0, determinism_score=1.0, contract_valid=True,
+            manifest_completeness={"score": 10},
+            agent_cases_total=2, agent_cases_passed=2,
+            agent_gold_blockers=["goal not passed to LLM prompt"],
+        )
+        result = compute_score_result(vr)
+        assert result.tier == "verified"
+
+    def test_agent_smoke_max_20(self):
+        vr = _make_agent_vr(smoke_status="passed")
+        result = compute_score_result(vr)
+        assert result.breakdown["smoke"].points == 20
+
+    def test_agent_manifest_completeness(self):
+        vr = _make_agent_vr(manifest_completeness={"score": 6})
+        result = compute_score_result(vr)
+        assert result.breakdown["manifest"].points == 6
+
+    def test_agent_failed_cases_no_gold(self):
+        vr = _make_agent_vr(
+            reliability=1.0, determinism_score=1.0, contract_valid=True,
+            manifest_completeness={"score": 10},
+            agent_cases_total=2, agent_cases_passed=1,
+            agent_gold_blockers=["1/2 cases failed"],
+        )
+        result = compute_score_result(vr)
+        assert result.tier == "verified"
+
+    def test_agent_low_reliability_no_gold(self):
+        vr = _make_agent_vr(
+            reliability=0.5, determinism_score=1.0, contract_valid=True,
+            manifest_completeness={"score": 10},
+            agent_cases_total=2, agent_cases_passed=2,
+            agent_gold_blockers=[],
+        )
+        result = compute_score_result(vr)
+        assert result.tier != "gold"
