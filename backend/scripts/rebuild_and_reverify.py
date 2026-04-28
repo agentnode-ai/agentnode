@@ -100,9 +100,19 @@ async def rebuild_and_reverify(dry_run: bool = False, slug_filter: str = "*"):
             continue
 
         try:
+            import hashlib
             artifact = build_artifact(pack_dir)
+            new_hash = hashlib.sha256(artifact).hexdigest()
             print(f"    artifact: {len(artifact)} bytes, uploading...", flush=True)
             await upload_artifact(pv.artifact_object_key, artifact)
+
+            async with async_session_factory() as session:
+                from sqlalchemy import text
+                await session.execute(
+                    text("UPDATE package_versions SET artifact_hash_sha256 = :hash WHERE id = :id"),
+                    {"hash": new_hash, "id": str(pv.id)},
+                )
+                await session.commit()
 
             print(f"    reverifying...", flush=True)
             await run_verification(pv.id, triggered_by="admin_reverify")
