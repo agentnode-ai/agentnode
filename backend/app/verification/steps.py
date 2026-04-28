@@ -604,7 +604,7 @@ class _MockAgentContext:
 _agent_ctx = _MockAgentContext()
 """
 
-    call_expr = "fn(_agent_ctx, **test_input)" if is_agent else "fn(**test_input)"
+    call_expr = "fn(_agent_ctx)" if is_agent else "fn(**test_input)"
     async_call_expr = f"asyncio.run({call_expr})" if not is_agent else call_expr
 
     code = f"""
