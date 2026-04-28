@@ -3,7 +3,7 @@ package_id: "blog-writer-agent"
 package_type: "agent"
 name: "Blog Writer Agent"
 publisher: "agentnode"
-version: "3.1.1"
+version: "3.2.0"
 summary: "Write SEO-optimized blog posts with compelling structure, using LLM reasoning."
 description: |
   Write SEO-optimized blog posts
