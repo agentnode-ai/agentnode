@@ -281,7 +281,7 @@ def _run_verification_sync(
                             reliability, determinism, contract_valid, stability_results = run_stability_check(
                                 sandbox, module_path, func_name,
                                 candidates[0], min(10, max(3, int(remaining / 3))),
-                                ctx, n=3,
+                                ctx, n=3, tool=first_passed_tool,
                             )
                             result["reliability"] = reliability
                             result["determinism_score"] = determinism

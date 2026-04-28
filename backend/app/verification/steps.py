@@ -697,15 +697,19 @@ def run_stability_check(
     timeout: int,
     ctx: SmokeContext,
     n: int = 3,
+    tool: dict | None = None,
 ) -> tuple[float, float, bool, list[dict]]:
     """Run same input N times, collect reliability + determinism + contract validity.
 
     Returns (reliability, determinism, contract_valid, run_results).
     """
+    tool = tool or {}
+    is_agent = tool.get("name") == "__agent_entrypoint__"
+
     results = []
     for i in range(n):
         reason, error_type, error_msg = _run_single_smoke(
-            sandbox, module_path, func_name, test_input, timeout, ctx,
+            sandbox, module_path, func_name, test_input, timeout, ctx, tool,
         )
         parsed = None
         # Re-run to get the SMOKE_JSON for hash/type info
@@ -740,18 +744,94 @@ for _stub_path in json.loads({stub_literal}):
         pass
 """
 
+        # Agent-aware stability code
+        if is_agent:
+            agent_section = tool.get("_agent_section", {})
+            agent_goal = agent_section.get("goal", "Verification stability test")
+            agent_goal_literal = json.dumps(agent_goal)
+            agent_block = f"""
+class _MockToolResult:
+    def __init__(self, success=True, result=None, error=None):
+        self.success = success
+        self.result = result or {{"output": "mock result"}}
+        self.error = error
+
+class _MockAgentContext:
+    def __init__(self):
+        self._goal = {agent_goal_literal}
+        self._iteration = 0
+    @property
+    def goal(self):
+        return self._goal
+    @property
+    def iteration(self):
+        return self._iteration
+    def run_tool(self, slug, tool_name=None, **kw):
+        return _MockToolResult()
+    def try_tool(self, slug, tool_name=None, **kw):
+        return _MockToolResult()
+    def next_iteration(self):
+        self._iteration += 1
+    def is_tool_available(self, slug):
+        return True
+    def call_llm(self, messages, **kw):
+        class _R:
+            content = "Mock LLM response for verification."
+            tool_calls = None
+            usage = None
+            model = "mock"
+            finish_reason = "stop"
+        return _R()
+    def call_llm_text(self, messages, **kw):
+        return "Mock LLM response for verification."
+    @property
+    def llm(self):
+        return None
+    @property
+    def system_prompt(self):
+        return None
+    @property
+    def allowed_packages(self):
+        return None
+    @property
+    def tool_calls_made(self):
+        return 0
+    @property
+    def tools_remaining(self):
+        return 50
+    @property
+    def max_tool_calls(self):
+        return 50
+    @property
+    def max_iterations(self):
+        return 10
+    @property
+    def run_id(self):
+        return None
+    @property
+    def llm_calls_made(self):
+        return 0
+
+_agent_ctx = _MockAgentContext()
+"""
+            call_line = "fn(_agent_ctx)"
+        else:
+            agent_block = ""
+            call_line = "fn(**test_input)"
+
         code = f"""
 import importlib, json, sys, inspect, asyncio, hashlib, time
 {stub_block}
+{agent_block}
 mod = importlib.import_module("{module_path}")
 fn = getattr(mod, "{func_name}")
 test_input = json.loads({input_literal})
 t0 = time.monotonic()
 try:
     if inspect.iscoroutinefunction(fn):
-        result = asyncio.run(fn(**test_input))
+        result = asyncio.run({call_line})
     else:
-        result = fn(**test_input)
+        result = {call_line}
     ms = int((time.monotonic() - t0) * 1000)
     result_repr = repr(result)[:1000]
     result_hash = hashlib.md5(result_repr.encode()).hexdigest()
