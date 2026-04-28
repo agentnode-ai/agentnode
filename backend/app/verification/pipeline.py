@@ -505,30 +505,34 @@ async def run_verification(
                         network_level = net.get("level", "none") or "none"
 
                 # Build normalized tool dicts for smoke context
-                tools = []
-                seen_eps = set()
-                for cap in capabilities:
-                    ep = cap.entrypoint
-                    # Derive entrypoint from package-level entrypoint if capability has none
-                    if not ep and pv.entrypoint:
-                        ep = f"{pv.entrypoint}:run"
-                    if ep and ep not in seen_eps:
-                        seen_eps.add(ep)
-                        tools.append({
-                            "name": cap.name,
-                            "entrypoint": ep,
-                            "input_schema": cap.input_schema,
-                            "env_requirements": pv.env_requirements,
-                            "examples": pv.examples,
-                            "network_level": network_level,
-                        })
-
-                # For agent packages, also verify the agent entrypoint
-                pkg_result = await session.execute(
+                # For agents: skip capability-level tools (they share the agent entrypoint
+                # and expect AgentContext). Only test the __agent_entrypoint__ with MockContext.
+                pkg_result_pre = await session.execute(
                     select(Package).where(Package.id == pv.package_id)
                 )
-                pkg = pkg_result.scalar_one_or_none()
-                if pkg and pkg.package_type == "agent":
+                pkg_pre = pkg_result_pre.scalar_one_or_none()
+                is_agent_pkg = pkg_pre and pkg_pre.package_type == "agent"
+
+                tools = []
+                seen_eps = set()
+                if not is_agent_pkg:
+                    for cap in capabilities:
+                        ep = cap.entrypoint
+                        if not ep and pv.entrypoint:
+                            ep = f"{pv.entrypoint}:run"
+                        if ep and ep not in seen_eps:
+                            seen_eps.add(ep)
+                            tools.append({
+                                "name": cap.name,
+                                "entrypoint": ep,
+                                "input_schema": cap.input_schema,
+                                "env_requirements": pv.env_requirements,
+                                "examples": pv.examples,
+                                "network_level": network_level,
+                            })
+
+                # For agent packages, verify the agent entrypoint with MockAgentContext
+                if is_agent_pkg:
                     agent_section = manifest.get("agent", {})
                     agent_ep = agent_section.get("entrypoint", "")
                     if agent_ep and ":" in agent_ep and agent_ep not in seen_eps:
