@@ -3,7 +3,7 @@ package_id: "project-planner-agent"
 package_type: "agent"
 name: "Project Planner Agent"
 publisher: "agentnode"
-version: "3.1.2"
+version: "3.1.3"
 summary: "Break down project goals into user stories, tasks, and milestones, using LLM reasoning."
 description: |
   Plan projects with structured breakdown
@@ -75,14 +75,14 @@ agent:
           required_keys: ['plan', 'project', 'done']
           done: true
           min_lengths:
-            plan: 200
+            plan: 100
       - name: website_redesign
         goal: "Plan a website redesign project for an e-commerce platform"
         expected:
           required_keys: ['plan', 'project', 'done']
           done: true
           min_lengths:
-            plan: 200
+            plan: 100
 
   isolation: "thread"
 

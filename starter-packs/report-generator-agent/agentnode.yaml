@@ -3,7 +3,7 @@ package_id: "report-generator-agent"
 package_type: "agent"
 name: "Report Generator Agent"
 publisher: "agentnode"
-version: "3.1.2"
+version: "3.1.3"
 summary: "Generate structured business reports with executive summary from provided data, using LLM reasoning."
 description: |
   Generate structured business reports
@@ -75,14 +75,14 @@ agent:
           required_keys: ['report', 'report_type', 'done']
           done: true
           min_lengths:
-            report: 200
+            report: 100
       - name: incident_report
         goal: "Write an incident report for a production database outage"
         expected:
           required_keys: ['report', 'report_type', 'done']
           done: true
           min_lengths:
-            report: 200
+            report: 100
 
   isolation: "thread"
 

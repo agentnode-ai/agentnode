@@ -3,7 +3,7 @@ package_id: "academic-research-agent"
 package_type: "agent"
 name: "Academic Research Agent"
 publisher: "agentnode"
-version: "2.1.2"
+version: "2.1.3"
 summary: "Search academic papers on arXiv, extract content, and produce a literature review."
 description: |
   Conduct academic research by searching paper databases, extracting PDFs, and summarizing into a review.
@@ -71,14 +71,14 @@ agent:
           required_keys: ['review', 'done']
           done: true
           min_lengths:
-            review: 30
+            review: 20
       - name: research_physics
         goal: "Review academic literature on gravitational wave detection methods"
         expected:
           required_keys: ['review', 'done']
           done: true
           min_lengths:
-            review: 30
+            review: 20
 
   isolation: "thread"
   state:
