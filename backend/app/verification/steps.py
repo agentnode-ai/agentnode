@@ -314,7 +314,7 @@ def step_smoke(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[str, st
             actual_timeout = min(per_tool_timeout, max(3, int(remaining_budget)))
 
             reason, error_type, error_msg = _run_single_smoke(
-                sandbox, module_path, func_name, candidate, actual_timeout, ctx,
+                sandbox, module_path, func_name, candidate, actual_timeout, ctx, tool,
             )
             verdict = REASON_VERDICTS.get(reason, ("inconclusive", ""))[0]
 
@@ -444,6 +444,7 @@ def _run_single_smoke(
     test_input: dict,
     timeout: int,
     ctx: SmokeContext,
+    tool: dict | None = None,
 ) -> tuple[str, str | None, str | None]:
     """Execute one smoke call and return (reason, error_type, error_message).
 
@@ -527,6 +528,7 @@ for _stub_path in json.loads({binary_literal}):
 """
 
     # Detect agent entrypoints — they need a mock AgentContext
+    tool = tool or {}
     is_agent = tool.get("name") == "__agent_entrypoint__"
     agent_goal = ""
     if is_agent:
