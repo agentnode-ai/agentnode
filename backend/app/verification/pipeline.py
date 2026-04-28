@@ -540,6 +540,7 @@ async def run_verification(
                             "env_requirements": pv.env_requirements,
                             "examples": None,
                             "network_level": network_level,
+                            "_agent_section": agent_section,
                         })
 
                 # Run verification in thread pool (subprocess.run blocks)

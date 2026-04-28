@@ -526,9 +526,83 @@ for _stub_path in json.loads({binary_literal}):
         pass
 """
 
+    # Detect agent entrypoints — they need a mock AgentContext
+    is_agent = tool.get("name") == "__agent_entrypoint__"
+    agent_goal = ""
+    if is_agent:
+        agent_section = tool.get("_agent_section", {})
+        agent_goal = agent_section.get("goal", "Verification smoke test")
+
+    agent_context_block = ""
+    if is_agent:
+        agent_goal_literal = json.dumps(agent_goal)
+        agent_context_block = f"""
+class _MockToolResult:
+    def __init__(self, success=True, result=None, error=None):
+        self.success = success
+        self.result = result or {{"output": "mock result"}}
+        self.error = error
+
+class _MockAgentContext:
+    def __init__(self):
+        self._goal = {agent_goal_literal}
+        self._iteration = 0
+    @property
+    def goal(self):
+        return self._goal
+    @property
+    def iteration(self):
+        return self._iteration
+    def run_tool(self, slug, tool_name=None, **kw):
+        return _MockToolResult()
+    def try_tool(self, slug, tool_name=None, **kw):
+        return _MockToolResult()
+    def next_iteration(self):
+        self._iteration += 1
+    def is_tool_available(self, slug):
+        return True
+    def call_llm(self, messages, **kw):
+        raise RuntimeError("LLM not available in verification")
+    def call_llm_text(self, messages, **kw):
+        raise RuntimeError("LLM not available in verification")
+    @property
+    def llm(self):
+        return None
+    @property
+    def system_prompt(self):
+        return None
+    @property
+    def allowed_packages(self):
+        return None
+    @property
+    def tool_calls_made(self):
+        return 0
+    @property
+    def tools_remaining(self):
+        return 50
+    @property
+    def max_tool_calls(self):
+        return 50
+    @property
+    def max_iterations(self):
+        return 10
+    @property
+    def run_id(self):
+        return None
+    @property
+    def llm_calls_made(self):
+        return 0
+
+_agent_ctx = _MockAgentContext()
+"""
+
+    call_expr = "fn(_agent_ctx, **test_input)" if is_agent else "fn(**test_input)"
+    async_call_expr = f"asyncio.run({call_expr})" if not is_agent else call_expr
+
     code = f"""
 import importlib, json, sys, inspect, asyncio, hashlib
 {stub_block}
+{agent_context_block}
 mod = importlib.import_module("{module_path}")
 fn = getattr(mod, "{func_name}")
 
@@ -536,9 +610,9 @@ test_input = json.loads({input_literal})
 
 try:
     if inspect.iscoroutinefunction(fn):
-        result = asyncio.run(fn(**test_input))
+        result = {async_call_expr}
     else:
-        result = fn(**test_input)
+        result = {call_expr}
     result_repr = repr(result)[:1000]
     result_hash = hashlib.md5(result_repr.encode()).hexdigest()
     is_none = result is None
