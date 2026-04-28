@@ -59,12 +59,15 @@ function StepCard({ step }: { step: VerificationStep }) {
   const isPassed = step.status === "passed";
   const isFailed = step.status === "failed" || step.status === "error";
 
-  const icon = isPassed ? "\u2714" : isFailed ? "\u2716" : step.status === "not_present" ? "\u2014" : "\u25CB";
+  const isNotExecuted = step.status === "not_executed";
+  const icon = isPassed ? "\u2714" : isFailed ? "\u2716" : isNotExecuted ? "\u26A0" : step.status === "not_present" ? "\u2014" : "\u25CB";
   const color = isPassed
     ? "text-green-400 border-green-500/20 bg-green-500/5"
     : isFailed
       ? "text-red-400 border-red-500/20 bg-red-500/5"
-      : "text-zinc-500 border-border bg-background";
+      : isNotExecuted
+        ? "text-yellow-400 border-yellow-500/20 bg-yellow-500/5"
+        : "text-zinc-500 border-border bg-background";
 
   const duration = step.duration_ms != null
     ? step.duration_ms < 1000
@@ -73,10 +76,13 @@ function StepCard({ step }: { step: VerificationStep }) {
     : null;
 
   return (
-    <div className={`flex flex-col items-center gap-1 rounded-lg border px-3 py-3 ${color}`}>
+    <div
+      className={`flex flex-col items-center gap-1 rounded-lg border px-3 py-3 ${color}`}
+      title={isNotExecuted ? "Tests are present but were not executed because no container sandbox is available." : undefined}
+    >
       <span className="text-lg">{icon}</span>
       <span className="text-xs font-medium capitalize">
-        {step.name}
+        {isNotExecuted ? "not executed" : step.name}
       </span>
       {duration && (
         <span className="text-[10px] font-mono opacity-70">

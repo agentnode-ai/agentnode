@@ -189,7 +189,7 @@ def _run_verification_sync(
     tools: list[dict],
     is_agent: bool = False,
     agent_section: dict | None = None,
-    publisher_trusted: bool = False,
+    container_available: bool = False,
 ) -> dict:
     """Run all verification steps synchronously (called in thread pool).
 
@@ -226,6 +226,7 @@ def _run_verification_sync(
         "smoke_confidence": None,
         # Isolation levels per step — determined dynamically from sandbox capabilities
         "isolation": None,  # populated after sandbox creation
+        "tests_execution_mode": "not_present",
         # Agent verification fields
         "is_agent_package": is_agent,
         "manifest_completeness": None,
@@ -408,19 +409,29 @@ def _run_verification_sync(
                 sandbox.generate_auto_tests(tools)
                 tests_auto_generated = True
 
-            can_run_tests = publisher_trusted or tests_auto_generated
-            if sandbox.has_tests() and can_run_tests:
+            if has_user_tests:
+                if container_available:
+                    t0 = time.monotonic()
+                    ok, log = sandbox.run_pytest_in_container()
+                    result["tests_duration_ms"] = int((time.monotonic() - t0) * 1000)
+                    result["tests_status"] = "passed" if ok else "failed"
+                    result["tests_log"] = log
+                    result["tests_execution_mode"] = "container"
+                else:
+                    result["tests_status"] = "not_executed"
+                    result["tests_log"] = "Tests present but not executed: no container sandbox available."
+                    result["tests_execution_mode"] = "skipped_no_container"
+            elif sandbox.has_tests():
                 t0 = time.monotonic()
                 ok, log = step_tests(sandbox)
                 result["tests_duration_ms"] = int((time.monotonic() - t0) * 1000)
                 result["tests_status"] = "passed" if ok else "failed"
                 result["tests_log"] = log
-            elif has_user_tests and not publisher_trusted:
-                result["tests_status"] = "not_executed"
-                result["tests_log"] = "User tests present but not executed: publisher not trusted. Container sandbox required for untrusted code."
+                result["tests_execution_mode"] = "auto_generated"
             else:
                 result["tests_status"] = "not_present"
                 result["tests_log"] = "No test directory found"
+                result["tests_execution_mode"] = "not_present"
             result["tests_auto_generated"] = tests_auto_generated
 
         # Collect warnings from all logs
@@ -599,20 +610,13 @@ async def run_verification(
                 # Build normalized tool dicts for smoke context
                 # For agents: skip capability-level tools (they share the agent entrypoint
                 # and expect AgentContext). Only test the __agent_entrypoint__ with MockContext.
-                from app.publishers.models import Publisher
+                from app.config import CONTAINER_RUNTIME
                 pkg_result_pre = await session.execute(
                     select(Package).where(Package.id == pv.package_id)
                 )
                 pkg_pre = pkg_result_pre.scalar_one_or_none()
                 is_agent_pkg = pkg_pre and pkg_pre.package_type == "agent"
-
-                publisher_trusted = False
-                if pkg_pre:
-                    pub_result = await session.execute(
-                        select(Publisher.trust_level).where(Publisher.id == pkg_pre.publisher_id)
-                    )
-                    trust_level = pub_result.scalar_one_or_none()
-                    publisher_trusted = trust_level in ("trusted", "curated")
+                container_available = CONTAINER_RUNTIME is not None
 
                 tools = []
                 seen_eps = set()
@@ -661,7 +665,7 @@ async def run_verification(
                             artifact_bytes, tools,
                             is_agent=bool(is_agent_pkg),
                             agent_section=agent_section_for_sync,
-                            publisher_trusted=publisher_trusted,
+                            container_available=container_available,
                         ),
                     ),
                     timeout=settings.VERIFICATION_TIMEOUT,
@@ -684,6 +688,7 @@ async def run_verification(
                     vr.import_status = step_results["import_status"]
                     vr.smoke_status = step_results.get("smoke_status")
                     vr.tests_status = step_results.get("tests_status")
+                    vr.tests_execution_mode = step_results.get("tests_execution_mode")
                     vr.install_log = step_results.get("install_log", "")
                     vr.import_log = step_results.get("import_log", "")
                     vr.smoke_log = step_results.get("smoke_log", "")
@@ -730,6 +735,7 @@ async def run_verification(
                 vr.import_status = step_results["import_status"]
                 vr.smoke_status = step_results["smoke_status"]
                 vr.tests_status = step_results["tests_status"]
+                vr.tests_execution_mode = step_results.get("tests_execution_mode")
                 vr.install_log = step_results["install_log"]
                 vr.import_log = step_results["import_log"]
                 vr.smoke_log = step_results["smoke_log"]

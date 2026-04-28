@@ -374,6 +374,97 @@ class VerificationSandbox:
         except Exception as e:
             return False, str(e)
 
+    def run_pytest_in_container(self, timeout: int = 60) -> tuple[bool, str]:
+        """Run pytest inside an isolated container. Returns (success, log).
+
+        All publisher tests run here — no trust-level exceptions.
+        pytest is installed on host (needs network), then site-packages
+        are mounted read-only into the container.
+        """
+        from app.config import CONTAINER_RUNTIME, settings
+
+        if not CONTAINER_RUNTIME:
+            return False, "No container runtime available (docker/podman)"
+
+        # Install pytest into venv on host (needs network)
+        try:
+            if self.installer == "uv" and shutil.which("uv"):
+                subprocess.run(
+                    ["uv", "pip", "install", "--python", self.python, "pytest"],
+                    capture_output=True, text=True, timeout=30,
+                )
+            else:
+                subprocess.run(
+                    [self.python, "-m", "pip", "install", "--no-cache-dir", "pytest"],
+                    capture_output=True, text=True, timeout=30,
+                )
+        except Exception:
+            return False, "Failed to install pytest"
+
+        # Detect test directory
+        test_dir = None
+        for candidate in ["tests", "test"]:
+            if os.path.isdir(os.path.join(self.pkg_dir, candidate)):
+                test_dir = candidate
+                break
+        if not test_dir:
+            return False, "No tests/ or test/ directory found"
+
+        # Find site-packages in venv for PYTHONPATH mount
+        site_pkgs = ""
+        venv_lib = os.path.join(self.venv_dir, "lib")
+        if os.path.isdir(venv_lib):
+            for d in os.listdir(venv_lib):
+                sp = os.path.join(venv_lib, d, "site-packages")
+                if os.path.isdir(sp):
+                    site_pkgs = sp
+                    break
+
+        cmd = [
+            CONTAINER_RUNTIME, "run", "--rm",
+            "--network=none",
+            "--read-only",
+            "--pids-limit=128",
+            "--memory=512m",
+            "--cpus=1.0",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges:true",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+            "-v", f"{self.pkg_dir}:/workspace:ro",
+            "-e", "AGENTNODE_VERIFICATION=1",
+            "-e", "PYTHONDONTWRITEBYTECODE=1",
+            "-e", "PYTEST_ADDOPTS=--cache-clear -p no:cacheprovider",
+        ]
+
+        if site_pkgs:
+            cmd += ["-v", f"{site_pkgs}:/site-packages:ro"]
+            cmd += ["-e", "PYTHONPATH=/workspace:/site-packages"]
+        else:
+            cmd += ["-e", "PYTHONPATH=/workspace"]
+
+        cmd += [
+            "-w", "/workspace",
+            "--user", "1000:1000",
+            settings.VERIFICATION_CONTAINER_IMAGE,
+            "python", "-m", "pytest", f"/workspace/{test_dir}",
+            "-v", "--tb=short", "-m", "not integration",
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout + 10,
+            )
+            log = (result.stdout + "\n" + result.stderr).strip()
+            return result.returncode == 0, _truncate_log(log)
+        except subprocess.TimeoutExpired:
+            return False, f"Container pytest timed out ({timeout}s)"
+        except Exception as e:
+            logger.error(f"Container pytest failed: {e}")
+            return False, f"Container pytest error: {e}"
+
     def has_tests(self) -> bool:
         """Check if the package has a test directory."""
         if not self.pkg_dir:

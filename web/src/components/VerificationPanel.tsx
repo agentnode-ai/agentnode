@@ -39,6 +39,8 @@ function StepIcon({ status }: { status: string | null }) {
       return <span className="text-red-400">&#10006;</span>;
     case "inconclusive":
       return <span className="text-yellow-400">&#9888;</span>;
+    case "not_executed":
+      return <span className="text-yellow-400">&#9888;</span>;
     case "error":
       return <span className="text-red-400">!</span>;
     case "not_present":
@@ -63,6 +65,8 @@ function stepLabel(status: string | null): string {
       return "Error";
     case "not_present":
       return "No tests found";
+    case "not_executed":
+      return "Tests not executed";
     case "skipped":
       return "Skipped";
     default:
@@ -79,6 +83,7 @@ function stepColor(status: string | null): string {
     case "error":
       return "text-red-400";
     case "inconclusive":
+    case "not_executed":
       return "text-yellow-400";
     default:
       return "text-zinc-500";

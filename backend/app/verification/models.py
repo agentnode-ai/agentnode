@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Boolean, Column, Enum, Float, ForeignKey, Integer, Text,
+    Boolean, Column, Enum, Float, ForeignKey, Integer, String, Text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 
@@ -41,6 +41,8 @@ class VerificationResult(Base, UUIDPrimaryKeyMixin):
     import_status = Column(_step_status_enum, nullable=True)
     smoke_status = Column(_step_status_enum, nullable=True)
     tests_status = Column(_step_status_enum, nullable=True)
+
+    tests_execution_mode = Column(String(50), nullable=True)
 
     install_log = Column(Text, nullable=True)
     import_log = Column(Text, nullable=True)

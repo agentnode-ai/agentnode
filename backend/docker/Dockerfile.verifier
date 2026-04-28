@@ -1,0 +1,4 @@
+FROM python:3.12-slim
+RUN useradd -u 1000 -m verifier
+USER verifier
+WORKDIR /workspace

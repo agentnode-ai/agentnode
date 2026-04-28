@@ -129,8 +129,8 @@ def compute_score_result(vr) -> ScoreResult:
         breakdown["tests"] = StepScore(3, 15, "No tests provided")
         score += 3
     elif vr.tests_status == "not_executed":
-        breakdown["tests"] = StepScore(3, 15, "Tests present but not executed (untrusted publisher)")
-        score += 3
+        breakdown["tests"] = StepScore(5, 15, "Tests present but not executed (no container sandbox)")
+        score += 5
     else:
         breakdown["tests"] = StepScore(0, 15, "Tests failed")
 
@@ -372,7 +372,7 @@ def _build_explanation(score: int, tier: str, vr) -> str:
     if vr.tests_status == "passed" and not vr.tests_auto_generated:
         parts.append("publisher tests passed")
     elif vr.tests_status == "not_executed":
-        parts.append("publisher tests present but awaiting trusted execution")
+        parts.append("publisher tests present but not executed (no container sandbox)")
     elif vr.tests_status == "not_present":
         parts.append("no custom tests provided")
 
