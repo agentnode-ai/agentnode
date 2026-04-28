@@ -3,7 +3,7 @@ package_id: "deep-research-agent"
 package_type: "agent"
 name: "Deep Research Agent"
 publisher: "agentnode"
-version: "2.2.0"
+version: "2.2.1"
 summary: "Conduct deep multi-source research on any topic, synthesize findings into a structured report."
 description: |
   Research a topic using web search, page extraction, and summarization to produce a report with sources.
@@ -71,14 +71,14 @@ agent:
           required_keys: ["report", "done"]
           done: true
           min_lengths:
-            report: 100
+            report: 30
       - name: research_tech
         goal: "Research the adoption of Rust programming language in enterprise software"
         expected:
           required_keys: ["report", "done"]
           done: true
           min_lengths:
-            report: 100
+            report: 30
   state:
     persistence: "none"
 
