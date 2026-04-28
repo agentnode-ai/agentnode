@@ -564,9 +564,15 @@ class _MockAgentContext:
     def is_tool_available(self, slug):
         return True
     def call_llm(self, messages, **kw):
-        raise RuntimeError("LLM not available in verification")
+        class _R:
+            content = "Mock LLM response for verification."
+            tool_calls = None
+            usage = None
+            model = "mock"
+            finish_reason = "stop"
+        return _R()
     def call_llm_text(self, messages, **kw):
-        raise RuntimeError("LLM not available in verification")
+        return "Mock LLM response for verification."
     @property
     def llm(self):
         return None
