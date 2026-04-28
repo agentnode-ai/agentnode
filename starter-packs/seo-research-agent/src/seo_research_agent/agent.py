@@ -43,12 +43,12 @@ def run(context: Any, **kwargs: Any) -> dict:
     # Step 2: Run SEO analysis on the page
     context.next_iteration()
     ok, seo = _call(context, "seo-optimizer-pack", None,
-                    html=page_text, url=target_url, keyword=keyword)
+                    url=target_url, keyword=keyword)
     seo_findings = seo if ok else {}
 
     # Step 3: Check competitor rankings for the keyword
     context.next_iteration()
-    search_query = keyword if keyword else page_title
+    search_query = keyword if keyword else (page_title if page_title else f"site:{target_url}")
     ok, competitors = _call(context, "web-search-pack", None,
                             query=search_query, max_results=10)
     competitor_urls = []

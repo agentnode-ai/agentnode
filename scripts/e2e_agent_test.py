@@ -85,13 +85,13 @@ GOALS = {
     "project-planner-agent": "Plan a 2-week sprint for building a user authentication system",
     "report-generator-agent": "Generate a summary report about team productivity metrics",
     "security-scanner-agent": "Scan this code for vulnerabilities: import os; os.system(input())",
-    "seo-research-agent": "Analyze SEO opportunities for a SaaS product landing page",
+    "seo-research-agent": "https://example.com",
     "social-media-agent": "Create 3 social media posts about a new AI product launch",
     "spreadsheet-auditor-agent": "Audit a spreadsheet with 100 rows of financial data for errors",
     "sql-report-agent": "Generate SQL to find the top 10 customers by revenue",
     "technical-docs-agent": "Generate API docs for a Python function: def calculate_price(items, tax_rate)",
     "test-writer-agent": "Write unit tests for: def fibonacci(n): return n if n<=1 else fibonacci(n-1)+fibonacci(n-2)",
-    "website-monitor-agent": "Check if example.com is accessible and extract its title",
+    "website-monitor-agent": "https://example.com",
 }
 
 results = []

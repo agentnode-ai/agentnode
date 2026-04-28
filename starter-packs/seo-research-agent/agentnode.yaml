@@ -3,7 +3,7 @@ package_id: "seo-research-agent"
 package_type: "agent"
 name: "SEO Research Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Audit a website's SEO by analyzing content, keywords, and competitor rankings."
 description: |
   Perform SEO analysis by extracting page content, analyzing SEO factors, and checking competitor rankings.

@@ -3,7 +3,7 @@ package_id: "website-monitor-agent"
 package_type: "agent"
 name: "Website Monitor Agent"
 publisher: "agentnode"
-version: "2.1.1"
+version: "2.1.2"
 summary: "Monitor websites for content changes, downtime, and extract current state."
 description: |
   Monitor target websites by checking content, comparing snapshots, and reporting status.
