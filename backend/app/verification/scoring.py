@@ -30,6 +30,7 @@ _SANDBOX_LIMITATION_REASONS = frozenset({
     "missing_system_dependency",
     "needs_binary_input",
     "external_network_blocked",
+    "heavy_import_timeout",
 })
 
 _CREDENTIAL_BOUNDARY_REASONS = frozenset({
@@ -181,6 +182,9 @@ def compute_score_result(vr) -> ScoreResult:
         breakdown["warnings"] = StepScore(0, 0, "No warnings")
     score -= deduction
 
+    # ── Tests-as-evidence boost for sandbox-limited packs ──
+    score = _tests_as_evidence_boost(vr, breakdown, score)
+
     score = max(0, min(100, score))
 
     # ── Tier (score-based, before caps) ──
@@ -211,28 +215,69 @@ def compute_score_result(vr) -> ScoreResult:
     )
 
 
+def _tests_as_evidence_boost(vr, breakdown: dict[str, StepScore], score: int) -> int:
+    """Grant partial quality credit when tests prove functionality but smoke is sandbox-limited.
+
+    Conservative: +5 contract, +5 reliability. No determinism inference.
+    Only applies when publisher tests passed AND smoke failed due to sandbox limitations.
+    """
+    if vr.tests_status != "passed" or vr.tests_auto_generated:
+        return score
+    if vr.smoke_status == "passed":
+        return score
+
+    sandbox_reasons = _SANDBOX_LIMITATION_REASONS | _CREDENTIAL_BOUNDARY_REASONS | {"invalid_test_input"}
+    if vr.smoke_reason not in sandbox_reasons:
+        return score
+
+    if breakdown.get("contract") and breakdown["contract"].points == 0:
+        breakdown["contract"] = StepScore(5, 10, "Inferred from passing publisher tests")
+        score += 5
+
+    if breakdown.get("reliability") and breakdown["reliability"].points == 0:
+        breakdown["reliability"] = StepScore(5, 10, "Inferred from passing publisher tests")
+        score += 5
+
+    return score
+
+
 def _compute_smoke_points(vr) -> tuple[int, str]:
-    """Compute smoke test points with credential boundary confidence."""
+    """Compute smoke test points with credential boundary confidence.
+
+    When publisher tests pass and smoke is blocked by sandbox limitations,
+    tests provide partial evidence that the tool works — bump to 15/25.
+    """
     if vr.smoke_status == "passed":
         return 25, "Returned valid result"
 
+    tests_passed = (vr.tests_status == "passed" and not vr.tests_auto_generated)
+
     if vr.smoke_status == "inconclusive":
         reason = vr.smoke_reason
-        smoke_confidence = getattr(vr, "smoke_confidence", None)
 
-        # Phase 7A: Credential boundary with confidence levels
         if reason == "credential_boundary_reached":
+            if tests_passed:
+                return 15, "Credential boundary, functionality confirmed by tests"
+            smoke_confidence = getattr(vr, "smoke_confidence", None)
             if smoke_confidence == "high":
                 return 15, "Credential boundary reached (high confidence)"
             return 12, "Credential boundary reached (medium confidence)"
 
         if reason in _SANDBOX_LIMITATION_REASONS:
+            if tests_passed:
+                return 15, f"Sandbox limitation ({reason}), confirmed by tests"
             return 12, f"Sandbox limitation: {reason}"
 
         if reason in _NO_CREDIT_REASONS:
             return 0, "Package is a stub/placeholder"
 
+        if tests_passed:
+            return 12, f"Inconclusive ({reason}), partially confirmed by tests"
         return 8, f"Inconclusive: {reason}"
+
+    # smoke_status == "failed"
+    if vr.smoke_reason == "heavy_import_timeout" and tests_passed:
+        return 12, "Heavy import timeout, functionality confirmed by tests"
 
     return 0, "Smoke test failed"
 
@@ -249,7 +294,7 @@ def apply_tier_caps(score: int, tier: str, vr) -> str:
         # Legitimate sandbox limitations → floor to partial
         if vr.smoke_reason in ("credential_boundary_reached", "needs_credentials",
                                 "missing_system_dependency", "needs_binary_input",
-                                "external_network_blocked"):
+                                "external_network_blocked", "heavy_import_timeout"):
             tier = "partial"
         # mock mode also gets partial floor
         verification_mode = getattr(vr, "verification_mode", None)
@@ -270,9 +315,19 @@ def apply_tier_caps(score: int, tier: str, vr) -> str:
     if contract_valid is False:
         tier = cap_tier(tier, "verified")
 
-    # Credential-boundary → max partial
+    # Credential-boundary → max partial (lifted to verified when publisher tests pass)
     if vr.smoke_reason in ("credential_boundary_reached", "needs_credentials"):
-        tier = cap_tier(tier, "partial")
+        if vr.tests_status == "passed" and not vr.tests_auto_generated:
+            tier = cap_tier(tier, "verified")
+        else:
+            tier = cap_tier(tier, "partial")
+
+    # Heavy import timeout → max verified when tests pass, else partial
+    if vr.smoke_reason == "heavy_import_timeout":
+        if vr.tests_status == "passed" and not vr.tests_auto_generated:
+            tier = cap_tier(tier, "verified")
+        else:
+            tier = cap_tier(tier, "partial")
 
     # verification_mode caps
     verification_mode = getattr(vr, "verification_mode", None)

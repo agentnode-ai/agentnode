@@ -184,6 +184,25 @@ def _compute_manifest_completeness(agent_section: dict) -> dict:
     return {"score": score, "details": details}
 
 
+def _read_python_dependencies(pkg_dir: str) -> list[str]:
+    """Read Python dependency names from pyproject.toml in the package directory."""
+    import os
+    pyproject_path = os.path.join(pkg_dir, "pyproject.toml") if pkg_dir else ""
+    if not pyproject_path or not os.path.isfile(pyproject_path):
+        return []
+    try:
+        import tomllib
+        with open(pyproject_path, "rb") as f:
+            data = tomllib.load(f)
+        deps = data.get("project", {}).get("dependencies", [])
+        if isinstance(deps, list):
+            return [d.split(">")[0].split("<")[0].split("=")[0].split("[")[0].split("!")[0].split("~")[0].strip()
+                    for d in deps if isinstance(d, str)]
+    except Exception:
+        pass
+    return []
+
+
 def _run_verification_sync(
     artifact_bytes: bytes,
     tools: list[dict],
@@ -264,6 +283,12 @@ def _run_verification_sync(
             result["error_summary"] = "Package installation failed"
             return result
 
+        # Inject Python dependencies for heavy-import detection
+        python_deps = _read_python_dependencies(sandbox.pkg_dir)
+        if python_deps:
+            for tool in tools:
+                tool["python_dependencies"] = python_deps
+
         # Step 2: Import
         t0 = time.monotonic()
         ok, log = step_import(sandbox, tools)
@@ -274,9 +299,9 @@ def _run_verification_sync(
             result["error_summary"] = "Tool entrypoint import verification failed"
             return result
 
-        # Step 3: Smoke test (returns 3-tuple: status, log, reason)
+        # Step 3: Smoke test (returns 4-tuple: status, log, reason, passed_candidate)
         t0 = time.monotonic()
-        smoke_status, log, smoke_reason = step_smoke(sandbox, tools)
+        smoke_status, log, smoke_reason, smoke_passed_candidate = step_smoke(sandbox, tools)
         result["smoke_duration_ms"] = int((time.monotonic() - t0) * 1000)
         result["smoke_status"] = smoke_status
         result["smoke_log"] = log
@@ -332,18 +357,23 @@ def _run_verification_sync(
 
             if first_passed_tool:
                 try:
-                    from app.verification.schema_generator import generate_candidates
+                    # Use the candidate that actually passed smoke (including probe-discovered ones)
+                    stability_candidate = smoke_passed_candidate
+                    if not stability_candidate:
+                        from app.verification.schema_generator import generate_candidates
+                        candidates = generate_candidates(first_passed_tool.get("input_schema"))
+                        stability_candidate = candidates[0] if candidates else None
+
                     ctx = build_smoke_context(first_passed_tool)
                     module_path, func_name = first_passed_tool["entrypoint"].rsplit(":", 1)
-                    candidates = generate_candidates(first_passed_tool.get("input_schema"))
-                    if candidates:
+                    if stability_candidate:
                         remaining = settings.VERIFICATION_SMOKE_BUDGET_SECONDS - (
                             (result.get("smoke_duration_ms") or 0) / 1000
                         )
                         if remaining > 10:
                             reliability, determinism, contract_valid, stability_results = run_stability_check(
                                 sandbox, module_path, func_name,
-                                candidates[0], min(10, max(3, int(remaining / 3))),
+                                stability_candidate, min(10, max(3, int(remaining / 3))),
                                 ctx, n=3, tool=first_passed_tool,
                             )
                             result["reliability"] = reliability

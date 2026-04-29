@@ -36,6 +36,7 @@ REASON_VERDICTS: dict[str, tuple[str, str]] = {
     "missing_system_dependency":            ("inconclusive", "Requires system-level dependency not available in sandbox"),
     "not_implemented":                      ("inconclusive", "Package raises NotImplementedError (stub/placeholder)"),
     "needs_binary_input":                   ("inconclusive", "Requires binary file formats that cannot be text-stubbed"),
+    "heavy_import_timeout":                 ("inconclusive", "Heavy ML library import exceeded time budget"),
     "unknown_smoke_condition":              ("inconclusive", "Ambiguous error — could be broken code or missing data"),
 
     # ── failed ──
@@ -50,6 +51,15 @@ FATAL_REASONS = frozenset({
     "fatal_import_during_smoke",
     "fatal_type_error",
     "fatal_timeout",
+})
+
+
+# ──────────────────────────────────────────────────────────────
+# Heavy ML imports that can exceed smoke timeout during import
+# ──────────────────────────────────────────────────────────────
+
+KNOWN_HEAVY_IMPORTS = frozenset({
+    "torch", "tensorflow", "transformers", "sentence_transformers", "spacy",
 })
 
 
@@ -162,6 +172,7 @@ class SmokeContext:
     input_has_enum_hints: bool = False       # Phase-2 prep, not yet active for classification
     has_examples: bool = False
     input_schema_present: bool = False
+    python_dependencies: frozenset[str] = field(default_factory=frozenset)
 
 
 def build_smoke_context(tool: dict) -> SmokeContext:
@@ -206,6 +217,15 @@ def build_smoke_context(tool: dict) -> SmokeContext:
     # ── Examples ──
     if tool.get("examples"):
         ctx.has_examples = True
+
+    # ── Python dependencies (for heavy-import detection) ──
+    py_deps = tool.get("python_dependencies")
+    if py_deps and isinstance(py_deps, (list, set, frozenset)):
+        normalized = frozenset(
+            d.replace("-", "_").lower().split("[")[0].split(">")[0].split("<")[0].split("=")[0].split("!")[0].split("~")[0].strip()
+            for d in py_deps if isinstance(d, str)
+        )
+        ctx.python_dependencies = normalized
 
     return ctx
 
@@ -385,4 +405,6 @@ def classify_timeout(ctx: SmokeContext) -> str:
     """
     if ctx.declares_network_access:
         return "external_network_blocked"
+    if ctx.python_dependencies and ctx.python_dependencies & KNOWN_HEAVY_IMPORTS:
+        return "heavy_import_timeout"
     return "fatal_timeout"

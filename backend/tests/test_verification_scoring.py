@@ -223,14 +223,26 @@ class TestComputeToolScore:
         _, _, breakdown = compute_tool_score(vr)
         assert breakdown["smoke"] == 12
 
-    def test_credential_boundary_tier_cap(self):
-        """credential_boundary_reached → max partial tier."""
+    def test_credential_boundary_tier_cap_with_tests(self):
+        """credential_boundary_reached + publisher tests passed → max verified tier."""
         vr = _make_vr(
             smoke_status="inconclusive",
             smoke_reason="credential_boundary_reached",
             smoke_confidence="high",
             tests_status="passed",
             tests_auto_generated=False,
+            contract_valid=True,
+        )
+        _, tier, _ = compute_tool_score(vr)
+        assert tier in ("partial", "verified")  # verified if score >= 70, else partial
+
+    def test_credential_boundary_tier_cap_without_tests(self):
+        """credential_boundary_reached without tests → max partial tier."""
+        vr = _make_vr(
+            smoke_status="inconclusive",
+            smoke_reason="credential_boundary_reached",
+            smoke_confidence="high",
+            tests_status="not_present",
             contract_valid=True,
         )
         _, tier, _ = compute_tool_score(vr)
@@ -346,6 +358,54 @@ class TestToolPackRegression:
         result = compute_score_result(vr)
         assert "manifest" not in result.breakdown
         assert "tests" in result.breakdown
+
+    def test_sandbox_limited_with_tests_gets_evidence_boost(self):
+        """Sandbox-limited pack with publisher tests gets inferred contract+reliability."""
+        vr = _make_vr(
+            smoke_status="inconclusive",
+            smoke_reason="credential_boundary_reached",
+            tests_status="passed",
+            tests_auto_generated=False,
+        )
+        result = compute_score_result(vr)
+        assert result.breakdown["contract"].points == 5
+        assert result.breakdown["reliability"].points == 5
+        assert "Inferred" in result.breakdown["contract"].reason
+
+    def test_sandbox_limited_without_tests_no_boost(self):
+        """Sandbox-limited pack without tests gets no evidence boost."""
+        vr = _make_vr(
+            smoke_status="inconclusive",
+            smoke_reason="credential_boundary_reached",
+            tests_status="not_present",
+        )
+        result = compute_score_result(vr)
+        assert result.breakdown["contract"].points == 0
+        assert result.breakdown["reliability"].points == 0
+
+    def test_heavy_import_timeout_with_tests(self):
+        """Heavy import timeout with publisher tests gets sandbox floor + smoke credit."""
+        vr = _make_vr(
+            smoke_status="failed",
+            smoke_reason="heavy_import_timeout",
+            tests_status="passed",
+            tests_auto_generated=False,
+        )
+        result = compute_score_result(vr)
+        assert result.breakdown["smoke"].points == 12
+        assert result.tier in ("partial", "verified")
+
+    def test_fatal_timeout_no_boost(self):
+        """Generic fatal_timeout gets no boost even with passing tests."""
+        vr = _make_vr(
+            smoke_status="failed",
+            smoke_reason="fatal_timeout",
+            tests_status="passed",
+            tests_auto_generated=False,
+        )
+        result = compute_score_result(vr)
+        assert result.breakdown["smoke"].points == 0
+        assert result.breakdown["contract"].points == 0
 
 
 class TestAgentScoring:

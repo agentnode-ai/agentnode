@@ -233,7 +233,7 @@ class TestStepSmoke:
         from app.verification.steps import step_smoke
         from unittest.mock import MagicMock
         sandbox = MagicMock()
-        status, log, reason = step_smoke(sandbox, [])
+        status, log, reason, _candidate = step_smoke(sandbox, [])
         assert status == "skipped"
 
     def test_smoke_returns_string_status(self):
@@ -257,7 +257,7 @@ class TestStepSmoke:
                 },
             }
         ]
-        status, log, reason = step_smoke(sandbox, tools)
+        status, log, reason, _candidate = step_smoke(sandbox, tools)
         assert status == "passed"
         assert isinstance(status, str)
         assert "[PASS]" in log
@@ -278,7 +278,7 @@ class TestStepSmoke:
                 "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
             }
         ]
-        status, log, reason = step_smoke(sandbox, tools)
+        status, log, reason, _candidate = step_smoke(sandbox, tools)
         assert status == "inconclusive"
         assert "[INCONCLUSIVE]" in log
 
@@ -295,7 +295,7 @@ class TestStepSmoke:
                 "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
             }
         ]
-        status, log, reason = step_smoke(sandbox, tools)
+        status, log, reason, _candidate = step_smoke(sandbox, tools)
         assert status == "failed"
 
     def test_smoke_caps_tools(self):
@@ -320,7 +320,7 @@ class TestStepSmoke:
         with patch("app.verification.steps.settings") as mock_settings:
             mock_settings.VERIFICATION_SMOKE_MAX_TOOLS = 3
             mock_settings.VERIFICATION_SMOKE_BUDGET_SECONDS = 60
-            status, log, reason = step_smoke(sandbox, tools)
+            status, log, reason, _candidate = step_smoke(sandbox, tools)
 
         assert status == "passed"
         assert sandbox.run_python_code.call_count == 3
@@ -490,6 +490,30 @@ class TestClassifyTimeout:
         ctx = SmokeContext(tool_name="test", declares_network_access=False)
         assert classify_timeout(ctx) == "fatal_timeout"
 
+    def test_timeout_heavy_import(self):
+        ctx = SmokeContext(
+            tool_name="test",
+            declares_network_access=False,
+            python_dependencies=frozenset({"torch", "numpy"}),
+        )
+        assert classify_timeout(ctx) == "heavy_import_timeout"
+
+    def test_timeout_heavy_import_network_takes_priority(self):
+        ctx = SmokeContext(
+            tool_name="test",
+            declares_network_access=True,
+            python_dependencies=frozenset({"torch"}),
+        )
+        assert classify_timeout(ctx) == "external_network_blocked"
+
+    def test_timeout_non_heavy_deps(self):
+        ctx = SmokeContext(
+            tool_name="test",
+            declares_network_access=False,
+            python_dependencies=frozenset({"requests", "numpy"}),
+        )
+        assert classify_timeout(ctx) == "fatal_timeout"
+
 
 class TestBuildSmokeContext:
 
@@ -549,6 +573,14 @@ class TestBuildSmokeContext:
         }
         ctx = build_smoke_context(tool)
         assert ctx.input_has_enum_hints is True
+
+    def test_python_dependencies(self):
+        tool = {
+            "name": "test",
+            "python_dependencies": ["torch>=2.0", "numpy", "sentence-transformers[gpu]"],
+        }
+        ctx = build_smoke_context(tool)
+        assert ctx.python_dependencies == frozenset({"torch", "numpy", "sentence_transformers"})
 
 
 class TestToolResultFromCandidates:

@@ -352,7 +352,7 @@ def _dominant_reason(reasons: list[str]) -> str | None:
     return reasons[0]
 
 
-def step_smoke(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[str, str, str | None]:
+def step_smoke(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[str, str, str | None, dict | None]:
     """Step 3: Evidence-based smoke probe for each tool.
 
     For each tool:
@@ -364,15 +364,17 @@ def step_smoke(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[str, st
 
     Rule: passed ends immediately. If no passed: any fatal → failed. Else → inconclusive.
 
-    Returns (status, log, final_reason) where status is "passed"/"failed"/"inconclusive"/"skipped".
-    The final_reason is the dominant reason across all tools (for Phase 3A smoke_reason persistence).
+    Returns (status, log, final_reason, passed_candidate) where:
+      - status is "passed"/"failed"/"inconclusive"/"skipped"
+      - final_reason is the dominant reason across all tools
+      - passed_candidate is the exact input dict that produced a "passed" verdict (for stability reuse)
     """
     if not tools:
-        return "skipped", "No tools with entrypoints to smoke test", None
+        return "skipped", "No tools with entrypoints to smoke test", None, None
 
     valid_tools = [t for t in tools if t.get("entrypoint") and ":" in t["entrypoint"]]
     if not valid_tools:
-        return "skipped", "No tools with valid entrypoints to smoke test", None
+        return "skipped", "No tools with valid entrypoints to smoke test", None, None
 
     max_tools = settings.VERIFICATION_SMOKE_MAX_TOOLS
     tools_to_test = valid_tools[:max_tools]
@@ -383,6 +385,7 @@ def step_smoke(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[str, st
     has_failure = False
     has_inconclusive = False
     tool_reasons: list[str] = []  # Track final reason per tool for smoke_reason
+    passed_candidate: dict | None = None  # The candidate that produced "passed" verdict
     start_time = time.monotonic()
 
     if len(valid_tools) > max_tools:
@@ -451,6 +454,7 @@ def step_smoke(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[str, st
 
             # Early exit: passed → stop trying (nothing beats it)
             if verdict == "passed":
+                passed_candidate = candidate
                 break
 
         # ── d. Probe: Active enum extraction (Phase 2B) ──
@@ -481,6 +485,9 @@ def step_smoke(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[str, st
                         # Extract probe metadata for logging
                         values, confidence = extract_enum_values(last_msg)
                         sorted_values = _sort_by_safety(values) if values else []
+
+                        if probe_verdict == "passed":
+                            passed_candidate = probe_candidate
 
                         probe_entry = {
                             "reason": probe_reason,
@@ -522,11 +529,11 @@ def step_smoke(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[str, st
     dominant_reason = _dominant_reason(tool_reasons)
 
     if has_failure:
-        return "failed", combined_log, dominant_reason
+        return "failed", combined_log, dominant_reason, None
     elif has_inconclusive:
-        return "inconclusive", combined_log, dominant_reason
+        return "inconclusive", combined_log, dominant_reason, None
     else:
-        return "passed", combined_log, dominant_reason
+        return "passed", combined_log, dominant_reason, passed_candidate
 
 
 def _tool_result_from_candidates(
