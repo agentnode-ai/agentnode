@@ -401,7 +401,7 @@ def _run_verification_sync(
                                     contract_result = validate_return(
                                         smoke_data,
                                         first_passed_tool.get("name", ""),
-                                        candidates[0],
+                                        stability_candidate,
                                     )
                                     result["contract_details"] = contract_result
                                     result["contract_valid"] = contract_result.get("valid", False)
