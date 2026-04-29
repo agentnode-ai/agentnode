@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     # Sandbox mode (for environment_info tracking)
     VERIFICATION_SANDBOX_MODE: str = "subprocess"   # "subprocess" or "container"
     VERIFICATION_CONTAINER_IMAGE: str = "agentnode-verifier:latest"
+    VERIFICATION_CONTAINER_IMAGE_BROWSER: str = "agentnode-verifier-browser:latest"
+    VERIFICATION_MODEL_CACHE_DIR: str = "/opt/agentnode/model-cache"
+    VERIFICATION_SMOKE_BUDGET_SECONDS_HEAVY: int = 180
 
     # Stripe (billing)
     STRIPE_SECRET_KEY: str = ""

@@ -1,0 +1,22 @@
+# Verification runner image with Playwright + Chromium for browser-based tools.
+# Used by the verification pipeline for packs that depend on playwright.
+#
+# Build: docker build -f Dockerfile.verifier-browser -t agentnode-verifier-browser:latest .
+
+FROM python:3.12-slim
+
+# Chromium runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnss3 libnspr4 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libxkbcommon0 libatspi2.0-0 libxcomposite1 \
+    libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 \
+    libcairo2 libasound2 libxshmfence1 fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir playwright && playwright install chromium
+
+RUN groupadd -g 1000 verifier && useradd -u 1000 -g verifier -m verifier
+
+WORKDIR /workspace
+USER verifier
+CMD ["python", "/run_code.py"]

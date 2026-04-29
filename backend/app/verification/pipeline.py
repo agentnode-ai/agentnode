@@ -299,9 +299,28 @@ def _run_verification_sync(
             result["error_summary"] = "Tool entrypoint import verification failed"
             return result
 
+        # Detect heavy ML dependencies for timeout/resource adjustments
+        from app.verification.smoke_context import KNOWN_HEAVY_IMPORTS
+        _normalized_deps = set(
+            d.replace("-", "_").lower().split("[")[0].split(">")[0].split("<")[0].split("=")[0].split("!")[0].split("~")[0].strip()
+            for d in python_deps
+        ) if python_deps else set()
+        has_heavy_ml = bool(_normalized_deps & KNOWN_HEAVY_IMPORTS)
+
+        # Detect playwright for browser-specific container image
+        has_playwright = "playwright" in _normalized_deps
+
         # Step 3: Smoke test (returns 4-tuple: status, log, reason, passed_candidate)
         t0 = time.monotonic()
-        smoke_status, log, smoke_reason, smoke_passed_candidate = step_smoke(sandbox, tools)
+        image_override = (
+            settings.VERIFICATION_CONTAINER_IMAGE_BROWSER if has_playwright else None
+        )
+        smoke_status, log, smoke_reason, smoke_passed_candidate = step_smoke(
+            sandbox, tools,
+            heavy_ml=has_heavy_ml,
+            image_override=image_override,
+            playwright_fixture=has_playwright,
+        )
         result["smoke_duration_ms"] = int((time.monotonic() - t0) * 1000)
         result["smoke_status"] = smoke_status
         result["smoke_log"] = log
@@ -367,14 +386,24 @@ def _run_verification_sync(
                     ctx = build_smoke_context(first_passed_tool)
                     module_path, func_name = first_passed_tool["entrypoint"].rsplit(":", 1)
                     if stability_candidate:
-                        remaining = settings.VERIFICATION_SMOKE_BUDGET_SECONDS - (
+                        effective_budget = (
+                            settings.VERIFICATION_SMOKE_BUDGET_SECONDS_HEAVY
+                            if has_heavy_ml
+                            else settings.VERIFICATION_SMOKE_BUDGET_SECONDS
+                        )
+                        remaining = effective_budget - (
                             (result.get("smoke_duration_ms") or 0) / 1000
                         )
                         if remaining > 10:
+                            if has_heavy_ml:
+                                per_run_timeout = min(60, max(15, int(remaining / 3)))
+                            else:
+                                per_run_timeout = min(10, max(3, int(remaining / 3)))
                             reliability, determinism, contract_valid, stability_results = run_stability_check(
                                 sandbox, module_path, func_name,
-                                stability_candidate, min(10, max(3, int(remaining / 3))),
+                                stability_candidate, per_run_timeout,
                                 ctx, n=3, tool=first_passed_tool,
+                                playwright_fixture=has_playwright,
                             )
                             result["reliability"] = reliability
                             result["determinism_score"] = determinism

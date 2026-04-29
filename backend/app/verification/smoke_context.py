@@ -60,6 +60,7 @@ FATAL_REASONS = frozenset({
 
 KNOWN_HEAVY_IMPORTS = frozenset({
     "torch", "tensorflow", "transformers", "sentence_transformers", "spacy",
+    "openai_whisper",
 })
 
 

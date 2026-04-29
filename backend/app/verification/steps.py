@@ -155,7 +155,7 @@ _FILE_PATH_PARAMS = frozenset({
     "input_file", "source_file", "file", "input_path",
     "pdf_file", "image_path", "image_file", "document",
     "document_path", "input_document", "audio_file",
-    "video_file", "source_path",
+    "audio_path", "video_file", "source_path",
 })
 
 _TEXT_EXTENSIONS = frozenset({
@@ -352,7 +352,11 @@ def _dominant_reason(reasons: list[str]) -> str | None:
     return reasons[0]
 
 
-def step_smoke(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[str, str, str | None, dict | None]:
+def step_smoke(
+    sandbox: VerificationSandbox, tools: list[dict],
+    heavy_ml: bool = False, image_override: str | None = None,
+    playwright_fixture: bool = False,
+) -> tuple[str, str, str | None, dict | None]:
     """Step 3: Evidence-based smoke probe for each tool.
 
     For each tool:
@@ -378,8 +382,18 @@ def step_smoke(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[str, st
 
     max_tools = settings.VERIFICATION_SMOKE_MAX_TOOLS
     tools_to_test = valid_tools[:max_tools]
-    budget = settings.VERIFICATION_SMOKE_BUDGET_SECONDS
-    per_tool_timeout = min(15, max(5, budget // len(tools_to_test)))
+
+    from app.verification.smoke_context import KNOWN_HEAVY_IMPORTS
+    has_heavy_deps = heavy_ml or any(
+        (build_smoke_context(t).python_dependencies & KNOWN_HEAVY_IMPORTS)
+        for t in tools_to_test
+    )
+    if has_heavy_deps:
+        budget = settings.VERIFICATION_SMOKE_BUDGET_SECONDS_HEAVY
+        per_tool_timeout = min(60, max(30, budget // len(tools_to_test)))
+    else:
+        budget = settings.VERIFICATION_SMOKE_BUDGET_SECONDS
+        per_tool_timeout = min(15, max(5, budget // len(tools_to_test)))
 
     logs: list[str] = []
     has_failure = False
@@ -432,6 +446,7 @@ def step_smoke(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[str, st
 
             reason, error_type, error_msg = _run_single_smoke(
                 sandbox, module_path, func_name, candidate, actual_timeout, ctx, tool,
+                playwright_fixture=playwright_fixture,
             )
             verdict = REASON_VERDICTS.get(reason, ("inconclusive", ""))[0]
 
@@ -479,6 +494,7 @@ def step_smoke(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[str, st
                         actual_timeout = min(per_tool_timeout, max(3, int(remaining_budget)))
                         probe_reason, probe_error_type, probe_error_msg = _run_single_smoke(
                             sandbox, module_path, func_name, probe_candidate, actual_timeout, ctx,
+                            playwright_fixture=playwright_fixture,
                         )
                         probe_verdict = REASON_VERDICTS.get(probe_reason, ("inconclusive", ""))[0]
 
@@ -566,6 +582,7 @@ def _run_single_smoke(
     timeout: int,
     ctx: SmokeContext,
     tool: dict | None = None,
+    playwright_fixture: bool = False,
 ) -> tuple[str, str | None, str | None]:
     """Execute one smoke call and return (reason, error_type, error_message).
 
@@ -634,6 +651,21 @@ try:
 except Exception:
     pass
 
+# WAV stub: 1 second of silence at 16kHz mono 16-bit PCM
+import struct as _struct
+def _make_wav_stub():
+    sr, nc, bps, ns = 16000, 1, 16, 16000
+    ds = ns * nc * (bps // 8)
+    return (
+        _struct.pack('<4sI4s', b'RIFF', 36 + ds, b'WAVE')
+        + _struct.pack('<4sIHHIIHH', b'fmt ', 16, 1, nc, sr, sr * nc * (bps // 8), nc * (bps // 8), bps)
+        + _struct.pack('<4sI', b'data', ds) + b'\\x00' * ds
+    )
+try:
+    _BINARY_STUBS['.wav'] = _make_wav_stub()
+except Exception:
+    pass
+
 for _stub_path in json.loads({binary_literal}):
     try:
         os.makedirs(os.path.dirname(_stub_path) or '.', exist_ok=True)
@@ -661,6 +693,24 @@ for _stub_path in json.loads({binary_literal}):
     call_expr = "fn(_agent_ctx)" if is_agent else "fn(**test_input)"
     async_call_expr = f"asyncio.run({call_expr})" if not is_agent else call_expr
 
+    playwright_block = ""
+    if playwright_fixture:
+        playwright_block = """
+import os as _os
+_html = '<html><head><title>AgentNode Test Page</title></head><body>'
+_html += '<h1>Test Page</h1><p>Test content for verification.</p>'
+_html += '<a href="#" id="test-link">Test Link</a>'
+_html += '<input type="text" id="test-input" value="test">'
+_html += '</body></html>'
+_fixture_path = '/tmp/agentnode_verify_test_page.html'
+_os.makedirs(_os.path.dirname(_fixture_path), exist_ok=True)
+with open(_fixture_path, 'w') as _hf:
+    _hf.write(_html)
+for _k, _v in list(test_input.items()):
+    if isinstance(_v, str) and _v.startswith('http'):
+        test_input[_k] = 'file://' + _fixture_path
+"""
+
     code = f"""
 import importlib, json, sys, inspect, asyncio, hashlib
 {stub_block}
@@ -669,7 +719,7 @@ mod = importlib.import_module("{module_path}")
 fn = getattr(mod, "{func_name}")
 
 test_input = json.loads({input_literal})
-
+{playwright_block}
 try:
     if inspect.iscoroutinefunction(fn):
         result = {async_call_expr}
@@ -759,6 +809,7 @@ def run_stability_check(
     ctx: SmokeContext,
     n: int = 3,
     tool: dict | None = None,
+    playwright_fixture: bool = False,
 ) -> tuple[float, float, bool, list[dict]]:
     """Run same input N times, collect reliability + determinism + contract validity.
 
@@ -771,6 +822,7 @@ def run_stability_check(
     for i in range(n):
         reason, error_type, error_msg = _run_single_smoke(
             sandbox, module_path, func_name, test_input, timeout, ctx, tool,
+            playwright_fixture=playwright_fixture,
         )
         parsed = None
         # Re-run to get the SMOKE_JSON for hash/type info

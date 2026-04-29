@@ -130,6 +130,7 @@ NAME_HINTS = {
     "document_path": "/tmp/agentnode_verify/test.pdf",
     "input_document": "/tmp/agentnode_verify/test.pdf",
     "audio_file": "/tmp/agentnode_verify/test.wav",
+    "audio_path": "/tmp/agentnode_verify/test.wav",
     "video_file": "/tmp/agentnode_verify/test.mp4",
     "source_path": "/tmp/agentnode_verify/test.txt",
     "email": "test@example.com",

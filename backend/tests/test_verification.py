@@ -1387,3 +1387,57 @@ class TestConfidenceLevel:
         vr.tests_auto_generated = False
         vr.smoke_reason = "credential_boundary_reached"
         assert compute_confidence(vr) == "low"
+
+
+class TestPhaseAQuickWins:
+    """Tests for Phase A Quick Wins: WAV stubs, heavy imports, playwright fixture."""
+
+    def test_openai_whisper_in_known_heavy_imports(self):
+        from app.verification.smoke_context import KNOWN_HEAVY_IMPORTS
+        assert "openai_whisper" in KNOWN_HEAVY_IMPORTS
+
+    def test_classify_timeout_openai_whisper(self):
+        ctx = SmokeContext(
+            tool_name="test",
+            declares_network_access=False,
+            python_dependencies=frozenset({"openai_whisper", "httpx"}),
+        )
+        assert classify_timeout(ctx) == "heavy_import_timeout"
+
+    def test_audio_path_in_file_path_params(self):
+        from app.verification.steps import _FILE_PATH_PARAMS
+        assert "audio_path" in _FILE_PATH_PARAMS
+
+    def test_audio_path_in_name_hints(self):
+        assert "audio_path" in NAME_HINTS
+        assert NAME_HINTS["audio_path"].endswith(".wav")
+
+    def test_audio_path_stub_created(self):
+        stubs = _collect_stub_paths({"audio_path": "/tmp/agentnode_verify/test.wav"})
+        text_stubs, binary_stubs = stubs
+        assert "/tmp/agentnode_verify/test.wav" in binary_stubs
+
+    def test_wav_extension_recognized_as_binary(self):
+        from app.verification.steps import _BINARY_EXTENSIONS
+        assert ".wav" in _BINARY_EXTENSIONS
+
+    def test_build_smoke_context_normalizes_openai_whisper(self):
+        tool = {
+            "name": "test",
+            "python_dependencies": ["openai-whisper>=20231117"],
+        }
+        ctx = build_smoke_context(tool)
+        assert "openai_whisper" in ctx.python_dependencies
+
+    def test_heavy_budget_config_exists(self):
+        from app.config import settings
+        assert hasattr(settings, "VERIFICATION_SMOKE_BUDGET_SECONDS_HEAVY")
+        assert settings.VERIFICATION_SMOKE_BUDGET_SECONDS_HEAVY >= 120
+
+    def test_model_cache_dir_config_exists(self):
+        from app.config import settings
+        assert hasattr(settings, "VERIFICATION_MODEL_CACHE_DIR")
+
+    def test_browser_image_config_exists(self):
+        from app.config import settings
+        assert hasattr(settings, "VERIFICATION_CONTAINER_IMAGE_BROWSER")

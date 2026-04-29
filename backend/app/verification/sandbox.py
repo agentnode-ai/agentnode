@@ -210,12 +210,16 @@ class VerificationSandbox:
 
     def run_python_code_enforced(
         self, code: str, timeout: int = 30,
+        heavy_ml: bool = False, image_override: str | None = None,
     ) -> tuple[bool, str]:
         """Run Python code in an isolated container with --network=none.
 
         Returns (success, log). If VERIFICATION_SANDBOX_MODE=container and no
         runtime is available, fails hard — no silent degradation.
         Falls back to best-effort subprocess only when mode is 'subprocess'.
+
+        heavy_ml: mount pre-cached ML model volumes, increase memory/tmpfs.
+        image_override: use a different container image (e.g. browser image).
         """
         from app.config import CONTAINER_RUNTIME, settings
 
@@ -255,20 +259,43 @@ class VerificationSandbox:
                     site_pkgs = sp
                     break
 
+        memory_limit = "2g" if heavy_ml else "512m"
+        tmpfs_size = "256m" if heavy_ml else "64m"
+
         cmd = [
             CONTAINER_RUNTIME, "run", "--rm",
             "--network=none",
             "--read-only",
             "--pids-limit=128",
-            "--memory=512m",
+            f"--memory={memory_limit}",
             "--cpus=1.0",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges:true",
-            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+            "--tmpfs", f"/tmp:rw,noexec,nosuid,size={tmpfs_size}",
             "-v", f"{self.pkg_dir}:/workspace:ro",
             "-v", f"{out_dir}:/out:rw",
             "-v", f"{code_file}:/run_code.py:ro",
         ]
+
+        if heavy_ml:
+            cache_dir = settings.VERIFICATION_MODEL_CACHE_DIR
+            hf_cache = os.path.join(cache_dir, "huggingface")
+            whisper_cache = os.path.join(cache_dir, "whisper")
+            torch_cache = os.path.join(cache_dir, "torch")
+            if os.path.isdir(hf_cache):
+                cmd += ["-v", f"{hf_cache}:/home/verifier/.cache/huggingface:ro"]
+            if os.path.isdir(whisper_cache):
+                cmd += ["-v", f"{whisper_cache}:/home/verifier/.cache/whisper:ro"]
+            if os.path.isdir(torch_cache):
+                cmd += ["-v", f"{torch_cache}:/home/verifier/.cache/torch:ro"]
+            cmd += [
+                "-e", "HF_HUB_OFFLINE=1",
+                "-e", "TRANSFORMERS_OFFLINE=1",
+                "-e", "HF_HOME=/home/verifier/.cache/huggingface",
+                "-e", "TORCH_HOME=/home/verifier/.cache/torch",
+                "-e", "XDG_CACHE_HOME=/home/verifier/.cache",
+                "-e", "TMPDIR=/tmp",
+            ]
 
         # Mount site-packages and add to PYTHONPATH so imports work
         if site_pkgs:
@@ -277,10 +304,11 @@ class VerificationSandbox:
         else:
             cmd += ["-e", "PYTHONPATH=/workspace"]
 
+        container_image = image_override or settings.VERIFICATION_CONTAINER_IMAGE
         cmd += [
             "-w", "/workspace",
             "--user", "1000:1000",
-            settings.VERIFICATION_CONTAINER_IMAGE,
+            container_image,
             "python", "/run_code.py",
         ]
 
