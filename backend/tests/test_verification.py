@@ -1589,3 +1589,34 @@ class TestSmokeContainerization:
             assert "Enforced sandbox unavailable" in log
             assert "refusing" in log.lower()
             mock_subprocess.assert_not_called()
+
+    def test_extract_artifact_sets_world_readable_permissions(self):
+        """Extracted workspace must be readable by container user 1000."""
+        from app.verification.sandbox import VerificationSandbox
+        import os, tarfile, io, stat
+        sandbox = VerificationSandbox()
+        try:
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                info = tarfile.TarInfo(name="./pyproject.toml")
+                content = b'[project]\nname = "test"\n'
+                info.size = len(content)
+                tar.addfile(info, io.BytesIO(content))
+                info2 = tarfile.TarInfo(name="./tests/test_main.py")
+                content2 = b"def test_ok(): assert True\n"
+                info2.size = len(content2)
+                tar.addfile(info2, io.BytesIO(content2))
+            buf.seek(0)
+            ok = sandbox.extract_artifact(buf.getvalue())
+            assert ok
+            work_mode = os.stat(sandbox.work_dir).st_mode
+            assert work_mode & stat.S_IROTH, "work_dir must be world-readable"
+            assert work_mode & stat.S_IXOTH, "work_dir must be world-executable"
+            for root, dirs, _files in os.walk(sandbox.work_dir):
+                for d in dirs:
+                    dp = os.path.join(root, d)
+                    m = os.stat(dp).st_mode
+                    assert m & stat.S_IROTH, f"{dp} must be world-readable"
+                    assert m & stat.S_IXOTH, f"{dp} must be world-executable"
+        finally:
+            sandbox.cleanup()

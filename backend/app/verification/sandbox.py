@@ -82,6 +82,18 @@ class VerificationSandbox:
                         return False
                 tar.extractall(self.work_dir, filter="data")
 
+            # tempfile.mkdtemp creates with 0700 — container user 1000
+            # can't read files inside. Make all dirs world-readable so
+            # container-mounted volumes are accessible.
+            os.chmod(self.work_dir, 0o755)
+            for root, dirs, _files in os.walk(self.work_dir):
+                for d in dirs:
+                    dp = os.path.join(root, d)
+                    try:
+                        os.chmod(dp, 0o755)
+                    except OSError:
+                        pass
+
             # Find the package root (directory with setup.py/pyproject.toml)
             for root, dirs, files in os.walk(self.work_dir):
                 if "pyproject.toml" in files or "setup.py" in files or "setup.cfg" in files:
