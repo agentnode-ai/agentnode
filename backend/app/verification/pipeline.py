@@ -465,11 +465,13 @@ def _run_verification_sync(
             result["tests_auto_generated"] = tests_auto_generated
 
         # Collect warnings from all logs
+        # Only count actual runtime warnings (WARN:/[WARN]), not [INCONCLUSIVE]
+        # which are verification-structural and already reflected in smoke score.
         warnings = []
         for log_key in ("import_log", "smoke_log"):
             log_text = result.get(log_key, "")
             for line in log_text.splitlines():
-                if line.startswith("WARN:") or line.startswith("[WARN]") or line.startswith("[INCONCLUSIVE]"):
+                if line.startswith("WARN:") or line.startswith("[WARN]"):
                     warnings.append(line.strip())
         result["warnings_count"] = len(warnings)
         if warnings:
