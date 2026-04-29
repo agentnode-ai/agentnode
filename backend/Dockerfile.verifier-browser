@@ -13,9 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 libasound2 libxshmfence1 fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 RUN pip install --no-cache-dir playwright && playwright install chromium
 
 RUN groupadd -g 1000 verifier && useradd -u 1000 -g verifier -m verifier
+RUN chmod -R o+rx /opt/playwright
 
 WORKDIR /workspace
 USER verifier
