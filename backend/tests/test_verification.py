@@ -1441,3 +1441,151 @@ class TestPhaseAQuickWins:
     def test_browser_image_config_exists(self):
         from app.config import settings
         assert hasattr(settings, "VERIFICATION_CONTAINER_IMAGE_BROWSER")
+
+
+class TestSmokeContainerization:
+    """Tests for smoke/stability containerization: enforced execution in container mode."""
+
+    def test_smoke_uses_enforced_in_container_mode(self):
+        from app.verification.steps import step_smoke
+        from unittest.mock import MagicMock, patch
+        sandbox = MagicMock()
+        sandbox.run_python_code_enforced.return_value = (
+            True,
+            'SMOKE_JSON:{"status":"ok","return_type":"dict"}',
+        )
+        tools = [{
+            "name": "tool1",
+            "entrypoint": "mod:func",
+            "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+        }]
+        with patch("app.verification.steps.settings") as mock_settings:
+            mock_settings.VERIFICATION_SANDBOX_MODE = "container"
+            mock_settings.VERIFICATION_SMOKE_MAX_TOOLS = 5
+            mock_settings.VERIFICATION_SMOKE_BUDGET_SECONDS = 60
+            status, log, reason, _candidate = step_smoke(sandbox, tools)
+        assert status == "passed"
+        sandbox.run_python_code_enforced.assert_called()
+        sandbox.run_python_code.assert_not_called()
+
+    def test_smoke_uses_subprocess_in_subprocess_mode(self):
+        from app.verification.steps import step_smoke
+        from unittest.mock import MagicMock, patch
+        sandbox = MagicMock()
+        sandbox.run_python_code.return_value = (
+            True,
+            'SMOKE_JSON:{"status":"ok","return_type":"dict"}',
+        )
+        tools = [{
+            "name": "tool1",
+            "entrypoint": "mod:func",
+            "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+        }]
+        with patch("app.verification.steps.settings") as mock_settings:
+            mock_settings.VERIFICATION_SANDBOX_MODE = "subprocess"
+            mock_settings.VERIFICATION_SMOKE_MAX_TOOLS = 5
+            mock_settings.VERIFICATION_SMOKE_BUDGET_SECONDS = 60
+            status, log, reason, _candidate = step_smoke(sandbox, tools)
+        assert status == "passed"
+        sandbox.run_python_code.assert_called()
+        sandbox.run_python_code_enforced.assert_not_called()
+
+    def test_smoke_passes_heavy_ml_to_enforced(self):
+        from app.verification.steps import step_smoke
+        from unittest.mock import MagicMock, patch
+        sandbox = MagicMock()
+        sandbox.run_python_code_enforced.return_value = (
+            True,
+            'SMOKE_JSON:{"status":"ok","return_type":"dict"}',
+        )
+        tools = [{
+            "name": "tool1",
+            "entrypoint": "mod:func",
+            "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+        }]
+        with patch("app.verification.steps.settings") as mock_settings:
+            mock_settings.VERIFICATION_SANDBOX_MODE = "container"
+            mock_settings.VERIFICATION_SMOKE_MAX_TOOLS = 5
+            mock_settings.VERIFICATION_SMOKE_BUDGET_SECONDS_HEAVY = 180
+            status, log, reason, _candidate = step_smoke(sandbox, tools, heavy_ml=True)
+        call_kwargs = sandbox.run_python_code_enforced.call_args
+        assert call_kwargs[1].get("heavy_ml") is True or call_kwargs.kwargs.get("heavy_ml") is True
+
+    def test_smoke_passes_image_override_to_enforced(self):
+        from app.verification.steps import step_smoke
+        from unittest.mock import MagicMock, patch
+        sandbox = MagicMock()
+        sandbox.run_python_code_enforced.return_value = (
+            True,
+            'SMOKE_JSON:{"status":"ok","return_type":"dict"}',
+        )
+        tools = [{
+            "name": "tool1",
+            "entrypoint": "mod:func",
+            "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+        }]
+        with patch("app.verification.steps.settings") as mock_settings:
+            mock_settings.VERIFICATION_SANDBOX_MODE = "container"
+            mock_settings.VERIFICATION_SMOKE_MAX_TOOLS = 5
+            mock_settings.VERIFICATION_SMOKE_BUDGET_SECONDS = 60
+            status, log, reason, _candidate = step_smoke(
+                sandbox, tools, image_override="custom-image:latest",
+            )
+        call_kwargs = sandbox.run_python_code_enforced.call_args
+        assert call_kwargs[1].get("image_override") == "custom-image:latest" or \
+            call_kwargs.kwargs.get("image_override") == "custom-image:latest"
+
+    def test_stability_uses_enforced_in_container_mode(self):
+        from app.verification.steps import run_stability_check
+        from unittest.mock import MagicMock, patch
+        sandbox = MagicMock()
+        sandbox.run_python_code_enforced.return_value = (
+            True,
+            'SMOKE_JSON:{"status":"ok","return_type":"str","return_hash":"abc","is_none":false,"is_serializable":true,"ms":10}',
+        )
+        ctx = SmokeContext(tool_name="test", declares_network_access=False)
+        with patch("app.verification.steps.settings") as mock_settings:
+            mock_settings.VERIFICATION_SANDBOX_MODE = "container"
+            reliability, determinism, contract_valid, results = run_stability_check(
+                sandbox, "mod", "func", {"x": "test"}, 10, ctx, n=2,
+            )
+        assert sandbox.run_python_code_enforced.call_count >= 2
+        sandbox.run_python_code.assert_not_called()
+
+    def test_agent_cases_uses_enforced_in_container_mode(self):
+        from app.verification.steps import run_agent_verification_cases
+        from unittest.mock import MagicMock, patch
+        sandbox = MagicMock()
+        sandbox.run_python_code_enforced.return_value = (
+            True,
+            'CASE_JSON:{"status":"ok","result":{"done":true},"return_type":"dict","llm_calls_made":1,"tool_calls_made":0,"tool_context_used":false,"prompt_history":["test"]}',
+        )
+        cases = [{"name": "test_case", "goal": "test goal", "expected": {"done": True}}]
+        agent_section = {"goal": "test", "tier": "free"}
+        with patch("app.verification.steps.settings") as mock_settings:
+            mock_settings.VERIFICATION_SANDBOX_MODE = "container"
+            result = run_agent_verification_cases(
+                sandbox, "mod", "func", cases, timeout=15,
+                agent_section=agent_section,
+            )
+        sandbox.run_python_code_enforced.assert_called()
+        sandbox.run_python_code.assert_not_called()
+
+    def test_container_mode_fails_closed_when_runtime_missing(self):
+        from app.verification.sandbox import VerificationSandbox
+        from unittest.mock import patch
+        sandbox = VerificationSandbox.__new__(VerificationSandbox)
+        sandbox.pkg_dir = "/tmp/test"
+        sandbox.work_dir = "/tmp/test"
+        sandbox.venv_dir = "/tmp/test/venv"
+        sandbox.python = "python"
+        sandbox._installer = "pip"
+        with patch("app.config.CONTAINER_RUNTIME", None), \
+             patch.object(sandbox, "run_python_code") as mock_subprocess:
+            from app.config import settings as real_settings
+            with patch.object(real_settings, "VERIFICATION_SANDBOX_MODE", "container"):
+                ok, log = sandbox.run_python_code_enforced("print('hi')")
+            assert ok is False
+            assert "Enforced sandbox unavailable" in log
+            assert "refusing" in log.lower()
+            mock_subprocess.assert_not_called()

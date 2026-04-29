@@ -447,6 +447,8 @@ def step_smoke(
             reason, error_type, error_msg = _run_single_smoke(
                 sandbox, module_path, func_name, candidate, actual_timeout, ctx, tool,
                 playwright_fixture=playwright_fixture,
+                heavy_ml=heavy_ml,
+                image_override=image_override,
             )
             verdict = REASON_VERDICTS.get(reason, ("inconclusive", ""))[0]
 
@@ -495,6 +497,8 @@ def step_smoke(
                         probe_reason, probe_error_type, probe_error_msg = _run_single_smoke(
                             sandbox, module_path, func_name, probe_candidate, actual_timeout, ctx,
                             playwright_fixture=playwright_fixture,
+                            heavy_ml=heavy_ml,
+                            image_override=image_override,
                         )
                         probe_verdict = REASON_VERDICTS.get(probe_reason, ("inconclusive", ""))[0]
 
@@ -583,6 +587,8 @@ def _run_single_smoke(
     ctx: SmokeContext,
     tool: dict | None = None,
     playwright_fixture: bool = False,
+    heavy_ml: bool = False,
+    image_override: str | None = None,
 ) -> tuple[str, str | None, str | None]:
     """Execute one smoke call and return (reason, error_type, error_message).
 
@@ -756,7 +762,12 @@ except Exception as e:
     print('SMOKE_JSON:' + json.dumps({{"status": "error", "error_type": type(e).__name__, "message": str(e)[:500]}}))
 """
 
-    ok, log = sandbox.run_python_code(code, timeout=timeout, restrict_network=True)
+    if settings.VERIFICATION_SANDBOX_MODE == "container":
+        ok, log = sandbox.run_python_code_enforced(
+            code, timeout=timeout, heavy_ml=heavy_ml, image_override=image_override,
+        )
+    else:
+        ok, log = sandbox.run_python_code(code, timeout=timeout, restrict_network=True)
 
     # ── Parse result ──
     if not ok:
@@ -810,6 +821,8 @@ def run_stability_check(
     n: int = 3,
     tool: dict | None = None,
     playwright_fixture: bool = False,
+    heavy_ml: bool = False,
+    image_override: str | None = None,
 ) -> tuple[float, float, bool, list[dict]]:
     """Run same input N times, collect reliability + determinism + contract validity.
 
@@ -823,6 +836,8 @@ def run_stability_check(
         reason, error_type, error_msg = _run_single_smoke(
             sandbox, module_path, func_name, test_input, timeout, ctx, tool,
             playwright_fixture=playwright_fixture,
+            heavy_ml=heavy_ml,
+            image_override=image_override,
         )
         parsed = None
         # Re-run to get the SMOKE_JSON for hash/type info
@@ -898,7 +913,12 @@ except Exception as e:
     ms = int((time.monotonic() - t0) * 1000)
     print('SMOKE_JSON:' + json.dumps({{"status": "error", "error_type": type(e).__name__, "message": str(e)[:200], "ms": ms}}))
 """
-        ok, log = sandbox.run_python_code(code, timeout=timeout, restrict_network=True)
+        if settings.VERIFICATION_SANDBOX_MODE == "container":
+            ok, log = sandbox.run_python_code_enforced(
+                code, timeout=timeout, heavy_ml=heavy_ml, image_override=image_override,
+            )
+        else:
+            ok, log = sandbox.run_python_code(code, timeout=timeout, restrict_network=True)
         parsed = _parse_smoke_json(log)
         if parsed:
             run_result["hash"] = parsed.get("return_hash")
@@ -961,6 +981,8 @@ def run_agent_verification_cases(
     cases: list[dict],
     timeout: int,
     agent_section: dict,
+    heavy_ml: bool = False,
+    image_override: str | None = None,
 ) -> dict:
     """Run agent verification cases and validate outputs.
 
@@ -1021,7 +1043,12 @@ except Exception as e:
     }}))
 """
 
-        ok, log = sandbox.run_python_code(code, timeout=timeout, restrict_network=True)
+        if settings.VERIFICATION_SANDBOX_MODE == "container":
+            ok, log = sandbox.run_python_code_enforced(
+                code, timeout=timeout, heavy_ml=heavy_ml, image_override=image_override,
+            )
+        else:
+            ok, log = sandbox.run_python_code(code, timeout=timeout, restrict_network=True)
 
         parsed = _parse_case_json(log)
         if not parsed or parsed.get("status") == "error":

@@ -404,6 +404,8 @@ def _run_verification_sync(
                                 stability_candidate, per_run_timeout,
                                 ctx, n=3, tool=first_passed_tool,
                                 playwright_fixture=has_playwright,
+                                heavy_ml=has_heavy_ml,
+                                image_override=image_override,
                             )
                             result["reliability"] = reliability
                             result["determinism_score"] = determinism
@@ -456,6 +458,8 @@ def _run_verification_sync(
                     cases_result = run_agent_verification_cases(
                         sandbox, module_path, func_name,
                         cases, timeout=15, agent_section=agent_section,
+                        heavy_ml=has_heavy_ml,
+                        image_override=image_override,
                     )
                     result["agent_cases_results"] = cases_result["results"]
                     result["agent_cases_passed"] = cases_result["passed"]
