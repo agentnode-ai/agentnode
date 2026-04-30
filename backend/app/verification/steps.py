@@ -912,7 +912,7 @@ try:
 except Exception as e:
     print('SMOKE_JSON:' + json.dumps({{"status": "error", "error_type": type(e).__name__, "message": str(e)[:500]}}))
 finally:
-    {vcr_exit}
+    {vcr_exit or "pass"}
 """
 
     if settings.VERIFICATION_SANDBOX_MODE == "container":
