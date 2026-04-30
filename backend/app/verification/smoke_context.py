@@ -44,6 +44,8 @@ REASON_VERDICTS: dict[str, tuple[str, str]] = {
     "fatal_import_during_smoke":            ("failed",       "Module failed to import during smoke test"),
     "fatal_type_error":                     ("failed",       "Function contract is broken (TypeError with schema present)"),
     "fatal_timeout":                        ("failed",       "Execution timed out without known network dependency"),
+    "fixture_replay_mismatch":              ("failed",       "HTTP request not found in fixture cassette"),
+    "fixture_expected_mismatch":            ("failed",       "Output did not match fixture expected contract"),
 }
 
 FATAL_REASONS = frozenset({
@@ -287,6 +289,10 @@ def classify_smoke_error(
     # ── 3. NotImplementedError → not_implemented (Phase 3A) ──
     if exception_type == "NotImplementedError":
         return "not_implemented"
+
+    # ── 3b. VCR cassette mismatch — unmatched HTTP request during fixture replay ──
+    if exception_type == "CannotSendRequest" and "cassette" in msg_lower:
+        return "fixture_replay_mismatch"
 
     # ── 4. Network exceptions ──
     if exception_type in ("ConnectionError", "TimeoutError", "ConnectError",

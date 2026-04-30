@@ -209,6 +209,8 @@ def _run_verification_sync(
     is_agent: bool = False,
     agent_section: dict | None = None,
     container_available: bool = False,
+    smoke_fixtures: list[dict] | None = None,
+    manual_test_input: dict | None = None,
 ) -> dict:
     """Run all verification steps synchronously (called in thread pool).
 
@@ -310,6 +312,11 @@ def _run_verification_sync(
         # Detect playwright for browser-specific container image
         has_playwright = "playwright" in _normalized_deps
 
+        # Inject manual_test_input into tools for candidate override
+        if manual_test_input and not smoke_fixtures:
+            for tool in tools:
+                tool["_manual_test_input"] = manual_test_input
+
         # Step 3: Smoke test (returns 4-tuple: status, log, reason, passed_candidate)
         t0 = time.monotonic()
         image_override = (
@@ -320,6 +327,7 @@ def _run_verification_sync(
             heavy_ml=has_heavy_ml,
             image_override=image_override,
             playwright_fixture=has_playwright,
+            fixtures=smoke_fixtures if smoke_fixtures else None,
         )
         result["smoke_duration_ms"] = int((time.monotonic() - t0) * 1000)
         result["smoke_status"] = smoke_status
@@ -350,7 +358,9 @@ def _run_verification_sync(
 
         # Phase 6E: Determine verification_mode
         from app.config import SYSTEM_CAPABILITIES
-        if smoke_reason == "missing_system_dependency":
+        if smoke_fixtures and smoke_status == "passed":
+            result["verification_mode"] = "fixture"
+        elif smoke_reason == "missing_system_dependency":
             result["verification_mode"] = "limited"
         elif smoke_reason == "needs_binary_input":
             result["verification_mode"] = "limited"
@@ -383,6 +393,15 @@ def _run_verification_sync(
                         candidates = generate_candidates(first_passed_tool.get("input_schema"))
                         stability_candidate = candidates[0] if candidates else None
 
+                    # Extract fixture cassette from passed_candidate (don't mutate)
+                    fixture_cassette = None
+                    if stability_candidate and "_fixture_cassette" in stability_candidate:
+                        fixture_cassette = stability_candidate.get("_fixture_cassette")
+                        stability_candidate = {
+                            k: v for k, v in stability_candidate.items()
+                            if not k.startswith("_fixture_")
+                        }
+
                     ctx = build_smoke_context(first_passed_tool)
                     module_path, func_name = first_passed_tool["entrypoint"].rsplit(":", 1)
                     if stability_candidate:
@@ -406,6 +425,7 @@ def _run_verification_sync(
                                 playwright_fixture=has_playwright,
                                 heavy_ml=has_heavy_ml,
                                 image_override=image_override,
+                                fixture_cassette=fixture_cassette,
                             )
                             result["reliability"] = reliability
                             result["determinism_score"] = determinism
@@ -717,6 +737,11 @@ async def run_verification(
                             "_agent_section": agent_section,
                         })
 
+                # Read fixture verification config from manifest
+                verification_config = manifest.get("verification", {}) if not is_agent_pkg else {}
+                smoke_fixtures = verification_config.get("fixtures", []) if isinstance(verification_config, dict) else []
+                manual_test_input = verification_config.get("test_input") if isinstance(verification_config, dict) else None
+
                 # Run verification in thread pool (subprocess.run blocks)
                 import functools
                 agent_section_for_sync = manifest.get("agent", {}) if is_agent_pkg else None
@@ -731,6 +756,8 @@ async def run_verification(
                             is_agent=bool(is_agent_pkg),
                             agent_section=agent_section_for_sync,
                             container_available=container_available,
+                            smoke_fixtures=smoke_fixtures or None,
+                            manual_test_input=manual_test_input,
                         ),
                     ),
                     timeout=settings.VERIFICATION_TIMEOUT,

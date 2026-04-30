@@ -360,7 +360,7 @@ def _qualifies_for_gold(score: int, vr) -> bool:
         return False
 
     verification_mode = getattr(vr, "verification_mode", None)
-    if verification_mode and verification_mode != "real":
+    if verification_mode and verification_mode not in ("real", "fixture"):
         return False
 
     if vr.smoke_reason in ("credential_boundary_reached", "needs_credentials"):

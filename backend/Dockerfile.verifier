@@ -6,6 +6,9 @@
 
 FROM python:3.12-slim
 
+# VCR.py for fixture-based HTTP replay (Phase B: Fixture Gold)
+RUN pip install --no-cache-dir vcrpy pyyaml
+
 # Create non-root user for sandbox execution
 RUN groupadd -g 1000 verifier && useradd -u 1000 -g verifier -m verifier
 

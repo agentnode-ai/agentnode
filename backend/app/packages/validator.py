@@ -553,6 +553,82 @@ def _validate_agent_verification_cases(
                     errors.append(f"{prefix}.expected.llm_prompt_contains must be a list of strings")
 
 
+def _validate_tool_verification(
+    verification: dict, errors: list[str], warnings: list[str],
+) -> None:
+    """Validate tool-pack verification section (Phase B: Fixture Gold)."""
+    import re
+    _CASSETTE_PATH_RE = re.compile(r"^fixtures/cassettes/[\w.-]+\.(yaml|yml|json)$")
+
+    # verification.test_input — optional manual smoke input override
+    test_input = verification.get("test_input")
+    if test_input is not None and not isinstance(test_input, dict):
+        errors.append("verification.test_input must be an object")
+
+    # verification.fixtures — optional fixture cases for VCR replay
+    fixtures = verification.get("fixtures")
+    if fixtures is None:
+        return
+
+    if not isinstance(fixtures, list):
+        errors.append("verification.fixtures must be a list")
+        return
+
+    if len(fixtures) > 10:
+        errors.append("verification.fixtures: maximum 10 fixtures allowed")
+
+    if len(fixtures) == 1:
+        warnings.append(
+            "verification.fixtures: at least 2 fixtures recommended for Gold tier"
+        )
+
+    seen_names: set[str] = set()
+    for i, fixture in enumerate(fixtures):
+        prefix = f"verification.fixtures[{i}]"
+        if not isinstance(fixture, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+
+        name = fixture.get("name")
+        if not name or not isinstance(name, str) or len(name) < 3:
+            errors.append(f"{prefix}.name is required (min 3 chars)")
+        elif name in seen_names:
+            errors.append(f"{prefix}.name '{name}' is duplicate")
+        else:
+            seen_names.add(name)
+
+        t_input = fixture.get("test_input")
+        if not isinstance(t_input, dict):
+            errors.append(f"{prefix}.test_input is required and must be an object")
+
+        cassette = fixture.get("cassette")
+        if not isinstance(cassette, str):
+            errors.append(f"{prefix}.cassette is required and must be a string")
+        elif ".." in cassette or cassette.startswith("/"):
+            errors.append(f"{prefix}.cassette must not contain '..' or absolute paths")
+        elif not _CASSETTE_PATH_RE.match(cassette):
+            errors.append(
+                f"{prefix}.cassette must match 'fixtures/cassettes/<name>.yaml|json' "
+                f"(got '{cassette}')"
+            )
+
+        expected = fixture.get("expected")
+        if expected is not None:
+            if not isinstance(expected, dict):
+                errors.append(f"{prefix}.expected must be an object")
+            else:
+                if "return_type" in expected and not isinstance(expected["return_type"], str):
+                    errors.append(f"{prefix}.expected.return_type must be a string")
+                if "min_length" in expected:
+                    ml = expected["min_length"]
+                    if not isinstance(ml, int) or ml < 1:
+                        errors.append(f"{prefix}.expected.min_length must be a positive integer")
+                if "required_keys" in expected:
+                    rk = expected["required_keys"]
+                    if not isinstance(rk, list) or not all(isinstance(k, str) for k in rk):
+                        errors.append(f"{prefix}.expected.required_keys must be a list of strings")
+
+
 def _validate_orchestration_steps(
     orchestration: dict, errors: list[str], warnings: list[str],
 ) -> None:
@@ -809,6 +885,14 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     if agent_section is not None and pkg_type == "agent":
         _validate_agent(agent_section, errors, warnings)
 
+    # --- Tool-pack verification block (Phase B: Fixture Gold) ---
+    verification_section = manifest.get("verification")
+    if verification_section is not None and pkg_type != "agent":
+        if not isinstance(verification_section, dict):
+            errors.append("verification must be an object")
+        else:
+            _validate_tool_verification(verification_section, errors, warnings)
+
     # permissions
     perms = manifest.get("permissions", {})
     if perms:
@@ -1039,5 +1123,33 @@ def validate_artifact_quality(artifact_bytes: bytes, slug: str, *, package_type:
     has_manifest = any(f == "agentnode.yaml" for f in normalized)
     if not has_manifest:
         warnings.append("No agentnode.yaml found in artifact — recommended to include manifest")
+
+    # Verify fixture cassette files exist if declared in manifest
+    if has_manifest:
+        try:
+            with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
+                manifest_member = None
+                for m in tar.getmembers():
+                    parts = m.name.split("/", 1)
+                    norm = parts[1] if len(parts) > 1 else parts[0]
+                    if norm == "agentnode.yaml":
+                        manifest_member = m
+                        break
+                if manifest_member:
+                    import yaml
+                    manifest_data = yaml.safe_load(tar.extractfile(manifest_member))
+                    if isinstance(manifest_data, dict):
+                        verification = manifest_data.get("verification", {})
+                        if isinstance(verification, dict):
+                            for fixture in verification.get("fixtures", []):
+                                if isinstance(fixture, dict):
+                                    cassette = fixture.get("cassette", "")
+                                    if cassette and cassette not in normalized:
+                                        errors.append(
+                                            f"Fixture cassette '{cassette}' declared in manifest "
+                                            f"but not found in artifact"
+                                        )
+        except Exception:
+            pass
 
     return errors, warnings

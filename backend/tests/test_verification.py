@@ -15,7 +15,12 @@ from app.verification.schema_generator import (
     NAME_HINTS,
     OPERATION_CANDIDATES,
 )
-from app.verification.steps import _collect_stub_paths, _dominant_reason
+from app.verification.steps import (
+    _collect_stub_paths,
+    _dominant_reason,
+    _build_vcr_replay_preamble,
+    step_smoke_fixtures,
+)
 from app.verification.smoke_context import (
     FATAL_REASONS,
     REASON_VERDICTS,
@@ -1901,3 +1906,152 @@ class TestDeterminismNormalization:
         result = compute_score_result(vr)
         assert result.breakdown["determinism"].points == 5
         assert "normalized" in result.breakdown["determinism"].reason.lower()
+
+
+class TestFixtureGold:
+    """Tests for Phase B: Fixture Gold — VCR replay, fixture scoring, manifest validation."""
+
+    def test_vcr_preamble_generated(self):
+        enter_code, exit_code = _build_vcr_replay_preamble("fixtures/cassettes/test.yaml")
+        assert "vcr" in enter_code.lower()
+        assert "use_cassette" in enter_code
+        assert "record_mode='none'" in enter_code or "record_mode" in enter_code
+        assert "/workspace/fixtures/cassettes/test.yaml" in enter_code
+        assert "__exit__" in exit_code
+
+    def test_vcr_preamble_has_size_guard(self):
+        enter_code, _ = _build_vcr_replay_preamble("fixtures/cassettes/big.yaml")
+        assert "1_048_576" in enter_code or "1048576" in enter_code
+
+    def test_vcr_preamble_raises_on_missing_cassette(self):
+        enter_code, _ = _build_vcr_replay_preamble("fixtures/cassettes/missing.yaml")
+        assert "FileNotFoundError" in enter_code
+
+    def test_fixture_replay_error_classified(self):
+        ctx = SmokeContext(tool_name="test")
+        result = classify_smoke_error("CannotSendRequest", "no cassette found", ctx)
+        assert result == "fixture_replay_mismatch"
+
+    def test_fixture_replay_mismatch_in_verdicts(self):
+        assert "fixture_replay_mismatch" in REASON_VERDICTS
+        verdict, _ = REASON_VERDICTS["fixture_replay_mismatch"]
+        assert verdict == "failed"
+
+    def test_fixture_expected_mismatch_in_verdicts(self):
+        assert "fixture_expected_mismatch" in REASON_VERDICTS
+        verdict, _ = REASON_VERDICTS["fixture_expected_mismatch"]
+        assert verdict == "failed"
+
+    def test_fixture_gold_eligible_in_scoring(self):
+        from app.verification.scoring import _qualifies_for_gold
+        from unittest.mock import MagicMock
+        vr = MagicMock()
+        vr.smoke_status = "passed"
+        vr.contract_valid = True
+        vr.contract_details = {"valid": True}
+        vr.verification_mode = "fixture"
+        vr.smoke_reason = "ok"
+        vr.reliability = 1.0
+        vr.install_duration_ms = None
+        assert _qualifies_for_gold(95, vr) is True
+
+    def test_real_mode_still_gold_eligible(self):
+        from app.verification.scoring import _qualifies_for_gold
+        from unittest.mock import MagicMock
+        vr = MagicMock()
+        vr.smoke_status = "passed"
+        vr.contract_valid = True
+        vr.contract_details = {"valid": True}
+        vr.verification_mode = "real"
+        vr.smoke_reason = "ok"
+        vr.reliability = 1.0
+        vr.install_duration_ms = None
+        assert _qualifies_for_gold(95, vr) is True
+
+    def test_mock_mode_not_gold_eligible(self):
+        from app.verification.scoring import _qualifies_for_gold
+        from unittest.mock import MagicMock
+        vr = MagicMock()
+        vr.smoke_status = "passed"
+        vr.contract_valid = True
+        vr.contract_details = {"valid": True}
+        vr.verification_mode = "mock"
+        vr.smoke_reason = "ok"
+        vr.reliability = 1.0
+        vr.install_duration_ms = None
+        assert _qualifies_for_gold(95, vr) is False
+
+    def test_manifest_validation_valid_fixtures(self):
+        from app.packages.validator import _validate_tool_verification
+        errors, warnings = [], []
+        verification = {
+            "fixtures": [
+                {
+                    "name": "search-test",
+                    "test_input": {"query": "test"},
+                    "cassette": "fixtures/cassettes/search.yaml",
+                },
+                {
+                    "name": "translate-test",
+                    "test_input": {"text": "hello", "target": "de"},
+                    "cassette": "fixtures/cassettes/translate.json",
+                },
+            ]
+        }
+        _validate_tool_verification(verification, errors, warnings)
+        assert not errors
+
+    def test_manifest_validation_cassette_path_traversal(self):
+        from app.packages.validator import _validate_tool_verification
+        errors, warnings = [], []
+        verification = {
+            "fixtures": [{
+                "name": "evil-test",
+                "test_input": {"x": 1},
+                "cassette": "../../../etc/passwd",
+            }]
+        }
+        _validate_tool_verification(verification, errors, warnings)
+        assert any(".." in e for e in errors)
+
+    def test_manifest_validation_absolute_path_rejected(self):
+        from app.packages.validator import _validate_tool_verification
+        errors, warnings = [], []
+        verification = {
+            "fixtures": [{
+                "name": "abs-test",
+                "test_input": {"x": 1},
+                "cassette": "/etc/cassette.yaml",
+            }]
+        }
+        _validate_tool_verification(verification, errors, warnings)
+        assert any("absolute" in e or "/" in e for e in errors)
+
+    def test_manifest_validation_test_input_override(self):
+        from app.packages.validator import _validate_tool_verification
+        errors, warnings = [], []
+        verification = {
+            "test_input": {"code": "password = 'hunter2'"},
+        }
+        _validate_tool_verification(verification, errors, warnings)
+        assert not errors
+
+    def test_manual_test_input_prepended_to_candidates(self):
+        tool = {
+            "name": "scanner",
+            "entrypoint": "pkg:run",
+            "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
+            "_manual_test_input": {"code": "secret = 'hunter2'"},
+        }
+        from app.verification.schema_generator import generate_candidates
+        candidates = generate_candidates(tool.get("input_schema"))
+        manual = tool.get("_manual_test_input")
+        if manual:
+            candidates = [manual] + candidates[:1]
+        assert candidates[0] == {"code": "secret = 'hunter2'"}
+
+    def test_run_stability_check_accepts_fixture_cassette(self):
+        import inspect
+        from app.verification.steps import run_stability_check
+        sig = inspect.signature(run_stability_check)
+        assert "fixture_cassette" in sig.parameters

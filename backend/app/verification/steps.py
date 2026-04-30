@@ -352,10 +352,103 @@ def _dominant_reason(reasons: list[str]) -> str | None:
     return reasons[0]
 
 
+def step_smoke_fixtures(
+    sandbox: VerificationSandbox,
+    tools: list[dict],
+    fixtures: list[dict],
+    heavy_ml: bool = False,
+    image_override: str | None = None,
+) -> tuple[str, str, str | None, dict | None]:
+    """Run fixture-based smoke tests using VCR cassette replay.
+
+    Each fixture declares test_input + cassette path. VCR.py intercepts HTTP
+    calls and replays recorded responses. Unmatched requests fail hard.
+
+    Returns same 4-tuple as step_smoke for pipeline compatibility.
+    The passed_candidate carries _fixture_cassette so stability can reuse it.
+    """
+    valid_tools = [t for t in tools if t.get("entrypoint") and ":" in t["entrypoint"]]
+    if not valid_tools:
+        return "skipped", "No tools with valid entrypoints", None, None
+
+    from app.verification.smoke_context import KNOWN_HEAVY_IMPORTS
+    has_heavy_deps = heavy_ml or any(
+        (build_smoke_context(t).python_dependencies & KNOWN_HEAVY_IMPORTS)
+        for t in valid_tools
+    )
+    per_fixture_timeout = 30 if has_heavy_deps else 15
+
+    logs: list[str] = []
+    has_failure = False
+    has_inconclusive = False
+    passed_candidate: dict | None = None
+
+    for fixture in fixtures:
+        fixture_name = fixture.get("name", "unnamed")
+        cassette = fixture.get("cassette", "")
+        test_input = fixture.get("test_input", {})
+        expected = fixture.get("expected", {})
+        tool_name_filter = fixture.get("tool")
+
+        target_tool = None
+        if tool_name_filter:
+            target_tool = next((t for t in valid_tools if t.get("name") == tool_name_filter), None)
+        if not target_tool:
+            target_tool = valid_tools[0]
+
+        module_path, func_name = target_tool["entrypoint"].rsplit(":", 1)
+        ctx = build_smoke_context(target_tool)
+
+        reason, error_type, error_msg, parsed = _run_single_smoke(
+            sandbox, module_path, func_name, test_input,
+            per_fixture_timeout, ctx, target_tool,
+            heavy_ml=heavy_ml, image_override=image_override,
+            fixture_cassette=cassette,
+        )
+
+        verdict = REASON_VERDICTS.get(reason, ("inconclusive", ""))[0]
+
+        if expected and parsed and parsed.get("status") == "ok":
+            if expected.get("return_type") and parsed.get("return_type") != expected["return_type"]:
+                verdict = "failed"
+                reason = "fixture_expected_mismatch"
+                logs.append(f"[FAIL] {fixture_name}: expected return_type={expected['return_type']}, got {parsed.get('return_type')}")
+            if expected.get("min_length") and (parsed.get("return_length") or 0) < expected["min_length"]:
+                verdict = "failed"
+                reason = "fixture_expected_mismatch"
+                logs.append(f"[FAIL] {fixture_name}: expected min_length={expected['min_length']}, got {parsed.get('return_length')}")
+
+        if verdict == "passed":
+            logs.append(f"[PASSED] {fixture_name} (cassette: {cassette})")
+            if passed_candidate is None:
+                passed_candidate = {
+                    **test_input,
+                    "_fixture_cassette": cassette,
+                    "_fixture_expected": expected or None,
+                }
+        elif verdict == "failed":
+            logs.append(f"[FAIL] {fixture_name}: {reason} — {error_msg or ''}")
+            has_failure = True
+        else:
+            logs.append(f"[INCONCLUSIVE] {fixture_name}: {reason}")
+            has_inconclusive = True
+
+    combined_log = "\n".join(logs)
+    if has_failure:
+        return "failed", combined_log, "fixture_replay_mismatch", None
+    elif has_inconclusive:
+        return "inconclusive", combined_log, "unknown_smoke_condition", None
+    elif passed_candidate is None:
+        return "inconclusive", combined_log, "unknown_smoke_condition", None
+    else:
+        return "passed", combined_log, "ok", passed_candidate
+
+
 def step_smoke(
     sandbox: VerificationSandbox, tools: list[dict],
     heavy_ml: bool = False, image_override: str | None = None,
     playwright_fixture: bool = False,
+    fixtures: list[dict] | None = None,
 ) -> tuple[str, str, str | None, dict | None]:
     """Step 3: Evidence-based smoke probe for each tool.
 
@@ -373,6 +466,12 @@ def step_smoke(
       - final_reason is the dominant reason across all tools
       - passed_candidate is the exact input dict that produced a "passed" verdict (for stability reuse)
     """
+    if fixtures:
+        return step_smoke_fixtures(
+            sandbox, tools, fixtures,
+            heavy_ml=heavy_ml, image_override=image_override,
+        )
+
     if not tools:
         return "skipped", "No tools with entrypoints to smoke test", None, None
 
@@ -419,6 +518,10 @@ def step_smoke(
         # ── b. Generate candidates ──
         input_schema = tool.get("input_schema")
         candidates = generate_candidates(input_schema)
+
+        manual_input = tool.get("_manual_test_input")
+        if manual_input:
+            candidates = [manual_input] + candidates[:1]
 
         if not candidates or (candidates == [{}] and input_schema and input_schema.get("required")):
             reason = "invalid_test_input"
@@ -578,6 +681,35 @@ def _tool_result_from_candidates(
     return "invalid_test_input", "inconclusive"
 
 
+def _build_vcr_replay_preamble(cassette_path: str) -> tuple[str, str]:
+    """Generate Python code to set up VCR.py cassette replay.
+
+    Returns (enter_code, exit_code) to be injected into the smoke template.
+    enter_code sets up the VCR context, exit_code tears it down in finally.
+    """
+    safe_path = json.dumps(f"/workspace/{cassette_path}")
+    enter_code = f"""
+import os as _vcr_os
+_vcr_cassette_ctx = None
+_vcr_cassette_path = {safe_path}
+if _vcr_os.path.isfile(_vcr_cassette_path):
+    _vcr_size = _vcr_os.path.getsize(_vcr_cassette_path)
+    if _vcr_size > 1_048_576:
+        raise RuntimeError(f"Cassette file too large: {{_vcr_size}} bytes (max 1MB)")
+    import vcr as _vcr_mod
+    _vcr_instance = _vcr_mod.VCR(record_mode='none', decode_compressed_response=True)
+    _vcr_cassette_ctx = _vcr_instance.use_cassette(_vcr_cassette_path)
+    _vcr_cassette_ctx.__enter__()
+else:
+    raise FileNotFoundError(f"Cassette file not found: {{_vcr_cassette_path}}")
+"""
+    exit_code = """
+if _vcr_cassette_ctx is not None:
+    _vcr_cassette_ctx.__exit__(None, None, None)
+"""
+    return enter_code, exit_code
+
+
 def _run_single_smoke(
     sandbox: VerificationSandbox,
     module_path: str,
@@ -589,6 +721,7 @@ def _run_single_smoke(
     playwright_fixture: bool = False,
     heavy_ml: bool = False,
     image_override: str | None = None,
+    fixture_cassette: str | None = None,
 ) -> tuple[str, str | None, str | None, dict | None]:
     """Execute one smoke call and return (reason, error_type, error_message, parsed_smoke_json).
 
@@ -719,9 +852,15 @@ for _k, _v in list(test_input.items()):
         test_input[_k] = 'file://' + _fixture_path
 """
 
+    vcr_enter = ""
+    vcr_exit = ""
+    if fixture_cassette:
+        vcr_enter, vcr_exit = _build_vcr_replay_preamble(fixture_cassette)
+
     code = f"""
 import importlib, json, sys, inspect, asyncio, hashlib
 {stub_block}
+{vcr_enter}
 {agent_context_block}
 
 def _normalize_for_hash(obj):
@@ -772,6 +911,8 @@ try:
     print('SMOKE_JSON:' + json.dumps(_smoke_data))
 except Exception as e:
     print('SMOKE_JSON:' + json.dumps({{"status": "error", "error_type": type(e).__name__, "message": str(e)[:500]}}))
+finally:
+    {vcr_exit}
 """
 
     if settings.VERIFICATION_SANDBOX_MODE == "container":
@@ -835,6 +976,7 @@ def run_stability_check(
     playwright_fixture: bool = False,
     heavy_ml: bool = False,
     image_override: str | None = None,
+    fixture_cassette: str | None = None,
 ) -> tuple[float, float, bool, list[dict]]:
     """Run same input N times, collect reliability + determinism + contract validity.
 
@@ -850,6 +992,7 @@ def run_stability_check(
             playwright_fixture=playwright_fixture,
             heavy_ml=heavy_ml,
             image_override=image_override,
+            fixture_cassette=fixture_cassette,
         )
         run_result = {"ok": reason == "ok", "reason": reason}
         if parsed and parsed.get("status") == "ok":
