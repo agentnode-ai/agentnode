@@ -1283,6 +1283,39 @@ class TestContractValidation:
         result = validate_return(smoke_data, "test_tool", {})
         assert result["valid"] is False
 
+    def test_binary_return_valid_contract(self):
+        """bytes output is a valid return type even though not JSON-serializable."""
+        from app.verification.contract import validate_return
+        smoke_data = {
+            "status": "ok",
+            "return_type": "bytes",
+            "return_hash": "abc",
+            "is_none": False,
+            "is_serializable": False,
+            "return_keys": None,
+            "return_length": None,
+        }
+        result = validate_return(smoke_data, "screenshot_capture", {"url": "http://example.com"})
+        assert result["valid"] is True
+        assert result["points"] >= 8
+        serial_check = next(c for c in result["checks"] if c["name"] == "serializable")
+        assert serial_check["passed"] is True
+        assert "Binary" in serial_check["detail"] or "binary" in serial_check["detail"].lower()
+
+    def test_bytearray_return_valid_contract(self):
+        from app.verification.contract import validate_return
+        smoke_data = {
+            "status": "ok",
+            "return_type": "bytearray",
+            "return_hash": "abc",
+            "is_none": False,
+            "is_serializable": False,
+            "return_keys": None,
+            "return_length": None,
+        }
+        result = validate_return(smoke_data, "audio_generator", {"text": "hello"})
+        assert result["valid"] is True
+
     def test_semantic_sanity_summary(self):
         from app.verification.contract import semantic_sanity_check
         hints = semantic_sanity_check(
@@ -1620,3 +1653,265 @@ class TestSmokeContainerization:
                     assert m & stat.S_IXOTH, f"{dp} must be world-executable"
         finally:
             sandbox.cleanup()
+
+
+class TestBinaryOutputScoring:
+    """Determinism and contract scoring for binary (bytes) outputs."""
+
+    def test_binary_determinism_partial_credit(self):
+        """Binary outputs get 0.6 determinism (3/5) when all runs succeed."""
+        from app.verification.scoring import compute_score_result
+        from unittest.mock import MagicMock
+        vr = MagicMock()
+        vr.is_agent_package = False
+        vr.is_agent_package = False
+        vr.install_status = "passed"
+        vr.install_duration_ms = None
+        vr.import_status = "passed"
+        vr.smoke_status = "passed"
+        vr.smoke_reason = "ok"
+        vr.smoke_confidence = None
+        vr.tests_status = "not_present"
+        vr.tests_auto_generated = False
+        vr.reliability = 1.0
+        vr.determinism_score = 0.6
+        vr.contract_valid = True
+        vr.contract_details = {"valid": True, "points": 10, "reason": "All passed"}
+        vr.warnings_count = 0
+        vr.stability_log = [
+            {"ok": True, "type": "bytes", "hash": "aaa"},
+            {"ok": True, "type": "bytes", "hash": "bbb"},
+            {"ok": True, "type": "bytes", "hash": "ccc"},
+        ]
+        vr.verification_mode = "real"
+        result = compute_score_result(vr)
+        assert result.breakdown["determinism"].points == 3
+        assert "binary" in result.breakdown["determinism"].reason.lower()
+
+    def test_json_determinism_full_credit(self):
+        """JSON/dict outputs get full 5/5 when hashes match."""
+        from app.verification.scoring import compute_score_result
+        from unittest.mock import MagicMock
+        vr = MagicMock()
+        vr.is_agent_package = False
+        vr.install_status = "passed"
+        vr.install_duration_ms = None
+        vr.import_status = "passed"
+        vr.smoke_status = "passed"
+        vr.smoke_reason = "ok"
+        vr.smoke_confidence = None
+        vr.tests_status = "not_present"
+        vr.tests_auto_generated = False
+        vr.reliability = 1.0
+        vr.determinism_score = 1.0
+        vr.contract_valid = True
+        vr.contract_details = {"valid": True, "points": 10, "reason": "All passed"}
+        vr.warnings_count = 0
+        vr.stability_log = [
+            {"ok": True, "type": "dict", "hash": "aaa"},
+            {"ok": True, "type": "dict", "hash": "aaa"},
+            {"ok": True, "type": "dict", "hash": "aaa"},
+        ]
+        vr.verification_mode = "real"
+        result = compute_score_result(vr)
+        assert result.breakdown["determinism"].points == 5
+        assert "Consistent" in result.breakdown["determinism"].reason
+
+    def test_binary_output_not_blocked_from_gold(self):
+        """Binary output with partial determinism should still achieve Gold if score >= 90."""
+        from app.verification.scoring import compute_score_result
+        from unittest.mock import MagicMock
+        vr = MagicMock()
+        vr.is_agent_package = False
+        vr.install_status = "passed"
+        vr.install_duration_ms = None
+        vr.import_status = "passed"
+        vr.smoke_status = "passed"
+        vr.smoke_reason = "ok"
+        vr.smoke_confidence = None
+        vr.tests_status = "passed"
+        vr.tests_auto_generated = False
+        vr.reliability = 1.0
+        vr.determinism_score = 0.6
+        vr.contract_valid = True
+        vr.contract_details = {"valid": True, "points": 10, "reason": "Binary output valid"}
+        vr.warnings_count = 0
+        vr.stability_log = [
+            {"ok": True, "type": "bytes", "hash": "aaa"},
+            {"ok": True, "type": "bytes", "hash": "bbb"},
+            {"ok": True, "type": "bytes", "hash": "ccc"},
+        ]
+        vr.verification_mode = "real"
+        result = compute_score_result(vr)
+        # 15+15+25+15+10+10+3 = 93
+        assert result.score >= 90
+        assert result.tier == "gold"
+
+    def test_stability_binary_determinism_partial(self):
+        """run_stability_check awards 0.6 determinism for binary outputs."""
+        from app.verification.steps import run_stability_check
+        from unittest.mock import MagicMock, patch
+        sandbox = MagicMock()
+        smoke_json = (
+            'SMOKE_JSON:{"status":"ok","return_type":"bytes",'
+            '"return_hash":"HASH_PLACEHOLDER","is_none":false,'
+            '"is_serializable":false,"ms":10}'
+        )
+        call_count = [0]
+        def mock_run_code(code, timeout=10, restrict_network=False):
+            call_count[0] += 1
+            h = f"hash_{call_count[0]}"
+            return (True, smoke_json.replace("HASH_PLACEHOLDER", h))
+
+        sandbox.run_python_code.side_effect = mock_run_code
+
+        ctx = MagicMock()
+        ctx.tool_name = "screenshot"
+
+        with patch("app.verification.steps.settings") as mock_settings:
+            mock_settings.VERIFICATION_SANDBOX_MODE = "subprocess"
+            with patch("app.verification.steps._run_single_smoke") as mock_smoke:
+                mock_smoke.return_value = ("ok", None, None)
+                reliability, determinism, contract_valid, results = run_stability_check(
+                    sandbox, "mod", "fn", {"url": "http://example.com"},
+                    timeout=10, ctx=ctx, n=3,
+                )
+        assert determinism == 0.6
+        assert contract_valid is True
+
+    def test_stability_json_strict_hash(self):
+        """run_stability_check uses strict hash comparison for JSON outputs."""
+        from app.verification.steps import run_stability_check
+        from unittest.mock import MagicMock, patch
+        sandbox = MagicMock()
+        smoke_json = (
+            'SMOKE_JSON:{"status":"ok","return_type":"dict",'
+            '"return_hash":"HASH_PLACEHOLDER","is_none":false,'
+            '"is_serializable":true,"ms":10}'
+        )
+        call_count = [0]
+        def mock_run_code(code, timeout=10, restrict_network=False):
+            call_count[0] += 1
+            h = f"hash_{call_count[0]}"
+            return (True, smoke_json.replace("HASH_PLACEHOLDER", h))
+
+        sandbox.run_python_code.side_effect = mock_run_code
+
+        ctx = MagicMock()
+        ctx.tool_name = "formatter"
+
+        with patch("app.verification.steps.settings") as mock_settings:
+            mock_settings.VERIFICATION_SANDBOX_MODE = "subprocess"
+            with patch("app.verification.steps._run_single_smoke") as mock_smoke:
+                mock_smoke.return_value = ("ok", None, None)
+                reliability, determinism, contract_valid, results = run_stability_check(
+                    sandbox, "mod", "fn", {"text": "hello"},
+                    timeout=10, ctx=ctx, n=3,
+                )
+        assert determinism == round(1.0 / 3, 2)
+        assert contract_valid is True
+
+
+class TestDeterminismNormalization:
+    """Case B: Hash normalization for structured outputs."""
+
+    def test_normalize_sorts_dict_keys(self):
+        """Dict keys are sorted recursively before hashing."""
+        import hashlib
+        def _normalize_for_hash(obj):
+            if isinstance(obj, dict):
+                return {k: _normalize_for_hash(v) for k, v in sorted(obj.items())}
+            if isinstance(obj, (list, tuple)):
+                return type(obj)(_normalize_for_hash(item) for item in obj)
+            if isinstance(obj, float):
+                return round(obj, 6)
+            return obj
+
+        a = {"z": 1, "a": 2, "m": {"b": 3, "a": 4}}
+        b = {"a": 2, "m": {"a": 4, "b": 3}, "z": 1}
+        hash_a = hashlib.md5(repr(_normalize_for_hash(a))[:1000].encode()).hexdigest()
+        hash_b = hashlib.md5(repr(_normalize_for_hash(b))[:1000].encode()).hexdigest()
+        assert hash_a == hash_b
+
+    def test_normalize_rounds_floats(self):
+        import hashlib
+        def _normalize_for_hash(obj):
+            if isinstance(obj, dict):
+                return {k: _normalize_for_hash(v) for k, v in sorted(obj.items())}
+            if isinstance(obj, (list, tuple)):
+                return type(obj)(_normalize_for_hash(item) for item in obj)
+            if isinstance(obj, float):
+                return round(obj, 6)
+            return obj
+
+        a = {"score": 0.33333333333333337}
+        b = {"score": 0.3333333333333334}
+        hash_a = hashlib.md5(repr(_normalize_for_hash(a))[:1000].encode()).hexdigest()
+        hash_b = hashlib.md5(repr(_normalize_for_hash(b))[:1000].encode()).hexdigest()
+        assert hash_a == hash_b
+
+    def test_normalize_preserves_list_order(self):
+        """List ordering is preserved — only dict keys are sorted."""
+        def _normalize_for_hash(obj):
+            if isinstance(obj, dict):
+                return {k: _normalize_for_hash(v) for k, v in sorted(obj.items())}
+            if isinstance(obj, (list, tuple)):
+                return type(obj)(_normalize_for_hash(item) for item in obj)
+            if isinstance(obj, float):
+                return round(obj, 6)
+            return obj
+
+        a = [{"name": "alpha"}, {"name": "beta"}]
+        b = [{"name": "beta"}, {"name": "alpha"}]
+        norm_a = repr(_normalize_for_hash(a))
+        norm_b = repr(_normalize_for_hash(b))
+        assert norm_a != norm_b
+
+    def test_normalize_in_stability_code_template(self):
+        """The stability code template includes _normalize_for_hash."""
+        from app.verification.steps import run_stability_check
+        from unittest.mock import MagicMock, patch
+        sandbox = MagicMock()
+        sandbox.run_python_code.return_value = (
+            True,
+            'SMOKE_JSON:{"status":"ok","return_type":"dict","return_hash":"abc","is_none":false,"is_serializable":true,"ms":10}',
+        )
+        ctx = MagicMock()
+        ctx.tool_name = "test"
+        with patch("app.verification.steps.settings") as mock_settings:
+            mock_settings.VERIFICATION_SANDBOX_MODE = "subprocess"
+            with patch("app.verification.steps._run_single_smoke") as mock_smoke:
+                mock_smoke.return_value = ("ok", None, None)
+                run_stability_check(sandbox, "mod", "fn", {"x": "1"}, timeout=10, ctx=ctx, n=1)
+        code_arg = sandbox.run_python_code.call_args[0][0]
+        assert "_normalize_for_hash" in code_arg
+        assert "sorted(obj.items())" in code_arg
+        assert "round(obj, 6)" in code_arg
+
+    def test_scoring_reason_reflects_normalization(self):
+        """Scoring reason mentions normalization for consistent structured output."""
+        from app.verification.scoring import compute_score_result
+        from unittest.mock import MagicMock
+        vr = MagicMock()
+        vr.is_agent_package = False
+        vr.install_status = "passed"
+        vr.install_duration_ms = None
+        vr.import_status = "passed"
+        vr.smoke_status = "passed"
+        vr.smoke_reason = "ok"
+        vr.smoke_confidence = None
+        vr.tests_status = "not_present"
+        vr.tests_auto_generated = False
+        vr.reliability = 1.0
+        vr.determinism_score = 1.0
+        vr.contract_valid = True
+        vr.contract_details = {"valid": True, "points": 10, "reason": "All passed"}
+        vr.warnings_count = 0
+        vr.stability_log = [
+            {"ok": True, "type": "dict", "hash": "same", "ms": 10},
+            {"ok": True, "type": "dict", "hash": "same", "ms": 10},
+        ]
+        vr.verification_mode = "real"
+        result = compute_score_result(vr)
+        assert result.breakdown["determinism"].points == 5
+        assert "normalized" in result.breakdown["determinism"].reason.lower()

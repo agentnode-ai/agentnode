@@ -165,10 +165,11 @@ def compute_score_result(vr) -> ScoreResult:
     else:
         breakdown["reliability"] = StepScore(0, 10, "No stability data")
 
-    # Determinism (5 pts)
+    # Determinism (5 pts) — type-aware scoring
     if vr.determinism_score is not None:
         det_points = int(vr.determinism_score * 5)
-        breakdown["determinism"] = StepScore(det_points, 5, "Output consistency check")
+        det_reason = _determinism_reason(vr, det_points)
+        breakdown["determinism"] = StepScore(det_points, 5, det_reason)
         score += det_points
     else:
         breakdown["determinism"] = StepScore(0, 5, "No determinism data")
@@ -402,6 +403,28 @@ def compute_confidence(vr) -> str:
     return "low"
 
 
+_BINARY_RETURN_TYPES = {"bytes", "bytearray", "memoryview"}
+
+
+def _determinism_reason(vr, det_points: int) -> str:
+    """Build type-aware determinism reason string."""
+    max_pts = 5
+    if getattr(vr, "is_agent_package", False):
+        max_pts = 10
+    stability_log = getattr(vr, "stability_log", None)
+    if stability_log and isinstance(stability_log, list):
+        return_types = [r.get("type") for r in stability_log if r.get("ok") and r.get("type")]
+        if any(t in _BINARY_RETURN_TYPES for t in return_types):
+            if det_points == max_pts:
+                return "Binary output — identical across runs"
+            return "Binary output — partial credit (non-deterministic by nature)"
+    if det_points == max_pts:
+        return "Consistent output across runs (normalized)"
+    if det_points == 0:
+        return "Output varies across runs despite normalization"
+    return f"Partial output consistency ({det_points}/{max_pts})"
+
+
 def _build_explanation(score: int, tier: str, vr) -> str:
     """Build a human-readable explanation one-liner."""
     parts = []
@@ -500,10 +523,11 @@ def _compute_agent_score(vr) -> ScoreResult:
     else:
         breakdown["reliability"] = StepScore(0, 15, "No stability data")
 
-    # Determinism (10 pts)
+    # Determinism (10 pts) — type-aware scoring
     if vr.determinism_score is not None:
         det_points = int(vr.determinism_score * 10)
-        breakdown["determinism"] = StepScore(det_points, 10, "Output consistency check")
+        det_reason = _determinism_reason(vr, det_points)
+        breakdown["determinism"] = StepScore(det_points, 10, det_reason)
         score += det_points
     else:
         breakdown["determinism"] = StepScore(0, 10, "No determinism data")

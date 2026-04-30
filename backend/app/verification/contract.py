@@ -44,6 +44,10 @@ def validate_return(smoke_data: dict, tool_name: str, input_data: dict) -> dict:
     checks = []
     all_passed = True
 
+    BINARY_RETURN_TYPES = {"bytes", "bytearray", "memoryview"}
+    return_type = smoke_data.get("return_type")
+    is_binary = return_type in BINARY_RETURN_TYPES
+
     # ── Level 1: Core contract checks (always run) ──
 
     # 1. Non-None check
@@ -56,18 +60,24 @@ def validate_return(smoke_data: dict, tool_name: str, input_data: dict) -> dict:
     if is_none:
         all_passed = False
 
-    # 2. Serializable check
+    # 2. Serializable check — binary types are valid but not JSON-serializable
     is_serializable = smoke_data.get("is_serializable", False)
-    checks.append({
-        "name": "serializable",
-        "passed": is_serializable,
-        "detail": "Output is JSON-serializable" if is_serializable else "Output is not JSON-serializable",
-    })
-    if not is_serializable:
-        all_passed = False
+    if is_binary:
+        checks.append({
+            "name": "serializable",
+            "passed": True,
+            "detail": f"Binary output ({return_type}) — JSON serialization not applicable",
+        })
+    else:
+        checks.append({
+            "name": "serializable",
+            "passed": is_serializable,
+            "detail": "Output is JSON-serializable" if is_serializable else "Output is not JSON-serializable",
+        })
+        if not is_serializable:
+            all_passed = False
 
     # 3. Type plausibility (return_type exists and is reasonable)
-    return_type = smoke_data.get("return_type")
     type_ok = return_type is not None and return_type != "NoneType"
     checks.append({
         "name": "type_present",

@@ -886,6 +886,16 @@ for _stub_path in json.loads({stub_literal}):
 import importlib, json, sys, inspect, asyncio, hashlib, time
 {stub_block}
 {agent_block}
+
+def _normalize_for_hash(obj):
+    if isinstance(obj, dict):
+        return {{k: _normalize_for_hash(v) for k, v in sorted(obj.items())}}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_normalize_for_hash(item) for item in obj)
+    if isinstance(obj, float):
+        return round(obj, 6)
+    return obj
+
 mod = importlib.import_module("{module_path}")
 fn = getattr(mod, "{func_name}")
 test_input = json.loads({input_literal})
@@ -896,7 +906,7 @@ try:
     else:
         result = {call_line}
     ms = int((time.monotonic() - t0) * 1000)
-    result_repr = repr(result)[:1000]
+    result_repr = repr(_normalize_for_hash(result))[:1000]
     result_hash = hashlib.md5(result_repr.encode()).hexdigest()
     is_serializable = False
     try:
@@ -938,9 +948,19 @@ except Exception as e:
     else:
         determinism = 1.0 if len(hashes) == 1 else 0.0
 
-    # Contract validity: at least one result is serializable and not None
+    # Binary outputs (screenshots, audio) are non-deterministic at byte level.
+    # Award partial credit when all runs succeeded.
+    BINARY_RETURN_TYPES = {"bytes", "bytearray", "memoryview"}
+    return_types = [r.get("type") for r in results if r["ok"] and r.get("type")]
+    is_binary_output = any(t in BINARY_RETURN_TYPES for t in return_types)
+    if is_binary_output and determinism < 1.0 and ok_count == len(results):
+        determinism = 0.6
+
+    # Contract validity: at least one result is serializable and not None.
+    # Binary types are valid returns even though not JSON-serializable.
     contract_valid = any(
-        r.get("is_serializable") and not r.get("is_none")
+        (r.get("is_serializable") or r.get("type") in BINARY_RETURN_TYPES)
+        and not r.get("is_none")
         for r in results if r["ok"]
     )
 
