@@ -19,7 +19,7 @@ BUILD_DIR = Path(__file__).resolve().parent.parent / "build" / "artifacts"
 def build_artifact(pack_dir: Path, output_path: Path) -> bool:
     """Build a .tar.gz artifact for a single pack. Returns True on success."""
     slug = pack_dir.name
-    include_dirs = {"src", "tests"}
+    include_dirs = {"src", "tests", "fixtures"}
     include_files = {"agentnode.yaml", "pyproject.toml"}
 
     try:

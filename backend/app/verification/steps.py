@@ -703,10 +703,7 @@ if _vcr_os.path.isfile(_vcr_cassette_path):
 else:
     raise FileNotFoundError(f"Cassette file not found: {{_vcr_cassette_path}}")
 """
-    exit_code = """
-if _vcr_cassette_ctx is not None:
-    _vcr_cassette_ctx.__exit__(None, None, None)
-"""
+    exit_code = "if _vcr_cassette_ctx is not None:\n        _vcr_cassette_ctx.__exit__(None, None, None)"
     return enter_code, exit_code
 
 
