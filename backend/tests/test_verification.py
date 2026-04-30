@@ -1752,30 +1752,24 @@ class TestBinaryOutputScoring:
         from app.verification.steps import run_stability_check
         from unittest.mock import MagicMock, patch
         sandbox = MagicMock()
-        smoke_json = (
-            'SMOKE_JSON:{"status":"ok","return_type":"bytes",'
-            '"return_hash":"HASH_PLACEHOLDER","is_none":false,'
-            '"is_serializable":false,"ms":10}'
-        )
-        call_count = [0]
-        def mock_run_code(code, timeout=10, restrict_network=False):
-            call_count[0] += 1
-            h = f"hash_{call_count[0]}"
-            return (True, smoke_json.replace("HASH_PLACEHOLDER", h))
-
-        sandbox.run_python_code.side_effect = mock_run_code
-
         ctx = MagicMock()
         ctx.tool_name = "screenshot"
 
-        with patch("app.verification.steps.settings") as mock_settings:
-            mock_settings.VERIFICATION_SANDBOX_MODE = "subprocess"
-            with patch("app.verification.steps._run_single_smoke") as mock_smoke:
-                mock_smoke.return_value = ("ok", None, None)
-                reliability, determinism, contract_valid, results = run_stability_check(
-                    sandbox, "mod", "fn", {"url": "http://example.com"},
-                    timeout=10, ctx=ctx, n=3,
-                )
+        call_count = [0]
+        def mock_single_smoke(*args, **kwargs):
+            call_count[0] += 1
+            parsed = {
+                "status": "ok", "return_type": "bytes",
+                "return_hash": f"hash_{call_count[0]}", "is_none": False,
+                "is_serializable": False, "ms": 10,
+            }
+            return ("ok", None, None, parsed)
+
+        with patch("app.verification.steps._run_single_smoke", side_effect=mock_single_smoke):
+            reliability, determinism, contract_valid, results = run_stability_check(
+                sandbox, "mod", "fn", {"url": "http://example.com"},
+                timeout=10, ctx=ctx, n=3,
+            )
         assert determinism == 0.6
         assert contract_valid is True
 
@@ -1784,30 +1778,24 @@ class TestBinaryOutputScoring:
         from app.verification.steps import run_stability_check
         from unittest.mock import MagicMock, patch
         sandbox = MagicMock()
-        smoke_json = (
-            'SMOKE_JSON:{"status":"ok","return_type":"dict",'
-            '"return_hash":"HASH_PLACEHOLDER","is_none":false,'
-            '"is_serializable":true,"ms":10}'
-        )
-        call_count = [0]
-        def mock_run_code(code, timeout=10, restrict_network=False):
-            call_count[0] += 1
-            h = f"hash_{call_count[0]}"
-            return (True, smoke_json.replace("HASH_PLACEHOLDER", h))
-
-        sandbox.run_python_code.side_effect = mock_run_code
-
         ctx = MagicMock()
         ctx.tool_name = "formatter"
 
-        with patch("app.verification.steps.settings") as mock_settings:
-            mock_settings.VERIFICATION_SANDBOX_MODE = "subprocess"
-            with patch("app.verification.steps._run_single_smoke") as mock_smoke:
-                mock_smoke.return_value = ("ok", None, None)
-                reliability, determinism, contract_valid, results = run_stability_check(
-                    sandbox, "mod", "fn", {"text": "hello"},
-                    timeout=10, ctx=ctx, n=3,
-                )
+        call_count = [0]
+        def mock_single_smoke(*args, **kwargs):
+            call_count[0] += 1
+            parsed = {
+                "status": "ok", "return_type": "dict",
+                "return_hash": f"hash_{call_count[0]}", "is_none": False,
+                "is_serializable": True, "ms": 10,
+            }
+            return ("ok", None, None, parsed)
+
+        with patch("app.verification.steps._run_single_smoke", side_effect=mock_single_smoke):
+            reliability, determinism, contract_valid, results = run_stability_check(
+                sandbox, "mod", "fn", {"text": "hello"},
+                timeout=10, ctx=ctx, n=3,
+            )
         assert determinism == round(1.0 / 3, 2)
         assert contract_valid is True
 
@@ -1867,22 +1855,20 @@ class TestDeterminismNormalization:
         norm_b = repr(_normalize_for_hash(b))
         assert norm_a != norm_b
 
-    def test_normalize_in_stability_code_template(self):
-        """The stability code template includes _normalize_for_hash."""
-        from app.verification.steps import run_stability_check
+    def test_normalize_in_smoke_code_template(self):
+        """The smoke code template includes _normalize_for_hash for hash stability."""
+        from app.verification.steps import _run_single_smoke
+        from app.verification.smoke_context import SmokeContext
         from unittest.mock import MagicMock, patch
         sandbox = MagicMock()
         sandbox.run_python_code.return_value = (
             True,
             'SMOKE_JSON:{"status":"ok","return_type":"dict","return_hash":"abc","is_none":false,"is_serializable":true,"ms":10}',
         )
-        ctx = MagicMock()
-        ctx.tool_name = "test"
+        ctx = SmokeContext(tool_name="test")
         with patch("app.verification.steps.settings") as mock_settings:
             mock_settings.VERIFICATION_SANDBOX_MODE = "subprocess"
-            with patch("app.verification.steps._run_single_smoke") as mock_smoke:
-                mock_smoke.return_value = ("ok", None, None)
-                run_stability_check(sandbox, "mod", "fn", {"x": "1"}, timeout=10, ctx=ctx, n=1)
+            _run_single_smoke(sandbox, "mod", "fn", {"x": "1"}, timeout=10, ctx=ctx)
         code_arg = sandbox.run_python_code.call_args[0][0]
         assert "_normalize_for_hash" in code_arg
         assert "sorted(obj.items())" in code_arg

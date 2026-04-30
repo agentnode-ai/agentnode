@@ -444,7 +444,7 @@ def step_smoke(
                 break
             actual_timeout = min(per_tool_timeout, max(3, int(remaining_budget)))
 
-            reason, error_type, error_msg = _run_single_smoke(
+            reason, error_type, error_msg, _parsed = _run_single_smoke(
                 sandbox, module_path, func_name, candidate, actual_timeout, ctx, tool,
                 playwright_fixture=playwright_fixture,
                 heavy_ml=heavy_ml,
@@ -494,7 +494,7 @@ def step_smoke(
                     )
                     if probe_candidate is not None:
                         actual_timeout = min(per_tool_timeout, max(3, int(remaining_budget)))
-                        probe_reason, probe_error_type, probe_error_msg = _run_single_smoke(
+                        probe_reason, probe_error_type, probe_error_msg, _probe_parsed = _run_single_smoke(
                             sandbox, module_path, func_name, probe_candidate, actual_timeout, ctx,
                             playwright_fixture=playwright_fixture,
                             heavy_ml=heavy_ml,
@@ -589,11 +589,13 @@ def _run_single_smoke(
     playwright_fixture: bool = False,
     heavy_ml: bool = False,
     image_override: str | None = None,
-) -> tuple[str, str | None, str | None]:
-    """Execute one smoke call and return (reason, error_type, error_message).
+) -> tuple[str, str | None, str | None, dict | None]:
+    """Execute one smoke call and return (reason, error_type, error_message, parsed_smoke_json).
 
     Subprocess outputs SMOKE_JSON:{...} for structured parsing.
     Classification happens here in the parent, with full SmokeContext.
+    The parsed SMOKE_JSON dict is returned so callers (e.g. stability check)
+    can access hash/type/serializable without re-executing.
     """
     input_json = json.dumps(test_input)
     # Use json.dumps to produce a safe Python string literal — avoids triple-quote
@@ -721,6 +723,16 @@ for _k, _v in list(test_input.items()):
 import importlib, json, sys, inspect, asyncio, hashlib
 {stub_block}
 {agent_context_block}
+
+def _normalize_for_hash(obj):
+    if isinstance(obj, dict):
+        return {{k: _normalize_for_hash(v) for k, v in sorted(obj.items())}}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_normalize_for_hash(item) for item in obj)
+    if isinstance(obj, float):
+        return round(obj, 6)
+    return obj
+
 mod = importlib.import_module("{module_path}")
 fn = getattr(mod, "{func_name}")
 
@@ -731,7 +743,7 @@ try:
         result = {async_call_expr}
     else:
         result = {call_expr}
-    result_repr = repr(result)[:1000]
+    result_repr = repr(_normalize_for_hash(result))[:1000]
     result_hash = hashlib.md5(result_repr.encode()).hexdigest()
     is_none = result is None
     is_serializable = False
@@ -774,30 +786,30 @@ except Exception as e:
         # Subprocess crashed or timed out
         if "timed out" in log.lower():
             reason = classify_timeout(ctx)
-            return reason, "SubprocessTimeout", f"subprocess timed out after {timeout}s"
+            return reason, "SubprocessTimeout", f"subprocess timed out after {timeout}s", None
         # Try to find SMOKE_JSON in mixed output
         parsed = _parse_smoke_json(log)
         if parsed and parsed.get("status") == "error":
             error_type = parsed.get("error_type", "")
             error_msg = parsed.get("message", "")
-            return classify_smoke_error(error_type, error_msg, ctx), error_type, error_msg
-        return "fatal_runtime_error", None, log[:200] if log else None
+            return classify_smoke_error(error_type, error_msg, ctx), error_type, error_msg, parsed
+        return "fatal_runtime_error", None, log[:200] if log else None, None
 
     # Subprocess exited 0 — parse structured output
     parsed = _parse_smoke_json(log)
     if not parsed:
         # No SMOKE_JSON found but exit 0 — function probably printed something else
-        return "ok", None, None
+        return "ok", None, None, None
 
     if parsed.get("status") == "ok":
-        return "ok", None, None
+        return "ok", None, None, parsed
 
     if parsed.get("status") == "error":
         error_type = parsed.get("error_type", "")
         error_msg = parsed.get("message", "")
-        return classify_smoke_error(error_type, error_msg, ctx), error_type, error_msg
+        return classify_smoke_error(error_type, error_msg, ctx), error_type, error_msg, parsed
 
-    return "unknown_smoke_condition", None, None
+    return "unknown_smoke_condition", None, None, parsed
 
 
 def _parse_smoke_json(log: str) -> dict | None:
@@ -833,104 +845,14 @@ def run_stability_check(
 
     results = []
     for i in range(n):
-        reason, error_type, error_msg = _run_single_smoke(
+        reason, error_type, error_msg, parsed = _run_single_smoke(
             sandbox, module_path, func_name, test_input, timeout, ctx, tool,
             playwright_fixture=playwright_fixture,
             heavy_ml=heavy_ml,
             image_override=image_override,
         )
-        parsed = None
-        # Re-run to get the SMOKE_JSON for hash/type info
-        # Actually, _run_single_smoke already runs the code. We need the parsed output.
-        # Let's use a simpler approach: run the code and parse SMOKE_JSON directly.
         run_result = {"ok": reason == "ok", "reason": reason}
-
-        # For hash/type, we need to run a separate call that captures the JSON
-        input_json = json.dumps(test_input)
-        input_literal = json.dumps(input_json)
-        stub_paths = _collect_stub_paths(test_input)
-        stub_literal = json.dumps(json.dumps(stub_paths))
-
-        stub_block = ""
-        if stub_paths:
-            stub_block = f"""
-import os, shutil
-_STUB_CONTENT = {{
-    '.json': '{{"status":"ok","items":[1,2,3]}}',
-    '.csv': 'name,value\\nalpha,1\\nbeta,2',
-}}
-_STUB_DEFAULT = 'Test content for verification.\\nLine 2.\\nLine 3.'
-for _stub_path in json.loads({stub_literal}):
-    try:
-        os.makedirs(os.path.dirname(_stub_path) or '.', exist_ok=True)
-        if os.path.isdir(_stub_path):
-            shutil.rmtree(_stub_path)
-        _ext = os.path.splitext(_stub_path)[1].lower()
-        with open(_stub_path, 'w') as _f:
-            _f.write(_STUB_CONTENT.get(_ext, _STUB_DEFAULT))
-    except Exception:
-        pass
-"""
-
-        # Agent-aware stability code
-        if is_agent:
-            agent_section = tool.get("_agent_section", {})
-            agent_goal = agent_section.get("goal", "Verification stability test")
-            agent_block = _build_mock_agent_context_code(agent_goal)
-            call_line = "fn(_agent_ctx)"
-        else:
-            agent_block = ""
-            call_line = "fn(**test_input)"
-
-        code = f"""
-import importlib, json, sys, inspect, asyncio, hashlib, time
-{stub_block}
-{agent_block}
-
-def _normalize_for_hash(obj):
-    if isinstance(obj, dict):
-        return {{k: _normalize_for_hash(v) for k, v in sorted(obj.items())}}
-    if isinstance(obj, (list, tuple)):
-        return type(obj)(_normalize_for_hash(item) for item in obj)
-    if isinstance(obj, float):
-        return round(obj, 6)
-    return obj
-
-mod = importlib.import_module("{module_path}")
-fn = getattr(mod, "{func_name}")
-test_input = json.loads({input_literal})
-t0 = time.monotonic()
-try:
-    if inspect.iscoroutinefunction(fn):
-        result = asyncio.run({call_line})
-    else:
-        result = {call_line}
-    ms = int((time.monotonic() - t0) * 1000)
-    result_repr = repr(_normalize_for_hash(result))[:1000]
-    result_hash = hashlib.md5(result_repr.encode()).hexdigest()
-    is_serializable = False
-    try:
-        json.dumps(result)
-        is_serializable = True
-    except (TypeError, ValueError, OverflowError):
-        pass
-    print('SMOKE_JSON:' + json.dumps({{
-        "status": "ok", "return_type": type(result).__name__,
-        "return_hash": result_hash, "is_none": result is None,
-        "is_serializable": is_serializable, "ms": ms,
-    }}))
-except Exception as e:
-    ms = int((time.monotonic() - t0) * 1000)
-    print('SMOKE_JSON:' + json.dumps({{"status": "error", "error_type": type(e).__name__, "message": str(e)[:200], "ms": ms}}))
-"""
-        if settings.VERIFICATION_SANDBOX_MODE == "container":
-            ok, log = sandbox.run_python_code_enforced(
-                code, timeout=timeout, heavy_ml=heavy_ml, image_override=image_override,
-            )
-        else:
-            ok, log = sandbox.run_python_code(code, timeout=timeout, restrict_network=True)
-        parsed = _parse_smoke_json(log)
-        if parsed:
+        if parsed and parsed.get("status") == "ok":
             run_result["hash"] = parsed.get("return_hash")
             run_result["type"] = parsed.get("return_type")
             run_result["ms"] = parsed.get("ms")
