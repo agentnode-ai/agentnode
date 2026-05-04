@@ -430,7 +430,8 @@ def step_smoke_fixtures(
             logs.append(f"[FAIL] {fixture_name}: {reason} — {error_msg or ''}")
             has_failure = True
         else:
-            logs.append(f"[INCONCLUSIVE] {fixture_name}: {reason}")
+            detail = error_msg[:200] if error_msg else ""
+            logs.append(f"[INCONCLUSIVE] {fixture_name}: {reason}" + (f" — {detail}" if detail else ""))
             has_inconclusive = True
 
     combined_log = "\n".join(logs)
