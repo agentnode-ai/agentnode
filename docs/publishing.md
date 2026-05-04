@@ -299,6 +299,122 @@ The validator checks:
 
 See [`research-agent-pack`](../starter-packs/research-agent-pack/) for a complete working example that orchestrates web search, PDF extraction, and summarization.
 
+## Verification Cases (Gold Tier)
+
+To reach **Gold** tier, your package must include explicit verification cases in the manifest. Without them, the maximum tier is **Verified** (even with a perfect score).
+
+### Schema
+
+```yaml
+verification:
+  cases:
+    - name: "case_name"           # required, min 3 chars
+      tool: "tool_name"           # optional: which tool to test (default: first)
+      input:                      # required: arguments passed to your tool
+        param1: "value1"
+      cassette: "fixtures/cassettes/file.yaml"  # optional: VCR replay file
+      expected:                   # optional: contract validation
+        return_type: "dict"
+        required_keys: ["key1", "key2"]
+        min_lengths: {key1: 1}
+  system_requirements: ["browser"]  # optional: selects specialized container
+```
+
+### Three Patterns
+
+**1. File-based tools** (CSV, JSON, image processing — no network needed):
+
+```yaml
+verification:
+  cases:
+    - name: "analyze_sample"
+      tool: "describe_csv"
+      input:
+        file_path: "/workspace/fixtures/test_data.csv"
+      expected:
+        return_type: "dict"
+        required_keys: ["rows", "columns"]
+```
+
+Include the test file in your package:
+```
+my-pack/
+├── fixtures/
+│   └── test_data.csv
+├── MANIFEST.in              # recursive-include fixtures *
+└── ...
+```
+
+The verification sandbox mounts your package at `/workspace/`, so fixtures are at `/workspace/fixtures/`.
+
+**2. API tools with VCR cassette** (external APIs — network blocked in sandbox):
+
+```yaml
+verification:
+  cases:
+    - name: "search_test"
+      tool: "search_web"
+      input:
+        query: "Python programming"
+      cassette: "fixtures/cassettes/search.yaml"
+      expected:
+        return_type: "dict"
+        required_keys: ["results"]
+```
+
+Record the cassette locally with VCR.py (`record_mode='new_episodes'`), then commit the YAML file. During verification, VCR replays the recorded HTTP responses.
+
+**3. Pure computation** (no files, no network):
+
+```yaml
+verification:
+  cases:
+    - name: "format_json"
+      input:
+        data: '{"key": "value"}'
+        indent: 2
+      expected:
+        return_type: "str"
+```
+
+### Gold Requirements
+
+All of these must be true:
+- `verification.cases` present (at least 1 case, 2 recommended)
+- Smoke status: `passed`
+- Contract valid: `true`
+- Reliability: `>= 0.9`
+- Score: `>= 90`
+
+### `expected` Validation
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `return_type` | string | Python type name (`dict`, `str`, `list`, etc.) |
+| `required_keys` | list[str] | Keys that must exist in a dict return |
+| `min_lengths` | dict[str, int] | Minimum length of specific return keys |
+| `min_length` | int | Minimum total length of the return value |
+
+### `system_requirements`
+
+Declare system dependencies your tool needs at runtime:
+
+```yaml
+verification:
+  system_requirements: ["browser"]
+  cases: [...]
+```
+
+Known values: `browser`, `ffmpeg`, `tesseract`, `imagemagick`. Unknown values produce a warning but don't block publishing.
+
+### Migration from Legacy Formats
+
+The pipeline automatically normalizes legacy formats:
+- `verification.fixtures` → treated as cases with cassettes
+- `verification.test_input` → treated as single real-mode case
+
+Both keep Gold eligibility. New packages should use `verification.cases` directly.
+
 ## Updating a Package
 
 Publish a new version by updating `version` in both `agentnode.yaml` and `pyproject.toml`, then:
