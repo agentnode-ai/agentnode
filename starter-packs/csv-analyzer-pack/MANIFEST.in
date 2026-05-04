@@ -1,0 +1,2 @@
+recursive-include fixtures *
+include agentnode.yaml

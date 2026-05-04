@@ -55,6 +55,26 @@ capabilities:
           operator: {type: "string", description: "Comparison operator (==, !=, >, <, >=, <=)"}
         required: ["file_path", "column", "value"]
 
+verification:
+  cases:
+    - name: "describe_test_csv"
+      tool: "describe_csv"
+      input:
+        file_path: "/workspace/fixtures/test_data.csv"
+      expected:
+        return_type: "dict"
+        required_keys: ["operation", "rows", "columns", "statistics"]
+    - name: "filter_by_city"
+      tool: "filter_csv"
+      input:
+        file_path: "/workspace/fixtures/test_data.csv"
+        column: "city"
+        value: "Berlin"
+        operator: "=="
+      expected:
+        return_type: "dict"
+        required_keys: ["operation", "matched_rows", "rows"]
+
 tags: ["csv", "analyzer", "pandas", "data"]
 categories: ["data-analysis"]
 
