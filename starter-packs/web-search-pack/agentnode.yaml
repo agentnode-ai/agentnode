@@ -29,6 +29,10 @@ capabilities:
             type: "integer"
             default: 5
             description: "Maximum number of results (1-20)"
+          backend:
+            type: "string"
+            default: ""
+            description: "Search backend: empty for httpx, 'ddgs' for duckduckgo-search"
         required: ["query"]
       output_schema:
         type: "object"
@@ -53,8 +57,10 @@ categories: ["web-and-browsing"]
 compatibility:
   frameworks: ["generic"]
   python: ">=3.10"
-
-dependencies: []
+  dependencies:
+    - "httpx>=0.25"
+  optional_dependencies:
+    - "duckduckgo-search>=6.0"
 
 permissions:
   network:
@@ -93,3 +99,15 @@ support:
   issues: "https://github.com/agentnode/starter-packs/issues"
 
 deprecation_policy: "6-months-notice"
+
+verification:
+  fixtures:
+    - name: "search_python_programming"
+      tool: "search_web"
+      test_input:
+        query: "Python programming"
+        max_results: 3
+      cassette: "fixtures/cassettes/search_python.yaml"
+      expected:
+        return_type: "dict"
+        required_keys: ["results"]

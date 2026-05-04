@@ -1,0 +1,33 @@
+interactions:
+- request:
+    body: q=Python+programming
+    headers:
+      User-Agent:
+      - AgentNode/1.0 (search-tool)
+    method: POST
+    uri: https://html.duckduckgo.com/html/
+  response:
+    body:
+      string: "<html><body><div id=\"links\"><div class=\"result results_links results_links_deep
+        web-result\"><div class=\"links_main links_deep result__body\"><h2 class=\"result__title\"><a
+        rel=\"nofollow\" class=\"result__a\" href=\"https://www.python.org/\">Python.org
+        — Welcome to Python</a></h2><a class=\"result__snippet\" href=\"https://www.python.org/\">The
+        official home of the Python Programming Language. Download, documentation,
+        community, and more.</a></div></div><div class=\"result results_links results_links_deep
+        web-result\"><div class=\"links_main links_deep result__body\"><h2 class=\"result__title\"><a
+        rel=\"nofollow\" class=\"result__a\" href=\"https://docs.python.org/3/tutorial/\">The
+        Python Tutorial</a></h2><a class=\"result__snippet\" href=\"https://docs.python.org/3/tutorial/\">Python
+        is an easy to learn, powerful programming language. It has efficient high-level
+        data structures and a simple but effective approach to OOP.</a></div></div><div
+        class=\"result results_links results_links_deep web-result\"><div class=\"links_main
+        links_deep result__body\"><h2 class=\"result__title\"><a rel=\"nofollow\" class=\"result__a\"
+        href=\"https://realpython.com/\">Real Python — Learn Python Programming</a></h2><a
+        class=\"result__snippet\" href=\"https://realpython.com/\">Learn Python online
+        with tutorials, courses, and guides for beginners and advanced developers.</a></div></div></div></body></html>"
+    headers:
+      Content-Type:
+      - text/html; charset=UTF-8
+    status:
+      code: 200
+      message: OK
+version: 1
