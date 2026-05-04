@@ -34,6 +34,8 @@ compatibility:
   frameworks: ["generic"]
   python: ">=3.10"
   dependencies:
+    - "httpx>=0.25"
+  optional_dependencies:
     - "openai-whisper>=20231117"
 
 permissions:
@@ -66,3 +68,15 @@ support:
   issues: "https://github.com/agentnode-ai/agentnode/issues"
 
 deprecation_policy: "6-months-notice"
+
+verification:
+  fixtures:
+    - name: "transcribe_audio_api"
+      tool: "document_parsing"
+      test_input:
+        audio_path: "/workspace/fixtures/test.wav"
+        api_key: "sk-fixture-test-key"
+      cassette: "fixtures/cassettes/transcribe_api.yaml"
+      expected:
+        return_type: "dict"
+        required_keys: ["text", "language", "duration", "segments"]

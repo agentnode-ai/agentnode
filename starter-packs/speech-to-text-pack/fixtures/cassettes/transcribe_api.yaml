@@ -1,0 +1,22 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Authorization:
+      - Bearer sk-fixture-test-key
+    method: POST
+    uri: https://api.openai.com/v1/audio/transcriptions
+  response:
+    body:
+      string: '{"task":"transcribe","language":"english","duration":0.25,"text":"Hello
+        world.","segments":[{"id":0,"seek":0,"start":0.0,"end":0.25,"text":" Hello
+        world.","tokens":[50364,2425,1002,13,50377],"temperature":0.0,"avg_logprob":-0.15,"compression_ratio":0.8,"no_speech_prob":0.01}]}'
+    headers:
+      Content-Type:
+      - application/json
+      X-Request-Id:
+      - req-fixture-test-001
+    status:
+      code: 200
+      message: OK
+version: 1
