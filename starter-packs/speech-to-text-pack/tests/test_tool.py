@@ -2,8 +2,11 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
+import importlib
 
 from speech_to_text_pack.tool import run
+
+_has_whisper = importlib.util.find_spec("whisper") is not None
 
 
 # -- Input validation --
@@ -15,6 +18,7 @@ def test_file_not_found():
 
 # -- Mocked local Whisper --
 
+@pytest.mark.skipif(not _has_whisper, reason="openai-whisper not installed")
 @patch("whisper.load_model")
 @patch("os.path.isfile", return_value=True)
 def test_local_transcribe(mock_isfile, mock_load_model):
@@ -37,6 +41,7 @@ def test_local_transcribe(mock_isfile, mock_load_model):
     mock_load_model.assert_called_once_with("base")
 
 
+@pytest.mark.skipif(not _has_whisper, reason="openai-whisper not installed")
 @patch("whisper.load_model")
 @patch("os.path.isfile", return_value=True)
 def test_local_transcribe_with_language(mock_isfile, mock_load_model):
