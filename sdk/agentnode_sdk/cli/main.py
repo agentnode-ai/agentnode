@@ -66,6 +66,10 @@ def main(argv: list[str] | None = None) -> int:
     remove_parser.add_argument("capability")
     remove_parser.add_argument("--yes", "-y", action="store_true")
 
+    # validate
+    validate_parser = sub.add_parser("validate", help="Validate package before publishing")
+    validate_parser.add_argument("path", nargs="?", default=".", help="Package directory (default: current)")
+
     # capabilities
     cap_parser = sub.add_parser("capabilities", help="List installed capabilities")
     cap_sub = cap_parser.add_subparsers(dest="cap_action")
@@ -109,6 +113,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "remove":
             return commands.cmd_remove(args.capability, yes=args.yes)
+        if args.command == "validate":
+            return commands.cmd_validate(args.path)
         if args.command == "capabilities":
             if args.cap_action == "show":
                 return commands.cmd_capabilities_show(args.name)

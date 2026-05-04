@@ -28,7 +28,7 @@ from app.packages.schemas import (
     VersionsResponse,
 )
 from app.packages.service import publish_package
-from app.packages.validator import validate_manifest
+from app.packages.validator import validate_manifest, compute_gold_eligibility
 from app.packages.version_queries import get_latest_installable_version, get_latest_owner_visible_version, get_owner_visible_versions, get_public_versions
 from app.config import settings
 from app.shared.exceptions import AppError
@@ -92,7 +92,13 @@ async def validate_package(
     session: AsyncSession = Depends(get_session),
 ):
     valid, errors, warnings = await validate_manifest(body.manifest, session)
-    return ValidateResponse(valid=valid, errors=errors, warnings=warnings)
+    eligibility = compute_gold_eligibility(body.manifest)
+    return ValidateResponse(
+        valid=valid,
+        errors=errors,
+        warnings=warnings,
+        gold_eligibility=eligibility,
+    )
 
 
 @router.post("/publish", response_model=PublishResponse, status_code=201, dependencies=[Depends(rate_limit(10, 60))])

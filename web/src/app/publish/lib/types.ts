@@ -65,10 +65,20 @@ export interface GuidedState {
   upgrade_install_strategy: string;
 }
 
+export interface GoldEligibility {
+  max_tier: string;
+  verification_mode: string;
+  has_cases: boolean;
+  cases_count: number;
+  missing_items: string[];
+  explanation: string;
+}
+
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
   warnings: string[];
+  gold_eligibility?: GoldEligibility | null;
 }
 
 export interface CapabilityOption {

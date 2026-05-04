@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.packages.models import CapabilityTaxonomy
+from app.verification.cases_adapter import normalize_verification_config
 
 # Valid enums
 VALID_PACKAGE_TYPES = {"agent", "toolpack", "upgrade"}
@@ -1251,3 +1252,142 @@ def validate_artifact_quality(artifact_bytes: bytes, slug: str, *, package_type:
             pass
 
     return errors, warnings
+
+
+def compute_gold_eligibility(manifest: dict) -> dict:
+    """Compute Gold tier eligibility preview from manifest alone.
+
+    Returns dict with max_tier, verification_mode, has_cases, cases_count,
+    missing_items, explanation. This is a PREVIEW — actual tier depends on
+    verification results (smoke, stability, contract).
+    """
+    missing: list[str] = []
+    package_type = manifest.get("package_type", "toolpack")
+
+    if package_type == "agent":
+        return _agent_gold_eligibility(manifest, missing)
+
+    verification = manifest.get("verification")
+    if not verification or not isinstance(verification, dict):
+        return {
+            "max_tier": "verified",
+            "verification_mode": "real_auto",
+            "has_cases": False,
+            "cases_count": 0,
+            "missing_items": ["No verification section defined"],
+            "explanation": (
+                "This package can reach Verified at most. "
+                "Add verification.cases to become Gold-eligible."
+            ),
+        }
+
+    normalized = normalize_verification_config(verification)
+
+    if not normalized.has_explicit_cases:
+        return {
+            "max_tier": "verified",
+            "verification_mode": "real_auto",
+            "has_cases": False,
+            "cases_count": 0,
+            "missing_items": ["No verification.cases defined"],
+            "explanation": (
+                "This package can reach Verified at most. "
+                "Add verification.cases to become Gold-eligible."
+            ),
+        }
+
+    cases_count = len(normalized.cases)
+    has_fixture = any(c.get("mode") == "fixture" for c in normalized.cases)
+    mode = "fixture" if has_fixture else "cases_real"
+
+    if cases_count < 2:
+        missing.append("Only 1 case defined — at least 2 recommended for Gold")
+
+    for c in normalized.cases:
+        expected = c.get("expected")
+        if not expected:
+            missing.append(f"Case '{c.get('name')}' has no expected output contract")
+
+    if has_fixture:
+        for c in normalized.cases:
+            cassette = c.get("cassette")
+            if cassette and not cassette.startswith("fixtures/"):
+                missing.append(f"Cassette '{cassette}' should be under fixtures/cassettes/")
+
+    max_tier = "gold" if cases_count >= 2 else "verified"
+
+    explanation_parts = []
+    if max_tier == "gold" and not missing:
+        explanation_parts.append(
+            "This package is Gold-eligible if all verification checks pass."
+        )
+    elif max_tier == "gold" and missing:
+        explanation_parts.append(
+            "This package is Gold-eligible but has recommendations."
+        )
+    else:
+        explanation_parts.append(
+            "This package can reach Verified at most."
+        )
+    if missing:
+        explanation_parts.append("Fix: " + "; ".join(missing[:3]))
+
+    return {
+        "max_tier": max_tier,
+        "verification_mode": mode,
+        "has_cases": True,
+        "cases_count": cases_count,
+        "missing_items": missing,
+        "explanation": " ".join(explanation_parts),
+    }
+
+
+def _agent_gold_eligibility(manifest: dict, missing: list[str]) -> dict:
+    """Gold eligibility for agent packages."""
+    agent_block = manifest.get("agent", {})
+    if not isinstance(agent_block, dict):
+        agent_block = {}
+
+    verification = agent_block.get("verification", {})
+    if not isinstance(verification, dict):
+        verification = {}
+
+    cases = verification.get("cases", [])
+    if not isinstance(cases, list):
+        cases = []
+
+    cases_count = len(cases)
+
+    if cases_count == 0:
+        missing.append("No agent verification cases defined")
+        return {
+            "max_tier": "verified",
+            "verification_mode": "real_auto",
+            "has_cases": False,
+            "cases_count": 0,
+            "missing_items": missing,
+            "explanation": (
+                "This agent can reach Verified at most. "
+                "Add agent.verification.cases to become Gold-eligible."
+            ),
+        }
+
+    if cases_count < 2:
+        missing.append("Only 1 case — at least 2 required for agent Gold")
+
+    max_tier = "gold" if cases_count >= 2 else "verified"
+
+    explanation = (
+        "This agent is Gold-eligible if all verification checks pass."
+        if max_tier == "gold"
+        else "This agent can reach Verified at most. Add at least 2 verification cases."
+    )
+
+    return {
+        "max_tier": max_tier,
+        "verification_mode": "cases_real",
+        "has_cases": True,
+        "cases_count": cases_count,
+        "missing_items": missing,
+        "explanation": explanation,
+    }

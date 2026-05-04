@@ -1139,7 +1139,8 @@ class TestScoringPhase6:
         vr.contract_valid = True
         vr.contract_details = None
         vr.warnings_count = 0
-        vr.verification_mode = "real"
+        vr.verification_mode = "cases_real"
+        vr.has_explicit_cases = True
         vr.stability_log = [{"ok": True}, {"ok": True}, {"ok": True}]
         vr.install_duration_ms = 2000
         vr.smoke_confidence = None
@@ -1205,7 +1206,8 @@ class TestScoringPhase6:
         vr.smoke_reason = "ok"
         vr.contract_valid = True
         vr.contract_details = None
-        vr.verification_mode = "real"
+        vr.verification_mode = "cases_real"
+        vr.has_explicit_cases = True
         vr.reliability = 1.0
         assert _qualifies_for_gold(95, vr) is True
 
@@ -1746,7 +1748,8 @@ class TestBinaryOutputScoring:
             {"ok": True, "type": "bytes", "hash": "bbb"},
             {"ok": True, "type": "bytes", "hash": "ccc"},
         ]
-        vr.verification_mode = "real"
+        vr.verification_mode = "cases_real"
+        vr.has_explicit_cases = True
         result = compute_score_result(vr)
         # 15+15+25+15+10+10+3 = 93
         assert result.score >= 90
@@ -1962,7 +1965,8 @@ class TestFixtureGold:
         vr.smoke_status = "passed"
         vr.contract_valid = True
         vr.contract_details = {"valid": True}
-        vr.verification_mode = "real"
+        vr.verification_mode = "cases_real"
+        vr.has_explicit_cases = True
         vr.smoke_reason = "ok"
         vr.reliability = 1.0
         vr.install_duration_ms = None

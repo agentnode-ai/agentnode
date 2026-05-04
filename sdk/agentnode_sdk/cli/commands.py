@@ -403,3 +403,62 @@ def cmd_capabilities_show(name: str) -> int:
 
     print()
     return 0
+
+
+def cmd_validate(path_str: str) -> int:
+    """Validate a package directory before publishing."""
+    from agentnode_sdk.cli.validate import validate_package_dir
+
+    pkg_path = Path(path_str).resolve()
+    if not pkg_path.is_dir():
+        print(f"  Error: '{path_str}' is not a directory")
+        return 1
+
+    result = validate_package_dir(pkg_path)
+
+    print()
+    header = "AgentNode Package Validation"
+    print(section(header))
+
+    if result.package_id:
+        label = f"{result.package_id}@{result.version}" if result.version else result.package_id
+        print(kv("Package", label))
+    if result.package_type:
+        print(kv("Type", result.package_type))
+    print()
+
+    print(bold("  Checks"))
+    print("  " + "-" * 6)
+    for check in result.checks:
+        status = "\033[32m[PASS]\033[0m" if check.passed else "\033[31m[FAIL]\033[0m"
+        line = f"  {status} {check.label}"
+        if check.detail:
+            line += f" — {check.detail}"
+        print(line)
+    print()
+
+    print(bold("  Tier Preview"))
+    print("  " + "-" * 12)
+    print(kv("Max tier", result.max_tier.capitalize()))
+    print(kv("Verification mode", result.verification_mode))
+    print(kv("Cases", str(result.cases_count)))
+    gold_eligible = "yes" if result.max_tier == "gold" else "no"
+    print(kv("Gold eligible", gold_eligible))
+    print()
+
+    if result.missing_items:
+        print(bold("  Missing for Gold"))
+        print("  " + "-" * 16)
+        for item in result.missing_items:
+            print(f"  • {item}")
+        print()
+
+    if result.has_errors:
+        print(dim("  Fix the errors above before publishing."))
+    elif result.max_tier == "gold":
+        print(dim("  This package is Gold-eligible. Actual tier depends on verification after publish."))
+    else:
+        print(dim("  Add verification.cases to become Gold-eligible. See: agentnode.net/docs/publishing"))
+    print()
+
+    return 1 if result.has_errors else 0

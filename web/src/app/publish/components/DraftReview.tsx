@@ -235,6 +235,39 @@ export function DraftReview({ form }: { form: PublishFormState }) {
         <ReadinessChecklist items={items} onNavigate={navigateToIssue} />
       </div>
 
+      {/* ---- Gold Eligibility Preview ---- */}
+      {validation?.gold_eligibility && (
+        <div className="mb-6 rounded-lg border border-border bg-card p-4">
+          <h3 className="mb-3 text-sm font-medium text-foreground">Verification tier preview</h3>
+          <div className="flex items-center gap-3 mb-3">
+            <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+              validation.gold_eligibility.max_tier === "gold"
+                ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300"
+                : validation.gold_eligibility.max_tier === "verified"
+                ? "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300"
+                : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+            }`}>
+              {validation.gold_eligibility.max_tier === "gold" ? "⬥ Gold eligible" :
+               validation.gold_eligibility.max_tier === "verified" ? "✓ Max: Verified" : "— Unverified"}
+            </span>
+            <span className="text-xs text-muted">
+              Mode: {validation.gold_eligibility.verification_mode} · {validation.gold_eligibility.cases_count} case{validation.gold_eligibility.cases_count !== 1 ? "s" : ""}
+            </span>
+          </div>
+          <p className="text-xs text-muted mb-2">{validation.gold_eligibility.explanation}</p>
+          {validation.gold_eligibility.missing_items.length > 0 && (
+            <ul className="space-y-1">
+              {validation.gold_eligibility.missing_items.map((item, i) => (
+                <li key={i} className="flex items-start gap-2 text-xs text-muted">
+                  <span className="mt-0.5 shrink-0 text-warning">•</span>
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       {/* ---- Code Status ---- */}
       <div className="mb-6">
         {(() => {

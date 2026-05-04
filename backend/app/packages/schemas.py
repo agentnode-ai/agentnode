@@ -8,10 +8,20 @@ class ValidateRequest(BaseModel):
     manifest: dict
 
 
+class GoldEligibility(BaseModel):
+    max_tier: str
+    verification_mode: str
+    has_cases: bool
+    cases_count: int
+    missing_items: list[str]
+    explanation: str
+
+
 class ValidateResponse(BaseModel):
     valid: bool
     errors: list[str]
     warnings: list[str]
+    gold_eligibility: GoldEligibility | None = None
 
 
 class PublisherInfo(BaseModel):
