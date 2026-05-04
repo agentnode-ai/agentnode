@@ -417,6 +417,21 @@ def step_smoke_fixtures(
                 verdict = "failed"
                 reason = "fixture_expected_mismatch"
                 logs.append(f"[FAIL] {fixture_name}: expected min_length={expected['min_length']}, got {parsed.get('return_length')}")
+            required_keys = expected.get("required_keys")
+            if required_keys and isinstance(required_keys, list):
+                actual_keys = set(parsed.get("return_keys") or [])
+                missing = [k for k in required_keys if k not in actual_keys]
+                if missing:
+                    verdict = "failed"
+                    reason = "fixture_expected_mismatch"
+                    logs.append(f"[FAIL] {fixture_name}: missing required_keys: {missing}")
+            min_lengths = expected.get("min_lengths")
+            if min_lengths and isinstance(min_lengths, dict) and parsed.get("return_keys"):
+                for key, min_len in min_lengths.items():
+                    if key not in (parsed.get("return_keys") or []):
+                        verdict = "failed"
+                        reason = "fixture_expected_mismatch"
+                        logs.append(f"[FAIL] {fixture_name}: min_lengths key '{key}' not in return_keys")
 
         if verdict == "passed":
             logs.append(f"[PASSED] {fixture_name} (cassette: {cassette})")

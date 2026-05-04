@@ -211,6 +211,8 @@ def _run_verification_sync(
     container_available: bool = False,
     smoke_fixtures: list[dict] | None = None,
     manual_test_input: dict | None = None,
+    system_requirements: list[str] | None = None,
+    has_explicit_cases: bool = False,
 ) -> dict:
     """Run all verification steps synchronously (called in thread pool).
 
@@ -243,6 +245,7 @@ def _run_verification_sync(
         # Phase 5+6 new fields
         "installer": "pip",
         "verification_mode": "real",
+        "has_explicit_cases": has_explicit_cases,
         "contract_details": None,
         "smoke_confidence": None,
         # Isolation levels per step — determined dynamically from sandbox capabilities
@@ -309,8 +312,9 @@ def _run_verification_sync(
         ) if python_deps else set()
         has_heavy_ml = bool(_normalized_deps & KNOWN_HEAVY_IMPORTS)
 
-        # Detect playwright for browser-specific container image
-        has_playwright = "playwright" in _normalized_deps
+        # Detect browser requirement: explicit system_requirements or playwright dep
+        _sys_reqs = set(system_requirements or [])
+        has_playwright = "browser" in _sys_reqs or "playwright" in _normalized_deps
 
         # Inject manual_test_input into tools for candidate override
         if manual_test_input and not smoke_fixtures:
@@ -360,14 +364,21 @@ def _run_verification_sync(
         from app.config import SYSTEM_CAPABILITIES
         if smoke_fixtures and smoke_status == "passed":
             result["verification_mode"] = "fixture"
+        elif has_explicit_cases and smoke_status == "passed":
+            result["verification_mode"] = "cases_real"
         elif smoke_reason == "missing_system_dependency":
             result["verification_mode"] = "limited"
         elif smoke_reason == "needs_binary_input":
             result["verification_mode"] = "limited"
         elif smoke_reason in ("credential_boundary_reached", "needs_credentials"):
-            result["verification_mode"] = "real"  # Tool ran, just hit auth
+            result["verification_mode"] = "real_auto"
         else:
-            result["verification_mode"] = "real"
+            result["verification_mode"] = "real_auto" if not has_explicit_cases else "cases_real"
+
+        logger.info(
+            "verification_mode=%s has_explicit_cases=%s system_requirements=%s",
+            result["verification_mode"], has_explicit_cases, system_requirements,
+        )
 
         # Step 3b: Stability check (Phase 4A) — only if smoke passed
         result["reliability"] = None
@@ -737,10 +748,17 @@ async def run_verification(
                             "_agent_section": agent_section,
                         })
 
-                # Read fixture verification config from manifest
+                # Normalize verification config via cases adapter
+                from app.verification.cases_adapter import normalize_verification_config
                 verification_config = manifest.get("verification", {}) if not is_agent_pkg else {}
-                smoke_fixtures = verification_config.get("fixtures", []) if isinstance(verification_config, dict) else []
-                manual_test_input = verification_config.get("test_input") if isinstance(verification_config, dict) else None
+                normalized = normalize_verification_config(verification_config)
+                fixture_cases = [c for c in normalized.cases if c["mode"] == "fixture"]
+                real_cases = [c for c in normalized.cases if c["mode"] == "real"]
+                # step_smoke_fixtures expects "test_input" key, adapter produces "input"
+                smoke_fixtures = [
+                    {**c, "test_input": c["input"]} for c in fixture_cases
+                ] if fixture_cases else None
+                manual_test_input = real_cases[0]["input"] if real_cases else None
 
                 # Run verification in thread pool (subprocess.run blocks)
                 import functools
@@ -758,6 +776,8 @@ async def run_verification(
                             container_available=container_available,
                             smoke_fixtures=smoke_fixtures or None,
                             manual_test_input=manual_test_input,
+                            system_requirements=normalized.system_requirements or None,
+                            has_explicit_cases=normalized.has_explicit_cases,
                         ),
                     ),
                     timeout=settings.VERIFICATION_TIMEOUT,
@@ -861,6 +881,7 @@ async def run_verification(
 
                 # Phase 6E: Verification mode
                 vr.verification_mode = step_results.get("verification_mode", "real")
+                vr.has_explicit_cases = step_results.get("has_explicit_cases", False)
 
                 # Phase 6A: Contract details
                 vr.contract_details = step_results.get("contract_details")

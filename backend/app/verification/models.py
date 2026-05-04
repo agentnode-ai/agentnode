@@ -95,6 +95,9 @@ class VerificationResult(Base, UUIDPrimaryKeyMixin):
     agent_cases_total = Column(Integer, nullable=True)
     agent_gold_blockers = Column(JSONB, nullable=True)
 
+    # Unified verification cases: publisher provided explicit cases/fixtures/test_input
+    has_explicit_cases = Column(Boolean, nullable=True, server_default="false")
+
     # Runner metadata for audit/forensics
     runner_version = Column(Text, nullable=True)
     python_version = Column(Text, nullable=True)

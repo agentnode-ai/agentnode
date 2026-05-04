@@ -556,9 +556,31 @@ def _validate_agent_verification_cases(
 def _validate_tool_verification(
     verification: dict, errors: list[str], warnings: list[str],
 ) -> None:
-    """Validate tool-pack verification section (Phase B: Fixture Gold)."""
+    """Validate tool-pack verification section (Phase B: Fixture Gold + unified cases)."""
     import re
     _CASSETTE_PATH_RE = re.compile(r"^fixtures/cassettes/[\w.-]+\.(yaml|yml|json)$")
+
+    # verification.system_requirements — optional system deps for image selection
+    _KNOWN_SYSTEM_REQUIREMENTS = {"browser", "ffmpeg", "tesseract", "imagemagick"}
+    sys_reqs = verification.get("system_requirements")
+    if sys_reqs is not None:
+        if not isinstance(sys_reqs, list):
+            errors.append("verification.system_requirements must be a list")
+        else:
+            for req in sys_reqs:
+                if not isinstance(req, str):
+                    errors.append("verification.system_requirements entries must be strings")
+                elif req not in _KNOWN_SYSTEM_REQUIREMENTS:
+                    warnings.append(
+                        f"verification.system_requirements: unknown requirement '{req}' "
+                        f"(known: {sorted(_KNOWN_SYSTEM_REQUIREMENTS)})"
+                    )
+
+    # verification.cases — new unified format (priority over fixtures/test_input)
+    cases = verification.get("cases")
+    if cases is not None:
+        _validate_tool_verification_cases(cases, errors, warnings, _CASSETTE_PATH_RE)
+        return
 
     # verification.test_input — optional manual smoke input override
     test_input = verification.get("test_input")
@@ -627,6 +649,82 @@ def _validate_tool_verification(
                     rk = expected["required_keys"]
                     if not isinstance(rk, list) or not all(isinstance(k, str) for k in rk):
                         errors.append(f"{prefix}.expected.required_keys must be a list of strings")
+
+
+def _validate_tool_verification_cases(
+    cases, errors: list[str], warnings: list[str], cassette_re,
+) -> None:
+    """Validate verification.cases (new unified format)."""
+    if not isinstance(cases, list):
+        errors.append("verification.cases must be a list")
+        return
+
+    if len(cases) > 10:
+        errors.append("verification.cases: maximum 10 cases allowed")
+
+    if len(cases) == 1:
+        warnings.append(
+            "verification.cases: at least 2 cases recommended for Gold tier"
+        )
+
+    seen_names: set[str] = set()
+    for i, case in enumerate(cases):
+        prefix = f"verification.cases[{i}]"
+        if not isinstance(case, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+
+        name = case.get("name")
+        if not name or not isinstance(name, str) or len(name) < 3:
+            errors.append(f"{prefix}.name is required (min 3 chars)")
+        elif name in seen_names:
+            errors.append(f"{prefix}.name '{name}' is duplicate")
+        else:
+            seen_names.add(name)
+
+        c_input = case.get("input")
+        if not isinstance(c_input, dict):
+            errors.append(f"{prefix}.input is required and must be an object")
+
+        tool = case.get("tool")
+        if tool is not None and not isinstance(tool, str):
+            errors.append(f"{prefix}.tool must be a string")
+
+        cassette = case.get("cassette")
+        if cassette is not None:
+            if not isinstance(cassette, str):
+                errors.append(f"{prefix}.cassette must be a string")
+            elif ".." in cassette or cassette.startswith("/"):
+                errors.append(f"{prefix}.cassette must not contain '..' or absolute paths")
+            elif not cassette_re.match(cassette):
+                errors.append(
+                    f"{prefix}.cassette must match 'fixtures/cassettes/<name>.yaml|json' "
+                    f"(got '{cassette}')"
+                )
+
+        expected = case.get("expected")
+        if expected is not None:
+            if not isinstance(expected, dict):
+                errors.append(f"{prefix}.expected must be an object")
+            else:
+                if "return_type" in expected and not isinstance(expected["return_type"], str):
+                    errors.append(f"{prefix}.expected.return_type must be a string")
+                if "min_length" in expected:
+                    ml = expected["min_length"]
+                    if not isinstance(ml, int) or ml < 1:
+                        errors.append(f"{prefix}.expected.min_length must be a positive integer")
+                if "required_keys" in expected:
+                    rk = expected["required_keys"]
+                    if not isinstance(rk, list) or not all(isinstance(k, str) for k in rk):
+                        errors.append(f"{prefix}.expected.required_keys must be a list of strings")
+                if "min_lengths" in expected:
+                    mls = expected["min_lengths"]
+                    if not isinstance(mls, dict):
+                        errors.append(f"{prefix}.expected.min_lengths must be an object")
+                    else:
+                        for k, v in mls.items():
+                            if not isinstance(v, int) or v < 1:
+                                errors.append(f"{prefix}.expected.min_lengths.{k} must be a positive integer")
 
 
 def _validate_orchestration_steps(

@@ -352,6 +352,15 @@ def _qualifies_for_gold(score: int, vr) -> bool:
     if score < 90:
         return False
 
+    # Gold requires explicit publisher-provided verification cases
+    if not getattr(vr, "has_explicit_cases", False):
+        return False
+
+    # real_auto means no explicit cases drove the smoke — never Gold
+    verification_mode = getattr(vr, "verification_mode", None)
+    if verification_mode == "real_auto":
+        return False
+
     contract_valid = vr.contract_valid
     contract_details = getattr(vr, "contract_details", None)
     if contract_details and isinstance(contract_details, dict):
@@ -359,8 +368,7 @@ def _qualifies_for_gold(score: int, vr) -> bool:
     if not contract_valid:
         return False
 
-    verification_mode = getattr(vr, "verification_mode", None)
-    if verification_mode and verification_mode not in ("real", "fixture"):
+    if verification_mode and verification_mode not in ("cases_real", "fixture"):
         return False
 
     if vr.smoke_reason in ("credential_boundary_reached", "needs_credentials"):

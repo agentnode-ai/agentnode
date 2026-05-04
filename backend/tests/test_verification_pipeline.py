@@ -170,7 +170,8 @@ def _make_step_results(*, passed=True, smoke_status="passed", smoke_reason=None,
         "warnings_summary": None,
         "smoke_reason": smoke_reason,
         "installer": "pip",
-        "verification_mode": "real",
+        "verification_mode": "real_auto",
+        "has_explicit_cases": False,
         "contract_details": None,
         "smoke_confidence": None,
         "reliability": None,
@@ -429,6 +430,8 @@ async def test_verification_updates_trust_score(session_factory, session):
             "determinism_score": 1.0,
             "contract_valid": True,
             "tests_auto_generated": False,
+            "has_explicit_cases": True,
+            "verification_mode": "cases_real",
         },
     )
 
