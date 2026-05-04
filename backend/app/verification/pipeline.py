@@ -893,16 +893,19 @@ async def run_verification(
                 pv.last_verified_at = datetime.now(timezone.utc)
                 pv.verification_score = score_result.score
 
-                # P1-V4: Retroactive tier updates are downgrade-only.
-                # A fresh `publish` run establishes the canonical tier. A re-
-                # verify (admin_reverify, runner_upgrade, scheduled, owner_request)
-                # can only REDUCE the tier — never promote, because the
-                # re-verify environment may differ from the original publish
-                # in ways the publisher didn't consent to.
+                # Tier update policy:
+                # - publish / admin_reverify: authoritative — always apply new tier
+                # - other triggers (scheduled, runner_upgrade, owner_request):
+                #   downgrade-only — re-verify environment may differ from publish
                 from app.verification.scoring import TIER_ORDER
                 current_tier = pv.verification_tier
                 new_tier = score_result.tier
-                if triggered_by == "publish" or current_tier is None:
+                if triggered_by in ("publish", "admin_reverify") or current_tier is None:
+                    if current_tier != new_tier:
+                        logger.info(
+                            "Tier update for %s: %s -> %s (trigger=%s)",
+                            version_id, current_tier, new_tier, triggered_by,
+                        )
                     pv.verification_tier = new_tier
                 else:
                     cur_rank = TIER_ORDER.get(current_tier, 0)

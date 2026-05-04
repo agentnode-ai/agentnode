@@ -6,6 +6,9 @@
 
 FROM python:3.12-slim
 
+LABEL agentnode.keep="true"
+LABEL agentnode.component="verifier"
+
 # VCR.py for fixture-based HTTP replay (Phase B: Fixture Gold)
 RUN pip install --no-cache-dir vcrpy pyyaml
 
