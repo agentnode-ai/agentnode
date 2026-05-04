@@ -460,6 +460,100 @@ def cmd_init(name: str | None = None, template_type: str | None = None) -> int:
     return 0
 
 
+def cmd_verify_local(path_str: str) -> int:
+    """Run verification pipeline locally."""
+    import yaml
+    from agentnode_sdk.cli.verify_local import run_local_verification
+
+    pkg_path = Path(path_str).resolve()
+    if not pkg_path.is_dir():
+        print(f"  Error: '{path_str}' is not a directory")
+        return 1
+
+    manifest_path = pkg_path / "agentnode.yaml"
+    if not manifest_path.exists():
+        print("  Error: agentnode.yaml not found")
+        return 1
+
+    try:
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"  Error parsing manifest: {e}")
+        return 1
+
+    pkg_id = manifest.get("package_id", pkg_path.name)
+    version = manifest.get("version", "?")
+
+    print()
+    print(section(f"Verifying {pkg_id}@{version}"))
+    print(dim("  Installing and running verification pipeline locally..."))
+    print()
+
+    result = run_local_verification(pkg_path, manifest)
+
+    # Pipeline steps
+    print(bold("  Pipeline"))
+    print("  " + "-" * 8)
+    _step_line("Install", result.install_ok, result.install_log)
+    _step_line("Import", result.import_ok, result.import_log)
+    _step_line("Smoke", result.smoke_status == "passed", result.smoke_reason)
+    if result.tests_ok is not None:
+        _step_line("Tests", result.tests_ok, result.tests_log)
+    else:
+        _step_line("Tests", False, result.tests_log or "not present")
+    _step_line("Contract", result.contract_valid)
+    _step_line("Reliability", result.reliability >= 0.9, f"{result.reliability:.1%}")
+    _step_line("Determinism", result.determinism >= 0.9, f"{result.determinism:.1%}")
+    print()
+
+    # Cases
+    if result.cases:
+        print(bold("  Cases"))
+        print("  " + "-" * 5)
+        for c in result.cases:
+            status = "\033[32m[PASS]\033[0m" if c.passed else "\033[31m[FAIL]\033[0m"
+            line = f"  {status} {c.name}"
+            if c.duration_ms:
+                line += f" ({c.duration_ms}ms)"
+            if c.error:
+                line += f" — {c.error}"
+            print(line)
+        print()
+
+    # Score
+    print(bold("  Result"))
+    print("  " + "-" * 6)
+    print(kv("Score", f"{result.score}/95"))
+    print(kv("Tier", result.tier.capitalize()))
+    print(kv("Mode", result.verification_mode))
+    gold = "yes" if result.tier == "gold" else "no"
+    print(kv("Gold", gold))
+    print()
+
+    if result.warnings:
+        for w in result.warnings:
+            print(f"  {dim('Warning: ' + w)}")
+        print()
+
+    if result.tier == "gold":
+        print(dim("  This package will reach Gold tier after publishing."))
+    elif result.score >= 80:
+        print(dim("  Close to Gold. Check the failed steps above."))
+    else:
+        print(dim("  See agentnode.net/docs/publishing for Gold requirements."))
+    print()
+
+    return 0 if result.install_ok else 1
+
+
+def _step_line(label: str, ok: bool, detail: str = "") -> None:
+    status = "\033[32m[PASS]\033[0m" if ok else "\033[31m[FAIL]\033[0m"
+    line = f"  {status} {label}"
+    if detail:
+        line += f"  {dim(detail)}"
+    print(line)
+
+
 def cmd_validate(path_str: str) -> int:
     """Validate a package directory before publishing."""
     from agentnode_sdk.cli.validate import validate_package_dir

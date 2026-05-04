@@ -75,6 +75,10 @@ def main(argv: list[str] | None = None) -> int:
     validate_parser = sub.add_parser("validate", help="Validate package before publishing")
     validate_parser.add_argument("path", nargs="?", default=".", help="Package directory (default: current)")
 
+    # verify-local
+    verify_parser = sub.add_parser("verify-local", help="Run verification pipeline locally")
+    verify_parser.add_argument("path", nargs="?", default=".", help="Package directory (default: current)")
+
     # capabilities
     cap_parser = sub.add_parser("capabilities", help="List installed capabilities")
     cap_sub = cap_parser.add_subparsers(dest="cap_action")
@@ -122,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
             return commands.cmd_init(name=args.name, template_type=args.template_type)
         if args.command == "validate":
             return commands.cmd_validate(args.path)
+        if args.command == "verify-local":
+            return commands.cmd_verify_local(args.path)
         if args.command == "capabilities":
             if args.cap_action == "show":
                 return commands.cmd_capabilities_show(args.name)
