@@ -405,6 +405,61 @@ def cmd_capabilities_show(name: str) -> int:
     return 0
 
 
+def cmd_init(name: str | None = None, template_type: str | None = None) -> int:
+    """Scaffold a new package from template."""
+    from agentnode_sdk.cli.init import scaffold_package, prompt_template_choice, prompt_package_details
+    from agentnode_sdk.cli.templates import TEMPLATES
+
+    if template_type and template_type in TEMPLATES:
+        chosen = template_type
+    else:
+        chosen = prompt_template_choice()
+        if not chosen:
+            print("  Cancelled.")
+            return 1
+
+    if name:
+        details = {
+            "package_id": name,
+            "name": name,
+            "publisher": "your-publisher-slug",
+            "summary": f"A {TEMPLATES[chosen]['label'].split('(')[0].strip().lower()} for AI agents",
+        }
+    else:
+        details = prompt_package_details(chosen)
+        if not details:
+            print("  Cancelled.")
+            return 1
+
+    pkg_id = details["package_id"]
+    target = Path.cwd() / pkg_id
+
+    if target.exists():
+        print(f"  Error: Directory '{pkg_id}' already exists")
+        return 1
+
+    target.mkdir(parents=True)
+    created = scaffold_package(chosen, target, **details)
+
+    print()
+    print(section(f"Created: {pkg_id}"))
+    print(kv("Type", TEMPLATES[chosen]["label"].split("(")[0].strip()))
+    print(kv("Directory", str(target)))
+    print()
+    print(bold("  Files"))
+    print("  " + "-" * 5)
+    for f in sorted(created):
+        print(f"    {f}")
+    print()
+    print(dim("  Next steps:"))
+    print(dim(f"    cd {pkg_id}"))
+    print(dim("    # Edit the tool code and manifest"))
+    print(dim("    agentnode validate ."))
+    print(dim("    agentnode publish ."))
+    print()
+    return 0
+
+
 def cmd_validate(path_str: str) -> int:
     """Validate a package directory before publishing."""
     from agentnode_sdk.cli.validate import validate_package_dir

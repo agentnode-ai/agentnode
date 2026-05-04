@@ -66,6 +66,11 @@ def main(argv: list[str] | None = None) -> int:
     remove_parser.add_argument("capability")
     remove_parser.add_argument("--yes", "-y", action="store_true")
 
+    # init
+    init_parser = sub.add_parser("init", help="Create a new package from template")
+    init_parser.add_argument("name", nargs="?", default=None, help="Package ID (optional, prompted if omitted)")
+    init_parser.add_argument("--type", dest="template_type", choices=["local", "api", "file", "agent"], default=None)
+
     # validate
     validate_parser = sub.add_parser("validate", help="Validate package before publishing")
     validate_parser.add_argument("path", nargs="?", default=".", help="Package directory (default: current)")
@@ -113,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "remove":
             return commands.cmd_remove(args.capability, yes=args.yes)
+        if args.command == "init":
+            return commands.cmd_init(name=args.name, template_type=args.template_type)
         if args.command == "validate":
             return commands.cmd_validate(args.path)
         if args.command == "capabilities":
