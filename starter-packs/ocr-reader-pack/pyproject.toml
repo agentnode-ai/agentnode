@@ -8,7 +8,10 @@ version = "1.0.0"
 description = "Extract text from images using Tesseract OCR"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["pytesseract>=0.3.10", "Pillow>=10.0"]
+dependencies = ["Pillow>=10.0", "httpx>=0.25"]
+
+[project.optional-dependencies]
+local = ["pytesseract>=0.3.10"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -22,6 +22,7 @@ capabilities:
           image_path: {type: "string"}
           language: {type: "string", default: "eng"}
           output_format: {type: "string", default: "text"}
+          api_key: {type: "string", default: ""}
         required: ['image_path']
   resources: []
   prompts: []
@@ -33,8 +34,10 @@ compatibility:
   frameworks: ["generic"]
   python: ">=3.10"
   dependencies:
-    - "pytesseract>=0.3.10"
     - "Pillow>=10.0"
+    - "httpx>=0.25"
+  optional_dependencies:
+    - "pytesseract>=0.3.10"
 
 permissions:
   network: {level: "none"}
@@ -66,3 +69,15 @@ support:
   issues: "https://github.com/agentnode-ai/agentnode/issues"
 
 deprecation_policy: "6-months-notice"
+
+verification:
+  fixtures:
+    - name: "ocr_image_api"
+      tool: "document_parsing"
+      test_input:
+        image_path: "/workspace/fixtures/test_image.bmp"
+        api_key: "fixture-ocr-key"
+      cassette: "fixtures/cassettes/ocr_api.yaml"
+      expected:
+        return_type: "dict"
+        required_keys: ["text", "confidence", "language"]

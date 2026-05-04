@@ -1,0 +1,19 @@
+interactions:
+- request:
+    body: null
+    headers:
+      apikey:
+      - fixture-ocr-key
+    method: POST
+    uri: https://api.ocr.space/parse/image
+  response:
+    body:
+      string: '{"ParsedResults":[{"TextOverlay":{"Lines":[{"Words":[{"WordText":"Hello","Left":10,"Top":15,"Height":18,"Width":45},{"WordText":"OCR","Left":60,"Top":15,"Height":18,"Width":35},{"WordText":"Test","Left":100,"Top":15,"Height":18,"Width":38}],"MaxHeight":18,"MinTop":15}],"HasOverlay":true},"TextOrientation":"0","FileParseExitCode":1,"ParsedText":"Hello
+        OCR Test\r\n","ErrorMessage":"","ErrorDetails":""}],"OCRExitCode":1,"IsErroredOnProcessing":false,"ProcessingTimeInMilliseconds":"250"}'
+    headers:
+      Content-Type:
+      - application/json
+    status:
+      code: 200
+      message: OK
+version: 1

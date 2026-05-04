@@ -2,9 +2,13 @@
 
 import os
 import tempfile
+import importlib
 from unittest.mock import patch, MagicMock
 
+import pytest
 from PIL import Image
+
+_has_pytesseract = importlib.util.find_spec("pytesseract") is not None
 
 
 def _create_text_image(path: str, text: str = "Hello OCR") -> None:
@@ -12,6 +16,7 @@ def _create_text_image(path: str, text: str = "Hello OCR") -> None:
     img.save(path)
 
 
+@pytest.mark.skipif(not _has_pytesseract, reason="pytesseract not installed")
 def test_text_extraction():
     from ocr_reader_pack.tool import run
 
@@ -41,6 +46,7 @@ def test_text_extraction():
             os.unlink(f.name)
 
 
+@pytest.mark.skipif(not _has_pytesseract, reason="pytesseract not installed")
 def test_data_output_format():
     from ocr_reader_pack.tool import run
 
@@ -71,6 +77,7 @@ def test_data_output_format():
             os.unlink(f.name)
 
 
+@pytest.mark.skipif(not _has_pytesseract, reason="pytesseract not installed")
 def test_hocr_output_format():
     from ocr_reader_pack.tool import run
 
@@ -99,6 +106,7 @@ def test_hocr_output_format():
             os.unlink(f.name)
 
 
+@pytest.mark.skipif(not _has_pytesseract, reason="pytesseract not installed")
 def test_custom_language():
     from ocr_reader_pack.tool import run
 
