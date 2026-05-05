@@ -1,6 +1,6 @@
 {
   "lockfile_version": "0.1",
-  "updated_at": "2026-04-16T13:48:58.752258+00:00",
+  "updated_at": "2026-05-05T10:30:55.276692+00:00",
   "packages": {
     "word-counter-pack": {
       "version": "1.0.0",
@@ -89,6 +89,56 @@
       "tools": [],
       "artifact_hash": "sha256:bf90bc3e2fb78682bc3df5f53d7a195675c564f0f3ede8dddfce403b59b73525",
       "installed_at": "2026-04-16T13:48:58.751523+00:00",
+      "source": "sdk",
+      "trust_level": "trusted",
+      "permissions": {
+        "network_level": "none",
+        "filesystem_level": "temp",
+        "code_execution_level": "none",
+        "data_access_level": "input_only",
+        "user_approval_level": "never"
+      },
+      "prompts": [],
+      "resources": [],
+      "connector": null,
+      "agent": null
+    },
+    "csv-analyzer-pack": {
+      "version": "1.0.0",
+      "package_type": "toolpack",
+      "runtime": "python",
+      "entrypoint": "csv_analyzer_pack.tool",
+      "capability_ids": [
+        "csv_analysis"
+      ],
+      "tools": [],
+      "artifact_hash": "sha256:62cfe9be62e97174ab41eff190e356d1c512b11ac88cb566d7c75e5f5e0f8d42",
+      "installed_at": "2026-04-24T13:59:54.295800+00:00",
+      "source": "sdk",
+      "trust_level": "trusted",
+      "permissions": {
+        "network_level": "none",
+        "filesystem_level": "temp",
+        "code_execution_level": "none",
+        "data_access_level": "input_only",
+        "user_approval_level": "never"
+      },
+      "prompts": [],
+      "resources": [],
+      "connector": null,
+      "agent": null
+    },
+    "data-visualizer-pack": {
+      "version": "1.0.0",
+      "package_type": "toolpack",
+      "runtime": "python",
+      "entrypoint": "data_visualizer_pack.tool",
+      "capability_ids": [
+        "data_visualization"
+      ],
+      "tools": [],
+      "artifact_hash": "sha256:bc9485ae4d4eec2644fb0b5dc0d8108293142db673e877b30f64dd335298822b",
+      "installed_at": "2026-05-05T10:30:55.275916+00:00",
       "source": "sdk",
       "trust_level": "trusted",
       "permissions": {
