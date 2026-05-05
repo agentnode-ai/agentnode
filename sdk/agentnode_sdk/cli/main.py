@@ -30,7 +30,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("setup", help="Run setup wizard")
 
     # doctor
-    sub.add_parser("doctor", help="Diagnose your setup")
+    doctor_parser = sub.add_parser("doctor", help="Diagnose setup and detect missing capabilities")
+    doctor_parser.add_argument("--fix", action="store_true", help="Auto-install suggested packages")
 
     # reset
     sub.add_parser("reset", help="Reset configuration")
@@ -118,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "setup":
             return commands.cmd_setup()
         if args.command == "doctor":
-            return commands.cmd_doctor()
+            return commands.cmd_doctor(fix=args.fix)
         if args.command == "reset":
             return commands.cmd_reset()
         if args.command == "config":

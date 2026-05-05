@@ -60,13 +60,14 @@ def cmd_setup() -> int:
     return run_wizard()
 
 
-def cmd_doctor() -> int:
+def cmd_doctor(fix: bool = False) -> int:
     import agentnode_sdk
 
     cfg = load_config()
     lock = read_lockfile()
     lockfile = _lockfile_path()
-    pkg_count = len(lock.get("packages", {}))
+    pkgs = lock.get("packages", {})
+    pkg_count = len(pkgs)
 
     cfg_found = config_exists()
     cfg_valid = True
@@ -80,15 +81,18 @@ def cmd_doctor() -> int:
     py_version = platform.python_version()
     sdk_version = agentnode_sdk.__version__
 
+    registry_ok = True
     registry_status = "yes"
     try:
         import httpx
 
-        resp = httpx.get("https://api.agentnode.net/v1/health", timeout=5)
+        resp = httpx.get("https://api.agentnode.net/health", timeout=5)
         if resp.status_code != 200:
             registry_status = f"no (HTTP {resp.status_code})"
+            registry_ok = False
     except Exception:
         registry_status = "no (network unavailable)"
+        registry_ok = False
 
     if lockfile.is_file():
         lock_info = f"{lockfile} ({pkg_count} packages)"
@@ -97,15 +101,173 @@ def cmd_doctor() -> int:
 
     print()
     print(section("AgentNode Doctor"))
-    print(kv("Config file", "found" if cfg_found else "not found"))
-    print(kv("Config valid", "yes" if cfg_valid else "no"))
-    print(kv("SDK version", sdk_version))
-    print(kv("Python version", py_version))
-    print(kv("Config path", str(config_path())))
-    print(kv("Lockfile", lock_info))
-    print(kv("Registry reachable", registry_status))
+
+    # --- System Health ---
+    print(bold("  System"))
+    print("  " + "-" * 6)
+    config_detail = "valid" if cfg_found and cfg_valid else "not found" if not cfg_found else "invalid"
+    _doctor_check("Config", cfg_found and cfg_valid, config_detail)
+    _doctor_check("SDK", True, f"v{sdk_version}")
+    _doctor_check("Python", True, py_version)
+    _doctor_check("Registry", registry_ok, registry_status)
+    _doctor_check("Lockfile", lockfile.is_file(), f"{pkg_count} packages" if lockfile.is_file() else "not found")
     print()
+
+    # --- Installed Capabilities ---
+    installed_caps: set[str] = set()
+    installed_slugs: set[str] = set(pkgs.keys())
+    for info in pkgs.values():
+        for cap_id in info.get("capability_ids", []):
+            installed_caps.add(cap_id)
+
+    if pkgs:
+        print(bold("  Installed"))
+        print("  " + "-" * 9)
+        for slug in sorted(installed_slugs):
+            info = pkgs[slug]
+            trust = info.get("trust_level") or "unknown"
+            caps = info.get("capability_ids", [])
+            cap_str = f"  ({', '.join(caps)})" if caps else ""
+            print(f"    {slug} {dim(f'[{trust}]{cap_str}')}")
+        print()
+
+    # --- Gap Analysis ---
+    if not registry_ok:
+        print(dim("  Cannot analyze gaps — registry unreachable."))
+        print()
+        return 0
+
+    # Determine missing complementary capabilities
+    _COMPLEMENTS: dict[str, list[str]] = {
+        "web_search": ["text_summarization", "webpage_extraction"],
+        "webpage_extraction": ["web_search", "text_summarization"],
+        "pdf_extraction": ["text_summarization", "document_parsing"],
+        "csv_analysis": ["chart_generation", "data_visualization"],
+        "text_summarization": ["web_search", "pdf_extraction"],
+        "text_translation": ["text_summarization", "language_detection"],
+        "browser_navigation": ["webpage_extraction", "web_search"],
+        "embedding_generation": ["vector_memory"],
+        "vector_memory": ["embedding_generation", "web_search"],
+        "sql_generation": ["csv_analysis"],
+        "chart_generation": ["csv_analysis", "data_visualization"],
+        "code_analysis": ["code_generation", "test_generation"],
+        "code_generation": ["code_analysis", "test_generation"],
+        "ocr_reading": ["pdf_extraction", "text_summarization"],
+    }
+
+    missing_caps: list[str] = []
+    for cap in installed_caps:
+        for complement in _COMPLEMENTS.get(cap, []):
+            if complement not in installed_caps and complement not in missing_caps:
+                missing_caps.append(complement)
+
+    if not missing_caps and not installed_caps:
+        print(bold("  Analysis"))
+        print("  " + "-" * 8)
+        print("    No packages installed. Get started:")
+        print()
+        print(dim("    agentnode discover           Browse available packages"))
+        print(dim("    agentnode resolve <cap>      Find a specific capability"))
+        print()
+        return 0
+
+    if not missing_caps:
+        print(bold("  Analysis"))
+        print("  " + "-" * 8)
+        print("    \033[32m[OK]\033[0m No missing capabilities detected.")
+        print()
+        print(dim("  Run `agentnode discover --new` to see what's new."))
+        print()
+        return 0
+
+    # Resolve missing capabilities to actual packages
+    try:
+        from agentnode_sdk.client import AgentNodeClient
+
+        client = AgentNodeClient()
+        try:
+            result = client.resolve(missing_caps[:10], limit=15)
+        finally:
+            client.close()
+    except Exception as e:
+        print(f"  Gap analysis failed: {e}")
+        print()
+        return 1
+
+    # Filter out already-installed
+    suggestions = [
+        pkg for pkg in result.results
+        if pkg.slug not in installed_slugs
+    ][:6]
+
+    if not suggestions:
+        print(bold("  Analysis"))
+        print("  " + "-" * 8)
+        print("    \033[32m[OK]\033[0m Setup looks complete.")
+        print()
+        return 0
+
+    # Show gaps and suggestions
+    print(bold("  Missing Capabilities"))
+    print("  " + "-" * 20)
+    for cap in missing_caps[:8]:
+        print(f"    \033[33m[-]\033[0m {cap}")
+    print()
+
+    print(bold("  Suggested Fixes"))
+    print("  " + "-" * 15)
+    install_slugs = []
+    for i, pkg in enumerate(suggestions, 1):
+        trust = pkg.trust_level or "unverified"
+        matched = ", ".join(pkg.matched_capabilities) if pkg.matched_capabilities else ""
+        print(f"    {i}. {bold(pkg.slug)} {dim(f'[{trust}]')}")
+        if matched:
+            print(f"       {dim(f'provides: {matched}')}")
+        install_slugs.append(pkg.slug)
+    print()
+
+    if fix:
+        # Auto-install suggested packages
+        print(bold("  Installing..."))
+        print("  " + "-" * 12)
+        from agentnode_sdk.client import AgentNodeClient as _FixClient
+
+        fix_client = _FixClient()
+        success_count = 0
+        try:
+            for slug in install_slugs:
+                try:
+                    r = fix_client.install(slug, require_verified=True)
+                    if r.installed:
+                        print(f"    \033[32m[OK]\033[0m {slug} installed")
+                        success_count += 1
+                    else:
+                        print(f"    \033[31m[!!]\033[0m {slug}: {r.message}")
+                except Exception as e:
+                    print(f"    \033[31m[!!]\033[0m {slug}: {e}")
+        finally:
+            fix_client.close()
+        print()
+        if success_count == len(install_slugs):
+            print("  \033[32mSystem ready.\033[0m")
+        else:
+            print(f"  {success_count}/{len(install_slugs)} installed.")
+        print()
+    else:
+        # Show install command
+        cmd = "agentnode install " + " ".join(install_slugs[:4])
+        print(dim("  Fix with:"))
+        print(f"    {cmd}")
+        print()
+        print(dim("  Or auto-fix all: agentnode doctor --fix"))
+        print()
+
     return 0
+
+
+def _doctor_check(label: str, ok: bool, detail: str) -> None:
+    status = "\033[32m[OK]\033[0m" if ok else "\033[31m[!!]\033[0m"
+    print(f"    {status} {label}: {detail}")
 
 
 def cmd_reset() -> int:
