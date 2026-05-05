@@ -140,26 +140,11 @@ def cmd_doctor(fix: bool = False) -> int:
         return 0
 
     # Determine missing complementary capabilities
-    _COMPLEMENTS: dict[str, list[str]] = {
-        "web_search": ["text_summarization", "webpage_extraction"],
-        "webpage_extraction": ["web_search", "text_summarization"],
-        "pdf_extraction": ["text_summarization", "document_parsing"],
-        "csv_analysis": ["chart_generation", "data_visualization"],
-        "text_summarization": ["web_search", "pdf_extraction"],
-        "text_translation": ["text_summarization", "language_detection"],
-        "browser_navigation": ["webpage_extraction", "web_search"],
-        "embedding_generation": ["vector_memory"],
-        "vector_memory": ["embedding_generation", "web_search"],
-        "sql_generation": ["csv_analysis"],
-        "chart_generation": ["csv_analysis", "data_visualization"],
-        "code_analysis": ["code_generation", "test_generation"],
-        "code_generation": ["code_analysis", "test_generation"],
-        "ocr_reading": ["pdf_extraction", "text_summarization"],
-    }
+    from agentnode_sdk.cli.complements import CAPABILITY_COMPLEMENTS
 
     missing_caps: list[str] = []
     for cap in installed_caps:
-        for complement in _COMPLEMENTS.get(cap, []):
+        for complement in CAPABILITY_COMPLEMENTS.get(cap, []):
             if complement not in installed_caps and complement not in missing_caps:
                 missing_caps.append(complement)
 
@@ -587,26 +572,11 @@ def cmd_recommend() -> int:
             installed_caps.add(cap_id)
 
     # Complementary capability suggestions based on what's installed
-    _COMPLEMENTS: dict[str, list[str]] = {
-        "web_search": ["text_summarization", "webpage_extraction", "knowledge_graph"],
-        "webpage_extraction": ["web_search", "text_summarization", "pdf_extraction"],
-        "pdf_extraction": ["text_summarization", "document_parsing", "ocr"],
-        "csv_analysis": ["chart_generation", "data_visualization", "spreadsheet_parsing"],
-        "text_summarization": ["text_translation", "web_search", "pdf_extraction"],
-        "text_translation": ["text_summarization", "language_detection"],
-        "browser_navigation": ["webpage_extraction", "web_search", "screenshot_capture"],
-        "embedding_generation": ["vector_memory", "text_summarization"],
-        "vector_memory": ["embedding_generation", "web_search"],
-        "sql_generation": ["csv_analysis", "database_connector"],
-        "chart_generation": ["csv_analysis", "data_visualization"],
-        "code_analysis": ["code_generation", "test_generation"],
-        "code_generation": ["code_analysis", "test_generation"],
-    }
+    from agentnode_sdk.cli.complements import CAPABILITY_COMPLEMENTS
 
-    # Find suggestions
     suggested_caps: list[str] = []
     for cap in installed_caps:
-        for complement in _COMPLEMENTS.get(cap, []):
+        for complement in CAPABILITY_COMPLEMENTS.get(cap, []):
             if complement not in installed_caps and complement not in suggested_caps:
                 suggested_caps.append(complement)
 
@@ -1151,7 +1121,7 @@ def cmd_init(name: str | None = None, template_type: str | None = None) -> int:
     print(dim(f"    cd {pkg_id}"))
     print(dim("    # Edit the tool code and manifest"))
     print(dim("    agentnode validate ."))
-    print(dim("    agentnode publish ."))
+    print(dim("    # Publish via web UI at agentnode.net/publish"))
     print()
     return 0
 

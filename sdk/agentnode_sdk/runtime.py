@@ -15,7 +15,6 @@ from typing import Any
 from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.models import PromptArgumentSpec, PromptSpec, ResourceSpec
 from agentnode_sdk.policy import check_run as _policy_check_run
-from agentnode_sdk.policy import check_install as _policy_check_install
 from agentnode_sdk.policy import audit_decision as _policy_audit
 from agentnode_sdk.policy import _trust_meets_minimum
 

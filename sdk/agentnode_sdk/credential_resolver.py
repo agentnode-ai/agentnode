@@ -130,7 +130,7 @@ def _resolve_from_local_file(
 ) -> CredentialHandle | None:
     """Resolve a CredentialHandle from ~/.agentnode/credentials.json.
 
-    Reads tokens stored via `agentnode auth <provider>`.
+    Reads tokens stored via `agentnode auth set <provider>`.
     Returns None if no credential is found for the provider.
     """
     try:

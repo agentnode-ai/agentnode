@@ -267,7 +267,15 @@ def _lockfile_path() -> Path:
 def read_lockfile(path: Path | None = None) -> dict:
     lf = path or _lockfile_path()
     if lf.is_file():
-        return json.loads(lf.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(lf.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "packages" in data:
+                return data
+        except (json.JSONDecodeError, OSError):
+            import logging
+            logging.getLogger("agentnode.installer").warning(
+                "Lockfile corrupted or unreadable: %s — treating as empty", lf
+            )
     return {"lockfile_version": LOCKFILE_VERSION, "updated_at": "", "packages": {}}
 
 

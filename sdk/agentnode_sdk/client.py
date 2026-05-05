@@ -967,7 +967,7 @@ class AgentNodeClient:
                     already_installed=False,
                     message=(
                         f"Package {skipped_for_creds} requires credentials that are not configured. "
-                        f"Run `agentnode auth <provider>` first. "
+                        f"Run `agentnode auth set <provider>` first. "
                         f"No credential-free alternative found for capabilities: {capabilities}"
                     ),
                 )
