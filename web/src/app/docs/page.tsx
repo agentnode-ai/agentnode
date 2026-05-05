@@ -1218,17 +1218,57 @@ def run(inputs: dict) -> dict:
         raise AgentNodeToolError(f"Unknown operation: {operation}", tool_name=operation)
     return handler(inputs)`}</CodeBlock>
 
-            <SubHeading>Step 5: Validate</SubHeading>
+            <SubHeading>Step 5: Validate and verify locally</SubHeading>
+            <p className="mb-3 text-sm text-muted">
+              Run the local verification pipeline to confirm your package will reach Gold tier
+              on first publish. This simulates the exact same checks the server runs.
+            </p>
             <CodeBlock title="terminal">{`$ agentnode validate .
 
-Validating github-integration-pack...
-  Manifest syntax       OK
-  Capability IDs        OK (1 tool, 0 resources)
-  Permissions           OK (network: unrestricted)
-  Entrypoint            OK (github_integration_pack.tool)
-  Compatibility         OK (3 frameworks)
+Validating github-integration-pack@1.0.0
+  [PASS] Manifest syntax valid
+  [PASS] Required fields present
+  [PASS] Verification cases defined (2 cases)
+  [PASS] Cassette files exist
 
-Package is valid and ready to publish.`}</CodeBlock>
+  Max tier              Gold
+  Mode                  fixture
+  Cases                 2`}</CodeBlock>
+            <p className="my-3 text-sm text-muted">
+              For API connectors that make external HTTP calls, record VCR cassettes first:
+            </p>
+            <CodeBlock title="terminal">{`$ agentnode record-cases .
+
+Recording cassettes for github-integration-pack
+  [OK] create_issue -> fixtures/cassettes/create_issue.yaml
+  [OK] list_repos -> fixtures/cassettes/list_repos.yaml
+
+  Cassette Warnings
+  [DYNAMIC] Fields that may change between runs:
+    - interactions[0].response.headers.Date
+
+  Next: agentnode verify-local .`}</CodeBlock>
+            <p className="my-3 text-sm text-muted">
+              Then run the full verification pipeline locally:
+            </p>
+            <CodeBlock title="terminal">{`$ agentnode verify-local .
+
+Verifying github-integration-pack@1.0.0
+
+  Pipeline
+  [PASS] Install
+  [PASS] Import
+  [PASS] Smoke
+  [PASS] Tests      2 passed in 0.3s
+  [PASS] Contract
+  [PASS] Reliability  100.0%
+  [PASS] Determinism  100.0%
+
+  Score                 95/95
+  Tier                  Gold
+  Mode                  fixture
+
+  This package will reach Gold tier after publishing.`}</CodeBlock>
 
             <SubHeading>Step 6: Publish</SubHeading>
             <CodeBlock title="terminal">{`$ agentnode publish .
@@ -1246,10 +1286,9 @@ Published! https://agentnode.net/packages/github-integration-pack`}</CodeBlock>
                 <span className="font-medium text-foreground">
                   Tip:
                 </span>{" "}
-                Use <C>agentnode publish --dry-run .</C> to test the full
-                publishing pipeline without actually publishing. This runs
-                validation, security scanning, and packaging but does not upload
-                to the registry.
+                Packages that pass <C>agentnode verify-local</C> reach Gold tier on their
+                first publish attempt. No debugging in the blind. The recommended flow is:{" "}
+                <C>init</C> → <C>validate</C> → <C>record-cases</C> → <C>verify-local</C> → publish.
               </p>
             </div>
           </section>
@@ -1577,17 +1616,116 @@ $ agentnode publish ./my-pack --dry-run`}</CodeBlock>
               </div>
             </div>
 
+            {/* init */}
+            <div className="mb-8 rounded-lg border border-border bg-card p-5">
+              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
+                agentnode init [name]
+              </h4>
+              <p className="mb-3 text-sm text-muted">
+                Scaffold a new package from a template. Creates a Gold-ready project structure
+                with manifest, source code, tests, and verification cases pre-configured.
+              </p>
+              <DocTable
+                headers={["Flag", "Description"]}
+                rows={[
+                  ["--type <type>", "Template type: local, api, file, or agent"],
+                ]}
+              />
+              <div className="mt-3">
+                <CodeBlock title="terminal">{`$ agentnode init my-api-connector --type api
+Created my-api-connector/
+  agentnode.yaml, pyproject.toml, src/, tests/, fixtures/
+  Template: api (with VCR cassette support)
+  Next: implement your tool, then run agentnode record-cases .`}</CodeBlock>
+              </div>
+            </div>
+
             {/* validate */}
             <div className="mb-8 rounded-lg border border-border bg-card p-5">
               <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode validate &lt;directory&gt;
+                agentnode validate [directory]
               </h4>
               <p className="mb-3 text-sm text-muted">
-                Validate a manifest without publishing. Checks syntax, capability
-                IDs, permissions consistency, entrypoint resolution, and
-                framework compatibility.
+                Validate a package manifest offline. Checks syntax, required fields,
+                verification cases, cassette file existence, and predicts the maximum
+                achievable tier (Gold eligibility).
               </p>
-              <CodeBlock title="terminal">{`$ agentnode validate .`}</CodeBlock>
+              <CodeBlock title="terminal">{`$ agentnode validate .
+
+Validating my-pack@1.0.0
+  [PASS] Manifest syntax valid
+  [PASS] Required fields present
+  [PASS] Verification cases defined (2 cases)
+  [PASS] Cassette files exist
+
+  Max tier              Gold
+  Mode                  fixture`}</CodeBlock>
+            </div>
+
+            {/* record-cases */}
+            <div className="mb-8 rounded-lg border border-border bg-card p-5">
+              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
+                agentnode record-cases [directory]
+              </h4>
+              <p className="mb-3 text-sm text-muted">
+                Record VCR cassettes for API verification cases. Makes real API calls and
+                saves responses as YAML fixtures. These cassettes are replayed during
+                verification for deterministic testing without network access.
+              </p>
+              <DocTable
+                headers={["Flag", "Description"]}
+                rows={[
+                  ["--strict", "Exit with error if cassettes contain secrets or possible tokens"],
+                ]}
+              />
+              <div className="mt-3">
+                <CodeBlock title="terminal">{`$ agentnode record-cases .
+
+Recording cassettes for my-api-pack
+  [OK] search_query -> fixtures/cassettes/search.yaml
+  [OK] empty_query -> fixtures/cassettes/empty.yaml
+
+  Cassette Warnings
+  [DYNAMIC] Fields that may change between runs:
+    - interactions[0].response.headers.Date
+
+  Next: agentnode verify-local .`}</CodeBlock>
+              </div>
+              <div className="mt-3 rounded-md border border-warning/20 bg-warning/5 px-3 py-2 text-xs text-muted">
+                Review cassettes for leaked credentials before committing. The{" "}
+                <C>--strict</C> flag blocks on detected secrets and can be used in CI.
+              </div>
+            </div>
+
+            {/* verify-local */}
+            <div className="mb-8 rounded-lg border border-border bg-card p-5">
+              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
+                agentnode verify-local [directory]
+              </h4>
+              <p className="mb-3 text-sm text-muted">
+                Run the full verification pipeline locally. Simulates exactly what the
+                server does: install, import, smoke test (run cases), pytest, contract
+                validation, reliability, and determinism scoring. Shows the predicted
+                tier and score.
+              </p>
+              <CodeBlock title="terminal">{`$ agentnode verify-local .
+
+Verifying my-pack@1.0.0
+
+  Pipeline
+  [PASS] Install      Installed in venv
+  [PASS] Import       Import OK
+  [PASS] Smoke        ok
+  [PASS] Tests        4 passed in 0.5s
+  [PASS] Contract
+  [PASS] Reliability  100.0%
+  [PASS] Determinism  100.0%
+
+  Score                 95/95
+  Tier                  Gold
+  Mode                  fixture
+
+  This package will reach Gold tier after publishing.`}</CodeBlock>
             </div>
 
             {/* report */}
