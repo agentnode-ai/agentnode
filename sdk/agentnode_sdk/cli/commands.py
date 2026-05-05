@@ -546,10 +546,11 @@ def cmd_verify_local(path_str: str) -> int:
     return 0 if result.install_ok else 1
 
 
-def cmd_record_cases(path_str: str) -> int:
+def cmd_record_cases(path_str: str, strict: bool = False) -> int:
     """Record VCR cassettes for verification cases."""
     import yaml
     from agentnode_sdk.cli.record_cases import record_cases, check_manifest_in, ensure_manifest_in
+    from agentnode_sdk.cli.cassette_audit import audit_cassettes
 
     pkg_path = Path(path_str).resolve()
     if not pkg_path.is_dir():
@@ -607,6 +608,50 @@ def cmd_record_cases(path_str: str) -> int:
             print(dim("  Created/updated MANIFEST.in to include fixtures."))
             print()
 
+    # Audit cassettes for dynamic/sensitive content
+    audit_failed = False
+    if result["recorded"]:
+        cassette_paths = [pkg_path / r["cassette"] for r in result["recorded"]]
+        audit = audit_cassettes(cassette_paths)
+
+        if audit.has_warnings:
+            print(bold("  Cassette Warnings"))
+            print("  " + "-" * 17)
+
+            secrets = [f for f in audit.findings if f.category == "secret"]
+            tokens = [f for f in audit.findings if f.category == "possible_token"]
+            dynamic = [f for f in audit.findings if f.category in ("dynamic", "uuid", "timestamp")]
+
+            if secrets:
+                print(f"  \033[31m[SECRET]\033[0m Leaked credentials detected:")
+                for f in secrets:
+                    print(f"    - {f.path}  ({f.value_preview})")
+                print()
+
+            if tokens:
+                print(f"  \033[33m[TOKEN?]\033[0m Possible tokens/keys:")
+                for f in tokens:
+                    print(f"    - {f.path}")
+                print()
+
+            if dynamic:
+                print(f"  \033[33m[DYNAMIC]\033[0m Fields that may change between runs:")
+                for f in dynamic:
+                    print(f"    - {f.path}  ({f.value_preview})")
+                print()
+
+            if secrets:
+                print(dim("  ACTION REQUIRED: Remove secrets before committing cassettes."))
+                print(dim("  Re-record with credentials in environment, not in cassette."))
+                audit_failed = True
+            elif dynamic:
+                print(dim("  These fields may cause determinism < 1.0 on replay."))
+                print(dim("  If verify-local shows determinism issues, consider filtering these."))
+            print()
+
+            if strict and (secrets or tokens):
+                audit_failed = True
+
     # Summary
     total = len(result["recorded"]) + len(result["skipped"]) + len(result["errors"])
     print(kv("Total cases", str(total)))
@@ -615,14 +660,17 @@ def cmd_record_cases(path_str: str) -> int:
     print(kv("Errors", str(len(result["errors"]))))
     print()
 
-    if result["recorded"]:
+    if result["recorded"] and not audit_failed:
         print(dim("  Next: agentnode verify-local ."))
-        print(dim("  Review cassettes for leaked credentials before committing."))
+    elif audit_failed:
+        print(dim("  Fix cassette warnings above before proceeding."))
     elif result["errors"]:
         print(dim("  Fix the errors above and try again."))
         print(dim("  Common issues: missing API credentials, network errors, wrong input format."))
     print()
 
+    if audit_failed:
+        return 1
     return 0 if not result["errors"] else 1
 
 

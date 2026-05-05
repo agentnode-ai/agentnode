@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     # record-cases
     record_parser = sub.add_parser("record-cases", help="Record VCR cassettes for API verification cases")
     record_parser.add_argument("path", nargs="?", default=".", help="Package directory (default: current)")
+    record_parser.add_argument("--strict", action="store_true", help="Exit with error if cassettes contain risky fields")
 
     # capabilities
     cap_parser = sub.add_parser("capabilities", help="List installed capabilities")
@@ -133,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "verify-local":
             return commands.cmd_verify_local(args.path)
         if args.command == "record-cases":
-            return commands.cmd_record_cases(args.path)
+            return commands.cmd_record_cases(args.path, strict=args.strict)
         if args.command == "capabilities":
             if args.cap_action == "show":
                 return commands.cmd_capabilities_show(args.name)
