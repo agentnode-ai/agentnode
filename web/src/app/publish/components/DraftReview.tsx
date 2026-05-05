@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { slugify } from "../lib/manifest";
 import { computeReadiness } from "../lib/readiness";
@@ -268,6 +269,22 @@ export function DraftReview({ form }: { form: PublishFormState }) {
         </div>
       )}
 
+      {/* ---- Pre-publish CLI commands ---- */}
+      <div className="mb-6 rounded-lg border border-border bg-card p-4">
+        <h3 className="mb-2 text-sm font-medium text-foreground">Before publishing, run locally:</h3>
+        <div className="space-y-2">
+          <CopyableCommand command="agentnode validate ." />
+          {(guided.network === "restricted" || guided.network === "full") && (
+            <CopyableCommand command="agentnode record-cases ." label="API connectors" />
+          )}
+          <CopyableCommand command="agentnode verify-local ." />
+        </div>
+        <p className="mt-3 text-xs text-muted">
+          Packages that pass <code className="rounded bg-background px-1 py-0.5 text-[11px] border border-border">verify-local</code> reach Gold tier on first publish.{" "}
+          <a href="/docs/publishing" className="text-primary hover:underline">Learn more</a>
+        </p>
+      </div>
+
       {/* ---- Code Status ---- */}
       <div className="mb-6">
         {(() => {
@@ -436,6 +453,44 @@ export function DraftReview({ form }: { form: PublishFormState }) {
           </ul>
         </div>
       )}
+    </div>
+  );
+}
+
+
+function CopyableCommand({ command, label }: { command: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(command);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 flex items-center rounded-md border border-border bg-background px-3 py-1.5 font-mono text-xs text-foreground">
+        <span className="text-muted mr-2">$</span>
+        <span className="flex-1">{command}</span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="ml-2 shrink-0 text-muted hover:text-foreground transition-colors"
+          title="Copy command"
+        >
+          {copied ? (
+            <svg className="h-3.5 w-3.5 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          ) : (
+            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+            </svg>
+          )}
+        </button>
+      </div>
+      {label && <span className="text-[10px] text-muted whitespace-nowrap">{label}</span>}
     </div>
   );
 }
