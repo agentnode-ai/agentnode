@@ -47,8 +47,9 @@ def cmd_dashboard() -> int:
     print()
     print(kv("Config", str(config_path())))
     print()
-    print(dim("  Run `agentnode search <query>` to discover capabilities."))
-    print(dim("  Run `agentnode setup` to change your settings."))
+    print(dim("  Run `agentnode discover` to browse available packages."))
+    print(dim("  Run `agentnode search <query>` for full-text search."))
+    print(dim("  Run `agentnode recommend` for personalized suggestions."))
     print()
     return 0
 
@@ -214,6 +215,254 @@ def cmd_search(query: str) -> int:
         return 1
 
 
+def cmd_discover(
+    category: str | None = None,
+    trending: bool = False,
+    new: bool = False,
+    package_type: str | None = None,
+) -> int:
+    """Browse the registry: trending, new, or by category."""
+    try:
+        from agentnode_sdk.client import AgentNodeClient
+
+        client = AgentNodeClient()
+        try:
+            # If specific view requested, show just that
+            if trending:
+                result = client.search(sort_by="download_count:desc", per_page=15)
+                print()
+                print(section("Trending"))
+                _print_discover_hits(result.hits)
+                return 0
+
+            if new:
+                result = client.search(sort_by="published_at:desc", per_page=15)
+                print()
+                print(section("Recently Published"))
+                _print_discover_hits(result.hits)
+                return 0
+
+            if category:
+                result = client.search(query=category, per_page=20)
+                print()
+                print(section(f"Category: {category}"))
+                if not result.hits:
+                    print(f"  No packages found for '{category}'.")
+                else:
+                    _print_discover_hits(result.hits)
+                print()
+                print(dim(f"  Run `agentnode search {category}` for full-text search."))
+                print()
+                return 0
+
+            # Default: show overview (trending + new + categories)
+            trending_result = client.search(sort_by="download_count:desc", per_page=8)
+            new_result = client.search(sort_by="published_at:desc", per_page=5)
+        finally:
+            client.close()
+
+        print()
+        print(section("Discover"))
+        print()
+
+        # Trending
+        print(bold("  Trending"))
+        print("  " + "-" * 8)
+        _print_discover_hits(trending_result.hits, numbered=True)
+
+        # New
+        print(bold("  Recently Published"))
+        print("  " + "-" * 18)
+        _print_discover_hits(new_result.hits, numbered=True)
+
+        # Categories
+        print(bold("  Browse by Category"))
+        print("  " + "-" * 18)
+        categories = ["connector", "research", "automation", "data", "character"]
+        for cat in categories:
+            print(f"    agentnode discover --category {cat}")
+        print()
+
+        # Navigation hints
+        print(dim("  Commands:"))
+        print(dim("    agentnode discover --trending       Top packages by installs"))
+        print(dim("    agentnode discover --new            Recently published"))
+        print(dim("    agentnode discover --category X     Browse by category"))
+        print(dim("    agentnode search <query>            Full-text search"))
+        print(dim("    agentnode resolve <capability>      Find by capability ID"))
+        print()
+        return 0
+    except Exception as e:
+        print(f"Discover failed: {e}", file=sys.stderr)
+        return 1
+
+
+def _print_discover_hits(hits: list, numbered: bool = False) -> None:
+    """Print search hits in compact discover format."""
+    for i, hit in enumerate(hits, 1):
+        tier = ""
+        trust = hit.trust_level or "unverified"
+        if trust in ("trusted", "curated"):
+            tier = f" [{trust}]"
+        elif trust == "verified":
+            tier = " [verified]"
+
+        prefix = f"  {i:2}. " if numbered else "  "
+        print(f"{prefix}{bold(hit.slug)}{dim(tier)}")
+        print(f"{'     ' if numbered else '  '}  {dim(hit.summary or '')}")
+    print()
+
+
+def cmd_resolve(capabilities: list[str], framework: str | None = None) -> int:
+    """Resolve capability IDs to ranked package recommendations."""
+    try:
+        from agentnode_sdk.client import AgentNodeClient
+
+        client = AgentNodeClient()
+        try:
+            result = client.resolve(capabilities, framework=framework)
+        finally:
+            client.close()
+
+        if not result.results:
+            print()
+            print(f"  No packages found for: {', '.join(capabilities)}")
+            print()
+            print(dim("  Try `agentnode search <query>` for full-text search."))
+            print()
+            return 0
+
+        cap_label = ", ".join(capabilities)
+        print()
+        print(section(f"Resolve: {cap_label}"))
+        print(f"  {result.total} match{'es' if result.total != 1 else ''}\n")
+
+        for i, pkg in enumerate(result.results[:10], 1):
+            score_str = f"{pkg.score:.0f}"
+            trust = pkg.trust_level or "unverified"
+            matched = ", ".join(pkg.matched_capabilities) if pkg.matched_capabilities else ""
+
+            print(f"  {i}. {bold(pkg.slug)} {dim(f'v{pkg.version}')}")
+            print(f"     {pkg.summary}")
+            parts = [f"score: {score_str}", trust]
+            if matched:
+                parts.append(f"caps: {matched}")
+            print(f"     {dim(' | '.join(parts))}")
+            print()
+
+        best = result.results[0]
+        print(dim(f"  Install best match:"))
+        print(f"    agentnode install {best.slug}")
+        print()
+        return 0
+    except Exception as e:
+        print(f"Resolve failed: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_recommend() -> int:
+    """Recommend packages based on what's installed."""
+    lock = read_lockfile()
+    pkgs = lock.get("packages", {})
+
+    if not pkgs:
+        print()
+        print("  No packages installed yet.")
+        print()
+        print(dim("  Run `agentnode discover` to browse available packages."))
+        print()
+        return 0
+
+    # Collect installed capability IDs and slugs
+    installed_slugs = set(pkgs.keys())
+    installed_caps: set[str] = set()
+    for info in pkgs.values():
+        for cap_id in info.get("capability_ids", []):
+            installed_caps.add(cap_id)
+
+    # Complementary capability suggestions based on what's installed
+    _COMPLEMENTS: dict[str, list[str]] = {
+        "web_search": ["text_summarization", "webpage_extraction", "knowledge_graph"],
+        "webpage_extraction": ["web_search", "text_summarization", "pdf_extraction"],
+        "pdf_extraction": ["text_summarization", "document_parsing", "ocr"],
+        "csv_analysis": ["chart_generation", "data_visualization", "spreadsheet_parsing"],
+        "text_summarization": ["text_translation", "web_search", "pdf_extraction"],
+        "text_translation": ["text_summarization", "language_detection"],
+        "browser_navigation": ["webpage_extraction", "web_search", "screenshot_capture"],
+        "embedding_generation": ["vector_memory", "text_summarization"],
+        "vector_memory": ["embedding_generation", "web_search"],
+        "sql_generation": ["csv_analysis", "database_connector"],
+        "chart_generation": ["csv_analysis", "data_visualization"],
+        "code_analysis": ["code_generation", "test_generation"],
+        "code_generation": ["code_analysis", "test_generation"],
+    }
+
+    # Find suggestions
+    suggested_caps: list[str] = []
+    for cap in installed_caps:
+        for complement in _COMPLEMENTS.get(cap, []):
+            if complement not in installed_caps and complement not in suggested_caps:
+                suggested_caps.append(complement)
+
+    if not suggested_caps:
+        print()
+        print("  No additional recommendations based on your current setup.")
+        print()
+        print(dim("  Run `agentnode discover --trending` for popular packages."))
+        print()
+        return 0
+
+    # Resolve suggested capabilities to packages
+    try:
+        from agentnode_sdk.client import AgentNodeClient
+
+        client = AgentNodeClient()
+        try:
+            result = client.resolve(suggested_caps[:8], limit=10)
+        finally:
+            client.close()
+    except Exception as e:
+        print(f"Recommend failed: {e}", file=sys.stderr)
+        return 1
+
+    # Filter out already-installed packages
+    recommendations = [
+        pkg for pkg in result.results
+        if pkg.slug not in installed_slugs
+    ]
+
+    if not recommendations:
+        print()
+        print("  Your setup looks complete — no additional recommendations.")
+        print()
+        return 0
+
+    print()
+    print(section("Recommendations"))
+    print()
+    print(dim("  Based on your installed packages:"))
+    for slug in sorted(installed_slugs)[:5]:
+        print(dim(f"    - {slug}"))
+    if len(installed_slugs) > 5:
+        print(dim(f"    ... +{len(installed_slugs) - 5} more"))
+    print()
+
+    print(bold("  You might also need:"))
+    print("  " + "-" * 20)
+    for i, pkg in enumerate(recommendations[:8], 1):
+        trust = pkg.trust_level or "unverified"
+        matched = ", ".join(pkg.matched_capabilities) if pkg.matched_capabilities else ""
+        print(f"  {i}. {bold(pkg.slug)} {dim(f'[{trust}]')}")
+        print(f"     {pkg.summary}")
+        if matched:
+            print(f"     {dim(f'capability: {matched}')}")
+        print()
+
+    print(dim("  Install with: agentnode install <name>"))
+    print()
+    return 0
+
+
 def cmd_install(capability: str, version: str | None = None, yes: bool = False) -> int:
     cfg = load_config()
 
@@ -349,7 +598,7 @@ def cmd_capabilities() -> int:
         print()
         print("  No capabilities installed.")
         print()
-        print(dim("  Run `agentnode search <query>` to find capabilities."))
+        print(dim("  Run `agentnode discover` to browse available packages."))
         print()
         return 0
 

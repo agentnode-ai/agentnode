@@ -48,6 +48,21 @@ def main(argv: list[str] | None = None) -> int:
     search_parser = sub.add_parser("search", help="Search for capabilities")
     search_parser.add_argument("query", nargs="+")
 
+    # discover
+    discover_parser = sub.add_parser("discover", help="Browse trending, new, and categorized packages")
+    discover_parser.add_argument("--category", "-c", default=None, help="Filter by category (connector, research, automation, data)")
+    discover_parser.add_argument("--trending", action="store_true", help="Show top packages by installs")
+    discover_parser.add_argument("--new", action="store_true", help="Show recently published packages")
+    discover_parser.add_argument("--type", dest="pkg_type", choices=["toolpack", "agent"], default=None, help="Filter by package type")
+
+    # resolve
+    resolve_parser = sub.add_parser("resolve", help="Find best packages for a capability")
+    resolve_parser.add_argument("capability", nargs="+", help="Capability ID(s) to resolve")
+    resolve_parser.add_argument("--framework", default=None, help="Preferred framework for scoring")
+
+    # recommend
+    sub.add_parser("recommend", help="Suggest packages based on your installed setup")
+
     # install
     install_parser = sub.add_parser("install", help="Install a capability")
     install_parser.add_argument("capability")
@@ -114,6 +129,17 @@ def main(argv: list[str] | None = None) -> int:
             return commands.cmd_config()
         if args.command == "search":
             return commands.cmd_search(" ".join(args.query))
+        if args.command == "discover":
+            return commands.cmd_discover(
+                category=args.category,
+                trending=args.trending,
+                new=args.new,
+                package_type=args.pkg_type,
+            )
+        if args.command == "resolve":
+            return commands.cmd_resolve(args.capability, framework=args.framework)
+        if args.command == "recommend":
+            return commands.cmd_recommend()
         if args.command == "install":
             return commands.cmd_install(
                 args.capability, version=args.pkg_version, yes=args.yes
