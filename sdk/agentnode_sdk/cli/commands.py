@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 
 from agentnode_sdk.config import (
+    CONFIG_DESCRIPTIONS,
+    VALID_VALUES,
     config_exists,
     config_path,
     delete_config,
@@ -309,21 +311,48 @@ def cmd_reset() -> int:
 
 def cmd_config() -> int:
     cfg = load_config()
+    w = 42
     print()
     print(section("AgentNode Config"))
-    print(kv("auto_upgrade_policy", cfg.get("auto_upgrade_policy", "safe")))
-    print(kv("install_confirmation", cfg.get("install_confirmation", "auto")))
+    print(kv("auto_upgrade_policy", cfg.get("auto_upgrade_policy", "safe"), w))
+    print(kv("install_confirmation", cfg.get("install_confirmation", "auto"), w))
     print()
     trust = cfg.get("trust", {})
-    print(kv("trust.minimum_trust_level", str(trust.get("minimum_trust_level", "verified"))))
-    print(kv("trust.allow_unverified", str(trust.get("allow_unverified", False)).lower()))
+    print(kv("trust.minimum_trust_level", str(trust.get("minimum_trust_level", "verified")), w))
     print()
     perms = cfg.get("permissions", {})
-    print(kv("permissions.network", perms.get("network", "prompt")))
-    print(kv("permissions.filesystem", perms.get("filesystem", "prompt")))
-    print(kv("permissions.code_execution", perms.get("code_execution", "sandboxed")))
+    print(kv("permissions.network", perms.get("network", "prompt"), w))
+    print(kv("permissions.filesystem", perms.get("filesystem", "prompt"), w))
+    print(kv("permissions.code_execution", perms.get("code_execution", "sandboxed"), w))
+    print()
+    creds = cfg.get("credentials", {})
+    print(kv("credentials.require_before_auto_install", str(creds.get("require_before_auto_install", True)).lower(), w))
     print()
     print(dim(f"  Config file: {config_path()}"))
+    print(dim("  Run `agentnode config list` for descriptions and allowed values."))
+    print()
+    return 0
+
+
+def cmd_config_list() -> int:
+    cfg = load_config()
+    print()
+    print(section("AgentNode Config Reference"))
+    print()
+    for key, allowed in VALID_VALUES.items():
+        try:
+            current = str(get_value(cfg, key)).lower()
+        except KeyError:
+            current = "?"
+        desc = CONFIG_DESCRIPTIONS.get(key, "")
+        print(f"  {bold(key)}")
+        print(f"    values:  {', '.join(allowed)}")
+        print(f"    current: {current}")
+        if desc:
+            print(f"    {dim(desc)}")
+        print()
+    print(dim(f"  Config file: {config_path()}"))
+    print(dim("  Set with: agentnode config set <key> <value>"))
     print()
     return 0
 

@@ -36,7 +36,7 @@ def _make_config(
     """Build a minimal config dict."""
     return {
         "version": "1",
-        "trust": {"minimum_trust_level": min_trust, "allow_unverified": False},
+        "trust": {"minimum_trust_level": min_trust},
         "permissions": {
             "network": network,
             "filesystem": filesystem,

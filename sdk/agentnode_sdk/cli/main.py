@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     # config
     config_parser = sub.add_parser("config", help="View or modify settings")
     config_sub = config_parser.add_subparsers(dest="config_action")
+    config_sub.add_parser("list", help="Show all settings with descriptions and allowed values")
     get_parser = config_sub.add_parser("get", help="Get a config value")
     get_parser.add_argument("key")
     set_parser = config_sub.add_parser("set", help="Set a config value")
@@ -125,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "reset":
             return commands.cmd_reset()
         if args.command == "config":
+            if args.config_action == "list":
+                return commands.cmd_config_list()
             if args.config_action == "get":
                 return commands.cmd_config_get(args.key)
             if args.config_action == "set":

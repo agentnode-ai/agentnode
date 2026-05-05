@@ -36,7 +36,7 @@ def test_default_config_has_required_keys():
     assert cfg["auto_upgrade_policy"] == "safe"
     assert cfg["install_confirmation"] == "auto"
     assert cfg["trust"]["minimum_trust_level"] == "verified"
-    assert cfg["trust"]["allow_unverified"] is False
+    assert "allow_unverified" not in cfg["trust"]
     assert cfg["permissions"]["network"] == "prompt"
     assert cfg["permissions"]["filesystem"] == "prompt"
     assert cfg["permissions"]["code_execution"] == "sandboxed"
@@ -158,8 +158,8 @@ def test_set_value_nested():
 
 def test_set_value_boolean():
     cfg = default_config()
-    set_value(cfg, "trust.allow_unverified", "true")
-    assert cfg["trust"]["allow_unverified"] is True
+    set_value(cfg, "credentials.require_before_auto_install", "false")
+    assert cfg["credentials"]["require_before_auto_install"] is False
 
 
 def test_set_value_unknown_key():

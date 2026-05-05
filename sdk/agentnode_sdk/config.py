@@ -18,7 +18,6 @@ DEFAULTS: dict[str, Any] = {
     "install_confirmation": "auto",
     "trust": {
         "minimum_trust_level": "verified",
-        "allow_unverified": False,
     },
     "permissions": {
         "network": "prompt",
@@ -34,11 +33,21 @@ VALID_VALUES: dict[str, tuple[str, ...]] = {
     "auto_upgrade_policy": ("safe", "off"),
     "install_confirmation": ("auto", "prompt"),
     "trust.minimum_trust_level": ("verified", "trusted", "curated"),
-    "trust.allow_unverified": ("true", "false"),
     "permissions.network": ("allow", "prompt", "deny"),
     "permissions.filesystem": ("allow", "prompt", "deny"),
     "permissions.code_execution": ("sandboxed", "prompt", "deny"),
     "credentials.require_before_auto_install": ("true", "false"),
+}
+
+
+CONFIG_DESCRIPTIONS: dict[str, str] = {
+    "auto_upgrade_policy": "Controls whether smart run and doctor --fix can auto-install packages",
+    "install_confirmation": "Whether to prompt before each installation",
+    "trust.minimum_trust_level": "Minimum trust tier required for install and execution",
+    "permissions.network": "Policy for packages that require network access",
+    "permissions.filesystem": "Policy for packages that require filesystem access",
+    "permissions.code_execution": "Policy for packages that execute code",
+    "credentials.require_before_auto_install": "Skip packages needing credentials you don't have during auto-install",
 }
 
 
@@ -73,7 +82,7 @@ def _merge_defaults(data: dict) -> dict[str, Any]:
         if key in data:
             cfg[key] = data[key]
     if isinstance(data.get("trust"), dict):
-        for k in ("minimum_trust_level", "allow_unverified"):
+        for k in ("minimum_trust_level",):
             if k in data["trust"]:
                 cfg["trust"][k] = data["trust"][k]
     if isinstance(data.get("permissions"), dict):
@@ -146,7 +155,7 @@ def set_value(cfg: dict[str, Any], key: str, value: str) -> dict[str, Any]:
             f"Allowed: {', '.join(allowed)}"
         )
 
-    bool_keys = ("trust.allow_unverified", "credentials.require_before_auto_install")
+    bool_keys = ("credentials.require_before_auto_install",)
     actual_value: Any = value.lower() == "true" if key in bool_keys else value.lower()
 
     parts = key.split(".")
