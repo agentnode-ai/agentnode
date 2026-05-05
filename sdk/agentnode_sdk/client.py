@@ -572,12 +572,13 @@ class AgentNodeClient:
         # 2b. Policy check — authoritative (Phase B: hard enforcement)
         from agentnode_sdk.policy import check_install as _policy_check_install
         from agentnode_sdk.policy import audit_decision as _policy_audit
+        from agentnode_sdk.policy import _resolve_interactive
         policy_entry = {
             "trust_level": trust_level or "unverified",
             "permissions": _permissions_to_dict(meta.permissions),
         }
         try:
-            decision = _policy_check_install(slug, policy_entry, interactive=True)
+            decision = _policy_check_install(slug, policy_entry, interactive=_resolve_interactive())
         except Exception as exc:
             # Policy check itself crashed (bug in policy.py, not config issue).
             # Translate to a clean deny — never silently proceed.
@@ -797,11 +798,12 @@ class AgentNodeClient:
 
         # Policy check via check_install() — Single Source of Truth
         from agentnode_sdk.policy import check_install as _policy_check
+        from agentnode_sdk.policy import _resolve_interactive as _ri
         policy_entry = {
             "trust_level": trust_level,
             "permissions": _permissions_to_dict(meta.permissions),
         }
-        decision = _policy_check(slug, policy_entry, interactive=True)
+        decision = _policy_check(slug, policy_entry, interactive=_ri())
         if decision.action == "deny":
             return CanInstallResult(
                 allowed=False,
@@ -860,7 +862,13 @@ class AgentNodeClient:
 
         The package must have been installed via ``install()`` first.
         """
-        return _load_tool(slug, tool_name=tool_name)
+        import warnings
+        warnings.warn(
+            "load_tool() bypasses policy checks. Use run_tool() for safe execution.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return _load_tool(slug, tool_name=tool_name, _internal=True)
 
     def run_tool(
         self,

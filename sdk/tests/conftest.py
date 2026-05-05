@@ -62,7 +62,6 @@ def bypass_policy():
         mock.patch("agentnode_sdk.runner.audit_decision"),
         # runtime.py imports (aliased)
         mock.patch("agentnode_sdk.runtime._policy_check_run", return_value=allow),
-        mock.patch("agentnode_sdk.runtime._policy_check_install", return_value=allow),
         mock.patch("agentnode_sdk.runtime._policy_audit"),
     ]
     for p in patches:

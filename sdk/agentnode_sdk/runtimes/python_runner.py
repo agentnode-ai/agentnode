@@ -84,7 +84,7 @@ try:
 
     from agentnode_sdk.installer import load_tool
 
-    func = load_tool(_slug, tool_name=_tool_name)
+    func = load_tool(_slug, tool_name=_tool_name, _internal=True)
 
     # Capture stdout so tool print() calls don't corrupt our JSON output.
     captured = io.StringIO()
@@ -226,7 +226,7 @@ def _run_direct(
     if lockfile_path is None:
         # No lockfile override — env doesn't need touching, no lock needed.
         try:
-            func = load_tool(slug, tool_name=tool_name)
+            func = load_tool(slug, tool_name=tool_name, _internal=True)
             return func(**kwargs)
         except ImportError as exc:
             raise AgentNodeToolError(str(exc), tool_name=tool_name or slug) from exc
@@ -235,7 +235,7 @@ def _run_direct(
         old_env = os.environ.get("AGENTNODE_LOCKFILE")
         os.environ["AGENTNODE_LOCKFILE"] = str(lockfile_path)
         try:
-            func = load_tool(slug, tool_name=tool_name)
+            func = load_tool(slug, tool_name=tool_name, _internal=True)
         except ImportError as exc:
             raise AgentNodeToolError(str(exc), tool_name=tool_name or slug) from exc
         finally:

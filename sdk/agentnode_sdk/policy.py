@@ -19,6 +19,15 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _resolve_interactive() -> bool:
+    """Determine if we're in interactive mode.
+
+    Returns False when AGENTNODE_NON_INTERACTIVE is set, which escalates
+    prompt actions to deny in all policy checks.
+    """
+    return os.environ.get("AGENTNODE_NON_INTERACTIVE", "").lower() not in ("true", "1")
+
+
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------

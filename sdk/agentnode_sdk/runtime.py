@@ -17,6 +17,7 @@ from agentnode_sdk.models import PromptArgumentSpec, PromptSpec, ResourceSpec
 from agentnode_sdk.policy import check_run as _policy_check_run
 from agentnode_sdk.policy import audit_decision as _policy_audit
 from agentnode_sdk.policy import _trust_meets_minimum
+from agentnode_sdk.policy import _resolve_interactive
 
 
 # ---------------------------------------------------------------------------
@@ -1272,7 +1273,7 @@ class AgentNodeRuntime:
             tool_name = tools[0].get("name")
 
         # Policy check (pre-execution)
-        decision = _policy_check_run(slug, tool_name, arguments, entry, interactive=True)
+        decision = _policy_check_run(slug, tool_name, arguments, entry, interactive=_resolve_interactive())
         _policy_audit(
             decision, "runtime_run", slug,
             tool_name=tool_name,

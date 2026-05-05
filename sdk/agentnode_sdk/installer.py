@@ -398,6 +398,7 @@ def install_package(
             "installed_at": datetime.now(timezone.utc).isoformat(),
             "source": "sdk",
             "trust_level": trust_level,
+            "last_trust_check": datetime.now(timezone.utc).isoformat(),
             "permissions": permissions,
             # ANP v0.3 taxonomy fields
             "prompts": prompts or [],
@@ -450,7 +451,7 @@ def _resolve_entrypoint(entrypoint: str) -> tuple[str, str]:
     return entrypoint, "run"
 
 
-def load_tool(slug: str, tool_name: str | None = None) -> Any:
+def load_tool(slug: str, tool_name: str | None = None, *, _internal: bool = False) -> Any:
     """Load an installed package's tool function.
 
     Args:
@@ -462,6 +463,13 @@ def load_tool(slug: str, tool_name: str | None = None) -> Any:
     For v0.1 packs: returns module.run
     For v0.2 packs with tool_name: returns the specific tool function
     """
+    if not _internal:
+        import warnings
+        warnings.warn(
+            "load_tool() bypasses policy checks. Use run_tool() for safe execution.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     data = read_lockfile()
     pkg = data.get("packages", {}).get(slug)
     if not pkg:
@@ -489,8 +497,9 @@ def load_tool(slug: str, tool_name: str | None = None) -> Any:
         # Fallback: tool_name given but not in tools list — use package-level entrypoint
         # Most tool-packs have a single run() function that handles all operations.
         # The tool_name is passed by the caller but maps to the same entrypoint.
+        # Only attempt fallback if no explicit tools list exists (v0.1 pack).
         entrypoint = pkg.get("entrypoint")
-        if entrypoint:
+        if entrypoint and not tools:
             module_path, func_name = _resolve_entrypoint(entrypoint)
             mod = _import_module(module_path, slug)
             # Try tool_name as function name in the module first

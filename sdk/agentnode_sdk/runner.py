@@ -11,9 +11,63 @@ from typing import Any
 
 from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.models import RunToolResult
-from agentnode_sdk.policy import resolve_runtime, check_run, audit_decision
+from agentnode_sdk.policy import resolve_runtime, check_run, audit_decision, _resolve_interactive
 
 logger = logging.getLogger(__name__)
+
+TRUST_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
+
+def _maybe_refresh_trust(slug: str, entry: dict, lockfile_path: Path | None) -> dict:
+    """Re-fetch trust level from backend if cached value is older than TTL.
+
+    On success: new trust level is applied and lockfile updated.
+    On network failure: cached trust used with a warning.
+    """
+    import os
+    from datetime import datetime, timezone
+
+    last_check = entry.get("last_trust_check", entry.get("installed_at", ""))
+    if not last_check:
+        return entry
+    try:
+        checked_at = datetime.fromisoformat(last_check)
+        if checked_at.tzinfo is None:
+            checked_at = checked_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - checked_at).total_seconds()
+        if age < TRUST_TTL_SECONDS:
+            return entry
+    except (ValueError, TypeError):
+        return entry
+
+    try:
+        import httpx
+        base = os.environ.get("AGENTNODE_API_URL", "https://api.agentnode.net")
+        resp = httpx.get(f"{base}/packages/{slug}", timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            new_trust = (
+                data.get("publisher", {}).get("trust_level")
+                or data.get("blocks", {}).get("trust", {}).get("publisher_trust_level")
+                or entry.get("trust_level", "unverified")
+            )
+            old_trust = entry.get("trust_level", "unverified")
+            entry["trust_level"] = new_trust
+            entry["last_trust_check"] = datetime.now(timezone.utc).isoformat()
+            if new_trust != old_trust:
+                logger.info(
+                    "Trust level for %s updated: %s -> %s",
+                    slug, old_trust, new_trust,
+                )
+            try:
+                from agentnode_sdk.installer import update_lockfile
+                update_lockfile(slug, entry, path=lockfile_path)
+            except Exception:
+                pass
+    except Exception:
+        logger.debug("Trust refresh failed for %s, using cached value", slug, exc_info=True)
+    return entry
+
 
 # Reserved kwarg names that may reach ``**kwargs`` via runtime-internal
 # forwarding paths (e.g. ``entry`` is set by the dispatcher). Most other
@@ -73,8 +127,11 @@ def run_tool(
             mode_used="not_executable",
         )
 
+    # Refresh trust level if TTL expired (best-effort, fail-open on network error)
+    entry = _maybe_refresh_trust(slug, entry, lockfile_path)
+
     # Pre-execution policy check
-    decision = check_run(slug, tool_name, kwargs, entry, interactive=True)
+    decision = check_run(slug, tool_name, kwargs, entry, interactive=_resolve_interactive())
     audit_decision(
         decision, "run_tool", slug,
         tool_name=tool_name,
