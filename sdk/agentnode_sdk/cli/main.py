@@ -36,6 +36,16 @@ def main(argv: list[str] | None = None) -> int:
     # reset
     sub.add_parser("reset", help="Reset configuration")
 
+    # auth
+    auth_parser = sub.add_parser("auth", help="Manage provider credentials")
+    auth_sub = auth_parser.add_subparsers(dest="auth_action")
+    auth_set_p = auth_sub.add_parser("set", help="Store a credential for a provider")
+    auth_set_p.add_argument("provider")
+    auth_sub.add_parser("list", help="Show configured credentials")
+    auth_rm_p = auth_sub.add_parser("remove", help="Remove a stored credential")
+    auth_rm_p.add_argument("provider")
+    auth_sub.add_parser("status", help="Check credential status for installed packages")
+
     # config
     config_parser = sub.add_parser("config", help="View or modify settings")
     config_sub = config_parser.add_subparsers(dest="config_action")
@@ -125,6 +135,19 @@ def main(argv: list[str] | None = None) -> int:
             return commands.cmd_doctor(fix=args.fix)
         if args.command == "reset":
             return commands.cmd_reset()
+        if args.command == "auth":
+            from agentnode_sdk.cli.auth import (
+                cmd_auth_set, cmd_auth_list, cmd_auth_remove, cmd_auth_status,
+            )
+            if args.auth_action == "set":
+                return cmd_auth_set(args.provider)
+            if args.auth_action == "list":
+                return cmd_auth_list()
+            if args.auth_action == "remove":
+                return cmd_auth_remove(args.provider)
+            if args.auth_action == "status":
+                return cmd_auth_status()
+            return cmd_auth_list()
         if args.command == "config":
             if args.config_action == "list":
                 return commands.cmd_config_list()

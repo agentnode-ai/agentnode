@@ -307,6 +307,124 @@ def test_no_color_flag(capsys, saved_config):
     assert "\033[" not in out
 
 
+# --- Auth commands ---
+
+
+def test_auth_set(capsys, saved_config):
+    with patch("agentnode_sdk.cli.auth.getpass.getpass", return_value="ghp_test_token_123"):
+        code = main(["auth", "set", "github"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Credential stored for github" in out
+    from agentnode_sdk.credential_store import has_credential
+    assert has_credential("github") is True
+
+
+def test_auth_set_empty_token(capsys, saved_config):
+    with patch("agentnode_sdk.cli.auth.getpass.getpass", return_value=""):
+        code = main(["auth", "set", "github"])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "no token provided" in err
+
+
+def test_auth_set_cancelled(capsys, saved_config):
+    with patch("agentnode_sdk.cli.auth.getpass.getpass", side_effect=KeyboardInterrupt):
+        code = main(["auth", "set", "github"])
+    assert code == 130
+
+
+def test_auth_list_empty(capsys, saved_config):
+    code = main(["auth", "list"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "No credentials configured" in out
+
+
+def test_auth_list_with_creds(capsys, saved_config):
+    from agentnode_sdk.credential_store import set_credential
+    set_credential("github", "ghp_xxx", auth_type="oauth2")
+    set_credential("openai", "sk_yyy", auth_type="api_key")
+    code = main(["auth", "list"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "github" in out
+    assert "openai" in out
+    assert "2 credential(s)" in out
+    assert "ghp_xxx" not in out
+    assert "sk_yyy" not in out
+
+
+def test_auth_remove_exists(capsys, saved_config):
+    from agentnode_sdk.credential_store import set_credential, has_credential
+    set_credential("github", "ghp_xxx")
+    code = main(["auth", "remove", "github"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Removed credential for github" in out
+    assert has_credential("github") is False
+
+
+def test_auth_remove_missing(capsys, saved_config):
+    code = main(["auth", "remove", "nonexistent"])
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "No credential found for nonexistent" in out
+
+
+def test_auth_status_no_packages(capsys, saved_config):
+    code = main(["auth", "status"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "No installed packages require credentials" in out
+
+
+def test_auth_status_with_connector(capsys, saved_config, isolated_env):
+    import json
+    from agentnode_sdk.credential_store import set_credential
+    lock_path = isolated_env / "agentnode.lock"
+    lock_data = {
+        "lockfile_version": "0.1",
+        "updated_at": "",
+        "packages": {
+            "gmail-pack": {
+                "version": "1.0.0",
+                "connector": {"provider": "google", "auth_type": "oauth2"},
+                "capability_ids": ["email_sending"],
+            },
+            "openai-pack": {
+                "version": "1.0.0",
+                "connector": {"provider": "openai", "auth_type": "api_key"},
+                "capability_ids": ["chat_completion"],
+            },
+        },
+    }
+    lock_path.write_text(json.dumps(lock_data), encoding="utf-8")
+    set_credential("openai", "sk_test")
+
+    import os
+    os.environ["AGENTNODE_LOCKFILE"] = str(lock_path)
+    try:
+        code = main(["auth", "status"])
+    finally:
+        del os.environ["AGENTNODE_LOCKFILE"]
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "google" in out
+    assert "missing" in out
+    assert "openai" in out
+    assert "configured" in out
+    assert "agentnode auth set google" in out
+
+
+def test_auth_bare_shows_list(capsys, saved_config):
+    code = main(["auth"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "No credentials configured" in out
+
+
 # --- Config enforcement in smart run ---
 
 
