@@ -23,7 +23,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -78,41 +77,11 @@ def load_credentials() -> dict[str, Any]:
 
 
 def save_credentials(data: dict[str, Any]) -> None:
-    """Write credentials to disk atomically (temp file + rename).
+    """Write credentials to disk atomically with 0600 permissions (Unix)."""
+    from agentnode_sdk._fileutil import atomic_write_json
 
-    Sets file permissions to 0600 on Unix.
-    """
     path = _credentials_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    content = json.dumps(data, indent=2) + "\n"
-
-    # Atomic write: write to temp file in same directory, then rename
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent),
-        prefix=".credentials_",
-        suffix=".tmp",
-    )
-    try:
-        os.write(fd, content.encode("utf-8"))
-        os.close(fd)
-        fd = -1  # Mark as closed
-
-        # Set permissions before rename (Unix only)
-        if os.name != "nt":
-            os.chmod(tmp_path, 0o600)
-
-        # Atomic rename (same filesystem)
-        os.replace(tmp_path, str(path))
-    except Exception:
-        # Clean up temp file on failure
-        if fd >= 0:
-            os.close(fd)
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    atomic_write_json(path, data, mode=0o600)
 
 
 def set_credential(

@@ -982,10 +982,10 @@ def _cmd_run_smart(task: str, raw: bool = False, explain: bool = False, dry_run:
 
 
 def cmd_remove(capability: str, yes: bool = False) -> int:
-    lock = read_lockfile()
-    pkgs = lock.get("packages", {})
+    from agentnode_sdk._fileutil import atomic_write_json, file_lock
 
-    if capability not in pkgs:
+    lock = read_lockfile()
+    if capability not in lock.get("packages", {}):
         print(f"\n  {capability} is not installed.\n")
         return 1
 
@@ -999,9 +999,14 @@ def cmd_remove(capability: str, yes: bool = False) -> int:
             print("  Cancelled.")
             return 0
 
-    del pkgs[capability]
     lock_path = _lockfile_path()
-    lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+    with file_lock(lock_path):
+        lock = read_lockfile(lock_path)
+        if capability not in lock.get("packages", {}):
+            print(f"\n  {capability} is not installed.\n")
+            return 1
+        del lock["packages"][capability]
+        atomic_write_json(lock_path, lock)
 
     print(f"\n  Removed {capability} from lockfile.\n")
     return 0

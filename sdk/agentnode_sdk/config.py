@@ -111,11 +111,12 @@ def load_config() -> dict[str, Any]:
 
 
 def save_config(cfg: dict[str, Any]) -> None:
-    """Write config to disk."""
+    """Write config to disk atomically."""
+    from agentnode_sdk._fileutil import atomic_write_json
+
     path = config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     cfg["updated_at"] = datetime.now(timezone.utc).isoformat()
-    path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(path, cfg)
 
 
 def delete_config() -> bool:

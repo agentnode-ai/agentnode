@@ -285,11 +285,14 @@ def update_lockfile(
     path: Path | None = None,
 ) -> None:
     """Write or update a package entry in agentnode.lock."""
+    from agentnode_sdk._fileutil import atomic_write_json, file_lock
+
     lf = path or _lockfile_path()
-    data = read_lockfile(lf)
-    data["packages"][slug] = entry
-    data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    lf.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    with file_lock(lf):
+        data = read_lockfile(lf)
+        data["packages"][slug] = entry
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        atomic_write_json(lf, data)
 
 
 def check_installed(slug: str, version: str, path: Path | None = None) -> str:
