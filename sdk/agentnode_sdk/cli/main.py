@@ -79,6 +79,10 @@ def main(argv: list[str] | None = None) -> int:
     verify_parser = sub.add_parser("verify-local", help="Run verification pipeline locally")
     verify_parser.add_argument("path", nargs="?", default=".", help="Package directory (default: current)")
 
+    # record-cases
+    record_parser = sub.add_parser("record-cases", help="Record VCR cassettes for API verification cases")
+    record_parser.add_argument("path", nargs="?", default=".", help="Package directory (default: current)")
+
     # capabilities
     cap_parser = sub.add_parser("capabilities", help="List installed capabilities")
     cap_sub = cap_parser.add_subparsers(dest="cap_action")
@@ -128,6 +132,8 @@ def main(argv: list[str] | None = None) -> int:
             return commands.cmd_validate(args.path)
         if args.command == "verify-local":
             return commands.cmd_verify_local(args.path)
+        if args.command == "record-cases":
+            return commands.cmd_record_cases(args.path)
         if args.command == "capabilities":
             if args.cap_action == "show":
                 return commands.cmd_capabilities_show(args.name)

@@ -546,6 +546,86 @@ def cmd_verify_local(path_str: str) -> int:
     return 0 if result.install_ok else 1
 
 
+def cmd_record_cases(path_str: str) -> int:
+    """Record VCR cassettes for verification cases."""
+    import yaml
+    from agentnode_sdk.cli.record_cases import record_cases, check_manifest_in, ensure_manifest_in
+
+    pkg_path = Path(path_str).resolve()
+    if not pkg_path.is_dir():
+        print(f"  Error: '{path_str}' is not a directory")
+        return 1
+
+    manifest_path = pkg_path / "agentnode.yaml"
+    if not manifest_path.exists():
+        print("  Error: agentnode.yaml not found")
+        return 1
+
+    try:
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"  Error parsing manifest: {e}")
+        return 1
+
+    pkg_id = manifest.get("package_id", pkg_path.name)
+
+    print()
+    print(section(f"Recording cassettes for {pkg_id}"))
+    print(dim("  Installing package and calling tools with VCR recording..."))
+    print(dim("  (This makes real API calls — ensure credentials are available)"))
+    print()
+
+    result = record_cases(pkg_path, manifest)
+
+    # Show results
+    if result["recorded"]:
+        print(bold("  Recorded"))
+        print("  " + "-" * 8)
+        for r in result["recorded"]:
+            print(f"  \033[32m[OK]\033[0m {r['name']} -> {r['cassette']}")
+        print()
+
+    if result["skipped"]:
+        print(bold("  Skipped"))
+        print("  " + "-" * 7)
+        for s in result["skipped"]:
+            print(f"  [--] {s['name']}: {s['reason']}")
+        print()
+
+    if result["errors"]:
+        print(bold("  Errors"))
+        print("  " + "-" * 6)
+        for e in result["errors"]:
+            print(f"  \033[31m[!!]\033[0m {e}")
+        print()
+
+    # Check MANIFEST.in
+    if result["recorded"]:
+        ok, msg = check_manifest_in(pkg_path)
+        if not ok:
+            ensure_manifest_in(pkg_path)
+            print(dim("  Created/updated MANIFEST.in to include fixtures."))
+            print()
+
+    # Summary
+    total = len(result["recorded"]) + len(result["skipped"]) + len(result["errors"])
+    print(kv("Total cases", str(total)))
+    print(kv("Recorded", str(len(result["recorded"]))))
+    print(kv("Skipped", str(len(result["skipped"]))))
+    print(kv("Errors", str(len(result["errors"]))))
+    print()
+
+    if result["recorded"]:
+        print(dim("  Next: agentnode verify-local ."))
+        print(dim("  Review cassettes for leaked credentials before committing."))
+    elif result["errors"]:
+        print(dim("  Fix the errors above and try again."))
+        print(dim("  Common issues: missing API credentials, network errors, wrong input format."))
+    print()
+
+    return 0 if not result["errors"] else 1
+
+
 def _step_line(label: str, ok: bool, detail: str = "") -> None:
     status = "\033[32m[PASS]\033[0m" if ok else "\033[31m[FAIL]\033[0m"
     line = f"  {status} {label}"

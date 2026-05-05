@@ -150,7 +150,7 @@ def _step_install(pkg_path: Path, venv_path: Path) -> tuple[bool, str]:
         )
         python = _venv_python(venv_path)
         r = subprocess.run(
-            [python, "-m", "pip", "install", "-q", str(pkg_path), "pytest"],
+            [python, "-m", "pip", "install", "-q", str(pkg_path), "pytest", "vcrpy"],
             capture_output=True, text=True, timeout=120,
         )
         if r.returncode != 0:
