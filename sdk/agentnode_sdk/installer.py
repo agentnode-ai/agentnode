@@ -478,17 +478,18 @@ def load_tool(slug: str, tool_name: str | None = None) -> Any:
                             f"for tool '{tool_name}' in package '{slug}'."
                         )
                     return func
-        # Fallback: tool_name given but not in tools list — try package-level entrypoint
-        # This handles packages where capability-level entrypoints are not published
+        # Fallback: tool_name given but not in tools list — use package-level entrypoint
+        # Most tool-packs have a single run() function that handles all operations.
+        # The tool_name is passed by the caller but maps to the same entrypoint.
         entrypoint = pkg.get("entrypoint")
         if entrypoint:
             module_path, func_name = _resolve_entrypoint(entrypoint)
             mod = _import_module(module_path, slug)
-            # Try tool_name as function name in the module
+            # Try tool_name as function name in the module first
             func = getattr(mod, tool_name, None)
             if func and callable(func):
                 return func
-            # Try default function from entrypoint
+            # Fall back to the default entrypoint function (usually run())
             func = getattr(mod, func_name, None)
             if func and callable(func):
                 return func
