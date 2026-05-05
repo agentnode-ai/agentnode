@@ -103,6 +103,20 @@ def parse_task(task: str) -> ParsedTask | None:
     return None
 
 
+def get_alternatives(task: str) -> list[str]:
+    """Get alternative capability interpretations for a task."""
+    task_lower = task.lower()
+    matches: list[str] = []
+    seen: set[str] = set()
+
+    for pattern, capability, _ in _TASK_PATTERNS:
+        if pattern.search(task_lower) and capability not in seen:
+            seen.add(capability)
+            matches.append(capability)
+
+    return matches
+
+
 def _extract_args(task: str, capability: str) -> dict:
     """Extract input arguments from the task string."""
     args: dict = {}

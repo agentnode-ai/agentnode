@@ -673,10 +673,12 @@ def cmd_run(
     input_data: str | None = None,
     file_path: str | None = None,
     raw: bool = False,
+    explain: bool = False,
+    dry_run: bool = False,
 ) -> int:
     # Detect if this is a natural language task (contains spaces = not a slug)
     if " " in capability.strip():
-        return _cmd_run_smart(capability, raw=raw)
+        return _cmd_run_smart(capability, raw=raw, explain=explain, dry_run=dry_run)
 
     if input_data and file_path:
         print("--input and --file are mutually exclusive.", file=sys.stderr)
@@ -731,9 +733,9 @@ def cmd_run(
         return 1
 
 
-def _cmd_run_smart(task: str, raw: bool = False) -> int:
+def _cmd_run_smart(task: str, raw: bool = False, explain: bool = False, dry_run: bool = False) -> int:
     """Smart run: parse natural language task → resolve → install → execute."""
-    from agentnode_sdk.cli.smart_run import parse_task
+    from agentnode_sdk.cli.smart_run import parse_task, get_alternatives
     from agentnode_sdk.installer import read_lockfile as _read_lock
 
     parsed = parse_task(task)
@@ -748,61 +750,153 @@ def _cmd_run_smart(task: str, raw: bool = False) -> int:
         print()
         return 1
 
-    print()
-    print(dim(f"  Task: {task}"))
-    print(dim(f"  Capability: {parsed.capability} (confidence: {parsed.confidence})"))
-    if parsed.input_args:
-        args_str = ", ".join(f"{k}={v!r}" for k, v in parsed.input_args.items())
-        print(dim(f"  Input: {args_str}"))
+    # Low confidence: prompt for confirmation
+    if parsed.confidence == "low" and not dry_run:
+        print()
+        print(f"  Task: {task}")
+        print(f"  Best guess: {bold(parsed.capability)} {dim('(low confidence)')}")
+        print()
+        alternatives = get_alternatives(task)
+        if alternatives:
+            print(dim("  Other possibilities:"))
+            for alt in alternatives[:3]:
+                print(dim(f"    - {alt}"))
+            print()
+        try:
+            confirm = input("  Proceed? [Y/n]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n  Cancelled.")
+            return 130
+        if confirm.lower() == "n":
+            print("  Cancelled.")
+            print(dim("  Try `agentnode resolve <capability>` for manual selection."))
+            print()
+            return 0
+
     print()
 
     # Find installed package for this capability
     lock = _read_lock()
     pkgs = lock.get("packages", {})
     target_slug: str | None = None
+    target_trust: str = "unknown"
 
     for slug, info in pkgs.items():
         if parsed.capability in info.get("capability_ids", []):
             target_slug = slug
+            target_trust = info.get("trust_level", "unknown")
             break
 
-    # Not installed → resolve and install
-    if not target_slug:
-        print(f"  Missing capability: {parsed.capability}")
-        print()
+    # Resolve alternatives for --explain
+    alternatives: list = []
+    needs_install = target_slug is None
 
+    if needs_install or explain:
         try:
             from agentnode_sdk.client import AgentNodeClient
 
             client = AgentNodeClient()
             try:
-                result = client.resolve([parsed.capability])
-                if not result.results:
-                    print(f"  No package found for capability: {parsed.capability}")
-                    print(dim("  Try `agentnode search` to find packages manually."))
-                    print()
-                    return 1
-
-                best = result.results[0]
-                print(f"  Installing {bold(best.slug)}...")
-
-                install_result = client.install(best.slug, require_verified=True)
-                if not install_result.installed:
-                    print(f"  Install failed: {install_result.message}")
-                    print()
-                    return 1
-
-                target_slug = best.slug
-                print(f"  \033[32m[OK]\033[0m {target_slug} installed")
-                print()
+                resolve_result = client.resolve([parsed.capability])
+                alternatives = resolve_result.results[:5] if resolve_result.results else []
             finally:
                 client.close()
+        except Exception:
+            alternatives = []
+
+    # --- Explain mode ---
+    if explain:
+        print(section("Explain"))
+        print(kv("Task", task))
+        print(kv("Detected capability", parsed.capability))
+        print(kv("Confidence", parsed.confidence))
+        print(kv("Matched by", parsed.source))
+        print()
+        if parsed.input_args:
+            print(bold("  Extracted input"))
+            print("  " + "-" * 15)
+            for k, v in parsed.input_args.items():
+                print(f"    {k}: {v!r}")
+            print()
+        if target_slug:
+            print(bold("  Selected package"))
+            print("  " + "-" * 16)
+            print(f"    {target_slug} [{target_trust}] (installed)")
+        elif alternatives:
+            print(bold("  Selected package"))
+            print("  " + "-" * 16)
+            best = alternatives[0]
+            print(f"    {best.slug} [score: {best.score:.0f}, {best.trust_level}] (will install)")
+        print()
+        if alternatives and len(alternatives) > 1:
+            print(bold("  Alternatives"))
+            print("  " + "-" * 12)
+            for alt in alternatives[1:4]:
+                print(f"    {alt.slug} [score: {alt.score:.0f}, {alt.trust_level}]")
+            print()
+        if not dry_run:
+            print(dim("  ---"))
+            print()
+
+    # --- Dry-run mode ---
+    if dry_run:
+        print(section("Plan (dry-run)"))
+        steps = []
+        if needs_install:
+            if alternatives:
+                steps.append(f"Install: {alternatives[0].slug}")
+            else:
+                steps.append(f"Install: (no package found for {parsed.capability})")
+        slug_label = target_slug or (alternatives[0].slug if alternatives else "?")
+        args_str = ", ".join(f"{k}={v!r}" for k, v in parsed.input_args.items())
+        steps.append(f"Execute: {slug_label}.{parsed.capability}({args_str})")
+
+        for i, step in enumerate(steps, 1):
+            print(f"    {i}. {step}")
+        print()
+        print(dim("  No changes applied."))
+        print()
+        return 0
+
+    # --- Install if needed ---
+    if needs_install:
+        if not alternatives:
+            print(f"  No package found for capability: {parsed.capability}")
+            print(dim("  Try `agentnode search` to find packages manually."))
+            print()
+            return 1
+
+        best = alternatives[0]
+        print(f"  Missing capability: {parsed.capability}")
+        print(f"  Installing {bold(best.slug)}...")
+
+        try:
+            from agentnode_sdk.client import AgentNodeClient as _InstClient
+
+            inst_client = _InstClient()
+            try:
+                install_result = inst_client.install(best.slug, require_verified=True)
+            finally:
+                inst_client.close()
+
+            if not install_result.installed:
+                print(f"  Install failed: {install_result.message}")
+                print()
+                return 1
+
+            target_slug = best.slug
+            print(f"  \033[32m[OK]\033[0m {target_slug} installed")
+            print()
         except Exception as e:
             print(f"  Auto-install failed: {e}")
             print()
             return 1
 
-    # Execute
+    # --- Execute ---
+    if not explain:
+        print(dim(f"  Task: {task}"))
+        print(dim(f"  Capability: {parsed.capability} (confidence: {parsed.confidence})"))
+        print()
     print(f"  Running {bold(target_slug)}...")
     print()
 

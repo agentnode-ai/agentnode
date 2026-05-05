@@ -76,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--input", dest="input_data", default=None)
     run_parser.add_argument("--file", dest="file_path", default=None)
     run_parser.add_argument("--raw", action="store_true")
+    run_parser.add_argument("--explain", action="store_true", help="Show reasoning: why this capability and package")
+    run_parser.add_argument("--dry-run", action="store_true", help="Show plan without executing")
 
     # remove
     remove_parser = sub.add_parser("remove", help="Remove a capability")
@@ -151,6 +153,8 @@ def main(argv: list[str] | None = None) -> int:
                 input_data=args.input_data,
                 file_path=args.file_path,
                 raw=args.raw,
+                explain=args.explain,
+                dry_run=args.dry_run,
             )
         if args.command == "remove":
             return commands.cmd_remove(args.capability, yes=args.yes)
