@@ -227,17 +227,32 @@ def cmd_doctor(fix: bool = False) -> int:
     print()
 
     if fix:
+        # Respect auto_upgrade_policy
+        if cfg.get("auto_upgrade_policy") == "off":
+            print()
+            print(dim("  Auto-install disabled (auto_upgrade_policy: off)."))
+            print(dim("  Install manually:"))
+            for slug in install_slugs:
+                print(dim(f"    agentnode install {slug}"))
+            print()
+            return 0
+
         # Auto-install suggested packages
         print(bold("  Installing..."))
         print("  " + "-" * 12)
         from agentnode_sdk.client import AgentNodeClient as _FixClient
 
+        trust_min = cfg.get("trust", {}).get("minimum_trust_level", "verified")
         fix_client = _FixClient()
         success_count = 0
         try:
             for slug in install_slugs:
                 try:
-                    r = fix_client.install(slug, require_verified=True)
+                    r = fix_client.install(
+                        slug,
+                        require_verified=trust_min in ("verified", "trusted", "curated"),
+                        require_trusted=trust_min in ("trusted", "curated"),
+                    )
                     if r.installed:
                         print(f"    \033[32m[OK]\033[0m {slug} installed")
                         success_count += 1
@@ -866,16 +881,48 @@ def _cmd_run_smart(task: str, raw: bool = False, explain: bool = False, dry_run:
             print()
             return 1
 
+        # Respect user config for auto-install
+        cfg = load_config()
+        if cfg.get("auto_upgrade_policy") == "off":
+            best = alternatives[0]
+            print(f"  Missing capability: {parsed.capability}")
+            print(f"  Best match: {best.slug}")
+            print()
+            print(dim("  Auto-install disabled (auto_upgrade_policy: off)."))
+            print(dim(f"  Install manually: agentnode install {best.slug}"))
+            print()
+            return 1
+
         best = alternatives[0]
-        print(f"  Missing capability: {parsed.capability}")
+
+        # Prompt if config requires confirmation
+        if cfg.get("install_confirmation") == "prompt":
+            print(f"  Missing capability: {parsed.capability}")
+            print(f"  Package: {best.slug} [{best.trust_level}]")
+            try:
+                confirm = input("  Install? [Y/n]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\n  Cancelled.")
+                return 130
+            if confirm.lower() == "n":
+                print("  Cancelled.")
+                return 0
+        else:
+            print(f"  Missing capability: {parsed.capability}")
+
         print(f"  Installing {bold(best.slug)}...")
 
         try:
             from agentnode_sdk.client import AgentNodeClient as _InstClient
 
+            trust_min = cfg.get("trust", {}).get("minimum_trust_level", "verified")
             inst_client = _InstClient()
             try:
-                install_result = inst_client.install(best.slug, require_verified=True)
+                install_result = inst_client.install(
+                    best.slug,
+                    require_verified=trust_min in ("verified", "trusted", "curated"),
+                    require_trusted=trust_min in ("trusted", "curated"),
+                )
             finally:
                 inst_client.close()
 

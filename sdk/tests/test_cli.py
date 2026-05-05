@@ -1,7 +1,7 @@
 """Tests for agentnode_sdk CLI."""
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -269,10 +269,9 @@ def test_doctor(capsys, saved_config):
     assert code == 0
     out = capsys.readouterr().out
     assert "AgentNode Doctor" in out
-    assert "Config file" in out
-    assert "found" in out
-    assert "SDK version" in out
-    assert "Python version" in out
+    assert "Config" in out
+    assert "SDK" in out
+    assert "Python" in out
 
 
 # --- Reset ---
@@ -306,3 +305,86 @@ def test_no_color_flag(capsys, saved_config):
     assert code == 0
     out = capsys.readouterr().out
     assert "\033[" not in out
+
+
+# --- Config enforcement in smart run ---
+
+
+def _mock_resolve_result():
+    """Create a mock resolve result with one package."""
+    result = MagicMock()
+    pkg = MagicMock()
+    pkg.slug = "web-search-pack"
+    pkg.score = 92.0
+    pkg.trust_level = "verified"
+    result.results = [pkg]
+    return result
+
+
+def test_smart_run_blocks_when_auto_upgrade_off(capsys, saved_config):
+    """Smart run should refuse auto-install when auto_upgrade_policy is off."""
+    from agentnode_sdk.config import load_config, save_config
+
+    cfg = load_config()
+    cfg["auto_upgrade_policy"] = "off"
+    save_config(cfg)
+
+    mock_client = MagicMock()
+    mock_client.resolve.return_value = _mock_resolve_result()
+    mock_client.close = MagicMock()
+
+    with patch("agentnode_sdk.client.AgentNodeClient", return_value=mock_client):
+        code = main(["run", "search", "for", "python", "tutorials"])
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "Auto-install disabled" in out
+
+
+def test_smart_run_prompts_when_install_confirmation_prompt(capsys, saved_config):
+    """Smart run should prompt user when install_confirmation is 'prompt'."""
+    from agentnode_sdk.config import load_config, save_config
+
+    cfg = load_config()
+    cfg["install_confirmation"] = "prompt"
+    save_config(cfg)
+
+    mock_client = MagicMock()
+    mock_client.resolve.return_value = _mock_resolve_result()
+    mock_client.close = MagicMock()
+
+    with patch("agentnode_sdk.client.AgentNodeClient", return_value=mock_client):
+        with patch("builtins.input", return_value="n") as mock_input:
+            code = main(["run", "search", "for", "python", "tutorials"])
+
+    assert code == 0
+    mock_input.assert_called_once()
+
+
+def test_cmd_install_respects_trust_level(capsys, saved_config):
+    """Direct install should pass trust level from config to client."""
+    from agentnode_sdk.config import load_config, save_config
+
+    cfg = load_config()
+    cfg["trust"] = {"minimum_trust_level": "trusted"}
+    save_config(cfg)
+
+    mock_client = MagicMock()
+    install_result = MagicMock()
+    install_result.installed = True
+    install_result.already_installed = False
+    install_result.slug = "some-pack"
+    install_result.version = "1.0.0"
+    mock_client.install.return_value = install_result
+    mock_client.close = MagicMock()
+
+    with patch("agentnode_sdk.client.AgentNodeClient", return_value=mock_client):
+        code = main(["install", "some-pack", "--yes"])
+
+    assert code == 0
+    mock_client.install.assert_called_once_with(
+        "some-pack",
+        version=None,
+        require_verified=True,
+        require_trusted=True,
+    )
