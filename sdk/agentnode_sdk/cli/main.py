@@ -71,8 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     install_parser.add_argument("--yes", "-y", action="store_true")
 
     # run
-    run_parser = sub.add_parser("run", help="Run a capability")
-    run_parser.add_argument("capability")
+    run_parser = sub.add_parser("run", help="Run a capability or natural language task")
+    run_parser.add_argument("capability", nargs="+", help="Package slug or natural language task")
     run_parser.add_argument("--input", dest="input_data", default=None)
     run_parser.add_argument("--file", dest="file_path", default=None)
     run_parser.add_argument("--raw", action="store_true")
@@ -147,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "run":
             return commands.cmd_run(
-                args.capability,
+                " ".join(args.capability),
                 input_data=args.input_data,
                 file_path=args.file_path,
                 raw=args.raw,

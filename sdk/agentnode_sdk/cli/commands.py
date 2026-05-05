@@ -674,6 +674,10 @@ def cmd_run(
     file_path: str | None = None,
     raw: bool = False,
 ) -> int:
+    # Detect if this is a natural language task (contains spaces = not a slug)
+    if " " in capability.strip():
+        return _cmd_run_smart(capability, raw=raw)
+
     if input_data and file_path:
         print("--input and --file are mutually exclusive.", file=sys.stderr)
         return 1
@@ -685,6 +689,7 @@ def cmd_run(
         print("  Use one of:")
         print("    agentnode run <capability> --input '{\"key\":\"value\"}'")
         print("    agentnode run <capability> --file input.json")
+        print("    agentnode run \"search for AI news\"  (smart mode)")
         print()
         return 1
 
@@ -723,6 +728,116 @@ def cmd_run(
         return 0
     except Exception as e:
         print(f"Run failed: {e}", file=sys.stderr)
+        return 1
+
+
+def _cmd_run_smart(task: str, raw: bool = False) -> int:
+    """Smart run: parse natural language task → resolve → install → execute."""
+    from agentnode_sdk.cli.smart_run import parse_task
+    from agentnode_sdk.installer import read_lockfile as _read_lock
+
+    parsed = parse_task(task)
+    if not parsed:
+        print()
+        print(f"  Could not understand task: \"{task}\"")
+        print()
+        print(dim("  Try being more specific:"))
+        print(dim("    agentnode run \"search for AI news\""))
+        print(dim("    agentnode run \"extract text from report.pdf\""))
+        print(dim("    agentnode run \"translate 'hello' to german\""))
+        print()
+        return 1
+
+    print()
+    print(dim(f"  Task: {task}"))
+    print(dim(f"  Capability: {parsed.capability} (confidence: {parsed.confidence})"))
+    if parsed.input_args:
+        args_str = ", ".join(f"{k}={v!r}" for k, v in parsed.input_args.items())
+        print(dim(f"  Input: {args_str}"))
+    print()
+
+    # Find installed package for this capability
+    lock = _read_lock()
+    pkgs = lock.get("packages", {})
+    target_slug: str | None = None
+
+    for slug, info in pkgs.items():
+        if parsed.capability in info.get("capability_ids", []):
+            target_slug = slug
+            break
+
+    # Not installed → resolve and install
+    if not target_slug:
+        print(f"  Missing capability: {parsed.capability}")
+        print()
+
+        try:
+            from agentnode_sdk.client import AgentNodeClient
+
+            client = AgentNodeClient()
+            try:
+                result = client.resolve([parsed.capability])
+                if not result.results:
+                    print(f"  No package found for capability: {parsed.capability}")
+                    print(dim("  Try `agentnode search` to find packages manually."))
+                    print()
+                    return 1
+
+                best = result.results[0]
+                print(f"  Installing {bold(best.slug)}...")
+
+                install_result = client.install(best.slug, require_verified=True)
+                if not install_result.installed:
+                    print(f"  Install failed: {install_result.message}")
+                    print()
+                    return 1
+
+                target_slug = best.slug
+                print(f"  \033[32m[OK]\033[0m {target_slug} installed")
+                print()
+            finally:
+                client.close()
+        except Exception as e:
+            print(f"  Auto-install failed: {e}")
+            print()
+            return 1
+
+    # Execute
+    print(f"  Running {bold(target_slug)}...")
+    print()
+
+    try:
+        from agentnode_sdk.runner import run_tool
+
+        result = run_tool(target_slug, **parsed.input_args)
+
+        if not result.success:
+            print(f"  \033[31mFailed:\033[0m {result.error}")
+            print()
+            return 1
+
+        output = result.result if hasattr(result, "result") else result
+        if raw:
+            print(json.dumps(output, default=str))
+        else:
+            print(bold("  Result"))
+            print("  " + "-" * 6)
+            if isinstance(output, dict):
+                for k, v in output.items():
+                    val_str = str(v)
+                    if len(val_str) > 200:
+                        val_str = val_str[:197] + "..."
+                    print(kv(k, val_str))
+            elif isinstance(output, str):
+                for line in output.split("\n")[:20]:
+                    print(f"  {line}")
+            else:
+                print(f"  {output}")
+            print()
+        return 0
+    except Exception as e:
+        print(f"  \033[31mExecution failed:\033[0m {e}")
+        print()
         return 1
 
 
