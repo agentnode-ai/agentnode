@@ -137,15 +137,22 @@ def run_tool(
         tool_name=tool_name,
         trust_level=entry.get("trust_level"),
     )
+    policy_info = {
+        "action": decision.action,
+        "reason": decision.reason,
+        "source": decision.source,
+    }
     if decision.action == "deny":
         return RunToolResult(
             success=False, error=decision.reason, mode_used="policy_denied",
+            policy=policy_info,
         )
     if decision.action == "prompt":
         return RunToolResult(
             success=False,
             error=f"Policy requires approval: {decision.reason}",
             mode_used="policy_prompt",
+            policy=policy_info,
         )
 
     # Agent dispatch — package_type=agent gets its own runner.
@@ -153,7 +160,9 @@ def run_tool(
     # not run_tool()'s timeout parameter.
     if entry.get("package_type") == "agent":
         from agentnode_sdk.runtimes.agent_runner import run_agent
-        return run_agent(slug, entry=entry, **kwargs)
+        res = run_agent(slug, entry=entry, **kwargs)
+        res.policy = policy_info
+        return res
 
     # Resolve runtime (default: python for backward compat)
     runtime = resolve_runtime(entry) if entry else "python"
@@ -168,20 +177,23 @@ def run_tool(
 
     if runtime == "python":
         from agentnode_sdk.runtimes.python_runner import run_python
-        return run_python(slug, tool_name, mode=mode, timeout=timeout,
-                          entry=entry, lockfile_path=lockfile_path, **kwargs)
+        res = run_python(slug, tool_name, mode=mode, timeout=timeout,
+                         entry=entry, lockfile_path=lockfile_path, **kwargs)
     elif runtime == "mcp":
         from agentnode_sdk.runtimes.mcp_runner import run_mcp
-        return run_mcp(slug, tool_name, timeout=timeout, entry=entry, **kwargs)
+        res = run_mcp(slug, tool_name, timeout=timeout, entry=entry, **kwargs)
     elif runtime == "remote":
         from agentnode_sdk.runtimes.remote_runner import run_remote
-        return run_remote(slug, tool_name, timeout=timeout, entry=entry, **kwargs)
+        res = run_remote(slug, tool_name, timeout=timeout, entry=entry, **kwargs)
     else:
         return RunToolResult(
             success=False,
             error=f"Unsupported runtime: {runtime!r}",
             mode_used=runtime,
+            policy=policy_info,
         )
+    res.policy = policy_info
+    return res
 
 
 def _get_lockfile_entry(slug: str, lockfile_path: Path | None) -> dict:

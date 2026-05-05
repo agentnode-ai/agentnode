@@ -32,6 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     # doctor
     doctor_parser = sub.add_parser("doctor", help="Diagnose setup and detect missing capabilities")
     doctor_parser.add_argument("--fix", action="store_true", help="Auto-install suggested packages")
+    doctor_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
 
     # reset
     sub.add_parser("reset", help="Reset configuration")
@@ -71,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     resolve_parser = sub.add_parser("resolve", help="Find best packages for a capability")
     resolve_parser.add_argument("capability", nargs="+", help="Capability ID(s) to resolve")
     resolve_parser.add_argument("--framework", default=None, help="Preferred framework for scoring")
+    resolve_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
 
     # recommend
     sub.add_parser("recommend", help="Suggest packages based on your installed setup")
@@ -86,7 +88,8 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("capability", nargs="+", help="Package slug or natural language task")
     run_parser.add_argument("--input", dest="input_data", default=None)
     run_parser.add_argument("--file", dest="file_path", default=None)
-    run_parser.add_argument("--raw", action="store_true")
+    run_parser.add_argument("--raw", action="store_true", help="Output only result payload")
+    run_parser.add_argument("--json", dest="json_output", action="store_true", help="Full structured JSON output")
     run_parser.add_argument("--explain", action="store_true", help="Show reasoning: why this capability and package")
     run_parser.add_argument("--dry-run", action="store_true", help="Show plan without executing")
 
@@ -94,6 +97,17 @@ def main(argv: list[str] | None = None) -> int:
     remove_parser = sub.add_parser("remove", help="Remove a capability")
     remove_parser.add_argument("capability")
     remove_parser.add_argument("--yes", "-y", action="store_true")
+
+    # audit
+    audit_parser = sub.add_parser("audit", help="Show recent policy decisions")
+    audit_parser.add_argument("-n", "--limit", type=int, default=20, help="Number of entries")
+    audit_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+
+    # logs
+    logs_parser = sub.add_parser("logs", help="Show agent run logs")
+    logs_parser.add_argument("run_id", nargs="?", default=None, help="Show specific run")
+    logs_parser.add_argument("-n", "--limit", type=int, default=10, help="Number of runs to list")
+    logs_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
 
     # init
     init_parser = sub.add_parser("init", help="Create a new package from template")
@@ -132,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "setup":
             return commands.cmd_setup()
         if args.command == "doctor":
-            return commands.cmd_doctor(fix=args.fix)
+            return commands.cmd_doctor(fix=args.fix, json_output=args.json_output)
         if args.command == "reset":
             return commands.cmd_reset()
         if args.command == "auth":
@@ -166,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
                 package_type=args.pkg_type,
             )
         if args.command == "resolve":
-            return commands.cmd_resolve(args.capability, framework=args.framework)
+            return commands.cmd_resolve(args.capability, framework=args.framework, json_output=args.json_output)
         if args.command == "recommend":
             return commands.cmd_recommend()
         if args.command == "install":
@@ -181,9 +195,17 @@ def main(argv: list[str] | None = None) -> int:
                 raw=args.raw,
                 explain=args.explain,
                 dry_run=args.dry_run,
+                json_output=args.json_output,
             )
         if args.command == "remove":
             return commands.cmd_remove(args.capability, yes=args.yes)
+        if args.command == "audit":
+            from agentnode_sdk.cli.audit import cmd_audit
+            return cmd_audit(limit=args.limit, json_output=args.json_output)
+        if args.command == "logs":
+            return commands.cmd_logs(
+                run_id=args.run_id, limit=args.limit, json_output=args.json_output,
+            )
         if args.command == "init":
             return commands.cmd_init(name=args.name, template_type=args.template_type)
         if args.command == "validate":

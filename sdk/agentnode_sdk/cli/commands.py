@@ -62,7 +62,7 @@ def cmd_setup() -> int:
     return run_wizard()
 
 
-def cmd_doctor(fix: bool = False) -> int:
+def cmd_doctor(fix: bool = False, json_output: bool = False) -> int:
     import agentnode_sdk
 
     cfg = load_config()
@@ -101,13 +101,32 @@ def cmd_doctor(fix: bool = False) -> int:
     else:
         lock_info = "not found"
 
+    health = {
+        "config": {"ok": cfg_found and cfg_valid, "detail": "valid" if cfg_found and cfg_valid else "not found" if not cfg_found else "invalid"},
+        "sdk": {"ok": True, "version": sdk_version},
+        "python": {"ok": True, "version": py_version},
+        "registry": {"ok": registry_ok, "detail": registry_status},
+        "lockfile": {"ok": lockfile.is_file(), "packages": pkg_count},
+    }
+
+    if json_output:
+        installed = {}
+        for slug, info in pkgs.items():
+            installed[slug] = {
+                "trust_level": info.get("trust_level", "unknown"),
+                "capability_ids": info.get("capability_ids", []),
+            }
+        report = {"health": health, "installed": installed}
+        print(json.dumps(report, indent=2))
+        return 0
+
     print()
     print(section("AgentNode Doctor"))
 
     # --- System Health ---
     print(bold("  System"))
     print("  " + "-" * 6)
-    config_detail = "valid" if cfg_found and cfg_valid else "not found" if not cfg_found else "invalid"
+    config_detail = health["config"]["detail"]
     _doctor_check("Config", cfg_found and cfg_valid, config_detail)
     _doctor_check("SDK", True, f"v{sdk_version}")
     _doctor_check("Python", True, py_version)
@@ -504,7 +523,7 @@ def _print_discover_hits(hits: list, numbered: bool = False) -> None:
     print()
 
 
-def cmd_resolve(capabilities: list[str], framework: str | None = None) -> int:
+def cmd_resolve(capabilities: list[str], framework: str | None = None, json_output: bool = False) -> int:
     """Resolve capability IDs to ranked package recommendations."""
     try:
         from agentnode_sdk.client import AgentNodeClient
@@ -516,11 +535,28 @@ def cmd_resolve(capabilities: list[str], framework: str | None = None) -> int:
             client.close()
 
         if not result.results:
+            if json_output:
+                print(json.dumps({"query": capabilities, "total": 0, "results": []}))
+                return 0
             print()
             print(f"  No packages found for: {', '.join(capabilities)}")
             print()
             print(dim("  Try `agentnode search <query>` for full-text search."))
             print()
+            return 0
+
+        if json_output:
+            items = []
+            for pkg in result.results[:10]:
+                items.append({
+                    "slug": pkg.slug,
+                    "version": pkg.version,
+                    "summary": pkg.summary,
+                    "score": pkg.score,
+                    "trust_level": pkg.trust_level or "unverified",
+                    "matched_capabilities": pkg.matched_capabilities or [],
+                })
+            print(json.dumps({"query": capabilities, "total": result.total, "results": items}, indent=2))
             return 0
 
         cap_label = ", ".join(capabilities)
@@ -689,6 +725,7 @@ def cmd_run(
     raw: bool = False,
     explain: bool = False,
     dry_run: bool = False,
+    json_output: bool = False,
 ) -> int:
     # Detect if this is a natural language task (contains spaces = not a slug)
     if " " in capability.strip():
@@ -729,6 +766,22 @@ def cmd_run(
         from agentnode_sdk.runner import run_tool
 
         result = run_tool(capability, **data)
+
+        if explain and hasattr(result, "policy") and result.policy:
+            print()
+            print(section("Explain"))
+            print(kv("Package", capability))
+            print(kv("Policy", result.policy["action"]))
+            print(kv("Reason", result.policy["reason"]))
+            print(kv("Source", result.policy["source"]))
+            print(kv("Mode", result.mode_used))
+            if result.duration_ms:
+                print(kv("Duration", f"{result.duration_ms:.0f}ms"))
+            print()
+
+        if json_output:
+            print(json.dumps(result.to_dict(), default=str))
+            return 0 if result.success else 1
 
         output = result.result if hasattr(result, "result") else result
         if raw:
@@ -1009,6 +1062,74 @@ def cmd_remove(capability: str, yes: bool = False) -> int:
         atomic_write_json(lock_path, lock)
 
     print(f"\n  Removed {capability} from lockfile.\n")
+    return 0
+
+
+def cmd_logs(run_id: str | None = None, limit: int = 10, json_output: bool = False) -> int:
+    """Show agent run logs."""
+    from agentnode_sdk.run_log import list_runs, read_run
+
+    if run_id:
+        events = read_run(run_id)
+        if not events:
+            print(f"\n  Run {run_id} not found.\n")
+            return 1
+        if json_output:
+            print(json.dumps(events, indent=2, default=str))
+        else:
+            print()
+            print(section(f"Run: {run_id}"))
+            for e in events:
+                ts = e.get("ts", "")[:19]
+                event = e.get("event", "?")
+                slug = e.get("slug", "")
+                detail = ""
+                if event == "tool_call":
+                    detail = e.get("tool_name", "")
+                elif event == "tool_result":
+                    ok = e.get("success", "?")
+                    detail = f"success={ok}"
+                elif event in ("run_start", "run_end"):
+                    detail = slug
+                print(f"  {dim(ts)}  {event:<16} {detail}")
+            print()
+        return 0
+
+    runs = list_runs(limit=limit)
+    if not runs:
+        print("\n  No run logs found.\n")
+        return 0
+
+    if json_output:
+        summaries = []
+        for rid in runs:
+            events = read_run(rid)
+            start = next((e for e in events if e.get("event") == "run_start"), {})
+            end = next((e for e in events if e.get("event") == "run_end"), {})
+            summaries.append({
+                "run_id": rid,
+                "slug": start.get("slug", ""),
+                "started_at": start.get("ts", ""),
+                "success": end.get("success"),
+                "events": len(events),
+            })
+        print(json.dumps(summaries, indent=2, default=str))
+        return 0
+
+    print()
+    print(section("Recent Runs"))
+    for rid in runs:
+        events = read_run(rid)
+        start = next((e for e in events if e.get("event") == "run_start"), {})
+        end = next((e for e in events if e.get("event") == "run_end"), {})
+        ts = start.get("ts", "")[:19]
+        slug = start.get("slug", rid)
+        success = end.get("success")
+        status = "\033[32mOK\033[0m" if success else "\033[31mFAIL\033[0m" if success is not None else dim("?")
+        print(f"  {dim(ts)}  {status}  {slug}  {dim(rid[:12])}")
+    print()
+    print(dim(f"  Show details: agentnode logs <run_id>"))
+    print()
     return 0
 
 

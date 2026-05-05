@@ -193,6 +193,24 @@ class RunToolResult:
     duration_ms: float = 0.0
     timed_out: bool = False
     run_id: str | None = None
+    policy: dict | None = None
+
+    def to_dict(self) -> dict:
+        d: dict[str, Any] = {
+            "success": self.success,
+            "mode_used": self.mode_used,
+            "duration_ms": self.duration_ms,
+            "timed_out": self.timed_out,
+        }
+        if self.result is not None:
+            d["result"] = self.result
+        if self.error:
+            d["error"] = self.error
+        if self.run_id:
+            d["run_id"] = self.run_id
+        if self.policy:
+            d["policy"] = self.policy
+        return d
 
 
 @dataclass
