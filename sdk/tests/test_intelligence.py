@@ -1,5 +1,6 @@
 """Tests for Phase 6: Intelligence Layer 2.0."""
 import json
+import os
 from dataclasses import field
 from unittest.mock import patch
 
@@ -220,6 +221,91 @@ def test_rerank_boost_clamped():
     ranked = rerank([pkg], {"web_search", "pdf_extraction", "document_parsing"}, set())
     effective_score = ranked[0].score
     assert effective_score <= 40.0 + 10.0
+
+
+# --- Backward Compatibility ---
+
+
+# --- Runtime / Taxonomy Separation ---
+
+
+def test_runtime_filters_planned_capabilities():
+    """missing_for() must never return planned capabilities."""
+    from agentnode_sdk.capability_graph import CAPABILITY_GRAPH, Edge, missing_for
+    from agentnode_sdk.capability_taxonomy import CAPABILITY_TAXONOMY
+
+    CAPABILITY_TAXONOMY["_test_planned_cap"] = {
+        "label": "Test planned",
+        "category": "test",
+        "status": "planned",
+        "description": "Not installable yet",
+    }
+    original_edges = CAPABILITY_GRAPH.get("web_search", [])
+    CAPABILITY_GRAPH["web_search"] = original_edges + [
+        Edge("_test_planned_cap", "complements", 0.9),
+    ]
+    try:
+        gaps = missing_for({"web_search"}, min_weight=0.3)
+        cap_names = [g[0] for g in gaps]
+        assert "_test_planned_cap" not in cap_names
+    finally:
+        CAPABILITY_GRAPH["web_search"] = original_edges
+        del CAPABILITY_TAXONOMY["_test_planned_cap"]
+
+
+def test_taxonomy_list_capabilities():
+    from agentnode_sdk.capability_taxonomy import list_capabilities
+
+    active_only = list_capabilities()
+    all_caps = list_capabilities(include_planned=True)
+
+    assert len(all_caps) > len(active_only)
+
+    active_ids = {c["id"] for c in active_only}
+    all_ids = {c["id"] for c in all_caps}
+
+    assert "web_search" in active_ids
+    assert "meeting_summary" not in active_ids
+    assert "meeting_summary" in all_ids
+
+    for cap in active_only:
+        assert cap["status"] == "active"
+
+
+def test_is_runtime_capability():
+    from agentnode_sdk.capability_taxonomy import is_runtime_capability, is_known_capability
+
+    assert is_runtime_capability("web_search") is True
+    assert is_runtime_capability("meeting_summary") is False
+    assert is_runtime_capability("nonexistent_xyz") is False
+
+    assert is_known_capability("web_search") is True
+    assert is_known_capability("meeting_summary") is True
+    assert is_known_capability("nonexistent_xyz") is False
+
+
+def test_available_capabilities_includes_installed(tmp_path):
+    """Capabilities from installed packages should be in the available set."""
+    import json
+    from agentnode_sdk.capability_graph import available_capabilities
+
+    lock_file = tmp_path / "agentnode.lock"
+    lock_file.write_text(json.dumps({
+        "version": "0.1",
+        "packages": {
+            "custom-pack": {
+                "version": "1.0",
+                "capability_ids": ["_custom_unlisted_cap"],
+            }
+        },
+    }))
+    os.environ["AGENTNODE_LOCKFILE"] = str(lock_file)
+    try:
+        available = available_capabilities()
+        assert "_custom_unlisted_cap" in available
+        assert "web_search" in available
+    finally:
+        pass
 
 
 # --- Backward Compatibility ---

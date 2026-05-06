@@ -160,6 +160,28 @@ def neighbors(cap: str, min_weight: float = 0.0) -> list[Edge]:
     return [e for e in CAPABILITY_GRAPH.get(cap, []) if e.weight >= min_weight]
 
 
+def available_capabilities() -> set[str]:
+    """Capabilities that currently have installable packages.
+
+    Sources: taxonomy ``active`` status + installed packages' capability_ids.
+    Installed packages may declare capabilities not yet in the taxonomy.
+    """
+    from agentnode_sdk.capability_taxonomy import CAPABILITY_TAXONOMY
+    from agentnode_sdk.installer import read_lockfile
+
+    active = {cap for cap, meta in CAPABILITY_TAXONOMY.items() if meta["status"] == "active"}
+
+    try:
+        lock = read_lockfile()
+        for info in lock.get("packages", {}).values():
+            for cap_id in info.get("capability_ids", []):
+                active.add(cap_id)
+    except Exception:
+        pass
+
+    return active
+
+
 def missing_for(
     installed: set[str],
     min_weight: float = 0.3,
@@ -168,7 +190,9 @@ def missing_for(
 
     Returns [(capability, priority_score, reason)] sorted by priority desc.
     Priority accumulates across all installed capabilities that point to it.
+    Only returns capabilities that are available at runtime (not planned).
     """
+    available = available_capabilities()
     scores: dict[str, float] = {}
     reasons: dict[str, list[str]] = {}
 
@@ -186,6 +210,8 @@ def missing_for(
 
     result = []
     for target, score in scores.items():
+        if target not in available:
+            continue
         reason = ", ".join(reasons[target])
         result.append((target, round(score, 2), reason))
 
