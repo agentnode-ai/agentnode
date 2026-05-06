@@ -779,7 +779,7 @@ def cmd_run(
 ) -> int:
     # Detect if this is a natural language task (contains spaces = not a slug)
     if " " in capability.strip():
-        return _cmd_run_smart(capability, raw=raw, explain=explain, dry_run=dry_run)
+        return _cmd_run_smart(capability, raw=raw, explain=explain, dry_run=dry_run, json_output=json_output)
 
     if input_data and file_path:
         print("--input and --file are mutually exclusive.", file=sys.stderr)
@@ -850,8 +850,17 @@ def cmd_run(
         return 1
 
 
-def _cmd_run_smart(task: str, raw: bool = False, explain: bool = False, dry_run: bool = False) -> int:
+def _cmd_run_smart(
+    task: str, raw: bool = False, explain: bool = False,
+    dry_run: bool = False, json_output: bool = False,
+) -> int:
     """Smart run: parse natural language task → resolve → install → execute."""
+    from agentnode_sdk.planner import _split_task
+
+    parts = _split_task(task)
+    if len(parts) > 1:
+        return _cmd_run_plan(task, raw=raw, explain=explain, dry_run=dry_run, json_output=json_output)
+
     from agentnode_sdk.cli.smart_run import parse_task, get_alternatives
     from agentnode_sdk.installer import read_lockfile as _read_lock
 
@@ -1082,6 +1091,153 @@ def _cmd_run_smart(task: str, raw: bool = False, explain: bool = False, dry_run:
         print(f"  \033[31mExecution failed:\033[0m {e}")
         print()
         return 1
+
+
+def _cmd_run_plan(
+    task: str, raw: bool = False, explain: bool = False,
+    dry_run: bool = False, json_output: bool = False,
+) -> int:
+    """Execute a multi-step plan."""
+    import os
+    from agentnode_sdk.planner import plan_task, plan_and_run, _find_installed_slug
+
+    try:
+        plan = plan_task(task)
+    except ValueError as e:
+        print(f"\n  {e}\n", file=sys.stderr)
+        return 1
+
+    is_interactive = os.environ.get("AGENTNODE_NON_INTERACTIVE", "").lower() not in ("true", "1")
+
+    # --- Low-confidence guardrail ---
+    low_conf_steps = [s for s in plan.steps if s.confidence == "low"]
+    if low_conf_steps and not dry_run:
+        if not is_interactive:
+            print(
+                f"\n  Aborted: step(s) with low confidence in non-interactive mode.",
+                file=sys.stderr,
+            )
+            for s in low_conf_steps:
+                print(f"    Step {s.index + 1}: {s.capability} ({s.confidence})", file=sys.stderr)
+            print(file=sys.stderr)
+            return 1
+
+        print()
+        print(section("Plan"))
+        for step in plan.steps:
+            conf_warn = " ⚠ low confidence" if step.confidence == "low" else ""
+            pipe_label = " ← previous output" if step.uses_previous else ""
+            print(f"    {step.index + 1}. [{step.capability}] {step.sub_task}{pipe_label}{conf_warn}")
+        print()
+        try:
+            confirm = input("  Steps with low confidence detected. Proceed? [Y/n]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n  Cancelled.")
+            return 130
+        if confirm.lower() == "n":
+            print("  Cancelled.")
+            return 0
+
+    # --- Install confirmation guardrail ---
+    cfg = load_config()
+    if cfg.get("install_confirmation") == "prompt" and not dry_run:
+        missing = []
+        for step in plan.steps:
+            if _find_installed_slug(step.capability) is None:
+                missing.append(step)
+
+        if missing and is_interactive:
+            print()
+            print(bold("  Packages to install:"))
+            for step in missing:
+                print(f"    Step {step.index + 1}: {step.capability}")
+            print()
+            try:
+                confirm = input("  Install missing packages? [Y/n]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\n  Cancelled.")
+                return 130
+            if confirm.lower() == "n":
+                print("  Cancelled.")
+                print(dim("  Install manually and re-run."))
+                print()
+                return 0
+
+    # --- Dry-run ---
+    if dry_run:
+        print()
+        print(section("Plan (dry-run)"))
+        for step in plan.steps:
+            pipe_label = " ← previous output" if step.uses_previous else ""
+            conf_label = f" ({step.confidence})" if step.confidence != "high" else ""
+            print(f"    {step.index + 1}. [{step.capability}] {step.sub_task}{pipe_label}{conf_label}")
+        print()
+        print(dim("  No changes applied."))
+        print()
+        return 0
+
+    # --- Explain ---
+    if explain:
+        print()
+        print(section("Plan"))
+        for step in plan.steps:
+            print(f"    Step {step.index + 1}: {bold(step.capability)}")
+            print(f"      Task: {step.sub_task}")
+            print(f"      Confidence: {step.confidence} ({step.source})")
+            if step.uses_previous:
+                print(f"      Input: previous step output")
+            elif step.input_args:
+                args_str = ", ".join(f"{k}={v!r}" for k, v in step.input_args.items())
+                print(f"      Input: {args_str}")
+            print()
+        print(dim("  ---"))
+        print()
+
+    # --- Execute ---
+    result = plan_and_run(task)
+
+    if json_output:
+        print(json.dumps(result.to_dict(), default=str))
+        return 0 if result.success else 1
+
+    print()
+    for sr in result.steps:
+        status = "\033[32m[OK]\033[0m" if sr.success else "\033[31m[FAIL]\033[0m"
+        slug_label = f" ({sr.slug})" if sr.slug else ""
+        installed_label = " [installed]" if sr.installed else ""
+        print(f"  {status} Step {sr.step.index + 1}: {sr.step.capability}{slug_label}{installed_label}")
+        if sr.error:
+            print(f"       {sr.error}")
+
+    print()
+
+    if result.success and result.steps:
+        last = result.steps[-1]
+        output = last.result
+        if raw:
+            print(json.dumps(output, default=str))
+        else:
+            print(bold("  Result"))
+            print("  " + "-" * 6)
+            if isinstance(output, dict):
+                for k, v in output.items():
+                    val_str = str(v)
+                    if len(val_str) > 200:
+                        val_str = val_str[:197] + "..."
+                    print(kv(k, val_str))
+            elif isinstance(output, str):
+                for line in output.split("\n")[:20]:
+                    print(f"  {line}")
+            else:
+                print(f"  {output}")
+            print()
+
+    if not result.success:
+        return 1
+
+    print(dim(f"  {len(result.steps)} steps completed in {result.duration_ms:.0f}ms"))
+    print()
+    return 0
 
 
 def cmd_remove(capability: str, yes: bool = False) -> int:
