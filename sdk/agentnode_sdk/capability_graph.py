@@ -1,7 +1,19 @@
 """Capability relationship graph with typed weighted edges.
 
-Provides graph traversal for doctor gap analysis, recommend, and
-client-side re-ranking of resolve results.
+How capabilities enter the graph:
+
+1. A package declares ``capability_ids`` in its manifest (agentnode.yaml).
+2. This graph maps relationships between those capability IDs.
+3. ``recommend``, ``doctor``, and ``resolve`` use the graph to prioritize
+   results and detect gaps.
+4. Unknown capability IDs are allowed — they simply have no graph edges,
+   so they receive no boost or gap signal.
+
+Edge types:
+- ``complements``: both capabilities are more useful together.
+- ``requires``: this capability is broken/useless without the target.
+  Use sparingly — most capabilities work standalone.
+- ``enhances``: target makes this capability better but is not needed.
 """
 from __future__ import annotations
 
