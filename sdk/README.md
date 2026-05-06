@@ -114,10 +114,49 @@ result = runtime.handle("agentnode_search", {"query": "pdf extraction"})
 # → {"success": true, "result": {"total": 5, "results": [...]}}
 ```
 
+## CLI
+
+The `agentnode` CLI is the human interface. Single commands, multi-step tasks, diagnostics.
+
+```bash
+# Search & install
+agentnode search "pdf extraction"
+agentnode install pdf-reader-pack
+
+# Run a single task (natural language)
+agentnode run "extract text from report.pdf"
+
+# Multi-step: pipe output between capabilities automatically
+agentnode run "extract text from report.pdf then translate to german"
+
+# Preview without executing
+agentnode run "search for AI news then summarize" --dry-run
+
+# Show reasoning
+agentnode run "search for AI news" --explain
+
+# Diagnostics
+agentnode doctor              # detect missing capabilities, suggest packages
+agentnode doctor --fix         # auto-install suggestions
+agentnode recommend            # prioritized recommendations based on installed setup
+agentnode audit                # recent policy decisions (allow/deny/prompt)
+
+# Credentials & config
+agentnode auth set openai
+agentnode auth status
+agentnode config list
+```
+
+All commands support `--json` for structured output.
+
+**Note:** Multi-step runs respect your config:
+- `install_confirmation: prompt` will ask before installing missing packages
+- Low-confidence steps require confirmation (or abort in non-interactive mode)
+
 ## Three Surfaces
 
 ```
-CLI           → for humans (search, install, publish)
+CLI           → for humans (search, install, run, diagnose)
 SDK / Client  → for programmatic access (search, resolve, install, run)
 Runtime       → for LLM agents (tool registration, dispatch, auto-loop)
 ```
@@ -182,6 +221,8 @@ from agentnode_sdk import run_tool
 
 result = run_tool("pdf-reader-pack", mode="auto", file_path="report.pdf")
 # result.success, result.result, result.error, result.mode_used, result.duration_ms
+# result.policy  → {"action": "allow", "reason": "...", "source": "..."}
+# result.to_dict()  → structured output for --json
 ```
 
 **Isolation contract.** `mode="auto"` always resolves to `subprocess`,
@@ -190,6 +231,28 @@ guarantee true by default. If you need in-process execution (for
 example, to share module-level state with the tool), pass
 `mode="direct"` explicitly — that is an opt-in performance trade-off,
 not a default.
+
+### Multi-step Planner
+
+Decompose and execute multi-step tasks programmatically.
+
+```python
+from agentnode_sdk.planner import plan_task, plan_and_run
+
+# Plan without executing
+plan = plan_task("extract text from report.pdf then summarize")
+# plan.steps[0].capability == "pdf_extraction"
+# plan.steps[1].capability == "text_summarization"
+# plan.steps[1].uses_previous == True
+
+# Plan and execute (each step runs through run_tool with full policy/audit)
+result = plan_and_run("extract text from report.pdf then summarize")
+# result.success, result.steps, result.duration_ms
+# result.to_dict()  → structured output
+```
+
+**Limitations:** Max 3 steps. Rule-based splitting on connectors (`then`,
+`and then`, `→`) — no LLM decomposition.
 
 ## License
 

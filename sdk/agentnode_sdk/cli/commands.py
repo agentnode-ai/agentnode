@@ -1126,7 +1126,7 @@ def _cmd_run_plan(
         print(section("Plan"))
         for step in plan.steps:
             conf_warn = " ⚠ low confidence" if step.confidence == "low" else ""
-            pipe_label = " ← previous output" if step.uses_previous else ""
+            pipe_label = " <- previous output" if step.uses_previous else ""
             print(f"    {step.index + 1}. [{step.capability}] {step.sub_task}{pipe_label}{conf_warn}")
         print()
         try:
@@ -1168,7 +1168,7 @@ def _cmd_run_plan(
         print()
         print(section("Plan (dry-run)"))
         for step in plan.steps:
-            pipe_label = " ← previous output" if step.uses_previous else ""
+            pipe_label = " <- previous output" if step.uses_previous else ""
             conf_label = f" ({step.confidence})" if step.confidence != "high" else ""
             print(f"    {step.index + 1}. [{step.capability}] {step.sub_task}{pipe_label}{conf_label}")
         print()
