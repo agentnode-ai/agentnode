@@ -75,7 +75,8 @@ def main(argv: list[str] | None = None) -> int:
     resolve_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
 
     # recommend
-    sub.add_parser("recommend", help="Suggest packages based on your installed setup")
+    recommend_parser = sub.add_parser("recommend", help="Suggest packages based on your installed setup")
+    recommend_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
 
     # install
     install_parser = sub.add_parser("install", help="Install a capability")
@@ -182,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "resolve":
             return commands.cmd_resolve(args.capability, framework=args.framework, json_output=args.json_output)
         if args.command == "recommend":
-            return commands.cmd_recommend()
+            return commands.cmd_recommend(json_output=args.json_output)
         if args.command == "install":
             return commands.cmd_install(
                 args.capability, version=args.pkg_version, yes=args.yes

@@ -74,6 +74,52 @@ _FILE_EXT_INPUT = {
     ".txt": "file_path",
 }
 
+_CAPABILITY_SYNONYMS: dict[str, str] = {
+    "scrape website": "webpage_extraction",
+    "web scraping": "webpage_extraction",
+    "fetch webpage": "webpage_extraction",
+    "read pdf": "pdf_extraction",
+    "convert pdf": "pdf_extraction",
+    "open pdf": "pdf_extraction",
+    "parse document": "document_parsing",
+    "read document": "document_parsing",
+    "make chart": "chart_generation",
+    "create chart": "chart_generation",
+    "create graph": "chart_generation",
+    "draw chart": "chart_generation",
+    "analyze data": "csv_analysis",
+    "data analysis": "csv_analysis",
+    "parse csv": "csv_analysis",
+    "read email": "email_reading",
+    "check email": "email_reading",
+    "send message": "email_sending",
+    "compose email": "email_sending",
+    "browse web": "browser_navigation",
+    "open browser": "browser_navigation",
+    "take screenshot": "screenshot_capture",
+    "capture screen": "screenshot_capture",
+    "detect language": "language_detection",
+    "identify language": "language_detection",
+    "generate embeddings": "embedding_generation",
+    "create embeddings": "embedding_generation",
+    "store vectors": "vector_memory",
+    "vector search": "vector_memory",
+    "write sql": "sql_generation",
+    "generate sql": "sql_generation",
+    "run query": "sql_generation",
+    "database query": "sql_generation",
+    "run tests": "test_generation",
+    "generate tests": "test_generation",
+    "write tests": "test_generation",
+    "read spreadsheet": "spreadsheet_parsing",
+    "parse excel": "spreadsheet_parsing",
+    "generate image": "image_generation",
+    "create image": "image_generation",
+    "edit image": "image_editing",
+}
+
+_SYNONYMS_SORTED = sorted(_CAPABILITY_SYNONYMS.items(), key=lambda x: len(x[0]), reverse=True)
+
 _FILE_RE = re.compile(r'["\']?([^\s"\']+\.\w{2,5})["\']?')
 _URL_RE = re.compile(r'(https?://\S+)')
 _QUERY_STRIP_RE = re.compile(
@@ -100,6 +146,17 @@ def parse_task(task: str) -> ParsedTask | None:
                 source="pattern",
             )
 
+    # Synonym fallback (longest phrase first to avoid partial matches)
+    task_lower = task.lower()
+    for phrase, capability in _SYNONYMS_SORTED:
+        if phrase in task_lower:
+            return ParsedTask(
+                capability=capability,
+                confidence="medium",
+                input_args=_extract_args(task, capability),
+                source="synonym",
+            )
+
     return None
 
 
@@ -111,6 +168,11 @@ def get_alternatives(task: str) -> list[str]:
 
     for pattern, capability, _ in _TASK_PATTERNS:
         if pattern.search(task_lower) and capability not in seen:
+            seen.add(capability)
+            matches.append(capability)
+
+    for phrase, capability in _SYNONYMS_SORTED:
+        if phrase in task_lower and capability not in seen:
             seen.add(capability)
             matches.append(capability)
 

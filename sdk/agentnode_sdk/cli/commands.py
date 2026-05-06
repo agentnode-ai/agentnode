@@ -158,14 +158,11 @@ def cmd_doctor(fix: bool = False, json_output: bool = False) -> int:
         print()
         return 0
 
-    # Determine missing complementary capabilities
-    from agentnode_sdk.cli.complements import CAPABILITY_COMPLEMENTS
+    # Determine missing complementary capabilities (weighted graph)
+    from agentnode_sdk.capability_graph import missing_for, priority_label
 
-    missing_caps: list[str] = []
-    for cap in installed_caps:
-        for complement in CAPABILITY_COMPLEMENTS.get(cap, []):
-            if complement not in installed_caps and complement not in missing_caps:
-                missing_caps.append(complement)
+    gaps = missing_for(installed_caps, min_weight=0.3)
+    missing_caps = [g[0] for g in gaps]
 
     if not missing_caps and not installed_caps:
         print(bold("  Analysis"))
@@ -213,11 +210,18 @@ def cmd_doctor(fix: bool = False, json_output: bool = False) -> int:
         print()
         return 0
 
+    gap_lookup = {g[0]: (g[1], g[2]) for g in gaps}
+
     # Show gaps and suggestions
     print(bold("  Missing Capabilities"))
     print("  " + "-" * 20)
     for cap in missing_caps[:8]:
-        print(f"    \033[33m[-]\033[0m {cap}")
+        score, reason = gap_lookup.get(cap, (0.0, ""))
+        prio = priority_label(score)
+        marker = "\033[31m[!!]\033[0m" if prio == "high" else "\033[33m[-]\033[0m"
+        print(f"    {marker} {cap} {dim(f'(priority: {score:.1f})')}")
+        if reason:
+            print(f"        {dim('↳ ' + reason)}")
     print()
 
     print(bold("  Suggested Fixes"))
@@ -534,6 +538,16 @@ def cmd_resolve(capabilities: list[str], framework: str | None = None, json_outp
         finally:
             client.close()
 
+        # Re-rank with local context
+        from agentnode_sdk.resolve import rerank
+        lock = read_lockfile()
+        _pkgs = lock.get("packages", {})
+        _inst_caps: set[str] = set()
+        for info in _pkgs.values():
+            for c in info.get("capability_ids", []):
+                _inst_caps.add(c)
+        result.results = rerank(result.results, _inst_caps, set(_pkgs.keys()))
+
         if not result.results:
             if json_output:
                 print(json.dumps({"query": capabilities, "total": 0, "results": []}))
@@ -587,12 +601,17 @@ def cmd_resolve(capabilities: list[str], framework: str | None = None, json_outp
         return 1
 
 
-def cmd_recommend() -> int:
+def cmd_recommend(json_output: bool = False) -> int:
     """Recommend packages based on what's installed."""
+    from agentnode_sdk.capability_graph import missing_for, priority_label
+
     lock = read_lockfile()
     pkgs = lock.get("packages", {})
 
     if not pkgs:
+        if json_output:
+            print(json.dumps({"installed_capabilities": [], "recommendations": []}))
+            return 0
         print()
         print("  No packages installed yet.")
         print()
@@ -600,23 +619,17 @@ def cmd_recommend() -> int:
         print()
         return 0
 
-    # Collect installed capability IDs and slugs
     installed_slugs = set(pkgs.keys())
     installed_caps: set[str] = set()
     for info in pkgs.values():
         for cap_id in info.get("capability_ids", []):
             installed_caps.add(cap_id)
 
-    # Complementary capability suggestions based on what's installed
-    from agentnode_sdk.cli.complements import CAPABILITY_COMPLEMENTS
-
-    suggested_caps: list[str] = []
-    for cap in installed_caps:
-        for complement in CAPABILITY_COMPLEMENTS.get(cap, []):
-            if complement not in installed_caps and complement not in suggested_caps:
-                suggested_caps.append(complement)
-
-    if not suggested_caps:
+    gaps = missing_for(installed_caps, min_weight=0.3)
+    if not gaps:
+        if json_output:
+            print(json.dumps({"installed_capabilities": sorted(installed_caps), "recommendations": []}))
+            return 0
         print()
         print("  No additional recommendations based on your current setup.")
         print()
@@ -624,24 +637,49 @@ def cmd_recommend() -> int:
         print()
         return 0
 
-    # Resolve suggested capabilities to packages
+    gap_caps = [g[0] for g in gaps[:8]]
+
     try:
         from agentnode_sdk.client import AgentNodeClient
 
         client = AgentNodeClient()
         try:
-            result = client.resolve(suggested_caps[:8], limit=10)
+            result = client.resolve(gap_caps, limit=12)
         finally:
             client.close()
     except Exception as e:
         print(f"Recommend failed: {e}", file=sys.stderr)
         return 1
 
-    # Filter out already-installed packages
-    recommendations = [
-        pkg for pkg in result.results
-        if pkg.slug not in installed_slugs
-    ]
+    recommendations = [pkg for pkg in result.results if pkg.slug not in installed_slugs]
+
+    gap_lookup = {g[0]: (g[1], g[2]) for g in gaps}
+
+    if json_output:
+        items = []
+        for pkg in recommendations[:8]:
+            best_cap = ""
+            best_score = 0.0
+            best_reason = ""
+            for mc in pkg.matched_capabilities:
+                if mc in gap_lookup and gap_lookup[mc][0] > best_score:
+                    best_score = gap_lookup[mc][0]
+                    best_reason = gap_lookup[mc][1]
+                    best_cap = mc
+            items.append({
+                "slug": pkg.slug,
+                "capability": best_cap,
+                "priority": priority_label(best_score),
+                "score": best_score,
+                "reason": best_reason,
+                "trust_level": pkg.trust_level or "unverified",
+                "summary": pkg.summary,
+            })
+        print(json.dumps({
+            "installed_capabilities": sorted(installed_caps),
+            "recommendations": items,
+        }, indent=2))
+        return 0
 
     if not recommendations:
         print()
@@ -659,15 +697,27 @@ def cmd_recommend() -> int:
         print(dim(f"    ... +{len(installed_slugs) - 5} more"))
     print()
 
-    print(bold("  You might also need:"))
-    print("  " + "-" * 20)
+    current_priority = None
     for i, pkg in enumerate(recommendations[:8], 1):
+        best_score = 0.0
+        best_reason = ""
+        for mc in pkg.matched_capabilities:
+            if mc in gap_lookup and gap_lookup[mc][0] > best_score:
+                best_score = gap_lookup[mc][0]
+                best_reason = gap_lookup[mc][1]
+
+        priority = priority_label(best_score)
+        if priority != current_priority:
+            current_priority = priority
+            label = {"high": "Priority: High", "suggested": "Priority: Suggested", "low": "Other"}.get(priority, priority)
+            print(f"  {bold(label)}")
+            print("  " + "-" * len(label))
+
         trust = pkg.trust_level or "unverified"
-        matched = ", ".join(pkg.matched_capabilities) if pkg.matched_capabilities else ""
         print(f"  {i}. {bold(pkg.slug)} {dim(f'[{trust}]')}")
         print(f"     {pkg.summary}")
-        if matched:
-            print(f"     {dim(f'capability: {matched}')}")
+        if best_reason:
+            print(f"     {dim('↳ ' + best_reason)}")
         print()
 
     print(dim("  Install with: agentnode install <name>"))
