@@ -1723,3 +1723,66 @@ class TestExplicitHelpers:
         health = ctx.tool_health("pack-a")
         assert health["allowed"] is True
         assert health["circuit_breaker"]["state"] == "closed"
+
+
+# ---------------------------------------------------------------------------
+# _ensure_installed — auto_upgrade_policy guard
+# ---------------------------------------------------------------------------
+
+class TestEnsureInstalledPolicy:
+    def test_auto_install_blocked_by_policy_off(self, monkeypatch):
+        """auto_upgrade_policy=off prevents auto-install of missing packages."""
+        ctx = _make_context(allowed_packages=["missing-pack"])
+        monkeypatch.setattr(
+            "agentnode_sdk.installer.read_lockfile",
+            lambda: {"packages": {}},
+        )
+        monkeypatch.setattr(
+            "agentnode_sdk.config.load_config",
+            lambda: {"auto_upgrade_policy": "off"},
+        )
+        result = ctx._ensure_installed("missing-pack")
+        assert result is False
+
+    def test_auto_install_allowed_by_policy_safe(self, monkeypatch):
+        """auto_upgrade_policy=safe allows the existing install path."""
+        ctx = _make_context(allowed_packages=["new-pack"])
+        # Mock lockfile: package NOT present
+        monkeypatch.setattr(
+            "agentnode_sdk.installer.read_lockfile",
+            lambda: {"packages": {}},
+        )
+        # Mock config: auto_upgrade_policy=safe (default)
+        monkeypatch.setattr(
+            "agentnode_sdk.config.load_config",
+            lambda: {"auto_upgrade_policy": "safe"},
+        )
+        # Mock client.install to succeed
+        class _FakeResult:
+            installed = True
+            version = "1.0.0"
+            message = ""
+        class _FakeClient:
+            def install(self, slug):
+                return _FakeResult()
+        monkeypatch.setattr(
+            "agentnode_sdk.client.AgentNodeClient",
+            _FakeClient,
+        )
+        result = ctx._ensure_installed("new-pack")
+        assert result is True
+
+    def test_already_installed_skips_policy_check(self, monkeypatch):
+        """Package already in lockfile returns True without checking policy."""
+        ctx = _make_context(allowed_packages=["existing-pack"])
+        monkeypatch.setattr(
+            "agentnode_sdk.installer.read_lockfile",
+            lambda: {"packages": {"existing-pack": {"version": "1.0.0"}}},
+        )
+        # load_config should NOT be called — if it is, blow up
+        monkeypatch.setattr(
+            "agentnode_sdk.config.load_config",
+            lambda: (_ for _ in ()).throw(AssertionError("load_config should not be called")),
+        )
+        result = ctx._ensure_installed("existing-pack")
+        assert result is True

@@ -823,12 +823,21 @@ class AgentContext:
         """Check if a package is in the lockfile; if not, auto-install it.
 
         Returns True if the package is available (already installed or
-        successfully auto-installed), False if auto-install failed.
+        successfully auto-installed), False if auto-install failed or
+        blocked by auto_upgrade_policy=off.
         """
         from agentnode_sdk.installer import read_lockfile
         lockfile = read_lockfile()
         if slug in lockfile.get("packages", {}):
             return True
+
+        from agentnode_sdk.config import load_config
+        cfg = load_config()
+        if cfg.get("auto_upgrade_policy") == "off":
+            logger.warning("auto_install blocked: auto_upgrade_policy=off for %s", slug)
+            if self._run_log:
+                self._run_log._write("auto_install_blocked", slug=slug, reason="auto_upgrade_policy=off")
+            return False
 
         logger.info("auto_install: %s not in lockfile, attempting install", slug)
         if self._run_log:
