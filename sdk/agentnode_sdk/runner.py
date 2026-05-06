@@ -137,11 +137,19 @@ def run_tool(
         tool_name=tool_name,
         trust_level=entry.get("trust_level"),
     )
+    from agentnode_sdk.input_guard import validate_tool_input
+    input_warnings = validate_tool_input(slug, tool_name, kwargs, entry)
+    if input_warnings:
+        for w in input_warnings:
+            logger.warning("input_guard: %s/%s: %s", slug, tool_name, w)
+
     policy_info = {
         "action": decision.action,
         "reason": decision.reason,
         "source": decision.source,
     }
+    if input_warnings:
+        policy_info["input_warnings"] = input_warnings
     if decision.action == "deny":
         return RunToolResult(
             success=False, error=decision.reason, mode_used="policy_denied",
