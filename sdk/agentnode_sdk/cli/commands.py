@@ -1339,6 +1339,141 @@ def cmd_logs(run_id: str | None = None, limit: int = 10, json_output: bool = Fal
     return 0
 
 
+def cmd_inspect(slug: str, *, json_output: bool = False) -> int:
+    """Security-focused report for an installed package."""
+    lock = read_lockfile()
+    pkgs = lock.get("packages", {})
+
+    if slug not in pkgs:
+        print(f"\n  Package '{slug}' is not installed.\n", file=sys.stderr)
+        return 1
+
+    pkg = pkgs[slug]
+
+    # --- Gather audit summary ---
+    audit_summary = _inspect_audit_summary(slug)
+
+    if json_output:
+        report = _inspect_build_report(slug, pkg, audit_summary)
+        print(json.dumps(report, indent=2))
+        return 0
+
+    # --- Human-readable output ---
+    print()
+    print(section(f"Inspect: {slug}"))
+
+    print(kv("Version", pkg.get("version", "?")))
+    trust = pkg.get("trust_level") or "unknown"
+    last_check = pkg.get("last_trust_check", "")
+    trust_display = trust
+    if last_check:
+        trust_display += f"  (checked: {last_check[:10]})"
+    print(kv("Trust level", trust_display))
+    print(kv("Package type", pkg.get("package_type", "?")))
+    print(kv("Runtime", pkg.get("runtime", "?")))
+    print(kv("Installed at", pkg.get("installed_at", "?")))
+
+    # Connector
+    connector = pkg.get("connector")
+    if connector and isinstance(connector, dict):
+        provider = connector.get("provider", "")
+        auth_type = connector.get("auth_type", "")
+        if provider:
+            print(kv("Connector", f"{provider} ({auth_type})" if auth_type else provider))
+
+    # Permissions
+    perms = pkg.get("permissions")
+    if perms and isinstance(perms, dict):
+        print()
+        print(f"  {bold('Permissions')}")
+        print("  " + "-" * 11)
+        for k, v in perms.items():
+            label = k.replace("_level", "").replace("_", " ").title()
+            print(kv(label, str(v)))
+    else:
+        print()
+        print(f"  {bold('Permissions')}")
+        print("  " + "-" * 11)
+        print(kv("(none declared)", dim("policy defaults apply")))
+
+    # Capabilities
+    caps = pkg.get("capability_ids", [])
+    if caps:
+        print()
+        print(f"  {bold('Capabilities')}")
+        print("  " + "-" * 12)
+        for c in caps:
+            print(f"    {c}")
+
+    # Tools
+    tools = pkg.get("tools", [])
+    if tools:
+        print()
+        print(f"  {bold('Tools')}")
+        print("  " + "-" * 5)
+        for t in tools:
+            name = t.get("name", "?")
+            print(f"    {name}")
+
+    # Audit summary
+    print()
+    print(f"  {bold('Audit Summary')}")
+    print("  " + "-" * 13)
+    if audit_summary["total"] > 0:
+        print(kv("Total runs", str(audit_summary["total"])))
+        print(kv("Allow", str(audit_summary["allow"])))
+        print(kv("Deny", str(audit_summary["deny"])))
+        print(kv("Prompt", str(audit_summary["prompt"])))
+    else:
+        print(kv("(no audit data)", dim("package has not been run yet")))
+
+    print()
+    return 0
+
+
+def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
+    """Build a JSON-serializable inspect report."""
+    perms = pkg.get("permissions")
+    connector = pkg.get("connector")
+    return {
+        "slug": slug,
+        "version": pkg.get("version"),
+        "package_type": pkg.get("package_type"),
+        "trust_level": pkg.get("trust_level"),
+        "last_trust_check": pkg.get("last_trust_check"),
+        "runtime": pkg.get("runtime"),
+        "installed_at": pkg.get("installed_at"),
+        "permissions": perms,
+        "capability_ids": pkg.get("capability_ids", []),
+        "tools": [t.get("name", "?") for t in pkg.get("tools", [])],
+        "connector": {
+            "provider": connector.get("provider"),
+            "auth_type": connector.get("auth_type"),
+        } if connector and isinstance(connector, dict) else None,
+        "audit": audit_summary,
+    }
+
+
+def _inspect_audit_summary(slug: str) -> dict:
+    """Count audit decisions for a specific slug via shared reader."""
+    from agentnode_sdk.cli.audit import read_audit_entries
+
+    summary = {"total": 0, "allow": 0, "deny": 0, "prompt": 0}
+    for entry in read_audit_entries():
+        if entry.get("slug") != slug:
+            continue
+        action = (entry.get("action") or "").lower()
+        summary["total"] += 1
+        if action == "allow":
+            summary["allow"] += 1
+        elif action == "deny":
+            summary["deny"] += 1
+        elif action == "prompt":
+            summary["prompt"] += 1
+
+    return summary
+
+
 def cmd_capabilities() -> int:
     lock = read_lockfile()
     pkgs = lock.get("packages", {})

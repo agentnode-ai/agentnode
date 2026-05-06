@@ -506,3 +506,101 @@ def test_cmd_install_respects_trust_level(capsys, saved_config):
         require_verified=True,
         require_trusted=True,
     )
+
+
+# --- Inspect ---
+
+
+def test_inspect_installed(capsys, saved_config, lockfile_with_packages):
+    code = main(["inspect", "pdf-reader-pack"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "pdf-reader-pack" in out
+    assert "1.2.0" in out
+    assert "verified" in out
+    assert "Permissions" in out
+    assert "Network" in out
+    assert "Capabilities" in out
+    assert "pdf_extraction" in out
+    assert "Audit Summary" in out
+
+
+def test_inspect_not_installed(capsys, saved_config):
+    code = main(["inspect", "nonexistent"])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "not installed" in err
+
+
+def test_inspect_json(capsys, saved_config, lockfile_with_packages):
+    code = main(["inspect", "pdf-reader-pack", "--json"])
+    assert code == 0
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["slug"] == "pdf-reader-pack"
+    assert data["version"] == "1.2.0"
+    assert data["trust_level"] == "verified"
+    assert data["permissions"]["network_level"] == "none"
+    assert "pdf_extraction" in data["capability_ids"]
+    assert isinstance(data["audit"], dict)
+    assert "total" in data["audit"]
+
+
+def test_inspect_no_permissions(capsys, saved_config, lockfile_with_packages):
+    """Package with permissions=None shows 'none declared'."""
+    code = main(["inspect", "csv-analyzer-pack"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "csv-analyzer-pack" in out
+    assert "none declared" in out
+
+
+def test_inspect_with_audit_data(capsys, saved_config, lockfile_with_packages, isolated_env):
+    """Audit summary should count entries for the inspected package."""
+    from agentnode_sdk.config import config_dir
+
+    audit_dir = config_dir()
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    audit_path = audit_dir / "audit.jsonl"
+    entries = [
+        '{"slug":"pdf-reader-pack","action":"allow","event":"run_tool"}',
+        '{"slug":"pdf-reader-pack","action":"allow","event":"run_tool"}',
+        '{"slug":"pdf-reader-pack","action":"deny","event":"run_tool"}',
+        '{"slug":"other-pack","action":"allow","event":"run_tool"}',
+    ]
+    audit_path.write_text("\n".join(entries) + "\n", encoding="utf-8")
+
+    code = main(["inspect", "pdf-reader-pack"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "3" in out  # total for pdf-reader-pack
+    assert "Deny" in out
+
+
+def test_inspect_connector(capsys, saved_config, isolated_env):
+    """Packages with connector info should show provider."""
+    lock_path = isolated_env / "agentnode.lock"
+    lock_data = {
+        "lockfile_version": "0.1",
+        "updated_at": "",
+        "packages": {
+            "slack-pack": {
+                "version": "1.0.0",
+                "package_type": "toolpack",
+                "runtime": "python",
+                "entrypoint": "slack.tool",
+                "capability_ids": ["messaging"],
+                "tools": [],
+                "trust_level": "verified",
+                "permissions": None,
+                "connector": {"provider": "slack", "auth_type": "oauth2"},
+            },
+        },
+    }
+    lock_path.write_text(json.dumps(lock_data), encoding="utf-8")
+
+    code = main(["inspect", "slack-pack"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "slack" in out
+    assert "oauth2" in out

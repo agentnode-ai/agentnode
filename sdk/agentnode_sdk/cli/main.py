@@ -128,6 +128,11 @@ def main(argv: list[str] | None = None) -> int:
     record_parser.add_argument("path", nargs="?", default=".", help="Package directory (default: current)")
     record_parser.add_argument("--strict", action="store_true", help="Exit with error if cassettes contain risky fields")
 
+    # inspect
+    inspect_parser = sub.add_parser("inspect", help="Security report for an installed package")
+    inspect_parser.add_argument("slug", help="Package slug to inspect")
+    inspect_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+
     # capabilities
     cap_parser = sub.add_parser("capabilities", help="List installed capabilities")
     cap_sub = cap_parser.add_subparsers(dest="cap_action")
@@ -215,6 +220,8 @@ def main(argv: list[str] | None = None) -> int:
             return commands.cmd_verify_local(args.path)
         if args.command == "record-cases":
             return commands.cmd_record_cases(args.path, strict=args.strict)
+        if args.command == "inspect":
+            return commands.cmd_inspect(args.slug, json_output=args.json_output)
         if args.command == "capabilities":
             if args.cap_action == "show":
                 return commands.cmd_capabilities_show(args.name)
