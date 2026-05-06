@@ -11,6 +11,8 @@ from agentnode_sdk.planner import (
     _has_explicit_input,
     plan_task,
     plan_and_run,
+    check_plan_risk,
+    audit_plan,
     PlanStep,
     ExecutionPlan,
     PlanResult,
@@ -405,3 +407,94 @@ def test_single_step_does_not_use_planner():
     for task in single_tasks:
         parts = _split_task(task)
         assert len(parts) == 1, f"'{task}' split into {len(parts)} parts, expected 1"
+
+
+# --- Plan-Level Risk Warnings ---
+
+
+def _make_plan(*capabilities):
+    """Build an ExecutionPlan with given capabilities."""
+    steps = [
+        PlanStep(
+            index=i, sub_task=f"do {cap}", capability=cap,
+            confidence="high", source="test", input_args={},
+            uses_previous=i > 0,
+        )
+        for i, cap in enumerate(capabilities)
+    ]
+    return ExecutionPlan(original_task=" then ".join(capabilities), steps=steps)
+
+
+def test_plan_risk_filesystem_then_network(isolated_env):
+    lock_file = isolated_env / "agentnode.lock"
+    lock_file.write_text(json.dumps({"version": "0.1", "packages": {
+        "file-reader": {
+            "capability_ids": ["file_reading"],
+            "permissions": {"filesystem_level": "read", "network_level": "none",
+                            "code_execution_level": "none"},
+        },
+        "web-sender": {
+            "capability_ids": ["web_send"],
+            "permissions": {"filesystem_level": "none", "network_level": "external",
+                            "code_execution_level": "none"},
+        },
+    }}))
+    plan = _make_plan("file_reading", "web_send")
+    warnings = check_plan_risk(plan)
+    assert len(warnings) == 1
+    assert "filesystem" in warnings[0]
+    assert "network" in warnings[0]
+
+
+def test_plan_risk_code_execution_then_network(isolated_env):
+    lock_file = isolated_env / "agentnode.lock"
+    lock_file.write_text(json.dumps({"version": "0.1", "packages": {
+        "code-runner": {
+            "capability_ids": ["code_exec"],
+            "permissions": {"filesystem_level": "none", "network_level": "none",
+                            "code_execution_level": "sandboxed"},
+        },
+        "api-caller": {
+            "capability_ids": ["api_call"],
+            "permissions": {"filesystem_level": "none", "network_level": "external",
+                            "code_execution_level": "none"},
+        },
+    }}))
+    plan = _make_plan("code_exec", "api_call")
+    warnings = check_plan_risk(plan)
+    assert len(warnings) == 1
+    assert "code" in warnings[0].lower()
+    assert "network" in warnings[0]
+
+
+def test_plan_risk_no_risk(isolated_env):
+    lock_file = isolated_env / "agentnode.lock"
+    lock_file.write_text(json.dumps({"version": "0.1", "packages": {
+        "text-pack": {
+            "capability_ids": ["text_processing"],
+            "permissions": {"filesystem_level": "none", "network_level": "none",
+                            "code_execution_level": "none"},
+        },
+        "translate-pack": {
+            "capability_ids": ["translation"],
+            "permissions": {"filesystem_level": "none", "network_level": "none",
+                            "code_execution_level": "none"},
+        },
+    }}))
+    plan = _make_plan("text_processing", "translation")
+    warnings = check_plan_risk(plan)
+    assert warnings == []
+
+
+def test_plan_audit_entry_created(isolated_env):
+    plan = _make_plan("cap_a", "cap_b")
+    audit_plan(plan, ["test warning"])
+
+    audit_path = isolated_env / "audit.jsonl"
+    assert audit_path.is_file()
+    entry = json.loads(audit_path.read_text().strip())
+    assert entry["event"] == "plan_execute"
+    assert entry["step_count"] == 2
+    assert entry["capabilities"] == ["cap_a", "cap_b"]
+    assert entry["warnings"] == ["test warning"]
+    assert len(entry["data_flow"]) == 2

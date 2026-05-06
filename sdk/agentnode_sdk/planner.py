@@ -208,6 +208,93 @@ def _pipe_result(previous_result: Any) -> dict:
     return {"input": previous_result}
 
 
+def _get_step_permissions(plan: ExecutionPlan) -> list[dict | None]:
+    """Look up permissions for each step's resolved package."""
+    from agentnode_sdk.installer import read_lockfile
+
+    lock = read_lockfile()
+    pkgs = lock.get("packages", {})
+
+    result: list[dict | None] = []
+    for step in plan.steps:
+        found = None
+        for _slug, info in pkgs.items():
+            if step.capability in info.get("capability_ids", []):
+                found = info.get("permissions")
+                break
+        result.append(found)
+    return result
+
+
+def check_plan_risk(plan: ExecutionPlan) -> list[str]:
+    """Check for risky step combinations. Returns warning strings.
+
+    Informational only — does not block execution.
+    """
+    if len(plan.steps) < 2:
+        return []
+
+    perms_list = _get_step_permissions(plan)
+    warnings: list[str] = []
+
+    for i in range(len(plan.steps) - 1):
+        cur = perms_list[i]
+        nxt = perms_list[i + 1]
+        if cur is None or nxt is None:
+            continue
+
+        next_net = nxt.get("network_level", "none")
+
+        if cur.get("filesystem_level", "none") in ("read", "write") and next_net != "none":
+            warnings.append(
+                f"Step {i + 1} reads filesystem -> Step {i + 2} has network access"
+            )
+
+        if cur.get("code_execution_level", "none") != "none" and next_net != "none":
+            warnings.append(
+                f"Step {i + 1} executes code -> Step {i + 2} has network access"
+            )
+
+    net_steps = [
+        i for i, p in enumerate(perms_list)
+        if p and p.get("network_level", "none") != "none"
+    ]
+    if len(net_steps) > 2:
+        step_nums = ", ".join(str(s + 1) for s in net_steps)
+        warnings.append(f"Steps {step_nums} all require network access")
+
+    return warnings
+
+
+def audit_plan(plan: ExecutionPlan, warnings: list[str]) -> None:
+    """Log execution plan to audit trail as a single entry before execution."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": "plan_execute",
+        "step_count": len(plan.steps),
+        "capabilities": [s.capability for s in plan.steps],
+        "data_flow": [
+            {"step": s.index + 1, "uses_previous": s.uses_previous}
+            for s in plan.steps
+        ],
+        "warnings": warnings,
+    }
+
+    try:
+        from agentnode_sdk.config import config_dir
+
+        audit_dir = config_dir()
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        audit_path = audit_dir / "audit.jsonl"
+        with open(audit_path, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def _find_installed_slug(capability: str) -> str | None:
     """Find an installed package that provides this capability."""
     from agentnode_sdk.installer import read_lockfile

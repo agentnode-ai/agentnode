@@ -1099,13 +1099,24 @@ def _cmd_run_plan(
 ) -> int:
     """Execute a multi-step plan."""
     import os
-    from agentnode_sdk.planner import plan_task, plan_and_run, _find_installed_slug
+    from agentnode_sdk.planner import plan_task, plan_and_run, _find_installed_slug, check_plan_risk, audit_plan
 
     try:
         plan = plan_task(task)
     except ValueError as e:
         print(f"\n  {e}\n", file=sys.stderr)
         return 1
+
+    # --- Plan-level risk warnings ---
+    risk_warnings = check_plan_risk(plan)
+    if risk_warnings:
+        print()
+        print(f"  {bold('Plan Risk Warnings')}")
+        for w in risk_warnings:
+            print(f"  {dim('! ' + w)}")
+        print()
+
+    audit_plan(plan, risk_warnings)
 
     is_interactive = os.environ.get("AGENTNODE_NON_INTERACTIVE", "").lower() not in ("true", "1")
 
