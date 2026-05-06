@@ -140,6 +140,7 @@ agentnode doctor              # detect missing capabilities, suggest packages
 agentnode doctor --fix         # auto-install suggestions
 agentnode recommend            # prioritized recommendations based on installed setup
 agentnode audit                # recent policy decisions (allow/deny/prompt)
+agentnode inspect pdf-reader-pack  # security report: trust, permissions, audit history
 
 # Credentials & config
 agentnode auth set openai

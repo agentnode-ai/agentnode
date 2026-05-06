@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.5.1 — Security Visibility & Guardrails
+
+Hardening release. Adds visibility into tool inputs, plan-level data flows,
+LLM-facing tool outputs, and agent auto-install behavior. All new checks are
+informational warnings — no blocking rules that could break existing packs.
+
+### Added
+
+- **`agentnode inspect <slug>`** — security-focused report for installed
+  packages: trust level, permissions, runtime, tools, connector info, and
+  audit history summary. Supports `--json`.
+- **Input guard** — `validate_tool_input()` warns on path traversal patterns,
+  oversized strings (>1 MB), oversized collections (>10k items), and URL
+  arguments when the package declares `network_level=none`. Warnings appear
+  in `RunToolResult.policy["input_warnings"]`.
+- **Plan-level risk warnings** — `check_plan_risk()` flags risky step
+  combinations: filesystem-read followed by network access, code execution
+  followed by network access, and >2 network steps. Warnings shown in CLI
+  before execution. `audit_plan()` logs the full plan as a single audit entry.
+- **LLM tool output marking** — `mark_untrusted_tool_output()` truncates tool
+  results >50 KB before passing to the LLM and wraps content containing
+  prompt injection markers in structured delimiters. Injection detection
+  triggers a run log event.
+- **Agent auto-install guard** — `AgentContext._ensure_installed()` now
+  respects `auto_upgrade_policy` from config. When set to `off`, agent
+  auto-install is blocked and logged.
+- **Shared audit reader** — `read_audit_entries()` extracted to `cli/audit.py`
+  as the single entry point for reading `audit.jsonl`. Both `cmd_audit()` and
+  `cmd_inspect()` use it.
+
+### Security
+
+- All new checks are warning-only. No existing packs or workflows are blocked.
+- Input guard warnings are logged and included in `RunToolResult.policy`.
+- Plan risk warnings are informational — shown but never block execution.
+- LLM output marking does not claim to prevent prompt injection; it marks
+  untrusted data and detects common injection patterns.
+- Agent auto-install guard is a policy gate, not a security boundary — it
+  respects the user's existing `auto_upgrade_policy` setting.
+
 ## 0.5.0 — Intelligence, Planner & Hardening
 
 ### Breaking changes
