@@ -134,7 +134,11 @@ export default function HomePage() {
                 Verified <span className="text-primary">Agent Skills</span> for Every AI Agent
               </h1>
               <p className="animate-fade-in-delay-1 mt-6 text-lg leading-relaxed text-foreground/80">
-                Your agent detects what&apos;s missing, installs verified skills, and keeps going. Works with LangChain, CrewAI, MCP, and plain Python.
+                AgentNode is a verified registry for AI agent skills and tools.
+                Agents discover missing capabilities, install verified skills at
+                runtime, and run them safely with built-in risk scoring, policy
+                controls, and trust verification. Works with LangChain, CrewAI,
+                MCP, and plain Python.
               </p>
               <p className="animate-fade-in-delay-1 mt-3 text-sm text-muted">
                 Powered by ANP. One portable package format for all AI agents.

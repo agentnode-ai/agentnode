@@ -169,8 +169,11 @@ export default function DocsPage() {
           Documentation
         </h1>
         <p className="text-muted">
-          The complete reference for discovering, installing, publishing, and
-          integrating AI agent capabilities with AgentNode.
+          AgentNode provides a CLI, Python SDK, and REST API for discovering,
+          installing, and running verified AI agent skills. This documentation
+          covers setup, package management, publishing, verification, trust
+          levels, security policies, and integrations with LangChain, CrewAI,
+          MCP, and OpenAI.
         </p>
       </div>
 

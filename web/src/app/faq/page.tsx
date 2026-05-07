@@ -162,9 +162,11 @@ export default function SupportPage() {
           <h1 className="text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
             How can we help?
           </h1>
-          <p className="mx-auto mt-4 max-w-xl text-muted">
-            Find answers to common questions below. If you need further
-            assistance, registered users can open a support ticket.
+          <p className="mx-auto mt-4 max-w-2xl text-muted">
+            AgentNode is a platform for installing, verifying, and running AI
+            agent tools across different frameworks. Below you will find answers
+            to common questions about accounts, publishing, reviews, the SDK and
+            CLI, billing, and security.
           </p>
         </div>
       </section>

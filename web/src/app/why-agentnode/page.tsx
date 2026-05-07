@@ -248,12 +248,12 @@ export default function WhyAgentNodePage() {
             <span className="text-primary">Start Resolving.</span>
           </h1>
           <p className="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-muted">
-            When your agent needs PDF extraction, web search, or email
-            capabilities, you should not be browsing through 500,000 PyPI
-            packages hoping to find something that works with your framework.
-            AgentNode is the verified, buildable, importable capability registry
-            built specifically for AI agent developers. Every package is
-            automatically verified on publish — packages are tested and scored for quality.
+            AgentNode is the verified registry for AI agent skills. Every
+            package is automatically tested on publish through a 4-step
+            verification pipeline, scored for quality, and filtered by trust
+            level. Agents resolve capabilities programmatically, install
+            verified tools at runtime, and enforce security policies — without
+            browsing 500,000 unverified PyPI packages.
           </p>
           <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
             <Link

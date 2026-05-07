@@ -184,8 +184,11 @@ export default function ForDevelopersPage() {
             Published skills can be installed by agents at runtime when policies permit
           </h1>
           <p className="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-muted">
-            Agents detect missing capabilities, find your skill, and install it when policies permit.
-            The higher your trust level, the more agents can use your tool without human approval.
+            Publish your AI tools as verified agent skills on AgentNode. Agents
+            detect missing capabilities, find your skill by what it does, and
+            install it at runtime when policies permit. Every published version
+            is automatically verified, scored, and discoverable across
+            LangChain, CrewAI, MCP, and Python agents.
           </p>
           <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
             <Link
