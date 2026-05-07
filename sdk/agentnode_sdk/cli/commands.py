@@ -1909,6 +1909,14 @@ def cmd_validate(path_str: str) -> int:
         print("  " + "-" * 18)
         print(kv("Risk level", result.risk_level.capitalize()))
         print(kv("Risk score", f"{result.risk_score}/100"))
+        if result.connector_auth_type:
+            parts = []
+            if result.connector_provider:
+                parts.append(result.connector_provider)
+            parts.append(result.connector_auth_type)
+            print(kv("Connector", " / ".join(parts)))
+            if result.connector_scopes:
+                print(kv("Scopes", ", ".join(result.connector_scopes)))
         if result.risk_flags:
             print(kv("Flags", ", ".join(result.risk_flags)))
         if result.risk_signals:

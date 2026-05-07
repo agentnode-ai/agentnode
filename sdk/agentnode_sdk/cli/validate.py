@@ -33,6 +33,9 @@ class ValidateResult:
     risk_signals: list[str] = field(default_factory=list)
     risk_flags: list[str] = field(default_factory=list)
     risk_hints: list[str] = field(default_factory=list)
+    connector_provider: str = ""
+    connector_auth_type: str = ""
+    connector_scopes: list[str] = field(default_factory=list)
 
     @property
     def has_errors(self) -> bool:
@@ -298,6 +301,11 @@ def _manifest_to_risk_entry(manifest: dict) -> dict:
         if isinstance(t, dict) and t.get("capability_id")
     ]
 
+    raw_connector = manifest.get("connector")
+    connector = None
+    if isinstance(raw_connector, dict) and raw_connector.get("auth_type"):
+        connector = {"auth_type": raw_connector["auth_type"]}
+
     return {
         "permissions": {
             "network_level": _NETWORK_LEVEL_MAP.get(net_level, net_level),
@@ -305,9 +313,14 @@ def _manifest_to_risk_entry(manifest: dict) -> dict:
             "code_execution_level": code_level,
         },
         "trust_level": "preview",
-        "connector": None,
+        "connector": connector,
         "capability_ids": capability_ids,
         "_manifest_permissions_declared": bool(manifest.get("permissions")),
+        "_connector_declared": bool(raw_connector),
+        "_connector_scopes": (
+            raw_connector.get("scopes", [])
+            if isinstance(raw_connector, dict) else []
+        ),
     }
 
 
@@ -324,6 +337,13 @@ def _check_risk_preview(manifest: dict, result: ValidateResult) -> None:
     result.risk_signals = profile.signals
     result.risk_flags = profile.risk_flags
     result.risk_hints = _build_risk_hints(profile, entry)
+
+    raw_connector = manifest.get("connector")
+    if isinstance(raw_connector, dict):
+        result.connector_provider = raw_connector.get("provider", "")
+        result.connector_auth_type = raw_connector.get("auth_type", "")
+        scopes = raw_connector.get("scopes")
+        result.connector_scopes = scopes if isinstance(scopes, list) else []
 
 
 def _build_risk_hints(profile, entry: dict) -> list[str]:
@@ -349,6 +369,21 @@ def _build_risk_hints(profile, entry: dict) -> list[str]:
         hints.append(
             "No permissions declared "
             "— risk scoring will use conservative defaults"
+        )
+
+    scopes = entry.get("_connector_scopes", [])
+    if entry.get("_connector_declared"):
+        write_scopes = [s for s in scopes if ":write" in s or s.startswith("write")]
+        if write_scopes:
+            hints.append(
+                f"Connector declares write scopes ({', '.join(write_scopes)}) "
+                "— contributes to external_write_capable detection"
+            )
+
+    if perms.get("network_level") in ("external", "full") and not entry.get("_connector_declared"):
+        hints.append(
+            "Package uses external network without connector metadata "
+            "— consider adding a connector block for accurate risk preview"
         )
 
     if profile.risk_level == "high":

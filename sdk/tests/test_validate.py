@@ -98,9 +98,41 @@ class TestManifestToRiskEntry:
         entry = _manifest_to_risk_entry({})
         assert entry["trust_level"] == "preview"
 
-    def test_connector_is_none(self):
+    def test_connector_none_when_missing(self):
         entry = _manifest_to_risk_entry({})
         assert entry["connector"] is None
+
+    def test_connector_mapped_from_manifest(self):
+        entry = _manifest_to_risk_entry({
+            "connector": {"provider": "slack", "auth_type": "oauth2"},
+        })
+        assert entry["connector"] == {"auth_type": "oauth2"}
+
+    def test_connector_none_without_auth_type(self):
+        entry = _manifest_to_risk_entry({
+            "connector": {"provider": "slack"},
+        })
+        assert entry["connector"] is None
+
+    def test_connector_declared_flag(self):
+        entry = _manifest_to_risk_entry({
+            "connector": {"provider": "slack", "auth_type": "oauth2"},
+        })
+        assert entry["_connector_declared"] is True
+
+    def test_connector_declared_false_when_missing(self):
+        entry = _manifest_to_risk_entry({})
+        assert entry["_connector_declared"] is False
+
+    def test_connector_scopes_extracted(self):
+        entry = _manifest_to_risk_entry({
+            "connector": {"auth_type": "oauth2", "scopes": ["chat:write", "channels:read"]},
+        })
+        assert entry["_connector_scopes"] == ["chat:write", "channels:read"]
+
+    def test_connector_scopes_empty_when_missing(self):
+        entry = _manifest_to_risk_entry({})
+        assert entry["_connector_scopes"] == []
 
     def test_permissions_declared_true(self):
         entry = _manifest_to_risk_entry({
@@ -149,6 +181,35 @@ class TestRiskPreview:
         _check_risk_preview(manifest, result)
         assert "external_write_capable" in result.risk_flags
 
+    def test_connector_adds_credential_signal(self):
+        manifest = _minimal_manifest(
+            connector={"auth_type": "oauth2"},
+            permissions={"network": {"level": "unrestricted"}},
+        )
+        result = ValidateResult()
+        _check_risk_preview(manifest, result)
+        assert result.risk_score == 40  # 25 (network) + 15 (credentials)
+        assert any("credentials" in s for s in result.risk_signals)
+
+    def test_connector_triggers_external_write_flag(self):
+        manifest = _minimal_manifest(
+            connector={"provider": "slack", "auth_type": "oauth2"},
+            permissions={"network": {"level": "unrestricted"}},
+        )
+        result = ValidateResult()
+        _check_risk_preview(manifest, result)
+        assert "external_write_capable" in result.risk_flags
+
+    def test_connector_without_auth_no_credential_signal(self):
+        manifest = _minimal_manifest(
+            connector={"provider": "slack"},
+            permissions={"network": {"level": "unrestricted"}},
+        )
+        result = ValidateResult()
+        _check_risk_preview(manifest, result)
+        assert result.risk_score == 25
+        assert not any("credentials" in s for s in result.risk_signals)
+
     def test_preview_trust_gives_zero_points(self):
         manifest = _minimal_manifest(permissions={
             "network": {"level": "none"},
@@ -188,6 +249,32 @@ class TestRiskHints:
         _check_risk_preview(manifest, result)
         assert any("after publish" in h for h in result.risk_hints)
 
+    def test_write_scopes_hint(self):
+        manifest = _minimal_manifest(
+            connector={"auth_type": "oauth2", "scopes": ["chat:write"]},
+            permissions={"network": {"level": "unrestricted"}},
+        )
+        result = ValidateResult()
+        _check_risk_preview(manifest, result)
+        assert any("write scopes" in h for h in result.risk_hints)
+
+    def test_no_connector_with_network_hint(self):
+        manifest = _minimal_manifest(
+            permissions={"network": {"level": "unrestricted"}},
+        )
+        result = ValidateResult()
+        _check_risk_preview(manifest, result)
+        assert any("connector metadata" in h for h in result.risk_hints)
+
+    def test_connector_suppresses_no_connector_hint(self):
+        manifest = _minimal_manifest(
+            connector={"provider": "slack", "auth_type": "oauth2"},
+            permissions={"network": {"level": "unrestricted"}},
+        )
+        result = ValidateResult()
+        _check_risk_preview(manifest, result)
+        assert not any("connector metadata" in h for h in result.risk_hints)
+
     def test_high_risk_hint(self):
         manifest = _minimal_manifest(permissions={
             "network": {"level": "unrestricted"},
@@ -221,6 +308,38 @@ class TestValidateRiskIntegration:
         result = validate_package_dir(tmp_path)
         assert result.has_errors
         assert result.risk_level == ""
+
+    def test_validate_connector_fields(self, tmp_path):
+        pkg_dir = _write_manifest(tmp_path, _minimal_manifest(
+            connector={"provider": "slack", "auth_type": "oauth2", "scopes": ["chat:write"]},
+            permissions={"network": {"level": "unrestricted"}},
+        ))
+        result = validate_package_dir(pkg_dir)
+        assert result.connector_provider == "slack"
+        assert result.connector_auth_type == "oauth2"
+        assert result.connector_scopes == ["chat:write"]
+
+    def test_validate_no_connector_empty_fields(self, tmp_path):
+        pkg_dir = _write_manifest(tmp_path, _minimal_manifest(
+            permissions={"network": {"level": "unrestricted"}},
+        ))
+        result = validate_package_dir(pkg_dir)
+        assert result.connector_provider == ""
+        assert result.connector_auth_type == ""
+        assert result.connector_scopes == []
+
+    def test_cmd_validate_shows_connector(self, tmp_path, capsys):
+        _write_manifest(tmp_path, _minimal_manifest(
+            connector={"provider": "slack", "auth_type": "oauth2", "scopes": ["chat:write"]},
+            permissions={"network": {"level": "unrestricted"}},
+        ))
+        from agentnode_sdk.cli.commands import cmd_validate
+        cmd_validate(str(tmp_path))
+        out = capsys.readouterr().out
+        assert "Connector" in out
+        assert "slack" in out
+        assert "oauth2" in out
+        assert "chat:write" in out
 
     def test_cmd_validate_shows_risk_section(self, tmp_path, capsys):
         _write_manifest(tmp_path, _minimal_manifest(
