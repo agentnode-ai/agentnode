@@ -6,6 +6,21 @@ export const metadata: Metadata = {
   title: "Getting Started | AgentNode",
   description:
     "Install AgentNode, configure permissions, and let your agent learn new skills on its own. Works with ChatGPT, Claude, Gemini, LangChain, CrewAI, and more.",
+  alternates: {
+    canonical: "/getting-started",
+  },
+  openGraph: {
+    title: "Getting Started | AgentNode",
+    description:
+      "Install AgentNode, configure permissions, and let your agent learn new skills on its own. Works with ChatGPT, Claude, Gemini, LangChain, CrewAI, and more.",
+    type: "website",
+    url: "https://agentnode.net/getting-started",
+    siteName: "AgentNode",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@AgentNodenet",
+  },
 };
 
 const steps = [

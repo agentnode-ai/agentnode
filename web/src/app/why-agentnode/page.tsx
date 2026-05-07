@@ -5,6 +5,21 @@ export const metadata = {
   title: "Why AgentNode — The Verified Agent Skills Registry",
   description:
     "Why developers choose AgentNode over PyPI for AI agent tools. 4-step verification, trust-aware resolution, security scanning, and cross-framework agent skills — not 500K unverified packages.",
+  alternates: {
+    canonical: "/why-agentnode",
+  },
+  openGraph: {
+    title: "Why AgentNode — The Verified Agent Skills Registry",
+    description:
+      "Why developers choose AgentNode over PyPI for AI agent tools. 4-step verification, trust-aware resolution, security scanning, and cross-framework agent skills.",
+    type: "website",
+    url: "https://agentnode.net/why-agentnode",
+    siteName: "AgentNode",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@AgentNodenet",
+  },
 };
 
 /* ------------------------------------------------------------------ */

@@ -3,6 +3,21 @@ import Link from "next/link";
 export const metadata = {
   title: "Open Source License — AgentNode Dual Licensing",
   description: "AgentNode open source licensing: MIT for CLI, SDK, and agent skill packs. BSL 1.1 for the backend registry. Free to use, modify, and redistribute.",
+  alternates: {
+    canonical: "/license",
+  },
+  openGraph: {
+    title: "Open Source License — AgentNode",
+    description:
+      "AgentNode open source licensing: MIT for CLI, SDK, and agent skill packs. BSL 1.1 for the backend registry.",
+    type: "website",
+    url: "https://agentnode.net/license",
+    siteName: "AgentNode",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@AgentNodenet",
+  },
 };
 
 const sections = [

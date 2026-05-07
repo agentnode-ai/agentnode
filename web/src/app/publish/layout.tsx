@@ -4,6 +4,9 @@ export const metadata: Metadata = {
   title: "Publish Agent Skills — Share Your AI Tools with Agents Worldwide",
   description:
     "Publish your AI agent skills on AgentNode. Your tools get 4-step verification, trust badges, and cross-framework compatibility — discoverable by agents everywhere.",
+  alternates: {
+    canonical: "/publish",
+  },
   openGraph: {
     title: "Publish Agent Skills on AgentNode",
     description:
@@ -11,6 +14,10 @@ export const metadata: Metadata = {
     type: "website",
     url: "https://agentnode.net/publish",
     siteName: "AgentNode",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@AgentNodenet",
   },
 };
 

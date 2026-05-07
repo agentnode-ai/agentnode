@@ -4,6 +4,21 @@ export const metadata = {
   title: "FAQ — AgentNode Help & Frequently Asked Questions",
   description:
     "Find answers to common questions about AgentNode — accounts, publishing, reviews, SDK, billing, and security. Can't find your answer? Open a support ticket.",
+  alternates: {
+    canonical: "/faq",
+  },
+  openGraph: {
+    title: "FAQ — AgentNode Help & Questions",
+    description:
+      "Answers to common questions about AgentNode — accounts, publishing, reviews, SDK, billing, and security.",
+    type: "website",
+    url: "https://agentnode.net/faq",
+    siteName: "AgentNode",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@AgentNodenet",
+  },
 };
 
 const faqCategories = [

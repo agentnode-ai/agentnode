@@ -8,6 +8,9 @@ import { BACKEND_URL } from "@/lib/constants";
 export const metadata: Metadata = {
   title: "Blog — AI Agent Skills, MCP Tools & Agentic AI Insights",
   description: "Expert articles on AI agent skills, MCP servers, agent tools, and agentic AI. Tutorials, guides, and insights for developers building with AI agents.",
+  alternates: {
+    canonical: "/blog",
+  },
   openGraph: {
     title: "AgentNode Blog — AI Agent Skills & Tools Insights",
     description: "Expert articles on AI agent skills, MCP servers, agent tools, and agentic AI for developers.",

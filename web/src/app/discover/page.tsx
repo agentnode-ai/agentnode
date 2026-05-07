@@ -7,6 +7,9 @@ export const metadata: Metadata = {
   title: "Discover Agent Skills — Trending AI Agent Tools & Packs",
   description:
     "Explore trending and newly published agent skills on AgentNode. Browse verified AI tools, starter packs, and capabilities trusted by developers worldwide.",
+  alternates: {
+    canonical: "/discover",
+  },
   openGraph: {
     title: "Discover Agent Skills — Trending AI Agent Tools",
     description:
@@ -14,6 +17,10 @@ export const metadata: Metadata = {
     type: "website",
     url: "https://agentnode.net/discover",
     siteName: "AgentNode",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@AgentNodenet",
   },
 };
 

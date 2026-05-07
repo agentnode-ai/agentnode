@@ -4,6 +4,9 @@ export const metadata: Metadata = {
   title: "Compare Agent Skills — Side-by-Side AI Tool Comparison",
   description:
     "Compare agent skills and AI tools side by side. See trust levels, capabilities, framework compatibility, and verification status at a glance on AgentNode.",
+  alternates: {
+    canonical: "/compare",
+  },
   openGraph: {
     title: "Compare Agent Skills — Side-by-Side Tool Comparison",
     description:
@@ -11,6 +14,10 @@ export const metadata: Metadata = {
     type: "website",
     url: "https://agentnode.net/compare",
     siteName: "AgentNode",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@AgentNodenet",
   },
 };
 

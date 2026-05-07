@@ -41,6 +41,14 @@ export const metadata: Metadata = {
     "CrewAI tools",
     "model context protocol",
   ],
+  openGraph: {
+    type: "website",
+    siteName: "AgentNode",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@AgentNodenet",
+  },
   icons: {
     icon: [
       { url: "/favicon.svg", type: "image/svg+xml" },

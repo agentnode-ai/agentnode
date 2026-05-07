@@ -4,6 +4,13 @@ export const metadata: Metadata = {
   title: "Search Agent Skills & Tools — Find Verified AI Capabilities",
   description:
     "Search the AgentNode registry for verified agent skills and tools. Filter by capability, framework, trust level, and runtime — find the right tool for your AI agent.",
+  robots: {
+    index: false,
+    follow: true,
+  },
+  alternates: {
+    canonical: "/search",
+  },
   openGraph: {
     title: "Search Agent Skills & Tools on AgentNode",
     description:
@@ -11,6 +18,10 @@ export const metadata: Metadata = {
     type: "website",
     url: "https://agentnode.net/search",
     siteName: "AgentNode",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@AgentNodenet",
   },
 };
 

@@ -11,6 +11,9 @@ export const metadata: Metadata = {
   title: "Verified Agent Skills for AI Agents | Auto-Detect & Install | AgentNode",
   description:
     "AI agents detect missing capabilities and install verified skills on demand. Trust-gated auto-upgrades with confidence scoring. Portable ANP format for LangChain, CrewAI, MCP, and Python.",
+  alternates: {
+    canonical: "/",
+  },
   openGraph: {
     title: "Verified Agent Skills for AI Agents | Auto-Detect & Install | AgentNode",
     description:

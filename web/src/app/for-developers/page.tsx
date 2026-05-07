@@ -4,6 +4,21 @@ export const metadata = {
   title: "Publish AI Agent Skills — Discoverable and Installable at Runtime",
   description:
     "Publish your AI tools as verified agent skills on AgentNode. Agents detect missing capabilities, find and install your skill when policies permit — one line of code. Trust tiers control what gets installed.",
+  alternates: {
+    canonical: "/for-developers",
+  },
+  openGraph: {
+    title: "Publish AI Agent Skills — For Developers",
+    description:
+      "Publish your AI tools as verified agent skills on AgentNode. Discoverable by agents, installable at runtime, governed by trust tiers.",
+    type: "website",
+    url: "https://agentnode.net/for-developers",
+    siteName: "AgentNode",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@AgentNodenet",
+  },
 };
 
 /* ------------------------------------------------------------------ */

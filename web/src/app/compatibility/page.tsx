@@ -13,6 +13,9 @@ export const metadata: Metadata = {
   title: "Model Compatibility — Verified with 175+ Models",
   description:
     "AgentNode Runtime is tested against 182 LLM models across 32 providers. See which models pass all 4 tool-calling scenarios.",
+  alternates: {
+    canonical: "/compatibility",
+  },
   openGraph: {
     title: "Model Compatibility — Verified with 175+ Models | AgentNode",
     description:
@@ -20,6 +23,10 @@ export const metadata: Metadata = {
     type: "website",
     url: "https://agentnode.net/compatibility",
     siteName: "AgentNode",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@AgentNodenet",
   },
 };
 

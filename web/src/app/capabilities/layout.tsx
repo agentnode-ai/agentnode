@@ -4,6 +4,9 @@ export const metadata: Metadata = {
   title: "AI Agent Capabilities — Browse 90+ Verified Skill Categories",
   description:
     "Explore AgentNode's capability taxonomy with 90+ categories. From PDF extraction to web search, database queries to code generation — find the right agent skill by capability.",
+  alternates: {
+    canonical: "/capabilities",
+  },
   openGraph: {
     title: "AI Agent Capabilities — 90+ Skill Categories",
     description:
@@ -11,6 +14,10 @@ export const metadata: Metadata = {
     type: "website",
     url: "https://agentnode.net/capabilities",
     siteName: "AgentNode",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@AgentNodenet",
   },
 };
 
