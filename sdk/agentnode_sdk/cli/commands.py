@@ -1450,6 +1450,10 @@ def cmd_inspect(slug: str, *, json_output: bool = False) -> int:
         print(f"  {dim('Signals:')}")
         for sig in risk.signals:
             print(f"    {dim('- ' + sig)}")
+    if risk.risk_flags:
+        print(f"  {dim('Flags:')}")
+        for flag in risk.risk_flags:
+            print(f"    {dim('- ' + flag)}")
     if risk.backend_hint:
         print(f"  {dim('Backend hint:')}")
         for k, v in risk.backend_hint.items():
@@ -1470,6 +1474,7 @@ def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
         "level": risk.risk_level,
         "score": risk.risk_score,
         "signals": risk.signals,
+        "flags": risk.risk_flags,
     }
     if risk.backend_hint:
         risk_dict["backend_hint"] = risk.backend_hint

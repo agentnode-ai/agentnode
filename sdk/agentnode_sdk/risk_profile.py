@@ -18,6 +18,7 @@ class RiskProfile:
     risk_level: str          # "low", "medium", "high"
     risk_score: int          # 0-100 (higher = riskier)
     signals: list[str]       # human-readable signal descriptions
+    risk_flags: list[str] = field(default_factory=list)  # semantic flags, not scored
     backend_hint: dict | None = None  # optional backend-provided risk data, displayed only
 
 
@@ -38,6 +39,7 @@ def compute_risk_profile(slug: str, entry: dict) -> RiskProfile:
         risk_level=level,
         risk_score=score,
         signals=signals,
+        risk_flags=_compute_flags(entry),
         backend_hint=_backend_hint(entry),
     )
 
@@ -100,6 +102,32 @@ def _runtime_signals(slug: str) -> list[tuple[int, str]]:
         pass
 
     return signals
+
+
+_EXTERNAL_WRITE_CAPABILITIES = frozenset({
+    "email_sending",
+    "calendar_management",
+    "task_management",
+})
+
+
+def _compute_flags(entry: dict) -> list[str]:
+    """Derive semantic risk flags. These do not affect the score."""
+    flags: list[str] = []
+    perms = entry.get("permissions") or {}
+    net = perms.get("network_level", "none")
+    has_external_net = net in ("external", "full")
+
+    connector = entry.get("connector")
+    has_connector = bool(connector and isinstance(connector, dict) and connector.get("auth_type"))
+
+    caps = set(entry.get("capability_ids", []))
+    has_write_cap = bool(caps & _EXTERNAL_WRITE_CAPABILITIES)
+
+    if has_external_net and (has_connector or has_write_cap):
+        flags.append("external_write_capable")
+
+    return flags
 
 
 def _backend_hint(entry: dict) -> dict | None:

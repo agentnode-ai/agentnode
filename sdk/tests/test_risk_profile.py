@@ -145,3 +145,51 @@ class TestEdgeCases:
     def test_no_permissions_entry(self):
         profile = compute_risk_profile("p", {"trust_level": "verified"})
         assert profile.risk_level in ("low", "medium", "high")
+
+
+class TestRiskFlags:
+    def test_gmail_style_external_write(self):
+        profile = compute_risk_profile("gmail-sender-pack", _entry(
+            network="external", trust="verified",
+            connector={"auth_type": "oauth2", "provider": "google"},
+        ))
+        assert "external_write_capable" in profile.risk_flags
+
+    def test_slack_style_external_write(self):
+        profile = compute_risk_profile("slack-pack", _entry(
+            network="external", trust="trusted",
+            connector={"auth_type": "oauth2", "provider": "slack"},
+        ))
+        assert "external_write_capable" in profile.risk_flags
+
+    def test_email_capability_triggers_flag(self):
+        entry = _entry(network="external", trust="verified")
+        entry["capability_ids"] = ["email_sending"]
+        profile = compute_risk_profile("email-pack", entry)
+        assert "external_write_capable" in profile.risk_flags
+
+    def test_no_flag_without_network(self):
+        profile = compute_risk_profile("local-pack", _entry(
+            network="none", trust="verified",
+            connector={"auth_type": "api_key"},
+        ))
+        assert "external_write_capable" not in profile.risk_flags
+
+    def test_no_flag_without_connector_or_write_cap(self):
+        profile = compute_risk_profile("search-pack", _entry(
+            network="external", trust="verified",
+        ))
+        assert "external_write_capable" not in profile.risk_flags
+
+    def test_flags_do_not_affect_score(self):
+        without_connector = compute_risk_profile("a", _entry(
+            network="external", trust="verified",
+        ))
+        with_connector = compute_risk_profile("b", _entry(
+            network="external", trust="verified",
+            connector={"auth_type": "oauth2"},
+        ))
+        # Score difference comes from credentials signal, not from the flag
+        assert with_connector.risk_score == without_connector.risk_score + 15
+        assert "external_write_capable" in with_connector.risk_flags
+        assert "external_write_capable" not in without_connector.risk_flags
