@@ -258,13 +258,13 @@ class TestRiskHints:
         _check_risk_preview(manifest, result)
         assert any("write scopes" in h for h in result.risk_hints)
 
-    def test_no_connector_with_network_hint(self):
+    def test_no_connector_with_network_warning(self):
         manifest = _minimal_manifest(
             permissions={"network": {"level": "unrestricted"}},
         )
         result = ValidateResult()
         _check_risk_preview(manifest, result)
-        assert any("connector metadata" in h for h in result.risk_hints)
+        assert any("Missing connector metadata" in w for w in result.warnings)
 
     def test_connector_suppresses_no_connector_hint(self):
         manifest = _minimal_manifest(
@@ -273,7 +273,7 @@ class TestRiskHints:
         )
         result = ValidateResult()
         _check_risk_preview(manifest, result)
-        assert not any("connector metadata" in h for h in result.risk_hints)
+        assert not any("Missing connector" in w for w in result.warnings)
 
     def test_high_risk_hint(self):
         manifest = _minimal_manifest(permissions={
@@ -352,3 +352,60 @@ class TestValidateRiskIntegration:
         assert "Risk level" in out
         assert "Risk score" in out
         assert "Hints" in out
+
+
+# ---------------------------------------------------------------------------
+# Connector Warning
+# ---------------------------------------------------------------------------
+
+class TestConnectorWarning:
+    def test_external_network_no_connector_warns(self):
+        manifest = _minimal_manifest(
+            permissions={"network": {"level": "unrestricted"}},
+        )
+        result = ValidateResult()
+        _check_risk_preview(manifest, result)
+        assert any("Missing connector metadata" in w for w in result.warnings)
+
+    def test_external_network_with_connector_no_warning(self):
+        manifest = _minimal_manifest(
+            connector={"provider": "slack", "auth_type": "oauth2"},
+            permissions={"network": {"level": "unrestricted"}},
+        )
+        result = ValidateResult()
+        _check_risk_preview(manifest, result)
+        assert not any("Missing connector metadata" in w for w in result.warnings)
+
+    def test_no_external_network_no_warning(self):
+        manifest = _minimal_manifest(
+            permissions={"network": {"level": "none"}},
+        )
+        result = ValidateResult()
+        _check_risk_preview(manifest, result)
+        assert not any("Missing connector metadata" in w for w in result.warnings)
+
+    def test_restricted_network_no_warning(self):
+        manifest = _minimal_manifest(
+            permissions={"network": {"level": "restricted"}},
+        )
+        result = ValidateResult()
+        _check_risk_preview(manifest, result)
+        assert not any("Missing connector metadata" in w for w in result.warnings)
+
+    def test_validate_result_has_warnings_field(self, tmp_path):
+        pkg_dir = _write_manifest(tmp_path, _minimal_manifest(
+            permissions={"network": {"level": "unrestricted"}},
+        ))
+        result = validate_package_dir(pkg_dir)
+        assert isinstance(result.warnings, list)
+        assert len(result.warnings) >= 1
+
+    def test_cmd_validate_shows_warnings_section(self, tmp_path, capsys):
+        _write_manifest(tmp_path, _minimal_manifest(
+            permissions={"network": {"level": "unrestricted"}},
+        ))
+        from agentnode_sdk.cli.commands import cmd_validate
+        cmd_validate(str(tmp_path))
+        out = capsys.readouterr().out
+        assert "Warnings" in out
+        assert "Missing connector metadata" in out

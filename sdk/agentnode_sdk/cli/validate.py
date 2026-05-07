@@ -36,6 +36,7 @@ class ValidateResult:
     connector_provider: str = ""
     connector_auth_type: str = ""
     connector_scopes: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def has_errors(self) -> bool:
@@ -345,6 +346,8 @@ def _check_risk_preview(manifest: dict, result: ValidateResult) -> None:
         scopes = raw_connector.get("scopes")
         result.connector_scopes = scopes if isinstance(scopes, list) else []
 
+    _check_connector_warning(entry, result)
+
 
 def _build_risk_hints(profile, entry: dict) -> list[str]:
     """Generate actionable hints for publishers."""
@@ -380,12 +383,6 @@ def _build_risk_hints(profile, entry: dict) -> list[str]:
                 "— contributes to external_write_capable detection"
             )
 
-    if perms.get("network_level") in ("external", "full") and not entry.get("_connector_declared"):
-        hints.append(
-            "Package uses external network without connector metadata "
-            "— consider adding a connector block for accurate risk preview"
-        )
-
     if profile.risk_level == "high":
         hints.append(
             "High usage risk "
@@ -398,3 +395,16 @@ def _build_risk_hints(profile, entry: dict) -> list[str]:
     )
 
     return hints
+
+
+def _check_connector_warning(entry: dict, result: ValidateResult) -> None:
+    """Warn when external network is declared without connector metadata."""
+    perms = entry.get("permissions") or {}
+    net = perms.get("network_level", "none")
+    if net in ("external", "full") and entry.get("connector") is None:
+        result.warnings.append(
+            "Missing connector metadata: package uses external network access "
+            "but does not declare a connector. This may lead to inaccurate risk "
+            "scoring and missing flags like external_write_capable. "
+            "Add a connector block to improve risk detection."
+        )

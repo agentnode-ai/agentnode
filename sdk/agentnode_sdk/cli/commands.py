@@ -1924,6 +1924,12 @@ def cmd_validate(path_str: str) -> int:
             for sig in result.risk_signals:
                 print(f"    - {sig}")
         print()
+        if result.warnings:
+            print(bold("  Warnings"))
+            print("  " + "-" * 8)
+            for w in result.warnings:
+                print(f"  ⚠ {w}")
+            print()
         if result.risk_hints:
             print(bold("  Hints"))
             print("  " + "-" * 5)
