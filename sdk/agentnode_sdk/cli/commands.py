@@ -1904,6 +1904,25 @@ def cmd_validate(path_str: str) -> int:
     print(kv("Gold eligible", gold_eligible))
     print()
 
+    if result.risk_level:
+        print(bold("  Usage Risk Preview"))
+        print("  " + "-" * 18)
+        print(kv("Risk level", result.risk_level.capitalize()))
+        print(kv("Risk score", f"{result.risk_score}/100"))
+        if result.risk_flags:
+            print(kv("Flags", ", ".join(result.risk_flags)))
+        if result.risk_signals:
+            print(kv("Signals", ""))
+            for sig in result.risk_signals:
+                print(f"    - {sig}")
+        print()
+        if result.risk_hints:
+            print(bold("  Hints"))
+            print("  " + "-" * 5)
+            for hint in result.risk_hints:
+                print(f"  • {hint}")
+            print()
+
     if result.missing_items:
         print(bold("  Missing for Gold"))
         print("  " + "-" * 16)

@@ -76,6 +76,7 @@ def _static_signals(entry: dict) -> list[tuple[int, str]]:
         signals.append((15, "Trust level: unverified"))
     elif trust == "verified":
         signals.append((5, "Trust level: verified"))
+    # "preview", "trusted", "curated" → 0 points (no signal)
 
     return signals
 

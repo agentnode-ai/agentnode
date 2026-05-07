@@ -28,6 +28,11 @@ class ValidateResult:
     verification_mode: str = "none"
     cases_count: int = 0
     missing_items: list[str] = field(default_factory=list)
+    risk_level: str = ""
+    risk_score: int = 0
+    risk_signals: list[str] = field(default_factory=list)
+    risk_flags: list[str] = field(default_factory=list)
+    risk_hints: list[str] = field(default_factory=list)
 
     @property
     def has_errors(self) -> bool:
@@ -63,6 +68,7 @@ def validate_package_dir(path: Path) -> ValidateResult:
 
     _check_required_fields(manifest, result)
     _check_verification(manifest, path, result)
+    _check_risk_preview(manifest, result)
 
     return result
 
@@ -259,3 +265,101 @@ def _check_manifest_in(path: Path, result: ValidateResult) -> None:
         result.checks.append(CheckResult(False, "MANIFEST.in", "Does not include fixtures"))
     else:
         result.checks.append(CheckResult(True, "MANIFEST.in", "Includes fixtures"))
+
+
+# ---------------------------------------------------------------------------
+# Usage Risk Preview
+# ---------------------------------------------------------------------------
+
+_NETWORK_LEVEL_MAP = {
+    "unrestricted": "external",
+    "restricted": "internal",
+    "none": "none",
+}
+
+
+def _manifest_to_risk_entry(manifest: dict) -> dict:
+    """Convert manifest permissions to lockfile-style entry for risk scoring."""
+    perms = manifest.get("permissions") or {}
+
+    net_raw = perms.get("network", {})
+    net_level = net_raw.get("level", "none") if isinstance(net_raw, dict) else "none"
+
+    fs_raw = perms.get("filesystem", {})
+    fs_level = fs_raw.get("level", "none") if isinstance(fs_raw, dict) else "none"
+
+    code_raw = perms.get("code_execution", {})
+    code_level = code_raw.get("level", "none") if isinstance(code_raw, dict) else "none"
+
+    caps = manifest.get("capabilities", {})
+    tools = caps.get("tools", []) if isinstance(caps, dict) else []
+    capability_ids = [
+        t["capability_id"] for t in tools
+        if isinstance(t, dict) and t.get("capability_id")
+    ]
+
+    return {
+        "permissions": {
+            "network_level": _NETWORK_LEVEL_MAP.get(net_level, net_level),
+            "filesystem_level": fs_level,
+            "code_execution_level": code_level,
+        },
+        "trust_level": "preview",
+        "connector": None,
+        "capability_ids": capability_ids,
+        "_manifest_permissions_declared": bool(manifest.get("permissions")),
+    }
+
+
+def _check_risk_preview(manifest: dict, result: ValidateResult) -> None:
+    """Compute usage risk preview from manifest data."""
+    from agentnode_sdk.risk_profile import compute_risk_profile
+
+    entry = _manifest_to_risk_entry(manifest)
+    slug = manifest.get("package_id", "unknown")
+    profile = compute_risk_profile(slug, entry)
+
+    result.risk_level = profile.risk_level
+    result.risk_score = profile.risk_score
+    result.risk_signals = profile.signals
+    result.risk_flags = profile.risk_flags
+    result.risk_hints = _build_risk_hints(profile, entry)
+
+
+def _build_risk_hints(profile, entry: dict) -> list[str]:
+    """Generate actionable hints for publishers."""
+    from agentnode_sdk.risk_profile import RiskProfile
+
+    hints: list[str] = []
+
+    if "external_write_capable" in profile.risk_flags:
+        hints.append(
+            "Package will be flagged as external_write_capable "
+            "— users can configure risk policies for this flag"
+        )
+
+    perms = entry.get("permissions") or {}
+    if perms.get("network_level") in ("external", "full"):
+        hints.append(
+            "Declare network permissions accurately "
+            "— overly broad declarations increase risk score"
+        )
+
+    if not entry.get("_manifest_permissions_declared"):
+        hints.append(
+            "No permissions declared "
+            "— risk scoring will use conservative defaults"
+        )
+
+    if profile.risk_level == "high":
+        hints.append(
+            "High usage risk "
+            "— consider whether all declared permissions are necessary"
+        )
+
+    hints.append(
+        "Trust level is assigned after publish "
+        "— not included in preview score"
+    )
+
+    return hints
