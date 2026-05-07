@@ -233,6 +233,23 @@ example, to share module-level state with the tool), pass
 `mode="direct"` explicitly — that is an opt-in performance trade-off,
 not a default.
 
+### `get_risk_profile()` (standalone)
+
+Usage risk assessment for installed packages. Separate from verification —
+risk answers "how risky is the usage?" not "does it work reliably?"
+
+```python
+from agentnode_sdk import get_risk_profile
+
+profile = get_risk_profile("gmail-sender-pack")
+# profile.risk_level   → "medium"
+# profile.risk_score   → 45  (0-100, higher = riskier)
+# profile.signals      → ["Uses external network access", "Requires credentials (oauth)"]
+# profile.risk_flags   → ["external_write_capable"]
+```
+
+Returns `None` if the package is not installed.
+
 ### Multi-step Planner
 
 Decompose and execute multi-step tasks programmatically.

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.2 — Usage Risk Profile
+
+Per-package usage risk scoring — separate from the verification score.
+Risk answers "how risky is the usage?" not "does it work reliably?"
+
+### Added
+
+- **Usage Risk Profile** — `compute_risk_profile()` scores packages from
+  static signals (permissions, trust, credentials) and runtime signals
+  (audit deny rate). Score 0–100, level low/medium/high.
+- **`get_risk_profile(slug)`** — public API to retrieve the risk profile
+  for any installed package. Returns `None` if not installed.
+- **Risk flags** — semantic boolean flags like `external_write_capable`
+  that categorize risk without affecting the numeric score. Derived from
+  network permissions, connectors, and capability IDs.
+- **Inspect integration** — `agentnode inspect` now shows Usage Risk
+  section (level, score, signals, flags) in both CLI and `--json` output.
+- **Backend hint** — optional `risk_score`/`risk_profile` from backend
+  metadata is displayed separately but never included in the local score.
+- Exports: `RiskProfile`, `compute_risk_profile`, `get_risk_profile`
+  available from `agentnode_sdk`.
+
 ## 0.5.1 — Security Visibility & Guardrails
 
 Hardening release. Adds visibility into tool inputs, plan-level data flows,
