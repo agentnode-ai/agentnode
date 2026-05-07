@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from agentnode_sdk.risk_profile import RiskProfile, compute_risk_profile
+from agentnode_sdk.risk_profile import RiskProfile, compute_risk_profile, get_risk_profile
 
 
 @pytest.fixture(autouse=True)
@@ -193,3 +193,31 @@ class TestRiskFlags:
         assert with_connector.risk_score == without_connector.risk_score + 15
         assert "external_write_capable" in with_connector.risk_flags
         assert "external_write_capable" not in without_connector.risk_flags
+
+
+class TestPublicAPI:
+    def test_get_risk_profile_found(self, isolated_env):
+        lock_file = isolated_env / "agentnode.lock"
+        lock_file.write_text(json.dumps({
+            "version": "0.1",
+            "packages": {
+                "my-pack": {
+                    "permissions": {"network_level": "external"},
+                    "trust_level": "verified",
+                },
+            },
+        }))
+        profile = get_risk_profile("my-pack")
+        assert isinstance(profile, RiskProfile)
+        assert profile.risk_score == 30
+        assert profile.risk_level == "medium"
+
+    def test_get_risk_profile_not_found(self, isolated_env):
+        profile = get_risk_profile("no-such-pack")
+        assert profile is None
+
+    def test_exports_accessible(self):
+        import agentnode_sdk
+        assert agentnode_sdk.RiskProfile is RiskProfile
+        assert agentnode_sdk.compute_risk_profile is compute_risk_profile
+        assert agentnode_sdk.get_risk_profile is get_risk_profile

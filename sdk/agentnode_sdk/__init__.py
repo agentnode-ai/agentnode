@@ -28,6 +28,7 @@ from agentnode_sdk.models import (
     SmartRunResult,
 )
 from agentnode_sdk.compatibility import recommend_model
+from agentnode_sdk.risk_profile import RiskProfile, compute_risk_profile, get_risk_profile
 from agentnode_sdk.policy import PolicyResult, check_install, check_run
 from agentnode_sdk.runner import run_tool
 from agentnode_sdk.runtime import AgentNodeRuntime
@@ -72,4 +73,7 @@ __all__ = [
     "check_install",
     "check_run",
     "recommend_model",
+    "RiskProfile",
+    "compute_risk_profile",
+    "get_risk_profile",
 ]

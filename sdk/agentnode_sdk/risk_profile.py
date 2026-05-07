@@ -130,6 +130,17 @@ def _compute_flags(entry: dict) -> list[str]:
     return flags
 
 
+def get_risk_profile(slug: str) -> RiskProfile | None:
+    """Return the risk profile for an installed package, or None if not installed."""
+    from agentnode_sdk.installer import read_lockfile
+
+    lock = read_lockfile()
+    entry = lock.get("packages", {}).get(slug)
+    if entry is None:
+        return None
+    return compute_risk_profile(slug, entry)
+
+
 def _backend_hint(entry: dict) -> dict | None:
     """Read optional backend risk data. Displayed separately, not scored."""
     hint = entry.get("risk_score") or entry.get("risk_profile")
