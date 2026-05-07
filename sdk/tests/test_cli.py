@@ -175,6 +175,32 @@ def test_config_set_unknown_key(capsys, saved_config):
     assert code == 1
 
 
+def test_config_show_risk_policies(capsys, saved_config):
+    code = main(["config"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "risk_policies.external_write_capable" in out
+    assert "log" in out
+
+
+def test_config_set_risk_policy(capsys, saved_config):
+    code = main(["config", "set", "risk_policies.external_write_capable", "prompt"])
+    assert code == 0
+    capsys.readouterr()
+
+    code = main(["config", "get", "risk_policies.external_write_capable"])
+    out = capsys.readouterr().out.strip()
+    assert out == "prompt"
+
+
+def test_config_list_shows_risk_policies(capsys, saved_config):
+    code = main(["config", "list"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "risk_policies.external_write_capable" in out
+    assert "allow, log, prompt, deny" in out
+
+
 # --- Capabilities ---
 
 

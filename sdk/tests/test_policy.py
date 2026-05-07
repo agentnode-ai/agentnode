@@ -14,6 +14,7 @@ from agentnode_sdk.policy import (
     EnvironmentContext,
     check_install,
     check_run,
+    check_risk_policies,
     audit_decision,
     _check_permission,
     _detect_environment,
@@ -679,3 +680,105 @@ class TestClientInstallPolicyCrash:
             result = check_install("pkg", {"trust_level": "verified"}, interactive=False)
             # Config broken + non-interactive → deny (fail-closed)
             assert result.action == "deny"
+
+
+# ---------------------------------------------------------------------------
+# Risk policies — check_risk_policies()
+# ---------------------------------------------------------------------------
+
+def _ext_write_entry(**overrides):
+    """Entry that triggers external_write_capable flag."""
+    e = {
+        "trust_level": "verified",
+        "permissions": {"network_level": "external"},
+        "connector": {"auth_type": "oauth2", "provider": "google"},
+    }
+    e.update(overrides)
+    return e
+
+
+class TestCheckRiskPolicies:
+    def test_no_matching_flags_returns_none(self):
+        cfg = _make_config()
+        cfg["risk_policies"] = {"external_write_capable": "log"}
+        with _patch_config(cfg):
+            result = check_risk_policies("safe-pack", {
+                "trust_level": "verified",
+                "permissions": {"network_level": "none"},
+            })
+            assert result is None
+
+    def test_log_returns_allow_with_source(self):
+        cfg = _make_config()
+        cfg["risk_policies"] = {"external_write_capable": "log"}
+        with _patch_config(cfg):
+            result = check_risk_policies("gmail-pack", _ext_write_entry())
+            assert result is not None
+            assert result.action == "allow"
+            assert result.source == "risk_policy.external_write_capable"
+            assert "log" in result.reason.lower()
+
+    def test_prompt_returns_prompt(self):
+        cfg = _make_config()
+        cfg["risk_policies"] = {"external_write_capable": "prompt"}
+        with _patch_config(cfg):
+            result = check_risk_policies("gmail-pack", _ext_write_entry())
+            assert result is not None
+            assert result.action == "prompt"
+            assert "external_write_capable" in result.reason
+            assert "prompt" in result.reason.lower()
+
+    def test_deny_returns_deny(self):
+        cfg = _make_config()
+        cfg["risk_policies"] = {"external_write_capable": "deny"}
+        with _patch_config(cfg):
+            result = check_risk_policies("gmail-pack", _ext_write_entry())
+            assert result is not None
+            assert result.action == "deny"
+            assert "external_write_capable" in result.reason
+            assert "deny" in result.reason.lower()
+
+    def test_allow_returns_none(self):
+        cfg = _make_config()
+        cfg["risk_policies"] = {"external_write_capable": "allow"}
+        with _patch_config(cfg):
+            result = check_risk_policies("gmail-pack", _ext_write_entry())
+            assert result is None
+
+    def test_default_is_log(self):
+        from agentnode_sdk.config import default_config
+        cfg = default_config()
+        with _patch_config(cfg):
+            result = check_risk_policies("gmail-pack", _ext_write_entry())
+            assert result is not None
+            assert result.action == "allow"
+            assert result.source == "risk_policy.external_write_capable"
+
+    def test_broken_config_returns_none(self):
+        with mock.patch(
+            "agentnode_sdk.config.load_config",
+            side_effect=RuntimeError("config broken"),
+        ):
+            result = check_risk_policies("pkg", _ext_write_entry())
+            assert result is None
+
+    def test_empty_risk_policies_returns_none(self):
+        cfg = _make_config()
+        cfg["risk_policies"] = {}
+        with _patch_config(cfg):
+            result = check_risk_policies("gmail-pack", _ext_write_entry())
+            assert result is None
+
+    def test_prompt_message_identifies_risk_policy(self):
+        cfg = _make_config()
+        cfg["risk_policies"] = {"external_write_capable": "prompt"}
+        with _patch_config(cfg):
+            result = check_risk_policies("gmail-pack", _ext_write_entry())
+            assert "risk policy" in result.reason.lower()
+
+    def test_deny_message_identifies_risk_policy(self):
+        cfg = _make_config()
+        cfg["risk_policies"] = {"external_write_capable": "deny"}
+        with _patch_config(cfg):
+            result = check_risk_policies("gmail-pack", _ext_write_entry())
+            assert "risk policy" in result.reason.lower()

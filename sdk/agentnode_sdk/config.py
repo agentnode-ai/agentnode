@@ -27,6 +27,9 @@ DEFAULTS: dict[str, Any] = {
     "credentials": {
         "require_before_auto_install": True,
     },
+    "risk_policies": {
+        "external_write_capable": "log",
+    },
 }
 
 VALID_VALUES: dict[str, tuple[str, ...]] = {
@@ -37,6 +40,7 @@ VALID_VALUES: dict[str, tuple[str, ...]] = {
     "permissions.filesystem": ("allow", "prompt", "deny"),
     "permissions.code_execution": ("sandboxed", "prompt", "deny"),
     "credentials.require_before_auto_install": ("true", "false"),
+    "risk_policies.external_write_capable": ("allow", "log", "prompt", "deny"),
 }
 
 
@@ -48,6 +52,7 @@ CONFIG_DESCRIPTIONS: dict[str, str] = {
     "permissions.filesystem": "Policy for packages that require filesystem access",
     "permissions.code_execution": "Policy for packages that execute code",
     "credentials.require_before_auto_install": "Skip packages needing credentials you don't have during auto-install",
+    "risk_policies.external_write_capable": "Policy for packages that can write or send data externally",
 }
 
 
@@ -93,6 +98,10 @@ def _merge_defaults(data: dict) -> dict[str, Any]:
         for k in ("require_before_auto_install",):
             if k in data["credentials"]:
                 cfg["credentials"][k] = data["credentials"][k]
+    if isinstance(data.get("risk_policies"), dict):
+        for k in cfg["risk_policies"]:
+            if k in data["risk_policies"]:
+                cfg["risk_policies"][k] = data["risk_policies"][k]
     return cfg
 
 

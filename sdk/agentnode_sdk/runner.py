@@ -11,7 +11,7 @@ from typing import Any
 
 from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.models import RunToolResult
-from agentnode_sdk.policy import resolve_runtime, check_run, audit_decision, _resolve_interactive
+from agentnode_sdk.policy import resolve_runtime, check_run, check_risk_policies, audit_decision, _resolve_interactive
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,17 @@ def run_tool(
         tool_name=tool_name,
         trust_level=entry.get("trust_level"),
     )
+    if decision.action == "allow":
+        risk_result = check_risk_policies(slug, entry, interactive=_resolve_interactive())
+        if risk_result is not None:
+            audit_decision(
+                risk_result, "run_tool", slug,
+                tool_name=tool_name,
+                trust_level=entry.get("trust_level"),
+            )
+            if risk_result.action in ("prompt", "deny"):
+                decision = risk_result
+
     from agentnode_sdk.input_guard import validate_tool_input
     input_warnings = validate_tool_input(slug, tool_name, kwargs, entry)
     if input_warnings:

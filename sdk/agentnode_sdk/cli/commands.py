@@ -336,6 +336,10 @@ def cmd_config() -> int:
     creds = cfg.get("credentials", {})
     print(kv("credentials.require_before_auto_install", str(creds.get("require_before_auto_install", True)).lower(), w))
     print()
+    risk = cfg.get("risk_policies", {})
+    for rk, rv in risk.items():
+        print(kv(f"risk_policies.{rk}", str(rv), w))
+    print()
     print(dim(f"  Config file: {config_path()}"))
     print(dim("  Run `agentnode config list` for descriptions and allowed values."))
     print()

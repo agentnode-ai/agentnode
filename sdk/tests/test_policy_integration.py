@@ -363,6 +363,111 @@ class TestClientInstallHardEnforcement:
             assert decision.action != "allow"
 
 
+class TestRiskPolicyRunnerIntegration:
+    """Tests that risk_policies integrate correctly with runner.run_tool()."""
+
+    def _make_lockfile(self, slug, **entry_overrides):
+        entry = {
+            "version": "1.0.0",
+            "runtime": "python",
+            "entrypoint": "fake_mod.tool",
+            "trust_level": "verified",
+            "permissions": {"network_level": "external"},
+            "connector": {"auth_type": "oauth2", "provider": "google"},
+            "tools": [],
+        }
+        entry.update(entry_overrides)
+        return {"packages": {slug: entry}}
+
+    def _allow_cfg(self, risk_policy="log"):
+        return {
+            "trust": {"minimum_trust_level": "verified"},
+            "permissions": {"network": "allow", "filesystem": "allow", "code_execution": "sandboxed"},
+            "risk_policies": {"external_write_capable": risk_policy},
+        }
+
+    def test_risk_policy_prompt_blocks_execution(self):
+        from agentnode_sdk.runner import run_tool
+
+        lockfile = self._make_lockfile("gmail-pack")
+        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+            with mock.patch("agentnode_sdk.config.load_config", return_value=self._allow_cfg("prompt")):
+                with mock.patch("agentnode_sdk.policy.audit_decision"):
+                    result = run_tool("gmail-pack")
+                    assert result.success is False
+                    assert result.mode_used == "policy_prompt"
+                    assert "risk policy" in result.error.lower()
+
+    def test_risk_policy_deny_blocks_execution(self):
+        from agentnode_sdk.runner import run_tool
+
+        lockfile = self._make_lockfile("gmail-pack")
+        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+            with mock.patch("agentnode_sdk.config.load_config", return_value=self._allow_cfg("deny")):
+                with mock.patch("agentnode_sdk.policy.audit_decision"):
+                    result = run_tool("gmail-pack")
+                    assert result.success is False
+                    assert result.mode_used == "policy_denied"
+                    assert "risk policy" in result.error.lower()
+
+    def test_risk_policy_log_allows_execution(self):
+        from agentnode_sdk.runner import run_tool
+        from agentnode_sdk.models import RunToolResult as RR
+
+        lockfile = self._make_lockfile("gmail-pack")
+        audit_calls = []
+
+        def capture_audit(decision, event_type, slug, **kwargs):
+            audit_calls.append(decision.source)
+
+        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+            with mock.patch("agentnode_sdk.config.load_config", return_value=self._allow_cfg("log")):
+                with mock.patch("agentnode_sdk.runner.audit_decision", capture_audit):
+                    with mock.patch(
+                        "agentnode_sdk.runtimes.python_runner.run_python",
+                        return_value=RR(success=True, result={"sent": True}, mode_used="subprocess"),
+                    ):
+                        result = run_tool("gmail-pack")
+                        assert result.success is True
+                        assert "risk_policy.external_write_capable" in audit_calls
+
+    def test_check_run_deny_skips_risk_policies(self):
+        from agentnode_sdk.runner import run_tool
+
+        lockfile = self._make_lockfile("untrusted-pack", trust_level="unverified")
+        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+            with mock.patch("agentnode_sdk.config.load_config", return_value=self._allow_cfg("prompt")):
+                with mock.patch("agentnode_sdk.policy.audit_decision"):
+                    result = run_tool("untrusted-pack")
+                    assert result.success is False
+                    assert result.mode_used == "policy_denied"
+                    assert "trust" in result.error.lower()
+
+    def test_default_config_logs_only(self):
+        from agentnode_sdk.runner import run_tool
+        from agentnode_sdk.models import RunToolResult as RR
+        from agentnode_sdk.config import default_config
+
+        lockfile = self._make_lockfile("gmail-pack")
+        audit_calls = []
+
+        def capture_audit(decision, event_type, slug, **kwargs):
+            audit_calls.append(decision.source)
+
+        cfg = default_config()
+        cfg["permissions"]["network"] = "allow"
+        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+            with mock.patch("agentnode_sdk.config.load_config", return_value=cfg):
+                with mock.patch("agentnode_sdk.runner.audit_decision", capture_audit):
+                    with mock.patch(
+                        "agentnode_sdk.runtimes.python_runner.run_python",
+                        return_value=RR(success=True, result={}, mode_used="subprocess"),
+                    ):
+                        result = run_tool("gmail-pack")
+                        assert result.success is True
+                        assert "risk_policy.external_write_capable" in audit_calls
+
+
 class TestDecisionLogIntegration:
     """Tests that all execution paths produce audit entries."""
 

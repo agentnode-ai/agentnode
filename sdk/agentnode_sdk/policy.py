@@ -468,6 +468,75 @@ def check_run(
 
 
 # ---------------------------------------------------------------------------
+# Risk policies — user-configured reactions to computed risk flags
+# ---------------------------------------------------------------------------
+
+_RISK_POLICY_SEVERITY = {"deny": 3, "prompt": 2, "log": 1, "allow": 0}
+
+
+def check_risk_policies(
+    slug: str,
+    entry: dict,
+    *,
+    interactive: bool = True,
+) -> PolicyResult | None:
+    """Check user-configured risk policies against computed risk flags.
+
+    Returns None if no risk policy fires (no opinion).
+    Called AFTER check_run() — only when check_run() returned allow.
+    """
+    cfg = _load_config_safe(interactive=interactive)
+    if cfg is None:
+        return None
+
+    risk_cfg = cfg.get("risk_policies", {})
+    if not risk_cfg:
+        return None
+
+    from agentnode_sdk.risk_profile import compute_risk_profile
+
+    profile = compute_risk_profile(slug, entry)
+    if not profile.risk_flags:
+        return None
+
+    best: tuple[int, str, str] | None = None  # (severity, action, flag)
+    for flag in profile.risk_flags:
+        action = risk_cfg.get(flag)
+        if action is None or action == "allow":
+            continue
+        severity = _RISK_POLICY_SEVERITY.get(action, 0)
+        if best is None or severity > best[0]:
+            best = (severity, action, flag)
+
+    if best is None:
+        return None
+
+    _, action, flag = best
+    source = f"risk_policy.{flag}"
+
+    if action == "log":
+        return PolicyResult(
+            action="allow",
+            reason=f"Risk policy (log): {flag}",
+            source=source,
+        )
+    if action == "prompt":
+        return PolicyResult(
+            action="prompt",
+            reason=f"Risk policy requires confirmation: {flag} is configured as prompt",
+            source=source,
+        )
+    if action == "deny":
+        return PolicyResult(
+            action="deny",
+            reason=f"Blocked by risk policy: {flag} is configured as deny",
+            source=source,
+        )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Audit trail (BD-4, BD-5, BD-6, BD-12)
 # ---------------------------------------------------------------------------
 
