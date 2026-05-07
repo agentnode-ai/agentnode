@@ -604,3 +604,22 @@ def test_inspect_connector(capsys, saved_config, isolated_env):
     out = capsys.readouterr().out
     assert "slack" in out
     assert "oauth2" in out
+
+
+def test_inspect_shows_risk_level(capsys, saved_config, lockfile_with_packages):
+    code = main(["inspect", "pdf-reader-pack"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Usage Risk" in out
+    assert "Risk level" in out
+    assert "Risk score" in out
+
+
+def test_inspect_json_includes_risk(capsys, saved_config, lockfile_with_packages):
+    code = main(["inspect", "pdf-reader-pack", "--json"])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert "risk" in data
+    assert data["risk"]["level"] in ("low", "medium", "high")
+    assert isinstance(data["risk"]["score"], int)
+    assert isinstance(data["risk"]["signals"], list)

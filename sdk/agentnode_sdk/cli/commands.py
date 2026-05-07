@@ -1438,14 +1438,41 @@ def cmd_inspect(slug: str, *, json_output: bool = False) -> int:
     else:
         print(kv("(no audit data)", dim("package has not been run yet")))
 
+    # Usage Risk
+    from agentnode_sdk.risk_profile import compute_risk_profile
+    risk = compute_risk_profile(slug, pkg)
+    print()
+    print(f"  {bold('Usage Risk')}")
+    print("  " + "-" * 10)
+    print(kv("Risk level", risk.risk_level.capitalize()))
+    print(kv("Risk score", f"{risk.risk_score}/100"))
+    if risk.signals:
+        print(f"  {dim('Signals:')}")
+        for sig in risk.signals:
+            print(f"    {dim('- ' + sig)}")
+    if risk.backend_hint:
+        print(f"  {dim('Backend hint:')}")
+        for k, v in risk.backend_hint.items():
+            print(f"    {dim(f'{k}: {v}')}")
+
     print()
     return 0
 
 
 def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
     """Build a JSON-serializable inspect report."""
+    from agentnode_sdk.risk_profile import compute_risk_profile
+
     perms = pkg.get("permissions")
     connector = pkg.get("connector")
+    risk = compute_risk_profile(slug, pkg)
+    risk_dict: dict = {
+        "level": risk.risk_level,
+        "score": risk.risk_score,
+        "signals": risk.signals,
+    }
+    if risk.backend_hint:
+        risk_dict["backend_hint"] = risk.backend_hint
     return {
         "slug": slug,
         "version": pkg.get("version"),
@@ -1462,6 +1489,7 @@ def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
             "auth_type": connector.get("auth_type"),
         } if connector and isinstance(connector, dict) else None,
         "audit": audit_summary,
+        "risk": risk_dict,
     }
 
 
