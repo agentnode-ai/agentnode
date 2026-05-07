@@ -132,8 +132,27 @@ const faqCategories = [
 ];
 
 export default function SupportPage() {
+  const faqLd = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqCategories.flatMap((cat) =>
+      cat.items.map((item) => ({
+        "@type": "Question",
+        name: item.q,
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: item.a,
+        },
+      }))
+    ),
+  };
+
   return (
     <div className="flex flex-col">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqLd) }}
+      />
       {/* Hero */}
       <section className="border-b border-border">
         <div className="mx-auto max-w-4xl px-6 pb-16 pt-20 sm:pt-24 text-center">

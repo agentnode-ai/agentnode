@@ -82,9 +82,44 @@ const featuredAgents = [
   },
 ];
 
+const organizationLd = {
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  name: "AgentNode",
+  url: "https://agentnode.net",
+  logo: "https://agentnode.net/logo.svg",
+  description:
+    "AgentNode is the verified registry for AI agent skills and tools. Agents discover, install, and run capabilities at runtime with built-in verification, risk scoring, and policy controls.",
+  foundingDate: "2025",
+  sameAs: [
+    "https://github.com/agentnode-ai/agentnode",
+    "https://x.com/AgentNodenet",
+  ],
+};
+
+const websiteLd = {
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  name: "AgentNode",
+  url: "https://agentnode.net",
+  potentialAction: {
+    "@type": "SearchAction",
+    target: "https://agentnode.net/search?q={search_term_string}",
+    "query-input": "required name=search_term_string",
+  },
+};
+
 export default function HomePage() {
   return (
     <div className="flex flex-col">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationLd) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteLd) }}
+      />
       {/* ============================================================ */}
       {/*  HERO                                                        */}
       {/* ============================================================ */}

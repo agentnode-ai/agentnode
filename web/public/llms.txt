@@ -1,0 +1,43 @@
+# AgentNode
+
+AgentNode is the verified registry for AI agent skills and tools. Agents discover, install, and run capabilities at runtime with built-in verification, risk scoring, and policy controls.
+
+## What AgentNode Does
+
+AgentNode provides a registry where AI agents can:
+- Discover missing capabilities and install verified skills on demand
+- Run tools safely with trust-gated execution and policy enforcement
+- Use a portable package format (ANP) that works across LangChain, CrewAI, MCP, and Python
+
+## Key Differentiators
+
+- Verification tiers: Every package version is tested (install, import, smoke test, unit tests) and scored
+- Risk scoring: Usage risk profiles with configurable policies (allow, log, prompt, deny)
+- Trust model: Trust is assigned per version, not per package
+- Runtime execution: Packages contain real code with dependencies, not just instructions
+- Compatibility: Tested with 175+ LLM models across 25+ providers
+
+## Key Pages
+
+- Homepage: https://agentnode.net/
+- FAQ: https://agentnode.net/faq
+- Documentation: https://agentnode.net/docs
+- Search Packages: https://agentnode.net/search
+- Browse Capabilities: https://agentnode.net/capabilities
+- Model Compatibility: https://agentnode.net/compatibility
+- For Developers: https://agentnode.net/for-developers
+- Why AgentNode: https://agentnode.net/why-agentnode
+- Publish Skills: https://agentnode.net/publish
+- Blog: https://agentnode.net/blog
+- Tutorials: https://agentnode.net/tutorials
+- Getting Started: https://agentnode.net/getting-started
+
+## SDK Installation
+
+pip install agentnode-sdk
+
+## Contact
+
+- Website: https://agentnode.net
+- GitHub: https://github.com/agentnode-ai/agentnode
+- Security: security@agentnode.net
