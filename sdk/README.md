@@ -250,6 +250,25 @@ profile = get_risk_profile("gmail-sender-pack")
 
 Returns `None` if the package is not installed.
 
+### Risk Policies
+
+Configure how the SDK reacts to computed risk flags. Uses the same
+`allow | log | prompt | deny` values as permission policies.
+
+```bash
+# Default: log (audit only, no blocking)
+agentnode config get risk_policies.external_write_capable
+
+# Require confirmation for packages that can send data externally
+agentnode config set risk_policies.external_write_capable prompt
+
+# Reset to audit-only
+agentnode config set risk_policies.external_write_capable log
+```
+
+Risk policies only fire after the normal permission check passes.
+Hard policies (trust, permissions) always have priority.
+
 ### Multi-step Planner
 
 Decompose and execute multi-step tasks programmatically.

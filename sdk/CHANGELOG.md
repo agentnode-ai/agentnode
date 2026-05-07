@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.5.3 — Configurable Risk Policies
+
+User-configurable policies for computed risk flags. Extends the risk
+profile from Phase 9 with actionable reactions — without changing the
+default behavior.
+
+### Added
+
+- **`risk_policies` config section** — per-flag policy configuration
+  using the same `allow | log | prompt | deny` values as permissions.
+  Default: `external_write_capable: log` (audit only, no blocking).
+- **`check_risk_policies()`** — internal policy check that evaluates
+  risk flags after `check_run()`. Only fires when the hard policy
+  already allowed execution. Hard policy always has priority.
+- **Runner integration** — `run_tool()` now evaluates risk policies
+  between the permission check and execution. Prompt/deny messages
+  clearly identify the risk policy as the source.
+
+### Usage
+
+```bash
+# View current setting
+agentnode config get risk_policies.external_write_capable
+
+# Require confirmation for external-write-capable packages
+agentnode config set risk_policies.external_write_capable prompt
+
+# Block external-write-capable packages
+agentnode config set risk_policies.external_write_capable deny
+
+# Reset to audit-only (default)
+agentnode config set risk_policies.external_write_capable log
+```
+
+### Design
+
+- Default is `log` — nothing is blocked out of the box.
+- Risk policies react to **computed** risk flags (from `risk_profile.py`),
+  not declared permissions. `permissions.*` handles declared permissions.
+- Risk policies only apply to `run_tool()`, not install.
+- When a risk policy blocks, the error message says so:
+  `"Blocked by risk policy: external_write_capable is configured as deny."`
+
 ## 0.5.2 — Usage Risk Profile
 
 Per-package usage risk scoring — separate from the verification score.
