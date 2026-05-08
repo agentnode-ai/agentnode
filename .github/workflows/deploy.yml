@@ -116,9 +116,9 @@ jobs:
       #   public/            — public assets (must be copied into standalone)
       - name: Prepare standalone bundle
         run: |
-          cp -r .next/static .next/standalone/web/.next/static
+          cp -r .next/static .next/standalone/.next/static
           if [ -d public ]; then
-            cp -r public .next/standalone/web/public
+            cp -r public .next/standalone/public
           fi
 
       - name: Upload frontend artifact
@@ -244,11 +244,11 @@ jobs:
 
             # Replace the running frontend
             rm -rf "$WEB_DIR/.next"
-            mv "$WEB_DIR/standalone-build/web/.next" "$WEB_DIR/.next"
+            mv "$WEB_DIR/standalone-build/.next" "$WEB_DIR/.next"
 
             # Copy the standalone server and node_modules
             cp -r "$WEB_DIR/standalone-build/node_modules" "$WEB_DIR/standalone-node_modules" 2>/dev/null || true
-            cp "$WEB_DIR/standalone-build/web/server.js" "$WEB_DIR/server.js" 2>/dev/null || true
+            cp "$WEB_DIR/standalone-build/server.js" "$WEB_DIR/server.js" 2>/dev/null || true
 
             echo "==> Restarting frontend service..."
             systemctl restart agentnode-web
