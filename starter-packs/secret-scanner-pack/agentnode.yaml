@@ -33,7 +33,7 @@ compatibility:
 
 permissions:
   network: {level: "none"}
-  filesystem: {level: "none"}
+  filesystem: {level: "workspace_read"}
   code_execution: {level: "none"}
   data_access: {level: "input_only"}
   user_approval: {required: "never"}

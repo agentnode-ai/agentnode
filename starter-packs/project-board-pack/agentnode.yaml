@@ -41,6 +41,11 @@ permissions:
   data_access: {level: "input_only"}
   user_approval: {required: "never"}
 
+connector:
+  provider: "trello"
+  auth_type: "api_key"
+  allowed_domains: ["api.trello.com"]
+
 upgrade_roles: ["task_management"]
 recommended_for:
   - agent_type: "general-assistant"

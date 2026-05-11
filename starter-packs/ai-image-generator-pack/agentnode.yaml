@@ -46,6 +46,11 @@ permissions:
   data_access: {level: "input_only"}
   user_approval: {required: "never"}
 
+connector:
+  provider: "stability_ai"
+  auth_type: "api_key"
+  allowed_domains: ["api.stability.ai"]
+
 upgrade_roles: ["chart_generation"]
 recommended_for:
   - agent_type: "general-assistant"

@@ -36,8 +36,8 @@ compatibility:
 
 permissions:
   network: {level: "none"}
-  filesystem: {level: "none"}
-  code_execution: {level: "none"}
+  filesystem: {level: "temp"}
+  code_execution: {level: "limited_subprocess"}
   data_access: {level: "input_only"}
   user_approval: {required: "never"}
 

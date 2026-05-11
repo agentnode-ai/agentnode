@@ -36,7 +36,7 @@ compatibility:
   python: ">=3.10"
 
 permissions:
-  network: {level: "none"}
+  network: {level: "restricted"}
   filesystem: {level: "none"}
   code_execution: {level: "none"}
   data_access: {level: "input_only"}

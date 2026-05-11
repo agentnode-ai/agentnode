@@ -43,6 +43,11 @@ permissions:
   data_access: {level: "input_only"}
   user_approval: {required: "never"}
 
+connector:
+  provider: "gitlab"
+  auth_type: "token"
+  allowed_domains: ["gitlab.com"]
+
 upgrade_roles: ["code_analysis"]
 recommended_for:
   - agent_type: "general-assistant"

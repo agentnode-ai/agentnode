@@ -83,3 +83,11 @@ compatibility:
   python: ">=3.10"
   dependencies:
     - "pandas>=2.0"
+
+permissions:
+  network:
+    level: "none"
+  filesystem:
+    level: "workspace_read"
+  code_execution:
+    level: "none"

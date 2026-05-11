@@ -42,6 +42,11 @@ permissions:
   data_access: {level: "input_only"}
   user_approval: {required: "never"}
 
+connector:
+  provider: "telegram"
+  auth_type: "token"
+  allowed_domains: ["api.telegram.org"]
+
 upgrade_roles: ["email_summary"]
 recommended_for:
   - agent_type: "general-assistant"

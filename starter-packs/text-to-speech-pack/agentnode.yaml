@@ -44,6 +44,11 @@ permissions:
   data_access: {level: "input_only"}
   user_approval: {required: "never"}
 
+connector:
+  provider: "openai"
+  auth_type: "api_key"
+  allowed_domains: ["api.openai.com"]
+
 upgrade_roles: ["tone_adjustment"]
 recommended_for:
   - agent_type: "general-assistant"

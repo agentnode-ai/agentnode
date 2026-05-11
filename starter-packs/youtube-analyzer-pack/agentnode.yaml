@@ -41,6 +41,11 @@ permissions:
   data_access: {level: "input_only"}
   user_approval: {required: "never"}
 
+connector:
+  provider: "google"
+  auth_type: "api_key"
+  allowed_domains: ["googleapis.com"]
+
 upgrade_roles: ["webpage_extraction"]
 recommended_for:
   - agent_type: "general-assistant"

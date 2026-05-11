@@ -3,7 +3,6 @@
 Usage: python -m scripts.reindex_search [--dry-run]
 """
 import asyncio
-import json
 import sys
 
 from sqlalchemy import select
@@ -20,7 +19,6 @@ from app.database import async_session_factory
 from app.packages.models import Package, PackageVersion
 from app.packages.service import build_meili_document
 from app.shared.meili import sync_package_to_meilisearch
-from app.shared.storage import download_artifact
 
 
 async def reindex(dry_run: bool = False):
@@ -55,24 +53,7 @@ async def reindex(dry_run: bool = False):
                 print(f"  SKIP {pkg.slug}: no version found")
                 continue
 
-            # Load manifest from artifact
-            manifest = {}
-            if version.artifact_object_key:
-                try:
-                    artifact_bytes = await download_artifact(version.artifact_object_key)
-                    if artifact_bytes:
-                        import tarfile
-                        import io
-                        with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
-                            for member in tar.getmembers():
-                                if member.name.endswith("manifest.json"):
-                                    f = tar.extractfile(member)
-                                    if f:
-                                        manifest = json.loads(f.read())
-                                    break
-                except Exception as e:
-                    print(f"  WARN {pkg.slug}: manifest extract failed: {e}")
-
+            manifest = version.manifest_raw or {}
             doc = build_meili_document(pkg, version, manifest)
 
             if dry_run:

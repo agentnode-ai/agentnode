@@ -39,8 +39,8 @@ compatibility:
     - "openai-whisper>=20231117"
 
 permissions:
-  network: {level: "none"}
-  filesystem: {level: "none"}
+  network: {level: "restricted"}
+  filesystem: {level: "workspace_read"}
   code_execution: {level: "none"}
   data_access: {level: "input_only"}
   user_approval: {required: "never"}

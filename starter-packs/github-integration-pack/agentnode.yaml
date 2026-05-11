@@ -42,6 +42,11 @@ permissions:
   data_access: {level: "input_only"}
   user_approval: {required: "never"}
 
+connector:
+  provider: "github"
+  auth_type: "token"
+  allowed_domains: ["api.github.com"]
+
 upgrade_roles: ["code_analysis"]
 recommended_for:
   - agent_type: "general-assistant"
