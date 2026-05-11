@@ -381,6 +381,8 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
 
           <p className="text-xs text-muted -mt-4">
             Runs locally on your machine. No execution data is sent to AgentNode.
+            {" "}Permissions are checked before execution.
+            {" "}<a href="/docs/security" className="text-primary/70 hover:text-primary hover:underline">Learn how this works</a>
           </p>
 
           {/* 2. Agent Info (only for agents) */}
