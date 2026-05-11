@@ -519,6 +519,13 @@ class TestConnectorValidation:
         assert valid is True, f"errors: {errors}"
 
     @pytest.mark.asyncio
+    async def test_connector_token_auth_valid(self):
+        m = _base_toolpack()
+        m["connector"] = {"provider": "linear", "auth_type": "token"}
+        valid, errors, _ = await validate_manifest(m)
+        assert valid is True, f"errors: {errors}"
+
+    @pytest.mark.asyncio
     async def test_connector_health_check_missing_endpoint(self):
         m = _base_toolpack()
         m["connector"] = {
