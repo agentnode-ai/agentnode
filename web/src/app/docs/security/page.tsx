@@ -69,6 +69,10 @@ export default function SecurityPage() {
   return (
     <main className="mx-auto max-w-3xl px-4 py-12 sm:px-6 lg:px-8">
       <h1 className="text-3xl font-bold text-foreground">Security Model</h1>
+      <p className="mt-3 text-foreground/80 font-medium">
+        AgentNode is local-first by design. All tools run on your machine.
+        The registry never sees what you do with them.
+      </p>
       <p className="mt-3 text-muted">
         AgentNode runs third-party tool code on your machine. This page
         explains exactly what is enforced, what is declared but not enforced,

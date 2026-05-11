@@ -379,6 +379,10 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
             postInstallCode={install.post_install_code}
           />
 
+          <p className="text-xs text-muted -mt-4">
+            Runs locally on your machine. No execution data is sent to AgentNode.
+          </p>
+
           {/* 2. Agent Info (only for agents) */}
           {pkg.agent_config && (
             <AgentInfoPanel agentConfig={pkg.agent_config} />
@@ -683,9 +687,15 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
               Privacy
             </h2>
             <p className="text-sm text-muted">
-              All tool execution happens locally on your machine. AgentNode does not
-              receive tool inputs, outputs, or execution logs. Only install events and
-              search queries are sent to the registry.
+              All tool execution happens locally on your machine. AgentNode never receives:
+            </p>
+            <ul className="mt-2 space-y-1 text-sm text-muted">
+              <li>&#x2022; Tool inputs or outputs</li>
+              <li>&#x2022; Execution logs</li>
+              <li>&#x2022; Data your agent processes</li>
+            </ul>
+            <p className="mt-2 text-sm text-muted">
+              Only install events and search queries are sent to the registry.
             </p>
           </section>
 

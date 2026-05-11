@@ -143,7 +143,10 @@ export default function HomePage() {
                 controls, and trust verification. Works with LangChain, CrewAI,
                 MCP, and plain Python.
               </p>
-              <p className="animate-fade-in-delay-1 mt-3 text-sm text-muted">
+              <p className="animate-fade-in-delay-1 mt-3 text-sm text-foreground/70">
+                Tools run locally on your machine. No data is sent to AgentNode.
+              </p>
+              <p className="animate-fade-in-delay-1 mt-1 text-sm text-muted">
                 Powered by ANP. One portable package format for all AI agents.
               </p>
 
