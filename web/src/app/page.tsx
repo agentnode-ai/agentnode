@@ -904,8 +904,8 @@ result = runtime.run(
                 <code className="whitespace-nowrap font-mono text-xs text-foreground">pip install agentnode-sdk</code>
               </div>
               <div className="rounded-lg border border-border bg-card px-5 py-3 text-center">
-                <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">Terminal &middot; install &amp; publish</div>
-                <code className="whitespace-nowrap font-mono text-xs text-foreground">npm install -g agentnode-cli</code>
+                <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">CLI &middot; search, install &amp; publish</div>
+                <code className="whitespace-nowrap font-mono text-xs text-foreground">pip install agentnode-sdk</code>
               </div>
               <div className="rounded-lg border border-border bg-card px-5 py-3 text-center">
                 <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">Frameworks &middot; LangChain, MCP</div>

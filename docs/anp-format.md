@@ -196,7 +196,7 @@ section (only valid for `package_type: toolpack`):
 ```yaml
 connector:
   provider: "slack"                        # Required: service name
-  auth_type: "oauth2"                      # "api_key" or "oauth2" (no "custom")
+  auth_type: "oauth2"                      # "api_key", "oauth2", or "token"
   scopes: ["chat:read", "chat:write"]      # Optional list of strings
   token_refresh: true                      # Optional bool
   health_check:                            # Optional

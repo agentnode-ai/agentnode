@@ -98,7 +98,7 @@ const faqCategories = [
       },
       {
         q: "How do I install the CLI?",
-        a: 'Run "npm install -g agentnode-cli". The CLI lets you search, install, publish, and manage packages from the terminal.',
+        a: 'The CLI is included in the Python SDK. Run "pip install agentnode-sdk" and the "agentnode" command will be available in your terminal for searching, installing, publishing, and managing packages.',
       },
       {
         q: "Which frameworks are supported?",

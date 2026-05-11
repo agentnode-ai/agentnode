@@ -1,4 +1,6 @@
-# agentnode-cli
+# agentnode-cli (legacy)
+
+> **Note:** This README documents the legacy TypeScript CLI. For the primary Python SDK CLI, install with `pip install agentnode-sdk`. The Python CLI includes all commands for searching, installing, validating, and publishing packages.
 
 CLI for [AgentNode](https://agentnode.net) — discover, resolve, and install AI agent capabilities.
 

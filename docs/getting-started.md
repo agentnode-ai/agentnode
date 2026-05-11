@@ -4,10 +4,10 @@ AgentNode is the open upgrade and discovery infrastructure for AI agents. It hel
 
 ## Quick Start
 
-### 1. Install the CLI
+### 1. Install the SDK
 
 ```bash
-npm install -g agentnode-cli
+pip install agentnode-sdk
 ```
 
 ### 2. Search for a capability
@@ -166,27 +166,25 @@ agentnode credentials delete <id>
 
 ### Create an account (publishers only)
 
-```bash
-# Via CLI
-agentnode login
-```
-
-Or register at [agentnode.net/auth/register](https://agentnode.net/auth/register).
+Register at [agentnode.net/auth/register](https://agentnode.net/auth/register) and enable 2FA.
 
 ### API Keys (publishers only)
 
-After logging in, create an API key for publishing:
+Create an API key in your [dashboard](https://agentnode.net/dashboard). The key (format: `ank_...`) is shown only once. Store it securely.
+
+Set it as an environment variable:
 
 ```bash
-curl -X POST https://api.agentnode.net/v1/auth/api-keys \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"label": "my-project"}'
+export AGENTNODE_API_KEY=ank_your_key_here
 ```
 
-The key (format: `ank_...`) is shown only once. Store it securely.
+Or pass it per-command:
 
-Use it in the SDK:
+```bash
+agentnode publish . --token ank_your_key_here
+```
+
+You can also use the key in the SDK:
 
 ```python
 client = AgentNodeClient(api_key="ank_your_key_here")
@@ -199,12 +197,6 @@ Or in the CLI config (`~/.agentnode/config.json`):
   "api_url": "https://api.agentnode.net",
   "api_key": "ank_your_key_here"
 }
-```
-
-Or as an environment variable:
-
-```bash
-export AGENTNODE_API_KEY=ank_your_key_here
 ```
 
 ## Next Steps

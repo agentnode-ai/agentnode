@@ -3,7 +3,7 @@
 ## Installation
 
 ```bash
-npm install -g agentnode-cli
+pip install agentnode-sdk
 ```
 
 ## Configuration
@@ -43,21 +43,21 @@ agentnode init my-tool --publisher acme --dir ./packages/my-tool
 
 ---
 
-### `agentnode login`
+### Authentication
 
-Authenticate with the AgentNode registry.
+Set your API key for publishing and authenticated operations:
 
 ```bash
-agentnode login
-agentnode login --api-key ank_...
+export AGENTNODE_API_KEY=ank_your_key_here
 ```
 
-Prompts for an API key (input is hidden). Verifies the key against the API and stores credentials in `~/.agentnode/config.json`.
+Or pass it per-command with `--token`:
 
-**Options:**
-| Flag | Description |
-|------|-------------|
-| `--api-key <key>` | API key (or set `AGENTNODE_API_KEY` env var) |
+```bash
+agentnode publish . --token ank_your_key_here
+```
+
+Create API keys in your [dashboard](https://agentnode.net/dashboard).
 
 ---
 
@@ -235,18 +235,19 @@ Checks `agentnode.yaml` against all validation rules.
 Publish a package to the AgentNode registry.
 
 ```bash
-agentnode publish ./my-pack
-agentnode publish ./my-pack --token ank_...
-agentnode publish ./my-pack --no-artifact
+agentnode publish .
+agentnode publish ./my-pack --dry-run
+agentnode publish . --token ank_...
 ```
 
-Requires authentication (via `--token`, stored API key, or `agentnode login`).
+Requires authentication (via `--token` flag or `AGENTNODE_API_KEY` env var).
 
 **Options:**
 | Flag | Description |
 |------|-------------|
-| `--token <token>` | Authentication token |
-| `--no-artifact` | Publish metadata only (skip artifact upload) |
+| `--dry-run` | Validate and build artifact without uploading |
+| `--skip-validate` | Continue past validation errors (does not skip hard failures) |
+| `--token <key>` | API key for authentication (overrides `AGENTNODE_API_KEY` env var) |
 
 ---
 

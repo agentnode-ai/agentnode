@@ -4,13 +4,32 @@ This guide walks you through creating and publishing an ANP (AgentNode Package) 
 
 ## Prerequisites
 
-1. An AgentNode account with a publisher profile
+1. An AgentNode account with a publisher profile — register at [agentnode.net/auth/register](https://agentnode.net/auth/register)
 2. 2FA enabled on your account
-3. The AgentNode CLI installed (`npm install -g agentnode-cli`)
+3. The AgentNode SDK installed (`pip install agentnode-sdk`)
+4. An API key — create one in your [dashboard](https://agentnode.net/dashboard)
 
-## Step 1: Create Your Package
+## Authentication
 
-A minimal package structure:
+Publishing requires an API key. After creating one in your dashboard, set it locally:
+
+```bash
+export AGENTNODE_API_KEY=ank_your_key_here
+```
+
+Or pass it per-command:
+
+```bash
+agentnode publish . --token ank_your_key_here
+```
+
+## Step 1: Scaffold Your Package
+
+```bash
+agentnode init my-tool-pack --type local
+```
+
+This creates a Gold-ready project structure:
 
 ```
 my-tool-pack/
@@ -23,6 +42,8 @@ my-tool-pack/
 └── tests/
     └── test_tool.py
 ```
+
+Use `--type api` for tools that call external APIs (includes VCR cassette setup), `--type file` for file-processing tools, or `--type agent` for autonomous agents.
 
 ### The Manifest (`agentnode.yaml`)
 
@@ -147,7 +168,7 @@ where = ["src"]
 ## Step 2: Validate
 
 ```bash
-agentnode validate ./my-tool-pack
+agentnode validate .
 ```
 
 This checks:
@@ -156,39 +177,88 @@ This checks:
 - Version format (semver)
 - Permission values are valid enums
 - Input/output schemas are valid JSON Schema
+- Verification cases are defined (required for Gold tier)
 
 Fix any errors before proceeding.
 
-## Step 3: Build the Artifact
+## Step 3: Record Cassettes (API tools only)
 
-Create a `.tar.gz` archive of your package:
-
-```bash
-cd my-tool-pack
-tar -czf ../my-tool-pack-1.0.0.tar.gz .
-```
-
-The archive must contain `pyproject.toml` at the root.
-
-> **Required:** The artifact must include a `tests/` directory with at least
-> one `test_*.py` file. The quality gate (`validate_artifact_quality()`) will
-> reject the publish if no tests are found.
-
-## Step 4: Publish
+If your tool calls external APIs, record VCR cassettes for offline verification:
 
 ```bash
-agentnode publish ./my-tool-pack
+agentnode record-cases .
 ```
 
-This will:
-1. Validate the manifest (schema, field ranges, type combinations)
-2. Run the quality gate (tests required in artifact)
-3. Check for typosquatting against existing package slugs
-4. Verify artifact signature (if signing key is registered)
-5. Check ownership (existing packages must belong to you)
-6. Check version uniqueness (duplicate `(package_id, version)` is rejected)
-7. Upload the artifact to the AgentNode registry
-8. Index the package for search (unless quarantined)
+This runs each verification case with live API access and saves the HTTP interactions as YAML cassettes in `fixtures/cassettes/`. During server-side verification, these cassettes are replayed instead of making live calls.
+
+## Step 4: Verify Locally
+
+```bash
+agentnode verify-local .
+```
+
+This runs the full verification pipeline locally — the same checks the server runs on publish. If your package passes here, it will reach Gold tier on first publish.
+
+## Step 5: Publish
+
+```bash
+agentnode publish .
+```
+
+Output:
+
+```
+  AgentNode Publish
+  Package    my-tool-pack@1.0.0
+  Type       toolpack
+
+  Validation    8 checks passed
+  Artifact      12.4 KB, 5 files
+
+  Publishing to api.agentnode.net...
+  Published my-tool-pack@1.0.0
+
+  https://agentnode.net/packages/my-tool-pack
+```
+
+### Publish Flags
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Validate and build the artifact without uploading. Shows what would be published. |
+| `--skip-validate` | Continue past validation errors. Does not skip hard failures (missing manifest, invalid YAML). |
+| `--token <key>` | API key for authentication. Overrides `AGENTNODE_API_KEY` env var. |
+
+### Dry Run
+
+Preview what will be published without uploading:
+
+```bash
+agentnode publish . --dry-run
+```
+
+```
+  AgentNode Publish
+  Package    my-tool-pack@1.0.0
+  Type       toolpack
+
+  Validation    8 checks passed
+  Artifact      12.4 KB, 5 files
+
+  Dry run — not publishing.
+  To publish: agentnode publish .
+```
+
+### What happens server-side
+
+After the CLI uploads your package, the server:
+1. Validates the manifest (schema, field ranges, type combinations)
+2. Runs the quality gate (tests required in artifact)
+3. Checks for typosquatting against existing package slugs
+4. Verifies artifact signature (if signing key is registered)
+5. Checks ownership (existing packages must belong to you)
+6. Checks version uniqueness (duplicate `(package_id, version)` is rejected)
+7. Indexes the package for search (unless quarantined)
 
 ### Quarantine
 
@@ -202,13 +272,21 @@ After your first package is cleared, future publishes skip quarantine.
 Publishers with `trusted` or `curated` trust level skip quarantine entirely
 (including typosquatting quarantine).
 
-## Step 5: Verify
+## The Recommended Flow
 
-```bash
-agentnode info my-tool-pack
+```
+agentnode init my-pack --type api
+cd my-pack
+# implement your tool
+agentnode validate .
+agentnode record-cases .        # if API tool
+agentnode verify-local .
+agentnode publish .
 ```
 
-Or visit `https://agentnode.net/packages/my-tool-pack`.
+## Step 6: Verify
+
+Visit `https://agentnode.net/packages/my-tool-pack` to see your published package.
 
 ## Publishing Agent Packages
 
@@ -220,8 +298,8 @@ Agent packages (`package_type: "agent"`) are autonomous agents that orchestrate 
 agentnode init --type agent my-agent
 cd my-agent
 # Edit agentnode.yaml and implement your agent
-agentnode validate agentnode.yaml
-agentnode publish
+agentnode validate .
+agentnode publish .
 ```
 
 ### Agent Manifest
@@ -260,7 +338,7 @@ Toolpacks that wrap external services can declare a `connector:` section:
 ```yaml
 connector:
   provider: "slack"
-  auth_type: "oauth2"                # "api_key" or "oauth2"
+  auth_type: "oauth2"                # "api_key", "oauth2", or "token"
   scopes: ["chat:read", "chat:write"]
   health_check:
     endpoint: "/api/health"
@@ -420,7 +498,7 @@ Both keep Gold eligibility. New packages should use `verification.cases` directl
 Publish a new version by updating `version` in both `agentnode.yaml` and `pyproject.toml`, then:
 
 ```bash
-agentnode publish ./my-tool-pack
+agentnode publish .
 ```
 
 Each `(package_id, version)` combination must be unique.
@@ -469,3 +547,13 @@ Requesting fewer permissions improves your package's resolution score and policy
 | `verified` | 2FA enabled + 1 published package |
 | `trusted` | 3+ packages, 50+ downloads, 0 open critical findings, 30+ days active |
 | `curated` | Manual admin promotion |
+
+## CI/CD Publishing
+
+Automate publishing from GitHub Actions:
+
+```yaml
+- uses: agentnode/publish@v1
+  with:
+    api-key: ${{ secrets.AGENTNODE_API_KEY }}
+```

@@ -48,11 +48,19 @@ const publishSteps = [
     step: 1,
     title: "Create your account",
     description:
-      "Claim your namespace and start publishing.",
+      "Register at agentnode.net, enable 2FA, and create an API key in your dashboard.",
     code: null,
   },
   {
     step: 2,
+    title: "Scaffold your package",
+    description:
+      "Use agentnode init to create a Gold-ready project structure with manifest, source code, and verification cases.",
+    code: `$ pip install agentnode-sdk
+$ agentnode init github-integration-pack --type api`,
+  },
+  {
+    step: 3,
     title: "Define your tool",
     description:
       "Describe what your tool does, what it needs, and how agents can use it.",
@@ -80,38 +88,32 @@ compatibility:
   frameworks: ["generic"]`,
   },
   {
-    step: 3,
-    title: "Import existing tools (optional)",
-    description:
-      "Already using LangChain, MCP or OpenAI? Import in one command.",
-    code: `agentnode import tools.py --from langchain`,
-  },
-  {
     step: 4,
-    title: "Validate",
-    description: null,
+    title: "Validate and verify locally",
+    description:
+      "Run the full verification pipeline locally to confirm your package will reach Gold tier on first publish.",
     code: `$ agentnode validate .
-
-Validating github-integration-pack...
-  Manifest syntax       OK
-  Capability IDs        OK
-  Permissions           OK
-  Entrypoint            OK
-
-Package is valid and ready to publish.`,
+$ agentnode record-cases .     # record VCR cassettes for API tools
+$ agentnode verify-local .`,
   },
   {
     step: 5,
     title: "Publish",
     description: null,
-    code: `$ agentnode publish .
+    code: `$ export AGENTNODE_API_KEY=ank_your_key_here
+$ agentnode publish .
 
-Publishing github-integration-pack@1.0.0...
-  Uploading package       done
-  Security scan           passed
-  Indexing capabilities   done
+  AgentNode Publish
+  Package    github-integration-pack@1.0.0
+  Type       toolpack
 
-Published! Your tool is now discoverable and installable by agents.`,
+  Validation    8 checks passed
+  Artifact      14.2 KB, 6 files
+
+  Publishing to api.agentnode.net...
+  Published github-integration-pack@1.0.0
+
+  https://agentnode.net/packages/github-integration-pack`,
   },
 ];
 
@@ -737,8 +739,8 @@ result = runtime.run(
                 <code className="whitespace-nowrap font-mono text-xs text-foreground">pip install agentnode-sdk</code>
               </div>
               <div className="rounded-lg border border-border bg-card px-5 py-3 text-center">
-                <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">Terminal &middot; install &amp; publish</div>
-                <code className="whitespace-nowrap font-mono text-xs text-foreground">npm install -g agentnode-cli</code>
+                <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">CLI &middot; search, install &amp; publish</div>
+                <code className="whitespace-nowrap font-mono text-xs text-foreground">pip install agentnode-sdk</code>
               </div>
               <div className="rounded-lg border border-border bg-card px-5 py-3 text-center">
                 <div className="mb-1 text-xs font-medium uppercase tracking-wider text-muted">Frameworks &middot; LangChain, MCP</div>

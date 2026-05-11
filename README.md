@@ -142,19 +142,17 @@ The more capabilities in the registry, the more powerful every agent becomes.
 
 ### 4. Build or Import in Minutes
 
-**Don't have a package?** Two paths to publishing:
+**Don't have a package?** Three paths to publishing:
 
+- **CLI** — `agentnode init → validate → verify-local → publish` — the primary developer workflow
 - **[Builder](https://agentnode.net/builder)** — Describe what your tool does in plain language → get a complete ANP package with code, manifest, and schemas
 - **[Import](https://agentnode.net/import)** — Paste existing LangChain / MCP / OpenAI / CrewAI code → get an ANP package back. Zero rewrite.
 
 ## Install
 
 ```bash
-# Python SDK — for agents & apps
+# Python SDK + CLI — search, install, publish
 pip install agentnode-sdk
-
-# CLI — search, install, publish
-npm install -g agentnode-cli
 
 # Framework adapters
 pip install agentnode-langchain
@@ -201,8 +199,8 @@ Automate publishing from CI/CD:
 ```
 agentnode/
 ├── backend/           # FastAPI + PostgreSQL + Redis + Meilisearch
-├── cli/               # TypeScript CLI (npm)
-├── sdk/               # Python SDK (PyPI)
+├── cli/               # Legacy TypeScript CLI (npm, supplementary)
+├── sdk/               # Python SDK + CLI (PyPI) — primary developer interface
 ├── adapter-mcp/       # MCP server integration
 ├── web/               # Next.js frontend (agentnode.net)
 ├── action/            # GitHub Action for CI/CD publishing

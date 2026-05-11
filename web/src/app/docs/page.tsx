@@ -195,27 +195,20 @@ export default function DocsPage() {
               installs a pack, and uses it in Python code.
             </p>
 
-            <SubHeading>1. Install the CLI</SubHeading>
-            <CodeBlock title="terminal">{`$ npm install -g agentnode-cli
+            <SubHeading>1. Install the SDK</SubHeading>
+            <CodeBlock title="terminal">{`$ pip install agentnode-sdk`}</CodeBlock>
 
-added 1 package in 2.1s`}</CodeBlock>
-
-            <SubHeading>2. Authenticate</SubHeading>
+            <SubHeading>2. Set up</SubHeading>
             <p className="mb-3 text-sm text-muted">
-              Log in to connect the CLI to your AgentNode account. If you do not
-              have an account yet, register at{" "}
+              Run the setup wizard, or skip it — sensible defaults work out of
+              the box. No account needed for searching, installing, or running
+              packages. For publishing, register at{" "}
               <Link href="/auth/register" className="text-primary hover:underline">
                 agentnode.net/auth/register
-              </Link>
-              .
+              </Link>{" "}
+              and create an API key in your dashboard.
             </p>
-            <CodeBlock title="terminal">{`$ agentnode login
-? Email: developer@example.com
-? Password: ********
-? 2FA Code: 123456
-
-Authenticated as developer@example.com
-API key stored in ~/.agentnode/credentials`}</CodeBlock>
+            <CodeBlock title="terminal">{`$ agentnode setup`}</CodeBlock>
 
             <SubHeading>3. Search for a capability</SubHeading>
             <CodeBlock title="terminal">{`$ agentnode search "pdf extraction"
@@ -668,7 +661,7 @@ print(result.result["sources"])`}</CodeBlock>
               headers={["Use case", "Package", "Install"]}
               rows={[
                 ["Build agents & apps in Python", "agentnode-sdk", "pip install agentnode-sdk"],
-                ["Install & publish from terminal", "agentnode-cli", "npm install -g agentnode-cli"],
+                ["CLI — search, install, publish", "agentnode-sdk", "pip install agentnode-sdk"],
                 ["Use with LangChain / LangGraph", "agentnode-langchain", "pip install agentnode-langchain"],
                 ["Use with MCP (Claude, Cursor)", "agentnode-mcp", "pip install agentnode-mcp"],
               ]}
@@ -676,43 +669,40 @@ print(result.result["sources"])`}</CodeBlock>
 
             <SubHeading>Install the CLI</SubHeading>
             <p className="mb-3 text-sm text-muted">
-              The AgentNode CLI is distributed as a global npm package. It
-              provides all commands for searching, installing, publishing, and
-              managing packs.
+              The AgentNode CLI is included in the Python SDK. After installing
+              the SDK, the <C>agentnode</C> command is available in your terminal.
             </p>
-            <CodeBlock title="terminal">{`$ npm install -g agentnode-cli`}</CodeBlock>
+            <CodeBlock title="terminal">{`$ pip install agentnode-sdk`}</CodeBlock>
 
             <p className="mt-4 mb-3 text-sm text-muted">
               Verify the installation:
             </p>
             <CodeBlock title="terminal">{`$ agentnode --version
-agentnode/0.3.1
 
 $ agentnode --help
 Usage: agentnode <command> [options]
 
 Commands:
-  login             Authenticate with the registry
+  setup             Run setup wizard
   search            Search for packages
   resolve           Resolve capabilities to packages
   install           Install a package
-  update            Update a package to the latest version
-  rollback          Roll back to a specific version
-  info              Show package details
-  explain           Explain capabilities, permissions, and use cases
+  remove            Remove a package
+  run               Run a capability or natural language task
   auth              Manage local credentials (own API tokens)
-  credentials       Manage server-side credentials (OAuth)
-  audit             View the policy decision audit trail
+  audit             View policy decision audit trail
   doctor            Analyze setup and suggest improvements
-  list              Show installed packages
-  publish           Publish a package
-  validate          Validate a manifest
-  report            Generate a security report
-  recommend         Get recommendations for missing capabilities
-  resolve-upgrade   Find upgrade packages for capability gaps
-  policy-check      Check policy constraints
-  api-keys          Manage API keys
-  import            Import tools from other frameworks`}</CodeBlock>
+  init              Create a new package from template
+  validate          Validate a package before publishing
+  verify-local      Run verification pipeline locally
+  publish           Publish a package to the registry
+  record-cases      Record VCR cassettes for verification
+  inspect           Security report for an installed package
+  discover          Browse trending and categorized packages
+  recommend         Get capability recommendations
+  capabilities      List installed capabilities
+  config            View or modify settings
+  logs              Show agent run logs`}</CodeBlock>
 
             <SubHeading>Authentication & API Keys</SubHeading>
             <p className="mb-3 text-sm text-muted">
@@ -734,25 +724,20 @@ Commands:
             />
             <p className="mt-3 mb-3 text-sm text-muted">
               <strong>How to get an API key:</strong> Register an account
-              on the website, then create an API key in your account settings
-              or via <C>agentnode api-keys create</C>. The key is shown once
-              at creation — save it immediately.
+              on the website, then create an API key in your{" "}
+              <Link href="/dashboard" className="text-primary hover:underline">
+                dashboard
+              </Link>
+              . The key is shown once at creation — save it immediately.
             </p>
-            <CodeBlock title="terminal">{`# Interactive login — stores the API key locally
-$ agentnode login
-Enter your API key: ********
-✓ Logged in as developer (ank_****f456)
-
-# Or set the key directly
-$ agentnode api-keys set ank_live_abc123def456
-
-# For CI/CD — use an environment variable
+            <CodeBlock title="terminal">{`# Set the API key as an environment variable
 $ export AGENTNODE_API_KEY=ank_live_abc123def456
 
-# Check which key is active
-$ agentnode api-keys list
-  Source:   ~/.agentnode/config.json
-  Key:     ank_****f456`}</CodeBlock>
+# Or pass it per-command
+$ agentnode publish . --token ank_live_abc123def456
+
+# Or store it in config
+# ~/.agentnode/config.json: { "api_key": "ank_..." }`}</CodeBlock>
             <p className="mt-3 text-sm text-muted">
               API keys are stored locally in <C>~/.agentnode/config.json</C>.
               The backend stores only a SHA-256 hash of your key — the
@@ -1274,15 +1259,32 @@ Verifying github-integration-pack@1.0.0
   This package will reach Gold tier after publishing.`}</CodeBlock>
 
             <SubHeading>Step 6: Publish</SubHeading>
-            <CodeBlock title="terminal">{`$ agentnode publish .
+            <p className="mb-3 text-sm text-muted">
+              Set your API key (from your{" "}
+              <Link href="/dashboard" className="text-primary hover:underline">
+                dashboard
+              </Link>
+              ), then publish:
+            </p>
+            <CodeBlock title="terminal">{`$ export AGENTNODE_API_KEY=ank_your_key_here
+$ agentnode publish .
 
-Publishing github-integration-pack@1.0.0...
-  Uploading package       done
-  Security scan           passed (no issues found)
-  Signing package         done (Ed25519)
-  Indexing capabilities   done
+  AgentNode Publish
+  Package    github-integration-pack@1.0.0
+  Type       toolpack
 
-Published! https://agentnode.net/packages/github-integration-pack`}</CodeBlock>
+  Validation    8 checks passed
+  Artifact      14.2 KB, 6 files
+
+  Publishing to api.agentnode.net...
+  Published github-integration-pack@1.0.0
+
+  https://agentnode.net/packages/github-integration-pack`}</CodeBlock>
+            <p className="mt-3 text-sm text-muted">
+              Use <C>--dry-run</C> to preview without uploading,{" "}
+              <C>--skip-validate</C> to continue past validation warnings, or{" "}
+              <C>--token &lt;key&gt;</C> to pass the API key directly.
+            </p>
 
             <div className="mt-6 rounded-lg border border-primary/20 bg-primary/5 p-4">
               <p className="text-sm text-muted">
@@ -1397,20 +1399,17 @@ Published! https://agentnode.net/packages/github-integration-pack`}</CodeBlock>
               Complete reference for all 18 commands in the AgentNode CLI.
             </p>
 
-            {/* login */}
+            {/* setup */}
             <div className="mb-8 rounded-lg border border-border bg-card p-5">
               <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode login
+                agentnode setup
               </h4>
               <p className="mb-3 text-sm text-muted">
-                Authenticate with the AgentNode registry. Stores credentials in{" "}
-                <C>~/.agentnode/credentials</C>.
+                Run the setup wizard to configure your local environment.
+                Sets up defaults for trust policy, credential storage, and
+                other settings.
               </p>
-              <CodeBlock title="terminal">{`$ agentnode login
-? Email: developer@example.com
-? Password: ********
-? 2FA Code: 123456
-Authenticated as developer@example.com`}</CodeBlock>
+              <CodeBlock title="terminal">{`$ agentnode setup`}</CodeBlock>
             </div>
 
             {/* search */}
@@ -1573,14 +1572,12 @@ $ agentnode audit stats
               </p>
               <CodeBlock title="terminal">{`$ agentnode doctor
 Checking environment...
-  Node.js:    v20.10.0    OK
   Python:     3.11.5      OK
-  CLI:        1.0.0       OK
-  Auth:       logged in   OK
+  SDK:        0.5.2       OK
+  Config:     found       OK
   Lockfile:   found       OK
 
-  1 outdated pack: pdf-reader-pack (1.2.0 -> 1.3.0)
-  Run: agentnode update pdf-reader-pack`}</CodeBlock>
+  1 suggestion: pdf-reader-pack (1.2.0 -> 1.3.0 available)`}</CodeBlock>
             </div>
 
             {/* list */}
@@ -1601,21 +1598,26 @@ Installed packages:
             {/* publish */}
             <div className="mb-8 rounded-lg border border-border bg-card p-5">
               <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode publish &lt;directory&gt;
+                agentnode publish [directory]
               </h4>
               <p className="mb-3 text-sm text-muted">
-                Publish a pack to the registry. Runs validation, security
-                scanning, signing, and indexing.
+                Publish a pack to the registry. Validates the manifest, builds
+                the artifact, and uploads to the AgentNode registry. Server-side
+                verification (security scanning, quality gate, indexing) runs
+                after upload.
               </p>
               <DocTable
                 headers={["Flag", "Description"]}
                 rows={[
-                  ["--dry-run", "Run the full pipeline without uploading"],
+                  ["--dry-run", "Validate and build artifact without uploading"],
+                  ["--skip-validate", "Continue past validation errors (does not skip hard failures like missing manifest)"],
+                  ["--token <key>", "API key for authentication (overrides AGENTNODE_API_KEY env var)"],
                 ]}
               />
               <div className="mt-3">
                 <CodeBlock title="terminal">{`$ agentnode publish .
-$ agentnode publish ./my-pack --dry-run`}</CodeBlock>
+$ agentnode publish ./my-pack --dry-run
+$ agentnode publish . --token ank_your_key`}</CodeBlock>
               </div>
             </div>
 
@@ -3182,13 +3184,13 @@ $ agentnode policy-check pdf-reader-pack --trust trusted --no-network`}</CodeBlo
                 the website or via <C>agentnode api-keys create &lt;label&gt;</C>
               </li>
               <li>
-                <strong>Store</strong> it locally
-                with <C>agentnode api-keys set &lt;key&gt;</C> or
-                via <C>agentnode login</C>
+                <strong>Set</strong> it as an environment variable
+                with <C>export AGENTNODE_API_KEY=ank_...</C> or pass
+                via <C>--token</C> flag
               </li>
               <li>
                 <strong>Use</strong> it automatically — the CLI reads from
-                config, or set <C>AGENTNODE_API_KEY</C> for CI/CD
+                <C>AGENTNODE_API_KEY</C> env var or <C>~/.agentnode/config.json</C>
               </li>
               <li>
                 <strong>Revoke</strong> at any time from your account settings
