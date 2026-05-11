@@ -128,6 +128,25 @@ class TestCredentialHandleAuthTypes:
         headers = h.authorized_request_headers("https://api.example.com")
         assert headers == {"Authorization": "Bearer oauth-tok-123"}
 
+    def test_token_bearer_header(self):
+        h = _make_handle(
+            auth_type="token",
+            secret_data={"access_token": "tok-123"},
+            allowed_domains=[],
+        )
+        headers = h.authorized_request_headers("https://api.example.com")
+        assert headers == {"Authorization": "Bearer tok-123"}
+
+    def test_token_fallback_from_api_key(self):
+        """auth_type='token' with api_key secret (CLI mismatch) still works."""
+        h = _make_handle(
+            auth_type="token",
+            secret_data={"api_key": "abc"},
+            allowed_domains=[],
+        )
+        headers = h.authorized_request_headers("https://api.example.com")
+        assert headers == {"Authorization": "Bearer abc"}
+
 
 class TestCredentialHandleMetadata:
     """Public metadata properties are safe to access."""

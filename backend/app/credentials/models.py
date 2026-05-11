@@ -29,7 +29,7 @@ class CredentialStore(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     connector_provider = Column(Text, nullable=False, index=True)
     connector_package_slug = Column(Text, nullable=False)
     auth_type = Column(
-        Enum("api_key", "oauth2", name="connector_auth_type", create_type=False),
+        Enum("api_key", "oauth2", "token", name="connector_auth_type", create_type=False),
         nullable=False,
     )
 

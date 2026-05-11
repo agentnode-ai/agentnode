@@ -14,6 +14,20 @@ from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.cli.output import bold, dim, section
 
 
+def _resolve_auth_type(provider: str) -> str:
+    """Read auth_type from lockfile connector entry. Falls back to 'api_key'.
+
+    If multiple installed connectors share a provider with different auth
+    types, this returns the first match — may need disambiguation later.
+    """
+    lock = read_lockfile()
+    for _slug, info in lock.get("packages", {}).items():
+        connector = info.get("connector")
+        if isinstance(connector, dict) and connector.get("provider", "").lower() == provider:
+            return connector.get("auth_type", "api_key")
+    return "api_key"
+
+
 def cmd_auth_set(provider: str) -> int:
     provider = provider.lower().strip()
     if not provider:
@@ -28,7 +42,8 @@ def cmd_auth_set(provider: str) -> int:
     if not token:
         print("  Error: no token provided.", file=sys.stderr)
         return 1
-    set_credential(provider, token, auth_type="api_key")
+    auth_type = _resolve_auth_type(provider)
+    set_credential(provider, token, auth_type=auth_type)
     print(f"\n  Credential stored for {provider}.\n")
     return 0
 

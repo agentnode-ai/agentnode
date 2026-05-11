@@ -31,7 +31,7 @@ async def store_credential(
     allowed_domains: list[str],
 ) -> CredentialStore:
     """Encrypt and store a credential. Upserts on (user_id, connector_provider)."""
-    if auth_type not in ("api_key", "oauth2"):
+    if auth_type not in ("api_key", "oauth2", "token"):
         raise ValueError(f"Unsupported auth_type: {auth_type}")
 
     encrypted = vault.encrypt(secret_data)

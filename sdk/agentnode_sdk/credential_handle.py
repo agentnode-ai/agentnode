@@ -132,6 +132,10 @@ class CredentialHandle:
             token = self._secret_data.get("access_token", "")
             return {"Authorization": f"Bearer {token}"}
 
+        if self._auth_type == "token":
+            token = self._secret_data.get("access_token", "") or self._secret_data.get("api_key", "")
+            return {"Authorization": f"Bearer {token}"}
+
         return {}
 
     def authorized_request_headers(self, url: str) -> dict[str, str]:

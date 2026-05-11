@@ -104,11 +104,9 @@ def _resolve_from_env(
         )
         return None
 
-    # Build secret_data based on auth_type
-    if auth_type == "oauth2":
+    if auth_type in ("oauth2", "token"):
         secret_data = {"access_token": secret}
     else:
-        # Default: api_key
         secret_data = {"api_key": secret}
 
     return CredentialHandle(
@@ -152,14 +150,14 @@ def _resolve_from_local_file(
     stored_auth_type = entry.get("auth_type", auth_type)
     stored_scopes = entry.get("scopes", [])
 
-    if stored_auth_type == "oauth2":
+    if stored_auth_type in ("oauth2", "token"):
         secret_data = {"access_token": token}
     else:
         secret_data = {"api_key": token}
 
     return CredentialHandle(
         provider=provider,
-        auth_type=stored_auth_type,
+        auth_type=auth_type,
         scopes=scopes or stored_scopes,
         allowed_domains=allowed_domains or [],
         secret_data=secret_data,

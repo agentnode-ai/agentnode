@@ -15,7 +15,7 @@ class StoreCredentialRequest(BaseModel):
 
     connector_package_slug: str
     connector_provider: str
-    auth_type: str  # "api_key" or "oauth2"
+    auth_type: str  # "api_key", "oauth2", or "token"
     secret_data: dict  # Raw secret — encrypted server-side, NEVER stored in plain text
     scopes: list[str] = []
 
