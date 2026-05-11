@@ -177,6 +177,11 @@ export default function QuickStart({
           <CodeWithCopy code={pythonImport} language="python" />
         )}
 
+        <p className="mt-2 text-xs text-muted">
+          Runs in a subprocess with filtered environment by default.
+          Declared permissions are policy-checked, not sandboxed.
+        </p>
+
         {/* Install resolution note */}
         {installableVersion && latestVersion && installableVersion !== latestVersion && (
           installResolution === "fallback" ? (

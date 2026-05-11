@@ -648,7 +648,7 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                 Permissions
               </h2>
               <p className="mb-4 text-xs text-muted">
-                This package declares the following access levels. Review before installing.
+                Declared by the publisher. Checked before execution by the policy gate.
               </p>
               <div className="space-y-2">
                 {[
@@ -667,8 +667,27 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                   </div>
                 ))}
               </div>
+              <p className="mt-3 text-xs text-muted">
+                Permissions are policy-checked before execution.
+                Network and filesystem access are not sandboxed at runtime.{" "}
+                <a href="/docs/security" className="text-primary hover:underline">
+                  Learn more
+                </a>
+              </p>
             </section>
           )}
+
+          {/* Privacy */}
+          <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+            <h2 className="mb-2 text-lg font-semibold text-foreground">
+              Privacy
+            </h2>
+            <p className="text-sm text-muted">
+              All tool execution happens locally on your machine. AgentNode does not
+              receive tool inputs, outputs, or execution logs. Only install events and
+              search queries are sent to the registry.
+            </p>
+          </section>
 
           {/* Recommended For */}
           {recommendedFor.length > 0 && (

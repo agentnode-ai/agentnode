@@ -57,6 +57,11 @@ def build_meili_document(pkg: Package, version: PackageVersion, manifest: dict) 
     tags = manifest.get("tags", [])
     frameworks = manifest.get("compatibility", {}).get("frameworks", [])
 
+    perms = manifest.get("permissions") or {}
+    network = perms.get("network") or {}
+    filesystem = perms.get("filesystem") or {}
+    code_exec = perms.get("code_execution") or {}
+
     return {
         "id": str(pkg.id),
         "slug": pkg.slug,
@@ -82,6 +87,10 @@ def build_meili_document(pkg: Package, version: PackageVersion, manifest: dict) 
         "has_security_review": version.security_reviewed_at is not None,
         "has_compatibility_review": version.compatibility_reviewed_at is not None,
         "has_manual_review": version.manually_reviewed_at is not None,
+        "network_level": network.get("level"),
+        "filesystem_level": filesystem.get("level"),
+        "code_execution_level": code_exec.get("level"),
+        "has_connector": isinstance(manifest.get("connector"), dict),
     }
 
 

@@ -67,6 +67,10 @@ class SearchHit(BaseModel):
     verification_status: str | None = None
     verification_score: int | None = None
     verification_tier: str | None = None
+    network_level: str | None = None
+    filesystem_level: str | None = None
+    code_execution_level: str | None = None
+    has_connector: bool | None = None
 
 
 class SearchResponse(BaseModel):

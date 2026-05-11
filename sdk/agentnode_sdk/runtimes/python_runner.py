@@ -6,6 +6,7 @@ All original logic is preserved; the public entry point is ``run_python()``.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -15,6 +16,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # P1-SDK7: serialize concurrent callers of _run_direct so the
 # os.environ["AGENTNODE_LOCKFILE"] save/restore dance is atomic.
@@ -143,6 +146,13 @@ def run_python(
     if mode == "auto":
         trust = _get_trust_level(slug, lockfile_path)
         resolved = _resolve_mode(mode, trust)
+
+    if resolved == "direct" and mode == "direct":
+        logger.warning(
+            "Running %s in direct mode — full env access, no isolation. "
+            "Use mode='auto' (default) for subprocess isolation.",
+            slug,
+        )
 
     t0 = time.monotonic()
     try:

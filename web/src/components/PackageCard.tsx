@@ -18,6 +18,32 @@ interface PackageCardProps {
   tags?: string[];
   publisher_name?: string | null;
   is_deprecated?: boolean;
+  network_level?: string | null;
+  filesystem_level?: string | null;
+  code_execution_level?: string | null;
+  has_connector?: boolean | null;
+}
+
+const NETWORK_EXTERNAL_VALUES = new Set(["restricted", "unrestricted"]);
+const FILESYSTEM_WRITE_VALUES = new Set(["workspace_write", "any"]);
+const CODE_EXEC_ACTIVE_VALUES = new Set(["limited_subprocess", "shell"]);
+
+function getRiskLabel(
+  networkLevel: string | null | undefined,
+  filesystemLevel: string | null | undefined,
+  codeExecutionLevel: string | null | undefined,
+  hasConnector: boolean | null | undefined,
+  isConnectorCategory: boolean,
+): string | null {
+  const hasExternalNetwork = !!networkLevel && NETWORK_EXTERNAL_VALUES.has(networkLevel);
+  const connector = hasConnector ?? isConnectorCategory;
+
+  if (hasExternalNetwork && connector) return "external network + credentials";
+  if (codeExecutionLevel && CODE_EXEC_ACTIVE_VALUES.has(codeExecutionLevel)) return "code execution";
+  if (filesystemLevel && FILESYSTEM_WRITE_VALUES.has(filesystemLevel)) return "writes to filesystem";
+  if (hasExternalNetwork) return "external network";
+  if (connector) return "uses credentials";
+  return null;
 }
 
 function formatDownloads(count: number): string {
@@ -42,6 +68,10 @@ export default function PackageCard({
   tags,
   publisher_name,
   is_deprecated,
+  network_level,
+  filesystem_level,
+  code_execution_level,
+  has_connector,
 }: PackageCardProps) {
   // Derive UI category from package_type + tags
   const category = package_type === "agent"
@@ -57,6 +87,15 @@ export default function PackageCard({
     character: { bg: "bg-purple-500/10", text: "text-purple-400", label: "character" },
     connector: { bg: "bg-orange-500/10", text: "text-orange-400", label: "connector" },
   };
+
+  const riskLabel = getRiskLabel(
+    network_level,
+    filesystem_level,
+    code_execution_level,
+    has_connector,
+    category === "connector",
+  );
+
   return (
     <Link
       href={`/packages/${slug}`}
@@ -104,6 +143,12 @@ export default function PackageCard({
       <p className="text-sm leading-relaxed text-muted line-clamp-2">
         {summary}
       </p>
+
+      {riskLabel && (
+        <span className="inline-block self-start rounded bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-400">
+          {riskLabel}
+        </span>
+      )}
 
       <div className="mt-auto flex items-center justify-between gap-2">
         <div className="flex flex-wrap gap-1.5">

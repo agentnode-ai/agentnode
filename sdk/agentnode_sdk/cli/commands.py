@@ -1463,13 +1463,88 @@ def cmd_inspect(slug: str, *, json_output: bool = False) -> int:
         for k, v in risk.backend_hint.items():
             print(f"    {dim(f'{k}: {v}')}")
 
+    # Runtime Enforcement
+    _inspect_print_enforcement(pkg)
+
+    # Policy Preview
+    _inspect_print_policy_preview(slug, pkg)
+
+    # Privacy
+    print()
+    print(f"  {bold('Privacy')}")
+    print("  " + "-" * 7)
+    print(kv("Execution", "local (your machine only)"))
+    print(kv("Sent to registry", "install events, search, trust refresh"))
+    print(kv("Never sent", "tool inputs, outputs, audit logs"))
+
     print()
     return 0
+
+
+def _inspect_print_enforcement(pkg: dict) -> None:
+    """Print the Runtime Enforcement section of inspect."""
+    runtime = pkg.get("runtime", "python")
+    is_subprocess = runtime in ("python", "mcp")
+
+    check = "\033[32m+\033[0m"
+    cross = "\033[31m-\033[0m"
+
+    print()
+    print(f"  {bold('Runtime Enforcement')}")
+    print("  " + "-" * 19)
+    if is_subprocess:
+        print(kv("Execution mode", "subprocess (env-filtered)"))
+        print(kv("Env filtering", f"{check} API keys stripped from subprocess"))
+        print(kv("Timeout", f"{check} Subprocess timeout enforced"))
+    else:
+        print(kv("Execution mode", runtime))
+        print(kv("Env filtering", f"{cross} Not applicable ({runtime})"))
+        print(kv("Timeout", f"{cross} Not applicable ({runtime})"))
+
+    print(kv("Network isolation", f"{cross} Not enforced at runtime"))
+    print(kv("Filesystem isolation", f"{cross} Not enforced at runtime"))
+    print()
+    print(f"  {dim('Permissions are declared by the publisher and checked')}")
+    print(f"  {dim('by the policy gate before execution. Network and filesystem')}")
+    print(f"  {dim('access are not restricted at runtime.')}")
+
+
+def _inspect_print_policy_preview(slug: str, pkg: dict) -> None:
+    """Print a dry-run policy preview without triggering interactive prompts."""
+    from agentnode_sdk.policy import check_run
+
+    try:
+        result = check_run(
+            slug,
+            tool_name=None,
+            kwargs={},
+            entry=pkg,
+            interactive=False,
+        )
+    except Exception:
+        return
+
+    action = result.action
+    if action == "deny":
+        display = "\033[31mdeny\033[0m"
+    elif action == "prompt":
+        display = "\033[33mprompt\033[0m" + dim(" (would ask in interactive mode)")
+    else:
+        display = "\033[32mallow\033[0m"
+
+    print()
+    print(f"  {bold('Policy Preview')} {dim('(current config)')}")
+    print("  " + "-" * 14)
+    print(kv("Run decision", display))
+    print(kv("Source", result.source))
+    if result.reason and result.reason != "All checks passed":
+        print(kv("Reason", result.reason))
 
 
 def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
     """Build a JSON-serializable inspect report."""
     from agentnode_sdk.risk_profile import compute_risk_profile
+    from agentnode_sdk.policy import check_run
 
     perms = pkg.get("permissions")
     connector = pkg.get("connector")
@@ -1482,13 +1557,27 @@ def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
     }
     if risk.backend_hint:
         risk_dict["backend_hint"] = risk.backend_hint
+
+    runtime = pkg.get("runtime", "python")
+    is_subprocess = runtime in ("python", "mcp")
+
+    try:
+        policy = check_run(slug, None, {}, pkg, interactive=False)
+        policy_dict = {
+            "action": policy.action,
+            "source": policy.source,
+            "reason": policy.reason,
+        }
+    except Exception:
+        policy_dict = None
+
     return {
         "slug": slug,
         "version": pkg.get("version"),
         "package_type": pkg.get("package_type"),
         "trust_level": pkg.get("trust_level"),
         "last_trust_check": pkg.get("last_trust_check"),
-        "runtime": pkg.get("runtime"),
+        "runtime": runtime,
         "installed_at": pkg.get("installed_at"),
         "permissions": perms,
         "capability_ids": pkg.get("capability_ids", []),
@@ -1499,6 +1588,19 @@ def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
         } if connector and isinstance(connector, dict) else None,
         "audit": audit_summary,
         "risk": risk_dict,
+        "enforcement": {
+            "execution_mode": "subprocess" if is_subprocess else runtime,
+            "env_filtering": is_subprocess,
+            "network_isolation": False,
+            "filesystem_isolation": False,
+            "timeout": is_subprocess,
+        },
+        "policy_preview": policy_dict,
+        "privacy": {
+            "execution_local": True,
+            "sent_to_registry": ["install_events", "search_queries", "trust_refresh"],
+            "never_sent": ["tool_inputs", "tool_outputs", "audit_logs"],
+        },
     }
 
 

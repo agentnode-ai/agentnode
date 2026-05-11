@@ -134,6 +134,10 @@ export default async function DiscoverPage() {
                 verification_score={pkg.verification_score}
                 package_type={pkg.package_type}
                 publisher_name={pkg.publisher_name}
+                network_level={pkg.network_level}
+                filesystem_level={pkg.filesystem_level}
+                code_execution_level={pkg.code_execution_level}
+                has_connector={pkg.has_connector}
               />
             ))}
           </div>
@@ -182,6 +186,10 @@ export default async function DiscoverPage() {
                 verification_score={pkg.verification_score}
                 package_type={pkg.package_type}
                 publisher_name={pkg.publisher_name}
+                network_level={pkg.network_level}
+                filesystem_level={pkg.filesystem_level}
+                code_execution_level={pkg.code_execution_level}
+                has_connector={pkg.has_connector}
               />
             ))}
           </div>
@@ -211,6 +219,10 @@ export default async function DiscoverPage() {
                 verification_score={pkg.verification_score}
                 package_type={pkg.package_type}
                 publisher_name={pkg.publisher_name}
+                network_level={pkg.network_level}
+                filesystem_level={pkg.filesystem_level}
+                code_execution_level={pkg.code_execution_level}
+                has_connector={pkg.has_connector}
               />
             ))}
           </div>

@@ -521,6 +521,10 @@ function SearchContent() {
                         tags={pkg.tags}
                         publisher_name={pkg.publisher_name}
                         is_deprecated={pkg.is_deprecated}
+                        network_level={pkg.network_level}
+                        filesystem_level={pkg.filesystem_level}
+                        code_execution_level={pkg.code_execution_level}
+                        has_connector={pkg.has_connector}
                       />
                     ))}
                   </div>

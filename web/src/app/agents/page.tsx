@@ -40,6 +40,10 @@ interface SearchHit {
   verification_score?: number | null;
   tags: string[];
   is_deprecated: boolean;
+  network_level?: string | null;
+  filesystem_level?: string | null;
+  code_execution_level?: string | null;
+  has_connector?: boolean | null;
 }
 
 async function fetchAgents(): Promise<SearchHit[]> {
@@ -331,6 +335,10 @@ export default async function AgentsPage() {
                 tags={agent.tags}
                 publisher_name={agent.publisher_name}
                 is_deprecated={agent.is_deprecated}
+                network_level={agent.network_level}
+                filesystem_level={agent.filesystem_level}
+                code_execution_level={agent.code_execution_level}
+                has_connector={agent.has_connector}
               />
             ))}
           </div>

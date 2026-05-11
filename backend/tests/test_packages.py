@@ -146,7 +146,7 @@ async def test_publish_new_package(mock_meili, mock_s3, client, session):
         data={"manifest": json.dumps(TEST_MANIFEST)},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 200, resp.json()
+    assert resp.status_code == 201, resp.json()
     data = resp.json()
     assert data["slug"] == "test-pack"
     assert data["version"] == "1.0.0"
@@ -211,7 +211,7 @@ async def test_publish_new_version(mock_meili, mock_s3, client):
         data={"manifest": json.dumps(v2_manifest)},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 201
     data = resp.json()
     assert data["version"] == "2.0.0"
 
@@ -240,7 +240,7 @@ async def test_publish_with_artifact(mock_meili, mock_s3, mock_preview, client, 
         files={"artifact": ("test.tar.gz", artifact_bytes, "application/gzip")},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 201
     mock_s3.assert_called_once()
 
 

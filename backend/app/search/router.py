@@ -150,6 +150,10 @@ async def search_packages(body: SearchRequest, request: Request):
             verification_status=doc.get("verification_status"),
             verification_score=doc.get("verification_score"),
             verification_tier=doc.get("verification_tier"),
+            network_level=doc.get("network_level"),
+            filesystem_level=doc.get("filesystem_level"),
+            code_execution_level=doc.get("code_execution_level"),
+            has_connector=doc.get("has_connector"),
         ))
 
     total = data.get("estimatedTotalHits", data.get("totalHits", len(hits)))

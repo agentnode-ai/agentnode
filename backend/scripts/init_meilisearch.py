@@ -13,6 +13,7 @@ INDEX_SETTINGS = {
         "package_type", "capability_ids", "frameworks", "runtime", "trust_level",
         "is_deprecated", "publisher_slug", "verification_tier",
         "has_security_review", "has_compatibility_review", "has_manual_review",
+        "network_level", "filesystem_level", "code_execution_level", "has_connector",
     ],
     "sortableAttributes": ["download_count", "install_count", "published_at", "verification_score"],
     "displayedAttributes": [
@@ -20,6 +21,7 @@ INDEX_SETTINGS = {
         "trust_level", "latest_version", "runtime", "capability_ids", "tags",
         "frameworks", "download_count", "install_count", "is_deprecated", "verification_status",
         "verification_score", "verification_tier",
+        "network_level", "filesystem_level", "code_execution_level", "has_connector",
     ],
     "rankingRules": [
         "words", "typo", "proximity", "attribute", "sort", "exactness",

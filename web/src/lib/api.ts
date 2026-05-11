@@ -19,6 +19,10 @@ export interface SearchHit {
   verification_status: string | null;
   verification_score?: number | null;
   verification_tier?: string | null;
+  network_level?: string | null;
+  filesystem_level?: string | null;
+  code_execution_level?: string | null;
+  has_connector?: boolean | null;
 }
 
 export interface SearchResponse {
