@@ -38,10 +38,11 @@ function getRiskLabel(
   const hasExternalNetwork = !!networkLevel && NETWORK_EXTERNAL_VALUES.has(networkLevel);
   const connector = hasConnector ?? isConnectorCategory;
 
-  if (hasExternalNetwork && connector) return "external network + credentials";
-  if (codeExecutionLevel && CODE_EXEC_ACTIVE_VALUES.has(codeExecutionLevel)) return "code execution";
-  if (filesystemLevel && FILESYSTEM_WRITE_VALUES.has(filesystemLevel)) return "writes to filesystem";
-  if (hasExternalNetwork) return "external network";
+  if (hasExternalNetwork && connector) return "external services + credentials";
+  if (codeExecutionLevel && CODE_EXEC_ACTIVE_VALUES.has(codeExecutionLevel)) return "runs code on your system";
+  if (filesystemLevel && FILESYSTEM_WRITE_VALUES.has(filesystemLevel)) return "can modify local files";
+  if (hasExternalNetwork && networkLevel === "restricted") return "connects to external services";
+  if (hasExternalNetwork) return "full network access";
   if (connector) return "uses credentials";
   return null;
 }
