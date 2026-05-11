@@ -123,6 +123,13 @@ def main(argv: list[str] | None = None) -> int:
     verify_parser = sub.add_parser("verify-local", help="Run verification pipeline locally")
     verify_parser.add_argument("path", nargs="?", default=".", help="Package directory (default: current)")
 
+    # publish
+    publish_parser = sub.add_parser("publish", help="Publish package to AgentNode registry")
+    publish_parser.add_argument("path", nargs="?", default=".", help="Package directory (default: current)")
+    publish_parser.add_argument("--dry-run", action="store_true", help="Validate and build without uploading")
+    publish_parser.add_argument("--skip-validate", action="store_true", help="Continue despite validation errors")
+    publish_parser.add_argument("--token", default=None, help="API key (default: AGENTNODE_API_KEY env)")
+
     # record-cases
     record_parser = sub.add_parser("record-cases", help="Record VCR cassettes for API verification cases")
     record_parser.add_argument("path", nargs="?", default=".", help="Package directory (default: current)")
@@ -218,6 +225,9 @@ def main(argv: list[str] | None = None) -> int:
             return commands.cmd_validate(args.path)
         if args.command == "verify-local":
             return commands.cmd_verify_local(args.path)
+        if args.command == "publish":
+            from agentnode_sdk.cli.publish import cmd_publish
+            return cmd_publish(args.path, dry_run=args.dry_run, skip_validate=args.skip_validate, token=args.token)
         if args.command == "record-cases":
             return commands.cmd_record_cases(args.path, strict=args.strict)
         if args.command == "inspect":
