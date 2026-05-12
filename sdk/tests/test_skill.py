@@ -509,3 +509,95 @@ class TestSkillCLI:
         assert "skill-a" in out
         assert "skill-b" in out
         assert "2 skills" in out
+
+
+# ---------------------------------------------------------------------------
+# read_resource tests
+# ---------------------------------------------------------------------------
+
+def _make_runtime():
+    from agentnode_sdk.runtime import AgentNodeRuntime
+    rt = AgentNodeRuntime.__new__(AgentNodeRuntime)
+    rt._minimum_trust_level = "verified"
+    return rt
+
+
+class TestReadResource:
+    def test_returns_asset_content(self, tmp_path):
+        _create_skill_dir(tmp_path)
+        _register_skill_in_lockfile()
+        rt = _make_runtime()
+        content = rt.read_resource("agentnode://skills/test-skill/assets/example-doc")
+        assert content is not None
+        assert "Example" in content
+        assert "Sample content" in content
+
+    def test_unknown_uri_returns_none(self, tmp_path):
+        rt = _make_runtime()
+        assert rt.read_resource("https://example.com/foo") is None
+        assert rt.read_resource("file:///etc/passwd") is None
+        assert rt.read_resource("") is None
+
+    def test_nonexistent_skill_returns_none(self, tmp_path):
+        rt = _make_runtime()
+        assert rt.read_resource("agentnode://skills/nonexistent/assets/doc") is None
+
+    def test_nonexistent_asset_returns_none(self, tmp_path):
+        _create_skill_dir(tmp_path)
+        _register_skill_in_lockfile()
+        rt = _make_runtime()
+        assert rt.read_resource("agentnode://skills/test-skill/assets/no-such") is None
+
+    def test_non_skill_package_returns_none(self, tmp_path):
+        update_lockfile("my-tool", {
+            "version": "1.0.0",
+            "package_type": "toolpack",
+            "assets": [{"id": "x", "path": "x.md"}],
+        })
+        rt = _make_runtime()
+        assert rt.read_resource("agentnode://skills/my-tool/assets/x") is None
+
+    def test_path_traversal_blocked(self, tmp_path):
+        _create_skill_dir(tmp_path)
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        update_lockfile("test-skill", {
+            "version": "1.0.0",
+            "package_type": "skill",
+            "install_path": str(_skills_dir() / "test-skill"),
+            "assets": [
+                {"id": "evil", "type": "document", "path": "../../secret.txt", "description": "Evil"},
+            ],
+        })
+        rt = _make_runtime()
+        assert rt.read_resource("agentnode://skills/test-skill/assets/evil") is None
+
+    def test_absolute_asset_path_blocked(self, tmp_path):
+        _create_skill_dir(tmp_path)
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        update_lockfile("test-skill", {
+            "version": "1.0.0",
+            "package_type": "skill",
+            "install_path": str(_skills_dir() / "test-skill"),
+            "assets": [
+                {"id": "abs", "type": "document", "path": str(secret), "description": "Abs"},
+            ],
+        })
+        rt = _make_runtime()
+        assert rt.read_resource("agentnode://skills/test-skill/assets/abs") is None
+
+    def test_missing_install_path_returns_none(self, tmp_path):
+        update_lockfile("no-path", {
+            "version": "1.0.0",
+            "package_type": "skill",
+            "assets": [{"id": "doc", "type": "document", "path": "doc.md", "description": "D"}],
+        })
+        rt = _make_runtime()
+        assert rt.read_resource("agentnode://skills/no-path/assets/doc") is None
+
+    def test_malformed_uri_returns_none(self, tmp_path):
+        rt = _make_runtime()
+        assert rt.read_resource("agentnode://skills/") is None
+        assert rt.read_resource("agentnode://skills/slug/wrong/id") is None
+        assert rt.read_resource("agentnode://other/path") is None

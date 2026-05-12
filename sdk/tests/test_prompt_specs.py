@@ -164,6 +164,129 @@ class TestPromptSpecs:
             os.unlink(path)
 
 
+class TestSkillPromptResolution:
+    """Skill prompt templates are file paths — runtime resolves to content."""
+
+    def test_skill_prompt_resolves_file_content(self, tmp_path):
+        skill_dir = tmp_path / "skills" / "seo-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("Write about {{topic}} for SEO.")
+
+        path = _make_lockfile({
+            "seo-skill": {
+                "version": "1.0.0",
+                "package_type": "skill",
+                "install_path": str(skill_dir),
+                "prompts": [{"name": "writer", "template": "SKILL.md"}],
+            },
+        })
+        os.environ["AGENTNODE_LOCKFILE"] = path
+        try:
+            specs = _make_runtime().prompt_specs()
+            assert len(specs) == 1
+            assert specs[0].template == "Write about {{topic}} for SEO."
+            assert "SKILL.md" not in specs[0].template
+        finally:
+            os.unlink(path)
+
+    def test_skill_prompt_missing_file_returns_empty(self, tmp_path):
+        skill_dir = tmp_path / "skills" / "missing-skill"
+        skill_dir.mkdir(parents=True)
+
+        path = _make_lockfile({
+            "missing-skill": {
+                "version": "1.0.0",
+                "package_type": "skill",
+                "install_path": str(skill_dir),
+                "prompts": [{"name": "main", "template": "NONEXISTENT.md"}],
+            },
+        })
+        os.environ["AGENTNODE_LOCKFILE"] = path
+        try:
+            specs = _make_runtime().prompt_specs()
+            assert len(specs) == 1
+            assert specs[0].template == ""
+        finally:
+            os.unlink(path)
+
+    def test_non_skill_template_unchanged(self):
+        """Toolpack prompts keep template string as-is (no file resolution)."""
+        path = _make_lockfile({
+            "tool-pack": {
+                "version": "1.0.0",
+                "package_type": "toolpack",
+                "prompts": [{"name": "greet", "template": "Hello {{name}}!"}],
+            },
+        })
+        os.environ["AGENTNODE_LOCKFILE"] = path
+        try:
+            specs = _make_runtime().prompt_specs()
+            assert len(specs) == 1
+            assert specs[0].template == "Hello {{name}}!"
+        finally:
+            os.unlink(path)
+
+    def test_skill_prompt_path_traversal_blocked(self, tmp_path):
+        skill_dir = tmp_path / "skills" / "evil-skill"
+        skill_dir.mkdir(parents=True)
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+
+        path = _make_lockfile({
+            "evil-skill": {
+                "version": "1.0.0",
+                "package_type": "skill",
+                "install_path": str(skill_dir),
+                "prompts": [{"name": "evil", "template": "../../secret.txt"}],
+            },
+        })
+        os.environ["AGENTNODE_LOCKFILE"] = path
+        try:
+            specs = _make_runtime().prompt_specs()
+            assert len(specs) == 1
+            assert specs[0].template == ""
+        finally:
+            os.unlink(path)
+
+    def test_skill_prompt_absolute_path_blocked(self, tmp_path):
+        skill_dir = tmp_path / "skills" / "abs-skill"
+        skill_dir.mkdir(parents=True)
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+
+        path = _make_lockfile({
+            "abs-skill": {
+                "version": "1.0.0",
+                "package_type": "skill",
+                "install_path": str(skill_dir),
+                "prompts": [{"name": "abs", "template": str(secret)}],
+            },
+        })
+        os.environ["AGENTNODE_LOCKFILE"] = path
+        try:
+            specs = _make_runtime().prompt_specs()
+            assert len(specs) == 1
+            assert specs[0].template == ""
+        finally:
+            os.unlink(path)
+
+    def test_skill_missing_install_path_no_crash(self):
+        path = _make_lockfile({
+            "no-path-skill": {
+                "version": "1.0.0",
+                "package_type": "skill",
+                "prompts": [{"name": "main", "template": "SKILL.md"}],
+            },
+        })
+        os.environ["AGENTNODE_LOCKFILE"] = path
+        try:
+            specs = _make_runtime().prompt_specs()
+            assert len(specs) == 1
+            assert specs[0].template == "SKILL.md"
+        finally:
+            os.unlink(path)
+
+
 class TestLockfilePromptFields:
     """Verify lockfile correctly stores prompt data from install_package."""
 

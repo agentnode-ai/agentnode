@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from agentnode_sdk.installer import read_lockfile
@@ -18,6 +19,34 @@ from agentnode_sdk.policy import check_run as _policy_check_run
 from agentnode_sdk.policy import audit_decision as _policy_audit
 from agentnode_sdk.policy import _trust_meets_minimum
 from agentnode_sdk.policy import _resolve_interactive
+
+
+# ---------------------------------------------------------------------------
+# Path safety — resolve relative paths confined to a base directory
+# ---------------------------------------------------------------------------
+
+_ASSET_MIME = {
+    "document": "text/markdown",
+    "data": "application/json",
+    "template": "text/plain",
+}
+
+
+def _resolve_under(base: Path, relative: str) -> Path | None:
+    """Safely resolve *relative* under *base*. Returns None if unsafe."""
+    if not relative or not base:
+        return None
+    rel = Path(relative)
+    if rel.is_absolute():
+        return None
+    if ".." in rel.parts:
+        return None
+    resolved = (base / rel).resolve()
+    try:
+        resolved.relative_to(base.resolve())
+    except ValueError:
+        return None
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -752,16 +781,36 @@ class AgentNodeRuntime:
 
         Discovery only — prompts are NOT executable by the runtime.
         The host/agent decides how to use them.
+
+        For skills, the manifest ``template`` field is a relative file path
+        (e.g. ``SKILL.md``), not inline content.  MCP/runtime consumers need
+        the actual prompt text, so we resolve the path and read the file
+        content into ``PromptSpec.template``.
         """
         lockfile = read_lockfile()
         packages = lockfile.get("packages", {})
         specs: list[PromptSpec] = []
         for slug, info in packages.items():
+            is_skill = info.get("package_type") == "skill"
+            install_path = info.get("install_path", "")
+
             for p in info.get("prompts", []):
                 name = p.get("name")
                 template = p.get("template")
                 if not name or not template:
                     continue
+
+                # Skills: resolve file path to content
+                if is_skill and install_path:
+                    safe = _resolve_under(Path(install_path), template)
+                    if safe and safe.is_file():
+                        try:
+                            template = safe.read_text(encoding="utf-8")
+                        except Exception:
+                            template = ""
+                    else:
+                        template = ""
+
                 arguments = None
                 if p.get("arguments"):
                     arguments = [
@@ -787,6 +836,10 @@ class AgentNodeRuntime:
 
         Discovery only — resources are NOT auto-loaded or injected.
         URI is identity, not a load instruction (S10).
+
+        Skill assets are mapped to resources with abstract URIs
+        (``agentnode://skills/{slug}/assets/{id}``).  No local file
+        paths are exposed — use ``read_resource()`` to get content.
         """
         lockfile = read_lockfile()
         packages = lockfile.get("packages", {})
@@ -804,7 +857,66 @@ class AgentNodeRuntime:
                     description=r.get("description"),
                     mime_type=r.get("mime_type"),
                 ))
+
+            if info.get("package_type") == "skill":
+                for a in info.get("assets", []):
+                    aid = a.get("id")
+                    if not aid:
+                        continue
+                    atype = a.get("type", "document")
+                    specs.append(ResourceSpec(
+                        name=aid,
+                        capability_id="",
+                        uri=f"agentnode://skills/{slug}/assets/{aid}",
+                        description=a.get("description"),
+                        mime_type=_ASSET_MIME.get(atype, "text/plain"),
+                    ))
         return specs
+
+    def read_resource(self, uri: str) -> str | None:
+        """Read resource content by URI. Only ``agentnode://`` URIs supported.
+
+        Returns the file content as a string, or None if the URI is
+        unrecognised, the skill is not installed, or the file is missing.
+        """
+        prefix = "agentnode://skills/"
+        if not uri or not uri.startswith(prefix):
+            return None
+
+        rest = uri[len(prefix):]
+        parts = rest.split("/", 2)  # slug / "assets" / asset_id
+        if len(parts) != 3 or parts[1] != "assets":
+            return None
+        slug, _, asset_id = parts
+        if not slug or not asset_id:
+            return None
+
+        lockfile = read_lockfile()
+        pkg = lockfile.get("packages", {}).get(slug)
+        if not pkg or pkg.get("package_type") != "skill":
+            return None
+
+        install_path = pkg.get("install_path")
+        if not install_path:
+            return None
+
+        assets = pkg.get("assets", [])
+        asset_path = None
+        for a in assets:
+            if isinstance(a, dict) and a.get("id") == asset_id:
+                asset_path = a.get("path")
+                break
+        if not asset_path:
+            return None
+
+        safe = _resolve_under(Path(install_path), asset_path)
+        if not safe or not safe.is_file():
+            return None
+
+        try:
+            return safe.read_text(encoding="utf-8")
+        except Exception:
+            return None
 
     def as_openai_tools(self) -> list[dict]:
         """Tool definitions in OpenAI function-calling format."""
