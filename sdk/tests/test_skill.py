@@ -443,6 +443,32 @@ class TestSkillCLI:
         assert "Python" in out
         assert "Rendered Prompt" in out
 
+    def test_skill_show_raw(self, tmp_path, capsys):
+        from agentnode_sdk.cli.commands import cmd_skill_show
+        _create_skill_dir(tmp_path)
+        _register_skill_in_lockfile()
+        exit_code = cmd_skill_show("test-skill", raw=True)
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "{{topic}}" in out
+        assert "test-skill\n=====" not in out
+
+    def test_skill_show_raw_with_render(self, tmp_path, capsys):
+        from agentnode_sdk.cli.commands import cmd_skill_show
+        _create_skill_dir(tmp_path)
+        _register_skill_in_lockfile()
+        exit_code = cmd_skill_show("test-skill", render_vars={"topic": "Python"}, raw=True)
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "Python" in out
+        assert "{{topic}}" not in out
+        assert "=====" not in out
+
+    def test_skill_show_raw_not_installed(self, tmp_path, capsys):
+        from agentnode_sdk.cli.commands import cmd_skill_show
+        exit_code = cmd_skill_show("nonexistent", raw=True)
+        assert exit_code == 1
+
     def test_skill_show_assets(self, tmp_path, capsys):
         from agentnode_sdk.cli.commands import cmd_skill_show
         _create_skill_dir(tmp_path)
@@ -452,6 +478,24 @@ class TestSkillCLI:
         out = capsys.readouterr().out
         assert "example-doc" in out
         assert "document" in out
+
+    def test_render_arg_validation_no_equals(self, tmp_path, capsys):
+        from agentnode_sdk.cli.main import main
+        _create_skill_dir(tmp_path)
+        _register_skill_in_lockfile()
+        exit_code = main(["skill", "show", "test-skill", "--render", "topic"])
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "expected KEY=VALUE" in err
+
+    def test_render_arg_validation_empty_key(self, tmp_path, capsys):
+        from agentnode_sdk.cli.main import main
+        _create_skill_dir(tmp_path)
+        _register_skill_in_lockfile()
+        exit_code = main(["skill", "show", "test-skill", "--render", "=foo"])
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "Invalid key" in err
 
     def test_skill_list_multiple(self, tmp_path, capsys):
         from agentnode_sdk.cli.commands import cmd_skill_list

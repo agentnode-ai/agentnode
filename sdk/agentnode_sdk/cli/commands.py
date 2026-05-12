@@ -1741,7 +1741,7 @@ def cmd_skill_list() -> int:
     return 0
 
 
-def cmd_skill_show(slug: str, render_vars: dict[str, str] | None = None) -> int:
+def cmd_skill_show(slug: str, render_vars: dict[str, str] | None = None, raw: bool = False) -> int:
     lock = read_lockfile()
     pkgs = lock.get("packages", {})
 
@@ -1754,12 +1754,25 @@ def cmd_skill_show(slug: str, render_vars: dict[str, str] | None = None) -> int:
         print(f"\n  '{slug}' is not a skill (type: {pkg.get('package_type')}).\n", file=sys.stderr)
         return 1
 
+    # --raw: output prompt text only (pipeable)
+    if raw:
+        from agentnode_sdk.skill import load_skill
+        try:
+            ctx = load_skill(slug)
+            text = ctx.render(**render_vars) if render_vars else ctx.prompt_text
+            print(text, end="")
+            return 0
+        except Exception as exc:
+            print(f"Failed to load skill from disk: {exc}", file=sys.stderr)
+            return 1
+
     print()
     print(section(slug))
     print(kv("Version", pkg.get("version", "?")))
     print(kv("Type", "skill"))
     print(kv("Install mode", pkg.get("install_mode", "prompt_only")))
-    print(kv("Installed at", pkg.get("installed_at", "?")[:19]))
+    installed_at = pkg.get("installed_at")
+    print(kv("Installed at", installed_at[:19] if installed_at else "?"))
     install_path = pkg.get("install_path", "")
     if install_path:
         print(kv("Install path", install_path))
@@ -1799,12 +1812,11 @@ def cmd_skill_show(slug: str, render_vars: dict[str, str] | None = None) -> int:
             ctx = load_skill(slug)
             rendered = ctx.render(**render_vars)
             print()
-            print(f"  {bold('Rendered Prompt')}")
-            print("  " + "-" * 15)
+            print(section("Rendered Prompt"))
             for line in rendered.splitlines():
                 print(f"    {line}")
         except Exception as exc:
-            print(f"\n  Render failed: {exc}\n", file=sys.stderr)
+            print(f"\n  Failed to load skill from disk: {exc}\n", file=sys.stderr)
             return 1
 
     print()

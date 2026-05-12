@@ -153,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     skill_show_parser = skill_sub.add_parser("show", help="Show skill details")
     skill_show_parser.add_argument("slug", help="Skill slug")
     skill_show_parser.add_argument("--render", nargs="*", metavar="KEY=VALUE", help="Render prompt with variables")
+    skill_show_parser.add_argument("--raw", action="store_true", help="Output raw prompt text only")
 
     args = parser.parse_args(argv)
 
@@ -250,10 +251,15 @@ def main(argv: list[str] | None = None) -> int:
                 if args.render:
                     render_vars = {}
                     for item in args.render:
-                        if "=" in item:
-                            k, v = item.split("=", 1)
-                            render_vars[k] = v
-                return commands.cmd_skill_show(args.slug, render_vars=render_vars)
+                        if "=" not in item:
+                            print(f"Invalid --render argument: {item} (expected KEY=VALUE)", file=sys.stderr)
+                            return 1
+                        k, v = item.split("=", 1)
+                        if not k:
+                            print(f"Invalid key in --render: {item}", file=sys.stderr)
+                            return 1
+                        render_vars[k] = v
+                return commands.cmd_skill_show(args.slug, render_vars=render_vars, raw=args.raw)
             return commands.cmd_skill_list()
         parser.print_help()
         return 1
