@@ -155,6 +155,9 @@ def main(argv: list[str] | None = None) -> int:
     skill_show_parser.add_argument("--render", nargs="*", metavar="KEY=VALUE", help="Render prompt with variables")
     skill_show_parser.add_argument("--raw", action="store_true", help="Output raw prompt text only")
 
+    # serve
+    sub.add_parser("serve", help="Start MCP server (stdio)")
+
     args = parser.parse_args(argv)
 
     if args.no_color:
@@ -261,6 +264,9 @@ def main(argv: list[str] | None = None) -> int:
                         render_vars[k] = v
                 return commands.cmd_skill_show(args.slug, render_vars=render_vars, raw=args.raw)
             return commands.cmd_skill_list()
+        if args.command == "serve":
+            from agentnode_sdk.cli.serve import cmd_serve
+            return cmd_serve()
         parser.print_help()
         return 1
     except KeyboardInterrupt:
