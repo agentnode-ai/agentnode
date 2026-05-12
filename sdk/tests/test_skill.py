@@ -370,3 +370,98 @@ class TestSkillAsset:
         f.write_bytes(b"binary content")
         asset = SkillAsset(id="test", type="document", path=f, description="Test")
         assert asset.read_bytes() == b"binary content"
+
+
+# ---------------------------------------------------------------------------
+# skill list / show CLI tests
+# ---------------------------------------------------------------------------
+
+class TestSkillCLI:
+    def test_skill_list_empty(self, tmp_path, capsys):
+        from agentnode_sdk.cli.commands import cmd_skill_list
+        exit_code = cmd_skill_list()
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "No skills installed" in out
+
+    def test_skill_list_shows_skills(self, tmp_path, capsys):
+        from agentnode_sdk.cli.commands import cmd_skill_list
+        _create_skill_dir(tmp_path)
+        _register_skill_in_lockfile()
+        exit_code = cmd_skill_list()
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "test-skill" in out
+        assert "1 skill" in out
+
+    def test_skill_list_ignores_toolpacks(self, tmp_path, capsys):
+        from agentnode_sdk.cli.commands import cmd_skill_list
+        update_lockfile("my-tool", {
+            "version": "1.0.0",
+            "package_type": "toolpack",
+        })
+        exit_code = cmd_skill_list()
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "No skills installed" in out
+
+    def test_skill_show(self, tmp_path, capsys):
+        from agentnode_sdk.cli.commands import cmd_skill_show
+        _create_skill_dir(tmp_path)
+        _register_skill_in_lockfile()
+        exit_code = cmd_skill_show("test-skill")
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "test-skill" in out
+        assert "1.0.0" in out
+        assert "prompt_only" in out
+        assert "main-prompt" in out
+
+    def test_skill_show_not_installed(self, tmp_path, capsys):
+        from agentnode_sdk.cli.commands import cmd_skill_show
+        exit_code = cmd_skill_show("nonexistent")
+        assert exit_code == 1
+
+    def test_skill_show_not_a_skill(self, tmp_path, capsys):
+        from agentnode_sdk.cli.commands import cmd_skill_show
+        update_lockfile("my-tool", {
+            "version": "1.0.0",
+            "package_type": "toolpack",
+        })
+        exit_code = cmd_skill_show("my-tool")
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "not a skill" in err
+
+    def test_skill_show_with_render(self, tmp_path, capsys):
+        from agentnode_sdk.cli.commands import cmd_skill_show
+        _create_skill_dir(tmp_path)
+        _register_skill_in_lockfile()
+        exit_code = cmd_skill_show("test-skill", render_vars={"topic": "Python"})
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "Python" in out
+        assert "Rendered Prompt" in out
+
+    def test_skill_show_assets(self, tmp_path, capsys):
+        from agentnode_sdk.cli.commands import cmd_skill_show
+        _create_skill_dir(tmp_path)
+        _register_skill_in_lockfile()
+        exit_code = cmd_skill_show("test-skill")
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "example-doc" in out
+        assert "document" in out
+
+    def test_skill_list_multiple(self, tmp_path, capsys):
+        from agentnode_sdk.cli.commands import cmd_skill_list
+        _create_skill_dir(tmp_path, slug="skill-a")
+        _register_skill_in_lockfile(slug="skill-a")
+        _create_skill_dir(tmp_path, slug="skill-b")
+        _register_skill_in_lockfile(slug="skill-b")
+        exit_code = cmd_skill_list()
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "skill-a" in out
+        assert "skill-b" in out
+        assert "2 skills" in out

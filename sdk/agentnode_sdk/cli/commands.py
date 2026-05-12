@@ -1699,6 +1699,118 @@ def cmd_capabilities_show(name: str) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# skill list / show
+# ---------------------------------------------------------------------------
+
+def cmd_skill_list() -> int:
+    lock = read_lockfile()
+    pkgs = lock.get("packages", {})
+
+    skills = {
+        slug: info for slug, info in pkgs.items()
+        if info.get("package_type") == "skill"
+    }
+
+    if not skills:
+        print()
+        print("  No skills installed.")
+        print()
+        print(dim("  Run `agentnode install <skill>` to install a skill package."))
+        print()
+        return 0
+
+    print()
+    print(section("Installed Skills"))
+    for slug, info in skills.items():
+        version = info.get("version", "?")
+        prompts = info.get("prompts", [])
+        prompt_count = len(prompts) if isinstance(prompts, list) else 0
+        assets = info.get("assets", [])
+        asset_count = len(assets) if isinstance(assets, list) else 0
+        meta = []
+        if prompt_count:
+            meta.append(f"{prompt_count} prompt{'s' if prompt_count != 1 else ''}")
+        if asset_count:
+            meta.append(f"{asset_count} asset{'s' if asset_count != 1 else ''}")
+        suffix = dim(f"  ({', '.join(meta)})") if meta else ""
+        print(f"  {bold(slug)} {dim(version)}{suffix}")
+    print()
+    print(dim(f"  {len(skills)} skill{'s' if len(skills) != 1 else ''} installed"))
+    print()
+    return 0
+
+
+def cmd_skill_show(slug: str, render_vars: dict[str, str] | None = None) -> int:
+    lock = read_lockfile()
+    pkgs = lock.get("packages", {})
+
+    if slug not in pkgs:
+        print(f"\n  Skill '{slug}' is not installed.\n", file=sys.stderr)
+        return 1
+
+    pkg = pkgs[slug]
+    if pkg.get("package_type") != "skill":
+        print(f"\n  '{slug}' is not a skill (type: {pkg.get('package_type')}).\n", file=sys.stderr)
+        return 1
+
+    print()
+    print(section(slug))
+    print(kv("Version", pkg.get("version", "?")))
+    print(kv("Type", "skill"))
+    print(kv("Install mode", pkg.get("install_mode", "prompt_only")))
+    print(kv("Installed at", pkg.get("installed_at", "?")[:19]))
+    install_path = pkg.get("install_path", "")
+    if install_path:
+        print(kv("Install path", install_path))
+
+    prompts = pkg.get("prompts", [])
+    if prompts and isinstance(prompts, list):
+        print()
+        print(f"  {bold('Prompts')}")
+        print("  " + "-" * 7)
+        for p in prompts:
+            if isinstance(p, dict):
+                name = p.get("name", "?")
+                template = p.get("template", "")
+                desc = p.get("description", "")
+                line = f"    {bold(name)}"
+                if template:
+                    line += f"  {dim(template)}"
+                print(line)
+                if desc:
+                    print(f"      {dim(desc)}")
+
+    assets = pkg.get("assets", [])
+    if assets and isinstance(assets, list):
+        print()
+        print(f"  {bold('Assets')}")
+        print("  " + "-" * 6)
+        for a in assets:
+            if isinstance(a, dict):
+                aid = a.get("id", "?")
+                atype = a.get("type", "?")
+                apath = a.get("path", "")
+                print(f"    {aid}  {dim(atype)}  {dim(apath)}")
+
+    if render_vars:
+        from agentnode_sdk.skill import load_skill
+        try:
+            ctx = load_skill(slug)
+            rendered = ctx.render(**render_vars)
+            print()
+            print(f"  {bold('Rendered Prompt')}")
+            print("  " + "-" * 15)
+            for line in rendered.splitlines():
+                print(f"    {line}")
+        except Exception as exc:
+            print(f"\n  Render failed: {exc}\n", file=sys.stderr)
+            return 1
+
+    print()
+    return 0
+
+
 def cmd_init(name: str | None = None, template_type: str | None = None) -> int:
     """Scaffold a new package from template."""
     from agentnode_sdk.cli.init import scaffold_package, prompt_template_choice, prompt_package_details

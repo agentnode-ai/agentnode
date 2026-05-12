@@ -146,6 +146,14 @@ def main(argv: list[str] | None = None) -> int:
     show_parser = cap_sub.add_parser("show", help="Show capability details")
     show_parser.add_argument("name")
 
+    # skill
+    skill_parser = sub.add_parser("skill", help="Manage installed skills")
+    skill_sub = skill_parser.add_subparsers(dest="skill_action")
+    skill_sub.add_parser("list", help="List installed skills")
+    skill_show_parser = skill_sub.add_parser("show", help="Show skill details")
+    skill_show_parser.add_argument("slug", help="Skill slug")
+    skill_show_parser.add_argument("--render", nargs="*", metavar="KEY=VALUE", help="Render prompt with variables")
+
     args = parser.parse_args(argv)
 
     if args.no_color:
@@ -236,6 +244,17 @@ def main(argv: list[str] | None = None) -> int:
             if args.cap_action == "show":
                 return commands.cmd_capabilities_show(args.name)
             return commands.cmd_capabilities()
+        if args.command == "skill":
+            if args.skill_action == "show":
+                render_vars = None
+                if args.render:
+                    render_vars = {}
+                    for item in args.render:
+                        if "=" in item:
+                            k, v = item.split("=", 1)
+                            render_vars[k] = v
+                return commands.cmd_skill_show(args.slug, render_vars=render_vars)
+            return commands.cmd_skill_list()
         parser.print_help()
         return 1
     except KeyboardInterrupt:
