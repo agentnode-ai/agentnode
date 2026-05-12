@@ -76,7 +76,7 @@ def prompt_template_choice() -> str | None:
     print()
 
     try:
-        raw = input("  Choice [1-4]: ").strip()
+        raw = input(f"  Choice [1-{len(choices)}]: ").strip()
     except (EOFError, KeyboardInterrupt):
         return None
 
@@ -112,6 +112,8 @@ def prompt_package_details(template_key: str) -> dict | None:
             goal = input("  Agent goal: ").strip()
             if goal:
                 details["agent_goal"] = goal
+        elif template_key == "skill":
+            pass
         else:
             tool = input(f"  Main tool function name [{pkg_id.replace('-', '_')}]: ").strip()
             if tool:

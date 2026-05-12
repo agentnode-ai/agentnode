@@ -508,6 +508,99 @@ def test_empty_csv():
 """,
         },
     },
+    "skill": {
+        "label": "Skill (prompt + assets, no code)",
+        "description": "A prompt-based skill package. Delivers instructions and reference materials — no code execution.",
+        "files": {
+            "agentnode.yaml": """\
+manifest_version: "0.3"
+package_id: "{package_id}"
+package_type: "skill"
+name: "{name}"
+publisher: "{publisher}"
+version: "1.0.0"
+summary: "{summary}"
+description: |
+  {description}
+
+runtime: "none"
+install_mode: "prompt_only"
+hosting_type: "agentnode_hosted"
+
+capabilities:
+  tools: []
+  resources: []
+  prompts:
+    - name: "{module_name}"
+      description: "{summary}"
+      template: "SKILL.md"
+      arguments:
+        - name: "topic"
+          description: "The topic to apply this skill to"
+          required: true
+
+assets:
+  - id: "example"
+    type: "document"
+    path: "assets/examples/example.md"
+    description: "Example output for reference"
+
+tags: []
+categories: []
+
+compatibility:
+  frameworks: ["generic"]
+
+permissions:
+  network:
+    level: "none"
+    allowed_domains: []
+  filesystem:
+    level: "none"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "never"
+  external_integrations: []
+""",
+            "SKILL.md": """\
+# {name}
+
+You are an expert at {{{{topic}}}}.
+
+## Instructions
+
+1. Analyze the given topic carefully
+2. Apply structured thinking
+3. Provide a clear, actionable result
+
+## Output Format
+
+Return your response in clear Markdown with headings and bullet points.
+
+## Reference
+
+See the example in `assets/examples/example.md` for the expected style and quality.
+""",
+            "assets/examples/example.md": """\
+# Example: Sample Topic
+
+This is an example of the expected output quality and format.
+
+## Key Points
+
+- Point one with supporting detail
+- Point two with evidence
+- Point three with recommendation
+
+## Summary
+
+A concise summary of the analysis.
+""",
+        },
+    },
     "agent": {
         "label": "Agent (orchestrates tools to accomplish goals)",
         "description": "An autonomous agent that uses other tool packages to accomplish goals via an LLM.",

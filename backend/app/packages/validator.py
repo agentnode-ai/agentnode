@@ -8,9 +8,9 @@ from app.packages.models import CapabilityTaxonomy
 from app.verification.cases_adapter import normalize_verification_config
 
 # Valid enums
-VALID_PACKAGE_TYPES = {"agent", "toolpack", "upgrade"}
-VALID_RUNTIMES = {"python", "mcp", "remote"}
-VALID_INSTALL_MODES = {"package", "remote_endpoint"}
+VALID_PACKAGE_TYPES = {"agent", "toolpack", "upgrade", "skill"}
+VALID_RUNTIMES = {"python", "mcp", "remote", "none"}
+VALID_INSTALL_MODES = {"package", "remote_endpoint", "prompt_only"}
 VALID_HOSTING_TYPES = {"agentnode_hosted"}  # MVP restriction
 VALID_CONNECTOR_AUTH_TYPES = {"api_key", "oauth2", "token"}
 VALID_NETWORK_LEVELS = {"none", "restricted", "unrestricted"}
@@ -27,7 +27,7 @@ ENTRYPOINT_PATTERN_V1 = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)+$")
 # v0.2 tool-level: module.path:function (e.g. csv_analyzer_pack.tool:describe)
 ENTRYPOINT_PATTERN_V2 = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)+:[a-z_][a-z0-9_]*$")
 
-VALID_MANIFEST_VERSIONS = {"0.1", "0.2"}
+VALID_MANIFEST_VERSIONS = {"0.1", "0.2", "0.3"}
 
 # Valid JSON Schema types
 VALID_JSON_SCHEMA_TYPES = {"string", "integer", "number", "boolean", "array", "object", "null"}
@@ -68,7 +68,7 @@ def normalize_manifest(manifest: dict) -> dict:
 
     v0.1 manifests pass through unchanged.
     """
-    if manifest.get("manifest_version") != "0.2":
+    if manifest.get("manifest_version") not in ("0.2", "0.3"):
         return manifest
 
     m = {**manifest}
@@ -139,6 +139,7 @@ _VALID_COMBINATIONS = {
     ("toolpack", "remote", "remote_endpoint"),
     ("agent", "python", "package"),       # only valid agent combo in v1
     ("upgrade", "python", "package"),     # upgrade only as package
+    ("skill", "none", "prompt_only"),     # skill: prompt+assets, no code
 }
 
 
@@ -146,6 +147,7 @@ _COMBO_HINTS = {
     "toolpack": "Toolpacks support: python+package, mcp+package, or remote+remote_endpoint.",
     "agent": "Agents support only runtime=python and install_mode=package in v0.3.",
     "upgrade": "Upgrades support only runtime=python and install_mode=package.",
+    "skill": "Skills support only runtime=none and install_mode=prompt_only.",
 }
 
 
@@ -172,6 +174,19 @@ def _validate_type_combination(manifest: dict) -> list[str]:
     # connector: section only valid for toolpack
     if "connector" in manifest and combo[0] != "toolpack":
         errors.append("connector: section only valid for package_type=toolpack")
+
+    # skill must not have executable sections
+    if combo[0] == "skill":
+        if "agent" in manifest:
+            errors.append("skill packages must not have an 'agent:' section")
+        if "connector" in manifest:
+            errors.append("skill packages must not have a 'connector:' section")
+        if manifest.get("entrypoint"):
+            errors.append("skill packages must not have an entrypoint (no code execution)")
+        caps = manifest.get("capabilities", {})
+        prompts = caps.get("prompts", [])
+        if not prompts:
+            errors.append("skill packages require at least 1 prompt in capabilities.prompts")
 
     # S9: upgrade must not have executable sections
     if combo[0] == "upgrade":
@@ -225,6 +240,94 @@ def _validate_prompts(prompts: list, errors: list[str], warnings: list[str]) -> 
                         errors.append(f"prompts[{i}].arguments[{j}] must be an object")
                     elif not arg.get("name"):
                         errors.append(f"prompts[{i}].arguments[{j}].name is required")
+
+
+# --- Skill Prompt Validation ---
+
+VALID_ASSET_TYPES = {"document", "data", "template"}
+ASSET_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
+
+
+def _validate_skill_prompts(prompts: list, errors: list[str], warnings: list[str]) -> None:
+    """Validate capabilities.prompts[] for skill packages.
+
+    Skill prompts require name + template. No capability_id required.
+    """
+    if not isinstance(prompts, list):
+        errors.append("capabilities.prompts must be an array")
+        return
+
+    for i, prompt in enumerate(prompts):
+        if not isinstance(prompt, dict):
+            errors.append(f"prompts[{i}] must be an object")
+            continue
+
+        if not prompt.get("name"):
+            errors.append(f"prompts[{i}].name is required")
+
+        if not prompt.get("template"):
+            errors.append(f"prompts[{i}].template is required")
+
+        if "entrypoint" in prompt:
+            errors.append(f"prompts[{i}].entrypoint is not allowed (prompts are non-executable)")
+        if "input_schema" in prompt:
+            errors.append(f"prompts[{i}].input_schema is not allowed (prompts are non-executable)")
+
+        arguments = prompt.get("arguments")
+        if arguments is not None:
+            if not isinstance(arguments, list):
+                errors.append(f"prompts[{i}].arguments must be an array")
+            else:
+                for j, arg in enumerate(arguments):
+                    if not isinstance(arg, dict):
+                        errors.append(f"prompts[{i}].arguments[{j}] must be an object")
+                    elif not arg.get("name"):
+                        errors.append(f"prompts[{i}].arguments[{j}].name is required")
+
+
+def _validate_assets(assets: list, errors: list[str], warnings: list[str]) -> None:
+    """Validate top-level assets[] for skill packages."""
+    if not isinstance(assets, list):
+        errors.append("assets must be an array")
+        return
+
+    if len(assets) > 20:
+        errors.append("assets: maximum 20 assets allowed")
+
+    seen_ids: set[str] = set()
+    for i, asset in enumerate(assets):
+        prefix = f"assets[{i}]"
+        if not isinstance(asset, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+
+        asset_id = asset.get("id", "")
+        if not asset_id or not isinstance(asset_id, str):
+            errors.append(f"{prefix}.id is required")
+        elif not ASSET_ID_PATTERN.match(asset_id):
+            errors.append(f"{prefix}.id must be lowercase alphanumeric with hyphens (got '{asset_id}')")
+        elif asset_id in seen_ids:
+            errors.append(f"{prefix}.id '{asset_id}' is duplicate")
+        else:
+            seen_ids.add(asset_id)
+
+        asset_type = asset.get("type", "")
+        if not asset_type:
+            errors.append(f"{prefix}.type is required")
+        elif asset_type not in VALID_ASSET_TYPES:
+            errors.append(f"{prefix}.type must be one of {sorted(VALID_ASSET_TYPES)} (got '{asset_type}')")
+
+        path = asset.get("path", "")
+        if not path or not isinstance(path, str):
+            errors.append(f"{prefix}.path is required")
+        elif ".." in path:
+            errors.append(f"{prefix}.path must not contain '..'")
+        elif path.startswith("/") or path.startswith("\\"):
+            errors.append(f"{prefix}.path must be relative (got '{path}')")
+
+        description = asset.get("description", "")
+        if not description:
+            errors.append(f"{prefix}.description is required")
 
 
 # --- Resource Validation (S2, S6, S10) ---
@@ -856,7 +959,7 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     # manifest_version
     manifest_version = manifest.get("manifest_version")
     if manifest_version not in VALID_MANIFEST_VERSIONS:
-        errors.append("manifest_version MUST be '0.1' or '0.2'")
+        errors.append("manifest_version MUST be '0.1', '0.2', or '0.3'")
 
     # package_id
     pkg_id = manifest.get("package_id", "")
@@ -918,8 +1021,8 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     combo_errors = _validate_type_combination(manifest)
     errors.extend(combo_errors)
 
-    # --- Entrypoint validation (version-dependent, skip for agent/upgrade) ---
-    if pkg_type not in ("agent", "upgrade"):
+    # --- Entrypoint validation (version-dependent, skip for agent/upgrade/skill) ---
+    if pkg_type not in ("agent", "upgrade", "skill"):
         _validate_entrypoints(manifest, manifest_version, errors)
 
     # capabilities.tools — conditional on package_type
@@ -967,7 +1070,10 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     # --- Prompt validation (S2, S6, S11) ---
     prompts = capabilities.get("prompts")
     if prompts:
-        _validate_prompts(prompts, errors, warnings)
+        if pkg_type == "skill":
+            _validate_skill_prompts(prompts, errors, warnings)
+        else:
+            _validate_prompts(prompts, errors, warnings)
 
     # --- Resource validation (S2, S6, S10) ---
     resources = capabilities.get("resources")
@@ -978,6 +1084,11 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     connector = manifest.get("connector")
     if connector is not None:
         _validate_connector(connector, errors, warnings)
+
+    # --- Assets validation (skill packages) ---
+    assets = manifest.get("assets")
+    if assets is not None:
+        _validate_assets(assets, errors, warnings)
 
     # --- Agent block validation (S4) ---
     agent_section = manifest.get("agent")
@@ -1196,6 +1307,16 @@ def validate_artifact_quality(artifact_bytes: bytes, slug: str, *, package_type:
     for n in names:
         parts = n.split("/", 1)
         normalized.append(parts[1] if len(parts) > 1 else parts[0])
+
+    # Skills: require SKILL.md, skip tests and pyproject checks
+    if package_type == "skill":
+        has_skill_md = any(f == "SKILL.md" for f in normalized)
+        if not has_skill_md:
+            errors.append(
+                "Quality Gate: SKILL.md not found. "
+                "Skill packages must include a SKILL.md file."
+            )
+        return errors, warnings
 
     # Check for test files (agents exempt — verification generates auto-tests)
     test_files = [

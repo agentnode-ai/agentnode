@@ -71,6 +71,12 @@ def validate_package_dir(path: Path) -> ValidateResult:
     result.checks.append(CheckResult(True, "YAML parse", "Valid"))
 
     _check_required_fields(manifest, result)
+
+    if manifest.get("package_type") == "skill":
+        _check_skill_files(manifest, path, result)
+        _check_risk_preview(manifest, result)
+        return result
+
     _check_verification(manifest, path, result)
     _check_risk_preview(manifest, result)
 
@@ -94,7 +100,7 @@ def _check_required_fields(manifest: dict, result: ValidateResult) -> None:
 
     pkg_type = manifest.get("package_type", "")
     result.package_type = pkg_type
-    if pkg_type not in ("toolpack", "agent", "upgrade"):
+    if pkg_type not in ("toolpack", "agent", "upgrade", "skill"):
         result.checks.append(CheckResult(False, "package_type", f"Invalid: '{pkg_type}'"))
     else:
         result.checks.append(CheckResult(True, "package_type", pkg_type))
@@ -115,6 +121,93 @@ def _check_required_fields(manifest: dict, result: ValidateResult) -> None:
             result.checks.append(CheckResult(False, "tools", "No tools with capability_id"))
         else:
             result.checks.append(CheckResult(True, "tools", f"{len(tools_with_cap)} tool(s) with capability IDs"))
+
+    if pkg_type == "skill":
+        caps = manifest.get("capabilities", {})
+        prompts = caps.get("prompts", []) if isinstance(caps, dict) else []
+        valid_prompts = [p for p in prompts if isinstance(p, dict) and p.get("name") and p.get("template")]
+        if not valid_prompts:
+            result.checks.append(CheckResult(False, "prompts", "Skills require at least 1 prompt with name and template"))
+        else:
+            result.checks.append(CheckResult(True, "prompts", f"{len(valid_prompts)} prompt(s)"))
+
+        assets = manifest.get("assets", [])
+        if assets and isinstance(assets, list):
+            _check_assets(assets, result)
+        elif assets:
+            result.checks.append(CheckResult(False, "assets", "assets must be an array"))
+
+
+ASSET_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
+VALID_ASSET_TYPES = {"document", "data", "template"}
+
+
+def _check_skill_files(manifest: dict, path: Path, result: ValidateResult) -> None:
+    """Validate skill-specific files: SKILL.md and asset files on disk."""
+    skill_md = path / "SKILL.md"
+    if not skill_md.exists():
+        result.checks.append(CheckResult(False, "SKILL.md", "Required file not found"))
+    else:
+        size = skill_md.stat().st_size
+        if size == 0:
+            result.checks.append(CheckResult(False, "SKILL.md", "File is empty"))
+        else:
+            result.checks.append(CheckResult(True, "SKILL.md", f"Found ({size} bytes)"))
+
+    assets = manifest.get("assets", [])
+    if isinstance(assets, list):
+        for i, asset in enumerate(assets):
+            if not isinstance(asset, dict):
+                continue
+            asset_path = asset.get("path", "")
+            if asset_path:
+                full = path / asset_path
+                if not full.exists():
+                    result.checks.append(CheckResult(False, f"assets[{i}].path", f"File not found: {asset_path}"))
+
+    result.max_tier = "verified"
+    result.verification_mode = "static"
+    result.checks.append(CheckResult(True, "verification", "Skills use static validation only"))
+
+
+def _check_assets(assets: list, result: ValidateResult) -> None:
+    """Validate assets[] entries in the manifest."""
+    seen_ids: set[str] = set()
+    valid = 0
+    for i, asset in enumerate(assets):
+        if not isinstance(asset, dict):
+            result.checks.append(CheckResult(False, f"assets[{i}]", "Must be an object"))
+            continue
+
+        asset_id = asset.get("id", "")
+        if not asset_id:
+            result.checks.append(CheckResult(False, f"assets[{i}].id", "Required"))
+            continue
+        if not ASSET_ID_RE.match(asset_id):
+            result.checks.append(CheckResult(False, f"assets[{i}].id", f"Invalid format: '{asset_id}'"))
+            continue
+        if asset_id in seen_ids:
+            result.checks.append(CheckResult(False, f"assets[{i}].id", f"Duplicate: '{asset_id}'"))
+            continue
+        seen_ids.add(asset_id)
+
+        asset_type = asset.get("type", "")
+        if asset_type not in VALID_ASSET_TYPES:
+            result.checks.append(CheckResult(False, f"assets[{i}].type", f"Invalid: '{asset_type}'"))
+            continue
+
+        path = asset.get("path", "")
+        if not path:
+            result.checks.append(CheckResult(False, f"assets[{i}].path", "Required"))
+            continue
+        if ".." in path or path.startswith("/") or path.startswith("\\"):
+            result.checks.append(CheckResult(False, f"assets[{i}].path", f"Invalid path: '{path}'"))
+            continue
+
+        valid += 1
+
+    if valid > 0:
+        result.checks.append(CheckResult(True, "assets", f"{valid} valid asset(s)"))
 
 
 def _check_verification(manifest: dict, path: Path, result: ValidateResult) -> None:

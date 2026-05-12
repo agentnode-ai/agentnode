@@ -476,11 +476,11 @@ class TestManifestVersionAcceptance:
         assert valid is True
 
     @pytest.mark.asyncio
-    async def test_rejects_v03(self):
+    async def test_accepts_v03(self):
+        # v0.3 is valid (added for skill package type)
         m = {**VALID_V01, "manifest_version": "0.3"}
-        valid, errors, _ = await validate_manifest(m)
-        assert valid is False
-        assert any("0.1" in e or "0.2" in e for e in errors)
+        _, errors, _ = await validate_manifest(m)
+        assert not any("manifest_version" in e for e in errors)
 
     @pytest.mark.asyncio
     async def test_rejects_v10(self):
