@@ -14,7 +14,7 @@ from mcp.shared.exceptions import McpError
 from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.runtime import _resolve_under, _ASSET_MIME
 
-_PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 
 mcp_app = FastMCP("agentnode")
 

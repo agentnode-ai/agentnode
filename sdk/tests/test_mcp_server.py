@@ -122,6 +122,22 @@ class TestListPrompts:
         arg_names = [a.name for a in main.arguments]
         assert "topic" in arg_names
 
+    def test_infers_arguments_from_whitespace_placeholders(self, tmp_path):
+        from agentnode_sdk.mcp_server import _build_prompt_list
+        from agentnode_sdk.config import config_dir
+
+        skill_dir = _create_skill(tmp_path)
+        (skill_dir / "SKILL.md").write_text(
+            "Write about {{ topic }} for {{ audience }}.",
+            encoding="utf-8",
+        )
+        prompts = _build_prompt_list()
+        main = next(p for p in prompts if p.name == "test-skill/main-prompt")
+        assert main.arguments is not None
+        arg_names = [a.name for a in main.arguments]
+        assert "topic" in arg_names
+        assert "audience" in arg_names
+
     def test_uses_manifest_arguments_when_present(self, tmp_path):
         from agentnode_sdk.mcp_server import _build_prompt_list
         skill_dir = _create_skill(tmp_path)
