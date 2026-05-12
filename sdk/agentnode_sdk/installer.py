@@ -365,6 +365,21 @@ def install_package(
         data = read_lockfile()
         previous_version = data["packages"][slug].get("version")
 
+    # Skills use a different install path: extract to ~/.agentnode/skills/{slug}/
+    if package_type == "skill":
+        return _install_skill(
+            slug=slug,
+            version=version,
+            artifact_url=artifact_url,
+            artifact_hash=artifact_hash,
+            previous_version=previous_version if status == "different" else None,
+            trust_level=trust_level,
+            permissions=permissions,
+            prompts=prompts,
+            resources=resources,
+            assets=None,
+        )
+
     tmpdir = Path(tempfile.mkdtemp(prefix="agentnode-"))
     try:
         tar_path = tmpdir / "package.tar.gz"
@@ -435,6 +450,117 @@ def install_package(
     finally:
         # Step 9: Cleanup
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Skill install (filesystem-first, no pip)
+# ---------------------------------------------------------------------------
+
+def _skills_dir() -> Path:
+    """Return the global skills directory (~/.agentnode/skills/)."""
+    from agentnode_sdk.config import config_dir
+    return config_dir() / "skills"
+
+
+def _install_skill(
+    slug: str,
+    version: str,
+    artifact_url: str,
+    artifact_hash: str | None,
+    previous_version: str | None,
+    trust_level: str | None,
+    permissions: dict | None,
+    prompts: list[dict] | None,
+    resources: list[dict] | None,
+    assets: list[dict] | None,
+) -> dict[str, Any]:
+    """Install a skill package to ~/.agentnode/skills/{slug}/.
+
+    No pip install, no Python runtime. Just extract and place files.
+    """
+    dest = _skills_dir() / slug
+    tmpdir = Path(tempfile.mkdtemp(prefix="agentnode-skill-"))
+
+    try:
+        tar_path = tmpdir / "package.tar.gz"
+        extract_dir = tmpdir / "extracted"
+        extract_dir.mkdir()
+
+        download_artifact(artifact_url, tar_path)
+        local_hash = verify_hash(tar_path, artifact_hash)
+        package_dir = extract_archive(tar_path, extract_dir)
+
+        # Read manifest from extracted package for lockfile metadata
+        manifest_assets = assets or []
+        manifest_prompts = prompts or []
+
+        manifest_path = package_dir / "agentnode.yaml"
+        if manifest_path.is_file():
+            import yaml
+            manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(manifest, dict):
+                if not manifest_prompts:
+                    caps = manifest.get("capabilities", {})
+                    manifest_prompts = caps.get("prompts", [])
+                if not manifest_assets:
+                    manifest_assets = manifest.get("assets", [])
+
+        # Atomic replace: remove old directory, move new one into place
+        if dest.exists():
+            shutil.rmtree(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(package_dir, dest)
+
+        lock_entry: dict[str, Any] = {
+            "version": version,
+            "package_type": "skill",
+            "runtime": "none",
+            "install_mode": "prompt_only",
+            "entrypoint": "",
+            "capability_ids": [],
+            "tools": [],
+            "artifact_hash": f"sha256:{local_hash}",
+            "installed_at": datetime.now(timezone.utc).isoformat(),
+            "install_path": str(dest),
+            "source": "sdk",
+            "trust_level": trust_level,
+            "permissions": permissions,
+            "prompts": manifest_prompts,
+            "resources": resources or [],
+            "assets": manifest_assets,
+            "connector": None,
+            "agent": None,
+        }
+        update_lockfile(slug, lock_entry)
+
+        result: dict[str, Any] = {
+            "slug": slug,
+            "version": version,
+            "installed": True,
+            "already_installed": False,
+            "hash_verified": bool(artifact_hash),
+            "install_path": str(dest),
+            "lockfile_updated": True,
+        }
+        if previous_version:
+            result["previous_version"] = previous_version
+            result["message"] = f"Upgraded {slug} from {previous_version} to {version}."
+        else:
+            result["message"] = f"Installed skill {slug}@{version}."
+
+        return result
+
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def remove_skill_directory(slug: str) -> bool:
+    """Delete the skill directory for a given slug. Returns True if deleted."""
+    dest = _skills_dir() / slug
+    if dest.is_dir():
+        shutil.rmtree(dest)
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------

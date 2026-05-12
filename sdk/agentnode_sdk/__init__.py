@@ -13,6 +13,7 @@ from agentnode_sdk.exceptions import (
     ValidationError,
 )
 from agentnode_sdk.installer import load_tool
+from agentnode_sdk.skill import load_skill, SkillContext, SkillAsset
 from agentnode_sdk.models import (
     CanInstallResult,
     DetectAndInstallResult,
@@ -48,6 +49,9 @@ __all__ = [
     "installation_behavior_label",
     "detect_gap",
     "load_tool",
+    "load_skill",
+    "SkillContext",
+    "SkillAsset",
     "run_tool",
     "AgentNodeError",
     "AgentNodeToolError",

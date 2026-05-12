@@ -1279,10 +1279,21 @@ def cmd_remove(capability: str, yes: bool = False) -> int:
         if capability not in lock.get("packages", {}):
             print(f"\n  {capability} is not installed.\n")
             return 1
+        pkg_entry = lock["packages"][capability]
+        pkg_type = pkg_entry.get("package_type", "")
+
         del lock["packages"][capability]
         atomic_write_json(lock_path, lock)
 
-    print(f"\n  Removed {capability} from lockfile.\n")
+    if pkg_type == "skill":
+        from agentnode_sdk.installer import remove_skill_directory
+        removed = remove_skill_directory(capability)
+        if removed:
+            print(f"\n  Removed skill {capability} (lockfile + directory).\n")
+        else:
+            print(f"\n  Removed {capability} from lockfile (directory already absent).\n")
+    else:
+        print(f"\n  Removed {capability} from lockfile.\n")
     return 0
 
 
