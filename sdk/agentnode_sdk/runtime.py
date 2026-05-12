@@ -41,9 +41,10 @@ def _resolve_under(base: Path, relative: str) -> Path | None:
         return None
     if ".." in rel.parts:
         return None
-    resolved = (base / rel).resolve()
+    base_resolved = base.resolve()
+    resolved = (base_resolved / rel).resolve()
     try:
-        resolved.relative_to(base.resolve())
+        resolved.relative_to(base_resolved)
     except ValueError:
         return None
     return resolved
