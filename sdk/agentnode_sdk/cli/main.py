@@ -103,6 +103,10 @@ def main(argv: list[str] | None = None) -> int:
     audit_parser = sub.add_parser("audit", help="Show recent policy decisions")
     audit_parser.add_argument("-n", "--limit", type=int, default=20, help="Number of entries")
     audit_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    audit_parser.add_argument("--event", "-e", type=str, default=None, help="Filter by event type")
+    audit_parser.add_argument("--slug", "-s", type=str, default=None, help="Filter by package slug")
+    audit_parser.add_argument("--action", "-a", type=str, default=None, help="Filter by action (allow/deny/prompt)")
+    audit_parser.add_argument("--tool", dest="tool_name", type=str, default=None, help="Filter by tool name")
 
     # logs
     logs_parser = sub.add_parser("logs", help="Show agent run logs")
@@ -226,7 +230,14 @@ def main(argv: list[str] | None = None) -> int:
             return commands.cmd_remove(args.capability, yes=args.yes)
         if args.command == "audit":
             from agentnode_sdk.cli.audit import cmd_audit
-            return cmd_audit(limit=args.limit, json_output=args.json_output)
+            return cmd_audit(
+                limit=args.limit,
+                json_output=args.json_output,
+                event=args.event,
+                slug=args.slug,
+                action=args.action,
+                tool_name=args.tool_name,
+            )
         if args.command == "logs":
             return commands.cmd_logs(
                 run_id=args.run_id, limit=args.limit, json_output=args.json_output,

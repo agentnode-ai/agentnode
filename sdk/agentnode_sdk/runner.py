@@ -174,7 +174,7 @@ def run_tool(
         from agentnode_sdk.guard import check_rate_limit
         rl_decision = check_rate_limit(slug, tool_name)
         if rl_decision.action != "allow":
-            _audit_guard_decision(rl_decision, slug, tool_name, entry)
+            _audit_guard_decision(rl_decision, slug, tool_name, entry, event_type="guard_rate_limit")
             decision = PolicyResult(
                 action=rl_decision.action,
                 reason=rl_decision.reason,
@@ -297,8 +297,9 @@ def _audit_guard_decision(
     slug: str,
     tool_name: str | None,
     entry: dict,
+    event_type: str = "guard_check",
 ) -> None:
-    """Write a guard_check audit event."""
+    """Write a guard audit event."""
     try:
         from agentnode_sdk.guard import GuardDecision
         if not isinstance(guard_decision, GuardDecision):
@@ -309,7 +310,7 @@ def _audit_guard_decision(
                 reason=guard_decision.reason,
                 source=guard_decision.source,
             ),
-            "guard_check",
+            event_type,
             slug,
             tool_name=tool_name,
             trust_level=entry.get("trust_level"),
