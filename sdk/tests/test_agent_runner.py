@@ -12,6 +12,7 @@ Covers:
 - PR 4: process-based isolation
 - PR 7: conditional orchestration steps (when expressions)
 """
+import json
 import sys
 import textwrap
 
@@ -34,6 +35,31 @@ from agentnode_sdk.runtimes.agent_runner import (
     run_agent,
 )
 from agentnode_sdk.models import RunToolResult
+
+
+@pytest.fixture(autouse=True)
+def _permissive_guard(tmp_path, monkeypatch):
+    """Set up permissive guard config so agent runner tests exercise dispatch, not guard policy."""
+    cfg = {
+        "version": "1",
+        "trust": {"minimum_trust_level": "verified"},
+        "permissions": {"network": "allow", "filesystem": "allow", "code_execution": "sandboxed"},
+        "risk_policies": {"external_write_capable": "allow"},
+        "guard": {
+            "delete": "allow", "write_external": "allow", "execute": "allow",
+            "credential_use": "allow", "network_egress": "allow", "write_local": "allow",
+            "read": "allow", "compute": "allow", "unknown": "allow",
+        },
+    }
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(json.dumps(cfg))
+    monkeypatch.setenv("AGENTNODE_CONFIG", str(cfg_file))
+    monkeypatch.setenv("AGENTNODE_CONFIG_DIR", str(tmp_path))
+    from agentnode_sdk.guard import reset_guard_config_cache, reset_rate_limits
+    reset_guard_config_cache()
+    reset_rate_limits()
+    yield
+    reset_guard_config_cache()
 
 
 # ---------------------------------------------------------------------------

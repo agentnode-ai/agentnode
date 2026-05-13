@@ -670,3 +670,107 @@ def reset_rate_limits() -> None:
     """Reset rate limit state — for testing only."""
     with _rate_limit_lock:
         _rate_limits.clear()
+
+
+# ---------------------------------------------------------------------------
+# CLI Guard UX (Phase 6.2a)
+# ---------------------------------------------------------------------------
+
+_RISK_COLORS = {
+    "critical": "\033[31m",  # red
+    "high": "\033[31m",
+    "medium": "\033[33m",    # yellow
+    "low": "\033[32m",       # green
+}
+_RESET = "\033[0m"
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+
+
+def format_guard_prompt(
+    slug: str,
+    tool_name: str | None,
+    decision: GuardDecision,
+    entry: dict | None = None,
+) -> str:
+    """Build a human-readable confirmation prompt for guard "prompt" decisions."""
+    lines: list[str] = []
+    risk_color = _RISK_COLORS.get(decision.risk_level, "")
+
+    lines.append("")
+    lines.append(f"  {_BOLD}Guard: confirmation required{_RESET}")
+    lines.append(f"  {'─' * 30}")
+    lines.append(f"  Package:      {slug}")
+    if tool_name:
+        lines.append(f"  Tool:         {tool_name}")
+    if decision.action_types:
+        lines.append(f"  Action types: {', '.join(decision.action_types)}")
+    lines.append(f"  Risk level:   {risk_color}{decision.risk_level}{_RESET}")
+    lines.append(f"  Reason:       {decision.reason}")
+
+    trust = (entry or {}).get("trust_level", "unknown")
+    lines.append(f"  Trust:        {trust}")
+
+    if decision.mitigations:
+        lines.append("")
+        for m in decision.mitigations:
+            lines.append(f"  {_DIM}→ {m}{_RESET}")
+
+    lines.append("")
+    lines.append(f"  {_DIM}Default: No (tool will NOT run){_RESET}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def format_guard_deny(
+    slug: str,
+    tool_name: str | None,
+    decision: GuardDecision,
+    entry: dict | None = None,
+) -> str:
+    """Build a human-readable message for guard "deny" decisions."""
+    lines: list[str] = []
+    risk_color = _RISK_COLORS.get(decision.risk_level, "")
+
+    lines.append("")
+    lines.append(f"  {_BOLD}\033[31mGuard: execution blocked{_RESET}")
+    lines.append(f"  {'─' * 30}")
+    lines.append(f"  Package:      {slug}")
+    if tool_name:
+        lines.append(f"  Tool:         {tool_name}")
+    if decision.action_types:
+        lines.append(f"  Action types: {', '.join(decision.action_types)}")
+    lines.append(f"  Risk level:   {risk_color}{decision.risk_level}{_RESET}")
+    lines.append(f"  Reason:       {decision.reason}")
+
+    trust = (entry or {}).get("trust_level", "unknown")
+    lines.append(f"  Trust:        {trust}")
+
+    if decision.mitigations:
+        lines.append("")
+        for m in decision.mitigations:
+            lines.append(f"  {_DIM}→ {m}{_RESET}")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def cli_confirmation_callback(
+    slug: str,
+    tool_name: str | None,
+    decision: GuardDecision,
+    entry: dict | None = None,
+) -> bool:
+    """Interactive CLI confirmation callback. Default: No (fail-closed)."""
+    import sys
+
+    prompt_text = format_guard_prompt(slug, tool_name, decision, entry)
+    print(prompt_text, file=sys.stderr)
+
+    try:
+        answer = input("  Proceed? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("", file=sys.stderr)
+        return False
+
+    return answer in ("y", "yes")

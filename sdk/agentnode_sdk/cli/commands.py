@@ -818,8 +818,16 @@ def cmd_run(
 
     try:
         from agentnode_sdk.runner import run_tool
+        from agentnode_sdk.guard import cli_confirmation_callback
 
-        result = run_tool(capability, **data)
+        is_interactive = os.environ.get("AGENTNODE_NON_INTERACTIVE", "").lower() not in ("true", "1")
+        callback = cli_confirmation_callback if is_interactive else None
+
+        result = run_tool(capability, confirmation_callback=callback, **data)
+
+        if result.mode_used == "policy_denied" and result.policy:
+            _print_guard_block(capability, None, result)
+            return 1
 
         if explain and hasattr(result, "policy") and result.policy:
             print()
@@ -852,6 +860,22 @@ def cmd_run(
     except Exception as e:
         print(f"Run failed: {e}", file=sys.stderr)
         return 1
+
+
+def _print_guard_block(slug: str, tool_name: str | None, result) -> None:
+    """Print structured guard deny/reject output for CLI users."""
+    from agentnode_sdk.guard import GuardDecision, format_guard_deny
+    policy = result.policy or {}
+    action_types = policy.get("guard_action_types", [])
+    risk_level = policy.get("guard_risk_level", "unknown")
+    decision = GuardDecision(
+        action="deny",
+        reason=policy.get("reason", result.error or ""),
+        action_types=action_types,
+        risk_level=risk_level,
+        source=policy.get("source", "guard"),
+    )
+    print(format_guard_deny(slug, tool_name, decision), file=sys.stderr)
 
 
 def _cmd_run_smart(
@@ -1064,8 +1088,16 @@ def _cmd_run_smart(
 
     try:
         from agentnode_sdk.runner import run_tool
+        from agentnode_sdk.guard import cli_confirmation_callback
 
-        result = run_tool(target_slug, **parsed.input_args)
+        is_interactive_run = os.environ.get("AGENTNODE_NON_INTERACTIVE", "").lower() not in ("true", "1")
+        callback = cli_confirmation_callback if is_interactive_run else None
+
+        result = run_tool(target_slug, confirmation_callback=callback, **parsed.input_args)
+
+        if result.mode_used == "policy_denied" and result.policy:
+            _print_guard_block(target_slug, None, result)
+            return 1
 
         if not result.success:
             print(f"  \033[31mFailed:\033[0m {result.error}")

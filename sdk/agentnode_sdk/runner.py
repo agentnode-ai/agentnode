@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.models import RunToolResult
@@ -88,6 +88,7 @@ def run_tool(
     mode: str = "auto",
     timeout: float = 30.0,
     lockfile_path: Path | None = None,
+    confirmation_callback: Callable | None = None,
     **kwargs: Any,
 ) -> RunToolResult:
     """Run an installed tool, dispatching to the appropriate runtime.
@@ -98,6 +99,10 @@ def run_tool(
         mode: ``"direct"``, ``"subprocess"``, or ``"auto"`` (Python runtime only).
         timeout: Maximum wall-clock seconds for execution.
         lockfile_path: Override path to ``agentnode.lock``.
+        confirmation_callback: Called with ``(slug, tool_name, guard_decision, entry)``
+            when guard returns ``"prompt"``. Return ``True`` to proceed,
+            ``False`` to deny. If ``None``, prompt decisions are returned
+            as ``policy_prompt`` without execution.
         **kwargs: Arguments forwarded to the tool function.
 
     Returns:
@@ -193,17 +198,52 @@ def run_tool(
         policy_info["guard_action_types"] = guard_decision.action_types
         policy_info["guard_risk_level"] = guard_decision.risk_level
     if decision.action == "deny":
+        if guard_decision and guard_decision.action == "deny":
+            from agentnode_sdk.guard import format_guard_deny
+            logger.info(
+                "Guard denied: slug=%s tool=%s reason=%s",
+                slug, tool_name, decision.reason,
+            )
         return RunToolResult(
             success=False, error=decision.reason, mode_used="policy_denied",
             policy=policy_info,
         )
     if decision.action == "prompt":
-        return RunToolResult(
-            success=False,
-            error=f"Policy requires approval: {decision.reason}",
-            mode_used="policy_prompt",
-            policy=policy_info,
-        )
+        if confirmation_callback is not None and guard_decision is not None:
+            approved = confirmation_callback(slug, tool_name, guard_decision, entry)
+            audit_decision(
+                PolicyResult(
+                    action="allow" if approved else "deny",
+                    reason="user_confirmed" if approved else "user_rejected",
+                    source="guard.confirmation",
+                ),
+                "guard_confirmation", slug,
+                tool_name=tool_name,
+                trust_level=entry.get("trust_level"),
+            )
+            if approved:
+                decision = PolicyResult(
+                    action="allow",
+                    reason="User confirmed execution",
+                    source="guard.confirmation",
+                )
+                policy_info["action"] = "allow"
+                policy_info["reason"] = "User confirmed execution"
+                policy_info["source"] = "guard.confirmation"
+            else:
+                return RunToolResult(
+                    success=False,
+                    error="User rejected execution",
+                    mode_used="policy_denied",
+                    policy=policy_info,
+                )
+        else:
+            return RunToolResult(
+                success=False,
+                error=f"Policy requires approval: {decision.reason}",
+                mode_used="policy_prompt",
+                policy=policy_info,
+            )
 
     # Agent dispatch — package_type=agent gets its own runner.
     # Agent timeout is configured via agent.limits.max_runtime_seconds,
