@@ -188,6 +188,27 @@ def _validate_type_combination(manifest: dict) -> list[str]:
         if not prompts:
             errors.append("skill packages require at least 1 prompt in capabilities.prompts")
 
+        perms = manifest.get("permissions", {})
+        if isinstance(perms, dict):
+            net = perms.get("network", {})
+            if isinstance(net, dict) and net.get("level", "none") != "none":
+                errors.append(
+                    "skill packages must have permissions.network.level = 'none' "
+                    "(skills are passive, no network access allowed)"
+                )
+            fs = perms.get("filesystem", {})
+            if isinstance(fs, dict) and fs.get("level", "none") != "none":
+                errors.append(
+                    "skill packages must have permissions.filesystem.level = 'none' "
+                    "(skills are passive, no filesystem access allowed)"
+                )
+            code = perms.get("code_execution", {})
+            if isinstance(code, dict) and code.get("level", "none") != "none":
+                errors.append(
+                    "skill packages must have permissions.code_execution.level = 'none' "
+                    "(skills are passive, no code execution allowed)"
+                )
+
     # S9: upgrade must not have executable sections
     if combo[0] == "upgrade":
         if "agent" in manifest:
@@ -246,6 +267,18 @@ def _validate_prompts(prompts: list, errors: list[str], warnings: list[str]) -> 
 
 VALID_ASSET_TYPES = {"document", "data", "template"}
 ASSET_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
+
+SKILL_ALLOWED_EXTENSIONS = frozenset({
+    ".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".xml",
+    ".html", ".css", ".svg", ".png", ".jpg", ".jpeg", ".webp",
+})
+
+SKILL_FORBIDDEN_FILES = frozenset({
+    "package.json", "pyproject.toml", "setup.py", "setup.cfg",
+    "makefile", "dockerfile", "cargo.toml", "go.mod", "go.sum",
+    "gemfile", "rakefile", "cmakelists.txt", "meson.build",
+    "requirements.txt", "pipfile", "poetry.lock",
+})
 
 
 def _validate_skill_prompts(prompts: list, errors: list[str], warnings: list[str]) -> None:
@@ -1308,7 +1341,7 @@ def validate_artifact_quality(artifact_bytes: bytes, slug: str, *, package_type:
         parts = n.split("/", 1)
         normalized.append(parts[1] if len(parts) > 1 else parts[0])
 
-    # Skills: require SKILL.md, skip tests and pyproject checks
+    # Skills: strict file boundary — only declared files allowed
     if package_type == "skill":
         has_skill_md = any(f == "SKILL.md" for f in normalized)
         if not has_skill_md:
@@ -1316,6 +1349,63 @@ def validate_artifact_quality(artifact_bytes: bytes, slug: str, *, package_type:
                 "Quality Gate: SKILL.md not found. "
                 "Skill packages must include a SKILL.md file."
             )
+
+        # Extract manifest to discover declared asset paths
+        declared_assets: set[str] = set()
+        try:
+            with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
+                manifest_member = None
+                for m in tar.getmembers():
+                    parts = m.name.split("/", 1)
+                    norm = parts[1] if len(parts) > 1 else parts[0]
+                    if norm == "agentnode.yaml":
+                        manifest_member = m
+                        break
+                if manifest_member:
+                    import yaml
+                    manifest_data = yaml.safe_load(tar.extractfile(manifest_member))
+                    if isinstance(manifest_data, dict):
+                        for asset in manifest_data.get("assets", []):
+                            if isinstance(asset, dict) and asset.get("path"):
+                                declared_assets.add(asset["path"])
+                        caps = manifest_data.get("capabilities", {})
+                        for prompt in caps.get("prompts", []) if isinstance(caps, dict) else []:
+                            if isinstance(prompt, dict) and prompt.get("template"):
+                                declared_assets.add(prompt["template"])
+        except Exception:
+            pass
+
+        allowed_files = {"agentnode.yaml", "SKILL.md"} | declared_assets
+
+        for f in normalized:
+            if not f or f.endswith("/"):
+                continue
+
+            if f not in allowed_files:
+                errors.append(
+                    f"Quality Gate: undeclared file '{f}' in skill artifact. "
+                    "Skill packages may only contain agentnode.yaml, SKILL.md, "
+                    "and files declared in assets[] or prompt templates."
+                )
+                continue
+
+            basename = f.rsplit("/", 1)[-1].lower() if "/" in f else f.lower()
+            if basename in SKILL_FORBIDDEN_FILES:
+                errors.append(
+                    f"Quality Gate: forbidden file '{f}' in skill artifact. "
+                    "Build/runtime files are not allowed in skill packages."
+                )
+                continue
+
+            ext = ""
+            if "." in basename:
+                ext = "." + basename.rsplit(".", 1)[-1]
+            if ext and ext not in SKILL_ALLOWED_EXTENSIONS:
+                errors.append(
+                    f"Quality Gate: file '{f}' has forbidden extension '{ext}'. "
+                    f"Skill packages only allow: {sorted(SKILL_ALLOWED_EXTENSIONS)}"
+                )
+
         return errors, warnings
 
     # Check for test files (agents exempt — verification generates auto-tests)

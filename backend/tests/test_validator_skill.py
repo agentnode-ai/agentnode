@@ -256,57 +256,244 @@ async def test_asset_missing_id():
 
 
 # ---------------------------------------------------------------------------
+# Skill permissions enforcement
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_skill_network_not_none_rejected():
+    m = _base_skill()
+    m["permissions"]["network"]["level"] = "restricted"
+    valid, errors, warnings = await validate_manifest(m)
+    assert not valid
+    assert any("network" in e and "none" in e for e in errors)
+
+
+@pytest.mark.asyncio
+async def test_skill_filesystem_not_none_rejected():
+    m = _base_skill()
+    m["permissions"]["filesystem"]["level"] = "temp"
+    valid, errors, warnings = await validate_manifest(m)
+    assert not valid
+    assert any("filesystem" in e and "none" in e for e in errors)
+
+
+@pytest.mark.asyncio
+async def test_skill_code_execution_not_none_rejected():
+    m = _base_skill()
+    m["permissions"]["code_execution"]["level"] = "limited_subprocess"
+    valid, errors, warnings = await validate_manifest(m)
+    assert not valid
+    assert any("code_execution" in e and "none" in e for e in errors)
+
+
+@pytest.mark.asyncio
+async def test_skill_all_permissions_none_accepted():
+    m = _base_skill()
+    valid, errors, warnings = await validate_manifest(m)
+    assert valid, f"Unexpected errors: {errors}"
+
+
+# ---------------------------------------------------------------------------
 # Artifact quality
 # ---------------------------------------------------------------------------
 
-def test_artifact_quality_skill_with_skill_md():
-    """Skills with SKILL.md pass quality gate."""
+def _build_skill_artifact(files: dict[str, bytes]) -> bytes:
+    """Build a tar.gz with given files under test-skill/ prefix."""
     import io
     import tarfile
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        data = b"# My Skill\nInstructions here."
-        info = tarfile.TarInfo(name="test-skill/SKILL.md")
-        info.size = len(data)
-        tar.addfile(info, io.BytesIO(data))
+        for name, data in files.items():
+            info = tarfile.TarInfo(name=f"test-skill/{name}")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
 
-        manifest = b"package_id: test-skill\npackage_type: skill"
-        info2 = tarfile.TarInfo(name="test-skill/agentnode.yaml")
-        info2.size = len(manifest)
-        tar.addfile(info2, io.BytesIO(manifest))
 
-    errors, warnings = validate_artifact_quality(buf.getvalue(), "test-skill", package_type="skill")
+def _skill_manifest_yaml(**overrides) -> bytes:
+    """Build minimal skill manifest YAML bytes."""
+    import yaml
+    m = {
+        "package_id": "test-skill",
+        "package_type": "skill",
+        "capabilities": {
+            "prompts": [{"name": "main", "template": "SKILL.md"}],
+        },
+    }
+    m.update(overrides)
+    return yaml.dump(m).encode()
+
+
+def test_artifact_quality_skill_with_skill_md():
+    """Skills with SKILL.md and only declared files pass quality gate."""
+    artifact = _build_skill_artifact({
+        "agentnode.yaml": _skill_manifest_yaml(),
+        "SKILL.md": b"# My Skill\nInstructions here.",
+    })
+    errors, warnings = validate_artifact_quality(artifact, "test-skill", package_type="skill")
     assert not errors, f"Unexpected errors: {errors}"
 
 
 def test_artifact_quality_skill_without_skill_md():
     """Skills without SKILL.md fail quality gate."""
-    import io
-    import tarfile
-
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        manifest = b"package_id: test-skill\npackage_type: skill"
-        info = tarfile.TarInfo(name="test-skill/agentnode.yaml")
-        info.size = len(manifest)
-        tar.addfile(info, io.BytesIO(manifest))
-
-    errors, warnings = validate_artifact_quality(buf.getvalue(), "test-skill", package_type="skill")
+    artifact = _build_skill_artifact({
+        "agentnode.yaml": _skill_manifest_yaml(),
+    })
+    errors, warnings = validate_artifact_quality(artifact, "test-skill", package_type="skill")
     assert any("SKILL.md" in e for e in errors)
 
 
 def test_artifact_quality_skill_no_tests_required():
     """Skills don't need test files."""
-    import io
-    import tarfile
-
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        data = b"# My Skill"
-        info = tarfile.TarInfo(name="test-skill/SKILL.md")
-        info.size = len(data)
-        tar.addfile(info, io.BytesIO(data))
-
-    errors, warnings = validate_artifact_quality(buf.getvalue(), "test-skill", package_type="skill")
+    artifact = _build_skill_artifact({
+        "agentnode.yaml": _skill_manifest_yaml(),
+        "SKILL.md": b"# My Skill",
+    })
+    errors, warnings = validate_artifact_quality(artifact, "test-skill", package_type="skill")
     assert not any("test files" in e.lower() for e in errors)
+
+
+def test_artifact_quality_skill_py_file_rejected():
+    """Python files in skill artifacts are blocked."""
+    import yaml
+    manifest = yaml.dump({
+        "package_id": "test-skill",
+        "package_type": "skill",
+        "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+        "assets": [{"id": "helper", "type": "document", "path": "helper.py"}],
+    }).encode()
+    artifact = _build_skill_artifact({
+        "agentnode.yaml": manifest,
+        "SKILL.md": b"# Skill",
+        "helper.py": b"print('hello')",
+    })
+    errors, warnings = validate_artifact_quality(artifact, "test-skill", package_type="skill")
+    assert any("forbidden extension" in e and ".py" in e for e in errors)
+
+
+def test_artifact_quality_skill_undeclared_file_rejected():
+    """Files not declared in manifest are blocked."""
+    artifact = _build_skill_artifact({
+        "agentnode.yaml": _skill_manifest_yaml(),
+        "SKILL.md": b"# Skill",
+        "extra.md": b"# Extra file",
+    })
+    errors, warnings = validate_artifact_quality(artifact, "test-skill", package_type="skill")
+    assert any("undeclared" in e.lower() and "extra.md" in e for e in errors)
+
+
+def test_artifact_quality_skill_pyproject_rejected():
+    """pyproject.toml in skill artifacts is blocked."""
+    import yaml
+    manifest = yaml.dump({
+        "package_id": "test-skill",
+        "package_type": "skill",
+        "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+        "assets": [{"id": "proj", "type": "data", "path": "pyproject.toml"}],
+    }).encode()
+    artifact = _build_skill_artifact({
+        "agentnode.yaml": manifest,
+        "SKILL.md": b"# Skill",
+        "pyproject.toml": b"[project]\nname = 'evil'",
+    })
+    errors, warnings = validate_artifact_quality(artifact, "test-skill", package_type="skill")
+    assert any("forbidden" in e.lower() and "pyproject" in e.lower() for e in errors)
+
+
+def test_artifact_quality_skill_shell_script_rejected():
+    """Shell scripts in skill artifacts are blocked."""
+    import yaml
+    manifest = yaml.dump({
+        "package_id": "test-skill",
+        "package_type": "skill",
+        "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+        "assets": [{"id": "run", "type": "document", "path": "run.sh"}],
+    }).encode()
+    artifact = _build_skill_artifact({
+        "agentnode.yaml": manifest,
+        "SKILL.md": b"# Skill",
+        "run.sh": b"#!/bin/bash\necho pwned",
+    })
+    errors, warnings = validate_artifact_quality(artifact, "test-skill", package_type="skill")
+    assert any("forbidden extension" in e and ".sh" in e for e in errors)
+
+
+def test_artifact_quality_skill_js_rejected():
+    """.js files in skill artifacts are blocked."""
+    import yaml
+    manifest = yaml.dump({
+        "package_id": "test-skill",
+        "package_type": "skill",
+        "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+        "assets": [{"id": "script", "type": "data", "path": "helper.js"}],
+    }).encode()
+    artifact = _build_skill_artifact({
+        "agentnode.yaml": manifest,
+        "SKILL.md": b"# Skill",
+        "helper.js": b"console.log('pwned')",
+    })
+    errors, warnings = validate_artifact_quality(artifact, "test-skill", package_type="skill")
+    assert any("forbidden extension" in e and ".js" in e for e in errors)
+
+
+def test_artifact_quality_skill_declared_asset_accepted():
+    """Declared assets with allowed extensions pass."""
+    import yaml
+    manifest = yaml.dump({
+        "package_id": "test-skill",
+        "package_type": "skill",
+        "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+        "assets": [
+            {"id": "example", "type": "document", "path": "assets/example.md"},
+            {"id": "data", "type": "data", "path": "assets/data.json"},
+        ],
+    }).encode()
+    artifact = _build_skill_artifact({
+        "agentnode.yaml": manifest,
+        "SKILL.md": b"# Skill",
+        "assets/example.md": b"# Example",
+        "assets/data.json": b'{"key": "value"}',
+    })
+    errors, warnings = validate_artifact_quality(artifact, "test-skill", package_type="skill")
+    assert not errors, f"Unexpected errors: {errors}"
+
+
+def test_artifact_quality_skill_prompt_template_accepted():
+    """Prompt template files declared in capabilities.prompts pass."""
+    import yaml
+    manifest = yaml.dump({
+        "package_id": "test-skill",
+        "package_type": "skill",
+        "capabilities": {
+            "prompts": [
+                {"name": "main", "template": "SKILL.md"},
+                {"name": "brief", "template": "BRIEF.md"},
+            ],
+        },
+    }).encode()
+    artifact = _build_skill_artifact({
+        "agentnode.yaml": manifest,
+        "SKILL.md": b"# Main",
+        "BRIEF.md": b"# Brief",
+    })
+    errors, warnings = validate_artifact_quality(artifact, "test-skill", package_type="skill")
+    assert not errors, f"Unexpected errors: {errors}"
+
+
+def test_artifact_quality_skill_exe_rejected():
+    """Binary executables in skill artifacts are blocked."""
+    import yaml
+    manifest = yaml.dump({
+        "package_id": "test-skill",
+        "package_type": "skill",
+        "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+        "assets": [{"id": "bin", "type": "data", "path": "tool.exe"}],
+    }).encode()
+    artifact = _build_skill_artifact({
+        "agentnode.yaml": manifest,
+        "SKILL.md": b"# Skill",
+        "tool.exe": b"\x4d\x5a\x90\x00",
+    })
+    errors, warnings = validate_artifact_quality(artifact, "test-skill", package_type="skill")
+    assert any("forbidden extension" in e and ".exe" in e for e in errors)

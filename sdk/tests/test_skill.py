@@ -601,3 +601,235 @@ class TestReadResource:
         assert rt.read_resource("agentnode://skills/") is None
         assert rt.read_resource("agentnode://skills/slug/wrong/id") is None
         assert rt.read_resource("agentnode://other/path") is None
+
+
+# ---------------------------------------------------------------------------
+# Install revalidation — _validate_skill_contents
+# ---------------------------------------------------------------------------
+
+class TestValidateSkillContents:
+    def test_valid_skill_passes(self, tmp_path):
+        from agentnode_sdk.installer import _validate_skill_contents
+
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "agentnode.yaml").write_text("package_type: skill")
+        (pkg / "SKILL.md").write_text("# Skill")
+
+        manifest = {
+            "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+            "assets": [],
+        }
+        errors = _validate_skill_contents(pkg, manifest)
+        assert not errors
+
+    def test_declared_assets_pass(self, tmp_path):
+        from agentnode_sdk.installer import _validate_skill_contents
+
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "agentnode.yaml").write_text("package_type: skill")
+        (pkg / "SKILL.md").write_text("# Skill")
+        assets_dir = pkg / "assets"
+        assets_dir.mkdir()
+        (assets_dir / "example.md").write_text("# Example")
+        (assets_dir / "data.json").write_text('{"key": "value"}')
+
+        manifest = {
+            "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+            "assets": [
+                {"id": "ex", "type": "document", "path": "assets/example.md"},
+                {"id": "d", "type": "data", "path": "assets/data.json"},
+            ],
+        }
+        errors = _validate_skill_contents(pkg, manifest)
+        assert not errors
+
+    def test_undeclared_file_rejected(self, tmp_path):
+        from agentnode_sdk.installer import _validate_skill_contents
+
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "agentnode.yaml").write_text("package_type: skill")
+        (pkg / "SKILL.md").write_text("# Skill")
+        (pkg / "extra.md").write_text("# Extra")
+
+        manifest = {
+            "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+            "assets": [],
+        }
+        errors = _validate_skill_contents(pkg, manifest)
+        assert any("Undeclared" in e and "extra.md" in e for e in errors)
+
+    def test_py_file_rejected(self, tmp_path):
+        from agentnode_sdk.installer import _validate_skill_contents
+
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "agentnode.yaml").write_text("package_type: skill")
+        (pkg / "SKILL.md").write_text("# Skill")
+        (pkg / "evil.py").write_text("import os; os.system('rm -rf /')")
+
+        manifest = {
+            "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+            "assets": [{"id": "evil", "type": "document", "path": "evil.py"}],
+        }
+        errors = _validate_skill_contents(pkg, manifest)
+        assert any(".py" in e for e in errors)
+
+    def test_pyproject_rejected(self, tmp_path):
+        from agentnode_sdk.installer import _validate_skill_contents
+
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "agentnode.yaml").write_text("package_type: skill")
+        (pkg / "SKILL.md").write_text("# Skill")
+        (pkg / "pyproject.toml").write_text("[project]")
+
+        manifest = {
+            "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+            "assets": [{"id": "proj", "type": "data", "path": "pyproject.toml"}],
+        }
+        errors = _validate_skill_contents(pkg, manifest)
+        assert any("Forbidden" in e and "pyproject" in e.lower() for e in errors)
+
+    def test_shell_script_rejected(self, tmp_path):
+        from agentnode_sdk.installer import _validate_skill_contents
+
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "agentnode.yaml").write_text("package_type: skill")
+        (pkg / "SKILL.md").write_text("# Skill")
+        (pkg / "run.sh").write_text("#!/bin/bash")
+
+        manifest = {
+            "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+            "assets": [{"id": "run", "type": "document", "path": "run.sh"}],
+        }
+        errors = _validate_skill_contents(pkg, manifest)
+        assert any(".sh" in e for e in errors)
+
+
+class TestInstallSkillRevalidation:
+    def test_install_rejects_py_file(self, tmp_path, monkeypatch):
+        pkg_dir = tmp_path / "build-bad"
+        pkg_dir.mkdir()
+        (pkg_dir / "SKILL.md").write_text("# Skill")
+        (pkg_dir / "agentnode.yaml").write_text(yaml.dump({
+            "manifest_version": "0.3",
+            "package_id": "bad-skill",
+            "package_type": "skill",
+            "version": "1.0.0",
+            "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+            "assets": [{"id": "evil", "type": "document", "path": "evil.py"}],
+        }))
+        (pkg_dir / "evil.py").write_text("import os")
+
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for item in pkg_dir.rglob("*"):
+                if item.is_file():
+                    rel = item.relative_to(pkg_dir)
+                    tar.add(str(item), arcname=f"bad-skill/{rel.as_posix()}")
+
+        artifact_path = tmp_path / "bad.tar.gz"
+        artifact_path.write_bytes(buf.getvalue())
+
+        monkeypatch.setattr(
+            "agentnode_sdk.installer.download_artifact",
+            lambda url, dest, **kw: dest.write_bytes(artifact_path.read_bytes()),
+        )
+
+        with pytest.raises(RuntimeError, match="forbidden files"):
+            _install_skill(
+                slug="bad-skill",
+                version="1.0.0",
+                artifact_url="https://fake.example.com/bad.tar.gz",
+                artifact_hash=None,
+                previous_version=None,
+                trust_level=None,
+                permissions=None,
+                prompts=None,
+                resources=None,
+                assets=None,
+            )
+
+        # Existing skill dir must not exist (fresh install that failed)
+        assert not (_skills_dir() / "bad-skill").exists()
+
+    def test_install_preserves_existing_on_failure(self, tmp_path, monkeypatch):
+        """When a bad upgrade is attempted, the existing install survives."""
+        # First: install a good skill
+        good_dir = tmp_path / "build-good"
+        good_dir.mkdir()
+        (good_dir / "SKILL.md").write_text("# Good skill v1")
+        (good_dir / "agentnode.yaml").write_text(yaml.dump({
+            "manifest_version": "0.3",
+            "package_id": "upgrade-test",
+            "package_type": "skill",
+            "version": "1.0.0",
+            "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+            "assets": [],
+        }))
+
+        good_buf = io.BytesIO()
+        with tarfile.open(fileobj=good_buf, mode="w:gz") as tar:
+            for item in good_dir.rglob("*"):
+                if item.is_file():
+                    rel = item.relative_to(good_dir)
+                    tar.add(str(item), arcname=f"upgrade-test/{rel.as_posix()}")
+        good_artifact = tmp_path / "good.tar.gz"
+        good_artifact.write_bytes(good_buf.getvalue())
+
+        monkeypatch.setattr(
+            "agentnode_sdk.installer.download_artifact",
+            lambda url, dest, **kw: dest.write_bytes(good_artifact.read_bytes()),
+        )
+        _install_skill(
+            slug="upgrade-test", version="1.0.0",
+            artifact_url="https://fake/good.tar.gz",
+            artifact_hash=None, previous_version=None,
+            trust_level=None, permissions=None,
+            prompts=None, resources=None, assets=None,
+        )
+        assert (_skills_dir() / "upgrade-test" / "SKILL.md").read_text() == "# Good skill v1"
+
+        # Now: attempt bad upgrade
+        bad_dir = tmp_path / "build-bad2"
+        bad_dir.mkdir()
+        (bad_dir / "SKILL.md").write_text("# Bad skill v2")
+        (bad_dir / "agentnode.yaml").write_text(yaml.dump({
+            "manifest_version": "0.3",
+            "package_id": "upgrade-test",
+            "package_type": "skill",
+            "version": "2.0.0",
+            "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+            "assets": [{"id": "x", "type": "document", "path": "exploit.sh"}],
+        }))
+        (bad_dir / "exploit.sh").write_text("#!/bin/bash\nrm -rf /")
+
+        bad_buf = io.BytesIO()
+        with tarfile.open(fileobj=bad_buf, mode="w:gz") as tar:
+            for item in bad_dir.rglob("*"):
+                if item.is_file():
+                    rel = item.relative_to(bad_dir)
+                    tar.add(str(item), arcname=f"upgrade-test/{rel.as_posix()}")
+        bad_artifact = tmp_path / "bad2.tar.gz"
+        bad_artifact.write_bytes(bad_buf.getvalue())
+
+        monkeypatch.setattr(
+            "agentnode_sdk.installer.download_artifact",
+            lambda url, dest, **kw: dest.write_bytes(bad_artifact.read_bytes()),
+        )
+
+        with pytest.raises(RuntimeError, match="forbidden files"):
+            _install_skill(
+                slug="upgrade-test", version="2.0.0",
+                artifact_url="https://fake/bad2.tar.gz",
+                artifact_hash=None, previous_version="1.0.0",
+                trust_level=None, permissions=None,
+                prompts=None, resources=None, assets=None,
+            )
+
+        # v1 must still be intact
+        assert (_skills_dir() / "upgrade-test" / "SKILL.md").read_text() == "# Good skill v1"

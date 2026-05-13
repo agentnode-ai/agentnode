@@ -22,6 +22,18 @@ PUBLISH_EXCLUDE_FILES = {".env"}
 
 MAX_SINGLE_FILE_WARN_BYTES = 10 * 1024 * 1024
 
+SKILL_ALLOWED_EXTENSIONS = frozenset({
+    ".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".xml",
+    ".html", ".css", ".svg", ".png", ".jpg", ".jpeg", ".webp",
+})
+
+SKILL_FORBIDDEN_FILES = frozenset({
+    "package.json", "pyproject.toml", "setup.py", "setup.cfg",
+    "makefile", "dockerfile", "cargo.toml", "go.mod", "go.sum",
+    "gemfile", "rakefile", "cmakelists.txt", "meson.build",
+    "requirements.txt", "pipfile", "poetry.lock",
+})
+
 
 def _should_exclude(entry: tarfile.TarInfo) -> bool:
     """Check if a tar entry should be excluded from the artifact."""
@@ -35,12 +47,50 @@ def _should_exclude(entry: tarfile.TarInfo) -> bool:
     return False
 
 
+def _skill_allowed_files(pkg_path: Path) -> set[str] | None:
+    """Compute the set of allowed relative paths for a skill package.
+
+    Returns None if the package is not a skill (caller should skip filtering).
+    """
+    manifest_path = pkg_path / "agentnode.yaml"
+    if not manifest_path.is_file():
+        return None
+
+    try:
+        import yaml
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    if not isinstance(manifest, dict):
+        return None
+    if manifest.get("package_type") != "skill":
+        return None
+
+    allowed: set[str] = {"agentnode.yaml", "SKILL.md"}
+
+    for asset in manifest.get("assets", []):
+        if isinstance(asset, dict) and asset.get("path"):
+            allowed.add(asset["path"])
+
+    caps = manifest.get("capabilities", {})
+    for prompt in caps.get("prompts", []) if isinstance(caps, dict) else []:
+        if isinstance(prompt, dict) and prompt.get("template"):
+            allowed.add(prompt["template"])
+
+    return allowed
+
+
 def _build_artifact(pkg_path: Path, arcname: str) -> tuple[bytes, int]:
     """Build a tar.gz artifact from a package directory.
 
     Returns (artifact_bytes, file_count).
     Excludes symlinks, absolute paths, and path traversal entries.
+    For skill packages, only declared files with allowed extensions are included.
     """
+    skill_allowed = _skill_allowed_files(pkg_path)
+    skipped_skill_files: list[str] = []
+
     buf = io.BytesIO()
     file_count = 0
     large_files: list[str] = []
@@ -50,7 +100,8 @@ def _build_artifact(pkg_path: Path, arcname: str) -> tuple[bytes, int]:
             if item.is_symlink():
                 continue
             rel = item.relative_to(pkg_path)
-            entry_name = f"{arcname}/{rel.as_posix()}"
+            rel_posix = rel.as_posix()
+            entry_name = f"{arcname}/{rel_posix}"
 
             info = tarfile.TarInfo(name=entry_name)
             if _should_exclude(info):
@@ -60,10 +111,27 @@ def _build_artifact(pkg_path: Path, arcname: str) -> tuple[bytes, int]:
                 continue
 
             if item.is_dir():
+                if skill_allowed is not None:
+                    # Only include directories that are parents of allowed files
+                    if not any(a.startswith(rel_posix + "/") for a in skill_allowed):
+                        continue
                 info.type = tarfile.DIRTYPE
                 info.mode = 0o755
                 tar.addfile(info)
             elif item.is_file():
+                if skill_allowed is not None:
+                    if rel_posix not in skill_allowed:
+                        skipped_skill_files.append(rel_posix)
+                        continue
+                    basename = item.name.lower()
+                    if basename in SKILL_FORBIDDEN_FILES:
+                        skipped_skill_files.append(rel_posix)
+                        continue
+                    ext = item.suffix.lower()
+                    if ext and ext not in SKILL_ALLOWED_EXTENSIONS:
+                        skipped_skill_files.append(rel_posix)
+                        continue
+
                 data = item.read_bytes()
                 info.size = len(data)
                 info.mode = 0o644
@@ -71,6 +139,17 @@ def _build_artifact(pkg_path: Path, arcname: str) -> tuple[bytes, int]:
                 file_count += 1
                 if len(data) > MAX_SINGLE_FILE_WARN_BYTES:
                     large_files.append(f"{rel} ({len(data) / 1024 / 1024:.1f} MB)")
+
+    if skipped_skill_files:
+        print(
+            f"  Skill boundary: {len(skipped_skill_files)} file(s) excluded "
+            "(not declared in manifest or forbidden extension):",
+            file=sys.stderr,
+        )
+        for sf in skipped_skill_files[:10]:
+            print(f"    - {sf}", file=sys.stderr)
+        if len(skipped_skill_files) > 10:
+            print(f"    ... and {len(skipped_skill_files) - 10} more", file=sys.stderr)
 
     if large_files:
         for lf in large_files:

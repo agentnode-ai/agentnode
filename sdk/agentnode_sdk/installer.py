@@ -456,10 +456,64 @@ def install_package(
 # Skill install (filesystem-first, no pip)
 # ---------------------------------------------------------------------------
 
+SKILL_ALLOWED_EXTENSIONS = frozenset({
+    ".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".xml",
+    ".html", ".css", ".svg", ".png", ".jpg", ".jpeg", ".webp",
+})
+
+SKILL_FORBIDDEN_FILES = frozenset({
+    "package.json", "pyproject.toml", "setup.py", "setup.cfg",
+    "makefile", "dockerfile", "cargo.toml", "go.mod", "go.sum",
+    "gemfile", "rakefile", "cmakelists.txt", "meson.build",
+    "requirements.txt", "pipfile", "poetry.lock",
+})
+
+
 def _skills_dir() -> Path:
     """Return the global skills directory (~/.agentnode/skills/)."""
     from agentnode_sdk.config import config_dir
     return config_dir() / "skills"
+
+
+def _validate_skill_contents(package_dir: Path, manifest: dict) -> list[str]:
+    """Validate extracted skill directory contains only allowed files.
+
+    Returns list of errors. Empty list means valid.
+    """
+    declared_assets: set[str] = set()
+    for asset in manifest.get("assets", []):
+        if isinstance(asset, dict) and asset.get("path"):
+            declared_assets.add(asset["path"])
+    caps = manifest.get("capabilities", {})
+    for prompt in caps.get("prompts", []) if isinstance(caps, dict) else []:
+        if isinstance(prompt, dict) and prompt.get("template"):
+            declared_assets.add(prompt["template"])
+
+    allowed = {"agentnode.yaml", "SKILL.md"} | declared_assets
+    errors: list[str] = []
+
+    for item in package_dir.rglob("*"):
+        if item.is_dir():
+            continue
+        rel = str(item.relative_to(package_dir)).replace("\\", "/")
+
+        if rel not in allowed:
+            errors.append(f"Undeclared file '{rel}' in skill artifact")
+            continue
+
+        basename = item.name.lower()
+        if basename in SKILL_FORBIDDEN_FILES:
+            errors.append(f"Forbidden build/runtime file '{rel}' in skill artifact")
+            continue
+
+        ext = item.suffix.lower()
+        if ext and ext not in SKILL_ALLOWED_EXTENSIONS:
+            errors.append(
+                f"File '{rel}' has forbidden extension '{ext}'. "
+                f"Allowed: {sorted(SKILL_ALLOWED_EXTENSIONS)}"
+            )
+
+    return errors
 
 
 def _install_skill(
@@ -477,6 +531,8 @@ def _install_skill(
     """Install a skill package to ~/.agentnode/skills/{slug}/.
 
     No pip install, no Python runtime. Just extract and place files.
+    Validates contents after extraction — aborts without touching
+    the existing install if validation fails.
     """
     dest = _skills_dir() / slug
     tmpdir = Path(tempfile.mkdtemp(prefix="agentnode-skill-"))
@@ -495,21 +551,50 @@ def _install_skill(
         manifest_prompts = prompts or []
 
         manifest_path = package_dir / "agentnode.yaml"
+        manifest: dict = {}
         if manifest_path.is_file():
             import yaml
             manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-            if isinstance(manifest, dict):
-                if not manifest_prompts:
-                    caps = manifest.get("capabilities", {})
-                    manifest_prompts = caps.get("prompts", [])
-                if not manifest_assets:
-                    manifest_assets = manifest.get("assets", [])
+            if not isinstance(manifest, dict):
+                manifest = {}
+            if not manifest_prompts:
+                caps = manifest.get("capabilities", {})
+                manifest_prompts = caps.get("prompts", [])
+            if not manifest_assets:
+                manifest_assets = manifest.get("assets", [])
 
-        # Atomic replace: remove old directory, move new one into place
-        if dest.exists():
-            shutil.rmtree(dest)
+        # Revalidate extracted contents — abort if invalid
+        content_errors = _validate_skill_contents(package_dir, manifest)
+        if content_errors:
+            raise RuntimeError(
+                f"Skill '{slug}' contains forbidden files — install aborted. "
+                f"Errors: {'; '.join(content_errors[:5])}"
+            )
+
+        # Atomic replace: build new dir in temp, then swap
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(package_dir, dest)
+        staging = dest.parent / f".{slug}_staging"
+        if staging.exists():
+            shutil.rmtree(staging)
+        shutil.copytree(package_dir, staging)
+
+        old_backup = dest.parent / f".{slug}_old"
+        if old_backup.exists():
+            shutil.rmtree(old_backup)
+
+        try:
+            if dest.exists():
+                dest.rename(old_backup)
+            staging.rename(dest)
+        except Exception:
+            # Rollback: restore old version if rename failed
+            if old_backup.exists() and not dest.exists():
+                old_backup.rename(dest)
+            raise
+
+        # Clean up old backup
+        if old_backup.exists():
+            shutil.rmtree(old_backup, ignore_errors=True)
 
         lock_entry: dict[str, Any] = {
             "version": version,

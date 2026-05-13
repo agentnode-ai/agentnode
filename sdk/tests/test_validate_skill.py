@@ -259,3 +259,144 @@ class TestSkillPublishDryRun:
         assert "agentnode.yaml" in normalized
         assert "SKILL.md" in normalized
         assert any("example.md" in n for n in normalized)
+
+    def test_build_artifact_excludes_py_files(self, tmp_path):
+        from agentnode_sdk.cli.publish import _build_artifact
+
+        target = tmp_path / "skill-with-py"
+        target.mkdir()
+        (target / "agentnode.yaml").write_text(yaml.dump({
+            "package_id": "skill-with-py",
+            "package_type": "skill",
+            "version": "1.0.0",
+            "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+            "assets": [],
+        }), encoding="utf-8")
+        (target / "SKILL.md").write_text("# Skill", encoding="utf-8")
+        (target / "evil.py").write_text("import os", encoding="utf-8")
+
+        artifact_bytes, file_count = _build_artifact(target, "skill-with-py")
+
+        import io
+        import tarfile
+        with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
+            names = tar.getnames()
+
+        normalized = [n.split("/", 1)[1] if "/" in n else n for n in names]
+        assert "evil.py" not in normalized
+        assert "SKILL.md" in normalized
+
+    def test_build_artifact_excludes_undeclared_files(self, tmp_path):
+        from agentnode_sdk.cli.publish import _build_artifact
+
+        target = tmp_path / "skill-extra"
+        target.mkdir()
+        (target / "agentnode.yaml").write_text(yaml.dump({
+            "package_id": "skill-extra",
+            "package_type": "skill",
+            "version": "1.0.0",
+            "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+            "assets": [],
+        }), encoding="utf-8")
+        (target / "SKILL.md").write_text("# Skill", encoding="utf-8")
+        (target / "readme.md").write_text("# Not declared", encoding="utf-8")
+        (target / "notes.txt").write_text("Not declared either", encoding="utf-8")
+
+        artifact_bytes, file_count = _build_artifact(target, "skill-extra")
+
+        import io
+        import tarfile
+        with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
+            names = tar.getnames()
+
+        normalized = [n.split("/", 1)[1] if "/" in n else n for n in names]
+        file_names = [n for n in normalized if not n.endswith("/")]
+        assert "readme.md" not in file_names
+        assert "notes.txt" not in file_names
+        assert "SKILL.md" in file_names
+        assert "agentnode.yaml" in file_names
+
+    def test_build_artifact_excludes_forbidden_extensions(self, tmp_path):
+        from agentnode_sdk.cli.publish import _build_artifact
+
+        target = tmp_path / "skill-js"
+        target.mkdir()
+        (target / "agentnode.yaml").write_text(yaml.dump({
+            "package_id": "skill-js",
+            "package_type": "skill",
+            "version": "1.0.0",
+            "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+            "assets": [
+                {"id": "script", "type": "data", "path": "helper.js"},
+            ],
+        }), encoding="utf-8")
+        (target / "SKILL.md").write_text("# Skill", encoding="utf-8")
+        (target / "helper.js").write_text("console.log('hi')", encoding="utf-8")
+
+        artifact_bytes, file_count = _build_artifact(target, "skill-js")
+
+        import io
+        import tarfile
+        with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
+            names = tar.getnames()
+
+        normalized = [n.split("/", 1)[1] if "/" in n else n for n in names]
+        assert "helper.js" not in normalized
+
+    def test_build_artifact_includes_declared_assets(self, tmp_path):
+        from agentnode_sdk.cli.publish import _build_artifact
+
+        target = tmp_path / "skill-assets"
+        target.mkdir()
+        assets_dir = target / "assets"
+        assets_dir.mkdir()
+        (target / "agentnode.yaml").write_text(yaml.dump({
+            "package_id": "skill-assets",
+            "package_type": "skill",
+            "version": "1.0.0",
+            "capabilities": {"prompts": [{"name": "main", "template": "SKILL.md"}]},
+            "assets": [
+                {"id": "doc", "type": "document", "path": "assets/guide.md"},
+                {"id": "data", "type": "data", "path": "assets/config.json"},
+            ],
+        }), encoding="utf-8")
+        (target / "SKILL.md").write_text("# Skill", encoding="utf-8")
+        (assets_dir / "guide.md").write_text("# Guide", encoding="utf-8")
+        (assets_dir / "config.json").write_text('{}', encoding="utf-8")
+
+        artifact_bytes, file_count = _build_artifact(target, "skill-assets")
+
+        import io
+        import tarfile
+        with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
+            names = tar.getnames()
+
+        normalized = [n.split("/", 1)[1] if "/" in n else n for n in names]
+        file_names = [n for n in normalized if not n.endswith("/")]
+        assert "assets/guide.md" in file_names
+        assert "assets/config.json" in file_names
+
+    def test_non_skill_packages_not_filtered(self, tmp_path):
+        """Toolpacks should not be affected by skill filtering."""
+        from agentnode_sdk.cli.publish import _build_artifact
+
+        target = tmp_path / "my-tool"
+        target.mkdir()
+        (target / "agentnode.yaml").write_text(yaml.dump({
+            "package_id": "my-tool",
+            "package_type": "toolpack",
+            "version": "1.0.0",
+        }), encoding="utf-8")
+        (target / "tool.py").write_text("def run(): pass", encoding="utf-8")
+        (target / "setup.py").write_text("# setup", encoding="utf-8")
+
+        artifact_bytes, file_count = _build_artifact(target, "my-tool")
+
+        import io
+        import tarfile
+        with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
+            names = tar.getnames()
+
+        normalized = [n.split("/", 1)[1] if "/" in n else n for n in names]
+        assert "tool.py" in normalized
+        assert "setup.py" in normalized
