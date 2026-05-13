@@ -1,7 +1,7 @@
 # Known Backend Test Failures
 
 Last verified: 2026-05-13 (post Phase 5.1 skill boundary hardening)
-Result: 27 failed, 981 passed — none related to Phase 5.1
+Result: 27 failed, 981 passed, 8 categories — none related to Phase 5.1
 
 ## Auth (1)
 
@@ -11,19 +11,19 @@ Result: 27 failed, 981 passed — none related to Phase 5.1
 
 ## Status Code Mismatches (9)
 
-Tests expect 200 but publish endpoint returns 201.
+Tests expect legacy 200, endpoint correctly returns 201 Created.
 
 | Test | Detail |
 |------|--------|
-| `test_cross_publisher_auth.py::test_cannot_publish_to_other_publishers_package` | `assert 201 == 200` |
-| `test_publish_v02.py::test_publish_v02_multi_tool` | publish returns 201 |
-| `test_publish_v02.py::test_publish_v02_single_tool` | publish returns 201 |
-| `test_publish_v02.py::test_v01_still_publishes` | publish returns 201 |
-| `test_publish_v02.py::test_install_info_v02_has_entrypoints` | depends on publish step |
-| `test_publish_v02.py::test_install_info_v01_null_entrypoints` | depends on publish step |
-| `test_publish_v02.py::test_install_v02_returns_tools` | depends on publish step |
-| `test_publish_v02.py::test_install_v01_returns_empty_tools` | depends on publish step |
-| `test_publish_v02.py::test_publish_compact_v02_with_defaults` | publish returns 201 |
+| `test_cross_publisher_auth.py::test_cannot_publish_to_other_publishers_package` | Tests expect legacy 200, endpoint correctly returns 201 Created |
+| `test_publish_v02.py::test_publish_v02_multi_tool` | Tests expect legacy 200, endpoint correctly returns 201 Created |
+| `test_publish_v02.py::test_publish_v02_single_tool` | Tests expect legacy 200, endpoint correctly returns 201 Created |
+| `test_publish_v02.py::test_v01_still_publishes` | Tests expect legacy 200, endpoint correctly returns 201 Created |
+| `test_publish_v02.py::test_install_info_v02_has_entrypoints` | Cascading from publish step expecting 200 |
+| `test_publish_v02.py::test_install_info_v01_null_entrypoints` | Cascading from publish step expecting 200 |
+| `test_publish_v02.py::test_install_v02_returns_tools` | Cascading from publish step expecting 200 |
+| `test_publish_v02.py::test_install_v01_returns_empty_tools` | Cascading from publish step expecting 200 |
+| `test_publish_v02.py::test_publish_compact_v02_with_defaults` | Tests expect legacy 200, endpoint correctly returns 201 Created |
 
 ## E2E Flow (3)
 
