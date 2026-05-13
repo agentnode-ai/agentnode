@@ -245,9 +245,14 @@ def run_mcp(
             else:
                 name = slug
 
-        # Guard: inspect MCP arguments before forwarding (Phase 6.1)
+        # Guard: inspect MCP arguments before forwarding
         from agentnode_sdk.guard import inspect_mcp_args
-        mcp_guard = inspect_mcp_args(slug, name, kwargs, entry)
+        input_schema = None
+        for t in entry.get("tools", []):
+            if t.get("name") == name:
+                input_schema = t.get("input_schema") or t.get("inputSchema")
+                break
+        mcp_guard = inspect_mcp_args(slug, name, kwargs, entry, input_schema=input_schema)
         if mcp_guard.action == "deny":
             elapsed = (time.monotonic() - t0) * 1000
             return RunToolResult(

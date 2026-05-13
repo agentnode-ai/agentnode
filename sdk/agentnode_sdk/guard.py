@@ -439,14 +439,17 @@ def inspect_mcp_args(
     tool_name: str,
     args: dict,
     entry: dict,
+    input_schema: dict | None = None,
 ) -> GuardDecision:
-    """Inspect MCP tool arguments for dangerous patterns.
+    """Inspect MCP tool arguments for dangerous patterns and schema violations.
 
-    Returns deny for clear technical violations, prompt for heuristic findings.
+    Returns deny for clear technical violations, prompt for schema/heuristic
+    findings. When ``input_schema`` is provided, validates args against the
+    schema and uses field context to suppress false-positive heuristics.
     OC-3: Internal exceptions → fail-closed.
     """
     try:
-        return _inspect_mcp_args_inner(slug, tool_name, args, entry)
+        return _inspect_mcp_args_inner(slug, tool_name, args, entry, input_schema)
     except Exception as exc:
         logger.warning("MCP inspection error: %s", exc, exc_info=True)
         action = "deny" if _is_strict() else "prompt"
@@ -462,6 +465,7 @@ def _inspect_mcp_args_inner(
     tool_name: str,
     args: dict,
     entry: dict,
+    input_schema: dict | None = None,
 ) -> GuardDecision:
     findings: list[str] = []
     deny_reasons: list[str] = []
@@ -476,10 +480,41 @@ def _inspect_mcp_args_inner(
         deny_reasons.append(f"Oversized payload: {payload_size} bytes (limit {MAX_PAYLOAD_BYTES})")
         findings.append("oversized_payload")
 
-    # Deep inspection with recursion limits
+    # Schema validation (Phase 6.3)
+    schema = _safe_schema(input_schema)
+    schema_props = {}
+    schema_findings: list[str] = []
+    if schema:
+        schema_props = schema.get("properties", {})
+        schema_findings = _validate_schema(args, schema)
+        if schema_findings:
+            for sf in schema_findings:
+                prompt_reasons.append(sf)
+            findings.append("schema_violation")
+
+    # Deep inspection with recursion limits + schema-aware heuristic suppression
     key_count = [0]
     perms = entry.get("permissions") or {}
     net_level = perms.get("network_level", "none")
+
+    def _is_freetext(path: str) -> bool:
+        """Check if a field is declared as free-text in schema."""
+        if not schema_props:
+            return False
+        field = path.split(".")[0]
+        prop = schema_props.get(field, {})
+        if not isinstance(prop, dict) or prop.get("type") != "string":
+            return False
+        max_len = prop.get("maxLength")
+        return max_len is None or max_len >= 1000
+
+    def _is_url_field(path: str) -> bool:
+        """Check if schema declares this field as a URL/URI."""
+        if not schema_props:
+            return False
+        field = path.split(".")[0]
+        prop = schema_props.get(field, {})
+        return isinstance(prop, dict) and prop.get("format") in ("uri", "url")
 
     def inspect_value(val: Any, depth: int, path: str) -> None:
         if depth > MAX_NESTING_DEPTH:
@@ -502,12 +537,14 @@ def _inspect_mcp_args_inner(
                 findings.append("absolute_path_escape")
 
             if net_level == "none" and _URL_RE.search(val):
-                deny_reasons.append(f"URL at {path} but network_level=none")
-                findings.append("url_anomaly")
+                if not _is_url_field(path):
+                    deny_reasons.append(f"URL at {path} but network_level=none")
+                    findings.append("url_anomaly")
 
             if _SHELL_TOKEN_RE.search(val):
-                prompt_reasons.append(f"Shell token at {path}")
-                findings.append("shell_token")
+                if not _is_freetext(path):
+                    prompt_reasons.append(f"Shell token at {path}")
+                    findings.append("shell_token")
 
         elif isinstance(val, dict):
             for k, v in val.items():
@@ -552,6 +589,148 @@ def _inspect_mcp_args_inner(
         source="guard.mcp_inspection",
         guard_chain=["mcp_inspect:allow"],
     )
+
+
+# ---------------------------------------------------------------------------
+# Minimal JSON Schema subset validator (Phase 6.3)
+# ---------------------------------------------------------------------------
+
+_SCHEMA_TYPE_MAP: dict[str, type | tuple[type, ...]] = {
+    "string": str,
+    "number": (int, float),
+    "integer": int,
+    "boolean": bool,
+    "array": (list, tuple),
+    "object": dict,
+}
+
+
+def _safe_schema(schema: dict | None) -> dict | None:
+    """Return schema if it looks valid, None otherwise (malformed → fallback)."""
+    if schema is None:
+        return None
+    if not isinstance(schema, dict):
+        logger.debug("Malformed schema: not a dict")
+        return None
+    if schema.get("type") not in ("object", None):
+        logger.debug("Malformed schema: root type is %r", schema.get("type"))
+        return None
+    props = schema.get("properties")
+    if props is not None and not isinstance(props, dict):
+        logger.debug("Malformed schema: properties is not a dict")
+        return None
+    return schema
+
+
+def _validate_schema(args: dict, schema: dict) -> list[str]:
+    """Validate args against a JSON Schema subset.
+
+    Returns a list of human-readable violation strings.
+    Schema violations → prompt (not deny).
+    """
+    violations: list[str] = []
+    props = schema.get("properties", {})
+    required = schema.get("required", [])
+
+    # Required field check
+    if isinstance(required, list):
+        for field in required:
+            if isinstance(field, str) and field not in args:
+                violations.append(f"Missing required field: '{field}'")
+
+    # Per-field validation
+    for field_name, value in args.items():
+        if field_name not in props:
+            continue
+        field_schema = props[field_name]
+        if not isinstance(field_schema, dict):
+            continue
+
+        field_violations = _validate_field(field_name, value, field_schema)
+        violations.extend(field_violations)
+
+    return violations
+
+
+def _validate_field(name: str, value: Any, schema: dict) -> list[str]:
+    """Validate a single field value against its schema."""
+    violations: list[str] = []
+
+    # Type check
+    expected_type = schema.get("type")
+    if expected_type and expected_type != "null":
+        if expected_type in _SCHEMA_TYPE_MAP:
+            expected_python = _SCHEMA_TYPE_MAP[expected_type]
+            if value is not None:
+                # bool is a subclass of int in Python — reject bools for int/number
+                if isinstance(value, bool) and expected_type in ("integer", "number"):
+                    violations.append(
+                        f"Type mismatch for '{name}': expected {expected_type}, "
+                        f"got {type(value).__name__}"
+                    )
+                    return violations
+                if not isinstance(value, expected_python):
+                    # int is valid for "number"
+                    if not (expected_type == "number" and isinstance(value, int)):
+                        violations.append(
+                            f"Type mismatch for '{name}': expected {expected_type}, "
+                            f"got {type(value).__name__}"
+                        )
+                        return violations
+
+    # Null check
+    if value is None:
+        if expected_type and expected_type != "null":
+            violations.append(f"Null value for non-nullable field '{name}'")
+        return violations
+
+    # Enum check
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and value not in enum_values:
+        violations.append(
+            f"Enum violation for '{name}': {value!r} not in {enum_values}"
+        )
+
+    # String constraints
+    if isinstance(value, str):
+        min_len = schema.get("minLength")
+        max_len = schema.get("maxLength")
+        if isinstance(min_len, int) and len(value) < min_len:
+            violations.append(
+                f"String too short for '{name}': {len(value)} < minLength {min_len}"
+            )
+        if isinstance(max_len, int) and len(value) > max_len:
+            violations.append(
+                f"String too long for '{name}': {len(value)} > maxLength {max_len}"
+            )
+
+    # Number constraints
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if isinstance(minimum, (int, float)) and value < minimum:
+            violations.append(
+                f"Value too small for '{name}': {value} < minimum {minimum}"
+            )
+        if isinstance(maximum, (int, float)) and value > maximum:
+            violations.append(
+                f"Value too large for '{name}': {value} > maximum {maximum}"
+            )
+
+    # Array constraints
+    if isinstance(value, (list, tuple)):
+        min_items = schema.get("minItems")
+        max_items = schema.get("maxItems")
+        if isinstance(min_items, int) and len(value) < min_items:
+            violations.append(
+                f"Too few items for '{name}': {len(value)} < minItems {min_items}"
+            )
+        if isinstance(max_items, int) and len(value) > max_items:
+            violations.append(
+                f"Too many items for '{name}': {len(value)} > maxItems {max_items}"
+            )
+
+    return violations
 
 
 # ---------------------------------------------------------------------------
