@@ -673,3 +673,97 @@ Agent-Tool-Calls gehen durch `AgentContext.run_tool()` → `runner.run_tool()`. 
 - `critical` Actions (risk score >70) werden **immer denied**, auch wenn sie in `pre_approved_actions` stehen.
 
 Begründung: Pauschales implizites Allow für trusted Agents wäre zu breit. Agents brauchen explizite Deklaration welche Action-Typen sie ausführen dürfen. Trust allein reicht nicht — ein Agent mit `trusted` Trust der undokumentiert `delete` Actions ausführt ist ein Risiko. Die Kombination aus Trust-Gate + Allowlist + pre_approved_actions gibt dem Publisher und dem User volle Kontrolle.
+
+---
+
+## 16. Architektur-Invarianten
+
+Ergänzende Invarianten, die vor Phase 6.1 Implementierung gelten.
+
+### INV-1: action_type ist immutable nach Publish
+
+`action_type` bestimmt Risk Score, Guard Decisions, Prompt/Allow-Logik und Audit-Semantik. Deshalb:
+
+- `action_type` darf nach Publish einer Version **nicht mehr verändert** werden.
+- Änderung erfordert eine **neue Package-Version**.
+
+Ohne diese Invariante kann ein Publisher still von `action_type: read` auf `action_type: delete` wechseln, ohne semantische Versionsgrenze. Enforcement gehört in die Backend/Registry-Validation (publish endpoint), Spec dokumentiert die Anforderung.
+
+### INV-2: unknown escaliert bei Permission-Signalen
+
+`unknown = medium` ist im MVP akzeptabel als Baseline. Aber ein nicht klassifizierbares Tool mit aktiven Permission-Signalen ist faktisch high-risk. Escalation-Regeln:
+
+```
+unknown + network_level != none     → mindestens high
+unknown + credential_use            → mindestens high
+unknown + code_execution != none    → mindestens high
+```
+
+Ohne diese Escalation reicht ein absichtlich obfuskierter Toolname, um Risk künstlich niedrig zu halten.
+
+### INV-3: Rate Limit Memory Bounds
+
+In-Memory Sliding Window (`dict[slug] → list[timestamp]`) braucht Bounds:
+
+- **Stale Entry Cleanup**: Entries älter als `window_size` werden bei jedem Check entfernt.
+- **Max Tracked Keys**: Maximal 10.000 aktive Slugs. Ältester Eintrag wird evicted bei Überlauf.
+- **Monotonic Clock**: `time.monotonic()` statt `time.time()` — Wall Clock kann springen (NTP, DST, Suspend/Resume).
+
+### INV-4: MCP Argument Inspection Recursion Limits
+
+`inspect_mcp_args()` verarbeitet beliebiges JSON. Ohne Limits wird Inspection selbst zum Angriffsvektor. Definierte Bounds:
+
+- **Max Nesting Depth**: 20 Ebenen. Tiefere Strukturen → deny.
+- **Max String Length**: 1MB pro Einzelstring. Längere Strings → deny.
+- **Max Total Keys**: 10.000 Keys über die gesamte Struktur. Mehr → deny.
+
+Diese Limits gelten zusätzlich zum Oversized-Check (>1MB Gesamt-Payload).
+
+### INV-5: Confirmation Callback bekommt GuardContext
+
+Aktuelles Interface `Callable[[GuardDecision], bool]` reicht für MVP, aber ein UI braucht Kontext für sinnvolle Darstellung. Erweitertes Interface:
+
+```python
+@dataclass
+class GuardContext:
+    slug: str
+    tool_name: str | None
+    args_preview: dict        # truncated/redacted kwargs
+    request_id: str | None
+    trust_level: str
+
+# MVP: GuardDecision only (backward-compatible)
+# Post-MVP: Callable[[GuardDecision, GuardContext], bool]
+```
+
+MVP implementiert `GuardContext` intern, übergibt es aber noch nicht an den Callback. Post-MVP erweitert die Signatur. Damit ist die Datenstruktur von Anfang an da, ohne Breaking Change beim Callback-Interface.
+
+### INV-6: Audit Decision Lineage
+
+Jeder Audit-Record bekommt ein `guard_chain` Feld, das die vollständige Entscheidungskette dokumentiert:
+
+```json
+{
+    "guard_chain": [
+        "check_run:allow",
+        "risk_policy:allow",
+        "guard_action:prompt",
+        "user_confirmed:allow"
+    ]
+}
+```
+
+Damit ist bei späterer Forensik sofort sichtbar, welche Schicht welche Entscheidung getroffen hat — ohne Audit-Logs korrelieren zu müssen.
+
+### INV-7: Guard ist Pre-Execution Policy, keine Behavioral Sandbox
+
+**Explizite Scope-Limitation**: Guard prüft Inputs vor Execution. Guard sieht nicht, was ein MCP-Server oder Python-Subprocess tatsächlich tut.
+
+```
+inspect_mcp_args(args)  → allow
+server.call_tool(args)  → Server kann intern beliebige Actions ausführen
+```
+
+Guard ist eine **pre-execution policy layer**, keine behavioral sandbox. Runtime-Isolation (Container, Subprocess-Sandboxing) ist ein separater Track und wird nicht durch Guard ersetzt.
+
+Diese Limitation muss in User-facing Dokumentation klar kommuniziert werden, damit Nutzer die tatsächliche Isolationsgrenze nicht überschätzen.
