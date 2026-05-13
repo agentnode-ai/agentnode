@@ -156,6 +156,49 @@ def reset_guard_config_cache() -> None:
     _config_loaded = False
 
 
+def get_resolved_policy() -> dict[str, Any]:
+    """Return the fully resolved guard policy for display purposes.
+
+    Read-only — no side effects, no audit writes.
+    """
+    strict = _is_strict()
+    policy = _get_effective_policy()
+
+    rate_limits_default = _get_rate_limits("__default__")
+    rate_limits_agent = _get_rate_limits("__default__", {"package_type": "agent"})
+    rate_limits_strict: dict[str, int] | None = None
+    if not strict:
+        saved = os.environ.get("AGENTNODE_GUARD_STRICT", "")
+        os.environ["AGENTNODE_GUARD_STRICT"] = "true"
+        rate_limits_strict = _get_rate_limits("__default__")
+        if saved:
+            os.environ["AGENTNODE_GUARD_STRICT"] = saved
+        else:
+            os.environ.pop("AGENTNODE_GUARD_STRICT", None)
+    else:
+        rate_limits_strict = dict(rate_limits_default)
+
+    agent_overrides: dict = {}
+    try:
+        from agentnode_sdk.config import load_config
+        cfg = load_config()
+        agent_overrides = cfg.get("guard", {}).get("agent_overrides", {})
+    except Exception:
+        pass
+
+    return {
+        "strict_mode": strict,
+        "action_policies": policy,
+        "credential_rule": "allow only with declared connector/credential scope; otherwise prompt",
+        "rate_limits": {
+            "toolpack": rate_limits_default,
+            "agent": rate_limits_agent,
+            "strict": rate_limits_strict,
+        },
+        "agent_overrides": agent_overrides,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Action classification (Spec §3)
 # ---------------------------------------------------------------------------

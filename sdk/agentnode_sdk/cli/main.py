@@ -159,6 +159,12 @@ def main(argv: list[str] | None = None) -> int:
     skill_show_parser.add_argument("--render", nargs="*", metavar="KEY=VALUE", help="Render prompt with variables")
     skill_show_parser.add_argument("--raw", action="store_true", help="Output raw prompt text only")
 
+    # guard
+    guard_parser = sub.add_parser("guard", help="Guard policy and status")
+    guard_sub = guard_parser.add_subparsers(dest="guard_action")
+    guard_policy_parser = guard_sub.add_parser("policy", help="Show resolved guard policy")
+    guard_policy_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+
     # serve
     sub.add_parser("serve", help="Start MCP server (stdio)")
 
@@ -275,6 +281,11 @@ def main(argv: list[str] | None = None) -> int:
                         render_vars[k] = v
                 return commands.cmd_skill_show(args.slug, render_vars=render_vars, raw=args.raw)
             return commands.cmd_skill_list()
+        if args.command == "guard":
+            if args.guard_action == "policy":
+                return commands.cmd_guard_policy(json_output=args.json_output)
+            guard_parser.print_help()
+            return 1
         if args.command == "serve":
             from agentnode_sdk.cli.serve import cmd_serve
             return cmd_serve()

@@ -2404,3 +2404,76 @@ def cmd_validate(path_str: str) -> int:
     print()
 
     return 1 if result.has_errors else 0
+
+
+# ---------------------------------------------------------------------------
+# Guard commands (Phase 7)
+# ---------------------------------------------------------------------------
+
+_ACTION_ORDER = [
+    "read", "compute", "write_local", "network_egress",
+    "write_external", "delete", "execute", "credential_use", "unknown",
+]
+
+_POLICY_COLORS = {
+    "allow": "\033[32m",   # green
+    "prompt": "\033[33m",  # yellow
+    "deny": "\033[31m",    # red
+}
+_RESET = "\033[0m"
+
+
+def cmd_guard_policy(*, json_output: bool = False) -> int:
+    """Show the fully resolved guard policy."""
+    from agentnode_sdk.guard import get_resolved_policy
+
+    resolved = get_resolved_policy()
+
+    if json_output:
+        print(json.dumps(resolved, indent=2))
+        return 0
+
+    strict = resolved["strict_mode"]
+    policies = resolved["action_policies"]
+    rl = resolved["rate_limits"]
+    overrides = resolved["agent_overrides"]
+
+    print()
+    print(bold("  Guard Policy"))
+    print(f"  {'─' * 40}")
+
+    mode_label = f"{_POLICY_COLORS['deny']}STRICT{_RESET}" if strict else "default"
+    print(f"  Mode:  {mode_label}")
+    print()
+
+    print(bold("  Action Policies"))
+    print(f"  {'─' * 40}")
+    for at in _ACTION_ORDER:
+        policy_val = policies.get(at, "unknown")
+        color = _POLICY_COLORS.get(policy_val, "")
+        print(f"  {at:<20} {color}{policy_val}{_RESET}")
+    print()
+    print(dim(f"  credential_use: {resolved['credential_rule']}"))
+    print()
+
+    print(bold("  Rate Limits"))
+    print(f"  {'─' * 40}")
+    for label, key in [("Toolpack (default)", "toolpack"), ("Agent", "agent"), ("Strict", "strict")]:
+        limits = rl.get(key, {})
+        cpm = limits.get("calls_per_minute", "?")
+        cph = limits.get("calls_per_hour", "?")
+        burst = limits.get("burst_size", "?")
+        marker = " ← active" if (key == "strict" and strict) or (key == "toolpack" and not strict) else ""
+        print(f"  {label:<20} {cpm}/min  {cph}/hour  burst {burst}{dim(marker)}")
+    print()
+
+    if overrides:
+        print(bold("  Agent Overrides"))
+        print(f"  {'─' * 40}")
+        for slug, override in overrides.items():
+            pre_approved = override.get("pre_approved_actions", [])
+            if pre_approved:
+                print(f"  {slug}: {', '.join(pre_approved)}")
+        print()
+
+    return 0
