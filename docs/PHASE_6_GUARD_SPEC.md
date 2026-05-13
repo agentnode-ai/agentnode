@@ -767,3 +767,43 @@ server.call_tool(args)  → Server kann intern beliebige Actions ausführen
 Guard ist eine **pre-execution policy layer**, keine behavioral sandbox. Runtime-Isolation (Container, Subprocess-Sandboxing) ist ein separater Track und wird nicht durch Guard ersetzt.
 
 Diese Limitation muss in User-facing Dokumentation klar kommuniziert werden, damit Nutzer die tatsächliche Isolationsgrenze nicht überschätzen.
+
+---
+
+## 17. Operative Implementierungs-Constraints für Phase 6.1
+
+### OC-1: Guard-Module dependency-light
+
+`guard.py` darf keine Imports aus Runtime-spezifischen Modulen haben (`python_runner`, `mcp_runner`, `agent_runner`, `remote_runner`). Erlaubt sind nur:
+
+- Standardbibliothek (`dataclasses`, `time`, `re`, `json`, `typing`)
+- `config.py` (für Guard-Policy laden)
+- `policy.py` (nur für `audit_decision()` und `PolicyResult` Typ)
+- `models.py` (nur für Typen/Interfaces)
+
+Begründung: Guard sitzt architektonisch über den Runtimes. Imports in Runtimes erzeugen zyklische Security-Abhängigkeiten und machen Guard testbar nur mit vollem Runtime-Stack.
+
+### OC-2: Guard Decision Path ist pure/in-memory
+
+Der gesamte Entscheidungspfad von `check_action()` und `inspect_mcp_args()`:
+
+- **Kein File-I/O** — Config wird einmal beim Start geladen, danach aus Memory
+- **Keine Netzwerkanfragen** — keine Registry-Calls, keine Trust-Refreshes
+- **Keine Datenbank-Zugriffe** — Guard arbeitet nur mit dem übergebenen `entry` dict
+
+Audit-Writes (`audit_decision()`) passieren **nach** der Entscheidung und sind fire-and-forget (Schreibfehler crashen nie den Caller — bestehende Invariante).
+
+Begründung: Guard muss <1ms sein (Designprinzip 5). Jede I/O-Abhängigkeit im Decision Path öffnet Failure Modes und macht die Latenz-Garantie unmöglich.
+
+### OC-3: Guard fail-closed bei internen Exceptions
+
+Wenn `guard.check_action()` oder `inspect_mcp_args()` intern eine unerwartete Exception wirft:
+
+```
+AGENTNODE_GUARD_STRICT=true  → deny  + audit(event=guard_check, action=deny, reason=internal_error)
+Default mode                 → prompt + audit(event=guard_check, action=prompt, reason=internal_error)
+```
+
+**Niemals** automatisch `allow` bei Guard-internen Fehlern. Ein crashender Guard der `allow` zurückgibt ist schlimmer als kein Guard.
+
+Die Exception wird im Audit-Record dokumentiert (`guard_error: str`), aber nicht an den Caller propagiert — der Caller sieht nur die deny/prompt Entscheidung.
