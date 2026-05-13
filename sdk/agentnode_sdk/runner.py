@@ -11,7 +11,7 @@ from typing import Any
 
 from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.models import RunToolResult
-from agentnode_sdk.policy import resolve_runtime, check_run, check_risk_policies, audit_decision, _resolve_interactive
+from agentnode_sdk.policy import resolve_runtime, check_run, check_risk_policies, audit_decision, _resolve_interactive, PolicyResult
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,34 @@ def run_tool(
             if risk_result.action in ("prompt", "deny"):
                 decision = risk_result
 
+    # Guard Layer 4: action-type classification + policy (Phase 6.1)
+    guard_decision = None
+    if decision.action == "allow" and entry.get("package_type") != "skill":
+        from agentnode_sdk.guard import check_action as guard_check_action
+        guard_decision = guard_check_action(
+            slug, tool_name, kwargs, entry,
+            interactive=_resolve_interactive(),
+        )
+        _audit_guard_decision(guard_decision, slug, tool_name, entry)
+        if guard_decision.action in ("prompt", "deny"):
+            decision = PolicyResult(
+                action=guard_decision.action,
+                reason=guard_decision.reason,
+                source=guard_decision.source,
+            )
+
+    # Guard Layer 5: rate limiting (Phase 6.1)
+    if decision.action == "allow" and entry.get("package_type") != "skill":
+        from agentnode_sdk.guard import check_rate_limit
+        rl_decision = check_rate_limit(slug, tool_name)
+        if rl_decision.action != "allow":
+            _audit_guard_decision(rl_decision, slug, tool_name, entry)
+            decision = PolicyResult(
+                action=rl_decision.action,
+                reason=rl_decision.reason,
+                source=rl_decision.source,
+            )
+
     from agentnode_sdk.input_guard import validate_tool_input
     input_warnings = validate_tool_input(slug, tool_name, kwargs, entry)
     if input_warnings:
@@ -161,6 +189,9 @@ def run_tool(
     }
     if input_warnings:
         policy_info["input_warnings"] = input_warnings
+    if guard_decision and guard_decision.action_types:
+        policy_info["guard_action_types"] = guard_decision.action_types
+        policy_info["guard_risk_level"] = guard_decision.risk_level
     if decision.action == "deny":
         return RunToolResult(
             success=False, error=decision.reason, mode_used="policy_denied",
@@ -219,3 +250,29 @@ def _get_lockfile_entry(slug: str, lockfile_path: Path | None) -> dict:
     """Read the lockfile entry for a package."""
     data = read_lockfile(lockfile_path)
     return data.get("packages", {}).get(slug, {})
+
+
+def _audit_guard_decision(
+    guard_decision: Any,
+    slug: str,
+    tool_name: str | None,
+    entry: dict,
+) -> None:
+    """Write a guard_check audit event."""
+    try:
+        from agentnode_sdk.guard import GuardDecision
+        if not isinstance(guard_decision, GuardDecision):
+            return
+        audit_decision(
+            PolicyResult(
+                action=guard_decision.action,
+                reason=guard_decision.reason,
+                source=guard_decision.source,
+            ),
+            "guard_check",
+            slug,
+            tool_name=tool_name,
+            trust_level=entry.get("trust_level"),
+        )
+    except Exception:
+        logger.debug("Failed to audit guard decision", exc_info=True)

@@ -245,6 +245,26 @@ def run_mcp(
             else:
                 name = slug
 
+        # Guard: inspect MCP arguments before forwarding (Phase 6.1)
+        from agentnode_sdk.guard import inspect_mcp_args
+        mcp_guard = inspect_mcp_args(slug, name, kwargs, entry)
+        if mcp_guard.action == "deny":
+            elapsed = (time.monotonic() - t0) * 1000
+            return RunToolResult(
+                success=False,
+                error=f"MCP argument inspection blocked: {mcp_guard.reason}",
+                mode_used="mcp",
+                duration_ms=round(elapsed, 1),
+            )
+        if mcp_guard.action == "prompt":
+            elapsed = (time.monotonic() - t0) * 1000
+            return RunToolResult(
+                success=False,
+                error=f"MCP argument inspection requires confirmation: {mcp_guard.reason}",
+                mode_used="mcp",
+                duration_ms=round(elapsed, 1),
+            )
+
         result = server.call_tool(name, kwargs, timeout=timeout)
         elapsed = (time.monotonic() - t0) * 1000
 

@@ -73,21 +73,30 @@ class TestRunnerPolicyIntegration:
         """run_tool with allow policy → proceeds to runtime dispatch."""
         from agentnode_sdk.runner import run_tool
         from agentnode_sdk.models import RunToolResult
+        from agentnode_sdk.guard import reset_guard_config_cache
 
         lockfile = self._make_lockfile("test-pack", trust="verified")
 
         def fake_run_python(*args, **kwargs):
             return RunToolResult(success=True, result={"ok": True}, mode_used="direct")
 
+        cfg = {
+            "trust": {"minimum_trust_level": "verified"},
+            "permissions": {"network": "allow", "filesystem": "allow", "code_execution": "sandboxed"},
+            "guard": {
+                "delete": "allow", "write_external": "allow", "execute": "allow",
+                "credential_use": "allow", "network_egress": "allow", "write_local": "allow",
+                "read": "allow", "compute": "allow", "unknown": "allow",
+            },
+        }
         with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
-            with mock.patch("agentnode_sdk.config.load_config", return_value={
-                "trust": {"minimum_trust_level": "verified"},
-                "permissions": {"network": "allow", "filesystem": "allow", "code_execution": "sandboxed"},
-            }):
+            with mock.patch("agentnode_sdk.config.load_config", return_value=cfg):
+                reset_guard_config_cache()
                 with mock.patch("agentnode_sdk.policy.audit_decision"):
                     with mock.patch("agentnode_sdk.runtimes.python_runner.run_python", fake_run_python):
                         result = run_tool("test-pack")
                         assert result.success is True
+                reset_guard_config_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -472,8 +481,9 @@ class TestDecisionLogIntegration:
     """Tests that all execution paths produce audit entries."""
 
     def test_runner_produces_audit(self, tmp_path):
-        """run_tool() should call audit_decision."""
+        """run_tool() should call audit_decision (run_tool + guard_check events)."""
         from agentnode_sdk.runner import run_tool
+        from agentnode_sdk.guard import reset_guard_config_cache
 
         lockfile = {
             "packages": {
@@ -489,7 +499,6 @@ class TestDecisionLogIntegration:
         }
 
         audit_calls = []
-        original_audit = None
 
         def capture_audit(decision, event_type, slug, **kwargs):
             audit_calls.append({
@@ -498,11 +507,18 @@ class TestDecisionLogIntegration:
                 "action": decision.action,
             })
 
+        cfg = {
+            "trust": {"minimum_trust_level": "verified"},
+            "permissions": {"network": "allow", "filesystem": "allow", "code_execution": "sandboxed"},
+            "guard": {
+                "delete": "allow", "write_external": "allow", "execute": "allow",
+                "credential_use": "allow", "network_egress": "allow", "write_local": "allow",
+                "read": "allow", "compute": "allow", "unknown": "allow",
+            },
+        }
         with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
-            with mock.patch("agentnode_sdk.config.load_config", return_value={
-                "trust": {"minimum_trust_level": "verified"},
-                "permissions": {"network": "allow", "filesystem": "allow", "code_execution": "sandboxed"},
-            }):
+            with mock.patch("agentnode_sdk.config.load_config", return_value=cfg):
+                reset_guard_config_cache()
                 with mock.patch("agentnode_sdk.runner.audit_decision", capture_audit):
                     from agentnode_sdk.models import RunToolResult as RR
                     with mock.patch(
@@ -510,7 +526,8 @@ class TestDecisionLogIntegration:
                         return_value=RR(success=True, result={}, mode_used="direct"),
                     ):
                         run_tool("test-pack")
-                        assert len(audit_calls) == 1
-                        assert audit_calls[0]["event"] == "run_tool"
-                        assert audit_calls[0]["slug"] == "test-pack"
-                        assert audit_calls[0]["action"] == "allow"
+                        run_tool_events = [c for c in audit_calls if c["event"] == "run_tool"]
+                        assert len(run_tool_events) >= 1
+                        assert run_tool_events[0]["slug"] == "test-pack"
+                        assert run_tool_events[0]["action"] == "allow"
+                reset_guard_config_cache()

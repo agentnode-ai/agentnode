@@ -53,6 +53,8 @@ def bypass_policy():
     trust/permission enforcement.
     """
     allow = _get_allow_result()
+    from agentnode_sdk.guard import GuardDecision
+    guard_allow = GuardDecision(action="allow", reason="test bypass", source="guard.default")
     patches = [
         mock.patch("agentnode_sdk.policy.check_run", return_value=allow),
         mock.patch("agentnode_sdk.policy.check_install", return_value=allow),
@@ -60,6 +62,9 @@ def bypass_policy():
         # runner.py imports
         mock.patch("agentnode_sdk.runner.check_run", return_value=allow),
         mock.patch("agentnode_sdk.runner.audit_decision"),
+        # guard bypass
+        mock.patch("agentnode_sdk.guard.check_action", return_value=guard_allow),
+        mock.patch("agentnode_sdk.guard.check_rate_limit", return_value=guard_allow),
         # runtime.py imports (aliased)
         mock.patch("agentnode_sdk.runtime._policy_check_run", return_value=allow),
         mock.patch("agentnode_sdk.runtime._policy_audit"),

@@ -543,6 +543,7 @@ def check_risk_policies(
 _VALID_EVENTS = frozenset({
     "run_tool", "runtime_run", "client_install", "mcp_run",
     "agent_run", "remote_run",
+    "guard_check", "guard_rate_limit",
 })
 
 

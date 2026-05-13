@@ -30,6 +30,17 @@ DEFAULTS: dict[str, Any] = {
     "risk_policies": {
         "external_write_capable": "log",
     },
+    "guard": {
+        "delete": "prompt",
+        "write_external": "prompt",
+        "execute": "prompt",
+        "credential_use": "prompt",
+        "network_egress": "allow",
+        "write_local": "allow",
+        "read": "allow",
+        "compute": "allow",
+        "unknown": "prompt",
+    },
 }
 
 VALID_VALUES: dict[str, tuple[str, ...]] = {
@@ -41,6 +52,15 @@ VALID_VALUES: dict[str, tuple[str, ...]] = {
     "permissions.code_execution": ("sandboxed", "prompt", "deny"),
     "credentials.require_before_auto_install": ("true", "false"),
     "risk_policies.external_write_capable": ("allow", "log", "prompt", "deny"),
+    "guard.delete": ("allow", "prompt", "deny"),
+    "guard.write_external": ("allow", "prompt", "deny"),
+    "guard.execute": ("allow", "prompt", "deny"),
+    "guard.credential_use": ("allow", "prompt", "deny"),
+    "guard.network_egress": ("allow", "prompt", "deny"),
+    "guard.write_local": ("allow", "prompt", "deny"),
+    "guard.read": ("allow", "prompt", "deny"),
+    "guard.compute": ("allow", "prompt", "deny"),
+    "guard.unknown": ("allow", "prompt", "deny"),
 }
 
 
@@ -53,6 +73,15 @@ CONFIG_DESCRIPTIONS: dict[str, str] = {
     "permissions.code_execution": "Policy for packages that execute code",
     "credentials.require_before_auto_install": "Skip packages needing credentials you don't have during auto-install",
     "risk_policies.external_write_capable": "Policy for packages that can write or send data externally",
+    "guard.delete": "Guard policy for tools that delete resources",
+    "guard.write_external": "Guard policy for tools that write data externally",
+    "guard.execute": "Guard policy for tools that execute code",
+    "guard.credential_use": "Guard policy for tools that use credentials",
+    "guard.network_egress": "Guard policy for tools with network egress",
+    "guard.write_local": "Guard policy for tools that write locally",
+    "guard.read": "Guard policy for tools that read data",
+    "guard.compute": "Guard policy for tools that perform computation",
+    "guard.unknown": "Guard policy for tools with unknown action type",
 }
 
 
@@ -102,6 +131,13 @@ def _merge_defaults(data: dict) -> dict[str, Any]:
         for k in cfg["risk_policies"]:
             if k in data["risk_policies"]:
                 cfg["risk_policies"][k] = data["risk_policies"][k]
+    if isinstance(data.get("guard"), dict):
+        for k in cfg["guard"]:
+            if k in data["guard"]:
+                cfg["guard"][k] = data["guard"][k]
+        for extra_key in ("rate_limits", "agent_overrides"):
+            if extra_key in data["guard"]:
+                cfg["guard"][extra_key] = data["guard"][extra_key]
     return cfg
 
 
