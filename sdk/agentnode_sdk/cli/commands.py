@@ -761,7 +761,9 @@ def cmd_install(capability: str, version: str | None = None, yes: bool = False) 
             if result.already_installed:
                 print(f"\n  {result.slug}@{result.version} is already installed.\n")
             else:
-                print(f"\n  Installed {result.slug}@{result.version}.\n")
+                print(f"\n  Installed {result.slug}@{result.version}.")
+                _print_install_guard_summary(result.slug)
+                print()
         else:
             print(f"\n  {result.message}\n")
             return 1
@@ -1512,6 +1514,9 @@ def cmd_inspect(slug: str, *, json_output: bool = False) -> int:
     # Policy Preview
     _inspect_print_policy_preview(slug, pkg)
 
+    # Guard Preview
+    _inspect_print_guard_preview(slug, pkg)
+
     # Privacy
     print()
     print(f"  {bold('Privacy')}")
@@ -1584,6 +1589,182 @@ def _inspect_print_policy_preview(slug: str, pkg: dict) -> None:
         print(kv("Reason", result.reason))
 
 
+def _inspect_print_guard_preview(slug: str, pkg: dict) -> None:
+    """Print guard preview — what check_action() would decide at runtime."""
+    from agentnode_sdk.guard import check_action, classify_action
+
+    pkg_type = pkg.get("package_type", "toolpack")
+
+    if pkg_type == "skill":
+        print()
+        print(f"  {bold('Guard Preview')}")
+        print("  " + "-" * 13)
+        print(kv("(skills bypass guard)", dim("")))
+        return
+
+    if pkg_type == "upgrade":
+        print()
+        print(f"  {bold('Guard Preview')}")
+        print("  " + "-" * 13)
+        print(kv("(no executable tools)", dim("upgrade/add-on package")))
+        return
+
+    tools = pkg.get("tools", [])
+    has_tools = tools and any(isinstance(t, dict) and t.get("name") for t in tools)
+
+    # Resource/prompt-only packages with no executable tools
+    if not has_tools and pkg_type not in ("toolpack", "agent"):
+        print()
+        print(f"  {bold('Guard Preview')}")
+        print("  " + "-" * 13)
+        print(kv("(no executable tools)", dim(f"{pkg_type} package")))
+        return
+
+    print()
+    print(f"  {bold('Guard Preview')} {dim('(current config)')}")
+    print("  " + "-" * 13)
+
+    if has_tools:
+        for t in tools:
+            if not isinstance(t, dict) or not t.get("name"):
+                continue
+            tool_name = t["name"]
+            decision = check_action(slug, tool_name, {}, pkg, interactive=False)
+            action_types = sorted(decision.action_types)
+            act_str = _guard_action_display(decision.action)
+            risk_str = _guard_risk_display(decision.risk_level)
+
+            print(f"  {tool_name:<20} {', '.join(action_types):<28} {risk_str:<10} {act_str}")
+            if decision.action in ("deny", "prompt"):
+                print(f"  {' ' * 20} {dim('↳ ' + decision.reason)}")
+    else:
+        decision = check_action(slug, None, {}, pkg, interactive=False)
+        action_types = sorted(decision.action_types)
+        act_str = _guard_action_display(decision.action)
+        risk_str = _guard_risk_display(decision.risk_level)
+
+        print(f"  {'(package-level)':<20} {', '.join(action_types):<28} {risk_str:<10} {act_str}")
+        if decision.action in ("deny", "prompt"):
+            print(f"  {' ' * 20} {dim('↳ ' + decision.reason)}")
+
+
+def _build_guard_preview(slug: str, pkg: dict) -> list[dict] | str:
+    """Build guard preview data for JSON report."""
+    from agentnode_sdk.guard import check_action
+
+    pkg_type = pkg.get("package_type", "toolpack")
+
+    if pkg_type == "skill":
+        return "skills_bypass_guard"
+    if pkg_type == "upgrade":
+        return "no_executable_tools"
+
+    tools = pkg.get("tools", [])
+    has_tools = tools and any(isinstance(t, dict) and t.get("name") for t in tools)
+
+    if not has_tools and pkg_type not in ("toolpack", "agent"):
+        return "no_executable_tools"
+
+    previews: list[dict] = []
+
+    if has_tools:
+        for t in tools:
+            if not isinstance(t, dict) or not t.get("name"):
+                continue
+            tool_name = t["name"]
+            decision = check_action(slug, tool_name, {}, pkg, interactive=False)
+            previews.append({
+                "tool_name": tool_name,
+                "action_types": sorted(decision.action_types),
+                "risk_level": decision.risk_level,
+                "guard_action": decision.action,
+                "reason": decision.reason,
+            })
+    else:
+        decision = check_action(slug, None, {}, pkg, interactive=False)
+        previews.append({
+            "tool_name": None,
+            "action_types": sorted(decision.action_types),
+            "risk_level": decision.risk_level,
+            "guard_action": decision.action,
+            "reason": decision.reason,
+        })
+
+    return previews
+
+
+def _print_install_guard_summary(slug: str) -> None:
+    """Print one-line guard summary after install."""
+    from agentnode_sdk.guard import check_action
+    from agentnode_sdk.installer import read_lockfile
+
+    try:
+        lock = read_lockfile()
+        pkg = lock.get("packages", {}).get(slug, {})
+        if not pkg:
+            return
+
+        pkg_type = pkg.get("package_type", "toolpack")
+        if pkg_type in ("skill", "upgrade"):
+            return
+
+        tools = pkg.get("tools", [])
+        has_tools = tools and any(isinstance(t, dict) and t.get("name") for t in tools)
+
+        # Collect all unique action types and worst decision across tools
+        all_action_types: set[str] = set()
+        worst_action = "allow"
+        worst_risk = "low"
+        risk_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+        if has_tools:
+            for t in tools:
+                if not isinstance(t, dict) or not t.get("name"):
+                    continue
+                decision = check_action(slug, t["name"], {}, pkg, interactive=False)
+                all_action_types.update(decision.action_types)
+                if _severity(decision.action) > _severity(worst_action):
+                    worst_action = decision.action
+                if risk_order.get(decision.risk_level, 0) > risk_order.get(worst_risk, 0):
+                    worst_risk = decision.risk_level
+        else:
+            decision = check_action(slug, None, {}, pkg, interactive=False)
+            all_action_types.update(decision.action_types)
+            worst_action = decision.action
+            worst_risk = decision.risk_level
+
+        types_str = ", ".join(sorted(all_action_types))
+        act_str = _guard_action_display(worst_action)
+        risk_str = _guard_risk_display(worst_risk)
+
+        print(f"  Guard: {types_str} → {act_str} ({risk_str})")
+
+    except Exception:
+        pass
+
+
+def _severity(action: str) -> int:
+    return {"allow": 0, "prompt": 1, "deny": 2}.get(action, 0)
+
+
+def _guard_action_display(action: str) -> str:
+    from agentnode_sdk.cli.output import _colors_enabled
+    if not _colors_enabled():
+        return action
+    colors = {"allow": "\033[32m", "deny": "\033[31m", "prompt": "\033[33m"}
+    color = colors.get(action, "")
+    return f"{color}{action}\033[0m" if color else action
+
+
+def _guard_risk_display(risk_level: str) -> str:
+    from agentnode_sdk.cli.output import _colors_enabled
+    if not _colors_enabled():
+        return risk_level
+    colors = {"critical": "\033[31m", "high": "\033[31m", "medium": "\033[33m", "low": "\033[32m"}
+    color = colors.get(risk_level, "")
+    return f"{color}{risk_level}\033[0m" if color else risk_level
+
+
 def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
     """Build a JSON-serializable inspect report."""
     from agentnode_sdk.risk_profile import compute_risk_profile
@@ -1639,6 +1820,7 @@ def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
             "timeout": is_subprocess,
         },
         "policy_preview": policy_dict,
+        "guard": _build_guard_preview(slug, pkg),
         "privacy": {
             "execution_local": True,
             "sent_to_registry": ["install_events", "search_queries", "trust_refresh"],
