@@ -164,6 +164,8 @@ def main(argv: list[str] | None = None) -> int:
     guard_sub = guard_parser.add_subparsers(dest="guard_action")
     guard_policy_parser = guard_sub.add_parser("policy", help="Show resolved guard policy")
     guard_policy_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    guard_status_parser = guard_sub.add_parser("status", help="Show guard activity summary")
+    guard_status_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
 
     # serve
     sub.add_parser("serve", help="Start MCP server (stdio)")
@@ -284,6 +286,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "guard":
             if args.guard_action == "policy":
                 return commands.cmd_guard_policy(json_output=args.json_output)
+            if args.guard_action == "status":
+                return commands.cmd_guard_status(json_output=args.json_output)
             guard_parser.print_help()
             return 1
         if args.command == "serve":

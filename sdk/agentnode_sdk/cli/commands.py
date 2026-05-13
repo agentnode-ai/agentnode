@@ -2477,3 +2477,72 @@ def cmd_guard_policy(*, json_output: bool = False) -> int:
         print()
 
     return 0
+
+
+def cmd_guard_status(*, json_output: bool = False) -> int:
+    """Show aggregated guard activity from audit log."""
+    from agentnode_sdk.cli.audit import read_audit_entries, guard_status_summary
+
+    guard_events = read_audit_entries(event="guard_check")
+    rate_events = read_audit_entries(event="guard_rate_limit")
+    confirm_events = read_audit_entries(event="guard_confirmation")
+    all_guard = guard_events + rate_events + confirm_events
+
+    if not all_guard:
+        if json_output:
+            print(json.dumps({"total_entries": 0}))
+        else:
+            print("\n  No guard activity recorded yet.\n")
+        return 0
+
+    summary = guard_status_summary(all_guard)
+
+    if json_output:
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    print()
+    print(bold("  Guard Status"))
+    print(f"  {'─' * 40}")
+    print(f"  Total guard events: {summary['total_entries']}")
+    print()
+
+    for label, key in [("Last 24 hours", "period_24h"), ("Last 7 days", "period_7d")]:
+        period = summary[key]
+        if period["total"] == 0:
+            print(f"  {bold(label)}: no activity")
+            print()
+            continue
+
+        actions = period["actions"]
+        allow = actions.get("allow", 0)
+        prompt = actions.get("prompt", 0)
+        deny = actions.get("deny", 0)
+        rl_hits = period["rate_limit_hits"]
+
+        print(f"  {bold(label)} ({period['total']} events)")
+        print(f"  {'─' * 40}")
+        print(f"  {_POLICY_COLORS.get('allow', '')}allow{_RESET}  {allow:>5}    "
+              f"{_POLICY_COLORS.get('prompt', '')}prompt{_RESET}  {prompt:>5}    "
+              f"{_POLICY_COLORS.get('deny', '')}deny{_RESET}  {deny:>5}")
+
+        if rl_hits:
+            print(f"  Rate limit hits: {rl_hits}")
+
+        top_denied = period["top_denied"]
+        if top_denied:
+            print()
+            print(f"  Top denied packages:")
+            for item in top_denied:
+                print(f"    {item['slug']:<30} {item['count']}x")
+
+        top_prompted = period["top_prompted_actions"]
+        if top_prompted:
+            print()
+            print(f"  Top prompted action types:")
+            for item in top_prompted:
+                print(f"    {item['action_type']:<30} {item['count']}x")
+
+        print()
+
+    return 0

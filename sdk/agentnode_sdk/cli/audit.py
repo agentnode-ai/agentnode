@@ -161,6 +161,73 @@ def _format_action(action: str) -> str:
     return f"{color}{action}\033[0m" if color else action
 
 
+def guard_status_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate guard audit entries into a status summary.
+
+    Pure computation — no I/O, no side effects.
+    """
+    from collections import Counter
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    cutoff_24h = (now - timedelta(hours=24)).isoformat()
+    cutoff_7d = (now - timedelta(days=7)).isoformat()
+
+    def _in_window(entry: dict, cutoff: str) -> bool:
+        ts = entry.get("ts", "")
+        return ts >= cutoff if ts else False
+
+    entries_24h = [e for e in entries if _in_window(e, cutoff_24h)]
+    entries_7d = [e for e in entries if _in_window(e, cutoff_7d)]
+
+    def _count_actions(subset: list[dict]) -> dict[str, int]:
+        c: Counter = Counter()
+        for e in subset:
+            c[e.get("action", "unknown")] += 1
+        return dict(c)
+
+    def _top_denied(subset: list[dict], n: int = 5) -> list[dict[str, Any]]:
+        c: Counter = Counter()
+        for e in subset:
+            if e.get("action") == "deny":
+                slug = e.get("slug") or "unknown"
+                c[slug] += 1
+        return [{"slug": s, "count": cnt} for s, cnt in c.most_common(n)]
+
+    def _top_prompted_actions(subset: list[dict], n: int = 5) -> list[dict[str, Any]]:
+        c: Counter = Counter()
+        for e in subset:
+            if e.get("action") == "prompt":
+                source = e.get("source", "")
+                if source.startswith("guard.action_policy."):
+                    action_type = source.split(".")[-1]
+                    c[action_type] += 1
+                else:
+                    c[source or "unknown"] += 1
+        return [{"action_type": a, "count": cnt} for a, cnt in c.most_common(n)]
+
+    def _rate_limit_hits(subset: list[dict]) -> int:
+        return sum(1 for e in subset if e.get("event") == "guard_rate_limit")
+
+    return {
+        "total_entries": len(entries),
+        "period_24h": {
+            "total": len(entries_24h),
+            "actions": _count_actions(entries_24h),
+            "top_denied": _top_denied(entries_24h),
+            "top_prompted_actions": _top_prompted_actions(entries_24h),
+            "rate_limit_hits": _rate_limit_hits(entries_24h),
+        },
+        "period_7d": {
+            "total": len(entries_7d),
+            "actions": _count_actions(entries_7d),
+            "top_denied": _top_denied(entries_7d),
+            "top_prompted_actions": _top_prompted_actions(entries_7d),
+            "rate_limit_hits": _rate_limit_hits(entries_7d),
+        },
+    }
+
+
 def _sanitize_entry(entry: dict) -> dict:
     """Return audit entry with only policy metadata — no sensitive data."""
     return {
