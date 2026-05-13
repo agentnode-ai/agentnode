@@ -172,7 +172,7 @@ def run_tool(
     # Guard Layer 5: rate limiting (Phase 6.1)
     if decision.action == "allow" and entry.get("package_type") != "skill":
         from agentnode_sdk.guard import check_rate_limit
-        rl_decision = check_rate_limit(slug, tool_name)
+        rl_decision = check_rate_limit(slug, tool_name, entry=entry)
         if rl_decision.action != "allow":
             _audit_guard_decision(rl_decision, slug, tool_name, entry, event_type="guard_rate_limit")
             decision = PolicyResult(

@@ -396,6 +396,45 @@ class TestRateLimit:
         d = check_rate_limit("pkg")
         assert d.action == "allow"
 
+    def test_strict_mode_lower_limits(self, monkeypatch):
+        monkeypatch.setenv("AGENTNODE_GUARD_STRICT", "true")
+        reset_guard_config_cache()
+        from agentnode_sdk.guard import _get_rate_limits
+        limits = _get_rate_limits("pkg")
+        assert limits["calls_per_minute"] == 30
+        assert limits["calls_per_hour"] == 500
+        assert limits["burst_size"] == 10
+
+    def test_agent_higher_limits(self):
+        from agentnode_sdk.guard import _get_rate_limits
+        agent_entry = {"package_type": "agent", "trust_level": "trusted"}
+        limits = _get_rate_limits("agent-pkg", agent_entry)
+        assert limits["calls_per_minute"] == 120
+        assert limits["calls_per_hour"] == 2000
+        assert limits["burst_size"] == 20
+
+    def test_strict_overrides_agent(self, monkeypatch):
+        monkeypatch.setenv("AGENTNODE_GUARD_STRICT", "true")
+        reset_guard_config_cache()
+        from agentnode_sdk.guard import _get_rate_limits
+        agent_entry = {"package_type": "agent", "trust_level": "trusted"}
+        limits = _get_rate_limits("agent-pkg", agent_entry)
+        assert limits["calls_per_minute"] == 30
+        assert limits["calls_per_hour"] == 500
+
+    def test_agent_burst_allows_more(self):
+        agent_entry = {"package_type": "agent", "trust_level": "trusted"}
+        for _ in range(15):
+            check_rate_limit("agent-burst", entry=agent_entry)
+        d = check_rate_limit("agent-burst", entry=agent_entry)
+        assert d.action == "allow"
+
+    def test_toolpack_burst_at_default(self):
+        for _ in range(10):
+            check_rate_limit("tp-burst")
+        d = check_rate_limit("tp-burst")
+        assert d.action == "deny"
+
 
 # ---------------------------------------------------------------------------
 # Audit event written (via runner integration)

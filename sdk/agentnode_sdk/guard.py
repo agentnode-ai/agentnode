@@ -746,14 +746,14 @@ _rate_limits: dict[str, _RateLimitBucket] = {}
 _rate_limit_lock = __import__("threading").Lock()
 
 
-def check_rate_limit(slug: str, tool_name: str | None = None) -> GuardDecision:
+def check_rate_limit(slug: str, tool_name: str | None = None, entry: dict | None = None) -> GuardDecision:
     """Check per-slug rate limit using sliding window.
 
     INV-3: monotonic clock, stale cleanup, max tracked keys.
     OC-3: Internal exceptions → fail-closed.
     """
     try:
-        return _check_rate_limit_inner(slug)
+        return _check_rate_limit_inner(slug, entry)
     except Exception as exc:
         logger.warning("Rate limit error: %s", exc, exc_info=True)
         action = "deny" if _is_strict() else "prompt"
@@ -764,9 +764,9 @@ def check_rate_limit(slug: str, tool_name: str | None = None) -> GuardDecision:
         )
 
 
-def _check_rate_limit_inner(slug: str) -> GuardDecision:
+def _check_rate_limit_inner(slug: str, entry: dict | None = None) -> GuardDecision:
     now = time.monotonic()
-    limits = _get_rate_limits(slug)
+    limits = _get_rate_limits(slug, entry)
     calls_per_minute = limits.get("calls_per_minute", 60)
     calls_per_hour = limits.get("calls_per_hour", 1000)
     burst_size = limits.get("burst_size", 10)
@@ -826,9 +826,18 @@ def _check_rate_limit_inner(slug: str) -> GuardDecision:
     )
 
 
-def _get_rate_limits(slug: str) -> dict[str, int]:
-    """Get rate limit config for a slug."""
-    defaults = {"calls_per_minute": 60, "calls_per_hour": 1000, "burst_size": 10}
+def _get_rate_limits(slug: str, entry: dict | None = None) -> dict[str, int]:
+    """Get rate limit config for a slug.
+
+    Priority: strict mode > agent defaults > base defaults.
+    User config overrides all.
+    """
+    if _is_strict():
+        defaults = {"calls_per_minute": 30, "calls_per_hour": 500, "burst_size": 10}
+    elif entry and entry.get("package_type") == "agent":
+        defaults = {"calls_per_minute": 120, "calls_per_hour": 2000, "burst_size": 20}
+    else:
+        defaults = {"calls_per_minute": 60, "calls_per_hour": 1000, "burst_size": 10}
     try:
         from agentnode_sdk.config import load_config
         cfg = load_config()

@@ -1,7 +1,32 @@
 # Phase 6.0 — AgentNode Guard Design Spec
 
-Status: Approved design, no implementation yet.
+Status: Implemented
 Date: 2026-05-13
+
+### Implementation Status
+
+| Phase | Commit | What |
+|-------|--------|------|
+| 6.1 MVP | `1502bb6` | guard.py, runner.py integration, mcp_runner.py inspection, rate limiting |
+| 6.2a CLI UX | `45f2f1e` | confirmation_callback, format_guard_prompt/deny, cli_confirmation_callback |
+| 6.2b Audit | `513b8a7` | Filtered read_audit_entries(), CLI filter flags, rate limit event fix |
+| 6.2c Preview | `6328f81` | Install-time guard risk preview, inspect guard preview, JSON output |
+| 6.3 Schema | `b31265f` | Schema-aware MCP arg inspection, heuristic suppression, bool/int fix |
+| 6.x Finalize | — | Strict/agent rate limit defaults, spec status update |
+
+### Known Deltas (by design)
+
+- `mcp_untyped_args` risk signal (+5 score) not implemented — schema-aware validation is the better approach
+- SQL injection / prompt injection heuristics deferred (false-positive risk, §14)
+- Per-tool policy deferred (§14)
+
+### Guard Regression Command
+
+```
+python -m pytest tests/test_guard.py tests/test_guard_ux.py tests/test_guard_schema.py tests/test_guard_preview.py tests/test_audit_ux.py -v
+```
+
+185 tests, 0 failures, ~2.2s.
 
 ---
 
