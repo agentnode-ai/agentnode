@@ -232,9 +232,15 @@ class AgentNode:
                 f"Expected JSON response, got content-type={ctype!r}",
             )
         try:
-            return response.json()
+            data = response.json()
         except ValueError as exc:
             raise AgentNodeError("UNKNOWN", f"Invalid JSON response: {exc}") from exc
+        if not isinstance(data, dict):
+            raise AgentNodeError(
+                "UNKNOWN",
+                f"Expected JSON object, got {type(data).__name__}",
+            )
+        return data
 
 
 def _check_credential_available(provider: str) -> bool:
@@ -330,12 +336,18 @@ class AgentNodeClient:
                 message=f"Expected JSON response, got content-type={ctype!r}",
             )
         try:
-            return resp.json()
+            data = resp.json()
         except ValueError as exc:
             raise AgentNodeError(
                 code="UNKNOWN",
                 message=f"Invalid JSON response: {exc}",
             ) from exc
+        if not isinstance(data, dict):
+            raise AgentNodeError(
+                code="UNKNOWN",
+                message=f"Expected JSON object, got {type(data).__name__}",
+            )
+        return data
 
     # --- Search ---
 

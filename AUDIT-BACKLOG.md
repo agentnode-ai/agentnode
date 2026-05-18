@@ -1,6 +1,8 @@
-# AgentNode Full Audit Backlog (2026-04-02)
+# AgentNode Full Audit Backlog (2026-04-02, re-triaged 2026-05-18)
 
-171+ findings from 8 parallel audit agents. **171 resolved, 5 deferred.**
+171+ findings from 8 parallel audit agents + 118 from 12-agent pre-launch audit.
+**All P0 fixed. All security P1 fixed. 2 P1 remain open (C12, CD5).**
+Guard Phases 6–9 provide defense-in-depth for SDK tool execution; P1-SDK10 fully mitigated.
 
 ---
 
@@ -186,11 +188,7 @@
 - [x] SMTP settings cache — loaded at app start, immediate reload on admin update (Perf 6.3)
 - [x] Deploy CI/CD — GitHub Actions: test → build → SCP → migrate → restart (Security M7)
 
-## DEFERRED (later, when needed)
-
-- [ ] CDN for blog images — images already optimized, act when measured as bottleneck (Perf 9.2)
-- [ ] `next/image` wrapper component — `<OptImage>`, blog images first (Perf 9.3)
-- [ ] Separate download-count from install-count — event-based aggregation (BizLogic 8.1)
+## DEFERRED (moved to "Remaining Open Findings" section below)
 
 ---
 
@@ -331,6 +329,109 @@ Sprint K progress (2026-04-14):
 - [x] **P2-S3** API-key constant-time comparison — `backend/app/auth/dependencies.py` `_authenticate_api_key` uses `hmac.compare_digest()` instead of `==` for hash comparison, closing the timing sidechannel.
 - [x] **P2-D1** CORS missing PATCH — `backend/app/main.py` `allow_methods` now includes `PATCH`.
 - [x] **P2-C1** Doctor serialized API calls — `cli/src/commands/doctor.ts` uses `Promise.allSettled` for parallel package fetches instead of sequential loop.
+
+### Phase 10 — Audit Re-Triage (2026-05-18)
+
+Verified all remaining P1 findings against current code. Guard (Phases 6–9) impact assessed.
+
+#### Verified FIXED (not previously tracked in sprint progress)
+
+- [x] **P1-S1** Refresh token TOCTOU — atomic GETDEL via `consume_refresh_jti` (`auth/router.py:158–163`, `auth/security.py:200–219`). Legacy no-JTI tokens gated by session generation — deliberate design, not a bypass.
+- [x] **P1-V1** Auto-clear doesn't check `triggered_by` — `_NON_AUTO_CLEARING_TRIGGERS` frozenset excludes `owner_request` and `admin_reverify` (`verification/pipeline.py:42–45, 976–982`).
+- [x] **P1-L5** Auto-clear MissingGreenlet — `selectinload(Package.publisher)` added (`verification/pipeline.py:1004–1008`).
+- [x] **P1-SDK4** `_request` crashes on non-JSON — content-type check before `.json()` + `ValueError` catch (`client.py:228–237, 326–338`).
+- [x] **P1-SDK5** `run_tool` kwargs collisions — `_RESERVED_RUN_TOOL_KWARGS` guards `entry`; `mode`/`timeout`/`slug`/`tool_name` are named params that can't collide (`runner.py:81, 116–121`).
+- [x] **P1-SDK6** Installer no size ceiling — 500MB streaming limit with Content-Length pre-check (`installer.py:33, 115–157`).
+- [x] **P1-SDK10** `run_tool` no logging/opt-out — Guard audit trail logs every decision + dispatch logging (`runner.py:140, 263–266`). **[Mitigated by Guard Phases 6–9]**
+- [x] **P1-C1** Cryptic SyntaxError on non-JSON — content-type check before `JSON.parse` (`api.ts:41–74`).
+- [x] **P1-C2** Login plaintext-echoes API key — redacted to first4…last4 via `redactKey()` (`login.ts:20–43`).
+- [x] **P1-C3** Unquoted Python path on Windows — double-quoted in both call sites (`python-resolver.ts:17, 78`).
+- [x] **P1-C6** Config permission warning spam on Windows — platform guard `process.platform !== "win32"` (`config.ts:30, 58`).
+- [x] **P1-C7** `--limit` not validated — clamped to [1, 100] with NaN/negative rejection (`resolve.ts:11–18, search.ts:13–21`).
+- [x] **P1-C9** `validate` no timeout — 30s default + `AbortSignal.timeout` + `--timeout` flag (`validate.ts:49–52, 86–102`).
+
+#### NOT A BUG
+
+- [x] **P1-L4** `AUTO_CLEARABLE_REASONS` enum mismatch — all sites use consistent `new_publisher_review` (snake_case). Scanner doesn't reference this reason at all. Verified: `pipeline.py:36`, `service.py:319`.
+
+#### PARTIAL FIX
+
+- [x] **P1-SDK3** `_handle` crashes on non-dict JSON — success path now validates `isinstance(data, dict)` in both `_handle` and `_request` (`client.py:235–241, 332–338`). 11 tests in `test_client_json_guard.py`.
+
+#### STILL OPEN
+
+- [ ] **P1-C12** `publish` no signing-key reconfirm — pre-publish preview shows identity (P1-C11 fix), but no interactive confirmation gate. Accidental publish from wrong machine still possible (`publish.ts:139–210`).
+- [ ] **P1-CD5** `backend/.env` with `change-me-in-production` — file not tracked in git but exists on disk. Needs user decision before removal (breaks local dev).
+
+#### NOT VERIFIED (frontend / test / minor CLI)
+
+These items were not individually verified against code in this triage. Likely still open.
+
+- P1-F1..F9 — 9 frontend a11y items (keyboard nav, aria, skip-to-main, loading skeletons)
+- P1-SEO1..SEO2 — metadataBase, canonical URLs
+- P1-C8 — `api-keys list` misaligned columns
+- P1-C10 — `resolve-upgrade` missing `--no-network`
+- P1-T1..T11 — Test coverage gaps (T2 + T7 covered by Sprint I `test_sprint_i_negative.py`; others not individually verified)
+
+#### Guard impact assessment
+
+Guard (Phases 6–9, commits `1502bb6`..`68687b5`) provides defense-in-depth for all SDK tool execution:
+- Pre-execution policy check with 9 action types (Phase 6, MVP)
+- MCP schema-aware argument inspection (Phase 5)
+- Audit trail for every decision (Phase 6)
+- Rate limiting per slug/tool (Phase 7)
+- Per-tool policy overrides (Phase 8)
+- Dry-run simulation via `guard check` (Phase 9)
+- Strict mode fail-closed
+
+Direct mitigation: **P1-SDK10** — Guard audit trail fully covers the "no logging and no opt-out" gap.
+No other P1 findings were directly mitigated (Guard operates at SDK policy layer, not backend/frontend/CLI).
+
+---
+
+## Remaining Open Findings (as of 2026-05-18)
+
+### High (runtime impact)
+
+- [x] **P1-SDK3** ~~`_handle` success path assumes dict~~ — FIXED, dict validation added
+- [ ] **P1-C12** `publish` no signing-key reconfirm from new machine
+- [ ] **P1-CD5** `backend/.env` change-me-in-production on disk (needs decision)
+
+### Not verified (frontend UX / a11y)
+
+- [ ] **P1-F1** CapabilityDropdown keyboard inaccessible
+- [ ] **P1-F2** CollapsiblePanel no aria-expanded
+- [ ] **P1-F3** forgot-password silent to screen readers
+- [ ] **P1-F4** Publish file dropzone not keyboard accessible
+- [ ] **P1-F5** verify-email StrictMode double-fire
+- [ ] **P1-F6** Registration auto-login silent fail
+- [ ] **P1-F7** /import uses window.alert
+- [ ] **P1-F8** No skip-to-main-content link
+- [ ] **P1-F9** /discover and /search no loading skeleton
+- [ ] **P1-SEO1** Root layout missing metadataBase
+- [ ] **P1-SEO2** Package detail no canonical with ?v=
+
+### Not verified (CLI minor / test gaps)
+
+- [ ] **P1-C8** api-keys list misaligned columns
+- [ ] **P1-C10** resolve-upgrade missing --no-network
+- [ ] **P1-T** Test coverage gaps (see MERGED.md P1-T1..T11)
+
+### Cosmetic / deferred
+
+- [ ] CLI uses `any` pervasively (CodeQuality #14) — TypeScript refactor, no runtime effect
+- [ ] Inconsistent DELETE status codes (API F20) — 1/9 uses 204, rest use 200
+- [ ] Lock contamination cleanup (Sprint J) — regenerate `requirements.lock` from pyproject.toml
+- [ ] CDN for blog images (Perf 9.2)
+- [ ] `next/image` wrapper component (Perf 9.3)
+- [ ] Separate download-count from install-count (BizLogic 8.1)
+- [ ] Adapter refresh — langchain/crewai/mcp (P2)
+
+### P2 (~38 remaining of 43, after Sprint K)
+
+See `docs/internal/audit-2026-04/MERGED.md` § P2 for full themed list. Sprint K fixed 5 items:
+P2-S1 (lockout keyed per email+IP), P2-S2 (banned user refresh), P2-S3 (API-key constant-time),
+P2-D1 (CORS PATCH), P2-C1 (doctor parallel).
 
 ### Adapter follow-up (P2)
 
