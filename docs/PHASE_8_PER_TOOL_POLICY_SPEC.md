@@ -1,7 +1,23 @@
 # Phase 8 — Per-Tool Policy Design Spec
 
-Status: Draft
+Status: Implemented
 Date: 2026-05-18
+
+### Implementation Status
+
+| Phase | Commit | What |
+|-------|--------|------|
+| 8.1 Config + Resolution | `a278794` | `_parse_tool_overrides`, `_get_tool_override`, per-tool resolution in `_check_action_inner`, `get_resolved_policy` includes overrides |
+| 8.2 CLI | `b561115` | `guard set --tool`, `guard unset`, policy display, reset clears tool_overrides |
+| 8.3 Audit + Chain | `867a07b` | Audit source/chain verification, filtering tests (no runtime changes needed) |
+
+### Guard Regression Command
+
+```
+python -m pytest tests/test_guard.py tests/test_guard_ux.py tests/test_guard_schema.py tests/test_guard_preview.py tests/test_audit_ux.py tests/test_guard_policy.py tests/test_guard_status.py tests/test_guard_set.py tests/test_guard_tool_override.py tests/test_guard_tool_override_cli.py tests/test_guard_tool_override_audit.py -v
+```
+
+329 tests, 0 failures, ~6s.
 
 ---
 
