@@ -347,13 +347,18 @@ def check_action(
     entry: dict,
     *,
     interactive: bool = True,
+    action_types_override: list[str] | None = None,
 ) -> GuardDecision:
     """Pre-execution guard check: classify action, compute risk, apply policy.
 
     OC-3: Never returns allow on internal exception.
     """
     try:
-        return _check_action_inner(slug, tool_name, kwargs, entry, interactive=interactive)
+        return _check_action_inner(
+            slug, tool_name, kwargs, entry,
+            interactive=interactive,
+            action_types_override=action_types_override,
+        )
     except Exception as exc:
         logger.warning("Guard internal error: %s", exc, exc_info=True)
         action = "deny" if _is_strict() else "prompt"
@@ -372,8 +377,9 @@ def _check_action_inner(
     entry: dict,
     *,
     interactive: bool,
+    action_types_override: list[str] | None = None,
 ) -> GuardDecision:
-    action_types = classify_action(tool_name, entry)
+    action_types = list(action_types_override) if action_types_override else classify_action(tool_name, entry)
     trust_level = entry.get("trust_level", "unverified")
 
     env_has_secrets = _detect_has_secrets()

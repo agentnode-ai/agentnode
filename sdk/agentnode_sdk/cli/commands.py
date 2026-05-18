@@ -2648,6 +2648,111 @@ def cmd_guard_unset(*, tool_key: str, action_type: str | None = None) -> int:
     return 0
 
 
+def cmd_guard_check(tool_key: str, *, action: str | None = None, json_output: bool = False) -> int:
+    """Dry-run guard check for a specific tool."""
+    from agentnode_sdk.guard import check_action, classify_action, _is_strict
+    from agentnode_sdk.installer import read_lockfile
+
+    if "/" not in tool_key:
+        print(f"Expected slug/tool_name format, got: {tool_key}", file=sys.stderr)
+        return 1
+
+    slug, tool_name = tool_key.split("/", 1)
+
+    lockfile = read_lockfile()
+    entry = lockfile.get("packages", {}).get(slug)
+    if not entry:
+        print(f"Package '{slug}' not installed.", file=sys.stderr)
+        return 1
+
+    if entry.get("package_type") == "skill":
+        print(f"  {slug} is a skill — skills bypass guard.")
+        return 0
+
+    action_types_override = None
+    action_source = "manifest"
+    if action is not None:
+        action = action.lower()
+        if action not in _GUARD_ACTION_TYPES:
+            print(f"Unknown action type: {action}", file=sys.stderr)
+            print(f"Valid action types: {', '.join(sorted(_GUARD_ACTION_TYPES))}", file=sys.stderr)
+            return 1
+        action_types_override = [action]
+        action_source = "override"
+
+    # Check if tool_name exists in manifest
+    tool_in_manifest = False
+    if entry.get("tools"):
+        tool_in_manifest = any(t.get("name") == tool_name for t in entry["tools"])
+
+    if not tool_in_manifest and action_types_override is None:
+        print(f"  Warning: '{tool_name}' not found in installed metadata for '{slug}'. Using name heuristic only.", file=sys.stderr)
+        action_source = "heuristic"
+
+    # Determine real classification for source label (when no override)
+    if action_types_override is None:
+        real_types = classify_action(tool_name, entry)
+        if tool_in_manifest:
+            action_source = "manifest"
+        else:
+            action_source = "heuristic"
+    else:
+        real_types = None
+
+    decision = check_action(
+        slug, tool_name, {}, entry,
+        interactive=False,
+        action_types_override=action_types_override,
+    )
+
+    strict = _is_strict()
+    trust_level = entry.get("trust_level", "unverified")
+
+    if json_output:
+        result = {
+            "slug": slug,
+            "tool_name": tool_name,
+            "action_types": decision.action_types,
+            "action_types_source": action_source,
+            "trust_level": trust_level,
+            "risk_level": decision.risk_level,
+            "decision": decision.action,
+            "source": decision.source,
+            "reason": decision.reason,
+            "guard_chain": decision.guard_chain,
+            "mitigations": decision.mitigations,
+            "strict_mode": strict,
+        }
+        print(json.dumps(result, indent=2))
+        return 0
+
+    color = _POLICY_COLORS.get(decision.action, "")
+    print()
+    print(bold(f"  Guard Check: {tool_key}"))
+    print(f"  {'─' * 40}")
+    print(f"  Action Types      {', '.join(decision.action_types)} ({action_source})")
+    print(f"  Trust Level       {trust_level}")
+    print(f"  Risk Level        {decision.risk_level or 'low'}")
+    if strict:
+        print(f"  Mode              {_POLICY_COLORS['deny']}STRICT{_RESET}")
+    print()
+    if decision.guard_chain:
+        print(bold("  Resolution Chain"))
+        for entry_line in decision.guard_chain:
+            print(f"    {entry_line}")
+        print()
+    print(f"  Decision          {color}{decision.action}{_RESET}")
+    print(f"  Source            {decision.source}")
+    if decision.reason:
+        print(f"  Reason            {decision.reason}")
+    if decision.mitigations:
+        print()
+        for m in decision.mitigations:
+            print(f"  {dim('→')} {dim(m)}")
+    print()
+    return 0
+
+
 def cmd_guard_reset() -> int:
     """Reset guard policies to defaults."""
     from agentnode_sdk.config import DEFAULTS
