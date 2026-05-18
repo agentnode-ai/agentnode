@@ -12,7 +12,10 @@ Date: 2026-05-13
 | 6.2b Audit | `513b8a7` | Filtered read_audit_entries(), CLI filter flags, rate limit event fix |
 | 6.2c Preview | `6328f81` | Install-time guard risk preview, inspect guard preview, JSON output |
 | 6.3 Schema | `b31265f` | Schema-aware MCP arg inspection, heuristic suppression, bool/int fix |
-| 6.x Finalize | — | Strict/agent rate limit defaults, spec status update |
+| 6.x Finalize | `a6c7b0a` | Strict/agent rate limit defaults, spec status update |
+| 7.1 Policy | `37b4d2a` | `agentnode guard policy [--json]` — resolved policy display |
+| 7.2 Status | `763c805` | `agentnode guard status [--json]` — audit aggregation (24h/7d) |
+| 7.3 Mutations | `cfae8c3` | `agentnode guard set/reset` — validated config mutations |
 
 ### Known Deltas (by design)
 
@@ -23,10 +26,10 @@ Date: 2026-05-13
 ### Guard Regression Command
 
 ```
-python -m pytest tests/test_guard.py tests/test_guard_ux.py tests/test_guard_schema.py tests/test_guard_preview.py tests/test_audit_ux.py -v
+python -m pytest tests/test_guard.py tests/test_guard_ux.py tests/test_guard_schema.py tests/test_guard_preview.py tests/test_audit_ux.py tests/test_guard_policy.py tests/test_guard_status.py tests/test_guard_set.py -v
 ```
 
-185 tests, 0 failures, ~2.2s.
+256 tests, 0 failures, ~5s.
 
 ---
 
