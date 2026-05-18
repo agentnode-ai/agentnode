@@ -2476,6 +2476,19 @@ def cmd_guard_policy(*, json_output: bool = False) -> int:
                 print(f"  {slug}: {', '.join(pre_approved)}")
         print()
 
+    tool_overrides = resolved.get("tool_overrides", {})
+    if tool_overrides:
+        print(bold("  Tool Overrides"))
+        print(f"  {'─' * 40}")
+        for tool_key in sorted(tool_overrides):
+            print(f"  {tool_key}")
+            for at in _ACTION_ORDER:
+                if at in tool_overrides[tool_key]:
+                    val = tool_overrides[tool_key][at]
+                    color = _POLICY_COLORS.get(val, "")
+                    print(f"    {at:<20} {color}{val}{_RESET}")
+        print()
+
     return 0
 
 
@@ -2555,7 +2568,7 @@ _GUARD_ACTION_TYPES = frozenset({
 _GUARD_VALID_VALUES = frozenset({"allow", "prompt", "deny"})
 
 
-def cmd_guard_set(action_type: str, value: str) -> int:
+def cmd_guard_set(action_type: str, value: str, *, tool_key: str | None = None) -> int:
     """Set a guard action policy with validation."""
     from agentnode_sdk.guard import reset_guard_config_cache
 
@@ -2572,6 +2585,21 @@ def cmd_guard_set(action_type: str, value: str) -> int:
         print(f"Allowed values: {', '.join(sorted(_GUARD_VALID_VALUES))}", file=sys.stderr)
         return 1
 
+    if tool_key is not None:
+        if "/" not in tool_key:
+            print(f"Invalid tool key: {tool_key} (expected slug/tool_name)", file=sys.stderr)
+            return 1
+        cfg = load_config()
+        if "guard" not in cfg or not isinstance(cfg["guard"], dict):
+            cfg["guard"] = {}
+        overrides = cfg["guard"].setdefault("tool_overrides", {})
+        overrides.setdefault(tool_key, {})[action_type] = value
+        save_config(cfg)
+        reset_guard_config_cache()
+        color = _POLICY_COLORS.get(value, "")
+        print(f"  guard.tool_overrides.{tool_key}.{action_type} = {color}{value}{_RESET}")
+        return 0
+
     cfg = load_config()
     if "guard" not in cfg or not isinstance(cfg["guard"], dict):
         cfg["guard"] = {}
@@ -2581,6 +2609,42 @@ def cmd_guard_set(action_type: str, value: str) -> int:
 
     color = _POLICY_COLORS.get(value, "")
     print(f"  guard.{action_type} = {color}{value}{_RESET}")
+    return 0
+
+
+def cmd_guard_unset(*, tool_key: str, action_type: str | None = None) -> int:
+    """Remove a per-tool guard override."""
+    from agentnode_sdk.guard import reset_guard_config_cache
+
+    if "/" not in tool_key:
+        print(f"Invalid tool key: {tool_key} (expected slug/tool_name)", file=sys.stderr)
+        return 1
+
+    if action_type is not None:
+        action_type = action_type.lower()
+        if action_type not in _GUARD_ACTION_TYPES:
+            print(f"Unknown action type: {action_type}", file=sys.stderr)
+            print(f"Valid action types: {', '.join(sorted(_GUARD_ACTION_TYPES))}", file=sys.stderr)
+            return 1
+
+    cfg = load_config()
+    overrides = cfg.get("guard", {}).get("tool_overrides", {})
+
+    if tool_key not in overrides:
+        print(f"  No overrides found for {tool_key}.")
+        return 0
+
+    if action_type is not None:
+        overrides[tool_key].pop(action_type, None)
+        if not overrides[tool_key]:
+            del overrides[tool_key]
+        print(f"  Removed guard.tool_overrides.{tool_key}.{action_type}")
+    else:
+        del overrides[tool_key]
+        print(f"  Removed all overrides for {tool_key}")
+
+    save_config(cfg)
+    reset_guard_config_cache()
     return 0
 
 

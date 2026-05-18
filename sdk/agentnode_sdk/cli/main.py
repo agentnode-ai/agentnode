@@ -169,6 +169,10 @@ def main(argv: list[str] | None = None) -> int:
     guard_set_parser = guard_sub.add_parser("set", help="Set a guard action policy")
     guard_set_parser.add_argument("action_type", help="Action type (e.g. delete, execute, read)")
     guard_set_parser.add_argument("value", help="Policy value (allow, prompt, deny)")
+    guard_set_parser.add_argument("--tool", dest="tool_key", default=None, help="Per-tool override (slug/tool_name)")
+    guard_unset_parser = guard_sub.add_parser("unset", help="Remove a guard tool override")
+    guard_unset_parser.add_argument("action_type", nargs="?", default=None, help="Action type to remove (omit to remove all)")
+    guard_unset_parser.add_argument("--tool", dest="tool_key", required=True, help="Tool to unset (slug/tool_name)")
     guard_sub.add_parser("reset", help="Reset guard policies to defaults")
 
     # serve
@@ -293,7 +297,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.guard_action == "status":
                 return commands.cmd_guard_status(json_output=args.json_output)
             if args.guard_action == "set":
-                return commands.cmd_guard_set(args.action_type, args.value)
+                return commands.cmd_guard_set(args.action_type, args.value, tool_key=args.tool_key)
+            if args.guard_action == "unset":
+                return commands.cmd_guard_unset(tool_key=args.tool_key, action_type=args.action_type)
             if args.guard_action == "reset":
                 return commands.cmd_guard_reset()
             guard_parser.print_help()
