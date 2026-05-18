@@ -166,6 +166,10 @@ def main(argv: list[str] | None = None) -> int:
     guard_policy_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     guard_status_parser = guard_sub.add_parser("status", help="Show guard activity summary")
     guard_status_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    guard_set_parser = guard_sub.add_parser("set", help="Set a guard action policy")
+    guard_set_parser.add_argument("action_type", help="Action type (e.g. delete, execute, read)")
+    guard_set_parser.add_argument("value", help="Policy value (allow, prompt, deny)")
+    guard_sub.add_parser("reset", help="Reset guard policies to defaults")
 
     # serve
     sub.add_parser("serve", help="Start MCP server (stdio)")
@@ -288,6 +292,10 @@ def main(argv: list[str] | None = None) -> int:
                 return commands.cmd_guard_policy(json_output=args.json_output)
             if args.guard_action == "status":
                 return commands.cmd_guard_status(json_output=args.json_output)
+            if args.guard_action == "set":
+                return commands.cmd_guard_set(args.action_type, args.value)
+            if args.guard_action == "reset":
+                return commands.cmd_guard_reset()
             guard_parser.print_help()
             return 1
         if args.command == "serve":

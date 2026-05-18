@@ -2546,3 +2546,53 @@ def cmd_guard_status(*, json_output: bool = False) -> int:
         print()
 
     return 0
+
+
+_GUARD_ACTION_TYPES = frozenset({
+    "read", "compute", "write_local", "write_external",
+    "delete", "execute", "credential_use", "network_egress", "unknown",
+})
+_GUARD_VALID_VALUES = frozenset({"allow", "prompt", "deny"})
+
+
+def cmd_guard_set(action_type: str, value: str) -> int:
+    """Set a guard action policy with validation."""
+    from agentnode_sdk.guard import reset_guard_config_cache
+
+    action_type = action_type.lower()
+    value = value.lower()
+
+    if action_type not in _GUARD_ACTION_TYPES:
+        print(f"Unknown action type: {action_type}", file=sys.stderr)
+        print(f"Valid action types: {', '.join(sorted(_GUARD_ACTION_TYPES))}", file=sys.stderr)
+        return 1
+
+    if value not in _GUARD_VALID_VALUES:
+        print(f"Invalid value: {value}", file=sys.stderr)
+        print(f"Allowed values: {', '.join(sorted(_GUARD_VALID_VALUES))}", file=sys.stderr)
+        return 1
+
+    cfg = load_config()
+    if "guard" not in cfg or not isinstance(cfg["guard"], dict):
+        cfg["guard"] = {}
+    cfg["guard"][action_type] = value
+    save_config(cfg)
+    reset_guard_config_cache()
+
+    color = _POLICY_COLORS.get(value, "")
+    print(f"  guard.{action_type} = {color}{value}{_RESET}")
+    return 0
+
+
+def cmd_guard_reset() -> int:
+    """Reset guard policies to defaults."""
+    from agentnode_sdk.config import DEFAULTS
+    from agentnode_sdk.guard import reset_guard_config_cache
+
+    cfg = load_config()
+    cfg["guard"] = dict(DEFAULTS["guard"])
+    save_config(cfg)
+    reset_guard_config_cache()
+
+    print("  Guard policies reset to defaults.")
+    return 0
