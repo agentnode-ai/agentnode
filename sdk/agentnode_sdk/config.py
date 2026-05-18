@@ -135,7 +135,7 @@ def _merge_defaults(data: dict) -> dict[str, Any]:
         for k in cfg["guard"]:
             if k in data["guard"]:
                 cfg["guard"][k] = data["guard"][k]
-        for extra_key in ("rate_limits", "agent_overrides"):
+        for extra_key in ("rate_limits", "agent_overrides", "tool_overrides"):
             if extra_key in data["guard"]:
                 cfg["guard"][extra_key] = data["guard"][extra_key]
     return cfg

@@ -113,12 +113,44 @@ class GuardContext:
 # ---------------------------------------------------------------------------
 
 _cached_guard_config: dict[str, Any] | None = None
+_cached_tool_overrides: dict[str, dict[str, str]] = {}
 _config_loaded: bool = False
+
+_VALID_POLICY_VALUES = frozenset({"allow", "prompt", "deny"})
+
+
+def _parse_tool_overrides(raw: Any) -> dict[str, dict[str, str]]:
+    """Parse and validate tool_overrides from config. Unknown keys silently ignored."""
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for tool_key, overrides in raw.items():
+        if not isinstance(tool_key, str) or "/" not in tool_key:
+            continue
+        if not isinstance(overrides, dict):
+            continue
+        filtered = {
+            k: v for k, v in overrides.items()
+            if k in ACTION_TYPES and v in _VALID_POLICY_VALUES
+        }
+        if filtered:
+            result[tool_key] = filtered
+    return result
+
+
+def _get_tool_override(
+    slug: str, tool_name: str | None, action_type: str,
+) -> str | None:
+    """Look up a per-tool policy override. Returns None if no override exists."""
+    if tool_name is None:
+        return None
+    tool_key = f"{slug}/{tool_name}"
+    return _cached_tool_overrides.get(tool_key, {}).get(action_type)
 
 
 def _load_guard_config() -> dict[str, str]:
     """Load guard policy from user config. Cached after first call."""
-    global _cached_guard_config, _config_loaded
+    global _cached_guard_config, _cached_tool_overrides, _config_loaded
     if _config_loaded:
         return dict(_cached_guard_config or _DEFAULT_GUARD_POLICY)
     _config_loaded = True
@@ -132,10 +164,14 @@ def _load_guard_config() -> dict[str, str]:
                 if k in ACTION_TYPES and v in ("allow", "prompt", "deny"):
                     merged[k] = v
             _cached_guard_config = merged
+            _cached_tool_overrides = _parse_tool_overrides(
+                guard_cfg.get("tool_overrides", {}),
+            )
             return dict(merged)
     except Exception:
         pass
     _cached_guard_config = dict(_DEFAULT_GUARD_POLICY)
+    _cached_tool_overrides = {}
     return dict(_cached_guard_config)
 
 
@@ -151,8 +187,9 @@ def _get_effective_policy() -> dict[str, str]:
 
 def reset_guard_config_cache() -> None:
     """Reset cached config — for testing only."""
-    global _cached_guard_config, _config_loaded
+    global _cached_guard_config, _cached_tool_overrides, _config_loaded
     _cached_guard_config = None
+    _cached_tool_overrides = {}
     _config_loaded = False
 
 
@@ -186,6 +223,9 @@ def get_resolved_policy() -> dict[str, Any]:
     except Exception:
         pass
 
+    _load_guard_config()
+    tool_overrides = dict(_cached_tool_overrides)
+
     return {
         "strict_mode": strict,
         "action_policies": policy,
@@ -196,6 +236,7 @@ def get_resolved_policy() -> dict[str, Any]:
             "strict": rate_limits_strict,
         },
         "agent_overrides": agent_overrides,
+        "tool_overrides": tool_overrides,
     }
 
 
@@ -363,10 +404,22 @@ def _check_action_inner(
     worst_action = "allow"
     worst_reason = ""
     worst_source = "guard.default"
+    strict = _is_strict()
 
     for at in action_types:
         # credential_use special handling
         if at == "credential_use":
+            # Tool override takes priority over connector bypass (§4.2)
+            if not strict:
+                tool_ov = _get_tool_override(slug, tool_name, at)
+                if tool_ov is not None:
+                    tool_key = f"{slug}/{tool_name}"
+                    chain.append(f"guard_action:{tool_ov}({at}:tool_override[{tool_key}])")
+                    if _severity(tool_ov) > _severity(worst_action):
+                        worst_action = tool_ov
+                        worst_reason = f"credential_use overridden by tool policy [{tool_key}]"
+                        worst_source = f"guard.tool_override.{tool_key}"
+                    continue
             has_connector_scope = bool(
                 (entry.get("connector") or {}).get("auth_type")
             )
@@ -374,12 +427,29 @@ def _check_action_inner(
                 chain.append("guard_action:allow(credential_use:connector_declared)")
                 continue
             else:
-                decision = "prompt" if not _is_strict() else "deny"
+                decision = "prompt" if not strict else "deny"
                 chain.append(f"guard_action:{decision}(credential_use:no_connector)")
                 if _severity(decision) > _severity(worst_action):
                     worst_action = decision
                     worst_reason = "credential_use without declared Connector scope"
                     worst_source = "guard.credential_use"
+                continue
+
+        # Tool override — above global policy and agent pre_approved (§4.1)
+        if not strict:
+            tool_ov = _get_tool_override(slug, tool_name, at)
+            if tool_ov is not None:
+                tool_key = f"{slug}/{tool_name}"
+                chain.append(f"guard_action:{tool_ov}({at}:tool_override[{tool_key}])")
+                if tool_ov == "deny":
+                    worst_action = "deny"
+                    worst_reason = f"Action type '{at}' denied by tool override [{tool_key}]"
+                    worst_source = f"guard.tool_override.{tool_key}"
+                    break
+                elif _severity(tool_ov) > _severity(worst_action):
+                    worst_action = tool_ov
+                    worst_reason = f"Action type '{at}' requires confirmation (tool override [{tool_key}])"
+                    worst_source = f"guard.tool_override.{tool_key}"
                 continue
 
         at_policy = policy.get(at, "prompt")
