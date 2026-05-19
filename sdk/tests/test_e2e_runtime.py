@@ -164,7 +164,7 @@ class TestE2ERun:
     def test_count_words(self, runtime):
         result = runtime.handle("agentnode_run", {
             "slug": "word-counter-pack",
-            "arguments": {"inputs": {"text": "Hello world"}},
+            "arguments": {"text": "Hello world"},
         })
         assert result["success"] is True
         output = result["result"]["output"]
@@ -176,7 +176,7 @@ class TestE2ERun:
         text = "The quick brown fox jumps over the lazy dog. It was a sunny day."
         result = runtime.handle("agentnode_run", {
             "slug": "word-counter-pack",
-            "arguments": {"inputs": {"text": text}},
+            "arguments": {"text": text},
         })
         assert result["success"] is True
         output = result["result"]["output"]
@@ -186,7 +186,7 @@ class TestE2ERun:
     def test_has_duration(self, runtime):
         result = runtime.handle("agentnode_run", {
             "slug": "word-counter-pack",
-            "arguments": {"inputs": {"text": "test"}},
+            "arguments": {"text": "test"},
         })
         assert result["success"] is True
         assert result["result"]["duration_ms"] > 0
@@ -217,10 +217,10 @@ class TestE2EFullHandleFlow:
         tools = installed[0]["tools"]
         assert len(tools) > 0
 
-        # Step 3: Run it (word-counter-pack expects inputs dict)
+        # Step 3: Run it
         result = runtime.handle("agentnode_run", {
             "slug": slug,
-            "arguments": {"inputs": {"text": "This is an end-to-end test"}},
+            "arguments": {"text": "This is an end-to-end test"},
         })
         assert result["success"] is True
         assert "output" in result["result"]
@@ -261,7 +261,7 @@ class TestE2EResponseContract:
             ("agentnode_search", {"query": "pdf"}),
             ("agentnode_run", {
                 "slug": "word-counter-pack",
-                "arguments": {"inputs": {"text": "test"}},
+                "arguments": {"text": "test"},
             }),
             ("nonexistent_tool", {}),
         ]
