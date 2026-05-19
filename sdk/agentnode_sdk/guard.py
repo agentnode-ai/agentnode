@@ -115,6 +115,7 @@ class GuardContext:
 _cached_guard_config: dict[str, Any] | None = None
 _cached_tool_overrides: dict[str, dict[str, str]] = {}
 _config_loaded: bool = False
+_config_signature: tuple[int, int] | None = None
 
 _VALID_POLICY_VALUES = frozenset({"allow", "prompt", "deny"})
 
@@ -148,12 +149,29 @@ def _get_tool_override(
     return _cached_tool_overrides.get(tool_key, {}).get(action_type)
 
 
+def _config_file_signature() -> tuple[int, int] | None:
+    """Return (mtime_ns, size) of the config file, or None if unavailable."""
+    try:
+        from agentnode_sdk.config import config_path
+        st = config_path().stat()
+        return (st.st_mtime_ns, st.st_size)
+    except (OSError, TypeError):
+        return None
+
+
 def _load_guard_config() -> dict[str, str]:
-    """Load guard policy from user config. Cached after first call."""
-    global _cached_guard_config, _cached_tool_overrides, _config_loaded
+    """Load guard policy from user config. Re-reads when config file changes."""
+    global _cached_guard_config, _cached_tool_overrides, _config_loaded, _config_signature
     if _config_loaded:
-        return dict(_cached_guard_config or _DEFAULT_GUARD_POLICY)
+        try:
+            current_sig = _config_file_signature()
+            if current_sig == _config_signature:
+                return dict(_cached_guard_config or _DEFAULT_GUARD_POLICY)
+            _config_loaded = False
+        except Exception:
+            return dict(_cached_guard_config or _DEFAULT_GUARD_POLICY)
     _config_loaded = True
+    _config_signature = _config_file_signature()
     try:
         from agentnode_sdk.config import load_config
         cfg = load_config()
@@ -187,10 +205,11 @@ def _get_effective_policy() -> dict[str, str]:
 
 def reset_guard_config_cache() -> None:
     """Reset cached config — for testing only."""
-    global _cached_guard_config, _cached_tool_overrides, _config_loaded
+    global _cached_guard_config, _cached_tool_overrides, _config_loaded, _config_signature
     _cached_guard_config = None
     _cached_tool_overrides = {}
     _config_loaded = False
+    _config_signature = None
 
 
 def get_resolved_policy() -> dict[str, Any]:
