@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
 import { join, extname, resolve, dirname } from "node:path";
 import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -136,6 +137,16 @@ function buildArtifact(packageDir: string): Uint8Array {
   }
 }
 
+async function promptConfirm(message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(`${message} [y/N] `, (answer: string) => {
+      rl.close();
+      resolve(answer.trim().toLowerCase() === "y");
+    });
+  });
+}
+
 export const publishCommand = new Command("publish")
   .description("Publish a package to the AgentNode registry")
   .argument(
@@ -143,6 +154,7 @@ export const publishCommand = new Command("publish")
     "Path to agentnode.yaml manifest file or package directory"
   )
   .option("--token <token>", "Authentication token")
+  .option("--yes", "Skip confirmation prompt")
   .option("--no-artifact", "Publish metadata only (skip artifact upload)")
   .action(async (pathArg: string, opts) => {
     try {
@@ -172,6 +184,15 @@ export const publishCommand = new Command("publish")
         console.log(`  auth:      ${redacted}`);
       } catch {
         // manifest validation happens server-side; preview is best-effort
+      }
+
+      // P1-C12: Require explicit confirmation before publishing.
+      if (!opts.yes) {
+        const confirmed = await promptConfirm("Proceed with publish?");
+        if (!confirmed) {
+          console.log("Aborted.");
+          process.exit(0);
+        }
       }
 
       // Build artifact unless --no-artifact was passed

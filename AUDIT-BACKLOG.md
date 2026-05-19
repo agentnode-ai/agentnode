@@ -1,7 +1,7 @@
 # AgentNode Full Audit Backlog (2026-04-02, re-triaged 2026-05-18)
 
 171+ findings from 8 parallel audit agents + 118 from 12-agent pre-launch audit.
-**All P0 fixed. All security P1 fixed. 2 P1 remain open (C12, CD5).**
+**All P0 fixed. All security P1 fixed. 1 P1 deferred (CD5 — needs user decision).**
 Guard Phases 6–9 provide defense-in-depth for SDK tool execution; P1-SDK10 fully mitigated.
 
 ---
@@ -360,7 +360,7 @@ Verified all remaining P1 findings against current code. Guard (Phases 6–9) im
 
 #### STILL OPEN
 
-- [ ] **P1-C12** `publish` no signing-key reconfirm — pre-publish preview shows identity (P1-C11 fix), but no interactive confirmation gate. Accidental publish from wrong machine still possible (`publish.ts:139–210`).
+- [x] **P1-C12** `publish` no signing-key reconfirm — interactive `[y/N]` confirmation after preview, before artifact build. `--yes` flag for CI. (`publish.ts:140–148, 189–196`)
 - [ ] **P1-CD5** `backend/.env` with `change-me-in-production` — file not tracked in git but exists on disk. Needs user decision before removal (breaks local dev).
 
 #### NOT VERIFIED (frontend / test / minor CLI)
@@ -394,7 +394,7 @@ No other P1 findings were directly mitigated (Guard operates at SDK policy layer
 ### High (runtime impact)
 
 - [x] **P1-SDK3** ~~`_handle` success path assumes dict~~ — FIXED, dict validation added
-- [ ] **P1-C12** `publish` no signing-key reconfirm from new machine
+- [x] **P1-C12** ~~`publish` no signing-key reconfirm~~ — FIXED, interactive confirmation gate
 - [ ] **P1-CD5** `backend/.env` change-me-in-production on disk (needs decision)
 
 ### Not verified (frontend UX / a11y)
