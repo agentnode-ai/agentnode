@@ -182,18 +182,35 @@ def run_tool(
             )
 
     from agentnode_sdk.input_guard import validate_tool_input
-    input_warnings = validate_tool_input(slug, tool_name, kwargs, entry)
-    if input_warnings:
-        for w in input_warnings:
-            logger.warning("input_guard: %s/%s: %s", slug, tool_name, w)
+    input_findings = validate_tool_input(slug, tool_name, kwargs, entry)
+    if input_findings:
+        for f in input_findings:
+            logger.warning("input_guard: %s/%s: %s", slug, tool_name, f)
+
+    # Input guard escalation: prompt-level findings block execution
+    if input_findings and decision.action == "allow":
+        prompt_findings = [f for f in input_findings if f.level == "prompt"]
+        if prompt_findings:
+            interactive = _resolve_interactive()
+            ig_action = "prompt" if interactive else "deny"
+            decision = PolicyResult(
+                action=ig_action,
+                reason=f"Input guard: {prompt_findings[0].message}",
+                source="input_guard",
+            )
+            audit_decision(
+                decision, "run_tool", slug,
+                tool_name=tool_name,
+                trust_level=entry.get("trust_level"),
+            )
 
     policy_info = {
         "action": decision.action,
         "reason": decision.reason,
         "source": decision.source,
     }
-    if input_warnings:
-        policy_info["input_warnings"] = input_warnings
+    if input_findings:
+        policy_info["input_warnings"] = [str(f) for f in input_findings]
     if guard_decision and guard_decision.action_types:
         policy_info["guard_action_types"] = guard_decision.action_types
         policy_info["guard_risk_level"] = guard_decision.risk_level
@@ -252,6 +269,7 @@ def run_tool(
         from agentnode_sdk.runtimes.agent_runner import run_agent
         res = run_agent(slug, entry=entry, **kwargs)
         res.policy = policy_info
+        _audit_runtime_run(slug, tool_name, "agent", res, entry)
         return res
 
     # Resolve runtime (default: python for backward compat)
@@ -283,7 +301,36 @@ def run_tool(
             policy=policy_info,
         )
     res.policy = policy_info
+    _audit_runtime_run(slug, tool_name, runtime, res, entry)
     return res
+
+
+def _audit_runtime_run(
+    slug: str,
+    tool_name: str | None,
+    runtime: str,
+    result: RunToolResult,
+    entry: dict,
+) -> None:
+    """Audit the runtime dispatch result. Never crashes the caller."""
+    try:
+        reason = f"runtime={runtime} success={result.success}"
+        if not result.success and result.error:
+            error_summary = result.error.split(":")[0][:80]
+            reason += f" error={error_summary}"
+        audit_decision(
+            PolicyResult(
+                action="allow" if result.success else "deny",
+                reason=reason,
+                source="runner.dispatch",
+            ),
+            "runtime_run",
+            slug,
+            tool_name=tool_name,
+            trust_level=entry.get("trust_level"),
+        )
+    except Exception:
+        logger.debug("Failed to audit runtime dispatch", exc_info=True)
 
 
 def _get_lockfile_entry(slug: str, lockfile_path: Path | None) -> dict:

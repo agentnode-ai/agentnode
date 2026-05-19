@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from agentnode_sdk.models import RunToolResult
+from agentnode_sdk.policy import PolicyResult, audit_decision
+
+logger = __import__("logging").getLogger("agentnode.mcp_runner")
 
 _request_id = itertools.count(1)
 
@@ -224,6 +227,7 @@ def run_mcp(
         **kwargs: Arguments passed to the tool.
     """
     t0 = time.monotonic()
+    name = tool_name
     try:
         command = entry.get("mcp_command")
         if not command:
@@ -273,6 +277,8 @@ def run_mcp(
         result = server.call_tool(name, kwargs, timeout=timeout)
         elapsed = (time.monotonic() - t0) * 1000
 
+        _audit_mcp_call(slug, name, success=True, duration_ms=elapsed)
+
         return RunToolResult(
             success=True,
             result=result,
@@ -281,6 +287,8 @@ def run_mcp(
         )
     except TimeoutError:
         elapsed = (time.monotonic() - t0) * 1000
+        _audit_mcp_call(slug, name, success=False,
+                        duration_ms=elapsed, error_class="TimeoutError")
         return RunToolResult(
             success=False,
             error=f"MCP tool timed out after {timeout}s",
@@ -290,9 +298,40 @@ def run_mcp(
         )
     except Exception as exc:
         elapsed = (time.monotonic() - t0) * 1000
+        _audit_mcp_call(slug, name, success=False,
+                        duration_ms=elapsed, error_class=type(exc).__name__)
         return RunToolResult(
             success=False,
             error=f"{type(exc).__name__}: {exc}",
             mode_used="mcp",
             duration_ms=round(elapsed, 1),
         )
+
+
+def _audit_mcp_call(
+    slug: str,
+    tool_name: str | None,
+    *,
+    success: bool,
+    duration_ms: float | None = None,
+    error_class: str | None = None,
+) -> None:
+    """Audit an MCP tool execution result. Never crashes the caller."""
+    try:
+        dur = round(duration_ms) if duration_ms is not None else 0
+        if success:
+            reason = f"mcp_call ok duration_ms={dur}"
+        else:
+            reason = "mcp_call failed"
+            if error_class:
+                reason += f" error={error_class}"
+            reason += f" duration_ms={dur}"
+
+        result = PolicyResult(
+            action="allow" if success else "deny",
+            reason=reason,
+            source="mcp_runner",
+        )
+        audit_decision(result, "mcp_run", slug, tool_name=tool_name)
+    except Exception:
+        logger.debug("Failed to audit MCP call for %s", slug, exc_info=True)

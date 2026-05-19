@@ -1,12 +1,15 @@
-"""Input validation for tool arguments — warning layer only.
+"""Input validation for tool arguments.
 
 Checks kwargs passed to run_tool() for patterns that indicate
-potential misuse. Returns warning strings; never blocks execution.
+potential misuse. Returns InputFinding objects with severity levels:
+- "warning": logged but non-blocking
+- "prompt": requires confirmation (interactive) or denies (non-interactive)
 """
 from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -18,55 +21,78 @@ _PATH_TRAVERSAL_RE = re.compile(r"(^|[\\/])\.\.[\\/]")
 _URL_RE = re.compile(r"https?://", re.IGNORECASE)
 
 
+@dataclass
+class InputFinding:
+    level: str       # "warning" or "prompt"
+    message: str
+    code: str        # "path_traversal", "url_anomaly", "oversized_string", "oversized_collection"
+
+    def __str__(self) -> str:
+        return self.message
+
+
 def validate_tool_input(
     slug: str,
     tool_name: str | None,
     kwargs: dict[str, Any],
     entry: dict,
-) -> list[str]:
+) -> list[InputFinding]:
     """Validate tool arguments against known risk patterns.
 
-    Returns list of warning strings (empty = all clear).
+    Returns list of InputFinding objects (empty = all clear).
+    Each finding has a level ("warning" or "prompt") and a code.
     """
     if not kwargs:
         return []
 
-    warnings: list[str] = []
+    findings: list[InputFinding] = []
     perms = entry.get("permissions") or {}
 
     for key, value in kwargs.items():
         if isinstance(value, str):
-            warnings.extend(_check_string(key, value, perms))
+            findings.extend(_check_string(key, value, perms))
         elif isinstance(value, (list, tuple, set, frozenset)):
             if len(value) > MAX_COLLECTION_SIZE:
-                warnings.append(
-                    f"arg '{key}': collection has {len(value)} items (limit {MAX_COLLECTION_SIZE})"
-                )
+                findings.append(InputFinding(
+                    level="warning",
+                    message=f"arg '{key}': collection has {len(value)} items (limit {MAX_COLLECTION_SIZE})",
+                    code="oversized_collection",
+                ))
         elif isinstance(value, dict):
             if len(value) > MAX_COLLECTION_SIZE:
-                warnings.append(
-                    f"arg '{key}': dict has {len(value)} keys (limit {MAX_COLLECTION_SIZE})"
-                )
+                findings.append(InputFinding(
+                    level="warning",
+                    message=f"arg '{key}': dict has {len(value)} keys (limit {MAX_COLLECTION_SIZE})",
+                    code="oversized_collection",
+                ))
 
-    return warnings
+    return findings
 
 
-def _check_string(key: str, value: str, perms: dict) -> list[str]:
+def _check_string(key: str, value: str, perms: dict) -> list[InputFinding]:
     """Check a single string argument."""
-    warnings: list[str] = []
+    findings: list[InputFinding] = []
 
     if len(value.encode("utf-8", errors="replace")) > MAX_STRING_BYTES:
-        warnings.append(
-            f"arg '{key}': string exceeds {MAX_STRING_BYTES // 1_000_000} MB"
-        )
+        findings.append(InputFinding(
+            level="warning",
+            message=f"arg '{key}': string exceeds {MAX_STRING_BYTES // 1_000_000} MB",
+            code="oversized_string",
+        ))
 
     if _PATH_TRAVERSAL_RE.search(value):
-        warnings.append(f"arg '{key}': contains path traversal pattern (..)")
+        findings.append(InputFinding(
+            level="prompt",
+            message=f"arg '{key}': contains path traversal pattern (..)",
+            code="path_traversal",
+        ))
 
     net_level = perms.get("network_level", "none")
     if net_level == "none" and _URL_RE.search(value):
-        warnings.append(
-            f"arg '{key}': contains URL but package declares network_level=none"
-        )
+        findings.append(InputFinding(
+            level="prompt",
+            message=f"arg '{key}': contains URL but package declares network_level=none",
+            code="url_anomaly",
+        ))
 
-    return warnings
+    return findings
