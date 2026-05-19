@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.6.1 — Runtime Audit Parity & Input Guard Escalation
+
+Audit completeness and input validation hardening after the v0.6.0
+architecture review.
+
+### Added
+
+- **`runtime_run` audit event** — unified dispatch-level audit for all
+  runtimes (python, mcp, remote, agent). Emitted after every tool
+  execution with runtime type, success/failure, and error summary.
+  No kwargs or result data in audit entries.
+- **`mcp_run` audit event** — execution-result audit for MCP tool calls,
+  analogous to `remote_run`. Records duration, success/failure, and
+  error class. Emitted only for actual tool execution, not pre-execution
+  guard decisions.
+- **Input guard escalation** — `path_traversal` and `url_anomaly`
+  findings promoted from warning to blocking:
+  - Interactive mode: returns `policy_prompt` (requires confirmation)
+  - Non-interactive mode: returns `policy_denied` (fail-closed)
+  - Warning-level findings (oversized inputs) remain non-blocking
+  - Guard/policy decisions take precedence — input guard never overrides
+    an earlier deny
+- **`InputFinding` dataclass** — structured findings with `level`
+  (warning/prompt), `message`, and `code` fields. `str()` returns the
+  message for backward compatibility with `policy_info["input_warnings"]`.
+- 50 new tests covering all three sub-phases.
+
+### Fixed
+
+- **Missing `import os` in CLI commands** — `agentnode run --explain`
+  and `--json` crashed with `NameError`. Pre-existing since Phase 5.
+- **`UnboundLocalError` in MCP runner** — `name` variable was assigned
+  inside try block but referenced in except handler. Fixed by
+  initializing before the try.
+
+### Security
+
+- Input guard fail-closed in non-interactive mode: if a finding is
+  severe enough to require human confirmation, it must not silently
+  pass when no human is present.
+- Audit entries never contain tool arguments, result data, or secrets.
+
 ## 0.6.0 — Guard: Pre-Execution Policy Gateway
 
 Runtime guardrails for AI agent tool calls. Guard sits between the policy
