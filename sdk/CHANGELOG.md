@@ -1,5 +1,127 @@
 # Changelog
 
+## 0.6.0 — Guard: Pre-Execution Policy Gateway
+
+Runtime guardrails for AI agent tool calls. Guard sits between the policy
+check and tool execution, classifying every tool invocation by action type
+and applying configurable policy — before any code runs.
+
+### Added
+
+- **AgentNode Guard** — pre-execution policy gateway with 9 action types:
+  `read`, `compute`, `write_local`, `write_external`, `delete`, `execute`,
+  `credential_use`, `network_egress`, `unknown`. Each action type maps to
+  a policy decision: `allow`, `prompt`, or `deny`.
+- **Default policy** — safe defaults out of the box: read/compute/write_local/
+  network_egress are allowed; delete/write_external/execute/credential_use
+  require confirmation; unknown requires confirmation.
+- **Strict mode** — `AGENTNODE_GUARD_STRICT=true` escalates: delete/
+  write_external/execute/unknown become hard `deny`, write_local becomes
+  `prompt`. Designed for production and CI.
+- **Per-tool policy overrides** — `agentnode guard set <action> <decision>
+  --tool <slug/tool>` overrides global policy for a specific tool. Overrides
+  never bypass critical risk, strict mode, or install/run denial.
+- **Guard CLI** —
+  - `agentnode guard status` — show resolved policy, strict mode, rate limits
+  - `agentnode guard set <action> <decision>` — set global or per-tool policy
+  - `agentnode guard unset <action>` — reset to default
+  - `agentnode guard check <slug/tool> [--action <type>] [--json]` — dry-run
+    policy check without executing
+  - `agentnode guard reset` — reset all policies to defaults
+- **Action classification** — three-tier: manifest declaration (highest),
+  name heuristic (fallback), permission signals (escalation). Permission
+  signals add `network_egress`, `execute`, or `credential_use` on top of
+  the declared/inferred type.
+- **Risk scoring** — composite score from action types, trust level, and
+  environment secrets. Levels: low (0–20), medium (21–45), high (46–70),
+  critical (71+). Critical risk is always denied (unoverridable).
+- **Connector credential bypass** — connectors with declared `auth_type`
+  get `credential_use: allow` without prompting when the global policy
+  allows it.
+- **Agent pre-approved actions** — agent packages declare
+  `pre_approved_actions` in their manifest. Pre-approved action types skip
+  the prompt. High-risk actions not in the list are denied in
+  non-interactive mode, prompted in interactive mode.
+- **MCP argument inspection** — deep inspection of tool arguments for path
+  traversal, absolute path escape, URL anomalies, shell tokens, oversized
+  payloads, excessive nesting, and excessive keys. Schema-aware: suppresses
+  false positives when `input_schema` declares free-text or URL fields.
+- **Rate limiting** — per-slug sliding window with burst/minute/hour limits.
+  Defaults: 60/min, 1000/hour, burst 10. Agents get 120/min, 2000/hour,
+  burst 20. Strict mode halves the defaults.
+- **Install-time risk preview** — `agentnode install` shows a guard risk
+  preview (action types, risk level, policy decisions) before installing.
+- **Guard chain tracing** — each policy step recorded as
+  `guard_action:{decision}({action_type}[:context])`. Chain visible in
+  `guard check --json` and audit entries.
+- **CLI confirmation UX** — interactive confirmation prompt with risk
+  coloring, mitigation hints, and fail-closed default (No = tool does not
+  run).
+- **Audit integration** — guard decisions logged to `audit.jsonl` with
+  `guard_check` event type. `agentnode audit --type guard_check` filters
+  guard events.
+- **Skill system** —
+  - `agentnode skill install <slug>` — install skill packages
+  - `agentnode skill list` — list installed skills
+  - `agentnode skill show <slug> [--raw] [--render <args>]` — display skill
+    prompts with placeholder rendering
+  - MCP server exposing skill prompts and assets
+  - Skills bypass guard (no tool execution)
+- **`agentnode publish`** — publish packages to the AgentNode registry with
+  artifact upload, manifest validation, and pre-publish confirmation gate.
+- **Token connector auth** — `auth_type: "token"` supported in connector
+  manifests alongside OAuth2.
+
+### Changed
+
+- **Audit display** — `agentnode audit` supports `--type` filter and
+  improved formatting for guard events.
+- **JSON response guard** — both sync and async SDK clients now validate
+  that success-path JSON responses are dicts. Arrays, strings, numbers,
+  and null trigger `AgentNodeError` instead of silent pass-through.
+
+### Security
+
+- **OC-1**: Guard imports no runtime-specific modules (python_runner,
+  mcp_runner, etc.).
+- **OC-2**: Decision path is pure in-memory — no file I/O, no network.
+- **OC-3**: Internal exceptions always fail closed — never allow on error.
+- **Critical risk is unoverridable** — unverified packages with high-risk
+  actions in environments with secrets are always denied, regardless of
+  policy configuration.
+- **Strict mode tool override bypass prevented** — per-tool overrides are
+  ignored in strict mode.
+- **Publish confirmation gate** — `agentnode publish` requires explicit
+  `y` confirmation (or `--yes`) before uploading.
+- **Production startup guard** — backend blocks startup when
+  `ENVIRONMENT=production` and default secrets are still configured.
+
+### Fixed
+
+- **Mitigation hint accuracy** — guard prompt hints now reference the actual
+  blocking action type instead of the first alphabetical action type.
+
+### Design Constraints
+
+- Guard is a decision layer, not a sandbox. It classifies and gates; it does
+  not isolate execution.
+- Policy resolution is deterministic: tool_override > global action_policy >
+  default. Strict mode replaces the effective policy layer.
+- All guard state is in-memory. No guard decision depends on file I/O or
+  network calls.
+- Agent `pre_approved_actions` come from the manifest and config overrides.
+  They are not inherited or guessed.
+
+### Migration
+
+- No breaking changes. All new features are additive.
+- Default guard policy matches pre-0.6.0 behavior: read/compute/write_local/
+  network_egress allowed, everything else prompted.
+- To enable strict mode: `export AGENTNODE_GUARD_STRICT=true`
+- To customize policy: `agentnode guard set <action_type> <decision>`
+- To add per-tool overrides: `agentnode guard set <action_type> <decision>
+  --tool <slug/tool_name>`
+
 ## 0.5.3 — Configurable Risk Policies
 
 User-configurable policies for computed risk flags. Extends the risk

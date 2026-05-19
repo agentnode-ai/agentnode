@@ -408,6 +408,7 @@ def _check_action_inner(
 
     # Evaluate policy per action type
     worst_action = "allow"
+    worst_action_type = action_types[0] if action_types else "unknown"
     worst_reason = ""
     worst_source = "guard.default"
     strict = _is_strict()
@@ -423,6 +424,7 @@ def _check_action_inner(
                     chain.append(f"guard_action:{tool_ov}({at}:tool_override[{tool_key}])")
                     if _severity(tool_ov) > _severity(worst_action):
                         worst_action = tool_ov
+                        worst_action_type = at
                         worst_reason = f"credential_use overridden by tool policy [{tool_key}]"
                         worst_source = f"guard.tool_override.{tool_key}"
                     continue
@@ -437,6 +439,7 @@ def _check_action_inner(
                 chain.append(f"guard_action:{decision}(credential_use:no_connector)")
                 if _severity(decision) > _severity(worst_action):
                     worst_action = decision
+                    worst_action_type = at
                     worst_reason = "credential_use without declared Connector scope"
                     worst_source = "guard.credential_use"
                 continue
@@ -449,11 +452,13 @@ def _check_action_inner(
                 chain.append(f"guard_action:{tool_ov}({at}:tool_override[{tool_key}])")
                 if tool_ov == "deny":
                     worst_action = "deny"
+                    worst_action_type = at
                     worst_reason = f"Action type '{at}' denied by tool override [{tool_key}]"
                     worst_source = f"guard.tool_override.{tool_key}"
                     break
                 elif _severity(tool_ov) > _severity(worst_action):
                     worst_action = tool_ov
+                    worst_action_type = at
                     worst_reason = f"Action type '{at}' requires confirmation (tool override [{tool_key}])"
                     worst_source = f"guard.tool_override.{tool_key}"
                 continue
@@ -472,6 +477,7 @@ def _check_action_inner(
                 chain.append(f"guard_action:{decision}({at}:agent_not_approved)")
                 if _severity(decision) > _severity(worst_action):
                     worst_action = decision
+                    worst_action_type = at
                     worst_reason = f"Agent action '{at}' not in pre_approved_actions"
                     worst_source = f"guard.agent.{at}"
                 continue
@@ -479,6 +485,7 @@ def _check_action_inner(
         if at_policy == "deny":
             chain.append(f"guard_action:deny({at})")
             worst_action = "deny"
+            worst_action_type = at
             worst_reason = f"Action type '{at}' denied by guard policy"
             worst_source = f"guard.action_policy.{at}"
             break
@@ -486,6 +493,7 @@ def _check_action_inner(
             chain.append(f"guard_action:prompt({at})")
             if _severity("prompt") > _severity(worst_action):
                 worst_action = "prompt"
+                worst_action_type = at
                 worst_reason = f"Action type '{at}' requires confirmation"
                 worst_source = f"guard.action_policy.{at}"
         else:
@@ -497,7 +505,7 @@ def _check_action_inner(
     mitigations = []
     if worst_action == "prompt":
         mitigations.append("Confirm execution to proceed")
-        mitigations.append(f"Or set guard.{action_types[0]}=allow in config")
+        mitigations.append(f"Or set guard.{worst_action_type}=allow in config")
     elif worst_action == "deny":
         mitigations.append("Change guard policy or use a higher trust package")
 

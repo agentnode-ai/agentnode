@@ -1,0 +1,136 @@
+{
+  "lockfile_version": "0.1",
+  "updated_at": "2026-05-19T10:00:00Z",
+  "packages": {
+    "word-counter-pack": {
+      "version": "1.0.0",
+      "package_type": "toolpack",
+      "runtime": "python",
+      "entrypoint": "word_counter_pack.tool",
+      "capability_ids": ["data_cleaning"],
+      "tools": [
+        {"name": "count_words", "action_type": "read"}
+      ],
+      "trust_level": "trusted",
+      "permissions": {
+        "network_level": "none",
+        "filesystem_level": "none",
+        "code_execution_level": "none"
+      }
+    },
+    "file-manager": {
+      "version": "2.1.0",
+      "package_type": "toolpack",
+      "runtime": "python",
+      "entrypoint": "file_manager.tool",
+      "capability_ids": ["file_management"],
+      "tools": [
+        {"name": "list_files", "action_type": "read"},
+        {"name": "read_file", "action_type": "read"},
+        {"name": "write_file", "action_type": "write_local"},
+        {"name": "delete_file", "action_type": "delete"},
+        {"name": "move_file", "action_type": "write_local"}
+      ],
+      "trust_level": "verified",
+      "permissions": {
+        "network_level": "none",
+        "filesystem_level": "read_write",
+        "code_execution_level": "none"
+      }
+    },
+    "web-scraper": {
+      "version": "1.3.0",
+      "package_type": "toolpack",
+      "runtime": "python",
+      "entrypoint": "web_scraper.tool",
+      "capability_ids": ["web_scraping"],
+      "tools": [
+        {"name": "fetch_page", "action_type": "network_egress"},
+        {"name": "extract_links", "action_type": "read"},
+        {"name": "download_file", "action_type": "write_external"}
+      ],
+      "trust_level": "verified",
+      "permissions": {
+        "network_level": "full",
+        "filesystem_level": "temp",
+        "code_execution_level": "none"
+      }
+    },
+    "code-runner": {
+      "version": "0.5.0",
+      "package_type": "toolpack",
+      "runtime": "python",
+      "entrypoint": "code_runner.tool",
+      "capability_ids": ["code_execution"],
+      "tools": [
+        {"name": "run_python", "action_type": "execute"},
+        {"name": "run_shell", "action_type": "execute"},
+        {"name": "eval_expression", "action_type": "compute"}
+      ],
+      "trust_level": "unverified",
+      "permissions": {
+        "network_level": "none",
+        "filesystem_level": "read_write",
+        "code_execution_level": "full"
+      }
+    },
+    "slack-connector": {
+      "version": "1.0.0",
+      "package_type": "toolpack",
+      "runtime": "python",
+      "entrypoint": "slack_connector.tool",
+      "capability_ids": ["messaging"],
+      "tools": [
+        {"name": "send_message", "action_type": "write_external"},
+        {"name": "read_channel", "action_type": "read"},
+        {"name": "upload_file", "action_type": "write_external"}
+      ],
+      "trust_level": "verified",
+      "permissions": {
+        "network_level": "full",
+        "filesystem_level": "none",
+        "code_execution_level": "none"
+      },
+      "connector": {
+        "provider": "slack",
+        "credential_scopes": ["chat:write", "channels:read", "files:write"]
+      }
+    },
+    "research-agent": {
+      "version": "1.2.0",
+      "package_type": "agent",
+      "runtime": "python",
+      "entrypoint": "research_agent.agent",
+      "capability_ids": ["research"],
+      "tools": [],
+      "trust_level": "trusted",
+      "permissions": {
+        "network_level": "full",
+        "filesystem_level": "temp",
+        "code_execution_level": "none"
+      },
+      "agent": {
+        "pre_approved_actions": ["read", "network_egress", "compute"]
+      }
+    },
+    "data-pipeline": {
+      "version": "0.2.0",
+      "package_type": "toolpack",
+      "runtime": "python",
+      "entrypoint": "data_pipeline.tool",
+      "capability_ids": ["data_processing"],
+      "tools": [
+        {"name": "transform", "action_type": "compute"},
+        {"name": "export_csv", "action_type": "write_local"},
+        {"name": "upload_s3", "action_type": "write_external"},
+        {"name": "delete_temp", "action_type": "delete"}
+      ],
+      "trust_level": "unverified",
+      "permissions": {
+        "network_level": "restricted",
+        "filesystem_level": "read_write",
+        "code_execution_level": "none"
+      }
+    }
+  }
+}

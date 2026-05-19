@@ -528,3 +528,34 @@ class TestGuardConfig:
         from agentnode_sdk.config import _merge_defaults
         merged = _merge_defaults(json.loads(cfg_file.read_text()))
         assert "my-agent" in merged["guard"]["agent_overrides"]
+
+
+# ---------------------------------------------------------------------------
+# Mitigation hint accuracy
+# ---------------------------------------------------------------------------
+
+class TestMitigationHint:
+    """Mitigation hint must reference the actual blocking action type."""
+
+    def test_single_action_type(self):
+        entry = {"trust_level": "verified", "permissions": {}, "tools": [
+            {"name": "delete_file", "action_type": "delete"},
+        ]}
+        d = check_action("pkg", "delete_file", {}, entry, interactive=False)
+        assert d.action == "prompt"
+        assert "guard.delete=allow" in d.mitigations[1]
+
+    def test_multi_action_blocking_is_not_first(self):
+        """When action_types are [network_egress, write_external],
+        the blocking type is write_external, not network_egress."""
+        entry = {
+            "trust_level": "verified",
+            "permissions": {"network_level": "full"},
+            "tools": [{"name": "download", "action_type": "write_external"}],
+        }
+        d = check_action("pkg", "download", {}, entry, interactive=False)
+        assert d.action == "prompt"
+        assert "network_egress" in d.action_types
+        assert "write_external" in d.action_types
+        assert "guard.write_external=allow" in d.mitigations[1]
+        assert "guard.network_egress=allow" not in d.mitigations[1]

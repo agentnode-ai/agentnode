@@ -250,6 +250,45 @@ profile = get_risk_profile("gmail-sender-pack")
 
 Returns `None` if the package is not installed.
 
+### Guard: Pre-Execution Policy Gateway
+
+Guard classifies every tool call by action type and applies configurable
+policy before any code runs. 9 action types, 3 decisions (allow/prompt/deny),
+per-tool overrides, strict mode.
+
+```bash
+# Check what Guard would decide for a tool
+agentnode guard check file-manager/delete_file
+agentnode guard check web-scraper/fetch_page --json
+
+# Show current policy
+agentnode guard status
+
+# Change policy for an action type
+agentnode guard set delete deny           # block all deletes
+agentnode guard set write_local allow      # allow local writes without prompt
+
+# Per-tool override (granular escape hatch)
+agentnode guard set delete allow --tool file-manager/delete_file
+
+# Reset everything
+agentnode guard reset
+
+# Strict mode (CI / production)
+export AGENTNODE_GUARD_STRICT=true
+```
+
+**Default policy:** read/compute/write_local/network_egress → allow.
+delete/write_external/execute/credential_use/unknown → prompt.
+
+**Strict mode:** delete/write_external/execute/unknown → deny.
+write_local → prompt. Per-tool overrides ignored.
+
+**Critical risk** (unverified + high-risk + secrets in env) → hard deny,
+no override possible.
+
+See [THREAT_MODEL.md](THREAT_MODEL.md) for the full security model.
+
 ### Risk Policies
 
 Configure how the SDK reacts to computed risk flags. Uses the same
