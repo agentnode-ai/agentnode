@@ -1,7 +1,7 @@
 # AgentNode Full Audit Backlog (2026-04-02, re-triaged 2026-05-18)
 
 171+ findings from 8 parallel audit agents + 118 from 12-agent pre-launch audit.
-**All P0 fixed. All security P1 fixed. 1 P1 deferred (CD5 — needs user decision).**
+**All P0 fixed. All P1 fixed. Zero open security findings.**
 Guard Phases 6–9 provide defense-in-depth for SDK tool execution; P1-SDK10 fully mitigated.
 
 ---
@@ -361,7 +361,7 @@ Verified all remaining P1 findings against current code. Guard (Phases 6–9) im
 #### STILL OPEN
 
 - [x] **P1-C12** `publish` no signing-key reconfirm — interactive `[y/N]` confirmation after preview, before artifact build. `--yes` flag for CI. (`publish.ts:140–148, 189–196`)
-- [ ] **P1-CD5** `backend/.env` with `change-me-in-production` — file not tracked in git but exists on disk. Needs user decision before removal (breaks local dev).
+- [x] **P1-CD5** `backend/.env` with `change-me-in-production` — ALREADY IMPLEMENTED. `_check_production_secrets()` in `config.py:142–168` blocks production startup when JWT_SECRET/S3/Meilisearch/COOKIE_SECURE still have insecure defaults. Dev/test unaffected. Verified 2026-05-19.
 
 #### NOT VERIFIED (frontend / test / minor CLI)
 
@@ -395,7 +395,7 @@ No other P1 findings were directly mitigated (Guard operates at SDK policy layer
 
 - [x] **P1-SDK3** ~~`_handle` success path assumes dict~~ — FIXED, dict validation added
 - [x] **P1-C12** ~~`publish` no signing-key reconfirm~~ — FIXED, interactive confirmation gate
-- [ ] **P1-CD5** `backend/.env` change-me-in-production on disk (needs decision)
+- [x] **P1-CD5** ~~`backend/.env` change-me-in-production~~ — ALREADY IMPLEMENTED, production startup guard exists
 
 ### Not verified (frontend UX / a11y)
 
