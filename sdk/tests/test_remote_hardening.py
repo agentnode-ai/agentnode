@@ -20,6 +20,8 @@ from agentnode_sdk.runtimes.remote_runner import (
     run_remote,
     _audit_remote_call,
     _extract_allowed_domains,
+    _check_method_action_consistency,
+    _extract_tool_action_type,
 )
 
 
@@ -225,15 +227,15 @@ class TestRedirectBehavior:
 
 
 class TestGAP5_ActionTypeMethodMismatch:
-    """GAP-5: action_type vs HTTP method mismatch not detected.
+    """GAP-5 ADDRESSED (Phase 14.3): action_type vs HTTP method mismatch warned.
 
-    Current behavior: a tool declaring action_type=read can use method=POST
-    without any warning or audit entry. Guard trusts the manifest classification.
-    Phase 14.3 will add warnings for mismatches.
+    Mismatches now produce warnings in logs and audit, but never block.
+    Guard remains the policy authority.
     """
 
     @respx.mock
-    def test_read_action_with_post_method_succeeds(self):
+    def test_read_action_with_post_method_succeeds(self, tmp_path):
+        """Mismatch warns but does NOT block execution."""
         respx.post("https://api.testapi.com/v1/actions").mock(
             return_value=httpx.Response(200, json={"ok": True})
         )
@@ -243,6 +245,12 @@ class TestGAP5_ActionTypeMethodMismatch:
         ])
         result = run_remote("test-pack", "post_action", entry=entry)
         assert result.success is True
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_method_mismatch") is True
+        assert any("read" in w and "POST" in w for w in r.get("remote_method_warnings", []))
 
 
 class TestGAP2_ScopesNotEnforced:
@@ -438,3 +446,167 @@ class TestRemoteAuditDomainOnly:
         assert r["remote_domain"] == "api.testapi.com"
         assert "://" not in r["remote_domain"]
         assert "/" not in r["remote_domain"]
+
+
+# ==========================================================================
+# Phase 14.3 — Method/Action-Type Consistency Warnings
+# ==========================================================================
+
+
+class TestMethodActionConsistencyUnit:
+    """Unit tests for _check_method_action_consistency helper."""
+
+    def test_read_get_no_warning(self):
+        assert _check_method_action_consistency("GET", "read") == []
+
+    def test_read_post_warning(self):
+        w = _check_method_action_consistency("POST", "read")
+        assert len(w) == 1
+        assert "read" in w[0] and "POST" in w[0]
+
+    def test_read_delete_warning(self):
+        w = _check_method_action_consistency("DELETE", "read")
+        assert len(w) == 1
+
+    def test_delete_get_warning(self):
+        w = _check_method_action_consistency("GET", "delete")
+        assert len(w) == 1
+        assert "delete" in w[0] and "GET" in w[0]
+
+    def test_delete_delete_no_warning(self):
+        assert _check_method_action_consistency("DELETE", "delete") == []
+
+    def test_missing_action_type_delete_warning(self):
+        w = _check_method_action_consistency("DELETE", None)
+        assert len(w) == 1
+        assert "no action_type" in w[0]
+
+    def test_missing_action_type_put_warning(self):
+        w = _check_method_action_consistency("PUT", None)
+        assert len(w) == 1
+
+    def test_missing_action_type_get_no_warning(self):
+        assert _check_method_action_consistency("GET", None) == []
+
+    def test_missing_action_type_post_no_warning(self):
+        assert _check_method_action_consistency("POST", None) == []
+
+    def test_execute_post_no_warning(self):
+        assert _check_method_action_consistency("POST", "execute") == []
+
+    def test_write_external_get_no_warning(self):
+        assert _check_method_action_consistency("GET", "write_external") == []
+
+    def test_write_post_no_warning(self):
+        assert _check_method_action_consistency("POST", "write") == []
+
+
+class TestExtractToolActionType:
+    """Unit tests for _extract_tool_action_type helper."""
+
+    def test_extracts_action_type(self):
+        entry = {"tools": [{"name": "my_tool", "action_type": "read"}]}
+        assert _extract_tool_action_type("my_tool", entry) == "read"
+
+    def test_returns_none_when_missing(self):
+        entry = {"tools": [{"name": "my_tool"}]}
+        assert _extract_tool_action_type("my_tool", entry) is None
+
+    def test_returns_none_for_unknown_tool(self):
+        entry = {"tools": [{"name": "other_tool", "action_type": "read"}]}
+        assert _extract_tool_action_type("my_tool", entry) is None
+
+    def test_returns_none_for_no_tool_name(self):
+        entry = {"tools": [{"name": "my_tool", "action_type": "read"}]}
+        assert _extract_tool_action_type(None, entry) is None
+
+
+class TestMethodActionConsistencyIntegration:
+    """Integration: warnings appear in audit and do not block execution."""
+
+    @respx.mock
+    def test_read_post_warning_in_audit(self, tmp_path):
+        respx.post("https://api.testapi.com/v1/actions").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        entry = _entry(tools=[
+            {"name": "post_action", "endpoint": "/actions", "method": "POST",
+             "action_type": "read"},
+        ])
+        result = run_remote("test-pack", "post_action", entry=entry)
+        assert result.success is True
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_method_mismatch") is True
+        assert any("read" in w and "POST" in w for w in r["remote_method_warnings"])
+
+    @respx.mock
+    def test_read_get_no_mismatch_in_audit(self, tmp_path):
+        respx.get("https://api.testapi.com/v1/data").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        entry = _entry(tools=[
+            {"name": "get_data", "endpoint": "/data", "method": "GET",
+             "action_type": "read"},
+        ])
+        run_remote("test-pack", "get_data", entry=entry)
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_method_mismatch") is None
+        assert "remote_method_warnings" not in r
+
+    @respx.mock
+    def test_delete_get_warning_in_audit(self, tmp_path):
+        respx.get("https://api.testapi.com/v1/data").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        entry = _entry(tools=[
+            {"name": "get_data", "endpoint": "/data", "method": "GET",
+             "action_type": "delete"},
+        ])
+        result = run_remote("test-pack", "get_data", entry=entry)
+        assert result.success is True
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_method_mismatch") is True
+
+    @respx.mock
+    def test_missing_action_type_delete_warning_in_audit(self, tmp_path):
+        respx.delete("https://api.testapi.com/v1/data").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        entry = _entry(tools=[
+            {"name": "get_data", "endpoint": "/data", "method": "DELETE"},
+        ])
+        result = run_remote("test-pack", "get_data", entry=entry)
+        assert result.success is True
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_method_mismatch") is True
+        assert any("no action_type" in w for w in r["remote_method_warnings"])
+
+    @respx.mock
+    def test_warning_does_not_block_on_failure(self, tmp_path):
+        """Mismatch warning still recorded even on HTTP error."""
+        respx.post("https://api.testapi.com/v1/actions").mock(
+            return_value=httpx.Response(403, json={"error": "forbidden"})
+        )
+        entry = _entry(tools=[
+            {"name": "post_action", "endpoint": "/actions", "method": "POST",
+             "action_type": "read"},
+        ])
+        result = run_remote("test-pack", "post_action", entry=entry)
+        assert result.success is False
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_method_mismatch") is True

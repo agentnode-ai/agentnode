@@ -96,6 +96,16 @@ def run_remote(
     except Exception:
         _audit_domain = "unknown"
 
+    # --- 3b. Method/action-type consistency check (advisory) ---
+    action_type = _extract_tool_action_type(tool_name, entry)
+    method_warnings = _check_method_action_consistency(method, action_type)
+    if method_warnings:
+        for w in method_warnings:
+            logger.warning(
+                "Method/action-type mismatch: %s (slug=%s, tool=%s)",
+                w, slug, tool_name,
+            )
+
     # --- 4-5. Make authenticated request with retries ---
     last_error: str | None = None
     last_status: int | None = None
@@ -129,6 +139,7 @@ def run_remote(
                     status_code=resp.status_code,
                     duration_ms=elapsed,
                     success=True,
+                    method_warnings=method_warnings,
                 )
 
                 return RunToolResult(
@@ -154,6 +165,7 @@ def run_remote(
                 status_code=resp.status_code,
                 duration_ms=elapsed,
                 success=False,
+                method_warnings=method_warnings,
             )
 
             return RunToolResult(
@@ -173,6 +185,7 @@ def run_remote(
                 status_code=None,
                 duration_ms=elapsed,
                 success=False,
+                method_warnings=method_warnings,
             )
             return RunToolResult(
                 success=False,
@@ -192,6 +205,7 @@ def run_remote(
                 status_code=None,
                 duration_ms=elapsed,
                 success=False,
+                method_warnings=method_warnings,
             )
 
             return RunToolResult(
@@ -211,6 +225,7 @@ def run_remote(
         status_code=last_status,
         duration_ms=elapsed,
         success=False,
+        method_warnings=method_warnings,
     )
     return RunToolResult(
         success=False,
@@ -297,6 +312,37 @@ def _safe_error_body(resp: AuthorizedResponse) -> str:
     return body
 
 
+def _extract_tool_action_type(tool_name: str | None, entry: dict) -> str | None:
+    """Extract action_type from the tool definition, if declared."""
+    if not tool_name:
+        return None
+    for t in entry.get("tools", []):
+        if t.get("name") == tool_name:
+            return t.get("action_type")
+    return None
+
+
+_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _check_method_action_consistency(method: str, action_type: str | None) -> list[str]:
+    """Detect suspicious mismatches between HTTP method and declared action_type.
+
+    Advisory only — never blocks execution, never overrides Guard.
+    """
+    warnings: list[str] = []
+    m = method.upper()
+
+    if action_type == "read" and m in _MUTATING_METHODS:
+        warnings.append(f"action_type='read' with HTTP {m}")
+    elif action_type == "delete" and m == "GET":
+        warnings.append(f"action_type='delete' with HTTP GET")
+    elif not action_type and m in ("DELETE", "PUT", "PATCH"):
+        warnings.append(f"no action_type declared with HTTP {m}")
+
+    return warnings
+
+
 def _audit_remote_call(
     slug: str,
     tool_name: str | None,
@@ -307,6 +353,7 @@ def _audit_remote_call(
     status_code: int | None,
     duration_ms: float | None = None,
     success: bool,
+    method_warnings: list[str] | None = None,
 ) -> None:
     """Audit a remote tool call. Never crashes the caller.
 
@@ -326,18 +373,22 @@ def _audit_remote_call(
             reason=reason,
             source="remote_runner",
         )
+        extra: dict[str, Any] = {
+            "remote_method": method,
+            "remote_domain": domain,
+            "remote_status_code": status_code,
+            "remote_duration_ms": round(duration_ms) if duration_ms is not None else None,
+            "remote_provider": provider,
+        }
+        if method_warnings:
+            extra["remote_method_mismatch"] = True
+            extra["remote_method_warnings"] = method_warnings
         audit_decision(
             result,
             "remote_run",
             slug,
             tool_name=tool_name,
-            extra={
-                "remote_method": method,
-                "remote_domain": domain,
-                "remote_status_code": status_code,
-                "remote_duration_ms": round(duration_ms) if duration_ms is not None else None,
-                "remote_provider": provider,
-            },
+            extra=extra,
         )
     except Exception:
         logger.debug("Failed to audit remote call for %s", slug, exc_info=True)
