@@ -2766,3 +2766,126 @@ def cmd_guard_reset() -> int:
 
     print("  Guard policies reset to defaults.")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# lock seal / lock verify
+# ---------------------------------------------------------------------------
+
+def cmd_lock_seal(*, force: bool = False) -> int:
+    """Compute integrity hashes for lockfile entries."""
+    from agentnode_sdk.lock_integrity import seal_entry, verify_entry
+    from agentnode_sdk._fileutil import atomic_write_json, file_lock
+
+    lock = read_lockfile()
+    packages = lock.get("packages", {})
+
+    if not packages:
+        print("  No packages in lockfile.")
+        return 0
+
+    sealed_count = 0
+    skipped_count = 0
+
+    for slug, entry in packages.items():
+        has_integrity = "_integrity" in entry
+        if has_integrity and not force:
+            skipped_count += 1
+            continue
+
+        packages[slug] = seal_entry(entry)
+        sealed_count += 1
+        label = "resealed" if has_integrity else "sealed"
+        print(f"  {slug}: {label}")
+
+        try:
+            from agentnode_sdk.policy import audit_decision, PolicyResult
+            audit_decision(
+                PolicyResult(
+                    action="allow",
+                    reason=f"entry {'resealed' if has_integrity else 'sealed'}",
+                    source="lock_integrity",
+                ),
+                "lock_seal",
+                slug,
+            )
+        except Exception:
+            pass
+
+    if sealed_count > 0:
+        from agentnode_sdk.installer import _lockfile_path
+        lf = _lockfile_path()
+        with file_lock(lf):
+            lock["packages"] = packages
+            from datetime import datetime, timezone
+            lock["updated_at"] = datetime.now(timezone.utc).isoformat()
+            atomic_write_json(lf, lock)
+
+    total = sealed_count + skipped_count
+    parts = []
+    if sealed_count:
+        parts.append(f"{sealed_count} sealed")
+    if skipped_count:
+        parts.append(f"{skipped_count} unchanged")
+    print(f"\n  {', '.join(parts)} ({total} total)")
+    return 0
+
+
+def cmd_lock_verify(*, json_output: bool = False, strict: bool = False) -> int:
+    """Verify integrity of all lockfile entries."""
+    from agentnode_sdk.lock_integrity import verify_entry
+
+    lock = read_lockfile()
+    packages = lock.get("packages", {})
+
+    verified: list[str] = []
+    missing: list[str] = []
+    mismatch: list[str] = []
+
+    for slug, entry in packages.items():
+        result = verify_entry(slug, entry)
+        if result.status == "verified":
+            verified.append(slug)
+        elif result.status == "missing":
+            missing.append(slug)
+        else:
+            mismatch.append(slug)
+
+    total = len(packages)
+    has_mismatch = len(mismatch) > 0
+    has_missing_strict = strict and len(missing) > 0
+    ok = not has_mismatch and not has_missing_strict
+
+    if json_output:
+        report = {
+            "verified": sorted(verified),
+            "missing": sorted(missing),
+            "mismatch": sorted(mismatch),
+            "total": total,
+            "ok": ok,
+        }
+        print(json.dumps(report, indent=2))
+        return 0 if ok else 1
+
+    if total == 0:
+        print("  No packages in lockfile.")
+        return 0
+
+    for slug in sorted(verified):
+        print(f"  ✓ {slug}: verified")
+    for slug in sorted(missing):
+        label = "missing (not sealed)" if not strict else "MISSING (strict)"
+        print(f"  - {slug}: {label}")
+    for slug in sorted(mismatch):
+        print(f"  ✗ {slug}: MISMATCH")
+
+    parts = []
+    if verified:
+        parts.append(f"{len(verified)} verified")
+    if mismatch:
+        parts.append(f"{len(mismatch)} mismatch")
+    if missing:
+        parts.append(f"{len(missing)} missing")
+    print(f"\n  {', '.join(parts)} ({total} total)")
+
+    return 0 if ok else 1

@@ -179,6 +179,15 @@ def main(argv: list[str] | None = None) -> int:
     guard_check_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     guard_sub.add_parser("reset", help="Reset guard policies to defaults")
 
+    # lock
+    lock_parser = sub.add_parser("lock", help="Lockfile integrity management")
+    lock_sub = lock_parser.add_subparsers(dest="lock_action")
+    lock_seal_p = lock_sub.add_parser("seal", help="Compute integrity hashes for all entries")
+    lock_seal_p.add_argument("--force", action="store_true", help="Recompute even if already sealed")
+    lock_verify_p = lock_sub.add_parser("verify", help="Verify integrity of all entries")
+    lock_verify_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    lock_verify_p.add_argument("--strict", action="store_true", help="Treat missing integrity as failure")
+
     # serve
     sub.add_parser("serve", help="Start MCP server (stdio)")
 
@@ -309,6 +318,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.guard_action == "reset":
                 return commands.cmd_guard_reset()
             guard_parser.print_help()
+            return 1
+        if args.command == "lock":
+            if args.lock_action == "seal":
+                return commands.cmd_lock_seal(force=args.force)
+            if args.lock_action == "verify":
+                return commands.cmd_lock_verify(
+                    json_output=args.json_output, strict=args.strict,
+                )
+            lock_parser.print_help()
             return 1
         if args.command == "serve":
             from agentnode_sdk.cli.serve import cmd_serve
