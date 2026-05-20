@@ -89,6 +89,13 @@ def run_remote(
     # --- 3. Map tool to HTTP endpoint ---
     url, method = _resolve_tool_endpoint(remote_endpoint, tool_name, entry)
 
+    # Extract domain once for audit (hostname only — no path/query/secrets)
+    try:
+        from urllib.parse import urlparse as _urlparse
+        _audit_domain = (_urlparse(url).hostname or "unknown").lower()
+    except Exception:
+        _audit_domain = "unknown"
+
     # --- 4-5. Make authenticated request with retries ---
     last_error: str | None = None
     last_status: int | None = None
@@ -117,7 +124,10 @@ def run_remote(
 
                 _audit_remote_call(
                     slug, tool_name, provider,
+                    method=method,
+                    domain=_audit_domain,
                     status_code=resp.status_code,
+                    duration_ms=elapsed,
                     success=True,
                 )
 
@@ -139,7 +149,10 @@ def run_remote(
 
             _audit_remote_call(
                 slug, tool_name, provider,
+                method=method,
+                domain=_audit_domain,
                 status_code=resp.status_code,
+                duration_ms=elapsed,
                 success=False,
             )
 
@@ -155,7 +168,10 @@ def run_remote(
             elapsed = (time.monotonic() - t0) * 1000
             _audit_remote_call(
                 slug, tool_name, provider,
+                method=method,
+                domain=_audit_domain,
                 status_code=None,
+                duration_ms=elapsed,
                 success=False,
             )
             return RunToolResult(
@@ -171,7 +187,10 @@ def run_remote(
 
             _audit_remote_call(
                 slug, tool_name, provider,
+                method=method,
+                domain=_audit_domain,
                 status_code=None,
+                duration_ms=elapsed,
                 success=False,
             )
 
@@ -187,7 +206,10 @@ def run_remote(
     elapsed = (time.monotonic() - t0) * 1000
     _audit_remote_call(
         slug, tool_name, provider,
+        method=method,
+        domain=_audit_domain,
         status_code=last_status,
+        duration_ms=elapsed,
         success=False,
     )
     return RunToolResult(
@@ -280,22 +302,42 @@ def _audit_remote_call(
     tool_name: str | None,
     provider: str,
     *,
+    method: str | None = None,
+    domain: str | None = None,
     status_code: int | None,
+    duration_ms: float | None = None,
     success: bool,
 ) -> None:
-    """Audit a remote tool call. Never crashes the caller."""
+    """Audit a remote tool call. Never crashes the caller.
+
+    Fields use ``remote_`` prefix to avoid collisions with core audit schema.
+    Only safe metadata is logged — no URLs, paths, kwargs, bodies, or secrets.
+    """
     try:
+        if success:
+            reason = f"Remote call completed with status {status_code}"
+        elif status_code is not None:
+            reason = f"remote_call status={status_code}"
+        else:
+            reason = "remote_call_failed"
+
         result = PolicyResult(
             action="allow" if success else "deny",
-            reason=f"remote_call status={status_code}" if status_code else "remote_call_failed",
+            reason=reason,
             source="remote_runner",
-            details={"mode": "remote", "provider": provider},
         )
         audit_decision(
             result,
             "remote_run",
             slug,
             tool_name=tool_name,
+            extra={
+                "remote_method": method,
+                "remote_domain": domain,
+                "remote_status_code": status_code,
+                "remote_duration_ms": round(duration_ms) if duration_ms is not None else None,
+                "remote_provider": provider,
+            },
         )
     except Exception:
         logger.debug("Failed to audit remote call for %s", slug, exc_info=True)

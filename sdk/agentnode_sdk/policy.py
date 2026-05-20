@@ -555,12 +555,17 @@ def audit_decision(
     tool_name: str | None = None,
     trust_level: str | None = None,
     run_id: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     """Log a policy decision to ``~/.agentnode/audit.jsonl``.
 
     BD-5: Append-only, UTF-8. Never crashes the caller.
     BD-6: Only has_secrets bool in env, no secret key names.
     BD-12: details field NOT written to audit.
+
+    Args:
+        extra: Additional fields merged into the audit record.
+            Use prefixed keys (e.g. ``remote_method``) to avoid collisions.
     """
     if event_type not in _VALID_EVENTS:
         logger.warning("Unknown audit event type: %s", event_type)
@@ -583,6 +588,8 @@ def audit_decision(
         "env": env_str,
         "request_id": run_id,  # Correlates with agent run_id when available
     }
+    if extra:
+        record.update(extra)
 
     try:
         from agentnode_sdk.config import config_dir
