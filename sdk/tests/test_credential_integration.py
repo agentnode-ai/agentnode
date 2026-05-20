@@ -46,10 +46,9 @@ class TestResolverPriorityIntegration:
         set_credential("github", "ghp_from_local", scopes=["repo"])
         monkeypatch.setenv("AGENTNODE_CRED_GITHUB", "ghp_from_env")
 
-        handle = resolve_handle("github", "oauth2")
+        handle = resolve_handle("github", "oauth2", allowed_domains=["api.github.com"])
         assert handle is not None
         assert handle.source == "env"
-        # Verify it's actually the env token by checking headers
         headers = handle.authorized_request_headers("https://api.github.com/user")
         assert headers["Authorization"] == "Bearer ghp_from_env"
 
@@ -57,7 +56,7 @@ class TestResolverPriorityIntegration:
         """auto mode: local file is used when no env var exists."""
         set_credential("github", "ghp_from_local", scopes=["repo"])
 
-        handle = resolve_handle("github", "oauth2")
+        handle = resolve_handle("github", "oauth2", allowed_domains=["api.github.com"])
         assert handle is not None
         assert handle.source == "local_file"
         headers = handle.authorized_request_headers("https://api.github.com/user")
@@ -79,7 +78,7 @@ class TestResolverPriorityIntegration:
         cfg.setdefault("credentials", {})["resolve_mode"] = "local"
         save_config(cfg)
 
-        handle = resolve_handle("github", "oauth2")
+        handle = resolve_handle("github", "oauth2", allowed_domains=["api.github.com"])
         assert handle is not None
         assert handle.source == "local_file"
         headers = handle.authorized_request_headers("https://api.github.com/user")
@@ -103,8 +102,8 @@ class TestResolverPriorityIntegration:
         set_credential("github", "ghp_token", scopes=["repo"])
         set_credential("slack", "xoxb_token", scopes=["chat:write"])
 
-        gh = resolve_handle("github", "oauth2")
-        sl = resolve_handle("slack", "oauth2")
+        gh = resolve_handle("github", "oauth2", allowed_domains=["api.github.com"])
+        sl = resolve_handle("slack", "oauth2", allowed_domains=["slack.com"])
 
         assert gh is not None
         assert sl is not None
@@ -113,7 +112,6 @@ class TestResolverPriorityIntegration:
         assert gh.source == "local_file"
         assert sl.source == "local_file"
 
-        # Headers are provider-specific
         gh_h = gh.authorized_request_headers("https://api.github.com/user")
         sl_h = sl.authorized_request_headers("https://slack.com/api/auth.test")
         assert gh_h["Authorization"] == "Bearer ghp_token"
@@ -147,14 +145,13 @@ class TestCliSdkIntegration:
         creds_path.write_text(json.dumps(creds_data, indent=2) + "\n")
 
         # --- SDK side: resolve credential ---
-        handle = resolve_handle("github", "oauth2")
+        handle = resolve_handle("github", "oauth2", allowed_domains=["api.github.com"])
         assert handle is not None
         assert handle.provider == "github"
         assert handle.auth_type == "oauth2"
         assert handle.source == "local_file"
         assert handle.scopes == ["repo", "read:user"]
 
-        # Handle produces correct auth headers
         headers = handle.authorized_request_headers("https://api.github.com/user")
         assert headers == {"Authorization": "Bearer ghp_cli_written_token"}
 

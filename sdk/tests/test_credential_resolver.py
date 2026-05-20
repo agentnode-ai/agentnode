@@ -74,7 +74,7 @@ class TestCredentialResolver:
         os.environ["AGENTNODE_CRED_TEST"] = "sk-secret"
         _clean_env.append("AGENTNODE_CRED_TEST")
 
-        handle = resolve_handle("test", "api_key", allowed_domains=[])
+        handle = resolve_handle("test", "api_key", allowed_domains=["api.test.com"])
         headers = handle.authorized_request_headers("https://api.test.com")
         assert headers == {"Authorization": "Bearer sk-secret"}
 
@@ -82,7 +82,7 @@ class TestCredentialResolver:
         os.environ["AGENTNODE_CRED_TEST"] = "oauth-tok"
         _clean_env.append("AGENTNODE_CRED_TEST")
 
-        handle = resolve_handle("test", "oauth2", allowed_domains=[])
+        handle = resolve_handle("test", "oauth2", allowed_domains=["api.test.com"])
         headers = handle.authorized_request_headers("https://api.test.com")
         assert headers == {"Authorization": "Bearer oauth-tok"}
 
@@ -141,7 +141,7 @@ class TestLocalFileResolver:
         from agentnode_sdk.credential_store import set_credential
         set_credential("github", "ghp_local_secret")
 
-        handle = _resolve_from_local_file("github", "oauth2", allowed_domains=[])
+        handle = _resolve_from_local_file("github", "oauth2", allowed_domains=["api.github.com"])
         headers = handle.authorized_request_headers("https://api.github.com/user")
         assert headers == {"Authorization": "Bearer ghp_local_secret"}
 
@@ -149,7 +149,7 @@ class TestLocalFileResolver:
         from agentnode_sdk.credential_store import set_credential
         set_credential("myapi", "key-123", auth_type="api_key")
 
-        handle = _resolve_from_local_file("myapi", "api_key", allowed_domains=[])
+        handle = _resolve_from_local_file("myapi", "api_key", allowed_domains=["api.example.com"])
         headers = handle.authorized_request_headers("https://api.example.com")
         assert headers == {"Authorization": "Bearer key-123"}
 

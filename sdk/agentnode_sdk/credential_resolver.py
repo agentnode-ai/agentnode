@@ -272,6 +272,7 @@ class ProxyCredentialHandle(CredentialHandle):
         import httpx
         from agentnode_sdk.credential_handle import AuthorizedResponse
 
+        self._require_secure_target(url)
         if not self.is_domain_allowed(url):
             from urllib.parse import urlparse
             host = urlparse(url).hostname or "unknown"

@@ -71,10 +71,11 @@ class TestCredentialHandleDomainRestriction:
         with pytest.raises(PermissionError, match="cannot access"):
             h.authorized_request_headers("https://evil.example.com/steal")
 
-    def test_empty_allowed_domains_allows_all(self):
+    def test_empty_allowed_domains_denied(self):
+        """Phase 14.2: empty allowed_domains = no domain binding = deny."""
         h = _make_handle(allowed_domains=[])
-        headers = h.authorized_request_headers("https://any.example.com/api")
-        assert "Authorization" in headers
+        with pytest.raises(PermissionError, match="no allowed_domains"):
+            h.authorized_request_headers("https://any.example.com/api")
 
     def test_domain_check_case_insensitive(self):
         h = _make_handle(allowed_domains=["API.SLACK.COM"])
@@ -101,7 +102,7 @@ class TestCredentialHandleAuthTypes:
         h = _make_handle(
             auth_type="api_key",
             secret_data={"api_key": "sk-test-key"},
-            allowed_domains=[],
+            allowed_domains=["api.example.com"],
         )
         headers = h.authorized_request_headers("https://api.example.com")
         assert headers == {"Authorization": "Bearer sk-test-key"}
@@ -114,7 +115,7 @@ class TestCredentialHandleAuthTypes:
                 "header_name": "X-API-Key",
                 "header_prefix": "",
             },
-            allowed_domains=[],
+            allowed_domains=["api.example.com"],
         )
         headers = h.authorized_request_headers("https://api.example.com")
         assert headers == {"X-API-Key": "my-key"}
@@ -123,7 +124,7 @@ class TestCredentialHandleAuthTypes:
         h = _make_handle(
             auth_type="oauth2",
             secret_data={"access_token": "oauth-tok-123"},
-            allowed_domains=[],
+            allowed_domains=["api.example.com"],
         )
         headers = h.authorized_request_headers("https://api.example.com")
         assert headers == {"Authorization": "Bearer oauth-tok-123"}
@@ -132,7 +133,7 @@ class TestCredentialHandleAuthTypes:
         h = _make_handle(
             auth_type="token",
             secret_data={"access_token": "tok-123"},
-            allowed_domains=[],
+            allowed_domains=["api.example.com"],
         )
         headers = h.authorized_request_headers("https://api.example.com")
         assert headers == {"Authorization": "Bearer tok-123"}
@@ -142,7 +143,7 @@ class TestCredentialHandleAuthTypes:
         h = _make_handle(
             auth_type="token",
             secret_data={"api_key": "abc"},
-            allowed_domains=[],
+            allowed_domains=["api.example.com"],
         )
         headers = h.authorized_request_headers("https://api.example.com")
         assert headers == {"Authorization": "Bearer abc"}
@@ -254,3 +255,58 @@ class TestAuthorizedRequest:
         # AuthorizedResponse should not contain the token
         assert "xoxb-secret-token" not in str(resp)
         assert "xoxb-secret-token" not in resp.body
+
+
+class TestProtocolEnforcement:
+    """Phase 14.2: Credentialed requests require HTTPS and domain binding."""
+
+    def test_http_denied_authorized_request(self):
+        h = _make_handle(allowed_domains=["api.slack.com"])
+        with pytest.raises(PermissionError, match="requires HTTPS"):
+            h.authorized_request("GET", "http://api.slack.com/data")
+
+    def test_http_denied_authorized_request_headers(self):
+        h = _make_handle(allowed_domains=["api.slack.com"])
+        with pytest.raises(PermissionError, match="requires HTTPS"):
+            h.authorized_request_headers("http://api.slack.com/data")
+
+    def test_empty_scheme_denied(self):
+        h = _make_handle(allowed_domains=["api.slack.com"])
+        with pytest.raises(PermissionError, match="requires HTTPS"):
+            h.authorized_request("GET", "//api.slack.com/data")
+
+    @respx.mock
+    def test_https_allowed(self):
+        respx.get("https://api.slack.com/data").mock(
+            return_value=httpx.Response(200, text="ok")
+        )
+        h = _make_handle(allowed_domains=["api.slack.com"])
+        resp = h.authorized_request("GET", "https://api.slack.com/data")
+        assert resp.status_code == 200
+
+    def test_empty_domains_denied_authorized_request(self):
+        h = _make_handle(allowed_domains=[])
+        with pytest.raises(PermissionError, match="no allowed_domains"):
+            h.authorized_request("GET", "https://api.slack.com/data")
+
+    def test_empty_domains_denied_authorized_request_headers(self):
+        h = _make_handle(allowed_domains=[])
+        with pytest.raises(PermissionError, match="no allowed_domains"):
+            h.authorized_request_headers("https://api.slack.com/data")
+
+    def test_no_request_sent_when_denied(self):
+        """Security proof: httpx.request() is never called on denial."""
+        from unittest import mock
+        h = _make_handle(allowed_domains=[])
+        with mock.patch("httpx.request") as mock_req:
+            with pytest.raises(PermissionError):
+                h.authorized_request("GET", "https://api.slack.com/data")
+            mock_req.assert_not_called()
+
+    def test_no_request_sent_on_http_denial(self):
+        from unittest import mock
+        h = _make_handle(allowed_domains=["api.slack.com"])
+        with mock.patch("httpx.request") as mock_req:
+            with pytest.raises(PermissionError):
+                h.authorized_request("GET", "http://api.slack.com/data")
+            mock_req.assert_not_called()

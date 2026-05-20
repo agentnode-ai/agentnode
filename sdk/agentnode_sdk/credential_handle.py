@@ -100,12 +100,11 @@ class CredentialHandle:
     def is_domain_allowed(self, url: str) -> bool:
         """Check if a URL's host is in the allowed domains list.
 
-        Returns True if:
-        - allowed_domains is empty (no restriction — fallback for early connector packs)
-        - The URL's hostname matches one of the allowed domains
+        Returns False if allowed_domains is empty — credentialed handles
+        require explicit domain binding (GAP-1 closed in Phase 14.2).
         """
         if not self._allowed_domains:
-            return True
+            return False
 
         try:
             parsed = urlparse(url)
@@ -114,6 +113,29 @@ class CredentialHandle:
             return False
 
         return host in self._allowed_domains
+
+    def _require_secure_target(self, url: str) -> None:
+        """Enforce HTTPS and non-empty domain binding before any credentialed request.
+
+        Must be called before httpx.request() or header generation.
+        Raises PermissionError on violation — no credential reaches the wire.
+        """
+        if not self._allowed_domains:
+            raise PermissionError(
+                f"CredentialHandle for '{self._provider}' has no allowed_domains. "
+                f"Refusing credentialed request without domain binding."
+            )
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            raise PermissionError(
+                f"CredentialHandle for '{self._provider}': cannot parse URL."
+            )
+        if parsed.scheme.lower() != "https":
+            raise PermissionError(
+                f"CredentialHandle for '{self._provider}' requires HTTPS. "
+                f"Refusing to send credentials over '{parsed.scheme or 'empty'}'."
+            )
 
     def _build_auth_headers(self) -> dict[str, str]:
         """Build authentication headers from secret data.
@@ -139,15 +161,16 @@ class CredentialHandle:
         return {}
 
     def authorized_request_headers(self, url: str) -> dict[str, str]:
-        """Get auth headers for a request, after domain validation.
+        """Get auth headers for a request, after security validation.
 
         Prefer ``authorized_request()`` which keeps the token inside the
         handle. This method is an escape hatch for callers that need raw
         headers (e.g. WebSocket upgrades, streaming protocols).
 
         Raises:
-            PermissionError: If the target domain is not allowed.
+            PermissionError: If HTTPS/domain binding check fails.
         """
+        self._require_secure_target(url)
         if not self.is_domain_allowed(url):
             try:
                 host = urlparse(url).hostname or "unknown"
@@ -193,6 +216,7 @@ class CredentialHandle:
         """
         import httpx
 
+        self._require_secure_target(url)
         if not self.is_domain_allowed(url):
             try:
                 host = urlparse(url).hostname or "unknown"

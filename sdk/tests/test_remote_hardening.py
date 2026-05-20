@@ -79,14 +79,12 @@ def _read_audit(tmp_path: Path) -> list[dict]:
 
 
 class TestGAP1_EmptyAllowedDomains:
-    """GAP-1: Empty allowed_domains = no domain restriction.
+    """GAP-1 CLOSED (Phase 14.2): Empty allowed_domains = deny.
 
-    Current behavior: CredentialHandle with empty allowed_domains allows
-    any URL. This is an authenticated HTTP proxy to arbitrary hosts.
-    Phase 14.2 will enforce deny for credentialed requests without domain binding.
+    Credentialed handles without domain binding refuse all requests.
     """
 
-    def test_empty_allowed_domains_allows_any_host(self):
+    def test_empty_allowed_domains_denies_any_host(self):
         handle = CredentialHandle(
             provider="test",
             auth_type="api_key",
@@ -94,8 +92,19 @@ class TestGAP1_EmptyAllowedDomains:
             allowed_domains=[],
             secret_data={"api_key": "secret"},
         )
-        assert handle.is_domain_allowed("https://evil.com/steal") is True
-        assert handle.is_domain_allowed("https://any.host.com") is True
+        assert handle.is_domain_allowed("https://evil.com/steal") is False
+        assert handle.is_domain_allowed("https://any.host.com") is False
+
+    def test_empty_allowed_domains_raises_on_request(self):
+        handle = CredentialHandle(
+            provider="test",
+            auth_type="api_key",
+            scopes=[],
+            allowed_domains=[],
+            secret_data={"api_key": "secret"},
+        )
+        with pytest.raises(PermissionError, match="no allowed_domains"):
+            handle.authorized_request("GET", "https://any.host.com/data")
 
     def test_extract_returns_empty_for_bad_endpoint(self):
         domains = _extract_allowed_domains("not-a-url", {})
@@ -103,14 +112,14 @@ class TestGAP1_EmptyAllowedDomains:
 
 
 class TestGAP4_HttpProtocol:
-    """GAP-4: HTTP (non-TLS) URLs pass domain check if hostname matches.
+    """GAP-4 CLOSED (Phase 14.2): Credentialed HTTP requests denied.
 
-    Current behavior: is_domain_allowed only checks hostname, not protocol.
-    A credentialed request over http:// would send tokens in cleartext.
-    Phase 14.2 will deny credentialed HTTP requests.
+    is_domain_allowed() still checks hostname only (protocol-agnostic).
+    _require_secure_target() enforces HTTPS before any credentialed request.
     """
 
     def test_http_url_passes_domain_check(self):
+        """is_domain_allowed is hostname-only — http:// matches by design."""
         handle = CredentialHandle(
             provider="test",
             auth_type="api_key",
@@ -129,6 +138,30 @@ class TestGAP4_HttpProtocol:
             secret_data={"api_key": "secret"},
         )
         assert handle.is_domain_allowed("https://api.example.com/data") is True
+
+    def test_http_credential_request_denied(self):
+        """Credentialed request over HTTP raises before sending."""
+        handle = CredentialHandle(
+            provider="test",
+            auth_type="api_key",
+            scopes=[],
+            allowed_domains=["api.example.com"],
+            secret_data={"api_key": "secret"},
+        )
+        with pytest.raises(PermissionError, match="requires HTTPS"):
+            handle.authorized_request("GET", "http://api.example.com/data")
+
+    def test_http_credential_headers_denied(self):
+        """authorized_request_headers() also enforces HTTPS."""
+        handle = CredentialHandle(
+            provider="test",
+            auth_type="api_key",
+            scopes=[],
+            allowed_domains=["api.example.com"],
+            secret_data={"api_key": "secret"},
+        )
+        with pytest.raises(PermissionError, match="requires HTTPS"):
+            handle.authorized_request_headers("http://api.example.com/data")
 
 
 class TestDomainMatchBehavior:
