@@ -24,6 +24,8 @@ from agentnode_sdk.runtimes.remote_runner import (
     _extract_tool_action_type,
     _measure_request_size,
     _measure_response_size,
+    _check_scope_method_consistency,
+    _is_read_only_scope,
     _MAX_REQUEST_BYTES,
     _MAX_RESPONSE_BYTES,
 )
@@ -258,11 +260,11 @@ class TestGAP5_ActionTypeMethodMismatch:
 
 
 class TestGAP2_ScopesNotEnforced:
-    """GAP-2: Scopes are stored but never enforced at runtime.
+    """GAP-2 ADDRESSED (Phase 14.5): Scope/method mismatches warned.
 
-    Current behavior: a credential with scopes=["read"] can be used for
-    any HTTP method (POST, DELETE, etc.) without restriction.
-    Phase 14.5 will add scope-method mismatch logging.
+    Scopes are still not enforced — a read-only scope can still be used
+    for DELETE requests. But obvious mismatches now produce warnings in
+    logs and audit. Enforcement is deferred.
     """
 
     def test_scopes_stored_on_handle(self):
@@ -804,3 +806,179 @@ class TestSizeAuditSafety:
         raw = json.dumps(remote[-1])
         assert "supersecret_payload_data" not in raw
         assert "response_body_secret" not in raw
+
+
+# ==========================================================================
+# Phase 14.5 — Scope/Method Mismatch Logging
+# ==========================================================================
+
+
+class TestIsReadOnlyScope:
+    """Unit tests for _is_read_only_scope heuristic."""
+
+    def test_read(self):
+        assert _is_read_only_scope("read") is True
+
+    def test_readonly(self):
+        assert _is_read_only_scope("readonly") is True
+
+    def test_view(self):
+        assert _is_read_only_scope("view") is True
+
+    def test_list(self):
+        assert _is_read_only_scope("list") is True
+
+    def test_dotted_read(self):
+        assert _is_read_only_scope("users.read") is True
+
+    def test_colon_read(self):
+        assert _is_read_only_scope("channels:read") is True
+
+    def test_write_not_read(self):
+        assert _is_read_only_scope("write") is False
+
+    def test_send_not_read(self):
+        assert _is_read_only_scope("email.send") is False
+
+    def test_delete_not_read(self):
+        assert _is_read_only_scope("delete") is False
+
+    def test_admin_not_read(self):
+        assert _is_read_only_scope("admin") is False
+
+    def test_create_not_read(self):
+        assert _is_read_only_scope("create") is False
+
+    def test_case_insensitive(self):
+        assert _is_read_only_scope("READ") is True
+        assert _is_read_only_scope("Users.Read") is True
+
+
+class TestScopeMethodConsistencyUnit:
+    """Unit tests for _check_scope_method_consistency helper."""
+
+    def test_read_scope_get_no_warning(self):
+        assert _check_scope_method_consistency("GET", ["read"]) == []
+
+    def test_read_scope_post_warning(self):
+        w = _check_scope_method_consistency("POST", ["read"])
+        assert len(w) == 1
+        assert "read-only" in w[0]
+
+    def test_users_read_delete_warning(self):
+        w = _check_scope_method_consistency("DELETE", ["users.read"])
+        assert len(w) == 1
+
+    def test_email_send_post_no_warning(self):
+        assert _check_scope_method_consistency("POST", ["email.send"]) == []
+
+    def test_write_put_no_warning(self):
+        assert _check_scope_method_consistency("PUT", ["write"]) == []
+
+    def test_delete_scope_delete_no_warning(self):
+        assert _check_scope_method_consistency("DELETE", ["delete"]) == []
+
+    def test_admin_scope_delete_no_warning(self):
+        assert _check_scope_method_consistency("DELETE", ["admin"]) == []
+
+    def test_mixed_read_write_post_no_warning(self):
+        assert _check_scope_method_consistency("POST", ["read", "write"]) == []
+
+    def test_empty_scopes_post_no_warning(self):
+        assert _check_scope_method_consistency("POST", []) == []
+
+    def test_multiple_read_scopes_post_warning(self):
+        w = _check_scope_method_consistency("POST", ["channels:read", "users.read"])
+        assert len(w) == 1
+
+    def test_read_scope_head_no_warning(self):
+        assert _check_scope_method_consistency("HEAD", ["read"]) == []
+
+    def test_read_scope_options_no_warning(self):
+        assert _check_scope_method_consistency("OPTIONS", ["read"]) == []
+
+
+class TestScopeMethodConsistencyIntegration:
+    """Integration: scope/method warnings in audit."""
+
+    @respx.mock
+    def test_read_scope_post_warning_in_audit(self, tmp_path):
+        respx.post("https://api.testapi.com/v1/actions").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        entry = _entry(
+            tools=[{"name": "post_action", "endpoint": "/actions", "method": "POST"}],
+            connector={"provider": "testapi", "auth_type": "api_key", "scopes": ["read"]},
+        )
+        result = run_remote("test-pack", "post_action", entry=entry)
+        assert result.success is True
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_scope_method_mismatch") is True
+        assert any("read-only" in w for w in r["remote_scope_method_warnings"])
+
+    @respx.mock
+    def test_read_scope_get_no_mismatch_in_audit(self, tmp_path):
+        respx.get("https://api.testapi.com/v1/data").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        entry = _entry(
+            tools=[{"name": "get_data", "endpoint": "/data", "method": "GET"}],
+            connector={"provider": "testapi", "auth_type": "api_key", "scopes": ["read"]},
+        )
+        run_remote("test-pack", "get_data", entry=entry)
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_scope_method_mismatch") is None
+
+    @respx.mock
+    def test_write_scope_post_no_mismatch(self, tmp_path):
+        respx.post("https://api.testapi.com/v1/actions").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        entry = _entry(
+            tools=[{"name": "post_action", "endpoint": "/actions", "method": "POST"}],
+            connector={"provider": "testapi", "auth_type": "api_key", "scopes": ["write"]},
+        )
+        run_remote("test-pack", "post_action", entry=entry)
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_scope_method_mismatch") is None
+
+    @respx.mock
+    def test_empty_scopes_no_warning(self, tmp_path):
+        respx.post("https://api.testapi.com/v1/actions").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        entry = _entry(
+            tools=[{"name": "post_action", "endpoint": "/actions", "method": "POST"}],
+            connector={"provider": "testapi", "auth_type": "api_key", "scopes": []},
+        )
+        run_remote("test-pack", "post_action", entry=entry)
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_scope_method_mismatch") is None
+
+    @respx.mock
+    def test_scope_warning_does_not_block(self, tmp_path):
+        """Scope warning never blocks execution."""
+        respx.delete("https://api.testapi.com/v1/data").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        entry = _entry(
+            tools=[{"name": "get_data", "endpoint": "/data", "method": "DELETE"}],
+            connector={"provider": "testapi", "auth_type": "api_key", "scopes": ["channels:read"]},
+        )
+        result = run_remote("test-pack", "get_data", entry=entry)
+        assert result.success is True
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        assert remote[-1].get("remote_scope_method_mismatch") is True

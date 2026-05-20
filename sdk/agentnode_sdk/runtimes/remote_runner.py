@@ -123,6 +123,15 @@ def run_remote(
             request_size, _MAX_REQUEST_BYTES, slug, tool_name,
         )
 
+    # --- 3d. Scope/method consistency check (advisory) ---
+    scope_warnings = _check_scope_method_consistency(method, scopes)
+    if scope_warnings:
+        for w in scope_warnings:
+            logger.warning(
+                "Scope/method mismatch: %s (slug=%s, tool=%s)",
+                w, slug, tool_name,
+            )
+
     # --- 4-5. Make authenticated request with retries ---
     last_error: str | None = None
     last_status: int | None = None
@@ -167,6 +176,7 @@ def run_remote(
                     request_size_bytes=request_size,
                     request_size_unknown=request_size_unknown,
                     response_size_bytes=response_size,
+                    scope_warnings=scope_warnings,
                 )
 
                 return RunToolResult(
@@ -196,6 +206,7 @@ def run_remote(
                 request_size_bytes=request_size,
                 request_size_unknown=request_size_unknown,
                 response_size_bytes=response_size,
+                scope_warnings=scope_warnings,
             )
 
             return RunToolResult(
@@ -218,6 +229,7 @@ def run_remote(
                 method_warnings=method_warnings,
                 request_size_bytes=request_size,
                 request_size_unknown=request_size_unknown,
+                scope_warnings=scope_warnings,
             )
             return RunToolResult(
                 success=False,
@@ -240,6 +252,7 @@ def run_remote(
                 method_warnings=method_warnings,
                 request_size_bytes=request_size,
                 request_size_unknown=request_size_unknown,
+                scope_warnings=scope_warnings,
             )
 
             return RunToolResult(
@@ -263,6 +276,7 @@ def run_remote(
         request_size_bytes=request_size,
         request_size_unknown=request_size_unknown,
         response_size_bytes=response_size,
+        scope_warnings=scope_warnings,
     )
     return RunToolResult(
         success=False,
@@ -401,6 +415,30 @@ def _check_method_action_consistency(method: str, action_type: str | None) -> li
     return warnings
 
 
+_READ_SCOPE_KEYWORDS = frozenset({"read", "readonly", "view", "list"})
+_READ_SCOPE_SUFFIXES = (".read", ":read")
+
+
+def _is_read_only_scope(scope: str) -> bool:
+    """Heuristic: does this scope look read-only?"""
+    s = scope.lower().strip()
+    if s in _READ_SCOPE_KEYWORDS:
+        return True
+    return any(s.endswith(sfx) for sfx in _READ_SCOPE_SUFFIXES)
+
+
+def _check_scope_method_consistency(method: str, scopes: list[str]) -> list[str]:
+    """Detect obvious scope/method mismatches. Advisory only — never blocks."""
+    if not scopes:
+        return []
+    m = method.upper()
+    if m not in _MUTATING_METHODS:
+        return []
+    if all(_is_read_only_scope(s) for s in scopes):
+        return [f"HTTP {m} may exceed read-only connector scopes"]
+    return []
+
+
 def _audit_remote_call(
     slug: str,
     tool_name: str | None,
@@ -415,6 +453,7 @@ def _audit_remote_call(
     request_size_bytes: int | None = None,
     request_size_unknown: bool = False,
     response_size_bytes: int | None = None,
+    scope_warnings: list[str] | None = None,
 ) -> None:
     """Audit a remote tool call. Never crashes the caller.
 
@@ -454,6 +493,9 @@ def _audit_remote_call(
             extra["remote_response_size_bytes"] = response_size_bytes
             extra["remote_response_size_warning"] = True
             extra["remote_response_size_limit"] = _MAX_RESPONSE_BYTES
+        if scope_warnings:
+            extra["remote_scope_method_mismatch"] = True
+            extra["remote_scope_method_warnings"] = scope_warnings
         audit_decision(
             result,
             "remote_run",
