@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.6.2 — Connector/Remote Runtime Hardening
+
+Closes the enforcement gap between Guard and the HTTP boundary for
+remote/connector tools. Credentials are now domain-bound and
+HTTPS-only before any request leaves the process.
+
+### Added
+
+- **HTTPS-only credential enforcement** — `CredentialHandle` refuses to
+  send credentials over non-HTTPS URLs. `_require_secure_target()` runs
+  before every `authorized_request()` and `authorized_request_headers()`
+  call. Covers `http://`, empty-scheme, and relative URLs.
+- **Empty-domain binding denial** — `CredentialHandle` with empty
+  `allowed_domains` now raises `PermissionError` instead of allowing any
+  host. Closes the open-proxy gap (GAP-1).
+- **Method/action-type consistency warnings** — remote runner detects
+  mismatches between HTTP method and declared `action_type` (e.g.
+  `action_type=read` with `POST`). Advisory only — logged and audited,
+  never blocks. Guard remains the policy authority.
+- **Request/response size warnings** — remote runner measures JSON
+  request payload and response body size. Warns on requests >10 MB or
+  responses >50 MB. Never blocks. Audit includes size fields only when
+  thresholds are exceeded.
+- **Scope/method mismatch logging** — remote runner detects mutating
+  HTTP methods (POST/PUT/PATCH/DELETE) when all declared connector
+  scopes appear read-only. Heuristic-based, advisory only.
+- **Remote audit fields** — `_audit_remote_call()` now records
+  `remote_method`, `remote_domain`, `remote_status_code`,
+  `remote_duration_ms`, `remote_provider`, and conditional warning
+  fields. All fields use `remote_` prefix. No URLs, paths, kwargs,
+  bodies, or secrets in audit entries.
+- **Guard config cache invalidation** — guard config is reloaded when
+  the config file's mtime or size changes, without restarting the
+  process.
+- 105 new tests across all phases (characterization, enforcement, audit).
+
+### Fixed
+
+- **Word-counter E2E argument shape** — test helper passed arguments in
+  wrong format.
+
+### Security
+
+- Deny happens before `httpx.request()` — credentials never reach the
+  wire for denied requests.
+- Empty `allowed_domains` is a hard deny, not a permissive default.
+- Remote runner advisory checks never override Guard decisions.
+- Audit entries contain only safe metadata (hostname, status code,
+  duration, method). No full URLs, request bodies, or credentials.
+
 ## 0.6.1 — Runtime Audit Parity & Input Guard Escalation
 
 Audit completeness and input validation hardening after the v0.6.0

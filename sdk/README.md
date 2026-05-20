@@ -287,6 +287,12 @@ write_local → prompt. Per-tool overrides ignored.
 **Critical risk** (unverified + high-risk + secrets in env) → hard deny,
 no override possible.
 
+**Remote/connector hardening:** Credentialed requests require HTTPS and
+explicit domain binding. Empty `allowed_domains` is denied — no
+open-proxy default. The remote runner additionally warns on
+method/action-type mismatches, oversized payloads, and scope/method
+inconsistencies (advisory only, never blocks).
+
 See [THREAT_MODEL.md](THREAT_MODEL.md) for the full security model.
 
 ### Risk Policies

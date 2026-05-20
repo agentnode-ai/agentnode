@@ -1,6 +1,6 @@
 # AgentNode SDK — Threat Model
 
-Last updated: 2026-05-19
+Last updated: 2026-05-20
 
 ## Scope
 
@@ -25,7 +25,13 @@ This document covers the AgentNode SDK's local execution model — the code that
 | **Trust refresh** | Trust levels are re-fetched from the registry every 7 days. | `runner.py` |
 | **Audit trail** | All policy decisions are logged to `~/.agentnode/audit.jsonl`. Append-only, rotated, local-only. No secrets logged. | `policy.py`, `guard.py` |
 | **MCP env filtering** | MCP server subprocesses use the same allowlist-based environment filtering. | `mcp_runner.py` |
-| **Credential domain lock** | `CredentialHandle` validates the target domain against `allowed_domains` before attaching credentials. Secrets are not exposed via properties. | `credential_handle.py` |
+| **Credential domain lock** | `CredentialHandle` validates the target domain against `allowed_domains` before attaching credentials. Empty `allowed_domains` is a hard deny (no open-proxy default). Secrets are not exposed via properties. | `credential_handle.py` |
+| **Credential HTTPS enforcement** | `_require_secure_target()` denies credentialed requests over `http://`, empty-scheme, or relative URLs. Runs before every `authorized_request()` call — credentials never reach the wire for denied requests. | `credential_handle.py` |
+| **Remote method/action-type warnings** | Remote runner detects mismatches between HTTP method and declared `action_type` (e.g. read + POST). Advisory only — logged and audited, never blocks. Guard remains the policy authority. | `remote_runner.py` |
+| **Remote payload size warnings** | Request >10 MB and response >50 MB trigger warnings in logs and audit. Never blocks execution. | `remote_runner.py` |
+| **Remote scope/method warnings** | Mutating HTTP methods with all-read-only scopes trigger advisory warnings. Heuristic-based, never blocks. | `remote_runner.py` |
+| **Remote audit trail** | Every remote call audits `remote_method`, `remote_domain`, `remote_status_code`, `remote_duration_ms`, `remote_provider`, and conditional warning fields. No full URLs, request bodies, or credentials. | `remote_runner.py` |
+| **Guard config hot-reload** | Guard config is reloaded when the config file's mtime or size changes. No restart required. | `guard.py` |
 | **Agent tool allowlist** | Agent packages can only call tools explicitly listed in their manifest. | `agent_runner.py` |
 
 ## What AgentNode does NOT enforce
@@ -34,6 +40,7 @@ This document covers the AgentNode SDK's local execution model — the code that
 |---|---|---|
 | **Network access by tools** | Declared in manifest, checked by policy gate, but **not restricted at runtime**. A tool declaring `network: none` can still make HTTP requests. | Review permissions before installing. Use `agentnode inspect` to see declared permissions. |
 | **Filesystem access by tools** | Same as network — declared, policy-checked, but not sandboxed. | Review permissions. Run in a VM or container for sensitive workloads. |
+| **Connector scope enforcement** | Connector scopes are declared but not enforced at runtime. A tool with `read`-only scopes can still issue mutating HTTP methods. The remote runner warns on obvious mismatches (advisory only). | Review connector scopes in manifest. Remote runner warnings appear in logs and audit. |
 | **Direct mode env access** | `mode="direct"` runs tool code in the same process with full environment access, including API keys. | Use `mode="auto"` (default), which always resolves to subprocess. |
 | **`load_tool()` bypass** | Calling `load_tool()` directly skips all policy checks and audit logging. | Use `run_tool()` instead, which goes through the full policy pipeline. |
 | **Malicious package code** | Trust level and verification reduce risk but do not prevent a determined attacker. | Only install packages from trusted publishers. Review source code for sensitive use cases. |
@@ -63,7 +70,8 @@ User calls run_tool()
       → Subprocess (default): filtered env, timeout, tmpdir
       → Direct: in-process, full env (explicit opt-in only)
       → MCP: subprocess with filtered env, JSON-RPC over stdio
-      → Remote: HTTPS with CredentialHandle, domain-locked
+      → Remote: HTTPS-only via CredentialHandle, domain-locked,
+               method/size/scope advisory checks, per-call audit
       → Agent: orchestrator with tool allowlist, iteration limits
 ```
 
