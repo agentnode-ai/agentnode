@@ -627,3 +627,236 @@ class TestFieldClassification:
             assert unclassified == set(), (
                 f"Unclassified fields in '{slug}': {unclassified}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Installer integration — Phase 15.3
+# ---------------------------------------------------------------------------
+
+class TestInstallerIntegrity:
+    """Verify install_package() and _install_skill() seal lockfile entries."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp_lockfile(self, tmp_path, monkeypatch):
+        self.lf = tmp_path / "agentnode.lock"
+        monkeypatch.setenv("AGENTNODE_LOCKFILE", str(self.lf))
+        self.tmp_path = tmp_path
+
+    def _read(self):
+        from agentnode_sdk.installer import read_lockfile
+        return read_lockfile(self.lf)
+
+    def test_install_creates_integrity(self, monkeypatch):
+        """install_package() writes _integrity to lockfile entry."""
+        from agentnode_sdk import installer
+
+        tar = self.tmp_path / "pkg.tar.gz"
+        pkg_dir = self.tmp_path / "extracted" / "my-pack"
+        pkg_dir.mkdir(parents=True)
+        (pkg_dir / "my_pack").mkdir()
+        (pkg_dir / "my_pack" / "tool.py").write_text("def run(): pass")
+
+        monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
+        monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "abc123")
+        monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
+        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
+
+        result = installer.install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+        )
+        assert result["installed"] is True
+
+        lock = self._read()
+        entry = lock["packages"]["test-pack"]
+        assert "_integrity" in entry
+        assert verify_entry("test-pack", entry).status == "verified"
+
+    def test_install_with_mcp_command_creates_integrity(self, monkeypatch):
+        """MCP entries get sealed too."""
+        from agentnode_sdk import installer
+
+        pkg_dir = self.tmp_path / "extracted" / "mcp-pack"
+        pkg_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
+        monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "def456")
+        monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
+        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
+
+        installer.install_package(
+            slug="mcp-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/mcp.tar.gz",
+            runtime="mcp",
+            mcp_command=["python", "-m", "mcp_server"],
+            trust_level="trusted",
+        )
+
+        lock = self._read()
+        entry = lock["packages"]["mcp-pack"]
+        assert "_integrity" in entry
+        assert entry.get("mcp_command") == ["python", "-m", "mcp_server"]
+        assert verify_entry("mcp-pack", entry).status == "verified"
+
+    def test_install_with_remote_endpoint_creates_integrity(self, monkeypatch):
+        """Remote entries get sealed too."""
+        from agentnode_sdk import installer
+
+        pkg_dir = self.tmp_path / "extracted" / "remote-pack"
+        pkg_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
+        monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "ghi789")
+        monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
+        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
+
+        installer.install_package(
+            slug="remote-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/remote.tar.gz",
+            runtime="remote",
+            remote_endpoint="https://api.example.com/v1",
+            connector={"provider": "example", "auth_type": "oauth2", "scopes": []},
+            trust_level="trusted",
+        )
+
+        lock = self._read()
+        entry = lock["packages"]["remote-pack"]
+        assert "_integrity" in entry
+        assert entry["remote_endpoint"] == "https://api.example.com/v1"
+        assert verify_entry("remote-pack", entry).status == "verified"
+
+    def test_skill_install_creates_integrity(self, monkeypatch):
+        """_install_skill() writes _integrity."""
+        from agentnode_sdk import installer
+        import tarfile, io
+
+        skill_dir = self.tmp_path / "skill-src"
+        skill_dir.mkdir()
+        (skill_dir / "agentnode.yaml").write_text("name: test-skill\n")
+        (skill_dir / "SKILL.md").write_text("# Test Skill\n")
+
+        tar_path = self.tmp_path / "skill.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tf:
+            tf.add(skill_dir, arcname="test-skill")
+
+        monkeypatch.setattr(
+            installer, "download_artifact",
+            lambda url, dest, **kw: __import__("shutil").copy2(tar_path, dest),
+        )
+
+        skills_dir = self.tmp_path / "skills"
+        monkeypatch.setattr(installer, "_skills_dir", lambda: skills_dir)
+
+        result = installer.install_package(
+            slug="test-skill",
+            version="1.0.0",
+            artifact_url="https://example.com/skill.tar.gz",
+            artifact_hash=None,
+            package_type="skill",
+            trust_level="trusted",
+        )
+        assert result["installed"] is True
+
+        lock = self._read()
+        entry = lock["packages"]["test-skill"]
+        assert "_integrity" in entry
+        assert verify_entry("test-skill", entry).status == "verified"
+
+    def test_reinstall_recomputes_integrity(self, monkeypatch):
+        """Upgrading a package recomputes _integrity with new canonical values."""
+        from agentnode_sdk import installer
+        from agentnode_sdk.installer import update_lockfile
+
+        pkg_dir = self.tmp_path / "extracted" / "my-pack"
+        pkg_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
+        monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "v1hash")
+        monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
+        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
+
+        installer.install_package(
+            slug="upgrade-pack", version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+        )
+
+        lock = self._read()
+        hash_v1 = lock["packages"]["upgrade-pack"]["_integrity"]["hash"]
+
+        monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "v2hash")
+        installer.install_package(
+            slug="upgrade-pack", version="2.0.0",
+            artifact_url="https://example.com/pkg2.tar.gz",
+            entrypoint="my_pack.tool_v2",
+            trust_level="trusted",
+        )
+
+        lock = self._read()
+        hash_v2 = lock["packages"]["upgrade-pack"]["_integrity"]["hash"]
+        assert hash_v1 != hash_v2
+        assert verify_entry("upgrade-pack", lock["packages"]["upgrade-pack"]).status == "verified"
+
+    def test_update_lockfile_preserves_unrelated_integrity(self, monkeypatch):
+        """Installing package B does not strip _integrity from package A."""
+        from agentnode_sdk.installer import update_lockfile
+
+        sealed_a = seal_entry(_make_entry(version="1.0.0"))
+        update_lockfile("pack-a", sealed_a, path=self.lf)
+
+        entry_b = _make_entry(version="2.0.0")
+        entry_b = seal_entry(entry_b)
+        update_lockfile("pack-b", entry_b, path=self.lf)
+
+        lock = self._read()
+        assert "_integrity" in lock["packages"]["pack-a"]
+        assert verify_entry("pack-a", lock["packages"]["pack-a"]).status == "verified"
+        assert "_integrity" in lock["packages"]["pack-b"]
+        assert verify_entry("pack-b", lock["packages"]["pack-b"]).status == "verified"
+
+    def test_trust_level_mutation_preserves_integrity(self):
+        """Simulating trust refresh: changing trust_level does not break verify."""
+        from agentnode_sdk.installer import update_lockfile
+
+        sealed = seal_entry(_make_entry(trust_level="trusted"))
+        update_lockfile("trust-test", sealed, path=self.lf)
+
+        lock = self._read()
+        entry = lock["packages"]["trust-test"]
+        entry["trust_level"] = "unverified"
+        entry["last_trust_check"] = "2099-01-01T00:00:00+00:00"
+        update_lockfile("trust-test", entry, path=self.lf)
+
+        lock = self._read()
+        result = verify_entry("trust-test", lock["packages"]["trust-test"])
+        assert result.status == "verified"
+
+    def test_read_lockfile_does_not_auto_seal(self):
+        """read_lockfile() must never add _integrity. That's an install-only action."""
+        from agentnode_sdk.installer import read_lockfile
+        from agentnode_sdk._fileutil import atomic_write_json
+
+        data = {
+            "lockfile_version": "0.1",
+            "updated_at": "2026-05-20T00:00:00+00:00",
+            "packages": {
+                "unsealed-pack": _make_entry(),
+            },
+        }
+        atomic_write_json(self.lf, data)
+
+        lock = read_lockfile(self.lf)
+        entry = lock["packages"]["unsealed-pack"]
+        assert "_integrity" not in entry

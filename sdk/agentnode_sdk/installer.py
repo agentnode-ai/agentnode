@@ -428,6 +428,9 @@ def install_package(
             lock_entry["mcp_command"] = mcp_command
         if remote_endpoint:
             lock_entry["remote_endpoint"] = remote_endpoint
+
+        from agentnode_sdk.lock_integrity import seal_entry
+        lock_entry = seal_entry(lock_entry)
         update_lockfile(slug, lock_entry)
 
         result: dict[str, Any] = {
@@ -616,6 +619,9 @@ def _install_skill(
             "connector": None,
             "agent": None,
         }
+
+        from agentnode_sdk.lock_integrity import seal_entry
+        lock_entry = seal_entry(lock_entry)
         update_lockfile(slug, lock_entry)
 
         result: dict[str, Any] = {
