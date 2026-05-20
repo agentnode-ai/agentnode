@@ -22,6 +22,10 @@ from agentnode_sdk.runtimes.remote_runner import (
     _extract_allowed_domains,
     _check_method_action_consistency,
     _extract_tool_action_type,
+    _measure_request_size,
+    _measure_response_size,
+    _MAX_REQUEST_BYTES,
+    _MAX_RESPONSE_BYTES,
 )
 
 
@@ -610,3 +614,193 @@ class TestMethodActionConsistencyIntegration:
         remote = [e for e in entries if e["event"] == "remote_run"]
         r = remote[-1]
         assert r.get("remote_method_mismatch") is True
+
+
+# ==========================================================================
+# Phase 14.4 — Request/Response Size Limits (warn-only)
+# ==========================================================================
+
+
+class TestMeasureRequestSizeUnit:
+    """Unit tests for _measure_request_size helper."""
+
+    def test_empty_kwargs_returns_zero(self):
+        size, unknown = _measure_request_size({})
+        assert size == 0
+        assert unknown is False
+
+    def test_small_kwargs(self):
+        size, unknown = _measure_request_size({"key": "value"})
+        assert size is not None
+        assert size > 0
+        assert unknown is False
+
+    def test_none_kwargs(self):
+        size, unknown = _measure_request_size(None)
+        assert size == 0
+        assert unknown is False
+
+
+class TestMeasureResponseSizeUnit:
+    """Unit tests for _measure_response_size helper."""
+
+    def test_empty_body(self):
+        from agentnode_sdk.credential_handle import AuthorizedResponse
+        resp = AuthorizedResponse(status_code=200, headers={}, body="")
+        assert _measure_response_size(resp) == 0
+
+    def test_normal_body(self):
+        from agentnode_sdk.credential_handle import AuthorizedResponse
+        resp = AuthorizedResponse(status_code=200, headers={}, body='{"ok": true}')
+        assert _measure_response_size(resp) == len('{"ok": true}'.encode("utf-8"))
+
+    def test_unicode_body(self):
+        from agentnode_sdk.credential_handle import AuthorizedResponse
+        body = "Héllo wörld"
+        resp = AuthorizedResponse(status_code=200, headers={}, body=body)
+        assert _measure_response_size(resp) == len(body.encode("utf-8"))
+
+
+class TestRequestSizeWarningIntegration:
+    """Integration: oversized request produces warning in audit."""
+
+    @respx.mock
+    def test_small_request_no_warning(self, tmp_path):
+        respx.post("https://api.testapi.com/v1/actions").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        entry = _entry()
+        result = run_remote("test-pack", "post_action", entry=entry, key="value")
+        assert result.success is True
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_request_size_warning") is None
+        assert "remote_request_size_bytes" not in r
+
+    @respx.mock
+    def test_oversized_request_warning(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agentnode_sdk.runtimes.remote_runner._MAX_REQUEST_BYTES", 50,
+        )
+        respx.post("https://api.testapi.com/v1/actions").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        entry = _entry()
+        big_data = "x" * 200
+        result = run_remote("test-pack", "post_action", entry=entry, data=big_data)
+        assert result.success is True
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_request_size_warning") is True
+        assert r["remote_request_size_bytes"] > 50
+        assert r["remote_request_size_limit"] == 50
+
+    @respx.mock
+    def test_oversized_request_does_not_block(self, tmp_path, monkeypatch):
+        """Size warning never blocks — request still executes."""
+        monkeypatch.setattr(
+            "agentnode_sdk.runtimes.remote_runner._MAX_REQUEST_BYTES", 10,
+        )
+        respx.post("https://api.testapi.com/v1/actions").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        entry = _entry()
+        result = run_remote("test-pack", "post_action", entry=entry, data="x" * 100)
+        assert result.success is True
+
+
+class TestResponseSizeWarningIntegration:
+    """Integration: oversized response produces warning in audit."""
+
+    @respx.mock
+    def test_small_response_no_warning(self, tmp_path):
+        respx.get("https://api.testapi.com/v1/data").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        entry = _entry()
+        result = run_remote("test-pack", "get_data", entry=entry)
+        assert result.success is True
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_response_size_warning") is None
+
+    @respx.mock
+    def test_oversized_response_warning(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agentnode_sdk.runtimes.remote_runner._MAX_RESPONSE_BYTES", 50,
+        )
+        big_body = "x" * 200
+        respx.get("https://api.testapi.com/v1/data").mock(
+            return_value=httpx.Response(200, text=big_body)
+        )
+        entry = _entry()
+        result = run_remote("test-pack", "get_data", entry=entry)
+        assert result.success is True
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_response_size_warning") is True
+        assert r["remote_response_size_bytes"] > 50
+        assert r["remote_response_size_limit"] == 50
+
+    @respx.mock
+    def test_oversized_response_does_not_block(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agentnode_sdk.runtimes.remote_runner._MAX_RESPONSE_BYTES", 10,
+        )
+        respx.get("https://api.testapi.com/v1/data").mock(
+            return_value=httpx.Response(200, text="x" * 100)
+        )
+        entry = _entry()
+        result = run_remote("test-pack", "get_data", entry=entry)
+        assert result.success is True
+
+    @respx.mock
+    def test_oversized_error_response_warning(self, tmp_path, monkeypatch):
+        """Size warning works on error responses too."""
+        monkeypatch.setattr(
+            "agentnode_sdk.runtimes.remote_runner._MAX_RESPONSE_BYTES", 50,
+        )
+        respx.get("https://api.testapi.com/v1/data").mock(
+            return_value=httpx.Response(403, text="x" * 200)
+        )
+        entry = _entry()
+        result = run_remote("test-pack", "get_data", entry=entry)
+        assert result.success is False
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        r = remote[-1]
+        assert r.get("remote_response_size_warning") is True
+
+
+class TestSizeAuditSafety:
+    """Audit must contain size numbers but never payloads."""
+
+    @respx.mock
+    def test_no_payload_in_audit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agentnode_sdk.runtimes.remote_runner._MAX_REQUEST_BYTES", 10,
+        )
+        monkeypatch.setattr(
+            "agentnode_sdk.runtimes.remote_runner._MAX_RESPONSE_BYTES", 10,
+        )
+        secret_payload = "supersecret_payload_data_1234"
+        respx.post("https://api.testapi.com/v1/actions").mock(
+            return_value=httpx.Response(200, text="response_body_secret_5678")
+        )
+        entry = _entry()
+        run_remote("test-pack", "post_action", entry=entry, data=secret_payload)
+
+        entries = _read_audit(tmp_path)
+        remote = [e for e in entries if e["event"] == "remote_run"]
+        raw = json.dumps(remote[-1])
+        assert "supersecret_payload_data" not in raw
+        assert "response_body_secret" not in raw

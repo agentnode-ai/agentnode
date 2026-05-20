@@ -30,6 +30,10 @@ _MAX_RETRIES = 1
 _RETRY_BACKOFF_SECONDS = 1.0
 _RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
 
+# Size warning thresholds (advisory only — never block)
+_MAX_REQUEST_BYTES = 10_485_760   # 10 MB
+_MAX_RESPONSE_BYTES = 52_428_800  # 50 MB
+
 
 def run_remote(
     slug: str,
@@ -106,9 +110,23 @@ def run_remote(
                 w, slug, tool_name,
             )
 
+    # --- 3c. Measure request size (advisory) ---
+    request_size, request_size_unknown = _measure_request_size(kwargs)
+    if request_size_unknown:
+        logger.warning(
+            "Cannot measure request size: slug=%s tool=%s",
+            slug, tool_name,
+        )
+    elif request_size is not None and request_size > _MAX_REQUEST_BYTES:
+        logger.warning(
+            "Request size %d bytes exceeds limit %d: slug=%s tool=%s",
+            request_size, _MAX_REQUEST_BYTES, slug, tool_name,
+        )
+
     # --- 4-5. Make authenticated request with retries ---
     last_error: str | None = None
     last_status: int | None = None
+    response_size: int | None = None
 
     for attempt in range(_MAX_RETRIES + 1):
         if attempt > 0:
@@ -126,6 +144,12 @@ def run_remote(
                 timeout=timeout,
             )
             last_status = resp.status_code
+            response_size = _measure_response_size(resp)
+            if response_size > _MAX_RESPONSE_BYTES:
+                logger.warning(
+                    "Response size %d bytes exceeds limit %d: slug=%s tool=%s",
+                    response_size, _MAX_RESPONSE_BYTES, slug, tool_name,
+                )
 
             if resp.status_code < 400:
                 # Success
@@ -140,6 +164,9 @@ def run_remote(
                     duration_ms=elapsed,
                     success=True,
                     method_warnings=method_warnings,
+                    request_size_bytes=request_size,
+                    request_size_unknown=request_size_unknown,
+                    response_size_bytes=response_size,
                 )
 
                 return RunToolResult(
@@ -166,6 +193,9 @@ def run_remote(
                 duration_ms=elapsed,
                 success=False,
                 method_warnings=method_warnings,
+                request_size_bytes=request_size,
+                request_size_unknown=request_size_unknown,
+                response_size_bytes=response_size,
             )
 
             return RunToolResult(
@@ -186,6 +216,8 @@ def run_remote(
                 duration_ms=elapsed,
                 success=False,
                 method_warnings=method_warnings,
+                request_size_bytes=request_size,
+                request_size_unknown=request_size_unknown,
             )
             return RunToolResult(
                 success=False,
@@ -206,6 +238,8 @@ def run_remote(
                 duration_ms=elapsed,
                 success=False,
                 method_warnings=method_warnings,
+                request_size_bytes=request_size,
+                request_size_unknown=request_size_unknown,
             )
 
             return RunToolResult(
@@ -226,6 +260,9 @@ def run_remote(
         duration_ms=elapsed,
         success=False,
         method_warnings=method_warnings,
+        request_size_bytes=request_size,
+        request_size_unknown=request_size_unknown,
+        response_size_bytes=response_size,
     )
     return RunToolResult(
         success=False,
@@ -312,6 +349,27 @@ def _safe_error_body(resp: AuthorizedResponse) -> str:
     return body
 
 
+def _measure_request_size(kwargs: dict[str, Any]) -> tuple[int | None, bool]:
+    """Measure JSON-serialized request payload size in bytes.
+
+    Returns (size_bytes, size_unknown). size_unknown=True if serialization fails.
+    """
+    if not kwargs:
+        return 0, False
+    try:
+        payload = json.dumps(kwargs, separators=(",", ":"), default=str)
+        return len(payload.encode("utf-8")), False
+    except Exception:
+        return None, True
+
+
+def _measure_response_size(resp: AuthorizedResponse) -> int:
+    """Measure response body size in bytes."""
+    if not resp.body:
+        return 0
+    return len(resp.body.encode("utf-8"))
+
+
 def _extract_tool_action_type(tool_name: str | None, entry: dict) -> str | None:
     """Extract action_type from the tool definition, if declared."""
     if not tool_name:
@@ -354,6 +412,9 @@ def _audit_remote_call(
     duration_ms: float | None = None,
     success: bool,
     method_warnings: list[str] | None = None,
+    request_size_bytes: int | None = None,
+    request_size_unknown: bool = False,
+    response_size_bytes: int | None = None,
 ) -> None:
     """Audit a remote tool call. Never crashes the caller.
 
@@ -383,6 +444,16 @@ def _audit_remote_call(
         if method_warnings:
             extra["remote_method_mismatch"] = True
             extra["remote_method_warnings"] = method_warnings
+        if request_size_unknown:
+            extra["remote_request_size_unknown"] = True
+        elif request_size_bytes is not None and request_size_bytes > _MAX_REQUEST_BYTES:
+            extra["remote_request_size_bytes"] = request_size_bytes
+            extra["remote_request_size_warning"] = True
+            extra["remote_request_size_limit"] = _MAX_REQUEST_BYTES
+        if response_size_bytes is not None and response_size_bytes > _MAX_RESPONSE_BYTES:
+            extra["remote_response_size_bytes"] = response_size_bytes
+            extra["remote_response_size_warning"] = True
+            extra["remote_response_size_limit"] = _MAX_RESPONSE_BYTES
         audit_decision(
             result,
             "remote_run",
