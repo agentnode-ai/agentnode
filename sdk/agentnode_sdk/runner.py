@@ -336,7 +336,43 @@ def _audit_runtime_run(
 def _get_lockfile_entry(slug: str, lockfile_path: Path | None) -> dict:
     """Read the lockfile entry for a package."""
     data = read_lockfile(lockfile_path)
-    return data.get("packages", {}).get(slug, {})
+    entry = data.get("packages", {}).get(slug, {})
+    if entry:
+        _check_entry_integrity(slug, entry)
+    return entry
+
+
+def _check_entry_integrity(slug: str, entry: dict) -> None:
+    """Warn and audit on lockfile integrity mismatch.  Side-effect only."""
+    from agentnode_sdk.lock_integrity import verify_entry
+
+    result = verify_entry(slug, entry)
+
+    if result.status in ("verified", "missing"):
+        return
+
+    if result.status == "mismatch":
+        logger.warning(
+            "Lockfile integrity mismatch for '%s'. "
+            "Run 'agentnode lock verify' for details.",
+            slug,
+        )
+        try:
+            audit_decision(
+                PolicyResult(
+                    action="warn",
+                    reason="lockfile_integrity_mismatch",
+                    source="lock_integrity",
+                ),
+                "lock_integrity_check",
+                slug,
+                extra={
+                    "integrity_status": "mismatch",
+                    "canonical_version": 1,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to audit integrity mismatch", exc_info=True)
 
 
 def _audit_guard_decision(
