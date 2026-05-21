@@ -1444,6 +1444,20 @@ def cmd_inspect(slug: str, *, json_output: bool = False) -> int:
     elif integrity_result.status == "mismatch":
         print(kv("Integrity", "MISMATCH (run 'agentnode lock verify')"))
 
+    # Signature
+    from agentnode_sdk.signature import verify_entry_signature, SignatureStatus
+    sig_result = verify_entry_signature(slug, pkg)
+    if sig_result.status == SignatureStatus.VALID:
+        sig_display = f"valid (key {sig_result.key_id})" if sig_result.key_id else "valid"
+        print(kv("Signature", sig_display))
+    elif sig_result.status == SignatureStatus.MISSING:
+        print(kv("Signature", "missing"))
+    elif sig_result.status == SignatureStatus.REVOKED:
+        print(kv("Signature", "REVOKED"))
+    else:
+        detail = sig_result.error or sig_result.status.value
+        print(kv("Signature", f"{sig_result.status.value.upper()} — {detail}"))
+
     # Connector
     connector = pkg.get("connector")
     if connector and isinstance(connector, dict):
@@ -1814,6 +1828,15 @@ def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
         integrity_dict["algorithm"] = "sha256"
         integrity_dict["canonical_version"] = stored.get("canonical_version", 1)
 
+    from agentnode_sdk.signature import verify_entry_signature
+    sig_result = verify_entry_signature(slug, pkg)
+    sig_dict: dict[str, str] = {"status": sig_result.status.value}
+    if sig_result.key_id:
+        sig_dict["key_id"] = sig_result.key_id
+        sig_dict["algorithm"] = "ed25519"
+    if sig_result.error:
+        sig_dict["error"] = sig_result.error
+
     return {
         "slug": slug,
         "version": pkg.get("version"),
@@ -1823,6 +1846,7 @@ def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
         "runtime": runtime,
         "installed_at": pkg.get("installed_at"),
         "integrity": integrity_dict,
+        "signature": sig_dict,
         "permissions": perms,
         "capability_ids": pkg.get("capability_ids", []),
         "tools": [t.get("name", "?") for t in pkg.get("tools", [])],
@@ -2850,9 +2874,25 @@ def cmd_lock_seal(*, force: bool = False) -> int:
     return 0
 
 
+def _sig_display(sig_dict: dict) -> str:
+    """Format a signature result dict for human output."""
+    status = sig_dict["status"]
+    if status == "valid":
+        key_id = sig_dict.get("key_id", "")
+        return f"signature: valid ({key_id})" if key_id else "signature: valid"
+    if status == "missing":
+        return "signature: missing"
+    if status == "revoked":
+        return "signature: REVOKED"
+    return f"signature: {status.upper()}"
+
+
 def cmd_lock_verify(*, json_output: bool = False, strict: bool = False) -> int:
     """Verify integrity of all lockfile entries."""
+    import warnings
+
     from agentnode_sdk.lock_integrity import verify_entry
+    from agentnode_sdk.signature import verify_entry_signature, SignatureStatus
 
     lock = read_lockfile()
     packages = lock.get("packages", {})
@@ -2860,6 +2900,9 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False) -> int:
     verified: list[str] = []
     missing: list[str] = []
     mismatch: list[str] = []
+
+    sig_results: dict[str, dict] = {}
+    sig_invalid: list[str] = []
 
     for slug, entry in packages.items():
         result = verify_entry(slug, entry)
@@ -2870,19 +2913,34 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False) -> int:
         else:
             mismatch.append(slug)
 
+        sig = verify_entry_signature(slug, entry)
+        sig_dict: dict[str, str] = {"status": sig.status.value}
+        if sig.key_id:
+            sig_dict["key_id"] = sig.key_id
+        if sig.error:
+            sig_dict["error"] = sig.error
+        sig_results[slug] = sig_dict
+
+        if sig.status in (SignatureStatus.INVALID, SignatureStatus.UNKNOWN_KEY):
+            sig_invalid.append(slug)
+
     total = len(packages)
     has_mismatch = len(mismatch) > 0
     has_missing_strict = strict and len(missing) > 0
-    ok = not has_mismatch and not has_missing_strict
+    has_sig_invalid = len(sig_invalid) > 0
+    ok = not has_mismatch and not has_missing_strict and not has_sig_invalid
 
     if json_output:
-        report = {
+        report: dict = {
             "verified": sorted(verified),
             "missing": sorted(missing),
             "mismatch": sorted(mismatch),
             "total": total,
             "ok": ok,
+            "signatures": sig_results,
         }
+        if sig_invalid:
+            report["signature_invalid"] = sorted(sig_invalid)
         print(json.dumps(report, indent=2))
         return 0 if ok else 1
 
@@ -2891,12 +2949,12 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False) -> int:
         return 0
 
     for slug in sorted(verified):
-        print(f"  ✓ {slug}: verified")
+        print(f"  ✓ {slug}: verified, {_sig_display(sig_results[slug])}")
     for slug in sorted(missing):
         label = "missing (not sealed)" if not strict else "MISSING (strict)"
-        print(f"  - {slug}: {label}")
+        print(f"  - {slug}: {label}, {_sig_display(sig_results[slug])}")
     for slug in sorted(mismatch):
-        print(f"  ✗ {slug}: MISMATCH")
+        print(f"  ✗ {slug}: MISMATCH, {_sig_display(sig_results[slug])}")
 
     parts = []
     if verified:
@@ -2906,5 +2964,12 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False) -> int:
     if missing:
         parts.append(f"{len(missing)} missing")
     print(f"\n  {', '.join(parts)} ({total} total)")
+
+    for slug in sorted(sig_invalid):
+        err = sig_results[slug].get("error", sig_results[slug]["status"])
+        warnings.warn(
+            f"Package '{slug}' has invalid publisher signature: {err}",
+            stacklevel=1,
+        )
 
     return 0 if ok else 1

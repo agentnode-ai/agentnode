@@ -1,4 +1,6 @@
 """Tests for agentnode_sdk CLI."""
+import base64
+import hashlib as _hashlib
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -758,3 +760,134 @@ def test_inspect_json_integrity_missing(capsys, saved_config, isolated_env):
     data = json.loads(capsys.readouterr().out)
     assert data["integrity"]["status"] == "missing"
     assert "algorithm" not in data["integrity"]
+
+
+# ---------------------------------------------------------------------------
+# Inspect — signature (Phase 16.5)
+# ---------------------------------------------------------------------------
+
+def _sign_entry_for_inspect(slug, entry):
+    """Sign an entry with a fresh Ed25519 key (test helper)."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    from agentnode_sdk.signature import build_sign_payload
+
+    private_key = Ed25519PrivateKey.generate()
+    pub_bytes = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    payload = build_sign_payload(slug, entry)
+    sig_bytes = private_key.sign(payload)
+    fingerprint = _hashlib.sha256(pub_bytes).hexdigest()[:16]
+
+    return {
+        "publisher": [{
+            "key_id": f"ed25519:{fingerprint}",
+            "algorithm": "ed25519",
+            "signature": base64.b64encode(sig_bytes).decode(),
+            "public_key": base64.b64encode(pub_bytes).decode(),
+            "canonical_version": 1,
+            "signed_at": "2026-05-21T12:00:00+00:00",
+        }],
+    }
+
+
+def _make_inspect_entry(**overrides):
+    """Standard inspect test entry."""
+    entry = {
+        "version": "1.0.0", "package_type": "toolpack", "runtime": "python",
+        "entrypoint": "my_pack.tool", "artifact_hash": "sha256:abc",
+        "tools": [], "permissions": {"network_level": "none"},
+        "installed_at": "2026-05-21T00:00:00+00:00", "trust_level": "verified",
+        "source": "sdk", "capability_ids": [],
+        "prompts": [], "resources": [], "connector": None, "agent": None,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_inspect_signature_valid(capsys, saved_config, isolated_env):
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = _make_inspect_entry()
+    entry["_signatures"] = _sign_entry_for_inspect("test-pack", entry)
+    _write_lockfile_with_entry(isolated_env, "test-pack", seal_entry(entry))
+    code = main(["inspect", "test-pack"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Signature" in out
+    assert "valid" in out
+
+
+def test_inspect_signature_missing(capsys, saved_config, isolated_env):
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = _make_inspect_entry()
+    _write_lockfile_with_entry(isolated_env, "test-pack", seal_entry(entry))
+    code = main(["inspect", "test-pack"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Signature" in out
+    assert "missing" in out
+
+
+def test_inspect_signature_invalid(capsys, saved_config, isolated_env):
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = _make_inspect_entry()
+    entry["_signatures"] = _sign_entry_for_inspect("test-pack", entry)
+    entry["_signatures"]["publisher"][0]["signature"] = base64.b64encode(b"X" * 64).decode()
+    _write_lockfile_with_entry(isolated_env, "test-pack", seal_entry(entry))
+    code = main(["inspect", "test-pack"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Signature" in out
+    assert "INVALID" in out
+
+
+def test_inspect_json_signature_valid(capsys, saved_config, isolated_env):
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = _make_inspect_entry()
+    entry["_signatures"] = _sign_entry_for_inspect("test-pack", entry)
+    _write_lockfile_with_entry(isolated_env, "test-pack", seal_entry(entry))
+    code = main(["inspect", "test-pack", "--json"])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert "signature" in data
+    assert data["signature"]["status"] == "valid"
+    assert "key_id" in data["signature"]
+    assert data["signature"]["algorithm"] == "ed25519"
+
+
+def test_inspect_json_signature_missing(capsys, saved_config, isolated_env):
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = _make_inspect_entry()
+    _write_lockfile_with_entry(isolated_env, "test-pack", seal_entry(entry))
+    code = main(["inspect", "test-pack", "--json"])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["signature"]["status"] == "missing"
+    assert "algorithm" not in data["signature"]
+
+
+def test_inspect_json_signature_invalid(capsys, saved_config, isolated_env):
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = _make_inspect_entry()
+    entry["_signatures"] = _sign_entry_for_inspect("test-pack", entry)
+    entry["_signatures"]["publisher"][0]["signature"] = base64.b64encode(b"X" * 64).decode()
+    _write_lockfile_with_entry(isolated_env, "test-pack", seal_entry(entry))
+    code = main(["inspect", "test-pack", "--json"])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["signature"]["status"] == "invalid"
+    assert "error" in data["signature"]
+
+
+def test_inspect_no_local_signing_key_loaded(capsys, saved_config, isolated_env, monkeypatch):
+    """inspect must not load or reference the local signing key."""
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = _make_inspect_entry()
+    entry["_signatures"] = _sign_entry_for_inspect("test-pack", entry)
+    _write_lockfile_with_entry(isolated_env, "test-pack", seal_entry(entry))
+    import agentnode_sdk.signing_key as sk_mod
+    monkeypatch.setattr(
+        sk_mod, "load_signing_key",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("signing key loaded")),
+    )
+    code = main(["inspect", "test-pack"])
+    assert code == 0

@@ -1,4 +1,6 @@
-"""Tests for agentnode lock seal / lock verify CLI — Phase 15.2."""
+"""Tests for agentnode lock seal / lock verify CLI — Phase 15.2 + 16.5."""
+import base64
+import hashlib as _hashlib
 import json
 import os
 from pathlib import Path
@@ -246,3 +248,146 @@ class TestLockVerify:
 
         content_after = tmp_lockfile.read_text(encoding="utf-8")
         assert content_before == content_after
+
+
+# ---------------------------------------------------------------------------
+# Signature helpers
+# ---------------------------------------------------------------------------
+
+def _sign_entry(slug, entry):
+    """Sign an entry with a fresh Ed25519 key (test helper)."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    from agentnode_sdk.signature import build_sign_payload
+
+    private_key = Ed25519PrivateKey.generate()
+    pub_bytes = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    payload = build_sign_payload(slug, entry)
+    sig_bytes = private_key.sign(payload)
+    fingerprint = _hashlib.sha256(pub_bytes).hexdigest()[:16]
+
+    return {
+        "publisher": [{
+            "key_id": f"ed25519:{fingerprint}",
+            "algorithm": "ed25519",
+            "signature": base64.b64encode(sig_bytes).decode(),
+            "public_key": base64.b64encode(pub_bytes).decode(),
+            "canonical_version": 1,
+            "signed_at": "2026-05-21T12:00:00+00:00",
+        }],
+    }
+
+
+def _make_signed_entry(**overrides):
+    """Create a sealed entry with a valid publisher signature."""
+    slug = overrides.pop("slug", "test-pack")
+    entry = _make_entry(**overrides)
+    entry["_signatures"] = _sign_entry(slug, entry)
+    return slug, seal_entry(entry)
+
+
+def _make_invalid_signed_entry(**overrides):
+    """Create a sealed entry with an invalid publisher signature."""
+    slug = overrides.pop("slug", "test-pack")
+    entry = _make_entry(**overrides)
+    entry["_signatures"] = _sign_entry(slug, entry)
+    entry["_signatures"]["publisher"][0]["signature"] = base64.b64encode(b"X" * 64).decode()
+    return slug, seal_entry(entry)
+
+
+# ---------------------------------------------------------------------------
+# lock verify — signature tests (Phase 16.5)
+# ---------------------------------------------------------------------------
+
+class TestLockVerifySignature:
+    def test_verify_valid_signature(self, tmp_lockfile, capsys):
+        slug, entry = _make_signed_entry()
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        rc = main(["lock", "verify"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "signature: valid" in out
+
+    def test_verify_missing_signature_returns_0(self, tmp_lockfile, capsys):
+        _write_lockfile(tmp_lockfile, {"test-pack": seal_entry(_make_entry())})
+        rc = main(["lock", "verify"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "signature: missing" in out
+
+    def test_verify_invalid_signature_returns_1(self, tmp_lockfile, capsys):
+        slug, entry = _make_invalid_signed_entry()
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        rc = main(["lock", "verify"])
+        assert rc == 1
+
+    def test_verify_json_includes_signatures(self, tmp_lockfile, capsys):
+        slug, entry = _make_signed_entry()
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        rc = main(["lock", "verify", "--json"])
+        assert rc == 0
+        report = json.loads(capsys.readouterr().out)
+        assert "signatures" in report
+        assert report["signatures"][slug]["status"] == "valid"
+        assert "key_id" in report["signatures"][slug]
+
+    def test_verify_json_missing_signature(self, tmp_lockfile, capsys):
+        _write_lockfile(tmp_lockfile, {"test-pack": seal_entry(_make_entry())})
+        rc = main(["lock", "verify", "--json"])
+        assert rc == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["signatures"]["test-pack"]["status"] == "missing"
+
+    def test_verify_json_invalid_signature(self, tmp_lockfile, capsys):
+        slug, entry = _make_invalid_signed_entry()
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        rc = main(["lock", "verify", "--json"])
+        assert rc == 1
+        report = json.loads(capsys.readouterr().out)
+        assert report["signatures"][slug]["status"] == "invalid"
+        assert slug in report["signature_invalid"]
+        assert report["ok"] is False
+
+    def test_verify_revoked_returns_0(self, tmp_lockfile, capsys):
+        """Revoked key on installed package → exit 0 but visible."""
+        slug, entry = _make_signed_entry()
+        from unittest.mock import patch
+        from agentnode_sdk.signature import SignatureResult, SignatureStatus
+        revoked = SignatureResult(
+            status=SignatureStatus.REVOKED, slug=slug, key_id="ed25519:revoked",
+        )
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        with patch(
+            "agentnode_sdk.signature.verify_entry_signature",
+            return_value=revoked,
+        ):
+            rc = main(["lock", "verify"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "REVOKED" in out
+
+    def test_verify_mixed_valid_and_unsigned(self, tmp_lockfile, capsys):
+        """Valid + missing signatures: still exit 0."""
+        slug_signed, signed_entry = _make_signed_entry(slug="signed-pack")
+        unsigned_entry = seal_entry(_make_entry(version="2.0.0"))
+        _write_lockfile(tmp_lockfile, {
+            slug_signed: signed_entry,
+            "unsigned-pack": unsigned_entry,
+        })
+        rc = main(["lock", "verify"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "signature: valid" in out
+        assert "signature: missing" in out
+
+    def test_no_local_signing_key_loaded(self, tmp_lockfile, monkeypatch):
+        """lock verify must not load or reference the local signing key."""
+        slug, entry = _make_signed_entry()
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        import agentnode_sdk.signing_key as sk_mod
+        monkeypatch.setattr(
+            sk_mod, "load_signing_key",
+            lambda *a, **kw: (_ for _ in ()).throw(AssertionError("signing key loaded")),
+        )
+        rc = main(["lock", "verify"])
+        assert rc == 0
