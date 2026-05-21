@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.7.0 — Lockfile Integrity
+
+Detects post-install mutation of lockfile entries. Every security-critical
+field (entrypoint, runtime, remote_endpoint, mcp_command, permissions) is
+covered by a per-entry SHA-256 hash. Tampered entries are warned on by
+default and denied in strict mode — before any code executes.
+
+### Added
+
+- **Per-entry `_integrity` hash** — `seal_entry()` computes a SHA-256
+  digest over canonical fields (version, package_type, runtime, entrypoint,
+  artifact_hash, tools, permissions, mcp_command, remote_endpoint,
+  connector, agent, prompts, resources, assets). Mutable fields
+  (trust_level, installed_at, last_trust_check, source, install_path,
+  install_mode, capability_ids) are excluded from the hash.
+- **`agentnode lock seal`** — computes `_integrity` for all entries
+  missing it. `--force` recomputes all entries. Writes atomically.
+- **`agentnode lock verify`** — verifies all entries against stored
+  hashes. Exit code 1 on mismatch. `--strict` treats missing integrity
+  as failure. `--json` for structured output.
+- **Install-time sealing** — `install_package()` and `_install_skill()`
+  automatically seal new entries. Reinstalls and upgrades recompute the
+  hash.
+- **Runtime integrity check** — `run_tool()` verifies entry integrity
+  before policy checks. Default mode: warn + audit on mismatch. Strict
+  mode (`AGENTNODE_GUARD_STRICT=true`): deny before execution.
+- **Strict mode deny** — integrity mismatch returns
+  `RunToolResult(success=False, mode_used="integrity_denied")` in strict
+  mode. Missing `_integrity` never blocks (migration-compatible).
+- **Inspect integration** — `agentnode inspect <slug>` shows integrity
+  status (verified / missing / MISMATCH) in both human and `--json`
+  output.
+- **Sensitive change detection** — `detect_sensitive_changes()` compares
+  two entries and flags security-relevant mutations: runtime swap,
+  entrypoint change, remote endpoint redirect, MCP command change,
+  permission escalation.
+- **Audit events** — `lock_integrity_check` (runtime mismatch/missing)
+  and `lock_seal` (CLI seal operations) added to audit trail.
+- 111 new tests across 4 test files.
+
+### Security
+
+- Integrity check runs before policy checks — tampered entries are caught
+  before Guard, check_run(), or runtime dispatch sees them.
+- No auto-seal on read. Reading a tampered lockfile never legitimizes the
+  tampering.
+- Audit entries contain only safe metadata (integrity_status,
+  canonical_version). No entry content, hashes, or field values.
+- `_integrity` is per-entry, not global. Individual entry tampering is
+  detected without requiring a full lockfile rehash.
+
+### Known Deltas
+
+- **`trust_level` is mutable** — TTL refresh legitimately updates it.
+  Local manipulation of `trust_level` (e.g. `unverified` → `trusted`)
+  is not detected by integrity checks. Trust enforcement relies on
+  policy/TTL mechanisms.
+- **`install_mode` is mutable** — currently UX metadata only. If it
+  gains runtime semantics, it must be promoted to canonical.
+
+### Design Constraints
+
+- Signatures are explicitly out of scope (Phase 16+).
+- No global lockfile hash — protects per-entry, not entry addition.
+- Missing `_integrity` is migration-compatible: no block, no prompt.
+- Canonical field list is versioned (`canonical_version: 1`) for future
+  evolution without breaking existing hashes.
+
+### Migration
+
+- No breaking changes. Existing lockfiles without `_integrity` continue
+  to work without warnings.
+- Run `agentnode lock seal` to add integrity hashes to existing entries.
+- Run `agentnode lock verify` in CI to detect lockfile drift.
+- Enable strict mode (`AGENTNODE_GUARD_STRICT=true`) to deny tampered
+  entries at runtime.
+
 ## 0.6.2 — Connector/Remote Runtime Hardening
 
 Closes the enforcement gap between Guard and the HTTP boundary for

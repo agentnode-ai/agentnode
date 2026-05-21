@@ -295,6 +295,32 @@ inconsistencies (advisory only, never blocks).
 
 See [THREAT_MODEL.md](THREAT_MODEL.md) for the full security model.
 
+### Lockfile Integrity
+
+Every installed package entry is sealed with a SHA-256 hash over its
+security-critical fields (entrypoint, runtime, remote_endpoint,
+mcp_command, permissions, tools, connector). Post-install tampering is
+detected before any code executes.
+
+```bash
+# Seal all entries (first time or after manual lockfile edits)
+agentnode lock seal
+
+# Verify integrity (CI-friendly, exit code 1 on mismatch)
+agentnode lock verify
+agentnode lock verify --strict   # also fail on missing integrity
+agentnode lock verify --json     # structured output
+
+# Inspect a single package
+agentnode inspect pdf-reader-pack
+# → Integrity       verified
+```
+
+New installs are sealed automatically. In strict mode
+(`AGENTNODE_GUARD_STRICT=true`), tampered entries are denied at runtime.
+In default mode, mismatches produce a warning and audit entry but do not
+block execution.
+
 ### Risk Policies
 
 Configure how the SDK reacts to computed risk flags. Uses the same

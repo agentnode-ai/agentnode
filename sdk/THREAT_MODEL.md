@@ -1,6 +1,6 @@
 # AgentNode SDK — Threat Model
 
-Last updated: 2026-05-20
+Last updated: 2026-05-21
 
 ## Scope
 
@@ -33,6 +33,9 @@ This document covers the AgentNode SDK's local execution model — the code that
 | **Remote audit trail** | Every remote call audits `remote_method`, `remote_domain`, `remote_status_code`, `remote_duration_ms`, `remote_provider`, and conditional warning fields. No full URLs, request bodies, or credentials. | `remote_runner.py` |
 | **Guard config hot-reload** | Guard config is reloaded when the config file's mtime or size changes. No restart required. | `guard.py` |
 | **Agent tool allowlist** | Agent packages can only call tools explicitly listed in their manifest. | `agent_runner.py` |
+| **Lockfile entry integrity** | Per-entry SHA-256 hash over canonical fields (entrypoint, runtime, remote_endpoint, mcp_command, permissions, tools, connector, agent, etc.). Detects post-install mutation of lockfile entries. Default mode: warn + audit. Strict mode: deny before execution. | `lock_integrity.py`, `runner.py` |
+| **Lockfile integrity CLI** | `agentnode lock seal` computes hashes, `agentnode lock verify` checks them. Exit code 1 on mismatch. `--strict` treats missing integrity as failure. Designed for CI pipelines. | `cli/commands.py` |
+| **Install-time sealing** | New installs and upgrades automatically include `_integrity` hash. No manual seal step required for new packages. | `installer.py` |
 
 ## What AgentNode does NOT enforce
 
@@ -45,6 +48,9 @@ This document covers the AgentNode SDK's local execution model — the code that
 | **`load_tool()` bypass** | Calling `load_tool()` directly skips all policy checks and audit logging. | Use `run_tool()` instead, which goes through the full policy pipeline. |
 | **Malicious package code** | Trust level and verification reduce risk but do not prevent a determined attacker. | Only install packages from trusted publishers. Review source code for sensitive use cases. |
 | **Inter-tool data leakage** | Tools in the same subprocess session share the filtered environment. | No current mitigation. |
+| **Lockfile entry addition** | Integrity is per-entry, not global. Adding a new malicious entry is not detected. | Review lockfile diffs in PRs. Global lockfile hash planned for a future phase. |
+| **`trust_level` manipulation** | `trust_level` is mutable (TTL refresh updates it). Local manipulation from `unverified` to `trusted` is not detected by integrity checks. | Trust enforcement relies on policy/TTL mechanisms, not lockfile integrity. |
+| **Publisher signatures** | Lockfile integrity detects mutation but not origin. A compromised registry could serve malicious entries that pass integrity checks after install. | Phase 16+ will add publisher signing. |
 
 ## Privacy boundary
 
@@ -56,6 +62,7 @@ This document covers the AgentNode SDK's local execution model — the code that
 
 ```
 User calls run_tool()
+  → Lockfile integrity: verify_entry() — warn or deny on mismatch
   → Policy kernel: check_run() — allow / deny / prompt
   → Risk policies: check_risk_policies() — flag-based reactions
   → Input guard: check_inputs() — warnings only, never blocks
@@ -95,6 +102,8 @@ User calls run_tool()
 
 ## Future work
 
+- Publisher signatures — cryptographic proof of entry origin (Phase 16+)
+- Global lockfile hash — detect entry addition/removal
 - Subprocess filesystem isolation (workspace-only mode)
 - Network namespace isolation (Linux)
 - Container-based sandbox for high-risk packages
