@@ -175,13 +175,8 @@ def manifest_to_entry(manifest: dict, artifact_hash: str) -> dict:
     tools_raw = caps.get("tools", [])
     tools = []
     for t in (tools_raw if isinstance(tools_raw, list) else []):
-        if isinstance(t, dict) and t.get("name"):
-            tool: dict = {"name": t["name"]}
-            if t.get("entrypoint"):
-                tool["entrypoint"] = t["entrypoint"]
-            if t.get("action_type"):
-                tool["action_type"] = t["action_type"]
-            tools.append(tool)
+        if isinstance(t, dict) and t.get("name") and t.get("entrypoint"):
+            tools.append({"name": t["name"], "entrypoint": t["entrypoint"]})
 
     prompts_raw = caps.get("prompts", [])
     prompts = prompts_raw if isinstance(prompts_raw, list) else []

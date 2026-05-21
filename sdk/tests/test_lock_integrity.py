@@ -995,3 +995,321 @@ class TestCanonicalVersionV2:
         e["_signatures"] = _make_signatures_block()
         canonical = _build_canonical(e, canonical_version=2)
         assert "_signatures" in canonical
+
+
+# ---------------------------------------------------------------------------
+# Install signature verification — Phase 16.4
+# ---------------------------------------------------------------------------
+
+def _real_sign_entry(slug, entry):
+    """Sign an entry with a real Ed25519 key (test helper)."""
+    import base64
+    import hashlib as _hashlib
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    from agentnode_sdk.signature import build_sign_payload
+
+    private_key = Ed25519PrivateKey.generate()
+    pub_bytes = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    payload = build_sign_payload(slug, entry)
+    sig_bytes = private_key.sign(payload)
+    fingerprint = _hashlib.sha256(pub_bytes).hexdigest()[:16]
+
+    return {
+        "publisher": [{
+            "key_id": f"ed25519:{fingerprint}",
+            "algorithm": "ed25519",
+            "signature": base64.b64encode(sig_bytes).decode(),
+            "public_key": base64.b64encode(pub_bytes).decode(),
+            "canonical_version": 1,
+            "signed_at": "2026-05-21T12:00:00+00:00",
+        }],
+    }
+
+
+class TestInstallerSignatureVerification:
+    """Verify install_package() enforces publisher signatures."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp_lockfile(self, tmp_path, monkeypatch):
+        self.lf = tmp_path / "agentnode.lock"
+        monkeypatch.setenv("AGENTNODE_LOCKFILE", str(self.lf))
+        self.tmp_path = tmp_path
+
+    def _read(self):
+        from agentnode_sdk.installer import read_lockfile
+        return read_lockfile(self.lf)
+
+    def _mock_install(self, monkeypatch):
+        from agentnode_sdk import installer
+        pkg_dir = self.tmp_path / "extracted" / "pkg"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        (pkg_dir / "my_pack").mkdir(exist_ok=True)
+        (pkg_dir / "my_pack" / "tool.py").write_text("def run(): pass")
+        monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
+        monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "abc123def456")
+        monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
+        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
+
+    def _make_valid_signatures(self, slug, **overrides):
+        """Build signatures that verify against the lock_entry install_package creates."""
+        entry = {
+            "version": overrides.get("version", "1.0.0"),
+            "package_type": overrides.get("package_type", "toolpack"),
+            "runtime": overrides.get("runtime", "python"),
+            "entrypoint": overrides.get("entrypoint", "my_pack.tool"),
+            "artifact_hash": "sha256:abc123def456",
+            "tools": overrides.get("tools", []),
+            "permissions": overrides.get("permissions", {"network_level": "none"}),
+            "prompts": overrides.get("prompts", []),
+            "resources": overrides.get("resources", []),
+            "connector": overrides.get("connector", None),
+            "agent": overrides.get("agent", None),
+        }
+        return _real_sign_entry(slug, entry)
+
+    def test_valid_signature_installs(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        sigs = self._make_valid_signatures("test-pack")
+        result = install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+            signatures=sigs,
+        )
+        assert result["installed"] is True
+
+    def test_valid_signature_stored_in_lockfile(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        sigs = self._make_valid_signatures("test-pack")
+        install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+            signatures=sigs,
+        )
+        lock = self._read()
+        entry = lock["packages"]["test-pack"]
+        assert "_signatures" in entry
+        assert entry["_signatures"]["publisher"][0]["algorithm"] == "ed25519"
+
+    def test_valid_signature_verifies_from_lockfile(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+        from agentnode_sdk.signature import verify_entry_signature, SignatureStatus
+
+        sigs = self._make_valid_signatures("test-pack")
+        install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+            signatures=sigs,
+        )
+        lock = self._read()
+        entry = lock["packages"]["test-pack"]
+        result = verify_entry_signature("test-pack", entry)
+        assert result.status == SignatureStatus.VALID
+
+    def test_signed_entry_gets_integrity_v2(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        sigs = self._make_valid_signatures("test-pack")
+        install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+            signatures=sigs,
+        )
+        lock = self._read()
+        entry = lock["packages"]["test-pack"]
+        assert entry["_integrity"]["canonical_version"] == 2
+
+    def test_missing_signature_warns_but_installs(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = install_package(
+                slug="test-pack",
+                version="1.0.0",
+                artifact_url="https://example.com/pkg.tar.gz",
+                artifact_hash="sha256:abc123def456",
+                entrypoint="my_pack.tool",
+                trust_level="trusted",
+                permissions={"network_level": "none"},
+            )
+        assert result["installed"] is True
+        sig_warnings = [x for x in w if "no publisher signature" in str(x.message)]
+        assert len(sig_warnings) >= 1
+
+    def test_unsigned_entry_gets_integrity_v1(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+        )
+        lock = self._read()
+        entry = lock["packages"]["test-pack"]
+        assert entry["_integrity"]["canonical_version"] == 1
+        assert "_signatures" not in entry
+
+    def test_invalid_signature_blocks_install(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        sigs = self._make_valid_signatures("test-pack")
+        sigs["publisher"][0]["signature"] = "AAAA" * 22
+
+        with pytest.raises(RuntimeError, match="signature verification failed"):
+            install_package(
+                slug="test-pack",
+                version="1.0.0",
+                artifact_url="https://example.com/pkg.tar.gz",
+                artifact_hash="sha256:abc123def456",
+                entrypoint="my_pack.tool",
+                trust_level="trusted",
+                permissions={"network_level": "none"},
+                signatures=sigs,
+            )
+        assert not self.lf.exists()
+
+    def test_malformed_signature_blocks_install(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        sigs = {
+            "publisher": [{
+                "key_id": "ed25519:bad",
+                "algorithm": "ed25519",
+                "signature": "not-valid-base64!!!",
+                "public_key": "also-bad!!!",
+            }],
+        }
+        with pytest.raises(RuntimeError, match="signature verification failed"):
+            install_package(
+                slug="test-pack",
+                version="1.0.0",
+                artifact_url="https://example.com/pkg.tar.gz",
+                artifact_hash="sha256:abc123def456",
+                entrypoint="my_pack.tool",
+                trust_level="trusted",
+                permissions={"network_level": "none"},
+                signatures=sigs,
+            )
+        assert not self.lf.exists()
+
+    def test_wrong_public_key_blocks_install(self, monkeypatch):
+        import base64
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+        from agentnode_sdk.signing_key import generate_ed25519_keypair
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        sigs = self._make_valid_signatures("test-pack")
+        _, other_pub = generate_ed25519_keypair()
+        sigs["publisher"][0]["public_key"] = base64.b64encode(other_pub).decode()
+
+        with pytest.raises(RuntimeError, match="signature verification failed"):
+            install_package(
+                slug="test-pack",
+                version="1.0.0",
+                artifact_url="https://example.com/pkg.tar.gz",
+                artifact_hash="sha256:abc123def456",
+                entrypoint="my_pack.tool",
+                trust_level="trusted",
+                permissions={"network_level": "none"},
+                signatures=sigs,
+            )
+
+    def test_install_does_not_load_local_signing_key(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        sigs = self._make_valid_signatures("test-pack")
+
+        import agentnode_sdk.signing_key as sk_mod
+        original_load = sk_mod.load_signing_key
+        load_called = []
+        def spy_load(*a, **kw):
+            load_called.append(True)
+            return original_load(*a, **kw)
+        monkeypatch.setattr(sk_mod, "load_signing_key", spy_load)
+        monkeypatch.setattr(sk_mod, "get_or_create_signing_key", spy_load)
+
+        install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+            signatures=sigs,
+        )
+        assert len(load_called) == 0
+
+    def test_signature_uses_downloaded_artifact_hash(self, monkeypatch):
+        """The signature must verify against the hash from the downloaded
+        artifact, not a registry-provided value that could be spoofed."""
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        spoofed_entry = {
+            "version": "1.0.0",
+            "package_type": "toolpack",
+            "runtime": "python",
+            "entrypoint": "my_pack.tool",
+            "artifact_hash": "sha256:spoofed_different_hash",
+            "tools": [],
+            "permissions": {"network_level": "none"},
+            "prompts": [],
+            "resources": [],
+            "connector": None,
+            "agent": None,
+        }
+        sigs = _real_sign_entry("test-pack", spoofed_entry)
+
+        with pytest.raises(RuntimeError, match="signature verification failed"):
+            install_package(
+                slug="test-pack",
+                version="1.0.0",
+                artifact_url="https://example.com/pkg.tar.gz",
+                artifact_hash="sha256:spoofed_different_hash",
+                entrypoint="my_pack.tool",
+                trust_level="trusted",
+                permissions={"network_level": "none"},
+                signatures=sigs,
+            )

@@ -305,6 +305,43 @@ def check_installed(slug: str, version: str, path: Path | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Publisher signature verification (Phase 16.4)
+# ---------------------------------------------------------------------------
+
+def _verify_publisher_signature(slug: str, lock_entry: dict) -> None:
+    """Verify publisher signature on a lock entry before writing.
+
+    - Valid → silent
+    - Missing → warn (install continues)
+    - Invalid / malformed → raise RuntimeError (install blocked)
+    """
+    import logging
+    import warnings
+
+    from agentnode_sdk.signature import verify_entry_signature, SignatureStatus
+
+    result = verify_entry_signature(slug, lock_entry)
+
+    if result.status == SignatureStatus.VALID:
+        logging.getLogger(__name__).info(
+            "Publisher signature valid for %s (key %s)", slug, result.key_id,
+        )
+        return
+
+    if result.status == SignatureStatus.MISSING:
+        warnings.warn(
+            f"Package '{slug}' has no publisher signature",
+            stacklevel=3,
+        )
+        return
+
+    raise RuntimeError(
+        f"Publisher signature verification failed for '{slug}': "
+        f"{result.error or result.status.value}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Full install flow
 # ---------------------------------------------------------------------------
 
@@ -328,6 +365,8 @@ def install_package(
     resources: list[dict] | None = None,
     connector: dict | None = None,
     agent: dict | None = None,
+    # Phase 16.4: publisher signatures
+    signatures: dict | None = None,
 ) -> dict[str, Any]:
     """Execute the full local install flow (mirrors CLI §13.4).
 
@@ -378,6 +417,7 @@ def install_package(
             prompts=prompts,
             resources=resources,
             assets=None,
+            signatures=signatures,
         )
 
     tmpdir = Path(tempfile.mkdtemp(prefix="agentnode-"))
@@ -428,6 +468,10 @@ def install_package(
             lock_entry["mcp_command"] = mcp_command
         if remote_endpoint:
             lock_entry["remote_endpoint"] = remote_endpoint
+
+        if signatures:
+            lock_entry["_signatures"] = signatures
+        _verify_publisher_signature(slug, lock_entry)
 
         from agentnode_sdk.lock_integrity import seal_entry
         lock_entry = seal_entry(lock_entry)
@@ -530,6 +574,7 @@ def _install_skill(
     prompts: list[dict] | None,
     resources: list[dict] | None,
     assets: list[dict] | None,
+    signatures: dict | None = None,
 ) -> dict[str, Any]:
     """Install a skill package to ~/.agentnode/skills/{slug}/.
 
@@ -619,6 +664,10 @@ def _install_skill(
             "connector": None,
             "agent": None,
         }
+
+        if signatures:
+            lock_entry["_signatures"] = signatures
+        _verify_publisher_signature(slug, lock_entry)
 
         from agentnode_sdk.lock_integrity import seal_entry
         lock_entry = seal_entry(lock_entry)

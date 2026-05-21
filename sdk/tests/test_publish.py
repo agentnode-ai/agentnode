@@ -313,9 +313,7 @@ class TestManifestToEntry:
         }
         entry = manifest_to_entry(manifest, "sha256:abc123")
         assert len(entry["tools"]) == 1
-        assert entry["tools"][0]["name"] == "do_thing"
-        assert entry["tools"][0]["entrypoint"] == "mod:do_thing"
-        assert entry["tools"][0]["action_type"] == "read"
+        assert entry["tools"][0] == {"name": "do_thing", "entrypoint": "mod:do_thing"}
 
     def test_strips_extra_tool_fields(self):
         from agentnode_sdk.cli.publish import manifest_to_entry
@@ -323,13 +321,12 @@ class TestManifestToEntry:
             **MINIMAL_MANIFEST,
             "capabilities": {
                 "tools": [
-                    {"name": "t", "capability_id": "x.y", "extra_field": "ignored"},
+                    {"name": "t", "entrypoint": "mod:t", "capability_id": "x.y", "extra_field": "ignored"},
                 ],
             },
         }
         entry = manifest_to_entry(manifest, "sha256:abc123")
-        assert "capability_id" not in entry["tools"][0]
-        assert "extra_field" not in entry["tools"][0]
+        assert entry["tools"][0] == {"name": "t", "entrypoint": "mod:t"}
 
     def test_defaults_for_missing_fields(self):
         from agentnode_sdk.cli.publish import manifest_to_entry

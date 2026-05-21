@@ -143,6 +143,7 @@ class InstallMetadata:
     dependencies: list[DependencyInfo] = field(default_factory=list)
     permissions: PermissionsInfo | None = None
     agent: dict | None = None
+    signatures: dict | None = None
 
 
 @dataclass

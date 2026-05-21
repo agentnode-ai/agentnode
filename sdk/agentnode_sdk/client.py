@@ -502,6 +502,7 @@ class AgentNodeClient:
             dependencies=deps,
             permissions=perms,
             agent=data.get("agent"),
+            signatures=data.get("_signatures"),
         )
 
     # --- Download ---
@@ -711,6 +712,7 @@ class AgentNodeClient:
             trust_level=trust_level,
             permissions=_permissions_to_dict(meta.permissions),
             agent=meta.agent,
+            signatures=meta.signatures,
         )
 
         return InstallResult(
