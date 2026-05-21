@@ -650,3 +650,111 @@ def test_inspect_json_includes_risk(capsys, saved_config, lockfile_with_packages
     assert data["risk"]["level"] in ("low", "medium", "high")
     assert isinstance(data["risk"]["score"], int)
     assert isinstance(data["risk"]["signals"], list)
+
+
+# ---------------------------------------------------------------------------
+# Inspect — integrity status (Phase 15.5)
+# ---------------------------------------------------------------------------
+
+def _write_lockfile_with_entry(env_path, slug, entry):
+    from agentnode_sdk.installer import LOCKFILE_VERSION
+    lock_path = env_path / "agentnode.lock"
+    lock_path.write_text(json.dumps({
+        "lockfile_version": LOCKFILE_VERSION,
+        "updated_at": "2026-05-21T00:00:00+00:00",
+        "packages": {slug: entry},
+    }, indent=2), encoding="utf-8")
+
+
+def test_inspect_integrity_verified(capsys, saved_config, isolated_env):
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = {
+        "version": "1.0.0", "package_type": "toolpack", "runtime": "python",
+        "entrypoint": "my_pack.tool", "artifact_hash": "sha256:abc",
+        "tools": [], "permissions": {"network_level": "none"},
+        "installed_at": "2026-05-21T00:00:00+00:00", "trust_level": "verified",
+        "source": "sdk", "capability_ids": [],
+        "prompts": [], "resources": [], "connector": None, "agent": None,
+    }
+    _write_lockfile_with_entry(isolated_env, "test-pack", seal_entry(entry))
+    code = main(["inspect", "test-pack"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Integrity" in out
+    assert "verified" in out
+
+
+def test_inspect_integrity_missing(capsys, saved_config, isolated_env):
+    entry = {
+        "version": "1.0.0", "package_type": "toolpack", "runtime": "python",
+        "entrypoint": "my_pack.tool", "artifact_hash": "sha256:abc",
+        "tools": [], "permissions": {"network_level": "none"},
+        "installed_at": "2026-05-21T00:00:00+00:00", "trust_level": "verified",
+        "source": "sdk", "capability_ids": [],
+        "prompts": [], "resources": [], "connector": None, "agent": None,
+    }
+    _write_lockfile_with_entry(isolated_env, "test-pack", entry)
+    code = main(["inspect", "test-pack"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Integrity" in out
+    assert "missing" in out
+    assert "agentnode lock seal" in out
+
+
+def test_inspect_integrity_mismatch(capsys, saved_config, isolated_env):
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = {
+        "version": "1.0.0", "package_type": "toolpack", "runtime": "python",
+        "entrypoint": "my_pack.tool", "artifact_hash": "sha256:abc",
+        "tools": [], "permissions": {"network_level": "none"},
+        "installed_at": "2026-05-21T00:00:00+00:00", "trust_level": "verified",
+        "source": "sdk", "capability_ids": [],
+        "prompts": [], "resources": [], "connector": None, "agent": None,
+    }
+    sealed = seal_entry(entry)
+    sealed["entrypoint"] = "tampered.module"
+    _write_lockfile_with_entry(isolated_env, "test-pack", sealed)
+    code = main(["inspect", "test-pack"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Integrity" in out
+    assert "MISMATCH" in out
+    assert "agentnode lock verify" in out
+
+
+def test_inspect_json_includes_integrity(capsys, saved_config, isolated_env):
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = {
+        "version": "1.0.0", "package_type": "toolpack", "runtime": "python",
+        "entrypoint": "my_pack.tool", "artifact_hash": "sha256:abc",
+        "tools": [], "permissions": {"network_level": "none"},
+        "installed_at": "2026-05-21T00:00:00+00:00", "trust_level": "verified",
+        "source": "sdk", "capability_ids": [],
+        "prompts": [], "resources": [], "connector": None, "agent": None,
+    }
+    _write_lockfile_with_entry(isolated_env, "test-pack", seal_entry(entry))
+    code = main(["inspect", "test-pack", "--json"])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert "integrity" in data
+    assert data["integrity"]["status"] == "verified"
+    assert data["integrity"]["algorithm"] == "sha256"
+    assert data["integrity"]["canonical_version"] == 1
+
+
+def test_inspect_json_integrity_missing(capsys, saved_config, isolated_env):
+    entry = {
+        "version": "1.0.0", "package_type": "toolpack", "runtime": "python",
+        "entrypoint": "my_pack.tool", "artifact_hash": "sha256:abc",
+        "tools": [], "permissions": {"network_level": "none"},
+        "installed_at": "2026-05-21T00:00:00+00:00", "trust_level": "verified",
+        "source": "sdk", "capability_ids": [],
+        "prompts": [], "resources": [], "connector": None, "agent": None,
+    }
+    _write_lockfile_with_entry(isolated_env, "test-pack", entry)
+    code = main(["inspect", "test-pack", "--json"])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["integrity"]["status"] == "missing"
+    assert "algorithm" not in data["integrity"]

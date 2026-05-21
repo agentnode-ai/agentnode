@@ -123,6 +123,12 @@ def run_tool(
     # Read lockfile entry
     entry = _get_lockfile_entry(slug, lockfile_path)
 
+    # Integrity check — warn or deny before any dispatch
+    if entry:
+        integrity_deny = _check_entry_integrity(slug, entry)
+        if integrity_deny is not None:
+            return integrity_deny
+
     # upgrade is a distribution/relationship type, NOT an execution model.
     # Runner and Policy ignore it. UI shows as "Add-on".
     if entry.get("package_type") == "upgrade":
@@ -336,22 +342,22 @@ def _audit_runtime_run(
 def _get_lockfile_entry(slug: str, lockfile_path: Path | None) -> dict:
     """Read the lockfile entry for a package."""
     data = read_lockfile(lockfile_path)
-    entry = data.get("packages", {}).get(slug, {})
-    if entry:
-        _check_entry_integrity(slug, entry)
-    return entry
+    return data.get("packages", {}).get(slug, {})
 
 
-def _check_entry_integrity(slug: str, entry: dict) -> None:
-    """Warn and audit on lockfile integrity mismatch.  Side-effect only."""
+def _check_entry_integrity(slug: str, entry: dict) -> RunToolResult | None:
+    """Check lockfile entry integrity.  Returns a deny result in strict mode."""
     from agentnode_sdk.lock_integrity import verify_entry
+    from agentnode_sdk.guard import _is_strict
 
     result = verify_entry(slug, entry)
 
     if result.status in ("verified", "missing"):
-        return
+        return None
 
     if result.status == "mismatch":
+        strict = _is_strict()
+        action = "deny" if strict else "warn"
         logger.warning(
             "Lockfile integrity mismatch for '%s'. "
             "Run 'agentnode lock verify' for details.",
@@ -360,7 +366,7 @@ def _check_entry_integrity(slug: str, entry: dict) -> None:
         try:
             audit_decision(
                 PolicyResult(
-                    action="warn",
+                    action=action,
                     reason="lockfile_integrity_mismatch",
                     source="lock_integrity",
                 ),
@@ -373,6 +379,18 @@ def _check_entry_integrity(slug: str, entry: dict) -> None:
             )
         except Exception:
             logger.debug("Failed to audit integrity mismatch", exc_info=True)
+
+        if strict:
+            return RunToolResult(
+                success=False,
+                error=(
+                    f"Lockfile integrity check failed for '{slug}' (strict mode). "
+                    "Run 'agentnode lock seal' after verifying the change is intentional."
+                ),
+                mode_used="integrity_denied",
+            )
+
+    return None
 
 
 def _audit_guard_decision(

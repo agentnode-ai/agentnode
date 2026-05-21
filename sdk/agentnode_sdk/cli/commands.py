@@ -1434,6 +1434,16 @@ def cmd_inspect(slug: str, *, json_output: bool = False) -> int:
     print(kv("Runtime", pkg.get("runtime", "?")))
     print(kv("Installed at", pkg.get("installed_at", "?")))
 
+    # Integrity
+    from agentnode_sdk.lock_integrity import verify_entry
+    integrity_result = verify_entry(slug, pkg)
+    if integrity_result.status == "verified":
+        print(kv("Integrity", "verified"))
+    elif integrity_result.status == "missing":
+        print(kv("Integrity", "missing (run 'agentnode lock seal')"))
+    elif integrity_result.status == "mismatch":
+        print(kv("Integrity", "MISMATCH (run 'agentnode lock verify')"))
+
     # Connector
     connector = pkg.get("connector")
     if connector and isinstance(connector, dict):
@@ -1796,6 +1806,13 @@ def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
     except Exception:
         policy_dict = None
 
+    from agentnode_sdk.lock_integrity import verify_entry, CANONICAL_VERSION
+    integrity_result = verify_entry(slug, pkg)
+    integrity_dict = {"status": integrity_result.status}
+    if integrity_result.status != "missing":
+        integrity_dict["algorithm"] = "sha256"
+        integrity_dict["canonical_version"] = CANONICAL_VERSION
+
     return {
         "slug": slug,
         "version": pkg.get("version"),
@@ -1804,6 +1821,7 @@ def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
         "last_trust_check": pkg.get("last_trust_check"),
         "runtime": runtime,
         "installed_at": pkg.get("installed_at"),
+        "integrity": integrity_dict,
         "permissions": perms,
         "capability_ids": pkg.get("capability_ids", []),
         "tools": [t.get("name", "?") for t in pkg.get("tools", [])],
