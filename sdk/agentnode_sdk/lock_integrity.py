@@ -4,10 +4,12 @@ Computes a per-entry SHA256 hash over canonical (immutable) fields.
 Mutable fields (trust_level, installed_at, etc.) are excluded so that
 legitimate runtime updates (TTL refresh) don't break integrity.
 
-Phase 15.1: core module only — no CLI, no runtime integration, no audit.
-
 Security note: This module detects WHETHER an entry changed, not WHO
-changed it. Publisher/registry authentication is Phase 16+.
+changed it. Publisher/registry authentication is in ``signature.py``.
+
+canonical_version history:
+- v1: 15 canonical fields (Phase 15). No _signatures awareness.
+- v2: v1 fields + _signatures (Phase 16). Detects signature/key swap.
 
 Known limitations:
 - trust_level is mutable and excluded from the hash. Local manipulation
@@ -26,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-CANONICAL_VERSION = 1
+CANONICAL_VERSION = 2
 
 CANONICAL_FIELDS = (
     "version",
@@ -44,6 +46,8 @@ CANONICAL_FIELDS = (
     "resources",
     "assets",
 )
+
+CANONICAL_FIELDS_V2 = CANONICAL_FIELDS + ("_signatures",)
 
 MUTABLE_FIELDS = (
     "installed_at",
@@ -88,23 +92,41 @@ class SensitiveChange:
     description: str
 
 
-def _build_canonical(entry: dict) -> dict:
+def _build_canonical(entry: dict, canonical_version: int = 1) -> dict:
     """Extract canonical fields from a lockfile entry.
 
     Missing fields are omitted (not set to null/empty) so that entries
     written before a field existed produce the same hash as entries
     where the field is absent.
+
+    canonical_version=1: Phase 15 fields (no _signatures).
+    canonical_version=2: Phase 15 fields + _signatures.
     """
+    fields = CANONICAL_FIELDS_V2 if canonical_version >= 2 else CANONICAL_FIELDS
     canonical = {}
-    for f in CANONICAL_FIELDS:
+    for f in fields:
         if f in entry and entry[f] is not None:
             canonical[f] = entry[f]
     return canonical
 
 
-def compute_integrity(entry: dict) -> dict:
-    """Compute the ``_integrity`` dict for a lockfile entry."""
-    canonical = _build_canonical(entry)
+def _detect_canonical_version(entry: dict) -> int:
+    """Auto-detect canonical version from entry content."""
+    sigs = entry.get("_signatures")
+    if isinstance(sigs, dict) and len(sigs) > 0:
+        return 2
+    return 1
+
+
+def compute_integrity(entry: dict, *, canonical_version: int | None = None) -> dict:
+    """Compute the ``_integrity`` dict for a lockfile entry.
+
+    If *canonical_version* is ``None``, auto-detect from entry content:
+    entries with ``_signatures`` get v2, others get v1.
+    """
+    if canonical_version is None:
+        canonical_version = _detect_canonical_version(entry)
+    canonical = _build_canonical(entry, canonical_version=canonical_version)
     payload = json.dumps(
         canonical,
         sort_keys=True,
@@ -114,7 +136,7 @@ def compute_integrity(entry: dict) -> dict:
     digest = hashlib.sha256(payload).hexdigest()
     return {
         "algorithm": "sha256",
-        "canonical_version": CANONICAL_VERSION,
+        "canonical_version": canonical_version,
         "hash": digest,
     }
 
@@ -131,16 +153,22 @@ def seal_entry(entry: dict) -> dict:
 
 
 def verify_entry(slug: str, entry: dict) -> IntegrityResult:
-    """Verify a single lockfile entry's integrity."""
+    """Verify a single lockfile entry's integrity.
+
+    Uses the stored ``canonical_version`` to pick the field list,
+    so v1 entries are verified against v1 fields and v2 entries
+    against v2 fields.
+    """
     integrity = entry.get("_integrity")
     if integrity is None:
         return IntegrityResult(status="missing", slug=slug)
 
     stored_hash = integrity.get("hash", "")
+    stored_version = integrity.get("canonical_version", 1)
 
     clean = dict(entry)
     clean.pop("_integrity", None)
-    expected = compute_integrity(clean)
+    expected = compute_integrity(clean, canonical_version=stored_version)
 
     if expected["hash"] == stored_hash:
         return IntegrityResult(status="verified", slug=slug)

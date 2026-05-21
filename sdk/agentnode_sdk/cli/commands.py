@@ -1806,12 +1806,13 @@ def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
     except Exception:
         policy_dict = None
 
-    from agentnode_sdk.lock_integrity import verify_entry, CANONICAL_VERSION
+    from agentnode_sdk.lock_integrity import verify_entry
     integrity_result = verify_entry(slug, pkg)
     integrity_dict = {"status": integrity_result.status}
     if integrity_result.status != "missing":
+        stored = pkg.get("_integrity") or {}
         integrity_dict["algorithm"] = "sha256"
-        integrity_dict["canonical_version"] = CANONICAL_VERSION
+        integrity_dict["canonical_version"] = stored.get("canonical_version", 1)
 
     return {
         "slug": slug,

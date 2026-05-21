@@ -15,6 +15,7 @@ import pytest
 
 from agentnode_sdk.lock_integrity import (
     CANONICAL_FIELDS,
+    CANONICAL_FIELDS_V2,
     CANONICAL_VERSION,
     MUTABLE_FIELDS,
     PERMISSION_ESCALATIONS,
@@ -22,6 +23,7 @@ from agentnode_sdk.lock_integrity import (
     IntegrityResult,
     SensitiveChange,
     _build_canonical,
+    _detect_canonical_version,
     compute_integrity,
     detect_sensitive_changes,
     seal_entry,
@@ -147,7 +149,7 @@ class TestHashDeterminism:
     def test_integrity_shape(self):
         result = compute_integrity(_make_entry())
         assert result["algorithm"] == "sha256"
-        assert result["canonical_version"] == CANONICAL_VERSION
+        assert result["canonical_version"] == 1
         assert isinstance(result["hash"], str)
         assert len(result["hash"]) == 64  # SHA256 hex
 
@@ -395,7 +397,7 @@ class TestSealEntry:
         sealed = seal_entry(e)
         assert "_integrity" in sealed
         assert sealed["_integrity"]["algorithm"] == "sha256"
-        assert sealed["_integrity"]["canonical_version"] == CANONICAL_VERSION
+        assert sealed["_integrity"]["canonical_version"] == 1
         assert len(sealed["_integrity"]["hash"]) == 64
 
     def test_idempotent(self):
@@ -592,7 +594,7 @@ class TestFieldClassification:
     """Every field in a real lockfile entry must be either canonical,
     mutable, or the _integrity seal itself."""
 
-    KNOWN_FIELDS = set(CANONICAL_FIELDS) | set(MUTABLE_FIELDS) | {"_integrity"}
+    KNOWN_FIELDS = set(CANONICAL_FIELDS) | set(MUTABLE_FIELDS) | {"_integrity", "_signatures"}
 
     def test_toolpack_entry_fields_classified(self):
         e = seal_entry(_make_entry())
@@ -860,3 +862,136 @@ class TestInstallerIntegrity:
         lock = read_lockfile(self.lf)
         entry = lock["packages"]["unsealed-pack"]
         assert "_integrity" not in entry
+
+
+# ---------------------------------------------------------------------------
+# Canonical version v2 — Phase 16.1
+# ---------------------------------------------------------------------------
+
+def _make_signatures_block():
+    """Return a realistic _signatures dict for testing."""
+    return {
+        "publisher": [{
+            "key_id": "ed25519:a1b2c3d4",
+            "algorithm": "ed25519",
+            "signature": "dGVzdHNpZw==",
+            "public_key": "dGVzdGtleQ==",
+            "canonical_version": 1,
+            "signed_at": "2026-05-21T12:00:00+00:00",
+        }],
+    }
+
+
+class TestCanonicalVersionV2:
+    """canonical_version v2 includes _signatures in the integrity hash."""
+
+    def test_v2_constant(self):
+        assert CANONICAL_VERSION == 2
+
+    def test_v2_fields_include_signatures(self):
+        assert "_signatures" in CANONICAL_FIELDS_V2
+        assert "_signatures" not in CANONICAL_FIELDS
+
+    def test_detect_version_without_signatures(self):
+        e = _make_entry()
+        assert _detect_canonical_version(e) == 1
+
+    def test_detect_version_with_signatures(self):
+        e = _make_entry()
+        e["_signatures"] = _make_signatures_block()
+        assert _detect_canonical_version(e) == 2
+
+    def test_detect_version_empty_signatures(self):
+        e = _make_entry()
+        e["_signatures"] = {}
+        assert _detect_canonical_version(e) == 1
+
+    def test_detect_version_none_signatures(self):
+        e = _make_entry()
+        e["_signatures"] = None
+        assert _detect_canonical_version(e) == 1
+
+    def test_v1_hash_excludes_signatures(self):
+        e = _make_entry()
+        h1 = compute_integrity(e, canonical_version=1)["hash"]
+        e["_signatures"] = _make_signatures_block()
+        h2 = compute_integrity(e, canonical_version=1)["hash"]
+        assert h1 == h2
+
+    def test_v2_hash_includes_signatures(self):
+        e = _make_entry()
+        h_no_sig = compute_integrity(e, canonical_version=2)["hash"]
+        e["_signatures"] = _make_signatures_block()
+        h_with_sig = compute_integrity(e, canonical_version=2)["hash"]
+        assert h_no_sig != h_with_sig
+
+    def test_seal_without_signatures_produces_v1(self):
+        e = _make_entry()
+        sealed = seal_entry(e)
+        assert sealed["_integrity"]["canonical_version"] == 1
+
+    def test_seal_with_signatures_produces_v2(self):
+        e = _make_entry()
+        e["_signatures"] = _make_signatures_block()
+        sealed = seal_entry(e)
+        assert sealed["_integrity"]["canonical_version"] == 2
+
+    def test_v1_entry_verifies_against_v1_fields(self):
+        e = _make_entry()
+        sealed = seal_entry(e)
+        assert sealed["_integrity"]["canonical_version"] == 1
+        assert verify_entry("test", sealed).status == "verified"
+
+    def test_v2_entry_verifies_against_v2_fields(self):
+        e = _make_entry()
+        e["_signatures"] = _make_signatures_block()
+        sealed = seal_entry(e)
+        assert sealed["_integrity"]["canonical_version"] == 2
+        assert verify_entry("test", sealed).status == "verified"
+
+    def test_signature_swap_causes_v2_mismatch(self):
+        """Swapping _signatures on a v2 entry must break integrity."""
+        e = _make_entry()
+        e["_signatures"] = _make_signatures_block()
+        sealed = seal_entry(e)
+        sealed["_signatures"]["publisher"][0]["public_key"] = "YXR0YWNrZXI="
+        assert verify_entry("test", sealed).status == "mismatch"
+
+    def test_adding_signatures_to_v1_entry_causes_mismatch(self):
+        """If an attacker adds _signatures to a v1 entry, the v1 hash
+        is still verified against v1 fields (which exclude _signatures).
+        The entry itself is not broken — but the _integrity is v1 so
+        the signature is simply not integrity-protected. This is expected:
+        the entry was sealed before signatures existed."""
+        e = _make_entry()
+        sealed = seal_entry(e)
+        assert sealed["_integrity"]["canonical_version"] == 1
+        sealed["_signatures"] = _make_signatures_block()
+        assert verify_entry("test", sealed).status == "verified"
+
+    def test_v2_idempotent_seal(self):
+        e = _make_entry()
+        e["_signatures"] = _make_signatures_block()
+        sealed1 = seal_entry(e)
+        sealed2 = seal_entry(sealed1)
+        assert sealed1["_integrity"]["hash"] == sealed2["_integrity"]["hash"]
+        assert sealed1["_integrity"]["canonical_version"] == 2
+
+    def test_v2_survives_json_roundtrip(self):
+        e = _make_entry()
+        e["_signatures"] = _make_signatures_block()
+        sealed = seal_entry(e)
+        roundtripped = json.loads(json.dumps(sealed))
+        assert verify_entry("test", roundtripped).status == "verified"
+
+    def test_build_canonical_v1_excludes_signatures(self):
+        e = _make_entry()
+        e["_signatures"] = _make_signatures_block()
+        canonical = _build_canonical(e, canonical_version=1)
+        assert "_signatures" not in canonical
+
+    def test_build_canonical_v2_includes_signatures(self):
+        e = _make_entry()
+        e["_signatures"] = _make_signatures_block()
+        canonical = _build_canonical(e, canonical_version=2)
+        assert "_signatures" in canonical
