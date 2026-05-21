@@ -287,3 +287,279 @@ class TestCmdPublish:
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("AGENTNODE_API_URL", None)
             assert _resolve_api_base() == DEFAULT_BASE_URL
+
+
+# ---------------------------------------------------------------------------
+# manifest_to_entry
+# ---------------------------------------------------------------------------
+
+class TestManifestToEntry:
+    def test_maps_basic_fields(self):
+        from agentnode_sdk.cli.publish import manifest_to_entry
+        entry = manifest_to_entry(MINIMAL_MANIFEST, "sha256:abc123")
+        assert entry["version"] == "1.0.0"
+        assert entry["package_type"] == "toolpack"
+        assert entry["artifact_hash"] == "sha256:abc123"
+
+    def test_maps_tools_from_capabilities(self):
+        from agentnode_sdk.cli.publish import manifest_to_entry
+        manifest = {
+            **MINIMAL_MANIFEST,
+            "capabilities": {
+                "tools": [
+                    {"name": "do_thing", "entrypoint": "mod:do_thing", "action_type": "read"},
+                ],
+            },
+        }
+        entry = manifest_to_entry(manifest, "sha256:abc123")
+        assert len(entry["tools"]) == 1
+        assert entry["tools"][0]["name"] == "do_thing"
+        assert entry["tools"][0]["entrypoint"] == "mod:do_thing"
+        assert entry["tools"][0]["action_type"] == "read"
+
+    def test_strips_extra_tool_fields(self):
+        from agentnode_sdk.cli.publish import manifest_to_entry
+        manifest = {
+            **MINIMAL_MANIFEST,
+            "capabilities": {
+                "tools": [
+                    {"name": "t", "capability_id": "x.y", "extra_field": "ignored"},
+                ],
+            },
+        }
+        entry = manifest_to_entry(manifest, "sha256:abc123")
+        assert "capability_id" not in entry["tools"][0]
+        assert "extra_field" not in entry["tools"][0]
+
+    def test_defaults_for_missing_fields(self):
+        from agentnode_sdk.cli.publish import manifest_to_entry
+        minimal = {"package_id": "x", "version": "1.0.0"}
+        entry = manifest_to_entry(minimal, "sha256:abc")
+        assert entry["runtime"] == "python"
+        assert entry["entrypoint"] == ""
+        assert entry["tools"] == []
+        assert entry["prompts"] == []
+
+    def test_maps_mcp_fields(self):
+        from agentnode_sdk.cli.publish import manifest_to_entry
+        manifest = {
+            **MINIMAL_MANIFEST,
+            "runtime": "mcp",
+            "mcp_command": ["python", "-m", "server"],
+        }
+        entry = manifest_to_entry(manifest, "sha256:abc")
+        assert entry["runtime"] == "mcp"
+        assert entry["mcp_command"] == ["python", "-m", "server"]
+
+    def test_maps_remote_fields(self):
+        from agentnode_sdk.cli.publish import manifest_to_entry
+        manifest = {
+            **MINIMAL_MANIFEST,
+            "runtime": "remote",
+            "remote_endpoint": "https://api.example.com/v1",
+            "connector": {"provider": "slack", "auth_type": "oauth2"},
+        }
+        entry = manifest_to_entry(manifest, "sha256:abc")
+        assert entry["remote_endpoint"] == "https://api.example.com/v1"
+        assert entry["connector"]["provider"] == "slack"
+
+    def test_maps_skill_prompts(self):
+        from agentnode_sdk.cli.publish import manifest_to_entry
+        manifest = {
+            "package_id": "my-skill",
+            "version": "1.0.0",
+            "package_type": "skill",
+            "capabilities": {
+                "prompts": [{"name": "greet", "template": "greet.md"}],
+            },
+            "assets": [{"path": "greet.md", "type": "template"}],
+        }
+        entry = manifest_to_entry(manifest, "sha256:abc")
+        assert entry["prompts"] == [{"name": "greet", "template": "greet.md"}]
+        assert entry["assets"] == [{"path": "greet.md", "type": "template"}]
+
+
+# ---------------------------------------------------------------------------
+# _sign_for_publish
+# ---------------------------------------------------------------------------
+
+class TestSignForPublish:
+    def test_returns_valid_signature_block(self, tmp_path, monkeypatch):
+        from agentnode_sdk.cli.publish import _sign_for_publish
+        monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path))
+
+        sig = _sign_for_publish("test-pack", MINIMAL_MANIFEST, b"artifact-data")
+        assert sig["algorithm"] == "ed25519"
+        assert sig["key_id"].startswith("ed25519:")
+        assert sig["canonical_version"] == 1
+        assert "signature" in sig
+        assert "public_key" in sig
+        assert "signed_at" in sig
+
+    def test_signature_verifies(self, tmp_path, monkeypatch):
+        from agentnode_sdk.cli.publish import _sign_for_publish, manifest_to_entry
+        from agentnode_sdk.signature import verify_entry_signature, SignatureStatus
+        import hashlib
+
+        monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path))
+
+        artifact = b"some-artifact-bytes"
+        sig = _sign_for_publish("test-pack", MINIMAL_MANIFEST, artifact)
+
+        artifact_hash = f"sha256:{hashlib.sha256(artifact).hexdigest()}"
+        entry = manifest_to_entry(MINIMAL_MANIFEST, artifact_hash)
+        entry["_signatures"] = {"publisher": [sig]}
+
+        result = verify_entry_signature("test-pack", entry)
+        assert result.status == SignatureStatus.VALID
+
+    def test_creates_signing_key_if_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path))
+        key_path = tmp_path / "signing_key"
+        assert not key_path.exists()
+
+        from agentnode_sdk.cli.publish import _sign_for_publish
+        _sign_for_publish("test-pack", MINIMAL_MANIFEST, b"data")
+        assert key_path.exists()
+
+    def test_reuses_existing_signing_key(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path))
+
+        from agentnode_sdk.cli.publish import _sign_for_publish
+        sig1 = _sign_for_publish("test-pack", MINIMAL_MANIFEST, b"data")
+        sig2 = _sign_for_publish("test-pack", MINIMAL_MANIFEST, b"data")
+        assert sig1["key_id"] == sig2["key_id"]
+        assert sig1["public_key"] == sig2["public_key"]
+
+    def test_private_key_not_in_signature(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path))
+
+        from agentnode_sdk.cli.publish import _sign_for_publish
+        from agentnode_sdk.signing_key import get_signing_key_path
+        sig = _sign_for_publish("test-pack", MINIMAL_MANIFEST, b"data")
+
+        sig_json = json.dumps(sig)
+        key_pem = (tmp_path / "signing_key").read_text()
+        assert "PRIVATE" not in sig_json
+        for line in key_pem.strip().split("\n"):
+            if line.startswith("-----"):
+                continue
+            assert line not in sig_json
+
+    def test_wrong_slug_fails_verification(self, tmp_path, monkeypatch):
+        from agentnode_sdk.cli.publish import _sign_for_publish, manifest_to_entry
+        from agentnode_sdk.signature import verify_entry_signature, SignatureStatus
+        import hashlib
+
+        monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path))
+
+        artifact = b"artifact"
+        sig = _sign_for_publish("real-slug", MINIMAL_MANIFEST, artifact)
+
+        artifact_hash = f"sha256:{hashlib.sha256(artifact).hexdigest()}"
+        entry = manifest_to_entry(MINIMAL_MANIFEST, artifact_hash)
+        entry["_signatures"] = {"publisher": [sig]}
+
+        result = verify_entry_signature("wrong-slug", entry)
+        assert result.status == SignatureStatus.INVALID
+
+
+# ---------------------------------------------------------------------------
+# cmd_publish with signing
+# ---------------------------------------------------------------------------
+
+class TestCmdPublishSigning:
+    def test_publish_request_contains_signatures(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path / "config"))
+
+        _write_manifest(tmp_path)
+        (tmp_path / "tools.py").write_text("def run(): pass")
+
+        captured_manifest = {}
+        mock_resp = {
+            "slug": "test-pack",
+            "version": "1.0.0",
+            "message": "Published",
+        }
+
+        def capture_post(manifest_json, artifact_bytes, api_key):
+            captured_manifest.update(json.loads(manifest_json))
+            return mock_resp
+
+        with patch("agentnode_sdk.cli.publish._post_publish", side_effect=capture_post):
+            rc = cmd_publish(str(tmp_path), token="test-key")
+
+        assert rc == 0
+        assert "_signatures" in captured_manifest
+        pub = captured_manifest["_signatures"]["publisher"]
+        assert isinstance(pub, list)
+        assert len(pub) == 1
+        assert pub[0]["algorithm"] == "ed25519"
+        assert pub[0]["key_id"].startswith("ed25519:")
+
+    def test_publish_signature_verifies_against_canonical(
+        self, tmp_path, capsys, monkeypatch,
+    ):
+        monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path / "config"))
+
+        manifest = {
+            **MINIMAL_MANIFEST,
+            "entrypoint": "test_pack.tool",
+            "capabilities": {
+                "tools": [{"name": "run", "entrypoint": "test_pack.tool:run", "capability_id": "test.run"}],
+            },
+        }
+        _write_manifest(tmp_path, manifest)
+        (tmp_path / "tools.py").write_text("def run(): pass")
+
+        captured = {}
+
+        def capture_post(manifest_json, artifact_bytes, api_key):
+            captured["manifest"] = json.loads(manifest_json)
+            captured["artifact"] = artifact_bytes
+            return {"slug": "test-pack", "version": "1.0.0", "message": "ok"}
+
+        with patch("agentnode_sdk.cli.publish._post_publish", side_effect=capture_post):
+            rc = cmd_publish(str(tmp_path), token="test-key")
+
+        assert rc == 0
+
+        import hashlib
+        from agentnode_sdk.cli.publish import manifest_to_entry
+        from agentnode_sdk.signature import verify_entry_signature, SignatureStatus
+
+        artifact_hash = f"sha256:{hashlib.sha256(captured['artifact']).hexdigest()}"
+        entry = manifest_to_entry(captured["manifest"], artifact_hash)
+        entry["_signatures"] = captured["manifest"]["_signatures"]
+
+        result = verify_entry_signature("test-pack", entry)
+        assert result.status == SignatureStatus.VALID
+
+    def test_signing_failure_warns_but_publishes(self, tmp_path, capsys, monkeypatch):
+        _write_manifest(tmp_path)
+        (tmp_path / "tools.py").write_text("def run(): pass")
+
+        mock_resp = {
+            "slug": "test-pack",
+            "version": "1.0.0",
+            "message": "Published",
+        }
+
+        with patch("agentnode_sdk.cli.publish._sign_for_publish", side_effect=RuntimeError("key error")):
+            with patch("agentnode_sdk.cli.publish._post_publish", return_value=mock_resp):
+                rc = cmd_publish(str(tmp_path), token="test-key")
+
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "Could not sign" in err
+
+    def test_dry_run_does_not_sign(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path / "config"))
+        _write_manifest(tmp_path)
+        (tmp_path / "tools.py").write_text("def run(): pass")
+
+        with patch("agentnode_sdk.cli.publish._sign_for_publish") as mock_sign:
+            rc = cmd_publish(str(tmp_path), dry_run=True)
+
+        assert rc == 0
+        mock_sign.assert_not_called()

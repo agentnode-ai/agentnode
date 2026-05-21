@@ -1,11 +1,14 @@
 """agentnode publish — publish a package to the AgentNode registry."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import io
 import json
 import os
 import sys
 import tarfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agentnode_sdk.cli.output import bold, dim, kv, section
@@ -156,6 +159,87 @@ def _build_artifact(pkg_path: Path, arcname: str) -> tuple[bytes, int]:
             print(f"  Warning: large file in artifact: {lf}", file=sys.stderr)
 
     return buf.getvalue(), file_count
+
+
+def manifest_to_entry(manifest: dict, artifact_hash: str) -> dict:
+    """Map a publish manifest to a lockfile-entry-equivalent dict.
+
+    Produces the same canonical field values that ``install_package()``
+    writes, so ``build_sign_payload(slug, entry)`` returns the same
+    payload at publish time and at install/verify time.
+    """
+    caps = manifest.get("capabilities", {})
+    if not isinstance(caps, dict):
+        caps = {}
+
+    tools_raw = caps.get("tools", [])
+    tools = []
+    for t in (tools_raw if isinstance(tools_raw, list) else []):
+        if isinstance(t, dict) and t.get("name"):
+            tool: dict = {"name": t["name"]}
+            if t.get("entrypoint"):
+                tool["entrypoint"] = t["entrypoint"]
+            if t.get("action_type"):
+                tool["action_type"] = t["action_type"]
+            tools.append(tool)
+
+    prompts_raw = caps.get("prompts", [])
+    prompts = prompts_raw if isinstance(prompts_raw, list) else []
+
+    return {
+        "version": manifest.get("version"),
+        "package_type": manifest.get("package_type", "toolpack"),
+        "runtime": manifest.get("runtime", "python"),
+        "entrypoint": manifest.get("entrypoint", ""),
+        "artifact_hash": artifact_hash,
+        "tools": tools,
+        "permissions": manifest.get("permissions"),
+        "mcp_command": manifest.get("mcp_command"),
+        "remote_endpoint": manifest.get("remote_endpoint"),
+        "connector": manifest.get("connector"),
+        "agent": manifest.get("agent"),
+        "prompts": prompts,
+        "resources": manifest.get("resources", []),
+        "assets": manifest.get("assets"),
+    }
+
+
+def _sign_for_publish(
+    slug: str,
+    manifest: dict,
+    artifact_bytes: bytes,
+) -> dict:
+    """Compute publisher signature block for a publish request.
+
+    Returns the ``_signatures.publisher[0]`` dict ready to be embedded
+    in the manifest before sending to the registry.
+    """
+    from agentnode_sdk.signature import build_sign_payload
+    from agentnode_sdk.signing_key import (
+        compute_key_id,
+        get_or_create_signing_key,
+        sign_payload,
+    )
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    artifact_hash = f"sha256:{hashlib.sha256(artifact_bytes).hexdigest()}"
+    entry = manifest_to_entry(manifest, artifact_hash)
+    payload = build_sign_payload(slug, entry)
+
+    private_key = get_or_create_signing_key()
+    pub_bytes = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+    sig_bytes = sign_payload(payload, private_key)
+    key_id = compute_key_id(pub_bytes)
+
+    return {
+        "key_id": key_id,
+        "algorithm": "ed25519",
+        "signature": base64.b64encode(sig_bytes).decode(),
+        "public_key": base64.b64encode(pub_bytes).decode(),
+        "canonical_version": 1,
+        "signed_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _resolve_api_base() -> str:
@@ -309,6 +393,13 @@ def cmd_publish(
             file=sys.stderr,
         )
         return 1
+
+    try:
+        sig_block = _sign_for_publish(pkg_id, manifest, artifact_bytes)
+        manifest["_signatures"] = {"publisher": [sig_block]}
+        print(f"  Signed        {sig_block['key_id']}")
+    except Exception as e:
+        print(f"  Warning: Could not sign package: {e}", file=sys.stderr)
 
     manifest_json = json.dumps(manifest, default=str)
 
