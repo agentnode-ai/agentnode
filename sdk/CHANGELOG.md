@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.10.0 — Registry Response Authenticity
+
+Cryptographic verification of registry API responses. The SDK no longer
+trusts registry metadata based solely on TLS transport — trust-critical
+responses are verified against pinned Ed25519 registry keys.
+
+This closes the first-install trust bootstrap gap: a compromised registry
+(or MitM with a valid cert) can no longer serve an attacker's public key
+to hijack publisher signature verification.
+
+### Added
+
+- **`registry_trust.py`** — new module for registry response authenticity
+  verification (TG-4). Ed25519 signature verification against pinned
+  registry keys. Exact-byte verification (no canonicalization).
+- **`X-AgentNode-Signature` header verification** — format
+  `algorithm:key_id:base64_signature`. Validated on trust-critical GET
+  endpoints: `/packages/{slug}`, `/packages/{slug}/install-info`,
+  `/publishers/{slug}/keys/{key_id}`.
+- **`RegistryKey` frozen dataclass** — typed trust anchor with key_id,
+  algorithm, public_key, and optional not_after expiry.
+- **`REGISTRY_KEYS` immutable mapping** — compile-time trust anchors
+  using `MappingProxyType`. Cannot be modified at runtime (no env
+  override, no config file, no network fetch).
+- **Activation semantics** — ships in bootstrap mode (empty
+  `REGISTRY_KEYS`, observational). Once keys are pinned in a release,
+  enforcement activates automatically. Missing signature header with
+  enforcement active is a hard deny (downgrade protection).
+- **Differentiated error codes**:
+  - `REGISTRY_SIGNATURE_MISSING` — header stripped (downgrade attack)
+  - `REGISTRY_SIGNATURE_INVALID` — known key, bad signature (tampering)
+  - `REGISTRY_KEY_UNKNOWN` — unrecognized key_id (SDK outdated)
+  - `REGISTRY_KEY_EXPIRED` — key past not_after (SDK outdated)
+- **Client integration** — `_verify_registry_signature()` runs in both
+  `AgentNodeClient._request()` and `AgentNode._handle()` after HTTP
+  status check, before JSON parsing.
+- **Key status integration** — `check_key_status()` verifies registry
+  response authenticity before trusting key status data.
+- **`is_trust_critical(path)`** — explicit regex matching for
+  security-critical endpoints. Trailing slash normalized, no URL
+  decoding or case folding.
+
+### Security
+
+- DoS protection: header ≤ 8192 bytes, signature == 64 bytes, public
+  key == 32 bytes, key_id validated via regex `^[a-z0-9._-]{1,64}$`,
+  algorithm allowlist `{"ed25519"}`.
+- Base64 decoding uses `validate=True` (rejects non-alphabet characters).
+- Registry signatures are transport-bound and ephemeral — not stored in
+  the lockfile (publisher signatures remain the artifact trust anchor).
+- Anti-replay (response freshness) is NOT in scope for v0.10.0 — deferred
+  to TG-5+. TG-4 provides authenticity and integrity only.
+
 ## 0.9.0 — Online Key Verification & Publisher Identity
 
 Online publisher key verification, install-time revocation, and offline

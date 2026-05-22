@@ -295,9 +295,9 @@ inconsistencies (advisory only, never blocks).
 
 See [THREAT_MODEL.md](THREAT_MODEL.md) for the full security model.
 
-### Lockfile Integrity & Publisher Signatures
+### Supply-Chain Protection
 
-Two layers of supply-chain protection:
+Three layers of supply-chain protection:
 
 **Integrity** (v0.7.0) — every installed package entry is sealed with a
 SHA-256 hash over security-critical fields. Post-install tampering is
@@ -307,6 +307,11 @@ detected before any code executes.
 Install verifies the signature before writing the lockfile. Invalid
 signatures block install. Missing signatures warn but don't block
 (gradual adoption).
+
+**Registry Authenticity** (v0.10.0) — trust-critical registry API
+responses are verified against pinned Ed25519 registry keys. Prevents
+a compromised registry from serving attacker-controlled metadata
+(public keys, trust levels, key status).
 
 ```bash
 # Verify integrity + signatures (CI-friendly, exit code 1 on mismatch/invalid)
