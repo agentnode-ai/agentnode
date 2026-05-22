@@ -16,6 +16,7 @@ import pytest
 from agentnode_sdk.lock_integrity import (
     CANONICAL_FIELDS,
     CANONICAL_FIELDS_V2,
+    CANONICAL_FIELDS_V3,
     CANONICAL_VERSION,
     MUTABLE_FIELDS,
     PERMISSION_ESCALATIONS,
@@ -886,7 +887,7 @@ class TestCanonicalVersionV2:
     """canonical_version v2 includes _signatures in the integrity hash."""
 
     def test_v2_constant(self):
-        assert CANONICAL_VERSION == 2
+        assert CANONICAL_VERSION == 3
 
     def test_v2_fields_include_signatures(self):
         assert "_signatures" in CANONICAL_FIELDS_V2
@@ -1313,3 +1314,302 @@ class TestInstallerSignatureVerification:
                 permissions={"network_level": "none"},
                 signatures=sigs,
             )
+
+
+# ---------------------------------------------------------------------------
+# Canonical version v3 — Phase 16.6
+# ---------------------------------------------------------------------------
+
+class TestCanonicalVersionV3:
+    """canonical_version v3 includes publisher_slug in the integrity hash."""
+
+    def test_v3_constant(self):
+        assert CANONICAL_VERSION == 3
+
+    def test_v3_fields_include_publisher_slug(self):
+        assert "publisher_slug" in CANONICAL_FIELDS_V3
+        assert "publisher_slug" not in CANONICAL_FIELDS_V2
+        assert "publisher_slug" not in CANONICAL_FIELDS
+
+    def test_v3_includes_all_v2_fields(self):
+        for f in CANONICAL_FIELDS_V2:
+            assert f in CANONICAL_FIELDS_V3
+
+    def test_detect_version_with_publisher_slug(self):
+        e = _make_entry(publisher_slug="acme-ai")
+        assert _detect_canonical_version(e) == 3
+
+    def test_detect_version_publisher_slug_with_signatures(self):
+        e = _make_entry(publisher_slug="acme-ai")
+        e["_signatures"] = _make_signatures_block()
+        assert _detect_canonical_version(e) == 3
+
+    def test_detect_version_signatures_only_stays_v2(self):
+        e = _make_entry()
+        e["_signatures"] = _make_signatures_block()
+        assert _detect_canonical_version(e) == 2
+
+    def test_detect_version_no_publisher_no_signatures_stays_v1(self):
+        e = _make_entry()
+        assert _detect_canonical_version(e) == 1
+
+    def test_detect_version_empty_string_publisher_slug(self):
+        e = _make_entry(publisher_slug="")
+        assert _detect_canonical_version(e) == 1
+
+    def test_detect_version_whitespace_only_publisher_slug(self):
+        e = _make_entry(publisher_slug="   ")
+        assert _detect_canonical_version(e) == 1
+
+    def test_detect_version_none_publisher_slug(self):
+        e = _make_entry(publisher_slug=None)
+        assert _detect_canonical_version(e) == 1
+
+    def test_v3_hash_includes_publisher_slug(self):
+        e = _make_entry()
+        h_no_pub = compute_integrity(e, canonical_version=3)["hash"]
+        e["publisher_slug"] = "acme-ai"
+        h_with_pub = compute_integrity(e, canonical_version=3)["hash"]
+        assert h_no_pub != h_with_pub
+
+    def test_v2_hash_does_not_include_publisher_slug(self):
+        e = _make_entry()
+        h1 = compute_integrity(e, canonical_version=2)["hash"]
+        e["publisher_slug"] = "acme-ai"
+        h2 = compute_integrity(e, canonical_version=2)["hash"]
+        assert h1 == h2
+
+    def test_v1_hash_unaffected_by_publisher_slug(self):
+        e = _make_entry()
+        h1 = compute_integrity(e, canonical_version=1)["hash"]
+        e["publisher_slug"] = "acme-ai"
+        h2 = compute_integrity(e, canonical_version=1)["hash"]
+        assert h1 == h2
+
+    def test_seal_with_publisher_slug_no_signatures_produces_v3(self):
+        e = _make_entry(publisher_slug="acme-ai")
+        sealed = seal_entry(e)
+        assert sealed["_integrity"]["canonical_version"] == 3
+
+    def test_seal_with_publisher_slug_and_signatures_produces_v3(self):
+        e = _make_entry(publisher_slug="acme-ai")
+        e["_signatures"] = _make_signatures_block()
+        sealed = seal_entry(e)
+        assert sealed["_integrity"]["canonical_version"] == 3
+
+    def test_seal_with_signatures_only_produces_v2(self):
+        e = _make_entry()
+        e["_signatures"] = _make_signatures_block()
+        sealed = seal_entry(e)
+        assert sealed["_integrity"]["canonical_version"] == 2
+
+    def test_seal_without_either_produces_v1(self):
+        e = _make_entry()
+        sealed = seal_entry(e)
+        assert sealed["_integrity"]["canonical_version"] == 1
+
+    def test_v1_entry_still_verifies(self):
+        e = _make_entry()
+        sealed = seal_entry(e)
+        assert sealed["_integrity"]["canonical_version"] == 1
+        assert verify_entry("test", sealed).status == "verified"
+
+    def test_v2_entry_still_verifies(self):
+        e = _make_entry()
+        e["_signatures"] = _make_signatures_block()
+        sealed = seal_entry(e)
+        assert sealed["_integrity"]["canonical_version"] == 2
+        assert verify_entry("test", sealed).status == "verified"
+
+    def test_v3_entry_verifies(self):
+        e = _make_entry(publisher_slug="acme-ai")
+        sealed = seal_entry(e)
+        assert sealed["_integrity"]["canonical_version"] == 3
+        assert verify_entry("test", sealed).status == "verified"
+
+    def test_changing_publisher_slug_causes_v3_mismatch(self):
+        e = _make_entry(publisher_slug="acme-ai")
+        sealed = seal_entry(e)
+        sealed["publisher_slug"] = "evil-corp"
+        assert verify_entry("test", sealed).status == "mismatch"
+
+    def test_v3_idempotent_seal(self):
+        e = _make_entry(publisher_slug="acme-ai")
+        sealed1 = seal_entry(e)
+        sealed2 = seal_entry(sealed1)
+        assert sealed1["_integrity"]["hash"] == sealed2["_integrity"]["hash"]
+        assert sealed1["_integrity"]["canonical_version"] == 3
+
+    def test_v3_survives_json_roundtrip(self):
+        e = _make_entry(publisher_slug="acme-ai")
+        sealed = seal_entry(e)
+        roundtripped = json.loads(json.dumps(sealed))
+        assert verify_entry("test", roundtripped).status == "verified"
+
+    def test_build_canonical_v3_includes_publisher_slug(self):
+        e = _make_entry(publisher_slug="acme-ai")
+        canonical = _build_canonical(e, canonical_version=3)
+        assert "publisher_slug" in canonical
+
+    def test_build_canonical_v2_excludes_publisher_slug(self):
+        e = _make_entry(publisher_slug="acme-ai")
+        canonical = _build_canonical(e, canonical_version=2)
+        assert "publisher_slug" not in canonical
+
+    def test_build_canonical_v1_excludes_publisher_slug(self):
+        e = _make_entry(publisher_slug="acme-ai")
+        canonical = _build_canonical(e, canonical_version=1)
+        assert "publisher_slug" not in canonical
+
+
+# ---------------------------------------------------------------------------
+# Installer publisher_slug storage — Phase 16.6
+# ---------------------------------------------------------------------------
+
+class TestInstallerPublisherSlug:
+    """Verify install_package() stores publisher_slug correctly."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp_lockfile(self, tmp_path, monkeypatch):
+        self.lf = tmp_path / "agentnode.lock"
+        monkeypatch.setenv("AGENTNODE_LOCKFILE", str(self.lf))
+        self.tmp_path = tmp_path
+
+    def _read(self):
+        from agentnode_sdk.installer import read_lockfile
+        return read_lockfile(self.lf)
+
+    def _mock_install(self, monkeypatch):
+        from agentnode_sdk import installer
+        pkg_dir = self.tmp_path / "extracted" / "pkg"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        (pkg_dir / "my_pack").mkdir(exist_ok=True)
+        (pkg_dir / "my_pack" / "tool.py").write_text("def run(): pass")
+        monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
+        monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "abc123def456")
+        monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
+        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
+
+    def test_publisher_slug_stored_at_entry_level(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+            publisher_slug="acme-ai",
+        )
+        lock = self._read()
+        entry = lock["packages"]["test-pack"]
+        assert entry["publisher_slug"] == "acme-ai"
+
+    def test_publisher_slug_stored_in_signatures_publisher(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        sigs = _real_sign_entry("test-pack", {
+            "version": "1.0.0",
+            "package_type": "toolpack",
+            "runtime": "python",
+            "entrypoint": "my_pack.tool",
+            "artifact_hash": "sha256:abc123def456",
+            "tools": [],
+            "permissions": {"network_level": "none"},
+            "prompts": [],
+            "resources": [],
+            "connector": None,
+            "agent": None,
+        })
+        install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+            signatures=sigs,
+            publisher_slug="acme-ai",
+        )
+        lock = self._read()
+        entry = lock["packages"]["test-pack"]
+        assert entry["publisher_slug"] == "acme-ai"
+        assert entry["_signatures"]["publisher"][0]["publisher_slug"] == "acme-ai"
+
+    def test_unsigned_install_with_publisher_slug_is_v3(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+            publisher_slug="acme-ai",
+        )
+        lock = self._read()
+        entry = lock["packages"]["test-pack"]
+        assert entry["_integrity"]["canonical_version"] == 3
+
+    def test_canonicalization_strips_and_lowercases(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+            publisher_slug="  Acme-AI  ",
+        )
+        lock = self._read()
+        entry = lock["packages"]["test-pack"]
+        assert entry["publisher_slug"] == "acme-ai"
+
+    def test_canonicalization_whitespace_only_becomes_none(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+            publisher_slug="   ",
+        )
+        lock = self._read()
+        entry = lock["packages"]["test-pack"]
+        assert entry["publisher_slug"] is None
+
+    def test_none_publisher_slug_stored(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+        )
+        lock = self._read()
+        entry = lock["packages"]["test-pack"]
+        assert entry["publisher_slug"] is None
+        assert entry["_integrity"]["canonical_version"] == 1

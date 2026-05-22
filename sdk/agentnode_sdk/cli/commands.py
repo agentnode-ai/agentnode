@@ -1430,6 +1430,9 @@ def cmd_inspect(slug: str, *, json_output: bool = False) -> int:
     if last_check:
         trust_display += f"  (checked: {last_check[:10]})"
     print(kv("Trust level", trust_display))
+    pub_slug = pkg.get("publisher_slug")
+    if pub_slug:
+        print(kv("Publisher", pub_slug))
     print(kv("Package type", pkg.get("package_type", "?")))
     print(kv("Runtime", pkg.get("runtime", "?")))
     print(kv("Installed at", pkg.get("installed_at", "?")))
@@ -1842,6 +1845,7 @@ def _inspect_build_report(slug: str, pkg: dict, audit_summary: dict) -> dict:
         "version": pkg.get("version"),
         "package_type": pkg.get("package_type"),
         "trust_level": pkg.get("trust_level"),
+        "publisher_slug": pkg.get("publisher_slug"),
         "last_trust_check": pkg.get("last_trust_check"),
         "runtime": runtime,
         "installed_at": pkg.get("installed_at"),
@@ -2919,6 +2923,9 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False) -> int:
             sig_dict["key_id"] = sig.key_id
         if sig.error:
             sig_dict["error"] = sig.error
+        pub = entry.get("publisher_slug")
+        if pub:
+            sig_dict["publisher_slug"] = pub
         sig_results[slug] = sig_dict
 
         if sig.status in (SignatureStatus.INVALID, SignatureStatus.UNKNOWN_KEY):
@@ -2949,12 +2956,18 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False) -> int:
         return 0
 
     for slug in sorted(verified):
-        print(f"  ✓ {slug}: verified, {_sig_display(sig_results[slug])}")
+        pub = packages[slug].get("publisher_slug")
+        pub_tag = f" [{pub}]" if pub else ""
+        print(f"  ✓ {slug}{pub_tag}: verified, {_sig_display(sig_results[slug])}")
     for slug in sorted(missing):
+        pub = packages[slug].get("publisher_slug")
+        pub_tag = f" [{pub}]" if pub else ""
         label = "missing (not sealed)" if not strict else "MISSING (strict)"
-        print(f"  - {slug}: {label}, {_sig_display(sig_results[slug])}")
+        print(f"  - {slug}{pub_tag}: {label}, {_sig_display(sig_results[slug])}")
     for slug in sorted(mismatch):
-        print(f"  ✗ {slug}: MISMATCH, {_sig_display(sig_results[slug])}")
+        pub = packages[slug].get("publisher_slug")
+        pub_tag = f" [{pub}]" if pub else ""
+        print(f"  ✗ {slug}{pub_tag}: MISMATCH, {_sig_display(sig_results[slug])}")
 
     parts = []
     if verified:

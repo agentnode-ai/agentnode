@@ -560,3 +560,34 @@ class TestCmdPublishSigning:
 
         assert rc == 0
         mock_sign.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Regression guards — publisher_slug boundaries (Phase 16.6)
+# ---------------------------------------------------------------------------
+
+class TestPublisherSlugRegressionGuards:
+    def test_build_sign_payload_does_not_include_publisher_slug(self):
+        from agentnode_sdk.signature import build_sign_payload
+        entry = {
+            "version": "1.0.0",
+            "package_type": "toolpack",
+            "runtime": "python",
+            "entrypoint": "my_pack.tool",
+            "artifact_hash": "sha256:abc123",
+            "tools": [],
+            "permissions": {},
+            "prompts": [],
+            "resources": [],
+            "connector": None,
+            "agent": None,
+            "publisher_slug": "acme-ai",
+        }
+        payload = build_sign_payload("test-pack", entry)
+        assert b"publisher_slug" not in payload
+        assert b"acme-ai" not in payload
+
+    def test_manifest_to_entry_does_not_produce_publisher_slug(self):
+        from agentnode_sdk.cli.publish import manifest_to_entry
+        entry = manifest_to_entry(MINIMAL_MANIFEST, "sha256:abc123")
+        assert "publisher_slug" not in entry

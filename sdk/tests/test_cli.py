@@ -891,3 +891,44 @@ def test_inspect_no_local_signing_key_loaded(capsys, saved_config, isolated_env,
     )
     code = main(["inspect", "test-pack"])
     assert code == 0
+
+
+def test_inspect_publisher_slug_human(capsys, saved_config, isolated_env):
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = _make_inspect_entry(publisher_slug="acme-ai")
+    _write_lockfile_with_entry(isolated_env, "test-pack", seal_entry(entry))
+    code = main(["inspect", "test-pack"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Publisher" in out
+    assert "acme-ai" in out
+
+
+def test_inspect_publisher_slug_omitted_when_none(capsys, saved_config, isolated_env):
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = _make_inspect_entry()
+    _write_lockfile_with_entry(isolated_env, "test-pack", seal_entry(entry))
+    code = main(["inspect", "test-pack"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Publisher" not in out
+
+
+def test_inspect_json_includes_publisher_slug(capsys, saved_config, isolated_env):
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = _make_inspect_entry(publisher_slug="acme-ai")
+    _write_lockfile_with_entry(isolated_env, "test-pack", seal_entry(entry))
+    code = main(["inspect", "test-pack", "--json"])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["publisher_slug"] == "acme-ai"
+
+
+def test_inspect_json_publisher_slug_null_when_absent(capsys, saved_config, isolated_env):
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = _make_inspect_entry()
+    _write_lockfile_with_entry(isolated_env, "test-pack", seal_entry(entry))
+    code = main(["inspect", "test-pack", "--json"])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["publisher_slug"] is None

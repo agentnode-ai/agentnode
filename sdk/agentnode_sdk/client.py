@@ -503,6 +503,7 @@ class AgentNodeClient:
             permissions=perms,
             agent=data.get("agent"),
             signatures=data.get("_signatures"),
+            publisher_slug=data.get("publisher", {}).get("slug"),
         )
 
     # --- Download ---
@@ -567,6 +568,7 @@ class AgentNodeClient:
         # 2. Fetch trust/verification info
         trust_level = None
         verification_tier = None
+        publisher_slug = None
         try:
             detail = self._request("GET", f"/packages/{slug}")
             # trust_level lives in publisher.trust_level or blocks.trust.publisher_trust_level,
@@ -576,6 +578,7 @@ class AgentNodeClient:
                 or detail.get("blocks", {}).get("trust", {}).get("publisher_trust_level")
                 or "unverified"
             )
+            publisher_slug = detail.get("publisher", {}).get("slug")
             lv = detail.get("latest_version") or {}
             verification_tier = lv.get("verification_tier")
         except Exception:
@@ -713,6 +716,7 @@ class AgentNodeClient:
             permissions=_permissions_to_dict(meta.permissions),
             agent=meta.agent,
             signatures=meta.signatures,
+            publisher_slug=publisher_slug,
         )
 
         return InstallResult(

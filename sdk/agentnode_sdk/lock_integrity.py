@@ -10,6 +10,7 @@ changed it. Publisher/registry authentication is in ``signature.py``.
 canonical_version history:
 - v1: 15 canonical fields (Phase 15). No _signatures awareness.
 - v2: v1 fields + _signatures (Phase 16). Detects signature/key swap.
+- v3: v2 fields + publisher_slug (Phase 16.6). Publisher identity integrity.
 
 Known limitations:
 - trust_level is mutable and excluded from the hash. Local manipulation
@@ -28,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-CANONICAL_VERSION = 2
+CANONICAL_VERSION = 3
 
 CANONICAL_FIELDS = (
     "version",
@@ -48,6 +49,8 @@ CANONICAL_FIELDS = (
 )
 
 CANONICAL_FIELDS_V2 = CANONICAL_FIELDS + ("_signatures",)
+
+CANONICAL_FIELDS_V3 = CANONICAL_FIELDS_V2 + ("publisher_slug",)
 
 MUTABLE_FIELDS = (
     "installed_at",
@@ -101,8 +104,14 @@ def _build_canonical(entry: dict, canonical_version: int = 1) -> dict:
 
     canonical_version=1: Phase 15 fields (no _signatures).
     canonical_version=2: Phase 15 fields + _signatures.
+    canonical_version=3: Phase 16 fields + publisher_slug.
     """
-    fields = CANONICAL_FIELDS_V2 if canonical_version >= 2 else CANONICAL_FIELDS
+    if canonical_version >= 3:
+        fields = CANONICAL_FIELDS_V3
+    elif canonical_version >= 2:
+        fields = CANONICAL_FIELDS_V2
+    else:
+        fields = CANONICAL_FIELDS
     canonical = {}
     for f in fields:
         if f in entry and entry[f] is not None:
@@ -112,6 +121,9 @@ def _build_canonical(entry: dict, canonical_version: int = 1) -> dict:
 
 def _detect_canonical_version(entry: dict) -> int:
     """Auto-detect canonical version from entry content."""
+    pub = entry.get("publisher_slug")
+    if isinstance(pub, str) and pub.strip():
+        return 3
     sigs = entry.get("_signatures")
     if isinstance(sigs, dict) and len(sigs) > 0:
         return 2

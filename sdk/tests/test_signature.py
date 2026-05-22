@@ -333,3 +333,33 @@ class TestSignatureTypes:
 
     def test_algorithm_constant(self):
         assert SIGN_ALGORITHM == "ed25519"
+
+
+# ---------------------------------------------------------------------------
+# Regression guards — publisher_slug boundaries (Phase 16.6)
+# ---------------------------------------------------------------------------
+
+class TestPublisherSlugRegressionGuards:
+    def test_build_sign_payload_excludes_publisher_slug(self):
+        entry = _make_entry(publisher_slug="acme-ai")
+        payload = build_sign_payload("test-pack", entry)
+        parsed = json.loads(payload)
+        assert "publisher_slug" not in parsed
+
+    def test_verify_ignores_publisher_slug_in_entry(self):
+        """Verification uses v1 canonical payload — publisher_slug is irrelevant."""
+        private_key, pub_bytes = _generate_keypair()
+        entry = _make_entry()
+        signed = _sign_entry("test-pack", entry, private_key, pub_bytes)
+        signed["publisher_slug"] = "acme-ai"
+        result = verify_entry_signature("test-pack", signed)
+        assert result.status == SignatureStatus.VALID
+
+    def test_verify_same_result_with_or_without_publisher_slug(self):
+        private_key, pub_bytes = _generate_keypair()
+        entry = _make_entry()
+        signed = _sign_entry("test-pack", entry, private_key, pub_bytes)
+        result_without = verify_entry_signature("test-pack", signed)
+        signed["publisher_slug"] = "acme-ai"
+        result_with = verify_entry_signature("test-pack", signed)
+        assert result_without.status == result_with.status == SignatureStatus.VALID

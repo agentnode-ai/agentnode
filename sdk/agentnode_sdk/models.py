@@ -144,6 +144,7 @@ class InstallMetadata:
     permissions: PermissionsInfo | None = None
     agent: dict | None = None
     signatures: dict | None = None
+    publisher_slug: str | None = None
 
 
 @dataclass

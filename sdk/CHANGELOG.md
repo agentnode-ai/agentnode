@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased — Publisher Identity Cache
+
+Offline publisher identity, integrity-protected. `publisher_slug` is
+cached at install time and included in canonical_version v3. Post-install
+manipulation of the displayed publisher identity causes an integrity
+mismatch. This prevents social-engineering attacks where an attacker edits
+the lockfile to display a trusted publisher name.
+
+### Added
+
+- **Publisher identity in lockfile** — `publisher_slug` stored at
+  Entry-Level as a canonical field (v3). Registry-canonicalized
+  (`strip().lower()`) before persistence. Write-once at install time —
+  never overwritten by trust refresh or registry sync.
+- **canonical_version v3** — integrity hash now covers `publisher_slug`.
+  Unsigned packages with `publisher_slug` get v3. v1/v2 entries continue
+  to verify against their stored version (backward compatible).
+- **Publisher display in CLI** — `agentnode inspect` shows Publisher line.
+  `agentnode lock verify` shows `[publisher_slug]` tag per package. Both
+  human and JSON output include `publisher_slug`.
+- **Dual storage** — `publisher_slug` stored at Entry-Level (authoritative,
+  canonical) and in `_signatures.publisher[]` (informational convenience
+  only). All display code reads only Entry-Level.
+
+### Security
+
+- Offline displayed publisher identity is integrity-protected (v3).
+- `publisher_slug` is NOT part of the signature payload — it is a registry
+  assertion, not a publisher-proven fact. Signature payload stays v1.
+- `manifest_to_entry()` does NOT produce `publisher_slug` — security
+  boundary between publisher-controlled manifest and registry-asserted
+  identity.
+
 ## 0.8.0 — Publisher Signatures
 
 Cryptographic proof of package origin. Publishers sign packages with

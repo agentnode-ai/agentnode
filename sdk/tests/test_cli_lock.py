@@ -391,3 +391,41 @@ class TestLockVerifySignature:
         )
         rc = main(["lock", "verify"])
         assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# lock verify — publisher_slug display (Phase 16.6)
+# ---------------------------------------------------------------------------
+
+class TestLockVerifyPublisherSlug:
+    def test_human_output_shows_publisher_tag(self, tmp_lockfile, capsys):
+        entry = _make_entry(publisher_slug="acme-ai")
+        _write_lockfile(tmp_lockfile, {"test-pack": seal_entry(entry)})
+        rc = main(["lock", "verify"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "[acme-ai]" in out
+
+    def test_human_output_no_tag_when_no_publisher(self, tmp_lockfile, capsys):
+        entry = _make_entry()
+        _write_lockfile(tmp_lockfile, {"test-pack": seal_entry(entry)})
+        rc = main(["lock", "verify"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "[" not in out
+
+    def test_json_includes_publisher_slug(self, tmp_lockfile, capsys):
+        entry = _make_entry(publisher_slug="acme-ai")
+        _write_lockfile(tmp_lockfile, {"test-pack": seal_entry(entry)})
+        rc = main(["lock", "verify", "--json"])
+        assert rc == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["signatures"]["test-pack"]["publisher_slug"] == "acme-ai"
+
+    def test_json_no_publisher_slug_when_absent(self, tmp_lockfile, capsys):
+        entry = _make_entry()
+        _write_lockfile(tmp_lockfile, {"test-pack": seal_entry(entry)})
+        rc = main(["lock", "verify", "--json"])
+        assert rc == 0
+        report = json.loads(capsys.readouterr().out)
+        assert "publisher_slug" not in report["signatures"]["test-pack"]

@@ -40,6 +40,7 @@ This document covers the AgentNode SDK's local execution model — the code that
 | **Publish-time signing** | `agentnode publish` signs the canonical payload (slug + all canonical fields) with the publisher's Ed25519 private key. Signing failure warns but does not block publishing. | `cli/publish.py`, `signing_key.py` |
 | **Signature integrity (canonical v2)** | `_integrity` v2 hash covers `_signatures`. Swapping the signature + public key in a lockfile entry invalidates the integrity hash. v1 entries without signatures continue to verify against v1 field list. | `lock_integrity.py` |
 | **Signature status in CLI** | `agentnode lock verify` reports signature status per package with exit code 1 on invalid/unknown_key. `agentnode inspect` shows signature details. Both use cached public key — no registry dependency. | `cli/commands.py` |
+| **Publisher identity integrity** | Entry-Level `publisher_slug` is a canonical field (v3). Post-install manipulation causes integrity mismatch. Displayed publisher identity is integrity-protected offline. Write-once at install time — never overwritten by trust refresh or registry sync. | `lock_integrity.py` |
 
 ## What AgentNode does NOT enforce
 

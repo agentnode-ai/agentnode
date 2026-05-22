@@ -367,6 +367,8 @@ def install_package(
     agent: dict | None = None,
     # Phase 16.4: publisher signatures
     signatures: dict | None = None,
+    # Phase 16.6: publisher identity
+    publisher_slug: str | None = None,
 ) -> dict[str, Any]:
     """Execute the full local install flow (mirrors CLI §13.4).
 
@@ -399,6 +401,12 @@ def install_package(
             "message": f"{slug}@{version} is already installed.",
         }
 
+    # Canonicalize publisher_slug (registry-normalized, write-once at install time)
+    if publisher_slug:
+        publisher_slug = publisher_slug.strip().lower()
+        if not publisher_slug:
+            publisher_slug = None
+
     previous_version = None
     if status == "different":
         data = read_lockfile()
@@ -418,6 +426,7 @@ def install_package(
             resources=resources,
             assets=None,
             signatures=signatures,
+            publisher_slug=publisher_slug,
         )
 
     tmpdir = Path(tempfile.mkdtemp(prefix="agentnode-"))
@@ -463,6 +472,8 @@ def install_package(
             "resources": resources or [],
             "connector": connector,
             "agent": agent,
+            # Phase 16.6: publisher identity (Entry-Level, authoritative)
+            "publisher_slug": publisher_slug,
         }
         if mcp_command:
             lock_entry["mcp_command"] = mcp_command
@@ -470,6 +481,10 @@ def install_package(
             lock_entry["remote_endpoint"] = remote_endpoint
 
         if signatures:
+            if publisher_slug:
+                for sig in (signatures.get("publisher") or []):
+                    if isinstance(sig, dict):
+                        sig["publisher_slug"] = publisher_slug
             lock_entry["_signatures"] = signatures
         _verify_publisher_signature(slug, lock_entry)
 
@@ -575,6 +590,7 @@ def _install_skill(
     resources: list[dict] | None,
     assets: list[dict] | None,
     signatures: dict | None = None,
+    publisher_slug: str | None = None,
 ) -> dict[str, Any]:
     """Install a skill package to ~/.agentnode/skills/{slug}/.
 
@@ -663,9 +679,14 @@ def _install_skill(
             "assets": manifest_assets,
             "connector": None,
             "agent": None,
+            "publisher_slug": publisher_slug,
         }
 
         if signatures:
+            if publisher_slug:
+                for sig in (signatures.get("publisher") or []):
+                    if isinstance(sig, dict):
+                        sig["publisher_slug"] = publisher_slug
             lock_entry["_signatures"] = signatures
         _verify_publisher_signature(slug, lock_entry)
 
