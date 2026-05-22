@@ -1,11 +1,12 @@
 # Changelog
 
-## Unreleased — Online Key Verification
+## 0.9.0 — Online Key Verification & Publisher Identity
 
-Online publisher key verification and install-time revocation.
-`lock verify --online` checks each signed package's key against the
-registry. Fail-closed: unreachable registry causes exit code 1,
-making it a reliable CI gate.
+Online publisher key verification, install-time revocation, and offline
+publisher identity cache. Together with v0.8.0 Publisher Signatures,
+this completes the trust chain: **v0.8.0 verifies who signed** (authenticity),
+**v0.9.0 verifies the key is still valid** (freshness) and **caches who
+published** (provenance).
 
 ### Added
 
@@ -21,26 +22,6 @@ making it a reliable CI gate.
 - **`OnlineKeyStatus` enum** — typed statuses (active/revoked/unknown/
   mismatch/error) with severity classification (critical/high/medium/
   availability/none).
-
-### Security
-
-- `lock verify --online` is fail-closed: registry unreachable → exit 1.
-- Revocation is asymmetric: new install with revoked key → deny;
-  already installed + revoked → warn + audit, no runtime deny.
-- `mismatch` (cached ≠ registry public key) is severity "critical" —
-  indicates lockfile manipulation, key rebinding, or registry compromise.
-- No runtime enforcement — runtime stays offline integrity/authenticity.
-
-## Unreleased — Publisher Identity Cache
-
-Offline publisher identity, integrity-protected. `publisher_slug` is
-cached at install time and included in canonical_version v3. Post-install
-manipulation of the displayed publisher identity causes an integrity
-mismatch. This prevents social-engineering attacks where an attacker edits
-the lockfile to display a trusted publisher name.
-
-### Added
-
 - **Publisher identity in lockfile** — `publisher_slug` stored at
   Entry-Level as a canonical field (v3). Registry-canonicalized
   (`strip().lower()`) before persistence. Write-once at install time —
@@ -51,12 +32,15 @@ the lockfile to display a trusted publisher name.
 - **Publisher display in CLI** — `agentnode inspect` shows Publisher line.
   `agentnode lock verify` shows `[publisher_slug]` tag per package. Both
   human and JSON output include `publisher_slug`.
-- **Dual storage** — `publisher_slug` stored at Entry-Level (authoritative,
-  canonical) and in `_signatures.publisher[]` (informational convenience
-  only). All display code reads only Entry-Level.
 
 ### Security
 
+- `lock verify --online` is fail-closed: registry unreachable → exit 1.
+- Revocation is asymmetric: new install with revoked key → deny;
+  already installed + revoked → warn + audit, no runtime deny.
+- `mismatch` (cached ≠ registry public key) is severity "critical" —
+  indicates lockfile manipulation, key rebinding, or registry compromise.
+- No runtime enforcement — runtime stays offline integrity/authenticity.
 - Offline displayed publisher identity is integrity-protected (v3).
 - `publisher_slug` is NOT part of the signature payload — it is a registry
   assertion, not a publisher-proven fact. Signature payload stays v1.
