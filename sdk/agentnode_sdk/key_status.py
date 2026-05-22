@@ -81,6 +81,29 @@ def check_key_status(
             error=f"Registry unreachable: {exc}",
         )
 
+    from agentnode_sdk.registry_trust import (
+        verify_registry_response, RegistrySignatureStatus, SIGNATURE_HEADER,
+    )
+    sig_header = resp.headers.get(SIGNATURE_HEADER)
+    sig_result = verify_registry_response(resp.content, sig_header)
+    if sig_result.status == RegistrySignatureStatus.MISSING:
+        return KeyStatusResult(
+            status=OnlineKeyStatus.ERROR,
+            key_id=key_id,
+            publisher_slug=publisher_slug,
+            error="Registry response missing signature — possible downgrade attack",
+        )
+    if sig_result.status not in (
+        RegistrySignatureStatus.VALID,
+        RegistrySignatureStatus.BOOTSTRAP,
+    ):
+        return KeyStatusResult(
+            status=OnlineKeyStatus.ERROR,
+            key_id=key_id,
+            publisher_slug=publisher_slug,
+            error=f"Registry response: {sig_result.status.value} — {sig_result.error}",
+        )
+
     if resp.status_code == 404:
         return KeyStatusResult(
             status=OnlineKeyStatus.UNKNOWN,

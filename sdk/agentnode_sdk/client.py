@@ -84,6 +84,56 @@ def _permissions_to_dict(perms: PermissionsInfo | None) -> dict | None:
     }
 
 
+def _verify_registry_signature(response: httpx.Response) -> None:
+    """Verify registry response authenticity for trust-critical endpoints (TG-4)."""
+    try:
+        request = response.request
+    except RuntimeError:
+        return
+    if request is None or request.method.upper() != "GET":
+        return
+    url_path = response.url.path if hasattr(response.url, "path") else ""
+    if not url_path:
+        return
+
+    from agentnode_sdk.registry_trust import (
+        is_trust_critical, verify_registry_response,
+        RegistrySignatureStatus, SIGNATURE_HEADER,
+    )
+
+    if not is_trust_critical(url_path):
+        return
+
+    sig_header = response.headers.get(SIGNATURE_HEADER)
+    result = verify_registry_response(response.content, sig_header)
+
+    if result.status == RegistrySignatureStatus.BOOTSTRAP:
+        import logging
+        logging.getLogger(__name__).debug(
+            "Registry response for %s: bootstrap mode (no pinned keys)", url_path,
+        )
+    elif result.status == RegistrySignatureStatus.MISSING:
+        raise AgentNodeError(
+            code="REGISTRY_SIGNATURE_MISSING",
+            message="Registry response has no signature — possible downgrade attack",
+        )
+    elif result.status == RegistrySignatureStatus.UNKNOWN_KEY:
+        raise AgentNodeError(
+            code="REGISTRY_KEY_UNKNOWN",
+            message=f"Registry signed with unknown key '{result.key_id}' — SDK may need upgrade",
+        )
+    elif result.status == RegistrySignatureStatus.EXPIRED_KEY:
+        raise AgentNodeError(
+            code="REGISTRY_KEY_EXPIRED",
+            message=f"Registry signing key '{result.key_id}' expired — SDK upgrade required",
+        )
+    elif result.status == RegistrySignatureStatus.INVALID:
+        raise AgentNodeError(
+            code="REGISTRY_SIGNATURE_INVALID",
+            message=f"Registry response signature invalid — {result.error or 'possible tampering'}",
+        )
+
+
 class AgentNode:
     """Spec-compliant SDK client (§14.3). Returns plain dicts."""
 
@@ -225,6 +275,9 @@ class AgentNode:
                 pass
             exc_class = ERROR_CLASS_MAP.get(response.status_code, AgentNodeError)
             raise exc_class(code, message)
+
+        _verify_registry_signature(response)
+
         ctype = response.headers.get("content-type", "")
         if "json" not in ctype.lower():
             raise AgentNodeError(
@@ -329,6 +382,9 @@ class AgentNodeClient:
                 pass
             exc_class = ERROR_CLASS_MAP.get(resp.status_code, AgentNodeError)
             raise exc_class(code=code, message=message)
+
+        _verify_registry_signature(resp)
+
         ctype = resp.headers.get("content-type", "")
         if "json" not in ctype.lower():
             raise AgentNodeError(

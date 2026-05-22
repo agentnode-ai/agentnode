@@ -1,5 +1,7 @@
 """Tests for online publisher key verification — TG-2."""
+import base64
 import json
+from types import MappingProxyType
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -10,6 +12,7 @@ from agentnode_sdk.key_status import (
     KeyStatusResult,
     check_key_status,
 )
+from agentnode_sdk.registry_trust import RegistryKey
 
 
 # ---------------------------------------------------------------------------
@@ -306,3 +309,78 @@ class TestCheckKeyStatus:
 
         assert result.status == OnlineKeyStatus.ERROR
         assert "401" in result.error
+
+
+# ---------------------------------------------------------------------------
+# TG-4: Registry response authenticity integration
+# ---------------------------------------------------------------------------
+
+def _mock_response_with_body(status_code=200, json_data=None, headers=None):
+    """Mock response with real content/headers for registry trust checks."""
+    body = json.dumps(json_data or {}).encode()
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = json_data or {}
+    resp.content = body
+    resp.headers = headers or {}
+    return resp
+
+
+def _patch_registry_keys(keys):
+    return patch(
+        "agentnode_sdk.registry_trust.REGISTRY_KEYS",
+        MappingProxyType(keys),
+    )
+
+
+class TestRegistryTrustIntegration:
+
+    def test_missing_signature_enforcement(self):
+        """REGISTRY_KEYS populated + no signature header → ERROR (downgrade)."""
+        fake_key = RegistryKey(
+            key_id="registry-2026", algorithm="ed25519",
+            public_key=base64.b64encode(b"\x00" * 32).decode(),
+            not_after="2099-12-31",
+        )
+        resp = _mock_response_with_body(200, {
+            "key_id": "ed25519:abc", "status": "active", "public_key": "AQID",
+        })
+        with patch("agentnode_sdk.key_status.httpx") as mock_httpx, \
+             _patch_registry_keys({"registry-2026": fake_key}):
+            mock_httpx.get.return_value = resp
+            result = check_key_status("acme-ai", "ed25519:abc", base_url="http://test")
+
+        assert result.status == OnlineKeyStatus.ERROR
+        assert "downgrade" in result.error.lower()
+
+    def test_invalid_signature_enforcement(self):
+        """REGISTRY_KEYS populated + bad signature → ERROR."""
+        fake_key = RegistryKey(
+            key_id="registry-2026", algorithm="ed25519",
+            public_key=base64.b64encode(b"\x00" * 32).decode(),
+            not_after="2099-12-31",
+        )
+        bad_sig = base64.b64encode(b"\xff" * 64).decode()
+        resp = _mock_response_with_body(
+            200,
+            {"key_id": "ed25519:abc", "status": "active", "public_key": "AQID"},
+            headers={"X-AgentNode-Signature": f"ed25519:registry-2026:{bad_sig}"},
+        )
+        with patch("agentnode_sdk.key_status.httpx") as mock_httpx, \
+             _patch_registry_keys({"registry-2026": fake_key}):
+            mock_httpx.get.return_value = resp
+            result = check_key_status("acme-ai", "ed25519:abc", base_url="http://test")
+
+        assert result.status == OnlineKeyStatus.ERROR
+        assert "invalid" in result.status.value or "verification failed" in result.error.lower()
+
+    def test_bootstrap_mode_allows(self):
+        """REGISTRY_KEYS empty → BOOTSTRAP → check_key_status proceeds normally."""
+        resp = _mock_response_with_body(200, {
+            "key_id": "ed25519:abc", "status": "active", "public_key": "AQID",
+        })
+        with patch("agentnode_sdk.key_status.httpx") as mock_httpx:
+            mock_httpx.get.return_value = resp
+            result = check_key_status("acme-ai", "ed25519:abc", base_url="http://test")
+
+        assert result.status == OnlineKeyStatus.ACTIVE

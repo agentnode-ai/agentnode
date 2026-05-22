@@ -43,6 +43,7 @@ This document covers the AgentNode SDK's local execution model — the code that
 | **Publisher identity integrity** | Entry-Level `publisher_slug` is a canonical field (v3). Post-install manipulation causes integrity mismatch. Displayed publisher identity is integrity-protected offline. Write-once at install time — never overwritten by trust refresh or registry sync. | `lock_integrity.py` |
 | **Online key verification** | `lock verify --online` checks each signed package's key_id against the registry. Revoked/unknown/mismatched keys cause exit code 1. Registry unreachable also causes exit 1 (fail-closed for CI). | `key_status.py`, `cli/commands.py` |
 | **Install-time revocation** | Install blocks packages with revoked publisher keys when the registry reports key status in the install response. No additional network call — uses data already present in the detail API response. | `installer.py` |
+| **Registry response authenticity (TG-4)** | Trust-critical GET endpoints (`/packages/{slug}`, `/packages/{slug}/install-info`, `/publishers/{slug}/keys/{key_id}`) are verified against pinned Ed25519 registry keys via `X-AgentNode-Signature` header. Missing header with enforcement active → deny (downgrade protection). Unknown/expired keys → deny. Bootstrap mode (no pinned keys) → allow. | `registry_trust.py`, `client.py`, `key_status.py` |
 
 ## What AgentNode does NOT enforce
 
@@ -58,7 +59,7 @@ This document covers the AgentNode SDK's local execution model — the code that
 | **Lockfile entry addition** | Integrity is per-entry, not global. Adding a new malicious entry is not detected. | Review lockfile diffs in PRs. Global lockfile hash planned for a future phase. |
 | **`trust_level` manipulation** | `trust_level` is mutable (TTL refresh updates it). Local manipulation from `unverified` to `trusted` is not detected by integrity checks. | Trust enforcement relies on policy/TTL mechanisms, not lockfile integrity. |
 | **Key revocation (runtime)** | `lock verify --online` detects revoked keys. Install blocks revoked keys when the registry reports status. Runtime does not check revocation — uses offline signature only. | Run `lock verify --online` in CI. |
-| **Registry response signing** | The registry response itself is not signed. A compromised registry could omit signatures or serve malicious metadata. Publisher signatures protect against artifact replacement but not metadata-only attacks. | Registry signing key infrastructure planned. |
+| **Registry response freshness** | Registry response signing (TG-4) provides authenticity and integrity but not freshness. A captured valid response can be replayed. | Run `lock verify --online` in CI. Timestamp-based anti-replay planned for TG-5+. |
 
 ## Privacy boundary
 
@@ -120,7 +121,7 @@ User calls run_tool()
 
 ## Future work
 
-- Registry response signing — registry-level cryptographic guarantees (TG-4)
+- Registry response freshness — anti-replay via timestamps/sequence numbers (TG-5+)
 - Global lockfile hash — detect entry addition/removal
 - Subprocess filesystem isolation (workspace-only mode)
 - Network namespace isolation (Linux)

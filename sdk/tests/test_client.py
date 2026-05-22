@@ -1,11 +1,15 @@
 """Unit tests for AgentNode SDK client."""
+import base64
 import json
+from types import MappingProxyType
+from unittest.mock import patch
 
 import httpx
 import pytest
 import respx
 
 from agentnode_sdk import AgentNodeClient
+from agentnode_sdk.registry_trust import RegistryKey
 
 BASE = "https://api.agentnode.net"
 
@@ -185,3 +189,107 @@ def test_p1_sdk4_non_json_response():
     with AgentNodeClient(api_key="k") as client:
         with pytest.raises(AgentNodeError):
             client.get_package("html")
+
+
+# ---------------------------------------------------------------------------
+# TG-4: Registry response authenticity integration
+# ---------------------------------------------------------------------------
+
+def _patch_registry_keys(keys):
+    return patch(
+        "agentnode_sdk.registry_trust.REGISTRY_KEYS",
+        MappingProxyType(keys),
+    )
+
+
+_FAKE_KEY = RegistryKey(
+    key_id="registry-2026",
+    algorithm="ed25519",
+    public_key=base64.b64encode(b"\x00" * 32).decode(),
+    not_after="2099-12-31",
+)
+
+_PACKAGE_JSON = {
+    "slug": "test-pack", "name": "Test", "package_type": "toolpack",
+    "summary": "Test", "description": None, "download_count": 0,
+    "is_deprecated": False, "latest_version": None,
+    "publisher": {"slug": "t", "display_name": "T", "trust_level": "verified"},
+    "blocks": {},
+}
+
+
+@respx.mock
+def test_tg4_missing_signature_blocks_trust_critical():
+    """Enforcement active + no signature header on GET /packages/{slug} → deny."""
+    respx.get(f"{BASE}/v1/packages/test-pack").mock(
+        return_value=httpx.Response(200, json=_PACKAGE_JSON)
+    )
+    from agentnode_sdk.exceptions import AgentNodeError
+    with _patch_registry_keys({"registry-2026": _FAKE_KEY}):
+        with AgentNodeClient(api_key="k") as client:
+            with pytest.raises(AgentNodeError) as exc:
+                client.get_package("test-pack")
+            assert exc.value.code == "REGISTRY_SIGNATURE_MISSING"
+
+
+@respx.mock
+def test_tg4_bootstrap_allows_trust_critical():
+    """REGISTRY_KEYS empty → BOOTSTRAP → request succeeds."""
+    respx.get(f"{BASE}/v1/packages/test-pack").mock(
+        return_value=httpx.Response(200, json=_PACKAGE_JSON)
+    )
+    with AgentNodeClient(api_key="k") as client:
+        pkg = client.get_package("test-pack")
+    assert pkg.slug == "test-pack"
+
+
+@respx.mock
+def test_tg4_non_trust_critical_skips_check():
+    """Non-trust-critical endpoints skip signature check even with keys."""
+    respx.post(f"{BASE}/v1/search").mock(
+        return_value=httpx.Response(200, json={
+            "query": "test", "hits": [], "total": 0, "page": 1, "per_page": 20,
+        })
+    )
+    with _patch_registry_keys({"registry-2026": _FAKE_KEY}):
+        with AgentNodeClient(api_key="k") as client:
+            results = client.search("test")
+    assert results.total == 0
+
+
+@respx.mock
+def test_tg4_invalid_signature_blocks():
+    """Enforcement active + bad signature → REGISTRY_SIGNATURE_INVALID."""
+    bad_sig = base64.b64encode(b"\xff" * 64).decode()
+    respx.get(f"{BASE}/v1/packages/test-pack").mock(
+        return_value=httpx.Response(
+            200,
+            json=_PACKAGE_JSON,
+            headers={"X-AgentNode-Signature": f"ed25519:registry-2026:{bad_sig}"},
+        )
+    )
+    from agentnode_sdk.exceptions import AgentNodeError
+    with _patch_registry_keys({"registry-2026": _FAKE_KEY}):
+        with AgentNodeClient(api_key="k") as client:
+            with pytest.raises(AgentNodeError) as exc:
+                client.get_package("test-pack")
+            assert exc.value.code == "REGISTRY_SIGNATURE_INVALID"
+
+
+@respx.mock
+def test_tg4_unknown_key_blocks():
+    """Signature with unknown key_id → REGISTRY_KEY_UNKNOWN."""
+    sig = base64.b64encode(b"\x00" * 64).decode()
+    respx.get(f"{BASE}/v1/packages/test-pack").mock(
+        return_value=httpx.Response(
+            200,
+            json=_PACKAGE_JSON,
+            headers={"X-AgentNode-Signature": f"ed25519:unknown-key:{sig}"},
+        )
+    )
+    from agentnode_sdk.exceptions import AgentNodeError
+    with _patch_registry_keys({"registry-2026": _FAKE_KEY}):
+        with AgentNodeClient(api_key="k") as client:
+            with pytest.raises(AgentNodeError) as exc:
+                client.get_package("test-pack")
+            assert exc.value.code == "REGISTRY_KEY_UNKNOWN"

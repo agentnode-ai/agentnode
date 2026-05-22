@@ -172,25 +172,19 @@ fail-closed.
 
 ## Open Gaps
 
-### 1. Registry Response Authenticity
+### 1. Registry Response Authenticity — CLOSED (TG-4)
 
-**Current state:** The registry serves metadata (trust level, public key,
-key_status) over HTTPS. TLS guarantees transport-level authenticity but
-not application-level.
+**Status:** Implemented. The SDK verifies registry API responses against
+pinned Ed25519 registry keys via `X-AgentNode-Signature` header.
 
-**Risk:** A compromised registry (or MitM with a valid cert) can:
-- Serve a replacement public key → victim installs with attacker signature
-- Report `key_status: "active"` for a revoked key
-- Omit `publisher_slug` or substitute a different publisher
+Trust-critical endpoints (`/packages/{slug}`, `/packages/{slug}/install-info`,
+`/publishers/{slug}/keys/{key_id}`) are verified. Missing header with
+enforcement active → deny (downgrade protection). Ships in bootstrap mode
+(no pinned keys, observational). Once keys are pinned in a release,
+enforcement activates automatically.
 
-**Publisher signatures partially mitigate this:** If a user already has
-a package installed with the real publisher's key, a replacement key
-from a compromised registry would fail signature verification on upgrade.
-But first-time installs have no prior trust anchor.
-
-**Recommended next step:** TG-4 — sign registry API responses with a
-registry-level key. The SDK verifies the registry signature before
-trusting any metadata.
+**Remaining gap:** Response freshness (anti-replay). A captured valid
+response can be replayed later. Deferred to TG-5+.
 
 ### 2. Transparency Log
 
@@ -241,17 +235,14 @@ and removal of entries.
 
 ## Recommended Next Block
 
-**TG-4 — Registry Response Authenticity**
+**TG-5 — Registry Response Freshness (Anti-Replay)**
 
-Goal: Prove that registry API responses are authentic, not just
-transport-encrypted. Close the first-install trust bootstrap gap.
+Goal: Prove that registry API responses are recent, not replayed from
+a previous capture. TG-4 provides authenticity and integrity; TG-5
+adds freshness.
 
 Likely approach:
-- Registry signs API responses with a long-lived Ed25519 key
-- SDK ships a pinned registry public key (or fetches it via TLS + pins)
-- `install_package()` verifies the registry signature before trusting
-  the publisher public key in the install response
-- `lock verify --online` verifies key_status responses the same way
-
-This is the highest-leverage remaining gap: it upgrades the trust anchor
-from "TLS to the registry" to "cryptographic proof from the registry".
+- `signed_at` / `expires_at` timestamps in signed response payload
+- SDK validates response timestamp falls within an acceptable window
+- Monotonic sequence numbers for key_status responses
+- Transparency log for publish events (long-term)
