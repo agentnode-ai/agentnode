@@ -308,12 +308,18 @@ def check_installed(slug: str, version: str, path: Path | None = None) -> str:
 # Publisher signature verification (Phase 16.4)
 # ---------------------------------------------------------------------------
 
-def _verify_publisher_signature(slug: str, lock_entry: dict) -> None:
+def _verify_publisher_signature(
+    slug: str,
+    lock_entry: dict,
+    *,
+    key_status: str | None = None,
+) -> None:
     """Verify publisher signature on a lock entry before writing.
 
     - Valid → silent
     - Missing → warn (install continues)
     - Invalid / malformed → raise RuntimeError (install blocked)
+    - key_status="revoked" → raise RuntimeError (install blocked)
     """
     import logging
     import warnings
@@ -326,6 +332,10 @@ def _verify_publisher_signature(slug: str, lock_entry: dict) -> None:
         logging.getLogger(__name__).info(
             "Publisher signature valid for %s (key %s)", slug, result.key_id,
         )
+        if key_status == "revoked":
+            raise RuntimeError(
+                f"Publisher key for '{slug}' has been revoked by the registry"
+            )
         return
 
     if result.status == SignatureStatus.MISSING:
@@ -369,6 +379,8 @@ def install_package(
     signatures: dict | None = None,
     # Phase 16.6: publisher identity
     publisher_slug: str | None = None,
+    # TG-2: registry-reported key status (install-time revocation)
+    key_status: str | None = None,
 ) -> dict[str, Any]:
     """Execute the full local install flow (mirrors CLI §13.4).
 
@@ -427,6 +439,7 @@ def install_package(
             assets=None,
             signatures=signatures,
             publisher_slug=publisher_slug,
+            key_status=key_status,
         )
 
     tmpdir = Path(tempfile.mkdtemp(prefix="agentnode-"))
@@ -486,7 +499,7 @@ def install_package(
                     if isinstance(sig, dict):
                         sig["publisher_slug"] = publisher_slug
             lock_entry["_signatures"] = signatures
-        _verify_publisher_signature(slug, lock_entry)
+        _verify_publisher_signature(slug, lock_entry, key_status=key_status)
 
         from agentnode_sdk.lock_integrity import seal_entry
         lock_entry = seal_entry(lock_entry)
@@ -591,6 +604,7 @@ def _install_skill(
     assets: list[dict] | None,
     signatures: dict | None = None,
     publisher_slug: str | None = None,
+    key_status: str | None = None,
 ) -> dict[str, Any]:
     """Install a skill package to ~/.agentnode/skills/{slug}/.
 
@@ -688,7 +702,7 @@ def _install_skill(
                     if isinstance(sig, dict):
                         sig["publisher_slug"] = publisher_slug
             lock_entry["_signatures"] = signatures
-        _verify_publisher_signature(slug, lock_entry)
+        _verify_publisher_signature(slug, lock_entry, key_status=key_status)
 
         from agentnode_sdk.lock_integrity import seal_entry
         lock_entry = seal_entry(lock_entry)

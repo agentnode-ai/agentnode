@@ -41,6 +41,8 @@ This document covers the AgentNode SDK's local execution model — the code that
 | **Signature integrity (canonical v2)** | `_integrity` v2 hash covers `_signatures`. Swapping the signature + public key in a lockfile entry invalidates the integrity hash. v1 entries without signatures continue to verify against v1 field list. | `lock_integrity.py` |
 | **Signature status in CLI** | `agentnode lock verify` reports signature status per package with exit code 1 on invalid/unknown_key. `agentnode inspect` shows signature details. Both use cached public key — no registry dependency. | `cli/commands.py` |
 | **Publisher identity integrity** | Entry-Level `publisher_slug` is a canonical field (v3). Post-install manipulation causes integrity mismatch. Displayed publisher identity is integrity-protected offline. Write-once at install time — never overwritten by trust refresh or registry sync. | `lock_integrity.py` |
+| **Online key verification** | `lock verify --online` checks each signed package's key_id against the registry. Revoked/unknown/mismatched keys cause exit code 1. Registry unreachable also causes exit 1 (fail-closed for CI). | `key_status.py`, `cli/commands.py` |
+| **Install-time revocation** | Install blocks packages with revoked publisher keys when the registry reports key status in the install response. No additional network call — uses data already present in the detail API response. | `installer.py` |
 
 ## What AgentNode does NOT enforce
 
@@ -55,7 +57,7 @@ This document covers the AgentNode SDK's local execution model — the code that
 | **Inter-tool data leakage** | Tools in the same subprocess session share the filtered environment. | No current mitigation. |
 | **Lockfile entry addition** | Integrity is per-entry, not global. Adding a new malicious entry is not detected. | Review lockfile diffs in PRs. Global lockfile hash planned for a future phase. |
 | **`trust_level` manipulation** | `trust_level` is mutable (TTL refresh updates it). Local manipulation from `unverified` to `trusted` is not detected by integrity checks. | Trust enforcement relies on policy/TTL mechanisms, not lockfile integrity. |
-| **Key revocation** | Publisher key revocation requires registry calls. Currently no key is ever marked revoked. `SignatureStatus.REVOKED` exists but is not checked against the registry. | Phase 16.6+ will add online revocation checks. |
+| **Key revocation (runtime)** | `lock verify --online` detects revoked keys. Install blocks revoked keys when the registry reports status. Runtime does not check revocation — uses offline signature only. | Run `lock verify --online` in CI. |
 | **Registry response signing** | The registry response itself is not signed. A compromised registry could omit signatures or serve malicious metadata. Publisher signatures protect against artifact replacement but not metadata-only attacks. | Registry signing key infrastructure planned. |
 
 ## Privacy boundary

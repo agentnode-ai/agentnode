@@ -1,9 +1,10 @@
-"""Tests for agentnode lock seal / lock verify CLI — Phase 15.2 + 16.5."""
+"""Tests for agentnode lock seal / lock verify CLI — Phase 15.2 + 16.5 + TG-2."""
 import base64
 import hashlib as _hashlib
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -429,3 +430,152 @@ class TestLockVerifyPublisherSlug:
         assert rc == 0
         report = json.loads(capsys.readouterr().out)
         assert "publisher_slug" not in report["signatures"]["test-pack"]
+
+
+# ---------------------------------------------------------------------------
+# lock verify --online (TG-2)
+# ---------------------------------------------------------------------------
+
+def _mock_key_status(status, key_id="ed25519:abc", error=None):
+    """Build a mock KeyStatusResult."""
+    from agentnode_sdk.key_status import KeyStatusResult, OnlineKeyStatus
+    return KeyStatusResult(
+        status=OnlineKeyStatus(status),
+        key_id=key_id,
+        publisher_slug="acme-ai",
+        error=error,
+    )
+
+
+class TestLockVerifyOnline:
+    def test_online_active_key_exit_0(self, tmp_lockfile, capsys):
+        slug, entry = _make_signed_entry(slug="test-pack")
+        entry["publisher_slug"] = "acme-ai"
+        entry = seal_entry(entry)
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        with patch(
+            "agentnode_sdk.key_status.check_key_status",
+            return_value=_mock_key_status("active"),
+        ):
+            rc = main(["lock", "verify", "--online"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "verified online" in out
+
+    def test_online_revoked_key_exit_1(self, tmp_lockfile, capsys):
+        slug, entry = _make_signed_entry(slug="test-pack")
+        entry["publisher_slug"] = "acme-ai"
+        entry = seal_entry(entry)
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        with patch(
+            "agentnode_sdk.key_status.check_key_status",
+            return_value=_mock_key_status("revoked"),
+        ):
+            rc = main(["lock", "verify", "--online"])
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "REVOKED" in out
+
+    def test_online_unknown_key_exit_1(self, tmp_lockfile, capsys):
+        slug, entry = _make_signed_entry(slug="test-pack")
+        entry["publisher_slug"] = "acme-ai"
+        entry = seal_entry(entry)
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        with patch(
+            "agentnode_sdk.key_status.check_key_status",
+            return_value=_mock_key_status("unknown", error="Key not found in registry"),
+        ):
+            rc = main(["lock", "verify", "--online"])
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "not found" in out
+
+    def test_online_network_error_exit_1(self, tmp_lockfile, capsys):
+        slug, entry = _make_signed_entry(slug="test-pack")
+        entry["publisher_slug"] = "acme-ai"
+        entry = seal_entry(entry)
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        with patch(
+            "agentnode_sdk.key_status.check_key_status",
+            return_value=_mock_key_status("error", error="Registry unreachable"),
+        ):
+            rc = main(["lock", "verify", "--online"])
+        assert rc == 1
+
+    def test_online_mismatch_exit_1(self, tmp_lockfile, capsys):
+        slug, entry = _make_signed_entry(slug="test-pack")
+        entry["publisher_slug"] = "acme-ai"
+        entry = seal_entry(entry)
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        with patch(
+            "agentnode_sdk.key_status.check_key_status",
+            return_value=_mock_key_status("mismatch", error="Cached public key does not match registry"),
+        ):
+            rc = main(["lock", "verify", "--online"])
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "MISMATCH" in out
+
+    def test_online_json_includes_key_status(self, tmp_lockfile, capsys):
+        slug, entry = _make_signed_entry(slug="test-pack")
+        entry["publisher_slug"] = "acme-ai"
+        entry = seal_entry(entry)
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        with patch(
+            "agentnode_sdk.key_status.check_key_status",
+            return_value=_mock_key_status("active"),
+        ):
+            rc = main(["lock", "verify", "--online", "--json"])
+        assert rc == 0
+        report = json.loads(capsys.readouterr().out)
+        assert "key_status" in report
+        assert report["key_status"][slug]["status"] == "active"
+        assert "key_status_failures" not in report
+
+    def test_online_json_includes_failures(self, tmp_lockfile, capsys):
+        slug, entry = _make_signed_entry(slug="test-pack")
+        entry["publisher_slug"] = "acme-ai"
+        entry = seal_entry(entry)
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        with patch(
+            "agentnode_sdk.key_status.check_key_status",
+            return_value=_mock_key_status("revoked"),
+        ):
+            rc = main(["lock", "verify", "--online", "--json"])
+        assert rc == 1
+        report = json.loads(capsys.readouterr().out)
+        assert report["ok"] is False
+        assert "key_status_failures" in report
+        assert slug in report["key_status_failures"]
+
+    def test_online_unsigned_package_skipped(self, tmp_lockfile, capsys):
+        entry = seal_entry(_make_entry(publisher_slug="acme-ai"))
+        _write_lockfile(tmp_lockfile, {"test-pack": entry})
+        with patch(
+            "agentnode_sdk.key_status.check_key_status",
+        ) as mock_ks:
+            rc = main(["lock", "verify", "--online"])
+        assert rc == 0
+        mock_ks.assert_not_called()
+
+    def test_online_no_publisher_slug_skipped(self, tmp_lockfile, capsys):
+        slug, entry = _make_signed_entry(slug="test-pack")
+        entry = seal_entry(entry)
+        _write_lockfile(tmp_lockfile, {slug: entry})
+        with patch(
+            "agentnode_sdk.key_status.check_key_status",
+        ) as mock_ks:
+            rc = main(["lock", "verify", "--online"])
+        assert rc == 0
+        mock_ks.assert_not_called()
+
+    def test_online_without_signed_packages_exit_0(self, tmp_lockfile, capsys):
+        entry = seal_entry(_make_entry())
+        _write_lockfile(tmp_lockfile, {"test-pack": entry})
+        rc = main(["lock", "verify", "--online"])
+        assert rc == 0
+
+    def test_online_empty_lockfile_exit_0(self, tmp_lockfile, capsys):
+        _write_lockfile(tmp_lockfile, {})
+        rc = main(["lock", "verify", "--online"])
+        assert rc == 0

@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased — Online Key Verification
+
+Online publisher key verification and install-time revocation.
+`lock verify --online` checks each signed package's key against the
+registry. Fail-closed: unreachable registry causes exit code 1,
+making it a reliable CI gate.
+
+### Added
+
+- **`agentnode lock verify --online`** — verify publisher key status
+  against the registry. Reports active/revoked/unknown/mismatch per
+  signed package. Non-active statuses cause exit code 1.
+- **Install-time revocation** — install blocks packages with revoked
+  publisher keys when the registry reports key status in the install
+  response. No additional network call.
+- **`key_status.py`** — new module for online key verification. Uses
+  httpx directly (same pattern as trust refresh). Keeps `signature.py`
+  offline-only (OC-2 preserved).
+- **`OnlineKeyStatus` enum** — typed statuses (active/revoked/unknown/
+  mismatch/error) with severity classification (critical/high/medium/
+  availability/none).
+
+### Security
+
+- `lock verify --online` is fail-closed: registry unreachable → exit 1.
+- Revocation is asymmetric: new install with revoked key → deny;
+  already installed + revoked → warn + audit, no runtime deny.
+- `mismatch` (cached ≠ registry public key) is severity "critical" —
+  indicates lockfile manipulation, key rebinding, or registry compromise.
+- No runtime enforcement — runtime stays offline integrity/authenticity.
+
 ## Unreleased — Publisher Identity Cache
 
 Offline publisher identity, integrity-protected. `publisher_slug` is

@@ -187,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     lock_verify_p = lock_sub.add_parser("verify", help="Verify integrity of all entries")
     lock_verify_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     lock_verify_p.add_argument("--strict", action="store_true", help="Treat missing integrity as failure")
+    lock_verify_p.add_argument("--online", action="store_true", help="Verify publisher key status against the registry")
 
     # serve
     sub.add_parser("serve", help="Start MCP server (stdio)")
@@ -324,7 +325,9 @@ def main(argv: list[str] | None = None) -> int:
                 return commands.cmd_lock_seal(force=args.force)
             if args.lock_action == "verify":
                 return commands.cmd_lock_verify(
-                    json_output=args.json_output, strict=args.strict,
+                    json_output=args.json_output,
+                    strict=args.strict,
+                    online=args.online,
                 )
             lock_parser.print_help()
             return 1

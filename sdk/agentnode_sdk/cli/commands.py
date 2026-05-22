@@ -2891,7 +2891,7 @@ def _sig_display(sig_dict: dict) -> str:
     return f"signature: {status.upper()}"
 
 
-def cmd_lock_verify(*, json_output: bool = False, strict: bool = False) -> int:
+def cmd_lock_verify(*, json_output: bool = False, strict: bool = False, online: bool = False) -> int:
     """Verify integrity of all lockfile entries."""
     import warnings
 
@@ -2931,11 +2931,39 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False) -> int:
         if sig.status in (SignatureStatus.INVALID, SignatureStatus.UNKNOWN_KEY):
             sig_invalid.append(slug)
 
+    # Online key verification pass
+    key_status_results: dict[str, dict] = {}
+    online_failures: list[str] = []
+
+    if online:
+        from agentnode_sdk.key_status import check_key_status, OnlineKeyStatus
+        from agentnode_sdk.signature import _extract_publisher_signature
+
+        for slug, entry in packages.items():
+            pub_slug = entry.get("publisher_slug")
+            sig_data = _extract_publisher_signature(entry)
+            if not pub_slug or not sig_data:
+                continue
+            key_id = sig_data.get("key_id")
+            pub_key = sig_data.get("public_key")
+            if not key_id:
+                continue
+
+            ks = check_key_status(pub_slug, key_id, pub_key)
+            ks_dict: dict[str, str] = {"status": ks.status.value, "key_id": ks.key_id}
+            if ks.error:
+                ks_dict["error"] = ks.error
+            key_status_results[slug] = ks_dict
+
+            if ks.status != OnlineKeyStatus.ACTIVE:
+                online_failures.append(slug)
+
     total = len(packages)
     has_mismatch = len(mismatch) > 0
     has_missing_strict = strict and len(missing) > 0
     has_sig_invalid = len(sig_invalid) > 0
-    ok = not has_mismatch and not has_missing_strict and not has_sig_invalid
+    has_online_failure = online and len(online_failures) > 0
+    ok = not has_mismatch and not has_missing_strict and not has_sig_invalid and not has_online_failure
 
     if json_output:
         report: dict = {
@@ -2948,6 +2976,10 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False) -> int:
         }
         if sig_invalid:
             report["signature_invalid"] = sorted(sig_invalid)
+        if online:
+            report["key_status"] = key_status_results
+            if online_failures:
+                report["key_status_failures"] = sorted(online_failures)
         print(json.dumps(report, indent=2))
         return 0 if ok else 1
 
@@ -2977,6 +3009,22 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False) -> int:
     if missing:
         parts.append(f"{len(missing)} missing")
     print(f"\n  {', '.join(parts)} ({total} total)")
+
+    if online and key_status_results:
+        print()
+        for slug in sorted(key_status_results):
+            ks = key_status_results[slug]
+            if ks["status"] == "active":
+                print(f"  ✓ {slug}: publisher key verified online")
+            elif ks["status"] == "revoked":
+                print(f"  ✗ {slug}: publisher key REVOKED")
+            elif ks["status"] == "mismatch":
+                print(f"  ✗ {slug}: publisher key MISMATCH (cached ≠ registry)")
+            elif ks["status"] == "unknown":
+                print(f"  ? {slug}: publisher key not found in registry")
+            else:
+                err = ks.get("error", "unknown error")
+                print(f"  ✗ {slug}: key status check failed ({err})")
 
     for slug in sorted(sig_invalid):
         err = sig_results[slug].get("error", sig_results[slug]["status"])

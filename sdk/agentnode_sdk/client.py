@@ -569,6 +569,7 @@ class AgentNodeClient:
         trust_level = None
         verification_tier = None
         publisher_slug = None
+        key_status = None
         try:
             detail = self._request("GET", f"/packages/{slug}")
             # trust_level lives in publisher.trust_level or blocks.trust.publisher_trust_level,
@@ -579,6 +580,7 @@ class AgentNodeClient:
                 or "unverified"
             )
             publisher_slug = detail.get("publisher", {}).get("slug")
+            key_status = detail.get("publisher", {}).get("key_status")
             lv = detail.get("latest_version") or {}
             verification_tier = lv.get("verification_tier")
         except Exception:
@@ -717,6 +719,7 @@ class AgentNodeClient:
             agent=meta.agent,
             signatures=meta.signatures,
             publisher_slug=publisher_slug,
+            key_status=key_status,
         )
 
         return InstallResult(

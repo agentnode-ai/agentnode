@@ -1613,3 +1613,111 @@ class TestInstallerPublisherSlug:
         entry = lock["packages"]["test-pack"]
         assert entry["publisher_slug"] is None
         assert entry["_integrity"]["canonical_version"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Install-time revocation deny (TG-2)
+# ---------------------------------------------------------------------------
+
+class TestInstallerKeyStatusRevocation:
+    """Verify install_package() blocks install when key_status is revoked."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp_lockfile(self, tmp_path, monkeypatch):
+        self.lf = tmp_path / "agentnode.lock"
+        monkeypatch.setenv("AGENTNODE_LOCKFILE", str(self.lf))
+        self.tmp_path = tmp_path
+
+    def _mock_install(self, monkeypatch):
+        from agentnode_sdk import installer
+        pkg_dir = self.tmp_path / "extracted" / "pkg"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        (pkg_dir / "my_pack").mkdir(exist_ok=True)
+        (pkg_dir / "my_pack" / "tool.py").write_text("def run(): pass")
+        monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
+        monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "abc123def456")
+        monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
+        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
+
+    def test_revoked_key_blocks_install(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        sigs = _real_sign_entry("test-pack", {
+            "version": "1.0.0",
+            "package_type": "toolpack",
+            "runtime": "python",
+            "entrypoint": "my_pack.tool",
+            "artifact_hash": "sha256:abc123def456",
+            "tools": [],
+            "permissions": {"network_level": "none"},
+            "prompts": [],
+            "resources": [],
+            "connector": None,
+            "agent": None,
+        })
+        with pytest.raises(RuntimeError, match="revoked"):
+            install_package(
+                slug="test-pack",
+                version="1.0.0",
+                artifact_url="https://example.com/pkg.tar.gz",
+                artifact_hash="sha256:abc123def456",
+                entrypoint="my_pack.tool",
+                trust_level="trusted",
+                permissions={"network_level": "none"},
+                signatures=sigs,
+                publisher_slug="acme-ai",
+                key_status="revoked",
+            )
+
+    def test_active_key_allows_install(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        result = install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+            publisher_slug="acme-ai",
+            key_status="active",
+        )
+        assert result["installed"] is True
+
+    def test_none_key_status_allows_install(self, monkeypatch):
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        result = install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+            publisher_slug="acme-ai",
+            key_status=None,
+        )
+        assert result["installed"] is True
+
+    def test_revoked_key_unsigned_package_not_blocked(self, monkeypatch):
+        """Unsigned packages ignore key_status — revocation only applies to signed packages."""
+        self._mock_install(monkeypatch)
+        from agentnode_sdk.installer import install_package
+
+        result = install_package(
+            slug="test-pack",
+            version="1.0.0",
+            artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:abc123def456",
+            entrypoint="my_pack.tool",
+            trust_level="trusted",
+            permissions={"network_level": "none"},
+            key_status="revoked",
+        )
+        assert result["installed"] is True
