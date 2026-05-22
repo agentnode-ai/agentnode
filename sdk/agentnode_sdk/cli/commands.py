@@ -47,6 +47,34 @@ def cmd_dashboard() -> int:
     print(kv("Code execution", perms.get("code_execution", "sandboxed")))
     print()
     print(kv("Installed capabilities", str(pkg_count)))
+
+    packages = lock.get("packages", {})
+    if packages:
+        from agentnode_sdk.signature import verify_entry_signature, SignatureStatus
+        from agentnode_sdk.lock_integrity import verify_entry
+
+        signed_count = 0
+        unsigned_count = 0
+        sealed_count = 0
+
+        for s, entry in packages.items():
+            sig = verify_entry_signature(s, entry)
+            if sig.status == SignatureStatus.VALID:
+                signed_count += 1
+            else:
+                unsigned_count += 1
+            integrity = verify_entry(s, entry)
+            if integrity.status == "verified":
+                sealed_count += 1
+
+        print()
+        print("  Trust")
+        print("  " + "-" * 5)
+        print(kv("Publisher verified", str(signed_count)))
+        if unsigned_count:
+            print(kv("Unverified", str(unsigned_count)))
+        print(kv("Integrity sealed", str(sealed_count)))
+
     print()
     print(kv("Config", str(config_path())))
     print()
@@ -763,6 +791,7 @@ def cmd_install(capability: str, version: str | None = None, yes: bool = False) 
                 print(f"\n  {result.slug}@{result.version} is already installed.\n")
             else:
                 print(f"\n  Installed {result.slug}@{result.version}.")
+                _print_install_trust_summary(result.slug)
                 _print_install_guard_summary(result.slug)
                 print()
         else:
@@ -1431,8 +1460,6 @@ def cmd_inspect(slug: str, *, json_output: bool = False) -> int:
         trust_display += f"  (checked: {last_check[:10]})"
     print(kv("Trust level", trust_display))
     pub_slug = pkg.get("publisher_slug")
-    if pub_slug:
-        print(kv("Publisher", pub_slug))
     print(kv("Package type", pkg.get("package_type", "?")))
     print(kv("Runtime", pkg.get("runtime", "?")))
     print(kv("Installed at", pkg.get("installed_at", "?")))
@@ -1447,19 +1474,31 @@ def cmd_inspect(slug: str, *, json_output: bool = False) -> int:
     elif integrity_result.status == "mismatch":
         print(kv("Integrity", "MISMATCH (run 'agentnode lock verify')"))
 
-    # Signature
+    # Publisher verification
     from agentnode_sdk.signature import verify_entry_signature, SignatureStatus
     sig_result = verify_entry_signature(slug, pkg)
     if sig_result.status == SignatureStatus.VALID:
-        sig_display = f"valid (key {sig_result.key_id})" if sig_result.key_id else "valid"
-        print(kv("Signature", sig_display))
+        if pub_slug:
+            pub_display = f"{pub_slug} (verified, key {sig_result.key_id})" if sig_result.key_id else f"{pub_slug} (verified)"
+        else:
+            pub_display = f"verified (key {sig_result.key_id})" if sig_result.key_id else "verified"
+        print(kv("Publisher", pub_display))
     elif sig_result.status == SignatureStatus.MISSING:
-        print(kv("Signature", "missing"))
+        if pub_slug:
+            print(kv("Publisher", f"{pub_slug} (unverified)"))
+        else:
+            print(kv("Publisher", "unverified"))
     elif sig_result.status == SignatureStatus.REVOKED:
-        print(kv("Signature", "REVOKED"))
+        if pub_slug:
+            print(kv("Publisher", f"{pub_slug} (revoked)"))
+        else:
+            print(kv("Publisher", "revoked"))
     else:
         detail = sig_result.error or sig_result.status.value
-        print(kv("Signature", f"{sig_result.status.value.upper()} — {detail}"))
+        if pub_slug:
+            print(kv("Publisher", f"{pub_slug} ({sig_result.status.value.upper()} — {detail})"))
+        else:
+            print(kv("Publisher", f"{sig_result.status.value.upper()} — {detail})"))
 
     # Connector
     connector = pkg.get("connector")
@@ -1719,6 +1758,38 @@ def _build_guard_preview(slug: str, pkg: dict) -> list[dict] | str:
         })
 
     return previews
+
+
+def _print_install_trust_summary(slug: str) -> None:
+    """Print publisher verification status after install."""
+    import logging
+
+    from agentnode_sdk.installer import read_lockfile
+    from agentnode_sdk.signature import verify_entry_signature, SignatureStatus
+
+    try:
+        lock = read_lockfile()
+        pkg = lock.get("packages", {}).get(slug, {})
+        if not pkg:
+            return
+
+        pub_slug = pkg.get("publisher_slug")
+        sig = verify_entry_signature(slug, pkg)
+
+        if sig.status == SignatureStatus.VALID:
+            if pub_slug:
+                print(f"  Publisher: {pub_slug} (verified)")
+            else:
+                key_short = sig.key_id or "unknown key"
+                print(f"  Publisher: verified ({key_short})")
+        elif sig.status == SignatureStatus.MISSING:
+            print(f"  Publisher: unverified")
+        else:
+            print(f"  Publisher: verification failed")
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "Failed to print trust summary for %s", slug, exc_info=True,
+        )
 
 
 def _print_install_guard_summary(slug: str) -> None:
@@ -2879,16 +2950,19 @@ def cmd_lock_seal(*, force: bool = False) -> int:
 
 
 def _sig_display(sig_dict: dict) -> str:
-    """Format a signature result dict for human output."""
+    """Format a publisher verification result for human output."""
     status = sig_dict["status"]
+    pub = sig_dict.get("publisher_slug")
     if status == "valid":
+        if pub:
+            return f"publisher: {pub} (verified)"
         key_id = sig_dict.get("key_id", "")
-        return f"signature: valid ({key_id})" if key_id else "signature: valid"
+        return f"publisher: verified ({key_id})" if key_id else "publisher: verified"
     if status == "missing":
-        return "signature: missing"
+        return "publisher: unverified"
     if status == "revoked":
-        return "signature: REVOKED"
-    return f"signature: {status.upper()}"
+        return "publisher: revoked"
+    return f"publisher: {status.upper()}"
 
 
 def cmd_lock_verify(*, json_output: bool = False, strict: bool = False, online: bool = False) -> int:

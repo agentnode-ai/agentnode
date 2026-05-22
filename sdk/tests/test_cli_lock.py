@@ -307,14 +307,15 @@ class TestLockVerifySignature:
         rc = main(["lock", "verify"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "signature: valid" in out
+        assert "publisher:" in out
+        assert "verified" in out
 
     def test_verify_missing_signature_returns_0(self, tmp_lockfile, capsys):
         _write_lockfile(tmp_lockfile, {"test-pack": seal_entry(_make_entry())})
         rc = main(["lock", "verify"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "signature: missing" in out
+        assert "publisher: unverified" in out
 
     def test_verify_invalid_signature_returns_1(self, tmp_lockfile, capsys):
         slug, entry = _make_invalid_signed_entry()
@@ -365,7 +366,7 @@ class TestLockVerifySignature:
             rc = main(["lock", "verify"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "REVOKED" in out
+        assert "revoked" in out
 
     def test_verify_mixed_valid_and_unsigned(self, tmp_lockfile, capsys):
         """Valid + missing signatures: still exit 0."""
@@ -378,8 +379,8 @@ class TestLockVerifySignature:
         rc = main(["lock", "verify"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "signature: valid" in out
-        assert "signature: missing" in out
+        assert "publisher:" in out and "verified" in out
+        assert "publisher: unverified" in out
 
     def test_no_local_signing_key_loaded(self, tmp_lockfile, monkeypatch):
         """lock verify must not load or reference the local signing key."""

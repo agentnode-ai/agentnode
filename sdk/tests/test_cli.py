@@ -537,6 +537,117 @@ def test_cmd_install_respects_trust_level(capsys, saved_config):
     )
 
 
+# --- Install trust message ---
+
+
+def test_install_trust_signed_with_publisher(capsys, saved_config, isolated_env):
+    """Install with signed package shows 'Publisher: acme-ai (verified)'."""
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = _make_inspect_entry(publisher_slug="acme-ai")
+    entry["_signatures"] = _sign_entry_for_inspect("test-pack", entry)
+    sealed = seal_entry(entry)
+
+    mock_client = MagicMock()
+    install_result = MagicMock()
+    install_result.installed = True
+    install_result.already_installed = False
+    install_result.slug = "test-pack"
+    install_result.version = "1.0.0"
+    mock_client.install.return_value = install_result
+    mock_client.close = MagicMock()
+
+    _write_lockfile_with_entry(isolated_env, "test-pack", sealed)
+    with patch("agentnode_sdk.client.AgentNodeClient", return_value=mock_client):
+        code = main(["install", "test-pack", "--yes"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Publisher: acme-ai (verified)" in out
+
+
+def test_install_trust_unsigned(capsys, saved_config, isolated_env):
+    """Install with unsigned package shows 'Publisher: unverified'."""
+    from agentnode_sdk.lock_integrity import seal_entry
+    entry = _make_inspect_entry()
+    sealed = seal_entry(entry)
+
+    mock_client = MagicMock()
+    install_result = MagicMock()
+    install_result.installed = True
+    install_result.already_installed = False
+    install_result.slug = "test-pack"
+    install_result.version = "1.0.0"
+    mock_client.install.return_value = install_result
+    mock_client.close = MagicMock()
+
+    _write_lockfile_with_entry(isolated_env, "test-pack", sealed)
+    with patch("agentnode_sdk.client.AgentNodeClient", return_value=mock_client):
+        code = main(["install", "test-pack", "--yes"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Publisher: unverified" in out
+
+
+def test_install_trust_already_installed_no_publisher_line(capsys, saved_config, isolated_env):
+    """Already installed → no Publisher line shown."""
+    mock_client = MagicMock()
+    install_result = MagicMock()
+    install_result.installed = True
+    install_result.already_installed = True
+    install_result.slug = "test-pack"
+    install_result.version = "1.0.0"
+    mock_client.install.return_value = install_result
+    mock_client.close = MagicMock()
+
+    with patch("agentnode_sdk.client.AgentNodeClient", return_value=mock_client):
+        code = main(["install", "test-pack", "--yes"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Publisher:" not in out
+
+
+# --- Dashboard trust summary ---
+
+
+def test_dashboard_trust_summary(capsys, saved_config, isolated_env):
+    """Dashboard shows trust counts for signed and unsigned packages."""
+    from agentnode_sdk.lock_integrity import seal_entry
+    from agentnode_sdk.installer import LOCKFILE_VERSION
+
+    signed_entry = _make_inspect_entry(publisher_slug="acme-ai")
+    signed_entry["_signatures"] = _sign_entry_for_inspect("signed-pack", signed_entry)
+    signed_entry = seal_entry(signed_entry)
+
+    unsigned_entry = _make_inspect_entry(version="2.0.0")
+    unsigned_entry = seal_entry(unsigned_entry)
+
+    lock_path = isolated_env / "agentnode.lock"
+    lock_path.write_text(json.dumps({
+        "lockfile_version": LOCKFILE_VERSION,
+        "updated_at": "2026-05-22T00:00:00+00:00",
+        "packages": {
+            "signed-pack": signed_entry,
+            "unsigned-pack": unsigned_entry,
+        },
+    }, indent=2), encoding="utf-8")
+
+    code = main([])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Trust" in out
+    assert "Publisher verified" in out
+    assert "1" in out
+    assert "Unverified" in out
+    assert "Integrity sealed" in out
+
+
+def test_dashboard_no_trust_section_when_empty(capsys, saved_config, isolated_env):
+    """Dashboard without packages shows no Trust section."""
+    code = main([])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Publisher verified" not in out
+
+
 # --- Inspect ---
 
 
@@ -812,8 +923,8 @@ def test_inspect_signature_valid(capsys, saved_config, isolated_env):
     code = main(["inspect", "test-pack"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "Signature" in out
-    assert "valid" in out
+    assert "Publisher" in out
+    assert "verified" in out
 
 
 def test_inspect_signature_missing(capsys, saved_config, isolated_env):
@@ -823,8 +934,8 @@ def test_inspect_signature_missing(capsys, saved_config, isolated_env):
     code = main(["inspect", "test-pack"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "Signature" in out
-    assert "missing" in out
+    assert "Publisher" in out
+    assert "unverified" in out
 
 
 def test_inspect_signature_invalid(capsys, saved_config, isolated_env):
@@ -836,7 +947,7 @@ def test_inspect_signature_invalid(capsys, saved_config, isolated_env):
     code = main(["inspect", "test-pack"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "Signature" in out
+    assert "Publisher" in out
     assert "INVALID" in out
 
 
@@ -911,7 +1022,8 @@ def test_inspect_publisher_slug_omitted_when_none(capsys, saved_config, isolated
     code = main(["inspect", "test-pack"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "Publisher" not in out
+    assert "Publisher" in out
+    assert "unverified" in out
 
 
 def test_inspect_json_includes_publisher_slug(capsys, saved_config, isolated_env):
