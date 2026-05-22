@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import httpx
 
-from agentnode_sdk.client import DEFAULT_BASE_URL, ERROR_CLASS_MAP
+from agentnode_sdk.client import DEFAULT_BASE_URL, ERROR_CLASS_MAP, _verify_registry_signature
 from agentnode_sdk.exceptions import AgentNodeError
 
 
@@ -130,6 +130,7 @@ class AsyncAgentNode:
 
     def _handle(self, response: httpx.Response) -> dict:
         """Parse response. Raise typed AgentNodeError on API errors."""
+        _verify_registry_signature(response)
         if response.status_code >= 400:
             code, message = "UNKNOWN", response.text
             try:

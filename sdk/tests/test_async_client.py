@@ -1,10 +1,15 @@
 """Unit tests for AsyncAgentNode client."""
+import base64
+from types import MappingProxyType
+from unittest.mock import patch
+
 import httpx
 import pytest
 import respx
 
 from agentnode_sdk import AsyncAgentNode
 from agentnode_sdk.exceptions import AgentNodeError, NotFoundError
+from agentnode_sdk.registry_trust import RegistryKey
 
 BASE = "https://api.agentnode.net"
 
@@ -341,3 +346,107 @@ async def test_p1_sdk4_non_json_response_raises_agentnode_error():
     async with AsyncAgentNode(api_key="k") as client:
         with pytest.raises(AgentNodeError):
             await client.get_package("html")
+
+
+# ---------------------------------------------------------------------------
+# TG-4: Registry response authenticity
+# ---------------------------------------------------------------------------
+
+def _patch_registry_keys(keys):
+    return patch(
+        "agentnode_sdk.registry_trust.REGISTRY_KEYS",
+        MappingProxyType(keys),
+    )
+
+
+_FAKE_KEY = RegistryKey(
+    key_id="registry-2026",
+    algorithm="ed25519",
+    public_key=base64.b64encode(b"\x00" * 32).decode(),
+    not_after="2099-12-31",
+)
+
+_PACKAGE_JSON = {
+    "slug": "test-pack", "name": "Test", "package_type": "toolpack",
+    "summary": "Test", "description": None, "download_count": 0,
+    "is_deprecated": False, "latest_version": None,
+}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_tg4_bootstrap_allows_trust_critical():
+    """REGISTRY_KEYS empty → BOOTSTRAP → request succeeds."""
+    respx.get(f"{BASE}/v1/packages/test-pack").mock(
+        return_value=httpx.Response(200, json=_PACKAGE_JSON)
+    )
+    async with AsyncAgentNode(api_key="k") as client:
+        result = await client.get_package("test-pack")
+    assert result["slug"] == "test-pack"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_tg4_missing_signature_blocks_trust_critical():
+    """Enforcement active + no signature header → deny."""
+    respx.get(f"{BASE}/v1/packages/test-pack").mock(
+        return_value=httpx.Response(200, json=_PACKAGE_JSON)
+    )
+    with _patch_registry_keys({"registry-2026": _FAKE_KEY}):
+        async with AsyncAgentNode(api_key="k") as client:
+            with pytest.raises(AgentNodeError) as exc:
+                await client.get_package("test-pack")
+            assert exc.value.code == "REGISTRY_SIGNATURE_MISSING"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_tg4_invalid_signature_blocks():
+    """Enforcement active + bad signature → REGISTRY_SIGNATURE_INVALID."""
+    bad_sig = base64.b64encode(b"\xff" * 64).decode()
+    respx.get(f"{BASE}/v1/packages/test-pack").mock(
+        return_value=httpx.Response(
+            200,
+            json=_PACKAGE_JSON,
+            headers={"X-AgentNode-Signature": f"ed25519:registry-2026:{bad_sig}"},
+        )
+    )
+    with _patch_registry_keys({"registry-2026": _FAKE_KEY}):
+        async with AsyncAgentNode(api_key="k") as client:
+            with pytest.raises(AgentNodeError) as exc:
+                await client.get_package("test-pack")
+            assert exc.value.code == "REGISTRY_SIGNATURE_INVALID"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_tg4_unknown_key_blocks():
+    """Signature with unknown key_id → REGISTRY_KEY_UNKNOWN."""
+    sig = base64.b64encode(b"\x00" * 64).decode()
+    respx.get(f"{BASE}/v1/packages/test-pack").mock(
+        return_value=httpx.Response(
+            200,
+            json=_PACKAGE_JSON,
+            headers={"X-AgentNode-Signature": f"ed25519:unknown-key:{sig}"},
+        )
+    )
+    with _patch_registry_keys({"registry-2026": _FAKE_KEY}):
+        async with AsyncAgentNode(api_key="k") as client:
+            with pytest.raises(AgentNodeError) as exc:
+                await client.get_package("test-pack")
+            assert exc.value.code == "REGISTRY_KEY_UNKNOWN"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_tg4_non_trust_critical_skips_check():
+    """POST /search is not trust-critical → no signature check."""
+    respx.post(f"{BASE}/v1/search").mock(
+        return_value=httpx.Response(200, json={
+            "query": "test", "hits": [], "total": 0,
+        })
+    )
+    with _patch_registry_keys({"registry-2026": _FAKE_KEY}):
+        async with AsyncAgentNode(api_key="k") as client:
+            result = await client.search("test")
+    assert result["total"] == 0

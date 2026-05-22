@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1 — AsyncAgentNode Registry Trust Parity
+
+- **AsyncAgentNode** now verifies registry response signatures on
+  trust-critical GET endpoints (parity with sync `AgentNodeClient`
+  and `AgentNode`).
+
 ## 0.10.0 — Registry Response Authenticity
 
 Cryptographic verification of registry API responses. The SDK no longer
