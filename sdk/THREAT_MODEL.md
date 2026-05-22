@@ -1,6 +1,6 @@
 # AgentNode SDK — Threat Model
 
-Last updated: 2026-05-21
+Last updated: 2026-05-22
 
 ## Scope
 
@@ -36,6 +36,10 @@ This document covers the AgentNode SDK's local execution model — the code that
 | **Lockfile entry integrity** | Per-entry SHA-256 hash over canonical fields (entrypoint, runtime, remote_endpoint, mcp_command, permissions, tools, connector, agent, etc.). Detects post-install mutation of lockfile entries. Default mode: warn + audit. Strict mode: deny before execution. | `lock_integrity.py`, `runner.py` |
 | **Lockfile integrity CLI** | `agentnode lock seal` computes hashes, `agentnode lock verify` checks them. Exit code 1 on mismatch. `--strict` treats missing integrity as failure. Designed for CI pipelines. | `cli/commands.py` |
 | **Install-time sealing** | New installs and upgrades automatically include `_integrity` hash. No manual seal step required for new packages. | `installer.py` |
+| **Publisher signature verification** | Ed25519 signatures verified on install before lockfile write. Invalid signature → install blocked (no override). Missing signature → warn (gradual adoption). Verification uses cached public key only (no registry call). | `signature.py`, `installer.py` |
+| **Publish-time signing** | `agentnode publish` signs the canonical payload (slug + all canonical fields) with the publisher's Ed25519 private key. Signing failure warns but does not block publishing. | `cli/publish.py`, `signing_key.py` |
+| **Signature integrity (canonical v2)** | `_integrity` v2 hash covers `_signatures`. Swapping the signature + public key in a lockfile entry invalidates the integrity hash. v1 entries without signatures continue to verify against v1 field list. | `lock_integrity.py` |
+| **Signature status in CLI** | `agentnode lock verify` reports signature status per package with exit code 1 on invalid/unknown_key. `agentnode inspect` shows signature details. Both use cached public key — no registry dependency. | `cli/commands.py` |
 
 ## What AgentNode does NOT enforce
 
@@ -50,7 +54,8 @@ This document covers the AgentNode SDK's local execution model — the code that
 | **Inter-tool data leakage** | Tools in the same subprocess session share the filtered environment. | No current mitigation. |
 | **Lockfile entry addition** | Integrity is per-entry, not global. Adding a new malicious entry is not detected. | Review lockfile diffs in PRs. Global lockfile hash planned for a future phase. |
 | **`trust_level` manipulation** | `trust_level` is mutable (TTL refresh updates it). Local manipulation from `unverified` to `trusted` is not detected by integrity checks. | Trust enforcement relies on policy/TTL mechanisms, not lockfile integrity. |
-| **Publisher signatures** | Lockfile integrity detects mutation but not origin. A compromised registry could serve malicious entries that pass integrity checks after install. | Phase 16+ will add publisher signing. |
+| **Key revocation** | Publisher key revocation requires registry calls. Currently no key is ever marked revoked. `SignatureStatus.REVOKED` exists but is not checked against the registry. | Phase 16.6+ will add online revocation checks. |
+| **Registry response signing** | The registry response itself is not signed. A compromised registry could omit signatures or serve malicious metadata. Publisher signatures protect against artifact replacement but not metadata-only attacks. | Registry signing key infrastructure planned. |
 
 ## Privacy boundary
 
@@ -61,6 +66,16 @@ This document covers the AgentNode SDK's local execution model — the code that
 ## Architecture summary
 
 ```
+User calls install_package()
+  → Download artifact, verify SHA-256 hash
+  → Build lock_entry from downloaded artifact (not registry metadata)
+  → Verify publisher signature: verify_entry_signature()
+      → Valid: log info, continue
+      → Missing: warn, continue (gradual adoption)
+      → Invalid/malformed/wrong-key: RuntimeError — install blocked
+  → seal_entry() (canonical_version v2 if signed, v1 if unsigned)
+  → update_lockfile() — only reached after signature verification
+
 User calls run_tool()
   → Lockfile integrity: verify_entry() — warn or deny on mismatch
   → Policy kernel: check_run() — allow / deny / prompt
@@ -102,7 +117,9 @@ User calls run_tool()
 
 ## Future work
 
-- Publisher signatures — cryptographic proof of entry origin (Phase 16+)
+- Key revocation checks — online verification of publisher key status
+- `lock verify --online` — re-fetch public key from registry
+- Registry response signing — registry-level cryptographic guarantees
 - Global lockfile hash — detect entry addition/removal
 - Subprocess filesystem isolation (workspace-only mode)
 - Network namespace isolation (Linux)

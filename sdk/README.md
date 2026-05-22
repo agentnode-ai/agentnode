@@ -295,31 +295,37 @@ inconsistencies (advisory only, never blocks).
 
 See [THREAT_MODEL.md](THREAT_MODEL.md) for the full security model.
 
-### Lockfile Integrity
+### Lockfile Integrity & Publisher Signatures
 
-Every installed package entry is sealed with a SHA-256 hash over its
-security-critical fields (entrypoint, runtime, remote_endpoint,
-mcp_command, permissions, tools, connector). Post-install tampering is
+Two layers of supply-chain protection:
+
+**Integrity** (v0.7.0) — every installed package entry is sealed with a
+SHA-256 hash over security-critical fields. Post-install tampering is
 detected before any code executes.
 
-```bash
-# Seal all entries (first time or after manual lockfile edits)
-agentnode lock seal
+**Authenticity** (v0.8.0) — publishers sign packages with Ed25519 keys.
+Install verifies the signature before writing the lockfile. Invalid
+signatures block install. Missing signatures warn but don't block
+(gradual adoption).
 
-# Verify integrity (CI-friendly, exit code 1 on mismatch)
+```bash
+# Verify integrity + signatures (CI-friendly, exit code 1 on mismatch/invalid)
 agentnode lock verify
 agentnode lock verify --strict   # also fail on missing integrity
-agentnode lock verify --json     # structured output
+agentnode lock verify --json     # structured output with signature status
 
 # Inspect a single package
 agentnode inspect pdf-reader-pack
 # → Integrity       verified
+# → Signature       valid (key ed25519:a1b2c3d4e5f6)
+
+# Seal entries after manual lockfile edits
+agentnode lock seal
 ```
 
-New installs are sealed automatically. In strict mode
-(`AGENTNODE_GUARD_STRICT=true`), tampered entries are denied at runtime.
-In default mode, mismatches produce a warning and audit entry but do not
-block execution.
+New installs are sealed and signature-verified automatically. In strict
+mode (`AGENTNODE_GUARD_STRICT=true`), tampered entries are denied at
+runtime. Invalid signatures always block install regardless of mode.
 
 ### Risk Policies
 

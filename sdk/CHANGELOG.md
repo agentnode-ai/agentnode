@@ -1,5 +1,113 @@
 # Changelog
 
+## 0.8.0 — Publisher Signatures
+
+Cryptographic proof of package origin. Publishers sign packages with
+Ed25519 keys at publish time. Install verifies signatures against the
+cached public key before writing the lockfile. Invalid signatures block
+install — no override. Missing signatures warn but never block (gradual
+publisher adoption).
+
+Together with v0.7.0 Lockfile Integrity, this closes the supply-chain
+gap: **v0.7.0 detects post-install mutation** (integrity), **v0.8.0
+verifies who authorized the entry** (authenticity).
+
+### Added
+
+- **Ed25519 publisher signatures** — publishers sign a canonical payload
+  (slug + version + entrypoint + artifact_hash + tools + permissions +
+  all canonical fields) with their Ed25519 private key at publish time.
+  Signatures are deterministic: same entry + same key = same signature.
+- **Signing key management** — `generate_ed25519_keypair()`,
+  `sign_payload()`, `load_signing_key()`, `get_or_create_signing_key()`.
+  Private key stored at `~/.agentnode/signing_key` (PEM/PKCS8, 0600
+  permissions on POSIX). Permission check warns on too-open files.
+- **Publish signing** — `agentnode publish` signs the package
+  automatically. Signing failure warns but does not block publishing
+  (resilient to key issues). Signature block included in the publish
+  API request.
+- **Install verification** — `install_package()` verifies the publisher
+  signature against the cached public key before `seal_entry()`. Policy:
+  - Valid signature: silent (log info)
+  - Missing signature: `warnings.warn()` — never silent, never blocks
+  - Invalid/malformed/wrong-key signature: `RuntimeError` before
+    `update_lockfile()` — install blocked, no partial lockfile write
+  - Private key is never loaded during install
+- **canonical_version v2** — `_integrity` hash now covers `_signatures`
+  when present. Detects signature/public-key swap attacks. v1 entries
+  (no `_signatures`) continue to verify against v1 field list. v2 is
+  produced automatically when `_signatures` are present.
+- **`agentnode lock verify` signature status** — verifies publisher
+  signatures alongside integrity for every lockfile entry. Human output
+  shows `signature: valid|missing|INVALID|REVOKED|UNKNOWN_KEY` per
+  package. JSON output includes `"signatures"` dict per package and
+  `"signature_invalid"` list. Exit code 1 on invalid/unknown_key.
+  Missing/revoked signatures do not affect exit code.
+- **`agentnode inspect` signature status** — shows `Signature` line in
+  human output and `"signature"` object in `--json` output with
+  `status`, `key_id`, `algorithm`, and `error` fields.
+- **`manifest_to_entry()`** — maps publish manifest to lockfile-entry
+  format for canonical payload consistency between publish and install.
+  Tools normalized to `{name, entrypoint}` only (no `action_type`).
+- **`SignatureStatus` enum** — `valid`, `missing`, `invalid`, `revoked`,
+  `unknown_key`. Used by all verification paths.
+- **`SignatureResult` dataclass** — carries `status`, `slug`, `key_id`,
+  and `error` from every signature verification call.
+- 68 new tests across 6 test files (signature verification, signing key
+  management, publish signing, install verification, lock verify, inspect).
+
+### Security
+
+- **Invalid signature is a hard block.** No `--force`, no override, no
+  fallback. This is the one supply-chain barrier that never bends.
+- **Signature payload uses v1 canonical fields** — never includes
+  `_signatures` (circular: the signature cannot sign itself).
+  `_integrity` v2 hash DOES include `_signatures`, protecting against
+  signature/public-key swap attacks.
+- **Verification uses cached public key only** — no registry call during
+  `lock verify` or `inspect`. Offline verification by default.
+- **Private key never leaves publisher machine** — never loaded during
+  install, lock verify, or inspect. Only used at `agentnode publish`.
+- **Lock entry verified against exact lock_entry** — not raw registry
+  metadata. Prevents publish-signs-A, install-verifies-B mismatches.
+- **Downloaded artifact hash** — lock_entry uses the hash from the
+  downloaded artifact, not the registry-provided value. Prevents
+  spoofed hash attacks.
+
+### Known Deltas
+
+- **Missing signatures are non-blocking** — by design. Publisher adoption
+  is gradual. But missing is never silent: `warnings.warn()` on install,
+  visible in `lock verify` and `inspect`.
+- **Revocation is status-only** — `SignatureStatus.REVOKED` exists but
+  revocation checks require registry calls (Phase 16.6+). Currently no
+  key is ever marked revoked.
+- **No `--online` flag yet** — `lock verify` and `inspect` use cached
+  public key. Online re-fetch and revocation checks deferred.
+- **Single signature per entry** — `_signatures.publisher` is an array
+  but only the first entry is verified. Multi-signature support deferred.
+
+### Design Constraints
+
+- Signing is Ed25519 only. No algorithm negotiation, no RSA, no ECDSA.
+  32-byte keys, 64-byte signatures, no configuration.
+- `canonical_version` is explicitly versioned: v1 (14 fields, no
+  `_signatures`), v2 (15 fields, includes `_signatures`). Future field
+  additions require a new canonical_version.
+- Private key format is PEM/PKCS8 (unencrypted). Encryption deferred.
+- Key ID format: `ed25519:{sha256_first_16_hex}` — deterministic from
+  the public key bytes.
+
+### Migration
+
+- No breaking changes. Existing v0.7.0 lockfiles without `_signatures`
+  continue to work. v1 integrity hashes remain valid.
+- Run `agentnode lock verify` to see signature status for all entries.
+- Run `agentnode inspect <slug>` to see signature details per package.
+- Signed packages get `_integrity` v2 automatically on install.
+- To generate a signing key: `agentnode publish` creates one on first use
+  at `~/.agentnode/signing_key`.
+
 ## 0.7.0 — Lockfile Integrity
 
 Detects post-install mutation of lockfile entries. Every security-critical
