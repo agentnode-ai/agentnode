@@ -120,10 +120,10 @@ User calls run_tool()
 
 ## Future work
 
-- Key revocation checks — online verification of publisher key status
-- `lock verify --online` — re-fetch public key from registry
-- Registry response signing — registry-level cryptographic guarantees
+- Registry response signing — registry-level cryptographic guarantees (TG-4)
 - Global lockfile hash — detect entry addition/removal
 - Subprocess filesystem isolation (workspace-only mode)
 - Network namespace isolation (Linux)
 - Container-based sandbox for high-risk packages
+
+See `TRUST_STACK.md` for the full trust architecture overview and gap analysis.
