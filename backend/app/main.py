@@ -163,8 +163,14 @@ app.add_middleware(
 # Error handlers
 app.add_exception_handler(AppError, app_error_handler)
 
-# Routers
+# Middleware (response order: inner → outer, so signing sees final body)
 app.add_middleware(RequestLoggingMiddleware)
+from app.shared.signing_middleware import RegistrySigningMiddleware
+app.add_middleware(
+    RegistrySigningMiddleware,
+    signing_key_b64=settings.REGISTRY_SIGNING_KEY,
+    key_id=settings.REGISTRY_SIGNING_KEY_ID,
+)
 
 app.include_router(auth_router)
 app.include_router(publishers_router)
@@ -196,6 +202,15 @@ app.include_router(support_router)
 @app.get("/v1/healthz")
 async def healthz():
     return {"status": "ok"}
+
+
+@app.get("/v1/health/signing")
+async def signing_health():
+    return {
+        "signing_active": bool(settings.REGISTRY_SIGNING_KEY),
+        "key_id": settings.REGISTRY_SIGNING_KEY_ID or None,
+        "algorithm": "ed25519" if settings.REGISTRY_SIGNING_KEY else None,
+    }
 
 
 @app.get("/readyz")

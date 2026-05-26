@@ -134,6 +134,10 @@ class Settings(BaseSettings):
     # Publish limits
     MAX_ARTIFACT_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB
 
+    # Registry signing (TG-4)
+    REGISTRY_SIGNING_KEY: str = ""        # base64-encoded PEM Ed25519 private key
+    REGISTRY_SIGNING_KEY_ID: str = ""     # e.g. "registry-2026"
+
     # Environment
     ENVIRONMENT: str = "development"
 
@@ -162,6 +166,12 @@ class Settings(BaseSettings):
                 file=sys.stderr,
             )
             sys.exit(1)
+        if not self.REGISTRY_SIGNING_KEY:
+            print(
+                "WARNING: REGISTRY_SIGNING_KEY not set — "
+                "trust-critical responses will not be signed",
+                file=sys.stderr,
+            )
 
 
 settings = Settings()
