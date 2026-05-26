@@ -225,3 +225,80 @@ async def test_register_signing_key_replaces_existing(client):
 async def test_get_signing_key_publisher_not_found(client):
     resp = await client.get("/v1/publishers/nonexistent/signing-key")
     assert resp.status_code == 404
+
+
+# --- Key-by-ID tests (GET /v1/publishers/{slug}/keys/{key_id}) ---
+
+import hashlib
+
+VALID_KEY_ID = "ed25519:" + hashlib.sha256(b"\x01" * 32).hexdigest()[:16]
+
+
+@pytest.mark.asyncio
+async def test_get_key_by_id(client):
+    token = await _create_publisher_with_token(client)
+    await client.put(
+        f"/v1/publishers/{TEST_PUBLISHER['slug']}/signing-key",
+        json={"public_key": VALID_SIGNING_KEY},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    resp = await client.get(
+        f"/v1/publishers/{TEST_PUBLISHER['slug']}/keys/{VALID_KEY_ID}"
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["key_id"] == VALID_KEY_ID
+    assert data["public_key"] == VALID_SIGNING_KEY
+    assert data["algorithm"] == "ed25519"
+    assert data["status"] == "active"
+    assert "registered_at" in data
+
+
+@pytest.mark.asyncio
+async def test_get_key_by_id_wrong_id(client):
+    token = await _create_publisher_with_token(client)
+    await client.put(
+        f"/v1/publishers/{TEST_PUBLISHER['slug']}/signing-key",
+        json={"public_key": VALID_SIGNING_KEY},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    resp = await client.get(
+        f"/v1/publishers/{TEST_PUBLISHER['slug']}/keys/ed25519:0000000000000000"
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_key_by_id_no_key_registered(client):
+    await _create_publisher_with_token(client)
+    resp = await client.get(
+        f"/v1/publishers/{TEST_PUBLISHER['slug']}/keys/{VALID_KEY_ID}"
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_key_by_id_publisher_not_found(client):
+    resp = await client.get(f"/v1/publishers/nonexistent/keys/{VALID_KEY_ID}")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_signing_key_endpoint_still_works(client):
+    """Existing /signing-key endpoint unchanged after adding /keys/{key_id}."""
+    token = await _create_publisher_with_token(client)
+    await client.put(
+        f"/v1/publishers/{TEST_PUBLISHER['slug']}/signing-key",
+        json={"public_key": VALID_SIGNING_KEY},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    resp = await client.get(f"/v1/publishers/{TEST_PUBLISHER['slug']}/signing-key")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["public_key"] == VALID_SIGNING_KEY
+    assert "registered_at" in data
+    assert "key_id" not in data
+    assert "algorithm" not in data

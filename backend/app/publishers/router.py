@@ -1,3 +1,5 @@
+import base64
+import hashlib
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends
@@ -8,6 +10,7 @@ from app.auth.models import User
 from app.database import get_session
 from app.publishers.schemas import (
     CreatePublisherRequest,
+    KeyDetailResponse,
     PublisherResponse,
     RegisterSigningKeyRequest,
     SigningKeyResponse,
@@ -70,6 +73,29 @@ async def get_signing_key(slug: str, session: AsyncSession = Depends(get_session
     return SigningKeyResponse(
         public_key=publisher.signing_public_key,
         registered_at=publisher.signing_key_registered_at,
+    )
+
+
+@router.get("/{slug}/keys/{key_id}", response_model=KeyDetailResponse, dependencies=[Depends(rate_limit(60, 60))])
+async def get_key_by_id(slug: str, key_id: str, session: AsyncSession = Depends(get_session)):
+    """Get a publisher's signing key by key_id. Public endpoint."""
+    publisher = await get_publisher_by_slug(session, slug)
+    if not publisher.signing_public_key or not publisher.signing_key_registered_at:
+        raise AppError("SIGNING_KEY_NOT_FOUND", "Publisher has no registered signing key", 404)
+
+    raw_bytes = base64.b64decode(publisher.signing_public_key)
+    fingerprint = hashlib.sha256(raw_bytes).hexdigest()[:16]
+    derived_key_id = f"ed25519:{fingerprint}"
+
+    if key_id != derived_key_id:
+        raise AppError("KEY_NOT_FOUND", f"No key with id '{key_id}'", 404)
+
+    return KeyDetailResponse(
+        key_id=derived_key_id,
+        public_key=publisher.signing_public_key,
+        algorithm="ed25519",
+        registered_at=publisher.signing_key_registered_at,
+        status="active",
     )
 
 

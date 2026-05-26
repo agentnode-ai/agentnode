@@ -58,3 +58,11 @@ class RegisterSigningKeyRequest(BaseModel):
 class SigningKeyResponse(BaseModel):
     public_key: str
     registered_at: datetime
+
+
+class KeyDetailResponse(BaseModel):
+    key_id: str
+    public_key: str
+    algorithm: str
+    registered_at: datetime
+    status: str
