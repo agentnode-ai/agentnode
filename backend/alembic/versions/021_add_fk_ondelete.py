@@ -16,51 +16,57 @@ revision = "021"
 down_revision = "020"
 
 
+def _table_exists(conn, name: str) -> bool:
+    result = conn.execute(text(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = 'public' AND table_name = :name"
+    ), {"name": name})
+    return result.scalar() is not None
+
+
 def upgrade() -> None:
     conn = op.get_bind()
 
-    # ── DB C3: package_reports.package_id → packages(id) ON DELETE CASCADE ──
-    conn.execute(text(
-        "ALTER TABLE package_reports "
-        "DROP CONSTRAINT IF EXISTS package_reports_package_id_fkey"
-    ))
-    conn.execute(text(
-        "ALTER TABLE package_reports "
-        "ADD CONSTRAINT package_reports_package_id_fkey "
-        "FOREIGN KEY (package_id) REFERENCES packages(id) ON DELETE CASCADE"
-    ))
+    # ── DB C3: package_reports FKs (table created in 022, skip if absent) ──
+    if _table_exists(conn, "package_reports"):
+        conn.execute(text(
+            "ALTER TABLE package_reports "
+            "DROP CONSTRAINT IF EXISTS package_reports_package_id_fkey"
+        ))
+        conn.execute(text(
+            "ALTER TABLE package_reports "
+            "ADD CONSTRAINT package_reports_package_id_fkey "
+            "FOREIGN KEY (package_id) REFERENCES packages(id) ON DELETE CASCADE"
+        ))
+        conn.execute(text(
+            "ALTER TABLE package_reports "
+            "ALTER COLUMN reporter_user_id DROP NOT NULL"
+        ))
+        conn.execute(text(
+            "ALTER TABLE package_reports "
+            "DROP CONSTRAINT IF EXISTS package_reports_reporter_user_id_fkey"
+        ))
+        conn.execute(text(
+            "ALTER TABLE package_reports "
+            "ADD CONSTRAINT package_reports_reporter_user_id_fkey "
+            "FOREIGN KEY (reporter_user_id) REFERENCES users(id) ON DELETE SET NULL"
+        ))
 
-    # ── DB C3: package_reports.reporter_user_id → users(id) ON DELETE SET NULL ──
-    # Column must be nullable to support SET NULL
-    conn.execute(text(
-        "ALTER TABLE package_reports "
-        "ALTER COLUMN reporter_user_id DROP NOT NULL"
-    ))
-    conn.execute(text(
-        "ALTER TABLE package_reports "
-        "DROP CONSTRAINT IF EXISTS package_reports_reporter_user_id_fkey"
-    ))
-    conn.execute(text(
-        "ALTER TABLE package_reports "
-        "ADD CONSTRAINT package_reports_reporter_user_id_fkey "
-        "FOREIGN KEY (reporter_user_id) REFERENCES users(id) ON DELETE SET NULL"
-    ))
-
-    # ── DB C4: admin_audit_logs.admin_user_id → users(id) ON DELETE SET NULL ──
-    # Column must be nullable to support SET NULL
-    conn.execute(text(
-        "ALTER TABLE admin_audit_logs "
-        "ALTER COLUMN admin_user_id DROP NOT NULL"
-    ))
-    conn.execute(text(
-        "ALTER TABLE admin_audit_logs "
-        "DROP CONSTRAINT IF EXISTS admin_audit_logs_admin_user_id_fkey"
-    ))
-    conn.execute(text(
-        "ALTER TABLE admin_audit_logs "
-        "ADD CONSTRAINT admin_audit_logs_admin_user_id_fkey "
-        "FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL"
-    ))
+    # ── DB C4: admin_audit_logs FKs (table created in 022, skip if absent) ──
+    if _table_exists(conn, "admin_audit_logs"):
+        conn.execute(text(
+            "ALTER TABLE admin_audit_logs "
+            "ALTER COLUMN admin_user_id DROP NOT NULL"
+        ))
+        conn.execute(text(
+            "ALTER TABLE admin_audit_logs "
+            "DROP CONSTRAINT IF EXISTS admin_audit_logs_admin_user_id_fkey"
+        ))
+        conn.execute(text(
+            "ALTER TABLE admin_audit_logs "
+            "ADD CONSTRAINT admin_audit_logs_admin_user_id_fkey "
+            "FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL"
+        ))
 
     # ── DB C5: capabilities.capability_id → capability_taxonomy(id) ON DELETE CASCADE ──
     conn.execute(text(

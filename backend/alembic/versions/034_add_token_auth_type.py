@@ -16,6 +16,11 @@ down_revision = "033"
 
 def upgrade() -> None:
     conn = op.get_bind()
+    type_exists = conn.execute(text(
+        "SELECT 1 FROM pg_type WHERE typname = 'connector_auth_type'"
+    )).scalar()
+    if type_exists is None:
+        return
     result = conn.execute(text(
         "SELECT 1 FROM pg_enum "
         "JOIN pg_type ON pg_enum.enumtypid = pg_type.oid "

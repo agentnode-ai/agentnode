@@ -25,6 +25,14 @@ def _index_exists(conn, index_name: str) -> bool:
     return result.scalar() is not None
 
 
+def _table_exists(conn, table_name: str) -> bool:
+    result = conn.execute(text(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = 'public' AND table_name = :name"
+    ), {"name": table_name})
+    return result.scalar() is not None
+
+
 def upgrade() -> None:
     conn = op.get_bind()
 
@@ -47,7 +55,7 @@ def upgrade() -> None:
     ]
 
     for name, table, columns in indices:
-        if not _index_exists(conn, name):
+        if _table_exists(conn, table) and not _index_exists(conn, name):
             op.create_index(name, table, columns)
 
     # Composite listing index (Perf 2.3)

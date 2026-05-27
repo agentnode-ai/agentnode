@@ -21,8 +21,10 @@ sys.path.insert(0, ".")
 
 from app.config import settings  # noqa: E402
 from app.database import async_session_factory  # noqa: E402
+from app.auth.models import User  # noqa: E402, F401
 from app.packages.models import Package, PackageVersion  # noqa: E402
 from app.publishers.models import Publisher  # noqa: E402
+from app.verification.models import VerificationResult  # noqa: E402, F401
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("seed_mcp")

@@ -6,6 +6,7 @@ is_system_publisher is internal-only, never client-settable.
 Revision ID: 036
 Revises: 035
 """
+import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import text
 
@@ -17,15 +18,15 @@ down_revision = "035"
 def upgrade() -> None:
     op.add_column(
         "publishers",
-        op.Column("is_system_publisher", op.Boolean(), nullable=False, server_default="false"),
+        sa.Column("is_system_publisher", sa.Boolean(), nullable=False, server_default="false"),
     )
 
     conn = op.get_bind()
 
     # Create system user if not exists
     conn.execute(text("""
-        INSERT INTO users (id, email, username, password_hash, is_active)
-        VALUES (gen_random_uuid(), 'system@agentnode.net', 'agentnode-system', '!locked', true)
+        INSERT INTO users (id, email, username, password_hash)
+        VALUES (gen_random_uuid(), 'system@agentnode.net', 'agentnode-system', '!locked')
         ON CONFLICT (email) DO NOTHING
     """))
 
