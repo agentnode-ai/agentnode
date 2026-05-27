@@ -560,6 +560,7 @@ class AgentNodeClient:
             agent=data.get("agent"),
             signatures=data.get("_signatures"),
             publisher_slug=data.get("publisher", {}).get("slug"),
+            mcp_server=data.get("mcp_server"),
         )
 
     # --- Download ---
@@ -760,6 +761,10 @@ class AgentNodeClient:
             if c.capability_type == "tool" and c.entrypoint
         ]
 
+        mcp_command = None
+        if meta.mcp_server and isinstance(meta.mcp_server, dict):
+            mcp_command = meta.mcp_server.get("command")
+
         result = install_package(
             slug=slug,
             version=meta.version,
@@ -776,6 +781,8 @@ class AgentNodeClient:
             signatures=meta.signatures,
             publisher_slug=publisher_slug,
             key_status=key_status,
+            runtime=meta.runtime,
+            mcp_command=mcp_command,
         )
 
         return InstallResult(

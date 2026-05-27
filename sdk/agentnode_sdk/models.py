@@ -145,6 +145,7 @@ class InstallMetadata:
     agent: dict | None = None
     signatures: dict | None = None
     publisher_slug: str | None = None
+    mcp_server: dict | None = None
 
 
 @dataclass

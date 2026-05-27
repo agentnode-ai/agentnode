@@ -128,6 +128,173 @@ def test_get_install_metadata():
 
 
 @respx.mock
+def test_get_install_metadata_mcp_server():
+    """install-info with mcp_server block is parsed into InstallMetadata.mcp_server."""
+    respx.get(f"{BASE}/v1/packages/mcp-filesystem/install-info").mock(
+        return_value=httpx.Response(200, json={
+            "slug": "mcp-filesystem",
+            "version": "0.1.0",
+            "package_type": "toolpack",
+            "install_mode": "package",
+            "hosting_type": "agentnode_hosted",
+            "runtime": "mcp",
+            "entrypoint": None,
+            "artifact": None,
+            "capabilities": [],
+            "dependencies": [],
+            "permissions": None,
+            "mcp_server": {
+                "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem@2025.3.28"],
+                "transport": "stdio",
+                "npm_package": "@modelcontextprotocol/server-filesystem",
+                "source_repo": "https://github.com/modelcontextprotocol/servers",
+                "env_keys": [],
+            },
+        })
+    )
+
+    with AgentNodeClient() as client:
+        meta = client.get_install_metadata("mcp-filesystem")
+        assert meta.slug == "mcp-filesystem"
+        assert meta.runtime == "mcp"
+        assert meta.mcp_server is not None
+        assert meta.mcp_server["command"] == [
+            "npx", "-y", "@modelcontextprotocol/server-filesystem@2025.3.28",
+        ]
+        assert meta.mcp_server["transport"] == "stdio"
+        assert meta.mcp_server["env_keys"] == []
+
+
+@respx.mock
+def test_get_install_metadata_no_mcp_server():
+    """Non-MCP install-info leaves mcp_server as None."""
+    respx.get(f"{BASE}/v1/packages/pdf-reader/install-info").mock(
+        return_value=httpx.Response(200, json={
+            "slug": "pdf-reader",
+            "version": "1.0.0",
+            "package_type": "toolpack",
+            "install_mode": "package",
+            "hosting_type": "agentnode_hosted",
+            "runtime": "python",
+            "entrypoint": "pdf_reader.tool",
+            "artifact": None,
+            "capabilities": [],
+            "dependencies": [],
+            "permissions": None,
+        })
+    )
+
+    with AgentNodeClient() as client:
+        meta = client.get_install_metadata("pdf-reader")
+        assert meta.mcp_server is None
+
+
+def _mock_install_endpoints(slug, install_info_json):
+    """Mock all endpoints that client.install() hits: install-info, package detail, POST install."""
+    respx.get(f"{BASE}/v1/packages/{slug}/install-info").mock(
+        return_value=httpx.Response(200, json=install_info_json)
+    )
+    respx.get(f"{BASE}/v1/packages/{slug}").mock(
+        return_value=httpx.Response(200, json={
+            "slug": slug, "name": slug, "package_type": "toolpack",
+            "summary": "Test", "description": None, "download_count": 0,
+            "is_deprecated": False, "latest_version": None,
+            "publisher": {"slug": "test-pub", "display_name": "Test", "trust_level": "verified"},
+            "blocks": {},
+        })
+    )
+    respx.post(f"{BASE}/v1/packages/{slug}/install").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+
+
+@respx.mock
+def test_install_mcp_forwards_runtime_and_command(tmp_path, monkeypatch):
+    """client.install() forwards runtime and mcp_command to install_package()."""
+    mcp_server_block = {
+        "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem@2025.3.28"],
+        "transport": "stdio",
+        "npm_package": "@modelcontextprotocol/server-filesystem",
+        "env_keys": [],
+    }
+
+    _mock_install_endpoints("mcp-filesystem", {
+        "slug": "mcp-filesystem",
+        "version": "0.1.0",
+        "package_type": "toolpack",
+        "install_mode": "package",
+        "hosting_type": "agentnode_hosted",
+        "runtime": "mcp",
+        "entrypoint": None,
+        "artifact": None,
+        "capabilities": [],
+        "dependencies": [],
+        "permissions": None,
+        "mcp_server": mcp_server_block,
+    })
+
+    captured_kwargs = {}
+
+    def fake_install_package(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "slug": "mcp-filesystem",
+            "version": "0.1.0",
+            "installed": True,
+            "message": "ok",
+        }
+
+    monkeypatch.setattr("agentnode_sdk.client.install_package", fake_install_package)
+
+    with AgentNodeClient() as client:
+        result = client.install("mcp-filesystem")
+
+    assert result.installed is True
+    assert captured_kwargs["runtime"] == "mcp"
+    assert captured_kwargs["mcp_command"] == [
+        "npx", "-y", "@modelcontextprotocol/server-filesystem@2025.3.28",
+    ]
+
+
+@respx.mock
+def test_install_non_mcp_no_mcp_command(tmp_path, monkeypatch):
+    """client.install() passes mcp_command=None for non-MCP packages."""
+    _mock_install_endpoints("pdf-reader", {
+        "slug": "pdf-reader",
+        "version": "1.0.0",
+        "package_type": "toolpack",
+        "install_mode": "package",
+        "hosting_type": "agentnode_hosted",
+        "runtime": "python",
+        "entrypoint": "pdf_reader.tool",
+        "artifact": {"url": "https://s3.example.com/a.tar.gz", "hash_sha256": "abc123", "size_bytes": 1000},
+        "capabilities": [],
+        "dependencies": [],
+        "permissions": None,
+    })
+
+    captured_kwargs = {}
+
+    def fake_install_package(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "slug": "pdf-reader",
+            "version": "1.0.0",
+            "installed": True,
+            "message": "ok",
+        }
+
+    monkeypatch.setattr("agentnode_sdk.client.install_package", fake_install_package)
+
+    with AgentNodeClient() as client:
+        result = client.install("pdf-reader")
+
+    assert result.installed is True
+    assert captured_kwargs["runtime"] == "python"
+    assert captured_kwargs["mcp_command"] is None
+
+
+@respx.mock
 def test_error_handling():
     respx.get(f"{BASE}/v1/packages/nonexistent").mock(return_value=httpx.Response(404, json={
         "error": {"code": "PACKAGE_NOT_FOUND", "message": "Not found", "details": {}}
