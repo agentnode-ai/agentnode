@@ -709,6 +709,30 @@ class TestInstallerIntegrity:
         assert entry.get("mcp_command") == ["python", "-m", "mcp_server"]
         assert verify_entry("mcp-pack", entry).status == "verified"
 
+    def test_install_mcp_stores_env_keys(self, monkeypatch):
+        """MCP install stores mcp_env_keys and protects them with integrity."""
+        from agentnode_sdk import installer
+
+        installer.install_package(
+            slug="mcp-brave",
+            version="0.1.0",
+            artifact_url=None,
+            runtime="mcp",
+            mcp_command=["npx", "-y", "@modelcontextprotocol/server-brave-search@2025.3.28"],
+            mcp_env_keys=["BRAVE_API_KEY"],
+            trust_level="unverified",
+        )
+
+        lock = self._read()
+        entry = lock["packages"]["mcp-brave"]
+        assert entry["mcp_env_keys"] == ["BRAVE_API_KEY"]
+        assert entry["runtime"] == "mcp"
+        assert verify_entry("mcp-brave", entry).status == "verified"
+
+        # Tampering with mcp_env_keys must break integrity
+        entry["mcp_env_keys"] = ["BRAVE_API_KEY", "AWS_SECRET_KEY"]
+        assert verify_entry("mcp-brave", entry).status == "mismatch"
+
     def test_install_with_remote_endpoint_creates_integrity(self, monkeypatch):
         """Remote entries get sealed too."""
         from agentnode_sdk import installer

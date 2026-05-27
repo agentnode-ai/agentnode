@@ -40,6 +40,7 @@ CANONICAL_FIELDS = (
     "tools",
     "permissions",
     "mcp_command",
+    "mcp_env_keys",
     "remote_endpoint",
     "connector",
     "agent",
@@ -66,6 +67,7 @@ SENSITIVE_FIELDS: dict[str, str] = {
     "runtime": "Execution runtime changed",
     "entrypoint": "Code entrypoint changed",
     "mcp_command": "MCP process command changed",
+    "mcp_env_keys": "MCP environment key declarations changed",
     "remote_endpoint": "Remote endpoint changed",
     "package_type": "Package type changed",
 }

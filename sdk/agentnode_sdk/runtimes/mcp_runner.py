@@ -34,9 +34,9 @@ class MCPServerProcess:
         self._lock = threading.Lock()
         self._last_used = time.monotonic()
 
-    def start(self, timeout: float = 10.0) -> None:
+    def start(self, timeout: float = 10.0, env_keys: list[str] | None = None) -> None:
         """Start the MCP server subprocess."""
-        env = _mcp_env()
+        env = _mcp_env(env_keys)
 
         # Windows: CREATE_NEW_PROCESS_GROUP for clean shutdown
         kwargs: dict[str, Any] = {}
@@ -156,7 +156,10 @@ class MCPProcessPool:
         self._lock = threading.Lock()
         atexit.register(self.stop_all)
 
-    def get_or_start(self, slug: str, command: list[str], timeout: float = 10.0) -> MCPServerProcess:
+    def get_or_start(
+        self, slug: str, command: list[str],
+        timeout: float = 10.0, env_keys: list[str] | None = None,
+    ) -> MCPServerProcess:
         """Get an existing server or start a new one."""
         with self._lock:
             server = self._servers.get(slug)
@@ -168,7 +171,7 @@ class MCPProcessPool:
                 server.stop()
 
             server = MCPServerProcess(slug, command)
-            server.start(timeout=timeout)
+            server.start(timeout=timeout, env_keys=env_keys)
             self._servers[slug] = server
             return server
 
@@ -196,8 +199,12 @@ def _get_global_pool() -> MCPProcessPool:
         return _pool
 
 
-def _mcp_env() -> dict[str, str]:
-    """Build environment for MCP subprocess."""
+def _mcp_env(env_keys: list[str] | None = None) -> dict[str, str]:
+    """Build environment for MCP subprocess.
+
+    Only system-safe keys plus explicitly declared env_keys are passed through.
+    Declared keys are only included if already set in os.environ.
+    """
     safe_keys = {
         "PATH", "HOME", "USERPROFILE", "USER", "LOGNAME",
         "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME",
@@ -206,7 +213,17 @@ def _mcp_env() -> dict[str, str]:
         "TEMP", "TMP", "TMPDIR",
         "LANG", "LC_ALL", "LC_CTYPE",
     }
-    return {k: v for k, v in os.environ.items() if k in safe_keys}
+    result = {k: v for k, v in os.environ.items() if k in safe_keys}
+    for key in (env_keys or []):
+        val = os.environ.get(key)
+        if val is not None:
+            result[key] = val
+    return result
+
+
+def _check_env_keys(slug: str, env_keys: list[str]) -> list[str]:
+    """Return list of declared env_keys that are not set in os.environ."""
+    return [k for k in env_keys if k not in os.environ]
 
 
 def run_mcp(
@@ -237,8 +254,22 @@ def run_mcp(
                 mode_used="mcp",
             )
 
+        env_keys = entry.get("mcp_env_keys") or []
+        missing = _check_env_keys(slug, env_keys)
+        if missing:
+            names = ", ".join(missing)
+            return RunToolResult(
+                success=False,
+                error=(
+                    f"Missing environment variables for '{slug}': {names}\n"
+                    f"Set them before running, e.g.: "
+                    + " ".join(f"{k}=..." for k in missing[:3])
+                ),
+                mode_used="mcp",
+            )
+
         pool = _get_global_pool()
-        server = pool.get_or_start(slug, command)
+        server = pool.get_or_start(slug, command, env_keys=env_keys)
 
         # Resolve tool name
         name = tool_name

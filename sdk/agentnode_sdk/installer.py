@@ -379,6 +379,8 @@ def install_package(
     signatures: dict | None = None,
     # Phase 16.6: publisher identity
     publisher_slug: str | None = None,
+    # MCP env keys (declared by manifest, stored for runtime UX)
+    mcp_env_keys: list[str] | None = None,
     # TG-2: registry-reported key status (install-time revocation)
     key_status: str | None = None,
 ) -> dict[str, Any]:
@@ -396,6 +398,28 @@ def install_package(
 
     Returns dict with install result.
     """
+    # MCP packages are metadata-only: no artifact, no pip install.
+    # Write lockfile entry with mcp_command and return early.
+    if runtime == "mcp":
+        return _install_mcp(
+            slug=slug,
+            version=version,
+            package_type=package_type,
+            mcp_command=mcp_command,
+            mcp_env_keys=mcp_env_keys,
+            capability_ids=capability_ids,
+            tools=tools,
+            trust_level=trust_level,
+            permissions=permissions,
+            prompts=prompts,
+            resources=resources,
+            connector=connector,
+            agent=agent,
+            signatures=signatures,
+            publisher_slug=publisher_slug,
+            key_status=key_status,
+        )
+
     if not artifact_url:
         raise RuntimeError(
             f"No artifact available for {slug}@{version}. "
@@ -490,6 +514,8 @@ def install_package(
         }
         if mcp_command:
             lock_entry["mcp_command"] = mcp_command
+        if mcp_env_keys:
+            lock_entry["mcp_env_keys"] = mcp_env_keys
         if remote_endpoint:
             lock_entry["remote_endpoint"] = remote_endpoint
 
@@ -525,6 +551,109 @@ def install_package(
     finally:
         # Step 9: Cleanup
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# MCP install (metadata-only, no artifact)
+# ---------------------------------------------------------------------------
+
+
+def _install_mcp(
+    slug: str,
+    version: str,
+    package_type: str = "toolpack",
+    mcp_command: list[str] | None = None,
+    mcp_env_keys: list[str] | None = None,
+    capability_ids: list[str] | None = None,
+    tools: list[dict[str, str]] | None = None,
+    trust_level: str | None = None,
+    permissions: dict | None = None,
+    prompts: list[dict] | None = None,
+    resources: list[dict] | None = None,
+    connector: dict | None = None,
+    agent: dict | None = None,
+    signatures: dict | None = None,
+    publisher_slug: str | None = None,
+    key_status: str | None = None,
+) -> dict[str, Any]:
+    """Install an MCP package (metadata-only, no artifact download)."""
+    if not mcp_command:
+        raise RuntimeError(
+            f"MCP package {slug}@{version} has no mcp_command. "
+            "Cannot install without a command to run."
+        )
+
+    status = check_installed(slug, version)
+    if status == "same":
+        return {
+            "slug": slug,
+            "version": version,
+            "installed": True,
+            "already_installed": True,
+            "message": f"{slug}@{version} is already installed.",
+        }
+
+    if publisher_slug:
+        publisher_slug = publisher_slug.strip().lower()
+        if not publisher_slug:
+            publisher_slug = None
+
+    previous_version = None
+    if status == "different":
+        data = read_lockfile()
+        previous_version = data["packages"][slug].get("version")
+
+    lock_entry: dict[str, Any] = {
+        "version": version,
+        "package_type": package_type,
+        "runtime": "mcp",
+        "entrypoint": "",
+        "capability_ids": capability_ids or [],
+        "tools": tools or [],
+        "artifact_hash": "",
+        "installed_at": datetime.now(timezone.utc).isoformat(),
+        "source": "sdk",
+        "trust_level": trust_level,
+        "last_trust_check": datetime.now(timezone.utc).isoformat(),
+        "permissions": permissions,
+        "prompts": prompts or [],
+        "resources": resources or [],
+        "connector": connector,
+        "agent": agent,
+        "publisher_slug": publisher_slug,
+        "mcp_command": mcp_command,
+    }
+    if mcp_env_keys:
+        lock_entry["mcp_env_keys"] = mcp_env_keys
+
+    if signatures:
+        if publisher_slug:
+            for sig in (signatures.get("publisher") or []):
+                if isinstance(sig, dict):
+                    sig["publisher_slug"] = publisher_slug
+        lock_entry["_signatures"] = signatures
+    _verify_publisher_signature(slug, lock_entry, key_status=key_status)
+
+    from agentnode_sdk.lock_integrity import seal_entry
+    lock_entry = seal_entry(lock_entry)
+    update_lockfile(slug, lock_entry)
+
+    result: dict[str, Any] = {
+        "slug": slug,
+        "version": version,
+        "installed": True,
+        "already_installed": False,
+        "hash_verified": False,
+        "entrypoint": None,
+        "lockfile_updated": True,
+    }
+    if previous_version:
+        result["previous_version"] = previous_version
+        result["message"] = f"Upgraded {slug} from {previous_version} to {version}."
+    else:
+        result["message"] = f"Installed {slug}@{version}."
+
+    return result
 
 
 # ---------------------------------------------------------------------------

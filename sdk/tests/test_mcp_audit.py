@@ -272,3 +272,129 @@ class TestMcpRunnerAuditIntegration:
         entries = _read_audit(tmp_path)
         mcp_entries = [e for e in entries if e["event"] == "mcp_run"]
         assert len(mcp_entries) == 0
+
+
+class TestMcpEnvKeys:
+    """Tests for MCP env_keys handling."""
+
+    def test_missing_env_keys_returns_clear_error(self, tmp_path, monkeypatch):
+        """Missing declared env vars produce a clear error naming the keys."""
+        from agentnode_sdk.runtimes.mcp_runner import run_mcp
+
+        monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+
+        entry = {
+            "mcp_command": ["npx", "-y", "fake-server"],
+            "mcp_env_keys": ["BRAVE_API_KEY"],
+            "tools": [{"name": "search"}],
+            "permissions": {},
+        }
+        result = run_mcp("test-mcp-pack", "search", timeout=5.0, entry=entry)
+
+        assert not result.success
+        assert "BRAVE_API_KEY" in result.error
+        assert "Missing environment variables" in result.error
+
+    def test_multiple_missing_env_keys(self, tmp_path, monkeypatch):
+        """Multiple missing env vars are all listed."""
+        from agentnode_sdk.runtimes.mcp_runner import run_mcp
+
+        monkeypatch.delenv("KEY_A", raising=False)
+        monkeypatch.delenv("KEY_B", raising=False)
+
+        entry = {
+            "mcp_command": ["npx", "-y", "fake-server"],
+            "mcp_env_keys": ["KEY_A", "KEY_B"],
+            "tools": [{"name": "query"}],
+            "permissions": {},
+        }
+        result = run_mcp("test-mcp-pack", "query", timeout=5.0, entry=entry)
+
+        assert not result.success
+        assert "KEY_A" in result.error
+        assert "KEY_B" in result.error
+
+    def test_env_keys_set_passes_through(self, tmp_path, monkeypatch):
+        """When all env_keys are set, run_mcp proceeds (mocks the server)."""
+        from agentnode_sdk.runtimes.mcp_runner import run_mcp
+
+        monkeypatch.setenv("BRAVE_API_KEY", "test-key-123")
+
+        mock_server = mock.MagicMock()
+        mock_server.call_tool.return_value = {"content": [{"text": "ok"}]}
+        mock_server.health_check.return_value = True
+
+        entry = {
+            "mcp_command": ["npx", "-y", "fake-server"],
+            "mcp_env_keys": ["BRAVE_API_KEY"],
+            "tools": [{"name": "search"}],
+            "permissions": {},
+        }
+
+        with mock.patch("agentnode_sdk.runtimes.mcp_runner._get_global_pool") as mock_pool, \
+             mock.patch("agentnode_sdk.guard.inspect_mcp_args") as mock_inspect:
+            mock_pool.return_value.get_or_start.return_value = mock_server
+            from agentnode_sdk.guard import GuardDecision
+            mock_inspect.return_value = GuardDecision(
+                action="allow", reason="ok", source="guard.mcp_inspection",
+            )
+            result = run_mcp("test-mcp-pack", "search", timeout=5.0, entry=entry)
+
+        assert result.success
+
+    def test_empty_env_keys_no_error(self, tmp_path):
+        """Empty env_keys list does not block execution."""
+        from agentnode_sdk.runtimes.mcp_runner import run_mcp
+
+        mock_server = mock.MagicMock()
+        mock_server.call_tool.return_value = {"content": [{"text": "ok"}]}
+        mock_server.health_check.return_value = True
+
+        entry = {
+            "mcp_command": ["npx", "-y", "fake-server"],
+            "mcp_env_keys": [],
+            "tools": [{"name": "search"}],
+            "permissions": {},
+        }
+
+        with mock.patch("agentnode_sdk.runtimes.mcp_runner._get_global_pool") as mock_pool, \
+             mock.patch("agentnode_sdk.guard.inspect_mcp_args") as mock_inspect:
+            mock_pool.return_value.get_or_start.return_value = mock_server
+            from agentnode_sdk.guard import GuardDecision
+            mock_inspect.return_value = GuardDecision(
+                action="allow", reason="ok", source="guard.mcp_inspection",
+            )
+            result = run_mcp("test-mcp-pack", "search", timeout=5.0, entry=entry)
+
+        assert result.success
+
+    def test_mcp_env_only_passes_declared_keys(self):
+        """_mcp_env only passes env_keys that are declared AND set."""
+        from agentnode_sdk.runtimes.mcp_runner import _mcp_env
+        import os
+
+        old_val = os.environ.get("BRAVE_API_KEY")
+        try:
+            os.environ["BRAVE_API_KEY"] = "secret-val"
+            env = _mcp_env(env_keys=["BRAVE_API_KEY"])
+            assert env["BRAVE_API_KEY"] == "secret-val"
+
+            env_no_keys = _mcp_env(env_keys=[])
+            assert "BRAVE_API_KEY" not in env_no_keys
+
+            env_none = _mcp_env()
+            assert "BRAVE_API_KEY" not in env_none
+        finally:
+            if old_val is None:
+                os.environ.pop("BRAVE_API_KEY", None)
+            else:
+                os.environ["BRAVE_API_KEY"] = old_val
+
+    def test_mcp_env_unset_declared_key_not_included(self):
+        """A declared but unset env key is simply not passed to subprocess."""
+        from agentnode_sdk.runtimes.mcp_runner import _mcp_env
+        import os
+
+        os.environ.pop("NONEXISTENT_MCP_KEY_12345", None)
+        env = _mcp_env(env_keys=["NONEXISTENT_MCP_KEY_12345"])
+        assert "NONEXISTENT_MCP_KEY_12345" not in env

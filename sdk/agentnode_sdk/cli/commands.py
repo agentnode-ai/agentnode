@@ -793,6 +793,7 @@ def cmd_install(capability: str, version: str | None = None, yes: bool = False) 
                 print(f"\n  Installed {result.slug}@{result.version}.")
                 _print_install_trust_summary(result.slug)
                 _print_install_guard_summary(result.slug)
+                _print_install_mcp_guidance(result.slug)
                 print()
         else:
             print(f"\n  {result.message}\n")
@@ -1464,6 +1465,20 @@ def cmd_inspect(slug: str, *, json_output: bool = False) -> int:
     print(kv("Runtime", pkg.get("runtime", "?")))
     print(kv("Installed at", pkg.get("installed_at", "?")))
 
+    # MCP detail
+    if pkg.get("runtime") == "mcp":
+        mcp_cmd = pkg.get("mcp_command")
+        if mcp_cmd:
+            print(kv("MCP command", " ".join(mcp_cmd)))
+        env_keys = pkg.get("mcp_env_keys") or []
+        if env_keys:
+            print()
+            print(f"  {bold('MCP Environment')}")
+            print("  " + "-" * 15)
+            for k in env_keys:
+                status = "set" if os.environ.get(k) else "missing"
+                print(kv(k, status))
+
     # Integrity
     from agentnode_sdk.lock_integrity import verify_entry
     integrity_result = verify_entry(slug, pkg)
@@ -1837,6 +1852,36 @@ def _print_install_guard_summary(slug: str) -> None:
         risk_str = _guard_risk_display(worst_risk)
 
         print(f"  Guard: {types_str} → {act_str} ({risk_str})")
+
+    except Exception:
+        pass
+
+
+def _print_install_mcp_guidance(slug: str) -> None:
+    """Print MCP-specific post-install guidance (env vars, run command)."""
+    import os
+    from agentnode_sdk.installer import read_lockfile
+
+    try:
+        lock = read_lockfile()
+        pkg = lock.get("packages", {}).get(slug, {})
+        if not pkg or pkg.get("runtime") != "mcp":
+            return
+
+        env_keys = pkg.get("mcp_env_keys") or []
+        if env_keys:
+            missing = [k for k in env_keys if k not in os.environ]
+            if missing:
+                print()
+                print(f"  MCP Server requires environment variables:")
+                for k in missing:
+                    print(f"    {k}  (not set)")
+            else:
+                print()
+                print(f"  MCP Server environment: all required variables set.")
+
+        print()
+        print(f"  Run:  agentnode run {slug} --input '{{\"key\": \"value\"}}'")
 
     except Exception:
         pass

@@ -210,12 +210,12 @@ def _mock_install_endpoints(slug, install_info_json):
 
 @respx.mock
 def test_install_mcp_forwards_runtime_and_command(tmp_path, monkeypatch):
-    """client.install() forwards runtime and mcp_command to install_package()."""
+    """client.install() forwards runtime, mcp_command and mcp_env_keys to install_package()."""
     mcp_server_block = {
         "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem@2025.3.28"],
         "transport": "stdio",
         "npm_package": "@modelcontextprotocol/server-filesystem",
-        "env_keys": [],
+        "env_keys": ["BRAVE_API_KEY"],
     }
 
     _mock_install_endpoints("mcp-filesystem", {
@@ -254,6 +254,7 @@ def test_install_mcp_forwards_runtime_and_command(tmp_path, monkeypatch):
     assert captured_kwargs["mcp_command"] == [
         "npx", "-y", "@modelcontextprotocol/server-filesystem@2025.3.28",
     ]
+    assert captured_kwargs["mcp_env_keys"] == ["BRAVE_API_KEY"]
 
 
 @respx.mock
@@ -292,6 +293,7 @@ def test_install_non_mcp_no_mcp_command(tmp_path, monkeypatch):
     assert result.installed is True
     assert captured_kwargs["runtime"] == "python"
     assert captured_kwargs["mcp_command"] is None
+    assert captured_kwargs["mcp_env_keys"] is None
 
 
 @respx.mock

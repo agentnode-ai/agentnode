@@ -762,8 +762,10 @@ class AgentNodeClient:
         ]
 
         mcp_command = None
+        mcp_env_keys = None
         if meta.mcp_server and isinstance(meta.mcp_server, dict):
             mcp_command = meta.mcp_server.get("command")
+            mcp_env_keys = meta.mcp_server.get("env_keys")
 
         result = install_package(
             slug=slug,
@@ -783,6 +785,7 @@ class AgentNodeClient:
             key_status=key_status,
             runtime=meta.runtime,
             mcp_command=mcp_command,
+            mcp_env_keys=mcp_env_keys,
         )
 
         return InstallResult(
