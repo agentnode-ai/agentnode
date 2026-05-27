@@ -111,6 +111,8 @@ async def publish(
     session: AsyncSession = Depends(get_session),
 ):
     """Publish a new package or new version of an existing package."""
+    if user.publisher.is_system_publisher:
+        raise AppError("SYSTEM_PUBLISHER_READONLY", "System publishers cannot publish via API", 403)
     if not manifest or not manifest.strip():
         raise AppError("MANIFEST_INVALID", "Manifest must not be empty", 400)
     try:

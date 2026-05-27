@@ -241,3 +241,112 @@ async def test_download_count_reflected_in_detail(mock_meili, mock_s3, client, s
     resp = await client.get("/v1/packages/install-test-pkg")
     assert resp.status_code == 200
     assert resp.json()["download_count"] == 1
+
+
+# --- MCP install-info tests ---
+
+MCP_MANIFEST = {
+    "manifest_version": "0.3",
+    "package_id": "mcp-install-test",
+    "package_type": "toolpack",
+    "name": "MCP Install Test",
+    "publisher": "install-pub",
+    "version": "1.0.0",
+    "summary": "An MCP server package for install flow testing.",
+    "runtime": "mcp",
+    "install_mode": "package",
+    "hosting_type": "agentnode_hosted",
+    "entrypoint": "mcp_test.server",
+    "capabilities": {
+        "tools": [{
+            "name": "mcp_tool",
+            "capability_id": "general",
+            "description": "MCP test tool",
+            "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+        }],
+        "resources": [],
+        "prompts": [],
+    },
+    "mcp_server": {
+        "command": ["npx", "-y", "@modelcontextprotocol/server-test@1.0.0"],
+        "transport": "stdio",
+        "npm_package": "@modelcontextprotocol/server-test",
+        "source_repo": "https://github.com/modelcontextprotocol/servers",
+        "env_keys": ["TEST_API_KEY"],
+    },
+    "permissions": {
+        "network": {"level": "none", "allowed_domains": []},
+        "filesystem": {"level": "none"},
+        "code_execution": {"level": "none"},
+        "data_access": {"level": "input_only"},
+        "user_approval": {"required": "once"},
+        "external_integrations": [],
+    },
+    "tags": ["mcp", "mcp-server"],
+    "categories": ["general"],
+    "compatibility": {"frameworks": ["mcp"]},
+}
+
+
+@pytest.mark.asyncio
+@patch("app.packages.service.upload_artifact")
+@patch("app.packages.service.sync_package_to_meilisearch")
+async def test_install_metadata_mcp_server(mock_meili, mock_s3, client, session):
+    """MCP packages should return mcp_server config in install-info."""
+    token = await get_auth_token(client, session)
+    pub_resp = await publish_test_package(client, token, manifest=MCP_MANIFEST)
+    assert pub_resp.status_code == 201, f"Publish failed: {pub_resp.json()}"
+
+    resp = await client.get("/v1/packages/mcp-install-test/install-info")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["runtime"] == "mcp"
+    assert data["mcp_server"] is not None
+    assert data["mcp_server"]["command"] == ["npx", "-y", "@modelcontextprotocol/server-test@1.0.0"]
+    assert data["mcp_server"]["transport"] == "stdio"
+    assert data["mcp_server"]["npm_package"] == "@modelcontextprotocol/server-test"
+    assert data["mcp_server"]["source_repo"] == "https://github.com/modelcontextprotocol/servers"
+    assert data["mcp_server"]["env_keys"] == ["TEST_API_KEY"]
+    assert data["mcp_server"]["schema_version"] == 1
+
+
+@pytest.mark.asyncio
+@patch("app.packages.service.upload_artifact")
+@patch("app.packages.service.sync_package_to_meilisearch")
+async def test_install_metadata_non_mcp_no_mcp_server(mock_meili, mock_s3, client, session):
+    """Non-MCP packages should NOT have mcp_server in install-info."""
+    token = await get_auth_token(client, session)
+    await publish_test_package(client, token)
+
+    resp = await client.get("/v1/packages/install-test-pkg/install-info")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["runtime"] == "python"
+    assert data["mcp_server"] is None
+    assert data["seeded"] is False
+    assert data["seed_source"] is None
+
+
+@pytest.mark.asyncio
+@patch("app.packages.service.upload_artifact")
+@patch("app.packages.service.sync_package_to_meilisearch")
+async def test_install_metadata_seeded_package(mock_meili, mock_s3, client, session):
+    """Packages with seed_metadata should report seeded=True."""
+    token = await get_auth_token(client, session)
+    seeded_manifest = {
+        **MCP_MANIFEST,
+        "package_id": "mcp-seeded-test",
+        "seed_metadata": {
+            "seeded_by": "agentnode-community",
+            "seeded_at": "2026-05-27T00:00:00Z",
+            "source": "awesome-mcp-servers",
+        },
+    }
+    pub_resp = await publish_test_package(client, token, manifest=seeded_manifest)
+    assert pub_resp.status_code == 201, f"Publish failed: {pub_resp.json()}"
+
+    resp = await client.get("/v1/packages/mcp-seeded-test/install-info")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["seeded"] is True
+    assert data["seed_source"] == "awesome-mcp-servers"

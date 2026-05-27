@@ -469,6 +469,77 @@ def _validate_connector(connector: dict, errors: list[str], warnings: list[str])
 
 # --- Agent Block Validation (S4) ---
 
+_KNOWN_MCP_COMMAND_ROOTS = {"npx", "node", "uvx", "python", "docker"}
+_ALLOWED_REPO_HOSTS = {"github.com", "gitlab.com"}
+_ENV_KEY_RE = re.compile(r"^[A-Z0-9_]{1,100}$")
+
+
+def _validate_mcp_server(mcp: dict, manifest: dict, errors: list[str], warnings: list[str]) -> None:
+    """Validate mcp_server section (required for runtime=mcp)."""
+    if not isinstance(mcp, dict):
+        errors.append("mcp_server must be an object")
+        return
+
+    if manifest.get("runtime") != "mcp":
+        errors.append("mcp_server section requires runtime=mcp")
+        return
+
+    command = mcp.get("command")
+    if not command or not isinstance(command, list):
+        errors.append("mcp_server.command is required and must be a list of strings")
+    elif not all(isinstance(c, str) for c in command):
+        errors.append("mcp_server.command entries must be strings")
+    elif len(command) > 20:
+        errors.append("mcp_server.command: max 20 elements")
+    elif any(len(c) > 500 for c in command):
+        errors.append("mcp_server.command: each element max 500 characters")
+    elif any(not c.strip() for c in command):
+        errors.append("mcp_server.command: entries must not be empty or whitespace-only")
+    elif sum(len(c) for c in command) > 4000:
+        errors.append("mcp_server.command: total argv size must not exceed 4000 characters")
+    elif any("\x00" in c for c in command):
+        errors.append("mcp_server.command: entries must not contain null bytes")
+    else:
+        if command[0] not in _KNOWN_MCP_COMMAND_ROOTS:
+            warnings.append(f"mcp_server.command[0] '{command[0]}' is not a known MCP executable")
+        if command[0].startswith(("./", "../", ".\\")):
+            warnings.append("mcp_server.command[0] uses relative path — portability and audit risk")
+
+    transport = mcp.get("transport", "stdio")
+    if transport not in ("stdio", "sse"):
+        errors.append("mcp_server.transport must be 'stdio' or 'sse'")
+
+    npm = mcp.get("npm_package")
+    if npm is not None and not isinstance(npm, str):
+        errors.append("mcp_server.npm_package must be a string")
+
+    source_repo = mcp.get("source_repo")
+    if source_repo is not None:
+        if not isinstance(source_repo, str):
+            errors.append("mcp_server.source_repo must be a string")
+        elif len(source_repo) > 1000:
+            errors.append("mcp_server.source_repo: max 1000 characters")
+        else:
+            from urllib.parse import urlparse
+            parsed = urlparse(source_repo)
+            if parsed.scheme != "https":
+                errors.append("mcp_server.source_repo must be https://")
+            elif (parsed.hostname or "").lower() not in _ALLOWED_REPO_HOSTS:
+                errors.append(
+                    f"mcp_server.source_repo host must be one of: "
+                    f"{', '.join(sorted(_ALLOWED_REPO_HOSTS))}"
+                )
+
+    env_keys = mcp.get("env_keys")
+    if env_keys is not None:
+        if not isinstance(env_keys, list):
+            errors.append("mcp_server.env_keys must be a list")
+        elif not all(isinstance(k, str) for k in env_keys):
+            errors.append("mcp_server.env_keys entries must be strings")
+        elif not all(_ENV_KEY_RE.match(k) for k in env_keys):
+            errors.append("mcp_server.env_keys: each key must match ^[A-Z0-9_]{1,100}$")
+
+
 def _validate_agent(agent: dict, errors: list[str], warnings: list[str]) -> None:
     """Validate the agent: section (required for package_type=agent)."""
     if not isinstance(agent, dict):
@@ -1117,6 +1188,14 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     connector = manifest.get("connector")
     if connector is not None:
         _validate_connector(connector, errors, warnings)
+
+    # --- MCP Server block validation ---
+    mcp_server = manifest.get("mcp_server")
+    if mcp_server is not None:
+        _validate_mcp_server(mcp_server, manifest, errors, warnings)
+
+    if manifest.get("runtime") == "mcp" and not manifest.get("mcp_server"):
+        warnings.append("runtime=mcp but no mcp_server section — MCP metadata missing")
 
     # --- Assets validation (skill packages) ---
     assets = manifest.get("assets")

@@ -34,6 +34,15 @@ class PermissionsInfo(BaseModel):
     external_integrations: list = []
 
 
+class McpServerInfo(BaseModel):
+    schema_version: int = 1
+    command: list[str]
+    transport: str = "stdio"
+    npm_package: str | None = None
+    source_repo: str | None = None
+    env_keys: list[str] = []
+
+
 class InstallMetadataResponse(BaseModel):
     slug: str
     version: str
@@ -52,6 +61,9 @@ class InstallMetadataResponse(BaseModel):
     verification_score: int | None = None
     install_resolution: str | None = None
     agent: dict | None = None
+    mcp_server: McpServerInfo | None = None
+    seeded: bool = False
+    seed_source: str | None = None
 
 
 class DownloadResponse(BaseModel):

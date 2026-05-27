@@ -19,6 +19,7 @@ class Publisher(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
         default="unverified",
     )
+    is_system_publisher = Column(Boolean, nullable=False, default=False)
     is_suspended = Column(Boolean, nullable=False, default=False)
     suspension_reason = Column(Text, nullable=True)
     packages_published_count = Column(Integer, nullable=False, default=0)

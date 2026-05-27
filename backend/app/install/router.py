@@ -21,6 +21,7 @@ from app.install.schemas import (
     InstallMetadataResponse,
     InstallRequest,
     InstallResponse,
+    McpServerInfo,
     PermissionsInfo,
     ToolInfo,
 )
@@ -124,6 +125,28 @@ async def get_install_metadata(
     if pkg.package_type == "agent" and pv.manifest_raw:
         agent_config = pv.manifest_raw.get("agent")
 
+    # Extract MCP server config (only for runtime=mcp)
+    mcp_server_config = None
+    if pv.runtime == "mcp" and pv.manifest_raw:
+        mcp_raw = pv.manifest_raw.get("mcp_server")
+        if mcp_raw:
+            mcp_server_config = McpServerInfo(
+                command=mcp_raw.get("command", []),
+                transport=mcp_raw.get("transport", "stdio"),
+                npm_package=mcp_raw.get("npm_package"),
+                source_repo=mcp_raw.get("source_repo"),
+                env_keys=mcp_raw.get("env_keys", []),
+            )
+
+    # Check if this is a community-seeded package
+    is_seeded = False
+    seed_source_val = None
+    if pv.manifest_raw:
+        seed_meta = pv.manifest_raw.get("seed_metadata")
+        if seed_meta and isinstance(seed_meta, dict):
+            is_seeded = True
+            seed_source_val = seed_meta.get("source")
+
     return InstallMetadataResponse(
         slug=pkg.slug,
         version=pv.version_number,
@@ -142,6 +165,9 @@ async def get_install_metadata(
         verification_score=pv.verification_score,
         install_resolution=reason,
         agent=agent_config,
+        mcp_server=mcp_server_config,
+        seeded=is_seeded,
+        seed_source=seed_source_val,
     )
 
 

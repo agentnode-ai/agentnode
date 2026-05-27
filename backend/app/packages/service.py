@@ -210,6 +210,14 @@ async def publish_package(
         select(Publisher).where(Publisher.id == publisher_id)
     )
     publisher_obj = pub_result.scalar_one_or_none()
+
+    if publisher_obj and publisher_obj.is_system_publisher:
+        raise AppError(
+            "SYSTEM_PUBLISHER_READONLY",
+            "System publishers cannot publish via API",
+            403,
+        )
+
     quarantine_for_new_publisher = False
     is_trusted_publisher = publisher_obj and publisher_obj.trust_level in ("trusted", "curated")
     if publisher_obj and publisher_obj.packages_cleared_count == 0 and not is_trusted_publisher:

@@ -11,7 +11,7 @@ INDEX_SETTINGS = {
     ],
     "filterableAttributes": [
         "package_type", "capability_ids", "frameworks", "runtime", "trust_level",
-        "is_deprecated", "publisher_slug", "verification_tier",
+        "is_deprecated", "publisher_slug", "verification_tier", "tags",
         "has_security_review", "has_compatibility_review", "has_manual_review",
         "network_level", "filesystem_level", "code_execution_level", "has_connector",
     ],
