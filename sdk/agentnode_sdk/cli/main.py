@@ -34,6 +34,14 @@ def main(argv: list[str] | None = None) -> int:
     doctor_parser.add_argument("--fix", action="store_true", help="Auto-install suggested packages")
     doctor_parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
 
+    # mcp
+    mcp_parser = sub.add_parser("mcp", help="MCP server management")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
+    mcp_doctor = mcp_sub.add_parser("doctor", help="Check MCP server readiness")
+    mcp_doctor.add_argument("slug", help="MCP package slug")
+    mcp_doctor.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    mcp_doctor.add_argument("--skip-start", action="store_true", help="Skip subprocess start test")
+
     # reset
     sub.add_parser("reset", help="Reset configuration")
 
@@ -206,6 +214,12 @@ def main(argv: list[str] | None = None) -> int:
             return commands.cmd_setup()
         if args.command == "doctor":
             return commands.cmd_doctor(fix=args.fix, json_output=args.json_output)
+        if args.command == "mcp":
+            if args.mcp_command == "doctor":
+                from agentnode_sdk.cli.mcp_commands import cmd_mcp_doctor
+                return cmd_mcp_doctor(args.slug, args.json_output, args.skip_start)
+            mcp_parser.print_help()
+            return 0
         if args.command == "reset":
             return commands.cmd_reset()
         if args.command == "auth":
