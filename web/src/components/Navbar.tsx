@@ -9,6 +9,7 @@ const navLinks = [
   { href: "/agents", label: "Agents" },
   { href: "/import", label: "Import" },
   { href: "/builder", label: "Builder" },
+  { href: "/mcp", label: "MCP" },
   { href: "/search", label: "Search" },
   { href: "/compatibility", label: "Models" },
   { href: "/for-developers", label: "For Developers" },

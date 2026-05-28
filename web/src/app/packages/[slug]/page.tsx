@@ -466,6 +466,12 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
               : "Runs locally on your machine. No execution data is sent to AgentNode. Permissions are checked before execution."
             }
             {" "}<a href="/docs/security" className="text-primary/70 hover:text-primary hover:underline">Learn how this works</a>
+            {isMcp && (
+              <>
+                {" | "}
+                <a href="/mcp" className="text-primary/70 hover:text-primary hover:underline">New to MCP?</a>
+              </>
+            )}
           </p>
 
           {/* 2. Agent Info (only for agents) */}
