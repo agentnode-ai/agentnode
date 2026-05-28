@@ -355,22 +355,12 @@ async def seed(dry_run: bool = False, reseed: bool = False) -> None:
             pkg.latest_version_id = pv.id
             session.add(pkg)
 
-            # Create capabilities (tools)
+            # Create capabilities (tools) — taxonomy first to satisfy FK
             caps = manifest.get("capabilities", {})
-            all_cap_ids = set()
-            for tool in caps.get("tools", []):
-                cap_id = tool.get("capability_id", "general")
-                all_cap_ids.add(cap_id)
-                session.add(Capability(
-                    package_version_id=pv.id,
-                    capability_type="tool",
-                    capability_id=cap_id,
-                    name=tool["name"],
-                    description=tool.get("description"),
-                    input_schema=tool.get("input_schema"),
-                ))
-
-            # Auto-create taxonomy entries
+            all_cap_ids = {
+                tool.get("capability_id", "general")
+                for tool in caps.get("tools", [])
+            }
             if all_cap_ids:
                 existing_tax = await session.execute(
                     select(CapabilityTaxonomy.id).where(
@@ -386,6 +376,18 @@ async def seed(dry_run: bool = False, reseed: bool = False) -> None:
                         description=None,
                         category="uncategorized",
                     ))
+                await session.flush()
+
+            for tool in caps.get("tools", []):
+                cap_id = tool.get("capability_id", "general")
+                session.add(Capability(
+                    package_version_id=pv.id,
+                    capability_type="tool",
+                    capability_id=cap_id,
+                    name=tool["name"],
+                    description=tool.get("description"),
+                    input_schema=tool.get("input_schema"),
+                ))
 
             # Tags
             for tag in manifest.get("tags", []):
