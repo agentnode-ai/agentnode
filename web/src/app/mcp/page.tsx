@@ -55,6 +55,7 @@ async function fetchMcpPackages(): Promise<SearchHit[]> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        q: "",
         runtime: "mcp",
         per_page: 50,
         sort_by: "name:asc",
