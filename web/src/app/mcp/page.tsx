@@ -58,7 +58,6 @@ async function fetchMcpPackages(): Promise<SearchHit[]> {
         q: "",
         runtime: "mcp",
         per_page: 50,
-        sort_by: "name:asc",
       }),
       next: { revalidate: 300 },
     });
