@@ -10,8 +10,9 @@ from agentnode_sdk.installer import read_lockfile
 
 
 def _check(label: str, ok: bool, detail: str) -> None:
-    status = "\033[32m✓\033[0m" if ok else "\033[31m✗\033[0m"
-    print(f"  {status} {label}: {detail}")
+    marker = "[OK]" if ok else "[!!]"
+    color = "\033[32m" if ok else "\033[31m"
+    print(f"  {color}{marker}\033[0m {label}: {detail}")
 
 
 def cmd_mcp_doctor(
@@ -42,11 +43,11 @@ def cmd_mcp_doctor(
             print(json.dumps({"slug": slug, "checks": checks, "ready": False}, indent=2))
         else:
             print()
-            print(f"  {bold(slug)} — MCP Health Check")
-            print(f"  {'─' * 36}")
+            print(f"  {bold(slug)} - MCP Health Check")
+            print(f"  {'-' * 36}")
             print()
             _check("Package installed", False, "not found")
-            print(f"    → agentnode install {slug}")
+            print(f"    -> agentnode install {slug}")
             print()
         return 1
 
@@ -61,8 +62,8 @@ def cmd_mcp_doctor(
             print(json.dumps({"slug": slug, "checks": checks, "ready": False}, indent=2))
         else:
             print()
-            print(f"  {bold(slug)} — MCP Health Check")
-            print(f"  {'─' * 36}")
+            print(f"  {bold(slug)} - MCP Health Check")
+            print(f"  {'-' * 36}")
             print()
             _check("Package installed", True, f"v{version}")
             _check("MCP runtime", False, f"{slug} is not an MCP package (runtime: {runtime})")
@@ -109,7 +110,7 @@ def cmd_mcp_doctor(
             record("env", False, f"{k} not set", f"export {k}=your-key-here")
     elif env_keys:
         record("env", True, f"{len(env_keys)} key{'s' if len(env_keys) > 1 else ''} set")
-    # No env_keys declared → skip silently
+    # No env_keys declared -> skip silently
 
     # --- 6. MCP starts + handshake ---
     if not skip_start and failed == 0:
@@ -143,19 +144,19 @@ def cmd_mcp_doctor(
 
 def _render_human(slug: str, version: str, checks: list[dict], failed: int) -> None:
     print()
-    print(f"  {bold(slug)} — MCP Health Check")
-    print(f"  {'─' * 36}")
+    print(f"  {bold(slug)} - MCP Health Check")
+    print(f"  {'-' * 36}")
     print()
 
     for c in checks:
         if c["ok"] is None:
-            print(f"  \033[33m-\033[0m {c['check']}: {c['detail']}")
+            print(f"  \033[33m[--]\033[0m {c['check']}: {c['detail']}")
         elif c["ok"]:
             _check(c["check"], True, c["detail"])
         else:
             _check(c["check"], False, c["detail"])
             if c.get("fix"):
-                print(f"    → {c['fix']}")
+                print(f"    -> {c['fix']}")
 
     print()
     if failed == 0:
