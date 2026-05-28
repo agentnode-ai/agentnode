@@ -11,14 +11,16 @@ const PER_PAGE = 20;
 
 const FILTER_OPTIONS = {
   package_type: ["toolpack", "agent"],
-  category: ["connector", "character", "research", "automation", "data"],
-  framework: ["langchain", "crewai", "generic"],
+  runtime: ["python", "mcp", "node"],
+  category: ["connector", "character", "research", "automation", "data", "mcp", "mcp-server"],
+  framework: ["langchain", "crewai", "mcp", "generic"],
   trust_level: ["curated", "trusted", "verified", "unverified"],
   verification_tier: ["gold", "verified", "partial"],
 };
 
 const FILTER_LABELS: Record<string, string> = {
   package_type: "Package Type",
+  runtime: "Runtime",
   category: "Category",
   framework: "Framework",
   trust_level: "Publisher Trust",
@@ -28,11 +30,15 @@ const FILTER_LABELS: Record<string, string> = {
 const OPTION_LABELS: Record<string, string> = {
   toolpack: "Tool Pack",
   agent: "Agent",
+  python: "Python",
+  mcp: "MCP Server",
+  node: "Node.js",
   connector: "Connector",
   character: "Character / Persona",
   research: "Research",
   automation: "Automation",
   data: "Data & Analytics",
+  "mcp-server": "MCP Server",
   generic: "Any framework",
 };
 
@@ -54,6 +60,7 @@ const SORT_VALUE_TO_API: Record<string, string> = {
 interface Filters {
   capability_id: string;
   package_type: string;
+  runtime: string;
   category: string;
   framework: string;
   trust_level: string;
@@ -80,6 +87,7 @@ function SearchContent() {
   const [filters, setFilters] = useState<Filters>({
     capability_id: searchParams.get("capability_id") ?? "",
     package_type: searchParams.get("package_type") ?? "",
+    runtime: searchParams.get("runtime") ?? "",
     category: searchParams.get("category") ?? "",
     framework: searchParams.get("framework") ?? "",
     trust_level: searchParams.get("trust_level") ?? "",
@@ -146,6 +154,7 @@ function SearchContent() {
       if (q) params.set("q", q);
       if (f.capability_id) params.set("capability_id", f.capability_id);
       if (f.package_type) params.set("package_type", f.package_type);
+      if (f.runtime) params.set("runtime", f.runtime);
       if (f.category) params.set("category", f.category);
       if (f.framework) params.set("framework", f.framework);
       if (f.trust_level) params.set("trust_level", f.trust_level);
@@ -162,6 +171,7 @@ function SearchContent() {
         if (q) body.q = q;
         if (f.capability_id) body.capability_id = f.capability_id;
         if (f.package_type) body.package_type = f.package_type;
+        if (f.runtime) body.runtime = f.runtime;
         if (f.category) body.tag = f.category;  // category maps to tag filter
         if (f.framework) body.framework = f.framework;
         if (f.trust_level) body.trust_level = f.trust_level;
@@ -243,6 +253,7 @@ function SearchContent() {
     const cleared: Filters = {
       capability_id: "",
       package_type: "",
+      runtime: "",
       category: "",
       framework: "",
       trust_level: "",
