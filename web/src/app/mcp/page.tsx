@@ -4,6 +4,8 @@ import PackageCard from "@/components/PackageCard";
 import { BACKEND_URL } from "@/lib/constants";
 import McpCodeBlock from "./McpCodeBlock";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "MCP Servers - AgentNode",
   description:
