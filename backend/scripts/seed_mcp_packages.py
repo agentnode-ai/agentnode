@@ -22,7 +22,16 @@ sys.path.insert(0, ".")
 from app.config import settings  # noqa: E402
 from app.database import async_session_factory  # noqa: E402
 from app.auth.models import User  # noqa: E402, F401
-from app.packages.models import Package, PackageVersion  # noqa: E402
+from app.packages.models import (  # noqa: E402
+    Capability,
+    CapabilityTaxonomy,
+    CompatibilityRule,
+    Package,
+    PackageCategory,
+    PackageTag,
+    PackageVersion,
+    Permission,
+)
 from app.publishers.models import Publisher  # noqa: E402
 from app.verification.models import VerificationResult  # noqa: E402, F401
 
@@ -228,7 +237,7 @@ def _build_manifest(entry: dict) -> dict:
     }
 
 
-async def seed(dry_run: bool = False) -> None:
+async def seed(dry_run: bool = False, reseed: bool = False) -> None:
     catalog = sorted(MCP_CATALOG, key=lambda x: x["slug"])
 
     async with async_session_factory() as session:
@@ -245,22 +254,47 @@ async def seed(dry_run: bool = False) -> None:
             log.error("Publisher 'agentnode-community' is not a system publisher.")
             sys.exit(1)
 
+        # Reseed: delete existing community MCP packages
+        if reseed and not dry_run:
+            slugs = [e["slug"] for e in catalog]
+            existing_pkgs = await session.execute(
+                select(Package).where(
+                    Package.slug.in_(slugs),
+                    Package.publisher_id == publisher.id,
+                )
+            )
+            for pkg in existing_pkgs.scalars().all():
+                pkg.latest_version_id = None
+                session.add(pkg)
+            await session.flush()
+            existing_pkgs = await session.execute(
+                select(Package).where(
+                    Package.slug.in_(slugs),
+                    Package.publisher_id == publisher.id,
+                )
+            )
+            for pkg in existing_pkgs.scalars().all():
+                await session.delete(pkg)
+                log.info("DELETED slug=%s (reseed)", pkg.slug)
+            await session.flush()
+
         created = 0
         skipped = 0
 
         for entry in catalog:
             slug = entry["slug"]
 
-            existing = await session.execute(
-                select(Package).where(Package.slug == slug)
-            )
-            if existing.scalar_one_or_none() is not None:
-                log.info("SKIPPED slug=%s (exists)", slug)
-                skipped += 1
-                continue
+            if not reseed:
+                existing = await session.execute(
+                    select(Package).where(Package.slug == slug)
+                )
+                if existing.scalar_one_or_none() is not None:
+                    log.info("SKIPPED slug=%s (exists)", slug)
+                    skipped += 1
+                    continue
 
             if dry_run:
-                log.info("CREATE slug=%s (dry-run)", slug)
+                log.info("%s slug=%s (dry-run)", "RESEED" if reseed else "CREATE", slug)
                 created += 1
                 continue
 
@@ -298,7 +332,69 @@ async def seed(dry_run: bool = False) -> None:
             pkg.latest_version_id = pv.id
             session.add(pkg)
 
-            log.info("SEEDED slug=%s", slug)
+            # Create capabilities (tools)
+            caps = manifest.get("capabilities", {})
+            all_cap_ids = set()
+            for tool in caps.get("tools", []):
+                cap_id = tool.get("capability_id", "general")
+                all_cap_ids.add(cap_id)
+                session.add(Capability(
+                    package_version_id=pv.id,
+                    capability_type="tool",
+                    capability_id=cap_id,
+                    name=tool["name"],
+                    description=tool.get("description"),
+                    input_schema=tool.get("input_schema"),
+                ))
+
+            # Auto-create taxonomy entries
+            if all_cap_ids:
+                existing_tax = await session.execute(
+                    select(CapabilityTaxonomy.id).where(
+                        CapabilityTaxonomy.id.in_(all_cap_ids)
+                    )
+                )
+                existing_ids = {row[0] for row in existing_tax.all()}
+                for new_id in all_cap_ids - existing_ids:
+                    display = new_id.replace("_", " ").title()
+                    session.add(CapabilityTaxonomy(
+                        id=new_id,
+                        display_name=display,
+                        description=None,
+                        category="uncategorized",
+                    ))
+
+            # Tags
+            for tag in manifest.get("tags", []):
+                session.add(PackageTag(package_version_id=pv.id, tag=tag))
+
+            # Categories
+            for cat in manifest.get("categories", []):
+                session.add(PackageCategory(package_version_id=pv.id, category=cat))
+
+            # Compatibility rules
+            for fw in manifest.get("compatibility", {}).get("frameworks", []):
+                session.add(CompatibilityRule(
+                    package_version_id=pv.id,
+                    framework=fw,
+                ))
+
+            # Permissions
+            perms = manifest.get("permissions", {})
+            if perms:
+                session.add(Permission(
+                    package_version_id=pv.id,
+                    network_level=perms.get("network", {}).get("level", "none"),
+                    allowed_domains=perms.get("network", {}).get("allowed_domains", []),
+                    filesystem_level=perms.get("filesystem", {}).get("level", "none"),
+                    code_execution_level=perms.get("code_execution", {}).get("level", "none"),
+                    data_access_level=perms.get("data_access", {}).get("level", "input_only"),
+                    user_approval_level=perms.get("user_approval", {}).get("required", "never"),
+                    external_integrations=perms.get("external_integrations", []),
+                ))
+
+            log.info("SEEDED slug=%s (%d tools, %d tags)", slug,
+                     len(caps.get("tools", [])), len(manifest.get("tags", [])))
             created += 1
 
         if not dry_run and created > 0:
@@ -343,10 +439,11 @@ async def _sync_search(session, catalog: list[dict]) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Seed community MCP packages")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be created without writing")
+    parser.add_argument("--reseed", action="store_true", help="Delete existing and re-create with full relations")
     parser.add_argument("--catalog-version", default=CATALOG_VERSION, help="Catalog version tag")
     args = parser.parse_args()
 
-    asyncio.run(seed(dry_run=args.dry_run))
+    asyncio.run(seed(dry_run=args.dry_run, reseed=args.reseed))
 
 
 if __name__ == "__main__":
