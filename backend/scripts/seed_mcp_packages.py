@@ -254,28 +254,51 @@ async def seed(dry_run: bool = False, reseed: bool = False) -> None:
             log.error("Publisher 'agentnode-community' is not a system publisher.")
             sys.exit(1)
 
-        # Reseed: delete existing community MCP packages
+        # Reseed: delete existing community MCP packages via raw SQL
+        # (ORM cascade is unreliable with circular latest_version_id FK)
         if reseed and not dry_run:
+            from sqlalchemy import text
             slugs = [e["slug"] for e in catalog]
-            existing_pkgs = await session.execute(
-                select(Package).where(
-                    Package.slug.in_(slugs),
-                    Package.publisher_id == publisher.id,
-                )
-            )
-            for pkg in existing_pkgs.scalars().all():
-                pkg.latest_version_id = None
-                session.add(pkg)
-            await session.flush()
-            existing_pkgs = await session.execute(
-                select(Package).where(
-                    Package.slug.in_(slugs),
-                    Package.publisher_id == publisher.id,
-                )
-            )
-            for pkg in existing_pkgs.scalars().all():
-                await session.delete(pkg)
-                log.info("DELETED slug=%s (reseed)", pkg.slug)
+            for s in slugs:
+                row = (await session.execute(
+                    select(Package.id).where(
+                        Package.slug == s,
+                        Package.publisher_id == publisher.id,
+                    )
+                )).scalar_one_or_none()
+                if row is None:
+                    continue
+                pkg_id = str(row)
+                await session.execute(text(
+                    "UPDATE packages SET latest_version_id = NULL WHERE id = :pid"
+                ), {"pid": pkg_id})
+                await session.execute(text(
+                    "DELETE FROM capabilities WHERE package_version_id IN "
+                    "(SELECT id FROM package_versions WHERE package_id = :pid)"
+                ), {"pid": pkg_id})
+                await session.execute(text(
+                    "DELETE FROM package_tags WHERE package_version_id IN "
+                    "(SELECT id FROM package_versions WHERE package_id = :pid)"
+                ), {"pid": pkg_id})
+                await session.execute(text(
+                    "DELETE FROM package_categories WHERE package_version_id IN "
+                    "(SELECT id FROM package_versions WHERE package_id = :pid)"
+                ), {"pid": pkg_id})
+                await session.execute(text(
+                    "DELETE FROM permissions WHERE package_version_id IN "
+                    "(SELECT id FROM package_versions WHERE package_id = :pid)"
+                ), {"pid": pkg_id})
+                await session.execute(text(
+                    "DELETE FROM compatibility_rules WHERE package_version_id IN "
+                    "(SELECT id FROM package_versions WHERE package_id = :pid)"
+                ), {"pid": pkg_id})
+                await session.execute(text(
+                    "DELETE FROM package_versions WHERE package_id = :pid"
+                ), {"pid": pkg_id})
+                await session.execute(text(
+                    "DELETE FROM packages WHERE id = :pid"
+                ), {"pid": pkg_id})
+                log.info("DELETED slug=%s (reseed)", s)
             await session.flush()
 
         created = 0
