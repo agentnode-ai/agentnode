@@ -12,6 +12,17 @@ import re
 
 logger = logging.getLogger("agentnode.signing")
 
+_signing_ready: bool = False
+
+
+def is_signing_ready() -> bool:
+    """Whether the signing middleware successfully loaded a private key.
+
+    Set once at middleware init. Not runtime-mutable — reflects startup state only.
+    """
+    return _signing_ready
+
+
 _TRUST_CRITICAL_PATTERNS = (
     re.compile(r"^/v1/packages/[^/]+$"),
     re.compile(r"^/v1/packages/[^/]+/install-info$"),
@@ -43,6 +54,8 @@ class RegistrySigningMiddleware:
                 from cryptography.hazmat.primitives.serialization import load_pem_private_key
                 pem_bytes = base64.b64decode(signing_key_b64)
                 self._private_key = load_pem_private_key(pem_bytes, password=None)
+                global _signing_ready
+                _signing_ready = True
                 logger.info("Registry signing key loaded (key_id=%s)", key_id)
             except Exception:
                 logger.critical(

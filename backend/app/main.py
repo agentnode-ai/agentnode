@@ -206,10 +206,13 @@ async def healthz():
 
 @app.get("/v1/health/signing")
 async def signing_health():
+    from app.shared.signing_middleware import is_signing_ready
+    ready = is_signing_ready()
     return {
-        "signing_active": bool(settings.REGISTRY_SIGNING_KEY),
-        "key_id": settings.REGISTRY_SIGNING_KEY_ID or None,
-        "algorithm": "ed25519" if settings.REGISTRY_SIGNING_KEY else None,
+        "signing_active": ready,
+        "key_id": settings.REGISTRY_SIGNING_KEY_ID if ready else None,
+        "algorithm": "ed25519" if ready else None,
+        "trust_mode": "signing" if ready else "bootstrap",
     }
 
 

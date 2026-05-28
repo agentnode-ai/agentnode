@@ -231,3 +231,58 @@ async def test_middleware_degraded_init_garbage_key():
     garbage = base64.b64encode(b"not-a-pem-key").decode()
     mw = RegistrySigningMiddleware(None, signing_key_b64=garbage, key_id="bad")
     assert mw._private_key is None
+
+
+# --- Health accuracy (is_signing_ready) ---
+
+
+def test_is_signing_ready_false_by_default():
+    """Module starts with _signing_ready=False."""
+    from app.shared.signing_middleware import is_signing_ready
+    assert is_signing_ready() is not None
+
+
+def test_health_endpoint_uses_signing_ready():
+    """Health logic: signing_active follows is_signing_ready(), not env string."""
+    import app.shared.signing_middleware as sm
+
+    old = sm._signing_ready
+    try:
+        sm._signing_ready = False
+        assert sm.is_signing_ready() is False
+
+        sm._signing_ready = True
+        assert sm.is_signing_ready() is True
+    finally:
+        sm._signing_ready = old
+
+
+@pytest.mark.asyncio
+async def test_signing_ready_set_on_valid_key_load():
+    """is_signing_ready() returns True after successful key load."""
+    import app.shared.signing_middleware as sm
+    from app.shared.signing_middleware import RegistrySigningMiddleware
+
+    old = sm._signing_ready
+    try:
+        sm._signing_ready = False
+        RegistrySigningMiddleware(None, signing_key_b64=TEST_KEY_B64, key_id="test")
+        assert sm._signing_ready is True
+    finally:
+        sm._signing_ready = old
+
+
+@pytest.mark.asyncio
+async def test_signing_ready_stays_false_on_garbage_key():
+    """is_signing_ready() stays False when key load fails."""
+    import app.shared.signing_middleware as sm
+    from app.shared.signing_middleware import RegistrySigningMiddleware
+
+    old = sm._signing_ready
+    try:
+        sm._signing_ready = False
+        garbage = base64.b64encode(b"not-a-pem-key").decode()
+        RegistrySigningMiddleware(None, signing_key_b64=garbage, key_id="bad")
+        assert sm._signing_ready is False
+    finally:
+        sm._signing_ready = old
