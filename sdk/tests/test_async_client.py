@@ -380,8 +380,9 @@ async def test_tg4_bootstrap_allows_trust_critical():
     respx.get(f"{BASE}/v1/packages/test-pack").mock(
         return_value=httpx.Response(200, json=_PACKAGE_JSON)
     )
-    async with AsyncAgentNode(api_key="k") as client:
-        result = await client.get_package("test-pack")
+    with _patch_registry_keys({}):
+        async with AsyncAgentNode(api_key="k") as client:
+            result = await client.get_package("test-pack")
     assert result["slug"] == "test-pack"
 
 

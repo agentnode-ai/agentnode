@@ -47,9 +47,11 @@ class RegistryKey:
 # MappingProxyType enforces immutability at runtime — any attempt
 # to assign, delete, or update raises TypeError.
 REGISTRY_KEYS: MappingProxyType = MappingProxyType({
-    # Empty during bootstrap phase — no enforcement.
-    # Once populated, MISSING header on trust-critical endpoints
-    # becomes a hard deny (prevents downgrade attack).
+    "registry-2026": RegistryKey(
+        key_id="registry-2026",
+        algorithm="ed25519",
+        public_key="ST/5p0sITXciGZ+41mWDSSqX1egSZdpSTcKlrJ8RIMk=",
+    ),
 })
 
 

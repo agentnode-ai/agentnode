@@ -9,10 +9,27 @@ import json
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 from unittest import mock
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _bootstrap_registry_keys():
+    """Run all tests in bootstrap mode (empty REGISTRY_KEYS).
+
+    REGISTRY_KEYS are pinned in source (v0.11.0+). Tests that don't
+    exercise TG-4 enforcement need bootstrap mode to avoid spurious
+    REGISTRY_SIGNATURE_MISSING errors on mocked HTTP responses.
+    TG-4 tests override this with their own _patch_registry_keys().
+    """
+    with mock.patch(
+        "agentnode_sdk.registry_trust.REGISTRY_KEYS",
+        MappingProxyType({}),
+    ):
+        yield
 
 
 # ---------------------------------------------------------------------------

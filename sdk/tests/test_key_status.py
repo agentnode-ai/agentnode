@@ -379,7 +379,8 @@ class TestRegistryTrustIntegration:
         resp = _mock_response_with_body(200, {
             "key_id": "ed25519:abc", "status": "active", "public_key": "AQID",
         })
-        with patch("agentnode_sdk.key_status.httpx") as mock_httpx:
+        with patch("agentnode_sdk.key_status.httpx") as mock_httpx, \
+             _patch_registry_keys({}):
             mock_httpx.get.return_value = resp
             result = check_key_status("acme-ai", "ed25519:abc", base_url="http://test")
 

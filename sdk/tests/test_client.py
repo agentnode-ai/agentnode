@@ -407,8 +407,9 @@ def test_tg4_bootstrap_allows_trust_critical():
     respx.get(f"{BASE}/v1/packages/test-pack").mock(
         return_value=httpx.Response(200, json=_PACKAGE_JSON)
     )
-    with AgentNodeClient(api_key="k") as client:
-        pkg = client.get_package("test-pack")
+    with _patch_registry_keys({}):
+        with AgentNodeClient(api_key="k") as client:
+            pkg = client.get_package("test-pack")
     assert pkg.slug == "test-pack"
 
 

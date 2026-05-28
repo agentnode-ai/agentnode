@@ -217,7 +217,8 @@ class TestVerifyRegistryResponse:
 class TestActivationSemantics:
 
     def test_no_keys_no_header_bootstrap(self):
-        result = verify_registry_response(b"body", None)
+        with _patch_keys({}):
+            result = verify_registry_response(b"body", None)
         assert result.status == RegistrySignatureStatus.BOOTSTRAP
         assert result.error is None
 
@@ -225,7 +226,8 @@ class TestActivationSemantics:
         """Even with a signature header, empty REGISTRY_KEYS → BOOTSTRAP."""
         sig = base64.b64encode(b"\x00" * 64).decode()
         header = f"ed25519:some-key:{sig}"
-        result = verify_registry_response(b"body", header)
+        with _patch_keys({}):
+            result = verify_registry_response(b"body", header)
         assert result.status == RegistrySignatureStatus.BOOTSTRAP
 
     def test_keys_populated_no_header_missing(self):
