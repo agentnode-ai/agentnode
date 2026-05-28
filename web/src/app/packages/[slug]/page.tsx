@@ -35,6 +35,19 @@ async function fetchPackage(slug: string, version?: string): Promise<any | null>
   }
 }
 
+async function fetchInstallInfo(slug: string): Promise<any | null> {
+  try {
+    const res = await fetch(
+      `${BACKEND_URL}/v1/packages/${encodeURIComponent(slug)}/install-info`,
+      { next: { revalidate: 60 } }
+    );
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
 async function fetchVersions(slug: string): Promise<any[]> {
   try {
     const baseUrl = BACKEND_URL;
@@ -160,9 +173,10 @@ function VerificationBadge({ verification }: { verification: any }) {
 export default async function PackageDetailPage({ params, searchParams }: PageProps) {
   const { slug } = await params;
   const { v } = await searchParams;
-  const [pkg, versions] = await Promise.all([
+  const [pkg, versions, installInfo] = await Promise.all([
     fetchPackage(slug, v),
     fetchVersions(slug),
+    fetchInstallInfo(slug),
   ]);
 
   if (!pkg) {
@@ -184,6 +198,15 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
   const perms = blocks.permissions;
   const trust = blocks.trust ?? {};
   const verification = pkg.verification;
+
+  // MCP detection
+  const isMcp = compat.runtime === "mcp";
+  const mcpServer = installInfo?.mcp_server ?? null;
+  const mcpCommand = mcpServer?.command ?? [];
+  const mcpEnvKeys: string[] = mcpServer?.env_keys ?? [];
+  const mcpNpmPackage = mcpServer?.npm_package ?? null;
+  const mcpSourceRepo = mcpServer?.source_repo ?? null;
+  const mcpTransport = mcpServer?.transport ?? "stdio";
 
   // Derive UI category from package_type + tags
   const pkgTags: string[] = pkg.tags ?? [];
@@ -312,7 +335,7 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                   {" "}&middot; published {timeAgo(publishedAt)}
                 </>
               )}
-              {" "}&middot; {pkg.package_type}
+              {" "}&middot; {isMcp ? "MCP Server" : pkg.package_type}
             </p>
             <p className="mt-3 max-w-2xl text-base leading-relaxed text-muted">
               {pkg.summary}
@@ -366,22 +389,82 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
         {/* Main column */}
         <div className="space-y-8 lg:col-span-2 min-w-0">
           {/* 1. Quick Start */}
-          <QuickStartWrapper
-            slug={pkg.slug}
-            entrypoint={install.entrypoint}
-            examples={pkg.examples}
-            envRequirements={pkg.env_requirements}
-            readmeMd={pkg.readme_md}
-            installResolution={install.install_resolution}
-            installableVersion={install.installable_version}
-            latestVersion={latestVersion?.version_number}
-            sdkCode={install.sdk_code}
-            postInstallCode={install.post_install_code}
-          />
+          {isMcp ? (
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+              <h2 className="mb-5 text-lg font-semibold text-foreground">
+                Quick Start
+              </h2>
+
+              {/* Requirements */}
+              <div className="mb-5 rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-yellow-400 mb-2">Requirements</p>
+                <ul className="space-y-1 text-sm text-muted">
+                  <li>&#x2022; Node.js and npx installed</li>
+                  {mcpEnvKeys.length > 0 && (
+                    <li>&#x2022; {mcpEnvKeys.length === 1 ? "1 API key" : `${mcpEnvKeys.length} environment variables`} required</li>
+                  )}
+                </ul>
+              </div>
+
+              {/* Step 1: Install */}
+              <div className="mb-5">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">
+                  1. Install
+                </p>
+                <CodeBlockWrapper
+                  code={`agentnode install ${pkg.slug}`}
+                  language="bash"
+                />
+              </div>
+
+              {/* Step 2: Set Environment (if env_keys) */}
+              {mcpEnvKeys.length > 0 && (
+                <div className="mb-5">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">
+                    2. Set Environment
+                  </p>
+                  <CodeBlockWrapper
+                    code={mcpEnvKeys.map(k => `export ${k}=your-key-here`).join("\n")}
+                    language="bash"
+                  />
+                </div>
+              )}
+
+              {/* Step 3: Run */}
+              <div className="mb-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">
+                  {mcpEnvKeys.length > 0 ? "3" : "2"}. Run
+                </p>
+                <CodeBlockWrapper
+                  code={`agentnode run ${pkg.slug} --input '{"query": "test"}'`}
+                  language="bash"
+                />
+              </div>
+
+              <p className="text-xs text-muted/70">
+                When started, this MCP server runs as a local subprocess via {mcpTransport} transport.
+              </p>
+            </section>
+          ) : (
+            <QuickStartWrapper
+              slug={pkg.slug}
+              entrypoint={install.entrypoint}
+              examples={pkg.examples}
+              envRequirements={pkg.env_requirements}
+              readmeMd={pkg.readme_md}
+              installResolution={install.install_resolution}
+              installableVersion={install.installable_version}
+              latestVersion={latestVersion?.version_number}
+              sdkCode={install.sdk_code}
+              postInstallCode={install.post_install_code}
+            />
+          )}
 
           <p className="text-xs text-muted -mt-4">
-            Runs locally on your machine. No execution data is sent to AgentNode.
-            {" "}Permissions are checked before execution.
+            {isMcp
+              ? "This MCP server runs locally on your machine as a subprocess. AgentNode provides discovery metadata — the executable code is maintained by its npm publisher."
+              : "Runs locally on your machine. No execution data is sent to AgentNode. Permissions are checked before execution."
+            }
             {" "}<a href="/docs/security" className="text-primary/70 hover:text-primary hover:underline">Learn how this works</a>
           </p>
 
@@ -390,8 +473,28 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
             <AgentInfoPanel agentConfig={pkg.agent_config} />
           )}
 
-          {/* 3. Verification (prominent, main column) */}
-          <VerificationMainPanel slug={pkg.slug} verification={verification} publisherSlug={publisher.slug} />
+          {/* 3. Verification / External Source */}
+          {isMcp ? (
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-foreground">Registry Verification</h2>
+                <span className="rounded-md bg-blue-500/10 border border-blue-500/20 px-2.5 py-1 text-xs font-medium text-blue-400">
+                  External Source
+                </span>
+              </div>
+              <p className="mt-3 text-sm text-muted">
+                No executable artifact is hosted in the AgentNode registry. This package references an external MCP server
+                {mcpNpmPackage && (
+                  <> published as <code className="font-mono text-xs text-foreground bg-card border border-border rounded px-1.5 py-0.5">{mcpNpmPackage}</code> on npm</>
+                )}.
+              </p>
+              <p className="mt-2 text-xs text-muted/70">
+                AgentNode provides discovery, install metadata, and integrity protection for the start command. The server code itself is maintained by its npm publisher.
+              </p>
+            </section>
+          ) : (
+            <VerificationMainPanel slug={pkg.slug} verification={verification} publisherSlug={publisher.slug} />
+          )}
 
           {/* 3. Use Cases */}
           {pkg.use_cases && pkg.use_cases.length > 0 && (
@@ -759,6 +862,62 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
             </section>
           )}
 
+          {/* MCP External Source (replaces File Browser for MCPs) */}
+          {isMcp && (mcpNpmPackage || mcpSourceRepo) && (
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
+              <h2 className="mb-3 text-sm font-semibold text-foreground">External Source</h2>
+              <div className="space-y-2.5">
+                {mcpNpmPackage && (
+                  <div className="flex items-start gap-2">
+                    <span className="text-xs text-muted shrink-0 mt-0.5">npm</span>
+                    <a
+                      href={`https://www.npmjs.com/package/${mcpNpmPackage}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm text-primary hover:underline font-mono break-all"
+                    >
+                      {mcpNpmPackage}
+                    </a>
+                  </div>
+                )}
+                {mcpSourceRepo && (
+                  <div className="flex items-start gap-2">
+                    <span className="text-xs text-muted shrink-0 mt-0.5">Repo</span>
+                    <a
+                      href={mcpSourceRepo}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm text-primary hover:underline break-all"
+                    >
+                      {mcpSourceRepo.replace("https://github.com/", "")}
+                    </a>
+                  </div>
+                )}
+              </div>
+              <p className="mt-3 text-xs text-muted/60">
+                Code is maintained externally, not hosted by AgentNode.
+              </p>
+            </section>
+          )}
+
+          {/* MCP Environment Variables (sidebar) */}
+          {isMcp && mcpEnvKeys.length > 0 && (
+            <section className="rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-4 sm:p-6">
+              <h2 className="mb-3 text-sm font-semibold text-foreground">Required Setup</h2>
+              <div className="space-y-1.5">
+                {mcpEnvKeys.map((key: string) => (
+                  <div key={key} className="flex items-center justify-between">
+                    <code className="font-mono text-xs text-yellow-400">{key}</code>
+                    <span className="text-[10px] text-yellow-400/70">required</span>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-muted/60">
+                Set these environment variables before running this MCP server.
+              </p>
+            </section>
+          )}
+
           {/* File Browser */}
           {pkg.file_list && pkg.file_list.length > 0 && (
             <section className="rounded-xl border border-border bg-card p-4 sm:p-6">
@@ -826,7 +985,7 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
               </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted">Type</span>
-                <span className="text-foreground">{pkg.package_type}</span>
+                <span className="text-foreground">{isMcp ? "MCP Server" : pkg.package_type}</span>
               </div>
               {install.entrypoint && (
                 <div className="flex items-center justify-between text-sm">
@@ -859,8 +1018,8 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                 <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted">
                   Runtime
                 </p>
-                <span className="rounded-md bg-background px-2.5 py-1 text-xs text-foreground border border-border capitalize">
-                  {compat.runtime ?? "python"}
+                <span className="rounded-md bg-background px-2.5 py-1 text-xs text-foreground border border-border">
+                  {compat.runtime === "mcp" ? "MCP" : (compat.runtime ?? "Python")}
                 </span>
               </div>
               {compat.python && (
