@@ -485,6 +485,16 @@ def enrich_github(candidate: dict) -> None:
 # Stage 5: Protocol test (optional)
 # ---------------------------------------------------------------------------
 
+def _resolve_command(command: list[str]) -> list[str]:
+    """Resolve command to full path, handling Windows .cmd/.bat wrappers."""
+    import shutil
+    exe = command[0]
+    resolved = shutil.which(exe)
+    if resolved:
+        return [resolved] + command[1:]
+    return command
+
+
 def protocol_test(candidate: dict) -> None:
     """Start the MCP server, do initialize + tools/list, stop."""
     command = candidate.get("command")
@@ -497,15 +507,18 @@ def protocol_test(candidate: dict) -> None:
         candidate["protocol_skip_reason"] = "requires_env_keys"
         return
 
+    resolved_cmd = _resolve_command(command)
+
     env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", tempfile.gettempdir())}
     if sys.platform == "win32":
         env["USERPROFILE"] = os.environ.get("USERPROFILE", "")
         env["APPDATA"] = os.environ.get("APPDATA", "")
         env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", "")
+        env["LOCALAPPDATA"] = os.environ.get("LOCALAPPDATA", "")
 
     try:
         proc = subprocess.Popen(
-            command,
+            resolved_cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -530,19 +543,21 @@ def protocol_test(candidate: dict) -> None:
             pass
 
     def recv(timeout=10):
-        import select as _sel
-        if sys.platform == "win32":
+        import threading
+
+        result = [None]
+        def _read():
             try:
                 line = proc.stdout.readline()
-                return json.loads(line) if line.strip() else None
+                if line and line.strip():
+                    result[0] = json.loads(line)
             except Exception:
-                return None
-        else:
-            ready, _, _ = _sel.select([proc.stdout], [], [], timeout)
-            if ready:
-                line = proc.stdout.readline()
-                return json.loads(line) if line.strip() else None
-            return None
+                pass
+
+        t = threading.Thread(target=_read, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        return result[0]
 
     try:
         send({
