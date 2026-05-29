@@ -219,6 +219,8 @@ def resolve_npm(candidate: dict) -> None:
                 "scripts": pkg_data.get("scripts", {}),
                 "dependencies": list(pkg_data.get("dependencies", {}).keys()),
                 "dep_count": len(pkg_data.get("dependencies", {})),
+                "main": pkg_data.get("main"),
+                "bin": pkg_data.get("bin"),
             }
 
             dangerous = set(pkg_data.get("scripts", {}).keys()) & DANGEROUS_SCRIPTS
@@ -651,6 +653,45 @@ OPAQUE_BACKEND_RE = re.compile(
 )
 
 
+def check_source_presence(candidate: dict) -> bool:
+    """Quick check if repo likely has actual source code."""
+    pkg = candidate.get("_pkg_json", {})
+    if pkg.get("dep_count", 0) > 2:
+        return True
+    if pkg.get("main") or pkg.get("bin"):
+        return True
+    scripts = pkg.get("scripts", {})
+    if any(k in scripts for k in ("build", "start", "dev", "compile", "prepare")):
+        return True
+
+    if candidate.get("python_entry_points"):
+        return True
+
+    owner = candidate.get("owner", "")
+    repo = candidate.get("repo", "")
+    if not owner:
+        return True
+
+    is_python = candidate.get("python_runtime", False)
+    probes = (
+        ["src/__init__.py", "main.py", "server.py"]
+        if is_python
+        else ["src/index.ts", "src/index.js", "index.ts", "index.js"]
+    )
+
+    for f in probes:
+        for branch in ("main", "master"):
+            url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{f}"
+            try:
+                resp = _http.head(url, follow_redirects=True)
+                if resp.status_code == 200:
+                    return True
+            except Exception:
+                continue
+
+    return False
+
+
 def compute_risk_flags(candidate: dict) -> list[str]:
     """Derive risk flags from README text, tools snapshot, and metadata."""
     flags = []
@@ -707,6 +748,17 @@ def compute_risk_flags(candidate: dict) -> list[str]:
                 flags.append("stale_project")
         except Exception:
             pass
+
+    if candidate.get("_has_source_code") is False:
+        flags.append("no_source_code")
+
+    stars = candidate.get("stars", 0) or 0
+    has_license = candidate.get("license") is not None
+    maintainer_count = len(candidate.get("npm_maintainers", []))
+    if not candidate.get("npm_maintainers"):
+        maintainer_count = 1 if candidate.get("pypi_author") else 0
+    if stars == 0 and not has_license and maintainer_count <= 1:
+        flags.append("very_low_trust")
 
     return sorted(set(flags))
 
@@ -946,6 +998,10 @@ def main():
             stats["pypi_found"] += 1
             print(f"    -> pypi: {c.get('pypi_package')}@{c.get('pypi_version', '?')}")
 
+        c["_has_source_code"] = check_source_presence(c)
+        if not c["_has_source_code"]:
+            print(f"    -> warning: no source code found in repo")
+
         package_resolved.append(c)
 
     # --- Stage 4: GitHub metadata — only for package-resolved candidates ---
@@ -1007,6 +1063,7 @@ def main():
         c.pop("repo", None)
         c.pop("_pkg_json", None)
         c.pop("_readme_text", None)
+        c.pop("_has_source_code", None)
 
     Path(args.output).write_text(
         json.dumps(output_candidates, indent=2, default=str),
