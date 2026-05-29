@@ -6,10 +6,13 @@ extracts metadata, and scores candidates for review.
 
 No DB writes. No auto-seeding. No trust upgrades. Review output only.
 
+Architecture: npm-first. Cheap checks (raw.githubusercontent.com, npmjs.org)
+run before expensive checks (GitHub API). GitHub API is only called for
+candidates that have a confirmed npm package.
+
 Usage:
     python scripts/verify_mcp_candidates.py -o mcp_candidates.json
-    python scripts/verify_mcp_candidates.py -o mcp_candidates.json --test
-    python scripts/verify_mcp_candidates.py -o mcp_candidates.json --test --max 10
+    python scripts/verify_mcp_candidates.py -o mcp_candidates.json --test --max 50
     python scripts/verify_mcp_candidates.py -o mcp_candidates.json --github-token ghp_xxx
 """
 from __future__ import annotations
@@ -29,6 +32,7 @@ import httpx
 
 AWESOME_URL = "https://raw.githubusercontent.com/punkpeye/awesome-mcp-servers/main/README.md"
 NPM_REGISTRY = "https://registry.npmjs.org"
+CACHE_DIR = Path(__file__).parent / ".mcp_cache"
 
 PERMISSIVE_LICENSES = {
     "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC",
@@ -46,13 +50,100 @@ NPX_CMD_RE = re.compile(r"npx\s+(?:-y\s+)?([^\s]+)")
 
 DANGEROUS_SCRIPTS = {"preinstall", "postinstall", "install"}
 
+# ---------------------------------------------------------------------------
+# Pre-filters: exclude repos that are clearly not MCP servers
+# ---------------------------------------------------------------------------
+
+EXCLUDE_REPO_PATTERNS = [
+    re.compile(r"^awesome-", re.IGNORECASE),
+    re.compile(r"^mcp[-_]?clients?$", re.IGNORECASE),
+    re.compile(r"^(?:docs?|documentation|examples?|templates?|tutorials?|demos?|samples?|starters?)$", re.IGNORECASE),
+    re.compile(r"[-_](?:docs?|examples?|templates?|tutorial)$", re.IGNORECASE),
+    re.compile(r"^(?:\.github|\.devcontainer)$", re.IGNORECASE),
+]
+
+EXCLUDE_REPOS_EXACT = {
+    "punkpeye/awesome-mcp-servers",
+    "punkpeye/awesome-mcp-clients",
+    "modelcontextprotocol/modelcontextprotocol",
+    "modelcontextprotocol/specification",
+    "modelcontextprotocol/docs",
+    "modelcontextprotocol/typescript-sdk",
+    "modelcontextprotocol/python-sdk",
+    "modelcontextprotocol/kotlin-sdk",
+    "modelcontextprotocol/java-sdk",
+    "modelcontextprotocol/inspector",
+    "modelcontextprotocol/create-python-server",
+    "modelcontextprotocol/create-typescript-server",
+}
+
+EXCLUDE_DESCRIPTION_PATTERNS = [
+    re.compile(r"\bclient\s+(?:for|of|to)\b.*\bmcp\b", re.IGNORECASE),
+    re.compile(r"\bmcp\s+client\b", re.IGNORECASE),
+    re.compile(r"\bcurated\s+list\b", re.IGNORECASE),
+    re.compile(r"\bawesome\s+list\b", re.IGNORECASE),
+]
+
+
+def _is_excluded_repo(owner: str, repo: str) -> str | None:
+    full = f"{owner}/{repo}"
+    if full.lower() in {r.lower() for r in EXCLUDE_REPOS_EXACT}:
+        return f"excluded_exact: {full}"
+    for pat in EXCLUDE_REPO_PATTERNS:
+        if pat.search(repo):
+            return f"excluded_pattern: {pat.pattern}"
+    return None
+
+
+def _is_excluded_by_description(description: str | None) -> str | None:
+    if not description:
+        return None
+    for pat in EXCLUDE_DESCRIPTION_PATTERNS:
+        if pat.search(description):
+            return f"excluded_description: {pat.pattern}"
+    return None
+
+
 _http = httpx.Client(timeout=15, follow_redirects=True)
 _github_headers: dict[str, str] = {"Accept": "application/vnd.github.v3+json"}
 
+# ---------------------------------------------------------------------------
+# Cache
+# ---------------------------------------------------------------------------
+
+def _cache_path(kind: str, key: str) -> Path:
+    safe_key = re.sub(r"[^a-zA-Z0-9._-]", "_", key)
+    return CACHE_DIR / kind / f"{safe_key}.json"
+
+
+def _cache_get(kind: str, key: str, max_age_hours: int = 24) -> dict | None:
+    p = _cache_path(kind, key)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        cached_at = datetime.fromisoformat(data.get("_cached_at", "2000-01-01T00:00:00+00:00"))
+        age_hours = (datetime.now(timezone.utc) - cached_at).total_seconds() / 3600
+        if age_hours > max_age_hours:
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def _cache_put(kind: str, key: str, data: dict) -> None:
+    p = _cache_path(kind, key)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    data["_cached_at"] = datetime.now(timezone.utc).isoformat()
+    p.write_text(json.dumps(data, default=str), encoding="utf-8")
+
 
 # ---------------------------------------------------------------------------
-# Stage 1: Crawl
+# Stage 1: Crawl + name filter
 # ---------------------------------------------------------------------------
+
+_filter_log: list[dict] = []
+
 
 def crawl_awesome() -> list[dict]:
     """Fetch awesome-mcp-servers and extract GitHub repos."""
@@ -64,6 +155,7 @@ def crawl_awesome() -> list[dict]:
     pattern = re.compile(r"https://github\.com/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)")
     seen: set[str] = set()
     candidates = []
+    filtered = {"exact": 0, "pattern": 0}
 
     for m in pattern.finditer(readme):
         owner, repo = m.group(1), m.group(2)
@@ -72,6 +164,14 @@ def crawl_awesome() -> list[dict]:
         if url in seen:
             continue
         seen.add(url)
+
+        reason = _is_excluded_repo(owner, repo)
+        if reason:
+            kind = "exact" if "excluded_exact" in reason else "pattern"
+            filtered[kind] += 1
+            _filter_log.append({"repo": f"{owner}/{repo}", "reason": reason})
+            continue
+
         slug = re.sub(r"[^a-z0-9-]", "-", repo.lower()).strip("-")
         if not slug.startswith("mcp-") and "mcp" not in slug:
             slug = f"mcp-{slug}"
@@ -83,58 +183,21 @@ def crawl_awesome() -> list[dict]:
             "source_repo": url,
         })
 
-    print(f"  Found {len(candidates)} unique repos")
+    total_seen = len(candidates) + filtered["exact"] + filtered["pattern"]
+    print(f"  Found {total_seen} unique repos")
+    print(f"  Filtered: {filtered['exact']} exact + {filtered['pattern']} pattern = {sum(filtered.values())} removed")
+    print(f"  Remaining: {len(candidates)} candidates")
     return candidates
 
 
 # ---------------------------------------------------------------------------
-# Stage 2: GitHub metadata
-# ---------------------------------------------------------------------------
-
-def enrich_github(candidate: dict) -> None:
-    """Fetch GitHub repo metadata."""
-    owner, repo = candidate["owner"], candidate["repo"]
-    url = f"https://api.github.com/repos/{owner}/{repo}"
-    try:
-        resp = _http.get(url, headers=_github_headers)
-        if resp.status_code == 403:
-            print(f"    Rate limited, sleeping 60s...")
-            time.sleep(60)
-            resp = _http.get(url, headers=_github_headers)
-        if resp.status_code == 404:
-            candidate["issues"] = candidate.get("issues", []) + ["repo_not_found"]
-            return
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        candidate["issues"] = candidate.get("issues", []) + [f"github_error: {e}"]
-        return
-
-    candidate["name"] = data.get("name", repo)
-    candidate["description"] = data.get("description", "")
-    candidate["stars"] = data.get("stargazers_count", 0)
-    candidate["archived"] = data.get("archived", False)
-    candidate["last_push"] = data.get("pushed_at", "")
-
-    license_info = data.get("license")
-    if license_info:
-        candidate["license"] = license_info.get("spdx_id", "NOASSERTION")
-    else:
-        candidate["license"] = None
-
-    if candidate.get("archived"):
-        candidate["issues"] = candidate.get("issues", []) + ["repo_archived"]
-
-
-# ---------------------------------------------------------------------------
-# Stage 3: Resolve npm package
+# Stage 2: npm resolve (cheap — raw.githubusercontent.com + npmjs.org)
 # ---------------------------------------------------------------------------
 
 def resolve_npm(candidate: dict) -> None:
-    """Try to find and resolve the npm package."""
+    """Try to find and resolve the npm package. No GitHub API calls."""
     owner, repo = candidate["owner"], candidate["repo"]
 
-    # Try package.json from GitHub
     pkg_json_url = f"https://raw.githubusercontent.com/{owner}/{repo}/main/package.json"
     npm_name = None
 
@@ -166,7 +229,6 @@ def resolve_npm(candidate: dict) -> None:
         candidate["issues"] = candidate.get("issues", []) + ["no_package_json"]
         return
 
-    # Check npm registry
     try:
         resp = _http.get(f"{NPM_REGISTRY}/{npm_name}")
         if resp.status_code == 404:
@@ -205,13 +267,12 @@ def resolve_npm(candidate: dict) -> None:
     candidate["npm_created"] = time_info.get("created")
     candidate["npm_modified"] = time_info.get("modified")
 
-    # Derive command
     if latest:
         candidate["command"] = ["npx", "-y", f"{npm_name}@{latest}"]
 
 
 # ---------------------------------------------------------------------------
-# Stage 4: Extract env_keys from README
+# Stage 3: Extract env_keys from README (cheap — raw.githubusercontent.com)
 # ---------------------------------------------------------------------------
 
 def extract_env_keys(candidate: dict) -> None:
@@ -231,6 +292,64 @@ def extract_env_keys(candidate: dict) -> None:
             continue
 
     candidate["env_keys"] = []
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: GitHub metadata (expensive — rate-limited API)
+# Only called for candidates that passed npm resolution.
+# ---------------------------------------------------------------------------
+
+_github_api_calls = 0
+
+
+def enrich_github(candidate: dict) -> None:
+    """Fetch GitHub repo metadata. Uses disk cache."""
+    global _github_api_calls
+    owner, repo = candidate["owner"], candidate["repo"]
+    cache_key = f"{owner}_{repo}"
+
+    cached = _cache_get("github", cache_key)
+    if cached:
+        cached.pop("_cached_at", None)
+        candidate.update(cached)
+        return
+
+    url = f"https://api.github.com/repos/{owner}/{repo}"
+    try:
+        resp = _http.get(url, headers=_github_headers)
+        _github_api_calls += 1
+
+        if resp.status_code == 403:
+            remaining = resp.headers.get("x-ratelimit-remaining", "?")
+            reset = resp.headers.get("x-ratelimit-reset", "?")
+            print(f"    Rate limited (remaining={remaining}, reset={reset}), sleeping 60s...")
+            time.sleep(60)
+            resp = _http.get(url, headers=_github_headers)
+            _github_api_calls += 1
+
+        if resp.status_code == 404:
+            candidate["issues"] = candidate.get("issues", []) + ["repo_not_found"]
+            return
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        candidate["issues"] = candidate.get("issues", []) + [f"github_error: {e}"]
+        return
+
+    gh_data = {
+        "name": data.get("name", repo),
+        "description": data.get("description", ""),
+        "stars": data.get("stargazers_count", 0),
+        "archived": data.get("archived", False),
+        "last_push": data.get("pushed_at", ""),
+        "license": (data.get("license") or {}).get("spdx_id", None),
+    }
+
+    if gh_data["archived"]:
+        candidate["issues"] = candidate.get("issues", []) + ["repo_archived"]
+
+    _cache_put("github", cache_key, gh_data)
+    candidate.update(gh_data)
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +401,7 @@ def protocol_test(candidate: dict) -> None:
             pass
 
     def recv(timeout=10):
-        import select
+        import select as _sel
         if sys.platform == "win32":
             try:
                 line = proc.stdout.readline()
@@ -290,14 +409,13 @@ def protocol_test(candidate: dict) -> None:
             except Exception:
                 return None
         else:
-            ready, _, _ = select.select([proc.stdout], [], [], timeout)
+            ready, _, _ = _sel.select([proc.stdout], [], [], timeout)
             if ready:
                 line = proc.stdout.readline()
                 return json.loads(line) if line.strip() else None
             return None
 
     try:
-        # Initialize
         send({
             "jsonrpc": "2.0", "id": next(_id), "method": "initialize",
             "params": {
@@ -317,7 +435,6 @@ def protocol_test(candidate: dict) -> None:
         candidate["protocol_tested"] = True
         candidate["protocol_passed"] = True
 
-        # tools/list
         send({"jsonrpc": "2.0", "id": next(_id), "method": "tools/list", "params": {}})
         tools_resp = recv(timeout=10)
         if tools_resp and "result" in tools_resp:
@@ -373,8 +490,6 @@ def compute_confidence(candidate: dict) -> str:
         return "HIGH"
 
     if candidate.get("npm_version") and candidate.get("command"):
-        if candidate.get("protocol_tested") and not candidate.get("protocol_passed"):
-            return "MEDIUM"
         return "MEDIUM"
 
     return "LOW"
@@ -384,12 +499,10 @@ def compute_confidence(candidate: dict) -> str:
 # Stage 7: Output
 # ---------------------------------------------------------------------------
 
-def build_suggested_seed(c: dict) -> dict | None:
-    """Build a suggested seed catalog entry for HIGH/MEDIUM candidates."""
+def build_candidate_metadata(c: dict) -> dict | None:
     if not c.get("npm_exists") or not c.get("npm_version"):
         return None
 
-    slug = c["slug"]
     tools = []
     for t in c.get("tools_snapshot", []):
         cap_id = "general"
@@ -411,12 +524,12 @@ def build_suggested_seed(c: dict) -> dict | None:
         tools = [{"name": "unknown", "capability_id": "general", "description": "Tool discovery pending"}]
 
     return {
-        "slug": slug,
-        "name": c.get("name", slug),
+        "slug": c["slug"],
+        "name": c.get("name", c["slug"]),
         "npm_package": c["npm_package"],
         "pinned_version": c["npm_version"],
         "source_repo": c["source_repo"],
-        "summary": (c.get("description") or f"MCP server: {c.get('name', slug)}")[:200],
+        "summary": (c.get("description") or f"MCP server: {c.get('name', c['slug'])}")[:200],
         "description": c.get("description") or "",
         "env_keys": c.get("env_keys", []),
         "tools": tools,
@@ -425,15 +538,34 @@ def build_suggested_seed(c: dict) -> dict | None:
     }
 
 
-def write_review_md(candidates: list[dict], path: str) -> None:
-    """Write human-readable review markdown."""
+def write_review_md(candidates: list[dict], path: str, stats: dict) -> None:
     lines = [
         "# MCP Candidate Review",
         "",
         f"Generated: {datetime.now(timezone.utc).isoformat()}",
-        f"Total candidates: {len(candidates)}",
+        f"Total candidates processed: {len(candidates)}",
+        "",
+        "## Pipeline Statistics",
+        "",
+        f"- Repos crawled: {stats.get('repos_crawled', '?')}",
+        f"- Filtered by name (exact): {stats.get('filtered_exact', '?')}",
+        f"- Filtered by name (pattern): {stats.get('filtered_pattern', '?')}",
+        f"- Filtered by description: {stats.get('filtered_description', '?')}",
+        f"- Candidates after filters: {stats.get('candidates_after_filter', '?')}",
+        f"- npm packages found: {stats.get('npm_found', '?')}",
+        f"- GitHub API calls: {stats.get('github_api_calls', '?')}",
+        f"- GitHub cache hits: {stats.get('github_cache_hits', '?')}",
         "",
     ]
+
+    if _filter_log:
+        lines.append("## Filtered Repos (top 30)")
+        lines.append("")
+        lines.append("| Repo | Reason |")
+        lines.append("|---|---|")
+        for entry in _filter_log[:30]:
+            lines.append(f"| {entry['repo']} | {entry['reason']} |")
+        lines.append("")
 
     by_confidence = {"HIGH": [], "MEDIUM": [], "LOW": [], "REJECT": []}
     for c in candidates:
@@ -449,8 +581,8 @@ def write_review_md(candidates: list[dict], path: str) -> None:
             lines.append("")
             continue
 
-        lines.append("| Slug | npm | Version | Stars | Tools | env_keys | Issues |")
-        lines.append("|---|---|---|---|---|---|---|")
+        lines.append("| Slug | npm | Version | Stars | Tools | env_keys | shasum | maintainers | Issues |")
+        lines.append("|---|---|---|---|---|---|---|---|---|")
 
         for c in sorted(items, key=lambda x: x.get("stars", 0) or 0, reverse=True):
             npm = c.get("npm_package", "-")
@@ -458,8 +590,10 @@ def write_review_md(candidates: list[dict], path: str) -> None:
             stars = c.get("stars", "-")
             tools = c.get("tools_count", len(c.get("tools_snapshot", [])))
             env = len(c.get("env_keys", []))
+            shasum = "yes" if c.get("npm_shasum") else "-"
+            maint = len(c.get("npm_maintainers", []))
             issues = "; ".join(c.get("issues", [])) or "-"
-            lines.append(f"| {c['slug']} | {npm} | {ver} | {stars} | {tools} | {env} | {issues} |")
+            lines.append(f"| {c['slug']} | {npm} | {ver} | {stars} | {tools} | {env} | {shasum} | {maint} | {issues} |")
 
         lines.append("")
 
@@ -467,7 +601,7 @@ def write_review_md(candidates: list[dict], path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Main — npm-first pipeline
 # ---------------------------------------------------------------------------
 
 def main():
@@ -478,17 +612,34 @@ def main():
     parser.add_argument("--test", action="store_true", help="Enable protocol smoke test")
     parser.add_argument("--max", type=int, default=0, help="Max candidates to process (0=all)")
     parser.add_argument("--skip-existing", action="store_true", help="Skip already-seeded slugs")
+    parser.add_argument("--cache-hours", type=int, default=24, help="GitHub cache TTL in hours")
     args = parser.parse_args()
 
     if args.github_token:
         _github_headers["Authorization"] = f"Bearer {args.github_token}"
 
-    # Stage 1
+    global _github_api_calls
+
+    # --- Stage 1: Crawl + name filter ---
     candidates = crawl_awesome()
     if args.max > 0:
         candidates = candidates[:args.max]
 
+    stats = {
+        "repos_crawled": len(candidates) + len(_filter_log),
+        "filtered_exact": sum(1 for e in _filter_log if "excluded_exact" in e["reason"]),
+        "filtered_pattern": sum(1 for e in _filter_log if "excluded_pattern" in e["reason"]),
+        "filtered_description": 0,
+        "candidates_after_filter": len(candidates),
+        "npm_found": 0,
+        "github_api_calls": 0,
+        "github_cache_hits": 0,
+    }
+
     total = len(candidates)
+    npm_resolved = []
+    desc_filtered = []
+
     for i, c in enumerate(candidates):
         slug = c["slug"]
         c["issues"] = []
@@ -501,25 +652,48 @@ def main():
 
         print(f"  [{i+1}/{total}] {c['owner']}/{c['repo']}")
 
-        # Stage 2: GitHub
-        enrich_github(c)
-        if c.get("archived"):
-            c["confidence"] = "REJECT"
-            print(f"    -> REJECT (archived)")
-            continue
-
-        time.sleep(0.3)
-
-        # Stage 3: npm
+        # --- Stage 2: npm resolve (cheap) ---
         resolve_npm(c)
-        time.sleep(0.2)
 
-        # Stage 4: env_keys
+        # --- Stage 3: env_keys (cheap) ---
         extract_env_keys(c)
 
-        # Stage 5: protocol test
-        if args.test and c.get("npm_exists") and c.get("command"):
-            print(f"    Testing protocol...")
+        if not c.get("npm_exists"):
+            c["confidence"] = compute_confidence(c)
+            print(f"    -> {c['confidence']} (no npm)")
+            continue
+
+        stats["npm_found"] += 1
+        npm_resolved.append(c)
+        print(f"    -> npm: {c.get('npm_package')}@{c.get('npm_version', '?')}")
+
+    # --- Stage 4: GitHub metadata — only for npm-resolved candidates ---
+    print(f"\nStage 4: GitHub metadata for {len(npm_resolved)} npm-resolved candidates...")
+    for i, c in enumerate(npm_resolved):
+        cache_key = f"{c['owner']}_{c['repo']}"
+        had_cache = _cache_get("github", cache_key) is not None
+        if had_cache:
+            stats["github_cache_hits"] += 1
+
+        enrich_github(c)
+
+        if c.get("archived"):
+            c["confidence"] = "REJECT"
+            print(f"  [{i+1}/{len(npm_resolved)}] {c['slug']}: REJECT (archived)")
+            continue
+
+        desc_reason = _is_excluded_by_description(c.get("description"))
+        if desc_reason:
+            c["confidence"] = "REJECT"
+            c["issues"].append(desc_reason)
+            stats["filtered_description"] += 1
+            desc_filtered.append({"repo": f"{c['owner']}/{c['repo']}", "reason": desc_reason})
+            print(f"  [{i+1}/{len(npm_resolved)}] {c['slug']}: REJECT ({desc_reason})")
+            continue
+
+        # --- Stage 5: protocol test (optional) ---
+        if args.test and c.get("command"):
+            print(f"  [{i+1}/{len(npm_resolved)}] {c['slug']}: testing protocol...")
             protocol_test(c)
             if c.get("protocol_passed"):
                 print(f"    -> Protocol OK, {c.get('tools_count', 0)} tools")
@@ -528,43 +702,41 @@ def main():
             else:
                 print(f"    -> Protocol FAILED: {c.get('protocol_error', '?')}")
 
-        # Stage 6: confidence
+        # --- Stage 6: confidence ---
         c["confidence"] = compute_confidence(c)
 
-        # Build suggested seed entry
         if c["confidence"] in ("HIGH", "MEDIUM"):
-            c["suggested_seed_entry"] = build_suggested_seed(c)
+            c["candidate_metadata"] = build_candidate_metadata(c)
 
-        status = c["confidence"]
-        npm_info = c.get("npm_package", "no-npm")
-        print(f"    -> {status} ({npm_info})")
+        print(f"  [{i+1}/{len(npm_resolved)}] {c['slug']}: {c['confidence']}")
 
-    # Filter out SKIP
+        time.sleep(0.3)
+
+    stats["github_api_calls"] = _github_api_calls
+
+    # --- Stage 7: Output ---
     output_candidates = [c for c in candidates if c.get("confidence") != "SKIP"]
-
-    # Remove internal fields
     for c in output_candidates:
         c.pop("owner", None)
         c.pop("repo", None)
         c.pop("_pkg_json", None)
 
-    # Stage 7: Write output
     Path(args.output).write_text(
         json.dumps(output_candidates, indent=2, default=str),
         encoding="utf-8",
     )
     print(f"\nOutput: {args.output} ({len(output_candidates)} candidates)")
 
-    # Write review
-    write_review_md(output_candidates, args.review)
+    _filter_log.extend(desc_filtered)
+    write_review_md(output_candidates, args.review, stats)
     print(f"Review: {args.review}")
 
-    # Summary
     counts = {}
     for c in output_candidates:
         conf = c.get("confidence", "?")
         counts[conf] = counts.get(conf, 0) + 1
     print(f"\nSummary: {counts}")
+    print(f"GitHub API calls: {_github_api_calls} (cache hits: {stats['github_cache_hits']})")
 
 
 if __name__ == "__main__":

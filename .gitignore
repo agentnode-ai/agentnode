@@ -76,4 +76,5 @@ internal/
 scripts/crawl_*.py
 scripts/enrich_*.py
 scripts/import_candidates.py
+scripts/.mcp_cache/
 candidates*.json
