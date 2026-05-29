@@ -414,6 +414,7 @@ def extract_env_keys(candidate: dict) -> None:
             resp = _http.get(url)
             if resp.status_code == 200:
                 readme = resp.text
+                candidate["_readme_text"] = readme
                 keys = sorted(set(ENV_KEY_RE.findall(readme)))
                 candidate["env_keys"] = keys
                 return
@@ -614,6 +615,103 @@ def protocol_test(candidate: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Stage 5b: Risk flags (derived from README, tools, metadata)
+# ---------------------------------------------------------------------------
+
+CRYPTO_KEYWORDS = re.compile(
+    r"\b(?:USDC|USDT|Bitcoin|Lightning|L402|x402|crypto|wallet|blockchain|"
+    r"on[- ]?chain|web3|ETH|Ethereum|Solana|Base)\b", re.IGNORECASE
+)
+
+PAYMENT_KEYWORDS = re.compile(
+    r"(?:\$\d+\.?\d*\s*(?:per|/|each|USDC|USD))|"
+    r"\b(?:pay[- ]?per[- ]?call|billing|pricing|subscription|paid\s+(?:API|tier|plan))\b",
+    re.IGNORECASE,
+)
+
+RUNTIME_INSTALL_TOOL_RE = re.compile(
+    r"\b(?:install|deploy|execute|spawn|run_command|exec|shell)\b", re.IGNORECASE
+)
+
+RULEFILE_TOOL_RE = re.compile(
+    r"\b(?:learn|write_rule|update_config|modify_agent|inject|write_file)\b", re.IGNORECASE
+)
+
+PII_KEYWORDS = re.compile(
+    r"\b(?:personal\s+data|PII|health\s+(?:data|signal|record)|medical|"
+    r"employee\s+(?:data|count)|revenue|salary|social\s+security|SSN|"
+    r"credit\s+(?:card|score)|background\s+check)\b", re.IGNORECASE
+)
+
+OPAQUE_BACKEND_RE = re.compile(
+    r"(?:queries?\s+(?:route|go|sent?)\s+through)|"
+    r"(?:proxy\s+(?:to|through|via))|"
+    r"(?:our\s+(?:API|infrastructure|backend|servers?))",
+    re.IGNORECASE,
+)
+
+
+def compute_risk_flags(candidate: dict) -> list[str]:
+    """Derive risk flags from README text, tools snapshot, and metadata."""
+    flags = []
+
+    readme = candidate.get("_readme_text", "")
+    tools = candidate.get("tools_snapshot", [])
+    tool_text = " ".join(
+        f"{t.get('name', '')} {t.get('description', '')}" for t in tools
+    )
+
+    # --- Hard flags (likely auto-reject) ---
+
+    if CRYPTO_KEYWORDS.search(readme) or CRYPTO_KEYWORDS.search(tool_text):
+        flags.append("crypto_payment")
+
+    if PAYMENT_KEYWORDS.search(readme) or PAYMENT_KEYWORDS.search(tool_text):
+        flags.append("paid_api")
+
+    if not candidate.get("license"):
+        flags.append("missing_license")
+    elif candidate.get("license") not in PERMISSIVE_LICENSES and candidate.get("license") != "NOASSERTION":
+        flags.append("non_permissive_license")
+
+    # --- Soft flags (needs human review) ---
+
+    for t in tools:
+        name = t.get("name", "")
+        desc = t.get("description", "")
+        combined = f"{name} {desc}"
+        if RUNTIME_INSTALL_TOOL_RE.search(combined):
+            flags.append("runtime_install")
+            break
+
+    for t in tools:
+        name = t.get("name", "")
+        desc = t.get("description", "")
+        combined = f"{name} {desc}"
+        if RULEFILE_TOOL_RE.search(combined):
+            flags.append("rulefile_write")
+            break
+
+    if PII_KEYWORDS.search(readme) or PII_KEYWORDS.search(tool_text):
+        flags.append("pii_handling")
+
+    if OPAQUE_BACKEND_RE.search(readme):
+        flags.append("opaque_backend")
+
+    last_push = candidate.get("last_push", "")
+    if last_push:
+        try:
+            push_dt = datetime.fromisoformat(last_push.replace("Z", "+00:00"))
+            age_days = (datetime.now(timezone.utc) - push_dt).days
+            if age_days > 180:
+                flags.append("stale_project")
+        except Exception:
+            pass
+
+    return sorted(set(flags))
+
+
+# ---------------------------------------------------------------------------
 # Stage 6: Confidence score
 # ---------------------------------------------------------------------------
 
@@ -740,7 +838,7 @@ def write_review_md(candidates: list[dict], path: str, stats: dict) -> None:
             lines.append("")
             continue
 
-        lines.append("| Slug | Runtime | Package | Version | Stars | Tools | env_keys | Issues |")
+        lines.append("| Slug | Runtime | Package | Version | Stars | Tools | Risk Flags | Issues |")
         lines.append("|---|---|---|---|---|---|---|---|")
 
         for c in sorted(items, key=lambda x: x.get("stars", 0) or 0, reverse=True):
@@ -762,9 +860,9 @@ def write_review_md(candidates: list[dict], path: str, stats: dict) -> None:
                 ver = "-"
             stars = c.get("stars", "-")
             tools = c.get("tools_count", len(c.get("tools_snapshot", [])))
-            env = len(c.get("env_keys", []))
+            rflags = ", ".join(c.get("risk_flags", [])) or "-"
             issues = "; ".join(c.get("issues", [])) or "-"
-            lines.append(f"| {c['slug']} | {runtime} | {pkg} | {ver} | {stars} | {tools} | {env} | {issues} |")
+            lines.append(f"| {c['slug']} | {runtime} | {pkg} | {ver} | {stars} | {tools} | {rflags} | {issues} |")
 
         lines.append("")
 
@@ -886,13 +984,17 @@ def main():
             else:
                 print(f"    -> Protocol FAILED: {c.get('protocol_error', '?')}")
 
+        # --- Stage 5b: risk flags ---
+        c["risk_flags"] = compute_risk_flags(c)
+
         # --- Stage 6: confidence ---
         c["confidence"] = compute_confidence(c)
 
         if c["confidence"] in ("HIGH", "MEDIUM"):
             c["candidate_metadata"] = build_candidate_metadata(c)
 
-        print(f"  [{i+1}/{len(package_resolved)}] {c['slug']}: {c['confidence']}")
+        flags_str = f" flags=[{','.join(c['risk_flags'])}]" if c["risk_flags"] else ""
+        print(f"  [{i+1}/{len(package_resolved)}] {c['slug']}: {c['confidence']}{flags_str}")
 
         time.sleep(0.3)
 
@@ -904,6 +1006,7 @@ def main():
         c.pop("owner", None)
         c.pop("repo", None)
         c.pop("_pkg_json", None)
+        c.pop("_readme_text", None)
 
     Path(args.output).write_text(
         json.dumps(output_candidates, indent=2, default=str),
