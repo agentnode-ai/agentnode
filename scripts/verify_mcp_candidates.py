@@ -32,6 +32,7 @@ import httpx
 
 AWESOME_URL = "https://raw.githubusercontent.com/punkpeye/awesome-mcp-servers/main/README.md"
 NPM_REGISTRY = "https://registry.npmjs.org"
+PYPI_REGISTRY = "https://pypi.org/pypi"
 CACHE_DIR = Path(__file__).parent / ".mcp_cache"
 
 PERMISSIVE_LICENSES = {
@@ -47,6 +48,10 @@ EXISTING_SLUGS = {
 
 ENV_KEY_RE = re.compile(r"\b([A-Z][A-Z0-9_]{2,}_(?:KEY|TOKEN|SECRET|PASSWORD|URL|ID|ENDPOINT))\b")
 NPX_CMD_RE = re.compile(r"npx\s+(?:-y\s+)?([^\s]+)")
+UVX_CMD_RE = re.compile(r"uvx\s+(?:--from\s+(\S+)\s+)?(\S+)")
+PIP_INSTALL_RE = re.compile(r"pip\s+install\s+(\S+)")
+PYPROJECT_NAME_RE = re.compile(r'^\s*name\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+PYPROJECT_SCRIPTS_RE = re.compile(r'\[(?:project\.scripts|tool\.poetry\.scripts)\](.*?)(?:\[|\Z)', re.DOTALL)
 
 DANGEROUS_SCRIPTS = {"preinstall", "postinstall", "install"}
 
@@ -272,6 +277,130 @@ def resolve_npm(candidate: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Stage 2b: Python/uvx resolve (cheap — raw.githubusercontent.com + pypi.org)
+# Only called when npm resolution found nothing.
+# ---------------------------------------------------------------------------
+
+def resolve_python(candidate: dict) -> None:
+    """Try to find a Python/uvx package. No GitHub API calls."""
+    owner, repo = candidate["owner"], candidate["repo"]
+
+    pypi_name = None
+    entry_points: list[str] = []
+
+    for branch in ("main", "master"):
+        url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/pyproject.toml"
+        try:
+            resp = _http.get(url)
+            if resp.status_code != 200:
+                continue
+
+            toml_text = resp.text
+            candidate["python_runtime"] = True
+
+            name_match = PYPROJECT_NAME_RE.search(toml_text)
+            if name_match:
+                pypi_name = name_match.group(1)
+
+            scripts_match = PYPROJECT_SCRIPTS_RE.search(toml_text)
+            if scripts_match:
+                scripts_block = scripts_match.group(1)
+                for line in scripts_block.strip().splitlines():
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#") and not line.startswith("["):
+                        ep_name = line.split("=")[0].strip().strip('"').strip("'")
+                        if ep_name:
+                            entry_points.append(ep_name)
+            break
+        except Exception:
+            continue
+
+    if not pypi_name and not candidate.get("python_runtime"):
+        for branch in ("main", "master"):
+            for filename in ("setup.py", "setup.cfg"):
+                url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{filename}"
+                try:
+                    resp = _http.get(url)
+                    if resp.status_code == 200:
+                        candidate["python_runtime"] = True
+                        name_m = re.search(r'name\s*=\s*["\']([^"\']+)["\']', resp.text)
+                        if name_m:
+                            pypi_name = name_m.group(1)
+                        break
+                except Exception:
+                    continue
+            if candidate.get("python_runtime"):
+                break
+
+    if not candidate.get("python_runtime"):
+        return
+
+    readme_text = candidate.get("_readme_text", "")
+    if not readme_text:
+        for branch in ("main", "master"):
+            url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/README.md"
+            try:
+                resp = _http.get(url)
+                if resp.status_code == 200:
+                    readme_text = resp.text
+                    break
+            except Exception:
+                continue
+
+    uvx_from_readme = None
+    if readme_text:
+        uvx_match = UVX_CMD_RE.search(readme_text)
+        if uvx_match:
+            uvx_from_readme = uvx_match.group(1) or uvx_match.group(2)
+
+        if not pypi_name:
+            pip_match = PIP_INSTALL_RE.search(readme_text)
+            if pip_match:
+                raw = pip_match.group(1)
+                pypi_name = re.split(r"[>=<\[!]", raw)[0].strip()
+
+    if not pypi_name:
+        candidate["pypi_exists"] = False
+        candidate["issues"] = candidate.get("issues", []) + ["no_pypi_name"]
+        return
+
+    try:
+        resp = _http.get(f"{PYPI_REGISTRY}/{pypi_name}/json")
+        if resp.status_code == 404:
+            candidate["pypi_package"] = pypi_name
+            candidate["pypi_exists"] = False
+            candidate["issues"] = candidate.get("issues", []) + ["pypi_not_found"]
+            return
+
+        resp.raise_for_status()
+        pypi_data = resp.json()
+    except Exception as e:
+        candidate["pypi_package"] = pypi_name
+        candidate["pypi_exists"] = False
+        candidate["issues"] = candidate.get("issues", []) + [f"pypi_error: {e}"]
+        return
+
+    candidate["pypi_package"] = pypi_name
+    candidate["pypi_exists"] = True
+
+    info = pypi_data.get("info", {})
+    candidate["pypi_version"] = info.get("version")
+    candidate["pypi_author"] = info.get("author") or info.get("maintainer") or ""
+    candidate["pypi_license"] = info.get("license") or ""
+    candidate["pypi_summary"] = info.get("summary") or ""
+
+    if entry_points:
+        candidate["python_entry_points"] = entry_points
+
+    cmd_name = uvx_from_readme or (entry_points[0] if entry_points else pypi_name)
+    version = candidate["pypi_version"]
+    if version:
+        candidate["command"] = ["uvx", f"{cmd_name}@{version}"]
+    else:
+        candidate["command"] = ["uvx", cmd_name]
+
+
+# ---------------------------------------------------------------------------
 # Stage 3: Extract env_keys from README (cheap — raw.githubusercontent.com)
 # ---------------------------------------------------------------------------
 
@@ -483,14 +612,16 @@ def compute_confidence(candidate: dict) -> str:
     if any("dangerous_scripts" in i for i in issues):
         return "REJECT"
 
-    if not candidate.get("npm_exists"):
+    has_package = candidate.get("npm_exists") or candidate.get("pypi_exists")
+    if not has_package:
         return "LOW"
 
     if candidate.get("protocol_passed"):
         return "HIGH"
 
-    if candidate.get("npm_version") and candidate.get("command"):
-        return "MEDIUM"
+    if candidate.get("command"):
+        if candidate.get("npm_version") or candidate.get("pypi_version"):
+            return "MEDIUM"
 
     return "LOW"
 
@@ -500,7 +631,9 @@ def compute_confidence(candidate: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def build_candidate_metadata(c: dict) -> dict | None:
-    if not c.get("npm_exists") or not c.get("npm_version"):
+    is_npm = c.get("npm_exists") and c.get("npm_version")
+    is_pypi = c.get("pypi_exists") and c.get("pypi_version")
+    if not is_npm and not is_pypi:
         return None
 
     tools = []
@@ -523,13 +656,23 @@ def build_candidate_metadata(c: dict) -> dict | None:
     if not tools:
         tools = [{"name": "unknown", "capability_id": "general", "description": "Tool discovery pending"}]
 
+    if is_npm:
+        runtime = "node"
+        package = c["npm_package"]
+        version = c["npm_version"]
+    else:
+        runtime = "python"
+        package = c["pypi_package"]
+        version = c["pypi_version"]
+
     return {
         "slug": c["slug"],
         "name": c.get("name", c["slug"]),
-        "npm_package": c["npm_package"],
-        "pinned_version": c["npm_version"],
+        "runtime": runtime,
+        "package": package,
+        "pinned_version": version,
         "source_repo": c["source_repo"],
-        "summary": (c.get("description") or f"MCP server: {c.get('name', c['slug'])}")[:200],
+        "summary": (c.get("description") or c.get("pypi_summary") or f"MCP server: {c.get('name', c['slug'])}")[:200],
         "description": c.get("description") or "",
         "env_keys": c.get("env_keys", []),
         "tools": tools,
@@ -553,6 +696,7 @@ def write_review_md(candidates: list[dict], path: str, stats: dict) -> None:
         f"- Filtered by description: {stats.get('filtered_description', '?')}",
         f"- Candidates after filters: {stats.get('candidates_after_filter', '?')}",
         f"- npm packages found: {stats.get('npm_found', '?')}",
+        f"- PyPI packages found: {stats.get('pypi_found', '?')}",
         f"- GitHub API calls: {stats.get('github_api_calls', '?')}",
         f"- GitHub cache hits: {stats.get('github_cache_hits', '?')}",
         "",
@@ -581,19 +725,31 @@ def write_review_md(candidates: list[dict], path: str, stats: dict) -> None:
             lines.append("")
             continue
 
-        lines.append("| Slug | npm | Version | Stars | Tools | env_keys | shasum | maintainers | Issues |")
-        lines.append("|---|---|---|---|---|---|---|---|---|")
+        lines.append("| Slug | Runtime | Package | Version | Stars | Tools | env_keys | Issues |")
+        lines.append("|---|---|---|---|---|---|---|---|")
 
         for c in sorted(items, key=lambda x: x.get("stars", 0) or 0, reverse=True):
-            npm = c.get("npm_package", "-")
-            ver = c.get("npm_version", "-")
+            if c.get("npm_exists"):
+                runtime = "node"
+                pkg = c.get("npm_package", "-")
+                ver = c.get("npm_version", "-")
+            elif c.get("pypi_exists"):
+                runtime = "python"
+                pkg = c.get("pypi_package", "-")
+                ver = c.get("pypi_version", "-")
+            elif c.get("python_runtime"):
+                runtime = "python?"
+                pkg = c.get("pypi_package", "-")
+                ver = "-"
+            else:
+                runtime = "-"
+                pkg = "-"
+                ver = "-"
             stars = c.get("stars", "-")
             tools = c.get("tools_count", len(c.get("tools_snapshot", [])))
             env = len(c.get("env_keys", []))
-            shasum = "yes" if c.get("npm_shasum") else "-"
-            maint = len(c.get("npm_maintainers", []))
             issues = "; ".join(c.get("issues", [])) or "-"
-            lines.append(f"| {c['slug']} | {npm} | {ver} | {stars} | {tools} | {env} | {shasum} | {maint} | {issues} |")
+            lines.append(f"| {c['slug']} | {runtime} | {pkg} | {ver} | {stars} | {tools} | {env} | {issues} |")
 
         lines.append("")
 
@@ -632,12 +788,13 @@ def main():
         "filtered_description": 0,
         "candidates_after_filter": len(candidates),
         "npm_found": 0,
+        "pypi_found": 0,
         "github_api_calls": 0,
         "github_cache_hits": 0,
     }
 
     total = len(candidates)
-    npm_resolved = []
+    package_resolved = []
     desc_filtered = []
 
     for i, c in enumerate(candidates):
@@ -655,21 +812,33 @@ def main():
         # --- Stage 2: npm resolve (cheap) ---
         resolve_npm(c)
 
+        # --- Stage 2b: Python/uvx resolve if no npm ---
+        if not c.get("npm_exists"):
+            resolve_python(c)
+
         # --- Stage 3: env_keys (cheap) ---
         extract_env_keys(c)
 
-        if not c.get("npm_exists"):
+        has_package = c.get("npm_exists") or c.get("pypi_exists")
+        if not has_package:
             c["confidence"] = compute_confidence(c)
-            print(f"    -> {c['confidence']} (no npm)")
+            runtime_hint = "python?" if c.get("python_runtime") else "no package"
+            print(f"    -> {c['confidence']} ({runtime_hint})")
             continue
 
-        stats["npm_found"] += 1
-        npm_resolved.append(c)
-        print(f"    -> npm: {c.get('npm_package')}@{c.get('npm_version', '?')}")
+        if c.get("npm_exists"):
+            stats["npm_found"] += 1
+            print(f"    -> npm: {c.get('npm_package')}@{c.get('npm_version', '?')}")
+        else:
+            stats["pypi_found"] += 1
+            print(f"    -> pypi: {c.get('pypi_package')}@{c.get('pypi_version', '?')}")
 
-    # --- Stage 4: GitHub metadata — only for npm-resolved candidates ---
-    print(f"\nStage 4: GitHub metadata for {len(npm_resolved)} npm-resolved candidates...")
-    for i, c in enumerate(npm_resolved):
+        package_resolved.append(c)
+
+    # --- Stage 4: GitHub metadata — only for package-resolved candidates ---
+    print(f"\nStage 4: GitHub metadata for {len(package_resolved)} package-resolved candidates "
+          f"(npm={stats['npm_found']}, pypi={stats['pypi_found']})...")
+    for i, c in enumerate(package_resolved):
         cache_key = f"{c['owner']}_{c['repo']}"
         had_cache = _cache_get("github", cache_key) is not None
         if had_cache:
@@ -679,7 +848,7 @@ def main():
 
         if c.get("archived"):
             c["confidence"] = "REJECT"
-            print(f"  [{i+1}/{len(npm_resolved)}] {c['slug']}: REJECT (archived)")
+            print(f"  [{i+1}/{len(package_resolved)}] {c['slug']}: REJECT (archived)")
             continue
 
         desc_reason = _is_excluded_by_description(c.get("description"))
@@ -688,12 +857,12 @@ def main():
             c["issues"].append(desc_reason)
             stats["filtered_description"] += 1
             desc_filtered.append({"repo": f"{c['owner']}/{c['repo']}", "reason": desc_reason})
-            print(f"  [{i+1}/{len(npm_resolved)}] {c['slug']}: REJECT ({desc_reason})")
+            print(f"  [{i+1}/{len(package_resolved)}] {c['slug']}: REJECT ({desc_reason})")
             continue
 
         # --- Stage 5: protocol test (optional) ---
         if args.test and c.get("command"):
-            print(f"  [{i+1}/{len(npm_resolved)}] {c['slug']}: testing protocol...")
+            print(f"  [{i+1}/{len(package_resolved)}] {c['slug']}: testing protocol...")
             protocol_test(c)
             if c.get("protocol_passed"):
                 print(f"    -> Protocol OK, {c.get('tools_count', 0)} tools")
@@ -708,7 +877,7 @@ def main():
         if c["confidence"] in ("HIGH", "MEDIUM"):
             c["candidate_metadata"] = build_candidate_metadata(c)
 
-        print(f"  [{i+1}/{len(npm_resolved)}] {c['slug']}: {c['confidence']}")
+        print(f"  [{i+1}/{len(package_resolved)}] {c['slug']}: {c['confidence']}")
 
         time.sleep(0.3)
 
