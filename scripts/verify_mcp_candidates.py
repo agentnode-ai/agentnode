@@ -277,6 +277,45 @@ def resolve_npm(candidate: dict) -> None:
     if latest:
         candidate["command"] = ["npx", "-y", f"{npm_name}@{latest}"]
 
+    _reconcile_repo_owner(candidate, npm_data.get("repository", {}))
+
+
+def _reconcile_repo_owner(candidate: dict, repo_info) -> None:
+    """Cross-check package registry repo URL against awesome-mcp-servers URL.
+
+    The npm/PyPI registry is authoritative for ownership. awesome-mcp-servers
+    may link to forks or contributor profiles.
+    """
+    if isinstance(repo_info, str):
+        repo_url = repo_info
+    elif isinstance(repo_info, dict):
+        repo_url = repo_info.get("url", "")
+    else:
+        return
+
+    m = re.search(r"github\.com/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)", repo_url)
+    if not m:
+        return
+
+    registry_owner = m.group(1)
+    registry_repo = m.group(2).removesuffix(".git")
+    current_owner = candidate.get("owner", "")
+    current_repo = candidate.get("repo", "")
+
+    if registry_owner.lower() == current_owner.lower() and registry_repo.lower() == current_repo.lower():
+        return
+
+    candidate["_owner_mismatch"] = {
+        "awesome_mcp": f"{current_owner}/{current_repo}",
+        "registry": f"{registry_owner}/{registry_repo}",
+    }
+    candidate["owner"] = registry_owner
+    candidate["repo"] = registry_repo
+    candidate["source_repo"] = f"https://github.com/{registry_owner}/{registry_repo}"
+    candidate["issues"] = candidate.get("issues", []) + [
+        f"owner_corrected: {current_owner}/{current_repo} -> {registry_owner}/{registry_repo}"
+    ]
+
 
 # ---------------------------------------------------------------------------
 # Stage 2b: Python/uvx resolve (cheap — raw.githubusercontent.com + pypi.org)
@@ -400,6 +439,19 @@ def resolve_python(candidate: dict) -> None:
         candidate["command"] = ["uvx", f"{cmd_name}@{version}"]
     else:
         candidate["command"] = ["uvx", cmd_name]
+
+    project_urls = info.get("project_urls") or {}
+    repo_url = (
+        project_urls.get("Repository")
+        or project_urls.get("Source")
+        or project_urls.get("Source Code")
+        or project_urls.get("GitHub")
+        or project_urls.get("Homepage")
+        or info.get("home_page")
+        or ""
+    )
+    if "github.com" in repo_url:
+        _reconcile_repo_owner(candidate, repo_url)
 
 
 # ---------------------------------------------------------------------------
@@ -1064,6 +1116,7 @@ def main():
         c.pop("_pkg_json", None)
         c.pop("_readme_text", None)
         c.pop("_has_source_code", None)
+        c.pop("_owner_mismatch", None)
 
     Path(args.output).write_text(
         json.dumps(output_candidates, indent=2, default=str),
