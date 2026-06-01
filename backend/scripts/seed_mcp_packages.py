@@ -256,6 +256,29 @@ MCP_CATALOG = [
         "tags": ["mcp", "mcp-server", "playwright", "browser", "automation", "testing", "web"],
         "categories": ["web-automation"],
     },
+    {
+        "slug": "mcp-firefox-devtools",
+        "name": "Firefox DevTools MCP",
+        "npm_package": "@mozilla/firefox-devtools-mcp",
+        "pinned_version": "0.9.3",
+        "source_repo": "https://github.com/mozilla/firefox-devtools-mcp",
+        "summary": "MCP server for Firefox browser automation and DevTools inspection.",
+        "description": "Automate Firefox via DevTools: navigate pages, fill forms, click elements, take screenshots, inspect DOM snapshots, monitor console and network. Requires Firefox 100+ installed. Supports headless mode and dedicated profiles.",
+        "env_keys": [],
+        "network_level": "unrestricted",
+        "tools": [
+            {"name": "navigate_page", "capability_id": "web_automation", "description": "Navigate selected tab to URL"},
+            {"name": "click_by_uid", "capability_id": "web_automation", "description": "Click element by UID"},
+            {"name": "fill_by_uid", "capability_id": "web_automation", "description": "Fill text input by UID"},
+            {"name": "fill_form_by_uid", "capability_id": "web_automation", "description": "Fill multiple form fields at once"},
+            {"name": "screenshot_page", "capability_id": "web_automation", "description": "Capture page screenshot as PNG"},
+            {"name": "take_snapshot", "capability_id": "web_automation", "description": "Capture DOM snapshot with stable UIDs"},
+            {"name": "list_network_requests", "capability_id": "web_automation", "description": "List network requests"},
+            {"name": "list_console_messages", "capability_id": "web_automation", "description": "List console messages with filtering"},
+        ],
+        "tags": ["mcp", "mcp-server", "firefox", "browser", "devtools", "automation", "mozilla"],
+        "categories": ["web-automation"],
+    },
 ]
 
 
