@@ -41,7 +41,7 @@ PERMISSIVE_LICENSES = {
 }
 
 EXISTING_SLUGS = {
-    "mcp-brave-search", "mcp-filesystem", "mcp-github", "mcp-google-drive",
+    "mcp-brave-search", "mcp-filesystem", "mcp-github",
     "mcp-memory", "mcp-postgres", "mcp-puppeteer", "mcp-sequential-thinking",
     "mcp-slack", "mcp-sqlite",
     "mcp-metmuseum", "mcp-nakkas", "mcp-astronomy-oracle",
