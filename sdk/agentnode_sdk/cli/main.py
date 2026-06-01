@@ -41,6 +41,10 @@ def main(argv: list[str] | None = None) -> int:
     mcp_doctor.add_argument("slug", help="MCP package slug")
     mcp_doctor.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     mcp_doctor.add_argument("--skip-start", action="store_true", help="Skip subprocess start test")
+    mcp_verify_p = mcp_sub.add_parser("verify", help="Verify an agentnode.yaml manifest")
+    mcp_verify_p.add_argument("path", nargs="?", default=".", help="Directory or file path")
+    mcp_verify_p.add_argument("--test", action="store_true", help="Run protocol test (starts the MCP)")
+    mcp_verify_p.add_argument("--json", dest="json_output", action="store_true", help="JSON report output")
 
     # reset
     sub.add_parser("reset", help="Reset configuration")
@@ -218,6 +222,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.mcp_command == "doctor":
                 from agentnode_sdk.cli.mcp_commands import cmd_mcp_doctor
                 return cmd_mcp_doctor(args.slug, args.json_output, args.skip_start)
+            if args.mcp_command == "verify":
+                from agentnode_sdk.cli.mcp_verify import cmd_mcp_verify
+                return cmd_mcp_verify(args.path, test=args.test, json_output=args.json_output)
             mcp_parser.print_help()
             return 0
         if args.command == "reset":

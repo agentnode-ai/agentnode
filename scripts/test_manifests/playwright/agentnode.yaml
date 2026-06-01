@@ -1,0 +1,28 @@
+agentnode: "0.1"
+name: "Playwright MCP"
+summary: "Browser automation via Playwright. Navigate, click, type, screenshot, execute JS."
+
+package:
+  registry: npm
+  name: "@playwright/mcp"
+  version: "0.0.75"
+
+transport: stdio
+command: ["npx", "-y", "@playwright/mcp@0.0.75", "--headless"]
+
+permissions:
+  network: unrestricted
+  filesystem: none
+  code_execution: shell
+
+env_keys: []
+
+license: Apache-2.0
+source_repo: "https://github.com/microsoft/playwright-mcp"
+
+requirements:
+  node: ">=18"
+  host_apps: []
+
+tags: [browser, automation, playwright]
+categories: [web-automation]

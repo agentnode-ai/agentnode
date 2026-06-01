@@ -1,0 +1,23 @@
+agentnode: "0.1"
+name: "Met Museum MCP"
+summary: "Search and browse The Metropolitan Museum of Art Collection."
+
+package:
+  registry: npm
+  name: metmuseum-mcp
+  version: "1.0.0"
+
+transport: stdio
+command: ["npx", "-y", "metmuseum-mcp@1.0.0"]
+
+permissions:
+  network: restricted
+  filesystem: none
+  code_execution: none
+
+env_keys: []
+
+license: MIT
+source_repo: "https://github.com/mikechao/metmuseum-mcp"
+tags: [museum, art, culture]
+categories: [data-management]

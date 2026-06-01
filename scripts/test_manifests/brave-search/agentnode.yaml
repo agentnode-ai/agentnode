@@ -1,0 +1,24 @@
+agentnode: "0.1"
+name: "Brave Search MCP"
+summary: "Web and local search via the Brave Search API."
+
+package:
+  registry: npm
+  name: "@modelcontextprotocol/server-brave-search"
+  version: "2025.3.28"
+
+transport: stdio
+command: ["npx", "-y", "@modelcontextprotocol/server-brave-search@2025.3.28"]
+
+permissions:
+  network: restricted
+  filesystem: none
+  code_execution: none
+
+env_keys:
+  - BRAVE_API_KEY
+
+license: MIT
+source_repo: "https://github.com/modelcontextprotocol/servers"
+tags: [search, web]
+categories: [search]
