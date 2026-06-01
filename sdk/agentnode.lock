@@ -1,6 +1,6 @@
 {
   "lockfile_version": "0.1",
-  "updated_at": "2026-05-05T10:30:55.276692+00:00",
+  "updated_at": "2026-05-28T19:20:23.936900+00:00",
   "packages": {
     "word-counter-pack": {
       "version": "1.0.0",
@@ -152,6 +152,85 @@
       "resources": [],
       "connector": null,
       "agent": null
+    },
+    "mcp-filesystem": {
+      "version": "0.1.0",
+      "package_type": "toolpack",
+      "runtime": "mcp",
+      "entrypoint": "",
+      "capability_ids": [
+        "file_read",
+        "file_write",
+        "file_read"
+      ],
+      "tools": [],
+      "artifact_hash": "",
+      "installed_at": "2026-05-28T19:19:36.026966+00:00",
+      "source": "sdk",
+      "trust_level": "unverified",
+      "last_trust_check": "2026-05-28T19:19:36.026975+00:00",
+      "permissions": {
+        "network_level": "none",
+        "filesystem_level": "none",
+        "code_execution_level": "none",
+        "data_access_level": "input_only",
+        "user_approval_level": "once"
+      },
+      "prompts": [],
+      "resources": [],
+      "connector": null,
+      "agent": null,
+      "publisher_slug": "agentnode-community",
+      "mcp_command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-filesystem@2025.3.28"
+      ],
+      "_integrity": {
+        "algorithm": "sha256",
+        "canonical_version": 3,
+        "hash": "e328410426cb56408c78c3a8b4ca3e5149b0f9a69e209755a2473c5596344e77"
+      }
+    },
+    "mcp-brave-search": {
+      "version": "0.1.0",
+      "package_type": "toolpack",
+      "runtime": "mcp",
+      "entrypoint": "",
+      "capability_ids": [
+        "web_search"
+      ],
+      "tools": [],
+      "artifact_hash": "",
+      "installed_at": "2026-05-28T19:20:23.929529+00:00",
+      "source": "sdk",
+      "trust_level": "unverified",
+      "last_trust_check": "2026-05-28T19:20:23.929538+00:00",
+      "permissions": {
+        "network_level": "none",
+        "filesystem_level": "none",
+        "code_execution_level": "none",
+        "data_access_level": "input_only",
+        "user_approval_level": "once"
+      },
+      "prompts": [],
+      "resources": [],
+      "connector": null,
+      "agent": null,
+      "publisher_slug": "agentnode-community",
+      "mcp_command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-brave-search@2025.3.28"
+      ],
+      "mcp_env_keys": [
+        "BRAVE_API_KEY"
+      ],
+      "_integrity": {
+        "algorithm": "sha256",
+        "canonical_version": 3,
+        "hash": "6971a6e31fc7b6364c7378cde6d6a2f86712aa7cc80ab53ddbcedf731b03632f"
+      }
     }
   }
 }

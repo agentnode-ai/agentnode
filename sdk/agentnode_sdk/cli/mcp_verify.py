@@ -1,8 +1,8 @@
-"""Verify an agentnode.yaml manifest for MCP servers.
+"""Verify an agentnode.yaml MCP manifest against registries and protocol.
 
-Reads a manifest file, validates the schema, resolves the package on
-npm/PyPI, checks owner match, and optionally runs a protocol test.
-Outputs a Verification Report.
+Reads an existing agentnode.yaml (manifest_version 0.3, runtime=mcp),
+validates the structure, resolves the npm/PyPI package, checks owner
+match, and optionally runs a protocol test.
 
 No code is executed without --test. Default mode is read-only checks.
 """
@@ -32,11 +32,6 @@ PERMISSIVE_LICENSES = {
     "MIT OR Apache-2.0",
 }
 
-REQUIRED_FIELDS = ["agentnode", "name", "summary", "package", "transport", "command", "permissions", "env_keys"]
-REQUIRED_PACKAGE_FIELDS = ["registry", "name", "version"]
-REQUIRED_PERMISSION_FIELDS = ["network", "filesystem", "code_execution"]
-VALID_REGISTRIES = {"npm", "pypi"}
-VALID_TRANSPORTS = {"stdio", "sse"}
 VALID_NETWORK = {"none", "restricted", "unrestricted"}
 VALID_FILESYSTEM = {"none", "read_only", "workspace_write", "any"}
 VALID_CODE_EXECUTION = {"none", "limited_subprocess", "shell"}
@@ -50,6 +45,10 @@ PAYMENT_RE = re.compile(
     r"\b(?:pay[- ]?per[- ]?call|billing|pricing|subscription|paid\s+(?:API|tier|plan))\b",
     re.IGNORECASE,
 )
+
+NETWORK_HINTS = re.compile(r"\b(url|uri|endpoint|host|domain|fetch|request|http|api_url)\b", re.IGNORECASE)
+FILESYSTEM_HINTS = re.compile(r"\b(path|file|filename|directory|folder|filepath)\b", re.IGNORECASE)
+CODE_EXEC_HINTS = re.compile(r"\b(execute|eval|run|code|script|command|shell|unsafe)\b", re.IGNORECASE)
 
 _http = httpx.Client(timeout=15, follow_redirects=True)
 
@@ -97,57 +96,39 @@ class VerifyReport:
 
 
 # ---------------------------------------------------------------------------
-# Check 1: Schema validation
+# Check 1: Schema — validates existing agentnode.yaml v0.3 with runtime=mcp
 # ---------------------------------------------------------------------------
 
 def check_schema(manifest: dict, report: VerifyReport) -> bool:
-    for f in REQUIRED_FIELDS:
-        if f not in manifest:
-            report.checks.append(Check("schema", False, f"missing required field: {f}", blocking=True))
-            report.errors.append(f"Missing required field: {f}")
-            return False
-
-    pkg = manifest.get("package", {})
-    for f in REQUIRED_PACKAGE_FIELDS:
-        if f not in pkg:
-            report.checks.append(Check("schema", False, f"missing package.{f}", blocking=True))
-            report.errors.append(f"Missing package.{f}")
-            return False
-
-    if pkg["registry"] not in VALID_REGISTRIES:
-        report.checks.append(Check("schema", False, f"invalid registry: {pkg['registry']}", blocking=True))
+    mv = manifest.get("manifest_version")
+    if mv not in ("0.1", "0.2", "0.3"):
+        report.checks.append(Check("schema", False, f"unsupported manifest_version: {mv}", blocking=True))
+        report.errors.append(f"Unsupported manifest_version: {mv}")
         return False
 
-    if manifest["transport"] not in VALID_TRANSPORTS:
-        report.checks.append(Check("schema", False, f"invalid transport: {manifest['transport']}", blocking=True))
+    report.manifest_version = str(mv)
+
+    runtime = manifest.get("runtime")
+    if runtime != "mcp":
+        report.checks.append(Check("schema", False, f"runtime is '{runtime}', expected 'mcp'", blocking=True))
+        report.errors.append("This command verifies MCP manifests (runtime: mcp)")
         return False
 
-    perms = manifest.get("permissions", {})
-    for f in REQUIRED_PERMISSION_FIELDS:
-        if f not in perms:
-            report.checks.append(Check("schema", False, f"missing permissions.{f}", blocking=True))
-            return False
-
-    if perms["network"] not in VALID_NETWORK:
-        report.checks.append(Check("schema", False, f"invalid network level: {perms['network']}", blocking=True))
-        return False
-    if perms["filesystem"] not in VALID_FILESYSTEM:
-        report.checks.append(Check("schema", False, f"invalid filesystem level: {perms['filesystem']}", blocking=True))
-        return False
-    if perms["code_execution"] not in VALID_CODE_EXECUTION:
-        report.checks.append(Check("schema", False, f"invalid code_execution level: {perms['code_execution']}", blocking=True))
+    mcp = manifest.get("mcp_server")
+    if not isinstance(mcp, dict):
+        report.checks.append(Check("schema", False, "missing mcp_server block", blocking=True))
+        report.errors.append("MCP manifest requires mcp_server block")
         return False
 
-    if not isinstance(manifest.get("command"), list) or not manifest["command"]:
-        report.checks.append(Check("schema", False, "command must be a non-empty list", blocking=True))
+    if not isinstance(mcp.get("command"), list) or not mcp["command"]:
+        report.checks.append(Check("schema", False, "mcp_server.command must be a non-empty list", blocking=True))
         return False
 
-    if not isinstance(manifest.get("env_keys"), list):
-        report.checks.append(Check("schema", False, "env_keys must be a list", blocking=True))
+    if not mcp.get("npm_package") and not mcp.get("pypi_package"):
+        report.checks.append(Check("schema", False, "mcp_server needs npm_package or pypi_package", blocking=True))
         return False
 
-    report.manifest_version = str(manifest.get("agentnode", ""))
-    report.checks.append(Check("schema", True, f"v{report.manifest_version}"))
+    report.checks.append(Check("schema", True, f"manifest v{mv}, runtime=mcp"))
     return True
 
 
@@ -156,21 +137,34 @@ def check_schema(manifest: dict, report: VerifyReport) -> bool:
 # ---------------------------------------------------------------------------
 
 def check_package(manifest: dict, report: VerifyReport) -> bool:
-    pkg = manifest["package"]
-    registry = pkg["registry"]
-    name = pkg["name"]
-    version = pkg["version"]
+    mcp = manifest["mcp_server"]
+    npm_name = mcp.get("npm_package")
+    pypi_name = mcp.get("pypi_package")
 
-    report.package = {"registry": registry, "name": name, "version": version}
+    version = None
+    cmd = mcp.get("command", [])
+    for part in cmd:
+        if "@" in part and not part.startswith("@"):
+            version = part.split("@")[-1]
+            break
+        if "@" in part and part.startswith("@"):
+            parts = part.split("@")
+            if len(parts) == 3:
+                version = parts[2]
+                break
 
-    if registry == "npm":
-        return _check_npm(name, version, report)
-    elif registry == "pypi":
-        return _check_pypi(name, version, report)
+    if npm_name:
+        report.package = {"registry": "npm", "name": npm_name, "version": version}
+        return _check_npm(npm_name, version, report)
+    elif pypi_name:
+        report.package = {"registry": "pypi", "name": pypi_name, "version": version}
+        return _check_pypi(pypi_name, version, report)
+
+    report.checks.append(Check("package_exists", False, "no package name found", blocking=True))
     return False
 
 
-def _check_npm(name: str, version: str, report: VerifyReport) -> bool:
+def _check_npm(name: str, version: str | None, report: VerifyReport) -> bool:
     try:
         resp = _http.get(f"{NPM_REGISTRY}/{name}")
         if resp.status_code == 404:
@@ -185,16 +179,24 @@ def _check_npm(name: str, version: str, report: VerifyReport) -> bool:
 
     report.checks.append(Check("package_exists", True, f"{name} on npm"))
 
-    versions = data.get("versions", {})
-    if version not in versions:
-        report.checks.append(Check("version_exists", False, f"version {version} not found", blocking=True))
-        report.errors.append(f"Version {version} not found on npm")
-        return False
+    if version:
+        versions = data.get("versions", {})
+        if version not in versions:
+            report.checks.append(Check("version_exists", False, f"version {version} not found", blocking=True))
+            report.errors.append(f"Version {version} not found on npm")
+            return False
 
-    ver_data = versions[version]
-    dist = ver_data.get("dist", {})
-    report.package["shasum"] = dist.get("shasum")
-    report.package["integrity"] = dist.get("integrity")
+        ver_data = versions[version]
+        dist = ver_data.get("dist", {})
+        report.package["shasum"] = dist.get("shasum")
+        report.package["integrity"] = dist.get("integrity")
+        report.checks.append(Check(
+            "version_exists", True,
+            f"{version} -- shasum: {(dist.get('shasum') or '?')[:16]}..."
+        ))
+    else:
+        report.checks.append(Check("version_exists", False, "no version pinned in command"))
+        report.warnings.append("No pinned version detected in command")
 
     maintainers = data.get("maintainers", [])
     report.package["maintainers"] = [m.get("name", "") for m in maintainers if isinstance(m, dict)]
@@ -205,23 +207,15 @@ def _check_npm(name: str, version: str, report: VerifyReport) -> bool:
     elif isinstance(repo_info, dict):
         report.package["registry_repo_url"] = repo_info.get("url", "")
 
-    report.checks.append(Check(
-        "version_exists", True,
-        f"{version} — shasum: {(dist.get('shasum') or '?')[:16]}..."
-    ))
     return True
 
 
-def _check_pypi(name: str, version: str, report: VerifyReport) -> bool:
+def _check_pypi(name: str, version: str | None, report: VerifyReport) -> bool:
+    url = f"{PYPI_REGISTRY}/{name}/json" if not version else f"{PYPI_REGISTRY}/{name}/{version}/json"
     try:
-        resp = _http.get(f"{PYPI_REGISTRY}/{name}/{version}/json")
+        resp = _http.get(url)
         if resp.status_code == 404:
-            resp2 = _http.get(f"{PYPI_REGISTRY}/{name}/json")
-            if resp2.status_code == 404:
-                report.checks.append(Check("package_exists", False, f"{name} not found on PyPI", blocking=True))
-                return False
-            report.checks.append(Check("package_exists", True, f"{name} on PyPI"))
-            report.checks.append(Check("version_exists", False, f"version {version} not found", blocking=True))
+            report.checks.append(Check("package_exists", False, f"{name} not found on PyPI", blocking=True))
             return False
         resp.raise_for_status()
         data = resp.json()
@@ -231,17 +225,14 @@ def _check_pypi(name: str, version: str, report: VerifyReport) -> bool:
 
     info = data.get("info", {})
     report.checks.append(Check("package_exists", True, f"{name} on PyPI"))
-    report.checks.append(Check("version_exists", True, f"{version}"))
+    if version:
+        report.checks.append(Check("version_exists", True, f"{version}"))
 
     project_urls = info.get("project_urls") or {}
     repo_url = (
-        project_urls.get("Repository")
-        or project_urls.get("Source")
-        or project_urls.get("Source Code")
-        or project_urls.get("GitHub")
-        or project_urls.get("Homepage")
-        or info.get("home_page")
-        or ""
+        project_urls.get("Repository") or project_urls.get("Source")
+        or project_urls.get("Source Code") or project_urls.get("GitHub")
+        or project_urls.get("Homepage") or info.get("home_page") or ""
     )
     if repo_url:
         report.package["registry_repo_url"] = repo_url
@@ -250,19 +241,19 @@ def _check_pypi(name: str, version: str, report: VerifyReport) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Check 4: Command pinning
+# Check 4: Version pinning
 # ---------------------------------------------------------------------------
 
 def check_pinning(manifest: dict, report: VerifyReport) -> None:
-    command = manifest["command"]
-    version = manifest["package"]["version"]
-    cmd_str = " ".join(command)
+    cmd = manifest["mcp_server"]["command"]
+    version = report.package.get("version")
+    cmd_str = " ".join(cmd)
 
-    if f"@{version}" in cmd_str or f"=={version}" in cmd_str:
+    if version and (f"@{version}" in cmd_str or f"=={version}" in cmd_str):
         report.checks.append(Check("version_pinned", True, cmd_str))
     else:
-        report.checks.append(Check("version_pinned", False, f"command does not pin to {version}"))
-        report.warnings.append(f"Command does not include pinned version @{version}")
+        report.checks.append(Check("version_pinned", False, "command does not pin exact version"))
+        report.warnings.append("Command does not include pinned version")
 
 
 # ---------------------------------------------------------------------------
@@ -270,35 +261,31 @@ def check_pinning(manifest: dict, report: VerifyReport) -> None:
 # ---------------------------------------------------------------------------
 
 def check_owner(manifest: dict, report: VerifyReport) -> None:
-    source_repo = manifest.get("source_repo", "")
+    source_repo = manifest["mcp_server"].get("source_repo", "")
     registry_repo = report.package.get("registry_repo_url", "")
 
     if not source_repo:
-        report.checks.append(Check("owner_verified", False, "no source_repo declared"))
-        report.warnings.append("No source_repo in manifest — cannot verify owner")
+        report.checks.append(Check("owner_verified", False, "no source_repo in mcp_server"))
+        report.warnings.append("No source_repo declared -- cannot verify owner")
         return
 
     report.source = {"declared": source_repo}
 
     if not registry_repo:
         report.checks.append(Check("owner_verified", False, "no repository URL in registry"))
-        report.warnings.append("Registry has no repository URL — cannot verify owner")
+        report.warnings.append("Registry has no repository URL -- cannot verify owner")
         return
 
-    def _extract_owner_repo(url: str) -> str | None:
+    def _extract(url: str) -> str | None:
         m = re.search(r"github\.com/([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)", url)
-        if m:
-            return m.group(1).removesuffix(".git").lower()
-        return None
+        return m.group(1).removesuffix(".git").lower() if m else None
 
-    declared = _extract_owner_repo(source_repo)
-    registry = _extract_owner_repo(registry_repo)
-
+    declared = _extract(source_repo)
+    registry = _extract(registry_repo)
     report.source["registry"] = registry_repo
 
     if not declared or not registry:
         report.checks.append(Check("owner_verified", False, "cannot parse GitHub URLs"))
-        report.warnings.append("Cannot parse GitHub owner from URLs")
         return
 
     if declared == registry:
@@ -313,7 +300,7 @@ def check_owner(manifest: dict, report: VerifyReport) -> None:
 # ---------------------------------------------------------------------------
 
 def check_protocol(manifest: dict, report: VerifyReport) -> None:
-    command = list(manifest["command"])
+    command = list(manifest["mcp_server"]["command"])
     exe = shutil.which(command[0])
     if exe:
         command[0] = exe
@@ -325,13 +312,8 @@ def check_protocol(manifest: dict, report: VerifyReport) -> None:
 
     try:
         proc = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            text=True,
-            cwd=tempfile.gettempdir(),
+            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, env=env, text=True, cwd=tempfile.gettempdir(),
         )
     except Exception as e:
         report.checks.append(Check("protocol_test", False, f"start failed: {e}"))
@@ -387,7 +369,6 @@ def check_protocol(manifest: dict, report: VerifyReport) -> None:
             report.checks.append(Check("protocol_test", True, f"{len(tools)} tools discovered"))
         else:
             report.checks.append(Check("protocol_test", False, f"tools/list failed: {tools_resp}"))
-
     except Exception as e:
         report.checks.append(Check("protocol_test", False, str(e)))
     finally:
@@ -405,18 +386,14 @@ def check_protocol(manifest: dict, report: VerifyReport) -> None:
 # Check 7: Permission honesty
 # ---------------------------------------------------------------------------
 
-NETWORK_HINTS = re.compile(r"\b(url|uri|endpoint|host|domain|fetch|request|http|api_url)\b", re.IGNORECASE)
-FILESYSTEM_HINTS = re.compile(r"\b(path|file|filename|directory|folder|filepath)\b", re.IGNORECASE)
-CODE_EXEC_HINTS = re.compile(r"\b(execute|eval|run|code|script|command|shell|unsafe)\b", re.IGNORECASE)
-
-
 def check_permissions(manifest: dict, report: VerifyReport) -> None:
-    declared = manifest["permissions"]
-    report.permissions = {
-        "declared": dict(declared),
-        "detected": {},
-        "mismatches": [],
+    perms = manifest.get("permissions", {})
+    declared = {
+        "network": perms.get("network", {}).get("level", "none"),
+        "filesystem": perms.get("filesystem", {}).get("level", "none"),
+        "code_execution": perms.get("code_execution", {}).get("level", "none"),
     }
+    report.permissions = {"declared": declared, "detected": {}, "mismatches": []}
 
     tools = report.tools_snapshot
     if not tools:
@@ -427,22 +404,19 @@ def check_permissions(manifest: dict, report: VerifyReport) -> None:
     for t in tools:
         all_keys.extend(t.get("input_schema_keys", []))
         all_names.append(t.get("name", ""))
+    combined = " ".join(all_keys) + " " + " ".join(all_names)
 
-    keys_text = " ".join(all_keys)
-    names_text = " ".join(all_names)
-    combined = f"{keys_text} {names_text}"
-
-    detected_network = bool(NETWORK_HINTS.search(combined))
+    detected_net = bool(NETWORK_HINTS.search(combined))
     detected_fs = bool(FILESYSTEM_HINTS.search(combined))
     detected_exec = bool(CODE_EXEC_HINTS.search(combined))
 
     report.permissions["detected"] = {
-        "network": "likely" if detected_network else "none",
+        "network": "likely" if detected_net else "none",
         "filesystem": "likely" if detected_fs else "none",
         "code_execution": "likely" if detected_exec else "none",
     }
 
-    if detected_network and declared["network"] == "none":
+    if detected_net and declared["network"] == "none":
         mm = "declared network:none but tools suggest network access"
         report.permissions["mismatches"].append(mm)
         report.warnings.append(f"Permission mismatch: {mm}")
@@ -457,12 +431,8 @@ def check_permissions(manifest: dict, report: VerifyReport) -> None:
         report.permissions["mismatches"].append(mm)
         report.warnings.append(f"Permission mismatch: {mm}")
 
-    has_mismatches = len(report.permissions["mismatches"]) > 0
-    if has_mismatches:
-        report.checks.append(Check(
-            "permission_honesty", False,
-            f"{len(report.permissions['mismatches'])} mismatch(es)"
-        ))
+    if report.permissions["mismatches"]:
+        report.checks.append(Check("permission_honesty", False, f"{len(report.permissions['mismatches'])} mismatch(es)"))
     else:
         report.checks.append(Check("permission_honesty", True, "declarations match detected capabilities"))
 
@@ -482,14 +452,6 @@ def check_risk_flags(manifest: dict, report: VerifyReport) -> None:
         report.risk_flags.append("crypto_payment")
     if PAYMENT_RE.search(summary) or PAYMENT_RE.search(tool_text):
         report.risk_flags.append("paid_api")
-
-    license_val = manifest.get("license", "")
-    if not license_val:
-        report.risk_flags.append("missing_license")
-    elif license_val not in PERMISSIVE_LICENSES:
-        report.risk_flags.append("non_permissive_license")
-
-    report.requirements = manifest.get("requirements", {})
 
 
 # ---------------------------------------------------------------------------
@@ -540,18 +502,15 @@ def verify_manifest(manifest_path: Path, run_test: bool = False) -> VerifyReport
     else:
         report.status = "INVALID"
 
-    if report.warnings:
-        report.status = max(report.status, "RESOLVED", key=["INVALID", "RESOLVED", "TESTED"].index)
-        if report.status != "INVALID":
-            has_serious = any("mismatch" in w.lower() for w in report.warnings)
-            if has_serious and report.status == "TESTED":
-                report.status = "REVIEW_NEEDED"
+    if report.warnings and report.status == "TESTED":
+        if any("mismatch" in w.lower() for w in report.warnings):
+            report.status = "REVIEW_NEEDED"
 
     return report
 
 
 # ---------------------------------------------------------------------------
-# CLI command
+# CLI output
 # ---------------------------------------------------------------------------
 
 def cmd_mcp_verify(path_str: str, test: bool = False, json_output: bool = False) -> int:
@@ -573,17 +532,14 @@ def cmd_mcp_verify(path_str: str, test: bool = False, json_output: bool = False)
         print(json.dumps(report.to_dict(), indent=2))
         return 0 if report.status != "INVALID" else 1
 
-    # Human-readable output
     print()
-    print("  agentnode.yaml -- Verification Report")
-    print("  " + "-" * 40)
+    print("  agentnode.yaml -- MCP Verification Report")
+    print("  " + "-" * 42)
     print()
 
     pkg = report.package
     if pkg:
-        pkg_name = pkg.get("name", "?")
-        pkg_ver = pkg.get("version", "?")
-        print(f"  Package:  {pkg_name}@{pkg_ver}")
+        print(f"  Package:  {pkg.get('name', '?')}@{pkg.get('version', '?')}")
     if report.source.get("declared"):
         src = report.source["declared"]
         m = re.search(r"github\.com/(.+?)(?:\.git)?$", src)
@@ -593,7 +549,7 @@ def cmd_mcp_verify(path_str: str, test: bool = False, json_output: bool = False)
     for c in report.checks:
         marker = "[OK]" if c.passed else "[!!]"
         color = "\033[32m" if c.passed else "\033[33m" if not c.blocking else "\033[31m"
-        detail = f" — {c.detail}" if c.detail else ""
+        detail = f" -- {c.detail}" if c.detail else ""
         print(f"  {color}{marker}\033[0m {c.name}{detail}")
 
     if report.permissions.get("declared"):

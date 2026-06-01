@@ -1,28 +1,37 @@
-agentnode: "0.1"
+manifest_version: "0.3"
+package_id: mcp-playwright
 name: "Playwright MCP"
+package_type: toolpack
+runtime: mcp
+install_mode: package
+version: "0.1.0"
+visibility: public
+hosting_type: agentnode_hosted
+publisher: agentnode-community
 summary: "Browser automation via Playwright. Navigate, click, type, screenshot, execute JS."
+description: "Full browser automation for AI agents. Chromium auto-downloads on first use."
 
-package:
-  registry: npm
-  name: "@playwright/mcp"
-  version: "0.0.75"
+mcp_server:
+  command: ["npx", "-y", "@playwright/mcp@0.0.75", "--headless"]
+  transport: stdio
+  npm_package: "@playwright/mcp"
+  source_repo: "https://github.com/microsoft/playwright-mcp"
+  env_keys: []
 
-transport: stdio
-command: ["npx", "-y", "@playwright/mcp@0.0.75", "--headless"]
+capabilities:
+  tools:
+    - name: browser_navigate
+      capability_id: web_automation
+      description: "Navigate to a URL"
+      input_schema: {type: object, properties: {}}
+  resources: []
+  prompts: []
 
 permissions:
-  network: unrestricted
-  filesystem: none
-  code_execution: shell
+  network: {level: unrestricted}
+  filesystem: {level: none}
+  code_execution: {level: shell}
 
-env_keys: []
-
-license: Apache-2.0
-source_repo: "https://github.com/microsoft/playwright-mcp"
-
-requirements:
-  node: ">=18"
-  host_apps: []
-
-tags: [browser, automation, playwright]
+tags: [mcp, mcp-server, playwright, browser, automation]
 categories: [web-automation]
+compatibility: {frameworks: [mcp]}
