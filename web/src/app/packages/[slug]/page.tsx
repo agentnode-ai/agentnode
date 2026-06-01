@@ -488,14 +488,38 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                   External Source
                 </span>
               </div>
-              <p className="mt-3 text-sm text-muted">
-                No executable artifact is hosted in the AgentNode registry. This package references an external MCP server
-                {mcpNpmPackage && (
-                  <> published as <code className="font-mono text-xs text-foreground bg-card border border-border rounded px-1.5 py-0.5">{mcpNpmPackage}</code> on npm</>
-                )}.
-              </p>
-              <p className="mt-2 text-xs text-muted/70">
-                AgentNode provides discovery, install metadata, and integrity protection for the start command. The server code itself is maintained by its npm publisher.
+
+              {/* Pipeline verification checklist */}
+              <div className="mt-4 space-y-2">
+                {[
+                  { check: !!mcpNpmPackage, label: "Package resolved", detail: mcpNpmPackage ? `${mcpNpmPackage} on npm` : undefined },
+                  { check: !!mcpSourceRepo, label: "Source verified", detail: mcpSourceRepo ? new URL(mcpSourceRepo).pathname.slice(1) : undefined },
+                  { check: capabilities.length > 0, label: "Protocol verified", detail: capabilities.length > 0 ? `${capabilities.length} tools discovered` : undefined },
+                  { check: perms && perms.network_level === "none" && perms.filesystem_level === "none" && perms.code_execution_level === "none", label: "Permissions clean", detail: "no network, filesystem, or code execution" },
+                  { check: !!mcpCommand.find((s: string) => s.includes("@")), label: "Version pinned", detail: mcpCommand.find((s: string) => s.includes("@")) },
+                ].map(({ check, label, detail }) => (
+                  <div key={label} className="flex items-start gap-2.5">
+                    <span className={`mt-0.5 text-sm ${check ? "text-green-400" : "text-zinc-500"}`}>
+                      {check ? "✓" : "○"}
+                    </span>
+                    <div>
+                      <span className={`text-sm ${check ? "text-foreground" : "text-muted"}`}>
+                        {label}
+                      </span>
+                      {detail && (
+                        <span className="ml-1.5 text-xs text-muted">
+                          &mdash; {detail}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <p className="mt-4 text-xs text-muted/70">
+                No executable artifact is hosted in the AgentNode registry.
+                AgentNode provides discovery, install metadata, and integrity protection for the start command.
+                The server code itself is maintained by its npm publisher.
               </p>
             </section>
           ) : (

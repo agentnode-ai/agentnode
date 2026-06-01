@@ -23,7 +23,7 @@ const config: Record<
     className: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
   },
   unverified: {
-    label: "Unverified",
+    label: "Community",
     icon: "\u25CB",
     className: "bg-zinc-500/10 text-zinc-400 border-zinc-500/20",
   },
