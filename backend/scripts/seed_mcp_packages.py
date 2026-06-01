@@ -232,6 +232,30 @@ MCP_CATALOG = [
         "tags": ["mcp", "mcp-server", "astronomy", "science", "space", "stargazing"],
         "categories": ["science"],
     },
+    {
+        "slug": "mcp-playwright",
+        "name": "Playwright MCP",
+        "npm_package": "@playwright/mcp",
+        "pinned_version": "0.0.75",
+        "source_repo": "https://github.com/microsoft/playwright-mcp",
+        "summary": "MCP server for browser automation via Playwright. Navigate, click, type, screenshot, and inspect web pages.",
+        "description": "Full browser automation for AI agents. Navigate pages, fill forms, click elements, take screenshots, inspect accessibility snapshots, monitor network requests, and execute JavaScript. Chromium auto-downloads on first use. Supports headless mode.",
+        "env_keys": [],
+        "network_level": "unrestricted",
+        "code_execution_level": "shell",
+        "tools": [
+            {"name": "browser_navigate", "capability_id": "web_automation", "description": "Navigate to a URL"},
+            {"name": "browser_click", "capability_id": "web_automation", "description": "Click an element on the page"},
+            {"name": "browser_type", "capability_id": "web_automation", "description": "Type text into an editable element"},
+            {"name": "browser_fill_form", "capability_id": "web_automation", "description": "Fill multiple form fields"},
+            {"name": "browser_take_screenshot", "capability_id": "web_automation", "description": "Take a screenshot of the current page"},
+            {"name": "browser_snapshot", "capability_id": "web_automation", "description": "Capture accessibility snapshot of the page"},
+            {"name": "browser_evaluate", "capability_id": "web_automation", "description": "Evaluate JavaScript expression on page"},
+            {"name": "browser_network_requests", "capability_id": "web_automation", "description": "List network requests since page load"},
+        ],
+        "tags": ["mcp", "mcp-server", "playwright", "browser", "automation", "testing", "web"],
+        "categories": ["web-automation"],
+    },
 ]
 
 
@@ -269,9 +293,9 @@ def _build_manifest(entry: dict) -> dict:
             "prompts": [],
         },
         "permissions": {
-            "network": {"level": "none"},
-            "filesystem": {"level": "none"},
-            "code_execution": {"level": "none"},
+            "network": {"level": entry.get("network_level", "none")},
+            "filesystem": {"level": entry.get("filesystem_level", "none")},
+            "code_execution": {"level": entry.get("code_execution_level", "none")},
             "data_access": {"level": "input_only"},
             "user_approval": {"required": "once"},
             "external_integrations": [],

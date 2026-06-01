@@ -495,7 +495,6 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                   { check: !!mcpNpmPackage, label: "Package resolved", detail: mcpNpmPackage ? `${mcpNpmPackage} on npm` : undefined },
                   { check: !!mcpSourceRepo, label: "Source verified", detail: mcpSourceRepo ? new URL(mcpSourceRepo).pathname.slice(1) : undefined },
                   { check: capabilities.length > 0, label: "Protocol verified", detail: capabilities.length > 0 ? `${capabilities.length} tools discovered` : undefined },
-                  { check: perms && perms.network_level === "none" && perms.filesystem_level === "none" && perms.code_execution_level === "none", label: "Permissions clean", detail: "no network, filesystem, or code execution" },
                   { check: !!mcpCommand.find((s: string) => s.includes("@")), label: "Version pinned", detail: mcpCommand.find((s: string) => s.includes("@")) },
                 ].map(({ check, label, detail }) => (
                   <div key={label} className="flex items-start gap-2.5">
@@ -514,6 +513,27 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                     </div>
                   </div>
                 ))}
+
+                {/* Permission Profile */}
+                {perms && (
+                  <div className="mt-3 pt-3 border-t border-border/50">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-muted">Permission Profile</span>
+                    <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
+                      {[
+                        { label: "Network", value: perms.network_level },
+                        { label: "Filesystem", value: perms.filesystem_level },
+                        { label: "Code Execution", value: perms.code_execution_level },
+                      ].map(({ label: pLabel, value }) => (
+                        <span key={pLabel} className="text-xs text-muted">
+                          {pLabel}:{" "}
+                          <span className={`font-mono ${value === "none" ? "text-green-400" : "text-amber-400"}`}>
+                            {value ?? "none"}
+                          </span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <p className="mt-4 text-xs text-muted/70">
