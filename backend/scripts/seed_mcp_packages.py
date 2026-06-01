@@ -52,6 +52,7 @@ MCP_CATALOG = [
         "summary": "MCP server for Brave Search API web and local search.",
         "description": "Provides web and local search capabilities via the Brave Search API. Returns web results with titles, descriptions, and URLs.",
         "env_keys": ["BRAVE_API_KEY"],
+        "network_level": "restricted",
         "tools": [{"name": "brave_web_search", "capability_id": "web_search", "description": "Search the web via Brave Search"}],
         "tags": ["mcp", "mcp-server", "search", "brave"],
         "categories": ["search"],
@@ -82,6 +83,7 @@ MCP_CATALOG = [
         "summary": "MCP server for GitHub API repository operations.",
         "description": "Interact with GitHub repositories: create issues, pull requests, search code, manage files, and more via the GitHub API.",
         "env_keys": ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+        "network_level": "restricted",
         "tools": [
             {"name": "create_issue", "capability_id": "project_management", "description": "Create a GitHub issue"},
             {"name": "search_repositories", "capability_id": "web_search", "description": "Search GitHub repositories"},
@@ -114,6 +116,7 @@ MCP_CATALOG = [
         "summary": "MCP server for read-only PostgreSQL database access.",
         "description": "Query PostgreSQL databases with read-only access. Supports schema inspection and SQL queries.",
         "env_keys": ["POSTGRES_CONNECTION_STRING"],
+        "network_level": "restricted",
         "tools": [{"name": "query", "capability_id": "database_query", "description": "Run a read-only SQL query"}],
         "tags": ["mcp", "mcp-server", "postgres", "database", "sql"],
         "categories": ["database"],
@@ -127,6 +130,8 @@ MCP_CATALOG = [
         "summary": "MCP server for browser automation via Puppeteer.",
         "description": "Automate web browsers with Puppeteer. Navigate pages, take screenshots, click elements, fill forms, and extract content.",
         "env_keys": [],
+        "network_level": "unrestricted",
+        "code_execution_level": "limited_subprocess",
         "tools": [
             {"name": "puppeteer_navigate", "capability_id": "web_automation", "description": "Navigate to a URL"},
             {"name": "puppeteer_screenshot", "capability_id": "web_automation", "description": "Take a screenshot"},
@@ -156,6 +161,7 @@ MCP_CATALOG = [
         "summary": "MCP server for Slack workspace interaction via Bot API.",
         "description": "Interact with Slack workspaces: list channels, post messages, reply to threads, add reactions, and search messages.",
         "env_keys": ["SLACK_BOT_TOKEN", "SLACK_TEAM_ID"],
+        "network_level": "restricted",
         "tools": [
             {"name": "slack_post_message", "capability_id": "messaging", "description": "Post a message to a Slack channel"},
             {"name": "slack_list_channels", "capability_id": "messaging", "description": "List Slack channels"},
