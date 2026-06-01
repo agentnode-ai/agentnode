@@ -1,0 +1,38 @@
+# Test fixture: simulates a Blender-like MCP with owner mismatch
+# and dishonest permissions (declares none but has code execution tool).
+# Used to verify MAINTAINER_ACTION_REQUIRED status and action derivation.
+manifest_version: "0.3"
+package_id: mcp-blender-test
+name: "Blender MCP (test fixture)"
+package_type: toolpack
+runtime: mcp
+install_mode: package
+version: "0.1.0"
+visibility: public
+publisher: test
+summary: "Blender integration through MCP"
+
+mcp_server:
+  command: ["uvx", "blender-mcp@1.5.6"]
+  transport: stdio
+  pypi_package: blender-mcp
+  source_repo: "https://github.com/ahujasid/blender-mcp"
+  env_keys: []
+
+capabilities:
+  tools:
+    - name: execute_blender_code
+      capability_id: general
+      description: "Execute arbitrary Python code in Blender"
+      input_schema: {type: object, properties: {}}
+  resources: []
+  prompts: []
+
+permissions:
+  network: {level: none}
+  filesystem: {level: none}
+  code_execution: {level: none}
+
+tags: [mcp, blender, 3d]
+categories: [creative-tools]
+compatibility: {frameworks: [mcp]}
