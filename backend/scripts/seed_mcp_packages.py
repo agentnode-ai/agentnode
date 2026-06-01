@@ -39,7 +39,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("seed_mcp")
 
 MANIFEST_VERSION = "0.3"
-CATALOG_VERSION = "2026-05-27"
+CATALOG_VERSION = "2026-06-01"
 SOURCE = "awesome-mcp-servers"
 
 MCP_CATALOG = [
@@ -178,6 +178,59 @@ MCP_CATALOG = [
         ],
         "tags": ["mcp", "mcp-server", "sqlite", "database", "sql"],
         "categories": ["database"],
+    },
+    # --- Community-discovered MCPs (pipeline-verified, manually reviewed) ---
+    {
+        "slug": "mcp-metmuseum",
+        "name": "Met Museum MCP",
+        "npm_package": "metmuseum-mcp",
+        "pinned_version": "1.0.0",
+        "source_repo": "https://github.com/mikechao/metmuseum-mcp",
+        "summary": "MCP server for The Metropolitan Museum of Art Collection API.",
+        "description": "Search and retrieve artwork details from The Met's open collection. Browse departments, search objects by keyword, and get detailed artwork metadata including images.",
+        "env_keys": [],
+        "tools": [
+            {"name": "list-departments", "capability_id": "data_retrieval", "description": "List all departments in the Met Museum"},
+            {"name": "search-museum-objects", "capability_id": "web_search", "description": "Search for objects in the Met collection"},
+            {"name": "get-museum-object", "capability_id": "data_retrieval", "description": "Get a museum object by its ID"},
+            {"name": "open-met-explorer", "capability_id": "web_automation", "description": "Open the interactive Met Explorer app"},
+        ],
+        "tags": ["mcp", "mcp-server", "museum", "art", "met", "culture"],
+        "categories": ["data-management"],
+    },
+    {
+        "slug": "mcp-nakkas",
+        "name": "Nakkas SVG MCP",
+        "npm_package": "nakkas",
+        "pinned_version": "0.1.5",
+        "source_repo": "https://github.com/arikusi/nakkas",
+        "summary": "MCP server that turns AI into an SVG artist with animated designs.",
+        "description": "Generate animated SVG artwork from JSON configuration. AI controls all design decisions including shapes, gradients, filters, and animations.",
+        "env_keys": [],
+        "tools": [
+            {"name": "render_svg", "capability_id": "file_write", "description": "Render animated SVG from JSON config"},
+            {"name": "preview", "capability_id": "file_read", "description": "Render SVG content to a PNG image for visual inspection"},
+            {"name": "save", "capability_id": "file_write", "description": "Save rendered content to disk as SVG, PNG, or text"},
+        ],
+        "tags": ["mcp", "mcp-server", "svg", "art", "design", "animation"],
+        "categories": ["creative-tools"],
+    },
+    {
+        "slug": "mcp-astronomy-oracle",
+        "name": "Astronomy Oracle MCP",
+        "npm_package": "astronomy-oracle",
+        "pinned_version": "0.1.0",
+        "source_repo": "https://github.com/gregario/astronomy-oracle",
+        "summary": "MCP server for celestial object catalog and observing session planning.",
+        "description": "Accurate astronomical data from 13,000+ deep-sky objects (OpenNGC catalog). Look up celestial objects, search by type or constellation, and plan observing sessions for any location.",
+        "env_keys": [],
+        "tools": [
+            {"name": "lookup_object", "capability_id": "data_retrieval", "description": "Look up a celestial object by Messier/NGC/IC number"},
+            {"name": "search_objects", "capability_id": "web_search", "description": "Search and filter the celestial object catalog"},
+            {"name": "plan_session", "capability_id": "data_retrieval", "description": "Generate an observing session plan for a location"},
+        ],
+        "tags": ["mcp", "mcp-server", "astronomy", "science", "space", "stargazing"],
+        "categories": ["science"],
     },
 ]
 

@@ -44,6 +44,7 @@ EXISTING_SLUGS = {
     "mcp-brave-search", "mcp-filesystem", "mcp-github", "mcp-google-drive",
     "mcp-memory", "mcp-postgres", "mcp-puppeteer", "mcp-sequential-thinking",
     "mcp-slack", "mcp-sqlite",
+    "mcp-metmuseum", "mcp-nakkas", "mcp-astronomy-oracle",
 }
 
 ENV_KEY_RE = re.compile(r"\b([A-Z][A-Z0-9_]{2,}_(?:KEY|TOKEN|SECRET|PASSWORD|URL|ID|ENDPOINT))\b")
