@@ -62,12 +62,23 @@ class Check:
 
 
 @dataclass
+class Action:
+    severity: str  # high, medium, low
+    code: str
+    title: str
+    detail: str
+    fix: str = ""
+
+
+@dataclass
 class VerifyReport:
     status: str = "INVALID"
+    summary: str = ""
     manifest_version: str = ""
     package: dict = field(default_factory=dict)
     source: dict = field(default_factory=dict)
     checks: list[Check] = field(default_factory=list)
+    actions: list[Action] = field(default_factory=list)
     permissions: dict = field(default_factory=dict)
     requirements: dict = field(default_factory=dict)
     tools_snapshot: list[dict] = field(default_factory=list)
@@ -78,6 +89,7 @@ class VerifyReport:
     def to_dict(self) -> dict:
         return {
             "status": self.status,
+            "summary": self.summary,
             "manifest_version": self.manifest_version,
             "checked_at": datetime.now(timezone.utc).isoformat(),
             "package": self.package,
@@ -85,6 +97,11 @@ class VerifyReport:
             "checks": [
                 {"name": c.name, "passed": c.passed, "detail": c.detail}
                 for c in self.checks
+            ],
+            "actions": [
+                {"severity": a.severity, "code": a.code, "title": a.title,
+                 "detail": a.detail, "fix": a.fix}
+                for a in self.actions
             ],
             "permissions": self.permissions,
             "requirements": self.requirements,
@@ -455,6 +472,83 @@ def check_risk_flags(manifest: dict, report: VerifyReport) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Action derivation — turns checks/warnings into maintainer instructions
+# ---------------------------------------------------------------------------
+
+def derive_actions(report: VerifyReport) -> None:
+    for c in report.checks:
+        if c.passed:
+            continue
+
+        if c.name == "schema" and c.blocking:
+            report.actions.append(Action(
+                severity="high", code="SCHEMA_INVALID",
+                title="Fix manifest schema",
+                detail=c.detail,
+                fix="Ensure agentnode.yaml has manifest_version, runtime: mcp, and a valid mcp_server block.",
+            ))
+
+        elif c.name == "package_exists":
+            report.actions.append(Action(
+                severity="high", code="PACKAGE_NOT_FOUND",
+                title="Package not found on registry",
+                detail=c.detail,
+                fix="Publish your package to npm or PyPI before submitting to AgentNode.",
+            ))
+
+        elif c.name == "version_exists":
+            report.actions.append(Action(
+                severity="high", code="VERSION_NOT_FOUND",
+                title="Pinned version not found",
+                detail=c.detail,
+                fix="Ensure the version in mcp_server.command matches a published version.",
+            ))
+
+        elif c.name == "version_pinned":
+            report.actions.append(Action(
+                severity="medium", code="VERSION_NOT_PINNED",
+                title="Command does not pin exact version",
+                detail=c.detail,
+                fix="Add @version to the package name in mcp_server.command (e.g. @org/pkg@1.2.3).",
+            ))
+
+        elif c.name == "owner_verified":
+            report.actions.append(Action(
+                severity="high", code="OWNER_METADATA_MISMATCH",
+                title="Source repo does not match registry",
+                detail=c.detail,
+                fix="Update source_repo in mcp_server to match the repository URL in your npm/PyPI package, or update your package metadata.",
+            ))
+
+        elif c.name == "protocol_test":
+            report.actions.append(Action(
+                severity="medium", code="PROTOCOL_TEST_FAILED",
+                title="MCP protocol test failed",
+                detail=c.detail,
+                fix="Ensure your server responds to initialize and tools/list via stdio. Run: agentnode mcp verify . --test",
+            ))
+
+        elif c.name == "permission_honesty":
+            mismatches = report.permissions.get("mismatches", [])
+            for mm in mismatches:
+                report.actions.append(Action(
+                    severity="medium", code="PERMISSION_MISMATCH",
+                    title="Declared permissions may be too low",
+                    detail=mm,
+                    fix="Update the permission level in your manifest to match actual tool capabilities.",
+                ))
+
+    if report.risk_flags:
+        for flag in report.risk_flags:
+            report.actions.append(Action(
+                severity="low", code=f"RISK_FLAG_{flag.upper()}",
+                title=f"Risk signal: {flag.replace('_', ' ')}",
+                detail=f"Detected risk indicator: {flag}",
+                fix="This may require additional review before catalog inclusion.",
+            ))
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -467,6 +561,8 @@ def verify_manifest(manifest_path: Path, run_test: bool = False) -> VerifyReport
     except yaml.YAMLError as e:
         report.errors.append(f"YAML parse error: {e}")
         report.checks.append(Check("schema", False, f"YAML parse error: {e}", blocking=True))
+        derive_actions(report)
+        report.summary = "Manifest has syntax errors."
         return report
     except Exception as e:
         report.errors.append(f"Cannot read file: {e}")
@@ -475,12 +571,18 @@ def verify_manifest(manifest_path: Path, run_test: bool = False) -> VerifyReport
     if not isinstance(manifest, dict):
         report.errors.append("Manifest must be a YAML mapping")
         report.checks.append(Check("schema", False, "not a YAML mapping", blocking=True))
+        derive_actions(report)
+        report.summary = "Manifest is not a valid YAML mapping."
         return report
 
     if not check_schema(manifest, report):
+        derive_actions(report)
+        report.summary = "Manifest schema is invalid."
         return report
 
     if not check_package(manifest, report):
+        derive_actions(report)
+        report.summary = "Package could not be resolved on registry."
         return report
 
     check_pinning(manifest, report)
@@ -491,20 +593,44 @@ def verify_manifest(manifest_path: Path, run_test: bool = False) -> VerifyReport
 
     check_permissions(manifest, report)
     check_risk_flags(manifest, report)
+    derive_actions(report)
 
+    # --- Status determination ---
     has_blocking = any(c.blocking and not c.passed for c in report.checks)
+    has_high_actions = any(a.severity == "high" for a in report.actions)
+    has_medium_actions = any(a.severity == "medium" for a in report.actions)
+    protocol_passed = any(c.name == "protocol_test" and c.passed for c in report.checks)
+    package_resolved = any(c.name == "package_exists" and c.passed for c in report.checks)
+
     if has_blocking:
         report.status = "INVALID"
-    elif run_test and any(c.name == "protocol_test" and c.passed for c in report.checks):
+    elif has_high_actions:
+        report.status = "MAINTAINER_ACTION_REQUIRED"
+    elif run_test and protocol_passed and not has_medium_actions:
         report.status = "TESTED"
-    elif any(c.name == "package_exists" and c.passed for c in report.checks):
+    elif run_test and protocol_passed and has_medium_actions:
+        report.status = "REVIEW_NEEDED"
+    elif package_resolved:
         report.status = "RESOLVED"
     else:
         report.status = "INVALID"
 
-    if report.warnings and report.status == "TESTED":
-        if any("mismatch" in w.lower() for w in report.warnings):
-            report.status = "REVIEW_NEEDED"
+    # --- Summary ---
+    n_actions = len(report.actions)
+    n_tools = len(report.tools_snapshot)
+    pkg_name = report.package.get("name", "?")
+
+    if report.status == "INVALID":
+        report.summary = f"{pkg_name}: manifest has blocking errors."
+    elif report.status == "MAINTAINER_ACTION_REQUIRED":
+        high_count = sum(1 for a in report.actions if a.severity == "high")
+        report.summary = f"{pkg_name}: {high_count} issue(s) must be fixed before catalog inclusion."
+    elif report.status == "REVIEW_NEEDED":
+        report.summary = f"{pkg_name}: protocol test passed ({n_tools} tools), but {n_actions} warning(s) need review."
+    elif report.status == "TESTED":
+        report.summary = f"{pkg_name}: all checks passed, {n_tools} tools discovered. Ready for review."
+    elif report.status == "RESOLVED":
+        report.summary = f"{pkg_name}: package resolved on registry. Run with --test for full verification."
 
     return report
 
@@ -535,8 +661,19 @@ def cmd_mcp_verify(path_str: str, test: bool = False, json_output: bool = False)
     print()
     print("  agentnode.yaml -- MCP Verification Report")
     print("  " + "-" * 42)
+
+    # Summary
+    status_color = {
+        "INVALID": "\033[31m",
+        "RESOLVED": "\033[36m",
+        "TESTED": "\033[32m",
+        "REVIEW_NEEDED": "\033[33m",
+        "MAINTAINER_ACTION_REQUIRED": "\033[33m",
+    }.get(report.status, "")
+    print(f"  {status_color}{report.status}\033[0m: {report.summary}")
     print()
 
+    # Package info
     pkg = report.package
     if pkg:
         print(f"  Package:  {pkg.get('name', '?')}@{pkg.get('version', '?')}")
@@ -546,12 +683,15 @@ def cmd_mcp_verify(path_str: str, test: bool = False, json_output: bool = False)
         print(f"  Source:   {m.group(1) if m else src}")
     print()
 
+    # Checks
+    print("  Checks:")
     for c in report.checks:
         marker = "[OK]" if c.passed else "[!!]"
         color = "\033[32m" if c.passed else "\033[33m" if not c.blocking else "\033[31m"
         detail = f" -- {c.detail}" if c.detail else ""
-        print(f"  {color}{marker}\033[0m {c.name}{detail}")
+        print(f"    {color}{marker}\033[0m {c.name}{detail}")
 
+    # Permission Profile
     if report.permissions.get("declared"):
         print()
         print("  Permission Profile:")
@@ -561,23 +701,47 @@ def cmd_mcp_verify(path_str: str, test: bool = False, json_output: bool = False)
             label = key.replace("_", " ").title()
             print(f"    {label + ':':<20} {color}{val}\033[0m")
 
+    # Risk Flags
     if report.risk_flags:
         print(f"\n  Risk Flags: {', '.join(report.risk_flags)}")
     elif any(c.name == "package_exists" and c.passed for c in report.checks):
         print("\n  Risk Flags: none")
 
-    if report.warnings:
+    # Required Actions
+    if report.actions:
         print()
-        for w in report.warnings:
-            print(f"  \033[33m!!\033[0m {w}")
+        high = [a for a in report.actions if a.severity == "high"]
+        medium = [a for a in report.actions if a.severity == "medium"]
+        low = [a for a in report.actions if a.severity == "low"]
 
-    status_color = {
-        "INVALID": "\033[31m",
-        "RESOLVED": "\033[36m",
-        "TESTED": "\033[32m",
-        "REVIEW_NEEDED": "\033[33m",
-    }.get(report.status, "")
-    print(f"\n  Status: {status_color}{report.status}\033[0m")
+        if high:
+            print("  \033[31mRequired Actions:\033[0m")
+            for a in high:
+                print(f"    [{a.code}] {a.title}")
+                print(f"      {a.detail}")
+                if a.fix:
+                    print(f"      Fix: {a.fix}")
+
+        if medium:
+            print("  \033[33mRecommended:\033[0m")
+            for a in medium:
+                print(f"    [{a.code}] {a.title}")
+                print(f"      {a.detail}")
+                if a.fix:
+                    print(f"      Fix: {a.fix}")
+
+        if low:
+            print("  Notes:")
+            for a in low:
+                print(f"    [{a.code}] {a.title}")
+
+    # Next steps
+    if report.status == "RESOLVED":
+        print("\n  Next: run \033[1magentnode mcp verify . --test\033[0m for full protocol verification")
+    elif report.status == "TESTED":
+        print("\n  Next: this MCP is ready for catalog review submission")
+    elif report.status == "MAINTAINER_ACTION_REQUIRED":
+        print(f"\n  Next: fix the {sum(1 for a in report.actions if a.severity == 'high')} required action(s) above, then re-verify")
+
     print()
-
-    return 0 if report.status != "INVALID" else 1
+    return 0 if report.status not in ("INVALID",) else 1
