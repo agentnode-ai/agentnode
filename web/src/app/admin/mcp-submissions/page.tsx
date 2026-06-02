@@ -106,8 +106,10 @@ function Fact({
   }
   return (
     <div className="flex justify-between gap-2">
-      <span className="text-muted">{label}</span>
-      <span className={`${mono ? "font-mono" : ""} ${color}`}>{display}</span>
+      <span className="shrink-0 text-muted">{label}</span>
+      <span className={`min-w-0 break-all text-right ${mono ? "font-mono" : ""} ${color}`}>
+        {display}
+      </span>
     </div>
   );
 }
@@ -407,11 +409,11 @@ export default function McpSubmissionsPage() {
                       <div className="mt-3 space-y-1 text-xs">
                         <div className="text-muted">
                           Declared source:{" "}
-                          <span className="font-mono text-foreground">{sv.declared_source_repo || "--"}</span>
+                          <span className="break-all font-mono text-foreground">{sv.declared_source_repo || "--"}</span>
                         </div>
                         <div className="text-muted">
                           Registry repo:{" "}
-                          <span className="font-mono text-foreground">{sv.registry_repo_url || "--"}</span>
+                          <span className="break-all font-mono text-foreground">{sv.registry_repo_url || "--"}</span>
                         </div>
                       </div>
                       {sv.warnings?.length ? (
