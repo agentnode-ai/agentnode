@@ -1,12 +1,14 @@
 """MCP submission endpoints."""
 import logging
-from uuid import uuid4
+from datetime import datetime, timezone
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import require_publisher
+from app.auth.dependencies import require_admin, require_publisher
 from app.auth.models import User
 from app.database import get_session
 from app.shared.exceptions import AppError
@@ -14,6 +16,7 @@ from app.shared.rate_limit import rate_limit
 from app.mcp.models import McpSubmission
 
 router = APIRouter(prefix="/v1/mcp", tags=["mcp"])
+admin_router = APIRouter(prefix="/v1/admin/mcp", tags=["admin-mcp"])
 logger = logging.getLogger(__name__)
 
 VALID_STATUSES = {"INVALID", "RESOLVED", "TESTED", "REVIEW_NEEDED", "MAINTAINER_ACTION_REQUIRED"}
@@ -104,4 +107,175 @@ async def submit_mcp(
         status=submission.status,
         package_name=pkg_name,
         message=msg,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Admin endpoints
+# ---------------------------------------------------------------------------
+
+class SubmissionSummary(BaseModel):
+    id: str
+    package_name: str
+    package_registry: str
+    package_version: str | None
+    source_repo: str | None
+    status: str
+    report_status: str | None
+    report_summary: str | None
+    actions_high: int
+    actions_medium: int
+    tools_count: int
+    created_at: str
+
+
+class SubmissionListResponse(BaseModel):
+    submissions: list[SubmissionSummary]
+    total: int
+
+
+class SubmissionDetail(BaseModel):
+    id: str
+    package_name: str
+    package_registry: str
+    package_version: str | None
+    source_repo: str | None
+    status: str
+    manifest: dict
+    verification_report: dict
+    reviewer_notes: str | None
+    created_at: str
+    updated_at: str
+
+
+class ReviewRequest(BaseModel):
+    status: str = Field(..., description="New status: approved, rejected, needs_changes")
+    notes: str | None = None
+
+
+class ReviewResponse(BaseModel):
+    id: str
+    status: str
+    message: str
+
+
+ADMIN_VALID_STATUSES = {"approved", "rejected", "needs_changes", "pending", "action_required"}
+
+
+@admin_router.get(
+    "/submissions",
+    response_model=SubmissionListResponse,
+    dependencies=[Depends(rate_limit(30, 60))],
+)
+async def list_submissions(
+    status: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """List MCP submissions for admin review."""
+    query = select(McpSubmission).order_by(McpSubmission.created_at.desc())
+    count_query = select(func.count(McpSubmission.id))
+
+    if status:
+        query = query.where(McpSubmission.status == status)
+        count_query = count_query.where(McpSubmission.status == status)
+
+    total = (await session.execute(count_query)).scalar() or 0
+    query = query.offset((page - 1) * per_page).limit(per_page)
+    rows = (await session.execute(query)).scalars().all()
+
+    submissions = []
+    for s in rows:
+        report = s.verification_report or {}
+        actions = report.get("actions", [])
+        submissions.append(SubmissionSummary(
+            id=str(s.id),
+            package_name=s.package_name,
+            package_registry=s.package_registry,
+            package_version=s.package_version,
+            source_repo=s.source_repo,
+            status=s.status,
+            report_status=report.get("status"),
+            report_summary=report.get("summary"),
+            actions_high=sum(1 for a in actions if a.get("severity") == "high"),
+            actions_medium=sum(1 for a in actions if a.get("severity") == "medium"),
+            tools_count=len(report.get("tools_snapshot", [])),
+            created_at=s.created_at.isoformat() if s.created_at else "",
+        ))
+
+    return SubmissionListResponse(submissions=submissions, total=total)
+
+
+@admin_router.get(
+    "/submissions/{submission_id}",
+    response_model=SubmissionDetail,
+    dependencies=[Depends(rate_limit(30, 60))],
+)
+async def get_submission(
+    submission_id: UUID,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get full submission detail including manifest and report."""
+    row = (await session.execute(
+        select(McpSubmission).where(McpSubmission.id == submission_id)
+    )).scalar_one_or_none()
+
+    if not row:
+        raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
+
+    return SubmissionDetail(
+        id=str(row.id),
+        package_name=row.package_name,
+        package_registry=row.package_registry,
+        package_version=row.package_version,
+        source_repo=row.source_repo,
+        status=row.status,
+        manifest=row.manifest_raw,
+        verification_report=row.verification_report,
+        reviewer_notes=row.reviewer_notes,
+        created_at=row.created_at.isoformat() if row.created_at else "",
+        updated_at=row.updated_at.isoformat() if row.updated_at else "",
+    )
+
+
+@admin_router.put(
+    "/submissions/{submission_id}/review",
+    response_model=ReviewResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
+async def review_submission(
+    submission_id: UUID,
+    body: ReviewRequest,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Set review status on a submission."""
+    if body.status not in ADMIN_VALID_STATUSES:
+        raise AppError("MCP_INVALID_STATUS", f"Status must be one of: {', '.join(sorted(ADMIN_VALID_STATUSES))}", 400)
+
+    row = (await session.execute(
+        select(McpSubmission).where(McpSubmission.id == submission_id)
+    )).scalar_one_or_none()
+
+    if not row:
+        raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
+
+    row.status = body.status
+    row.reviewer_notes = body.notes
+    row.reviewed_by_id = user.id
+    row.reviewed_at = datetime.now(timezone.utc)
+    row.updated_at = datetime.now(timezone.utc)
+
+    await session.flush()
+    await session.commit()
+
+    logger.info("MCP submission %s reviewed by %s: %s", submission_id, user.email, body.status)
+
+    return ReviewResponse(
+        id=str(row.id),
+        status=row.status,
+        message=f"Submission {row.package_name} marked as {body.status}.",
     )
