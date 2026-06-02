@@ -750,6 +750,7 @@ class TestInstallerIntegrity:
             slug="remote-pack",
             version="1.0.0",
             artifact_url="https://example.com/remote.tar.gz",
+            artifact_hash="sha256:ghi789",
             runtime="remote",
             remote_endpoint="https://api.example.com/v1",
             connector={"provider": "example", "auth_type": "oauth2", "scopes": []},
@@ -816,6 +817,7 @@ class TestInstallerIntegrity:
         installer.install_package(
             slug="upgrade-pack", version="1.0.0",
             artifact_url="https://example.com/pkg.tar.gz",
+            artifact_hash="sha256:v1hash",
             entrypoint="my_pack.tool",
             trust_level="trusted",
         )
@@ -827,6 +829,7 @@ class TestInstallerIntegrity:
         installer.install_package(
             slug="upgrade-pack", version="2.0.0",
             artifact_url="https://example.com/pkg2.tar.gz",
+            artifact_hash="sha256:v2hash",
             entrypoint="my_pack.tool_v2",
             trust_level="trusted",
         )

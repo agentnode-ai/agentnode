@@ -355,6 +355,13 @@ def _verify_publisher_signature(
 # Full install flow
 # ---------------------------------------------------------------------------
 
+# P0.0: tiers permitted to run build hooks (setup.py / PEP-517) natively on the
+# host. Non-trusted (community) packages must NOT build on the host — a sandboxed
+# build path is pending (P0.3). Artifacts are source trees (no wheel), so this is
+# a fail-closed gate, not a wheel fallback.
+_HOST_BUILD_TIERS = {"trusted", "curated"}
+
+
 def install_package(
     slug: str,
     version: str,
@@ -466,6 +473,16 @@ def install_package(
             key_status=key_status,
         )
 
+    # P0.0: building a non-trusted package runs its setup.py / PEP-517 hooks as
+    # arbitrary code on the host BEFORE any sandbox exists. Block native builds
+    # for community packages; sandboxed builds (P0.3) will re-enable them safely.
+    if (trust_level or "").lower() not in _HOST_BUILD_TIERS:
+        raise RuntimeError(
+            f"Refusing to build non-trusted package '{slug}@{version}' on the host: "
+            f"only curated/trusted packages may run build hooks natively. Sandboxed "
+            f"builds for community packages are pending (P0.3)."
+        )
+
     tmpdir = Path(tempfile.mkdtemp(prefix="agentnode-"))
     try:
         tar_path = tmpdir / "package.tar.gz"
@@ -475,7 +492,13 @@ def install_package(
         # Step 2: Download
         download_artifact(artifact_url, tar_path)
 
-        # Step 3: Verify hash
+        # Step 3: Verify hash (P0.0: a registry artifact MUST carry a hash —
+        # verify_hash() no-ops on an empty expected value, so require it here)
+        if not artifact_hash:
+            raise RuntimeError(
+                f"Refusing to install '{slug}@{version}': the registry provided no "
+                f"artifact hash, so integrity cannot be verified."
+            )
         local_hash = verify_hash(tar_path, artifact_hash)
 
         # Step 4: Extract & validate
@@ -487,10 +510,9 @@ def install_package(
         # Step 6: Resolve Python
         python = resolve_python()
 
-        # Step 7: pip install
-        pip_install(python, package_dir, verbose=verbose)
-
-        # Step 8: Update lockfile
+        # Build the lock entry and verify the publisher signature BEFORE pip.
+        # pip executes the package's build hooks, so every crypto/trust gate must
+        # pass first (P0.0 verify-before-build).
         lock_entry: dict[str, Any] = {
             "version": version,
             "package_type": package_type,
@@ -527,6 +549,10 @@ def install_package(
             lock_entry["_signatures"] = signatures
         _verify_publisher_signature(slug, lock_entry, key_status=key_status)
 
+        # Step 7: pip install — only reached after every gate passed
+        pip_install(python, package_dir, verbose=verbose)
+
+        # Step 8: seal + write lockfile (only after a successful install)
         from agentnode_sdk.lock_integrity import seal_entry
         lock_entry = seal_entry(lock_entry)
         update_lockfile(slug, lock_entry)
