@@ -50,7 +50,8 @@ interface SubmissionDetail {
   verification_report: Record<string, unknown>;
   server_verification: ServerVerification | null;
   ownership: {
-    status: string; // verified | expired | missing
+    status: string; // verified | revoked | expired | missing
+    claim_id: string | null;
     method: string | null; // manual_admin | registry_challenge
     verified_at: string | null;
     expires_at: string | null;
@@ -190,6 +191,27 @@ export default function McpSubmissionsPage() {
     if (!reason) return;
     setLoading(true);
     const res = await fetchWithAuth(`/admin/mcp/submissions/${selected.id}/verify-ownership`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    });
+    setLoading(false);
+    if (res.ok) {
+      await loadDetail(selected.id);
+    } else {
+      const err = await res.json().catch(() => ({ error: { message: res.statusText } }));
+      alert(`Failed: ${err.error?.message || "Unknown error"}`);
+    }
+  };
+
+  const revokeOwnership = async () => {
+    if (!selected || !selected.ownership.claim_id) return;
+    const reason = window.prompt(
+      "Reason for revoking ownership (audited, stored on the claim):"
+    );
+    if (!reason) return;
+    setLoading(true);
+    const res = await fetchWithAuth(`/admin/mcp/claims/${selected.ownership.claim_id}/revoke`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason }),
@@ -646,19 +668,28 @@ export default function McpSubmissionsPage() {
                   </p>
                 </div>
               ) : (
-                <>
-                  <button
-                    onClick={publishToCatalog}
-                    disabled={loading}
-                    className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {loading ? "Publishing..." : "Publish to Catalog"}
-                  </button>
-                  <p className="mt-1 text-xs text-muted">
+                <div className="space-y-2">
+                  <div className="flex gap-2">
+                    <button
+                      onClick={publishToCatalog}
+                      disabled={loading}
+                      className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {loading ? "Publishing..." : "Publish to Catalog"}
+                    </button>
+                    <button
+                      onClick={revokeOwnership}
+                      disabled={loading}
+                      className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-500/20 disabled:opacity-50 transition-colors"
+                    >
+                      Revoke ownership
+                    </button>
+                  </div>
+                  <p className="text-xs text-muted">
                     Publishes to the registry. The publish gate uses server verification and a
                     verified ownership claim, not the maintainer-submitted report.
                   </p>
-                </>
+                </div>
               )}
             </div>
           )}

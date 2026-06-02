@@ -911,3 +911,81 @@ async def test_ownership_shown_separate_from_repo_consistency(client, session):
     after = (await client.get(f"/v1/admin/mcp/submissions/{sub_id}", headers=_auth(admin_token))).json()
     assert after["ownership"]["status"] == "verified"
     assert after["server_verification"]["repo_consistency"] == "match"  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# 11. Ownership revoke (completes the axis: grant <-> revoke)
+# ---------------------------------------------------------------------------
+
+async def _revoke(client, admin_token, claim_id, reason="revoked by admin"):
+    return await client.post(
+        f"/v1/admin/mcp/claims/{claim_id}/revoke",
+        json={"reason": reason}, headers=_auth(admin_token),
+    )
+
+
+@pytest.mark.asyncio
+async def test_revoked_claim_blocks_publish(client, session):
+    """repo_consistency=match + a once-verified-but-revoked claim -> still blocked."""
+    admin_token, _, _, sub_id = await _approved(client, session, "rvk")
+    cid = (await _verify_ownership(client, admin_token, sub_id)).json()["claim_id"]
+    assert (await _revoke(client, admin_token, cid, "maintainer lost npm access")).status_code == 200
+
+    detail = (await client.get(f"/v1/admin/mcp/submissions/{sub_id}", headers=_auth(admin_token))).json()
+    assert detail["ownership"]["status"] == "revoked"
+    assert detail["server_verification"]["repo_consistency"] == "match"
+
+    resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
+    assert resp.status_code == 400
+    assert "revok" in resp.json()["error"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_revoke_stores_audit(client, session):
+    from uuid import UUID as _UUID
+    from sqlalchemy import select as _select
+    from app.mcp.models import PublisherPackageClaim
+
+    admin_token, _, _, sub_id = await _approved(client, session, "rvkaud")
+    cid = (await _verify_ownership(client, admin_token, sub_id)).json()["claim_id"]
+    await _revoke(client, admin_token, cid, "package transferred to new org")
+
+    claim = (await session.execute(
+        _select(PublisherPackageClaim).where(PublisherPackageClaim.id == _UUID(cid))
+    )).scalar_one()
+    assert claim.status == "revoked"
+    assert claim.evidence["revoke_reason"] == "package transferred to new org"
+    assert claim.evidence["revoked_by_id"]
+    assert claim.evidence["revoked_at"]
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_revoke(client, session):
+    admin_token, pub_token, _, sub_id = await _approved(client, session, "rvkna")
+    cid = (await _verify_ownership(client, admin_token, sub_id)).json()["claim_id"]
+    resp = await _revoke(client, pub_token, cid)  # publisher token, not admin
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_cannot_revoke_already_revoked(client, session):
+    admin_token, _, _, sub_id = await _approved(client, session, "rvk2x")
+    cid = (await _verify_ownership(client, admin_token, sub_id)).json()["claim_id"]
+    assert (await _revoke(client, admin_token, cid)).status_code == 200
+    resp = await _revoke(client, admin_token, cid)
+    assert resp.status_code == 400
+    assert "revoc" in resp.json()["error"]["message"].lower() or "verified" in resp.json()["error"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_regrant_after_revoke_allows_publish(client, session):
+    """Full cycle: grant -> revoke (blocked) -> re-grant -> allowed."""
+    admin_token, _, _, sub_id = await _approved(client, session, "rvkre")
+    cid = (await _verify_ownership(client, admin_token, sub_id)).json()["claim_id"]
+    await _revoke(client, admin_token, cid, "oops")
+    blocked = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
+    assert blocked.status_code == 400
+
+    await _verify_ownership(client, admin_token, sub_id, "re-confirmed maintainer")
+    resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
+    assert resp.status_code == 200, resp.json()

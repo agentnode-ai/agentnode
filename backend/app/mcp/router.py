@@ -20,17 +20,17 @@ from app.mcp.registry_verify import verify_registry, derive_status, normalize_pa
 OWNERSHIP_CLAIM_TTL_DAYS = 180
 
 
-async def _latest_verified_claim(session: AsyncSession, submission: McpSubmission):
-    """Most recent verified ownership claim matching this submission's
-    (publisher, registry, normalized package name). Expiry is checked by the
-    caller so 'expired' can be distinguished from 'missing'."""
+async def _latest_claim(session: AsyncSession, submission: McpSubmission):
+    """Most recent ownership claim (ANY status) matching this submission's
+    (publisher, registry, normalized package name). Ownership state = the latest
+    claim's effective status; the gate and UI both derive from it, so 'revoked'
+    and 'expired' are distinguishable from 'missing'."""
     norm = normalize_package_name(submission.package_registry, submission.package_name)
     return (await session.execute(
         select(PublisherPackageClaim).where(
             PublisherPackageClaim.publisher_id == submission.publisher_id,
             PublisherPackageClaim.registry == submission.package_registry,
             PublisherPackageClaim.package_name_normalized == norm,
-            PublisherPackageClaim.status == "verified",
         ).order_by(PublisherPackageClaim.verified_at.desc())
     )).scalars().first()
 
@@ -39,10 +39,19 @@ def _ownership_view(claim: PublisherPackageClaim | None) -> dict:
     """Ownership (package_control) status for the admin UI — independent of
     server_verification.repo_consistency."""
     if claim is None:
-        return {"status": "missing", "method": None, "verified_at": None, "expires_at": None}
-    expired = claim.expires_at is not None and claim.expires_at <= datetime.now(timezone.utc)
+        return {"status": "missing", "claim_id": None, "method": None, "verified_at": None, "expires_at": None}
+    now = datetime.now(timezone.utc)
+    if claim.status == "verified" and (claim.expires_at is None or claim.expires_at > now):
+        status = "verified"
+    elif claim.status == "revoked":
+        status = "revoked"
+    elif claim.status == "verified" and claim.expires_at and claim.expires_at <= now:
+        status = "expired"
+    else:
+        status = claim.status
     return {
-        "status": "expired" if expired else "verified",
+        "status": status,
+        "claim_id": str(claim.id),
         "method": claim.method,
         "verified_at": claim.verified_at.isoformat() if claim.verified_at else None,
         "expires_at": claim.expires_at.isoformat() if claim.expires_at else None,
@@ -372,7 +381,7 @@ async def get_submission(
     if not row:
         raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
 
-    ownership = _ownership_view(await _latest_verified_claim(session, row))
+    ownership = _ownership_view(await _latest_claim(session, row))
 
     return SubmissionDetail(
         id=str(row.id),
@@ -500,9 +509,14 @@ def _verify_publish_gate(submission: McpSubmission, ownership_claim: PublisherPa
 
     # --- Package control (ownership) — a SEPARATE axis. repo_consistency must
     # NEVER satisfy this; only a verified, non-expired publisher_package_claim does. ---
+    now = datetime.now(timezone.utc)
     if ownership_claim is None:
-        blocks.append("No verified ownership claim — package control is not proven (repo_consistency does not count)")
-    elif ownership_claim.expires_at is not None and ownership_claim.expires_at <= datetime.now(timezone.utc):
+        blocks.append("No ownership claim — package control is not proven (repo_consistency does not count)")
+    elif ownership_claim.status == "revoked":
+        blocks.append("Ownership claim was revoked")
+    elif ownership_claim.status != "verified":
+        blocks.append(f"Ownership claim is '{ownership_claim.status}', not verified")
+    elif ownership_claim.expires_at is not None and ownership_claim.expires_at <= now:
         blocks.append("Ownership claim has expired — re-verify package control")
 
     return blocks
@@ -529,7 +543,7 @@ async def publish_submission(
     if not row:
         raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
 
-    ownership_claim = await _latest_verified_claim(session, row)
+    ownership_claim = await _latest_claim(session, row)
     blocks = _verify_publish_gate(row, ownership_claim)
     if blocks:
         raise AppError("MCP_PUBLISH_BLOCKED", "; ".join(blocks), 400)
@@ -706,4 +720,61 @@ async def verify_ownership_manual(
         claim_id=str(claim.id),
         status="verified",
         message=f"Ownership of {row.package_name} marked manually verified (audited).",
+    )
+
+
+class RevokeOwnershipRequest(BaseModel):
+    reason: str = Field(..., min_length=1, description="Audit reason for revoking the claim")
+
+
+class RevokeOwnershipResponse(BaseModel):
+    claim_id: str
+    status: str
+    message: str
+
+
+@admin_router.post(
+    "/claims/{claim_id}/revoke",
+    response_model=RevokeOwnershipResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
+async def revoke_ownership(
+    claim_id: UUID,
+    body: RevokeOwnershipRequest,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Revoke a verified ownership claim. Package control is not permanent
+    (transfers, lost access, admin error) — this is the auditable counterpart to
+    grant. A revoked claim no longer satisfies the publish gate. Scoped to the
+    claim (which is per publisher+package), not a single submission.
+    """
+    claim = (await session.execute(
+        select(PublisherPackageClaim).where(PublisherPackageClaim.id == claim_id)
+    )).scalar_one_or_none()
+    if not claim:
+        raise AppError("MCP_CLAIM_NOT_FOUND", "Ownership claim not found", 404)
+    if claim.status != "verified":
+        raise AppError("MCP_CLAIM_NOT_REVOCABLE", f"Only verified claims can be revoked (status: {claim.status})", 400)
+
+    now = datetime.now(timezone.utc)
+    evidence = dict(claim.evidence or {})
+    evidence["revoke_reason"] = body.reason
+    evidence["revoked_by_id"] = str(user.id)
+    evidence["revoked_at"] = now.isoformat()
+    claim.evidence = evidence  # reassign so SQLAlchemy detects the JSONB change
+    claim.status = "revoked"
+    claim.updated_at = now
+    await session.flush()
+    await session.commit()
+
+    logger.info(
+        "MCP ownership claim %s revoked by admin %s (%s/%s)",
+        claim.id, user.email, claim.registry, claim.package_name,
+    )
+
+    return RevokeOwnershipResponse(
+        claim_id=str(claim.id),
+        status="revoked",
+        message=f"Ownership claim for {claim.package_name} revoked (audited).",
     )
