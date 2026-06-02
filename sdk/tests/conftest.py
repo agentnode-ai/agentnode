@@ -32,6 +32,33 @@ def _bootstrap_registry_keys():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _default_sandbox_available():
+    """Run tests as if a container runtime is available.
+
+    P0.1 added a LIVE fail-closed sandbox gate to runner.run_tool that blocks
+    non-trusted execution when no container runtime is present. Pre-existing tests
+    are not about the sandbox and would otherwise be blocked. The gate stays live;
+    its REAL block behaviour is covered by test_sandbox_gate.py, which overrides
+    this fixture in-body. (Parallels _bootstrap_registry_keys above.)
+    """
+    from agentnode_sdk.sandbox import set_default_backend
+    from agentnode_sdk.sandbox.backend import SandboxBackend
+    from agentnode_sdk.sandbox.types import SandboxAvailability
+
+    class _Available(SandboxBackend):
+        def check_available(self):
+            return SandboxAvailability(available=True, backend="docker", reason="",
+                                       daemon_ok=True, image_available=True)
+
+        def wrap_command(self, spec):
+            return ["docker", "run", *spec.command]
+
+    set_default_backend(_Available())
+    yield
+    set_default_backend(None)
+
+
 # ---------------------------------------------------------------------------
 # Policy bypass fixture — explicit opt-in via @pytest.mark.bypass_policy.
 #

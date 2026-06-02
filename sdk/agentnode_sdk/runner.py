@@ -141,6 +141,22 @@ def run_tool(
     # Refresh trust level if TTL expired (best-effort, fail-open on network error)
     entry = _maybe_refresh_trust(slug, entry, lockfile_path)
 
+    # P0.1 fail-closed sandbox gate. Community/unverified code may not run without
+    # a container runtime. NOTE: when a runtime IS available this gate passes and
+    # the tool currently runs ON THE HOST — a TEMPORARY P0.1 bridge, NOT a security
+    # decision that grants host execution. P0.2 MUST replace this with actual
+    # sandbox routing (execute inside the container), not just availability-checking.
+    if entry.get("package_type") != "skill":
+        from agentnode_sdk.sandbox import enforce_sandbox_policy, SandboxRequiredError
+        try:
+            enforce_sandbox_policy(
+                entry.get("trust_level"), runtime_hint=entry.get("runtime", "")
+            )
+        except SandboxRequiredError as e:
+            return RunToolResult(
+                success=False, error=str(e), mode_used="sandbox_unavailable"
+            )
+
     # Pre-execution policy check
     decision = check_run(slug, tool_name, kwargs, entry, interactive=_resolve_interactive())
     audit_decision(
