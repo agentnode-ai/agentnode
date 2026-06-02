@@ -142,7 +142,9 @@ def cmd_mcp_submit(
         code = ""
         message = resp.text
 
-    if resp.status_code == 401:
+    if resp.status_code == 409:
+        print(f"  {message}", file=sys.stderr)
+    elif resp.status_code == 401:
         print("  Error: Authentication failed. Check your API key.", file=sys.stderr)
     elif resp.status_code == 403:
         if "PUBLISHER" in code:

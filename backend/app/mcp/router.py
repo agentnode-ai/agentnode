@@ -78,6 +78,31 @@ async def submit_mcp(
     pkg_version = report.get("package", {}).get("version")
     source_repo = mcp_server.get("source_repo")
 
+    # Duplicate check: block if an open submission exists for same package+version
+    open_statuses = ("pending", "action_required", "needs_changes", "approved")
+    existing = (await session.execute(
+        select(McpSubmission).where(
+            McpSubmission.publisher_id == user.publisher.id,
+            McpSubmission.package_name == pkg_name,
+            McpSubmission.package_version == pkg_version,
+            McpSubmission.status.in_(open_statuses),
+        )
+    )).scalar_one_or_none()
+
+    if existing:
+        if existing.status == "approved":
+            raise AppError(
+                "MCP_ALREADY_APPROVED",
+                f"{pkg_name}@{pkg_version} was already approved (submission {str(existing.id)[:8]}).",
+                409,
+            )
+        raise AppError(
+            "MCP_DUPLICATE_SUBMISSION",
+            f"An open submission for {pkg_name}@{pkg_version} already exists (status: {existing.status}). "
+            f"Wait for review or ask admin to reject the existing submission before resubmitting.",
+            409,
+        )
+
     submission = McpSubmission(
         id=uuid4(),
         publisher_id=user.publisher.id,
