@@ -11,11 +11,32 @@ interface Submission {
   source_repo: string | null;
   status: string;
   report_status: string | null;
+  server_status: string | null;
   report_summary: string | null;
   actions_high: number;
   actions_medium: number;
   tools_count: number;
   created_at: string;
+}
+
+interface ServerVerification {
+  server_status: string | null;
+  registry: string | null;
+  package_name: string | null;
+  package_exists: boolean;
+  resolved_version: string | null;
+  version_exists: boolean;
+  shasum: string | null;
+  integrity: string | null;
+  registry_repo_url: string | null;
+  declared_source_repo: string | null;
+  repo_consistency: string;
+  maintainer_list: string[];
+  command_pinning: string;
+  pinned_command: string[] | null;
+  command_rewrite: string;
+  warnings: string[];
+  errors: string[];
 }
 
 interface SubmissionDetail {
@@ -27,10 +48,22 @@ interface SubmissionDetail {
   status: string;
   manifest: Record<string, unknown>;
   verification_report: Record<string, unknown>;
+  server_verification: ServerVerification | null;
   reviewer_notes: string | null;
+  maintainer_feedback: string | null;
+  published_package_id: string | null;
   created_at: string;
   updated_at: string;
 }
+
+// Server-derived registry verification status. Authoritative — distinct from the
+// maintainer-attested verification_report.
+const SERVER_STATUS: Record<string, { label: string; cls: string }> = {
+  verified: { label: "Server verified", cls: "text-green-400" },
+  mismatch: { label: "Mismatch", cls: "text-red-400" },
+  indeterminate: { label: "Indeterminate", cls: "text-amber-400" },
+  unavailable: { label: "Unavailable", cls: "text-blue-400" },
+};
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "bg-blue-500/20 text-blue-400",
@@ -47,6 +80,35 @@ function StatusBadge({ status }: { status: string }) {
     >
       {status.replace("_", " ")}
     </span>
+  );
+}
+
+function Fact({
+  label,
+  value,
+  bool,
+  mono,
+  cls,
+}: {
+  label: string;
+  value?: string | null;
+  bool?: boolean;
+  mono?: boolean;
+  cls?: string;
+}) {
+  let display: string;
+  let color = cls || "text-foreground";
+  if (typeof bool === "boolean") {
+    display = bool ? "yes" : "no";
+    color = bool ? "text-green-400" : "text-red-400";
+  } else {
+    display = value || "--";
+  }
+  return (
+    <div className="flex justify-between gap-2">
+      <span className="text-muted">{label}</span>
+      <span className={`${mono ? "font-mono" : ""} ${color}`}>{display}</span>
+    </div>
   );
 }
 
@@ -93,7 +155,7 @@ export default function McpSubmissionsPage() {
       setSelected(data);
       setReviewStatus(data.status);
       setReviewNotes(data.reviewer_notes || "");
-      setMaintainerFeedback((data as any).maintainer_feedback || "");
+      setMaintainerFeedback(data.maintainer_feedback || "");
     }
   };
 
@@ -117,7 +179,14 @@ export default function McpSubmissionsPage() {
     const report = selected.verification_report as Record<string, unknown>;
     const actions = (report.actions || []) as Array<{ severity: string }>;
     const mediumCount = actions.filter((a) => a.severity === "medium").length;
+    const serverStatus = selected.server_verification?.server_status;
 
+    if (serverStatus === "indeterminate") {
+      const confirmed = window.confirm(
+        "Server verification is indeterminate (registry metadata incomplete). Publish anyway?"
+      );
+      if (!confirmed) return;
+    }
     if (mediumCount > 0) {
       const confirmed = window.confirm(
         `This submission has ${mediumCount} medium-severity warning(s). Publish anyway?`
@@ -190,6 +259,14 @@ export default function McpSubmissionsPage() {
                   <span className="text-xs text-muted">@{s.package_version}</span>
                 )}
                 <StatusBadge status={s.status} />
+                {s.server_status && (
+                  <span
+                    className={`text-xs font-medium ${SERVER_STATUS[s.server_status]?.cls || "text-muted"}`}
+                    title="Server-side registry verification"
+                  >
+                    ● {SERVER_STATUS[s.server_status]?.label || s.server_status}
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-3 text-xs text-muted">
                 {s.tools_count > 0 && <span>{s.tools_count} tools</span>}
@@ -230,9 +307,11 @@ export default function McpSubmissionsPage() {
             </button>
           </div>
 
-          {/* Verification Report Summary */}
+          {/* Server-verified vs maintainer-attested */}
           {(() => {
             const report = selected.verification_report as Record<string, unknown>;
+            const sv = selected.server_verification;
+            const ss = sv?.server_status || null;
             const checks = (report.checks || []) as Array<{
               name: string;
               passed: boolean;
@@ -250,56 +329,156 @@ export default function McpSubmissionsPage() {
 
             return (
               <>
-                {/* Checks */}
-                <div>
-                  <h3 className="text-sm font-semibold text-foreground mb-2">
-                    Verification Checks
-                  </h3>
-                  <div className="space-y-1">
-                    {checks.map((c, i) => (
-                      <div key={i} className="flex items-center gap-2 text-xs">
-                        <span
-                          className={
-                            c.passed ? "text-green-400" : "text-yellow-400"
-                          }
-                        >
-                          {c.passed ? "[OK]" : "[!!]"}
-                        </span>
-                        <span className="text-foreground">{c.name}</span>
-                        {c.detail && (
-                          <span className="text-muted">-- {c.detail}</span>
-                        )}
-                      </div>
-                    ))}
+                {/* Trust banner */}
+                {ss === "mismatch" && (
+                  <div className="rounded-md border border-red-500/30 bg-red-500/10 p-3">
+                    <p className="text-sm font-semibold text-red-400">Trust mismatch detected</p>
+                    <p className="mt-1 text-xs text-muted">
+                      Server verification contradicts the maintainer-submitted report. Publishing is blocked.
+                    </p>
+                    {sv?.errors?.length ? (
+                      <ul className="mt-2 list-inside list-disc text-xs text-red-300/80">
+                        {sv.errors.map((e, i) => (
+                          <li key={i}>{e}</li>
+                        ))}
+                      </ul>
+                    ) : null}
                   </div>
-                </div>
-
-                {/* Permission Profile */}
-                {declared.network && (
-                  <div>
-                    <h3 className="text-sm font-semibold text-foreground mb-2">
-                      Permission Profile
-                    </h3>
-                    <div className="flex gap-4 text-xs">
-                      {["network", "filesystem", "code_execution"].map((k) => (
-                        <span key={k} className="text-muted">
-                          {k}:{" "}
-                          <span
-                            className={`font-mono ${declared[k] === "none" ? "text-green-400" : "text-amber-400"}`}
-                          >
-                            {declared[k]}
-                          </span>
-                        </span>
-                      ))}
-                    </div>
+                )}
+                {ss === "indeterminate" && (
+                  <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                    <p className="text-sm font-semibold text-amber-400">Registry metadata incomplete</p>
+                    <p className="mt-1 text-xs text-muted">
+                      Some facts could not be verified from npm/PyPI metadata. Admin review required.
+                    </p>
+                  </div>
+                )}
+                {ss === "unavailable" && (
+                  <div className="rounded-md border border-blue-500/30 bg-blue-500/10 p-3">
+                    <p className="text-sm font-semibold text-blue-400">Registry verification unavailable</p>
+                    <p className="mt-1 text-xs text-muted">
+                      Retry server verification before publishing.
+                    </p>
                   </div>
                 )}
 
-                {/* Actions */}
+                {/* Panel 1: Server-verified registry facts (authoritative) */}
+                <div className="rounded-lg border border-border bg-background/40 p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-foreground">
+                      Server-verified registry facts
+                    </h3>
+                    {ss && (
+                      <span className={`text-xs font-medium ${SERVER_STATUS[ss]?.cls || "text-muted"}`}>
+                        {SERVER_STATUS[ss]?.label || ss}
+                      </span>
+                    )}
+                  </div>
+                  {sv ? (
+                    <>
+                      <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                        <Fact label="Registry" value={sv.registry} />
+                        <Fact label="Package exists" bool={sv.package_exists} />
+                        <Fact label="Version exists" bool={sv.version_exists} />
+                        <Fact label="Resolved version" value={sv.resolved_version} mono />
+                        <Fact
+                          label="Repository consistency"
+                          value={sv.repo_consistency}
+                          cls={
+                            sv.repo_consistency === "match"
+                              ? "text-green-400"
+                              : sv.repo_consistency === "mismatch"
+                                ? "text-red-400"
+                                : "text-amber-400"
+                          }
+                        />
+                        <Fact label="Command pinning" value={sv.command_pinning} />
+                        <Fact
+                          label="Command rewrite"
+                          value={sv.command_rewrite}
+                          cls={sv.command_rewrite === "pinned" ? "text-green-400" : "text-muted"}
+                        />
+                        <Fact
+                          label="Integrity (provenance)"
+                          value={sv.shasum ? sv.shasum.slice(0, 16) + "…" : null}
+                          mono
+                        />
+                      </div>
+                      <div className="mt-3 space-y-1 text-xs">
+                        <div className="text-muted">
+                          Declared source:{" "}
+                          <span className="font-mono text-foreground">{sv.declared_source_repo || "--"}</span>
+                        </div>
+                        <div className="text-muted">
+                          Registry repo:{" "}
+                          <span className="font-mono text-foreground">{sv.registry_repo_url || "--"}</span>
+                        </div>
+                      </div>
+                      {sv.warnings?.length ? (
+                        <ul className="mt-2 list-inside list-disc text-xs text-amber-300/80">
+                          {sv.warnings.map((w, i) => (
+                            <li key={i}>{w}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted">
+                      No server verification on record — run re-verify.
+                    </p>
+                  )}
+                </div>
+
+                {/* Panel 2: Maintainer-attested runtime checks (advisory) */}
+                <div className="rounded-lg border border-border bg-background/40 p-4">
+                  <h3 className="mb-1 text-sm font-semibold text-foreground">
+                    Maintainer-attested runtime checks
+                  </h3>
+                  <p className="mb-3 text-xs text-muted">
+                    Self-reported by the submitter via{" "}
+                    <span className="font-mono">agentnode mcp verify</span>. Not independently
+                    verified by the server.
+                  </p>
+                  <div className="space-y-1">
+                    {checks.map((c, i) => (
+                      <div key={i} className="flex items-center gap-2 text-xs">
+                        <span className="text-muted">claimed</span>
+                        <span className="text-foreground">
+                          {c.name === "owner_verified"
+                            ? "source matches registry metadata"
+                            : c.name}
+                        </span>
+                        {c.detail && <span className="text-muted">-- {c.detail}</span>}
+                      </div>
+                    ))}
+                    {checks.length === 0 && (
+                      <p className="text-xs text-muted">No checks reported.</p>
+                    )}
+                  </div>
+                  {declared.network && (
+                    <div className="mt-3">
+                      <p className="mb-1 text-xs text-muted">Declared permission profile</p>
+                      <div className="flex gap-4 text-xs">
+                        {["network", "filesystem", "code_execution"].map((k) => (
+                          <span key={k} className="text-muted">
+                            {k}:{" "}
+                            <span
+                              className={`font-mono ${declared[k] === "none" ? "text-green-400" : "text-amber-400"}`}
+                            >
+                              {declared[k]}
+                            </span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Actions (maintainer-reported) */}
                 {actions.length > 0 && (
                   <div>
-                    <h3 className="text-sm font-semibold text-foreground mb-2">
-                      Maintainer Actions ({actions.length})
+                    <h3 className="mb-2 text-sm font-semibold text-foreground">
+                      Maintainer actions ({actions.length})
                     </h3>
                     <div className="space-y-2">
                       {actions.map((a, i) => (
@@ -317,11 +496,7 @@ export default function McpSubmissionsPage() {
                             [{a.code}] {a.title}
                           </div>
                           <div className="mt-1 text-muted">{a.detail}</div>
-                          {a.fix && (
-                            <div className="mt-1 text-primary/80">
-                              Fix: {a.fix}
-                            </div>
-                          )}
+                          {a.fix && <div className="mt-1 text-primary/80">Fix: {a.fix}</div>}
                         </div>
                       ))}
                     </div>
@@ -400,21 +575,30 @@ export default function McpSubmissionsPage() {
           </div>
 
           {/* Publish to Catalog */}
-          {selected.status === "approved" && !(selected as any).published_package_id && (
+          {selected.status === "approved" && !selected.published_package_id && (
             <div className="border-t border-border pt-4">
-              <button
-                onClick={publishToCatalog}
-                disabled={loading}
-                className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {loading ? "Publishing..." : "Publish to Catalog"}
-              </button>
-              <p className="mt-1 text-xs text-muted">
-                Creates a package entry visible in the registry.
-              </p>
+              {selected.server_verification?.server_status === "mismatch" ? (
+                <p className="text-xs text-red-400">
+                  Publishing blocked: the server-verification mismatch must be resolved first.
+                </p>
+              ) : (
+                <>
+                  <button
+                    onClick={publishToCatalog}
+                    disabled={loading}
+                    className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {loading ? "Publishing..." : "Publish to Catalog"}
+                  </button>
+                  <p className="mt-1 text-xs text-muted">
+                    Publishes to the registry. The publish gate uses server verification,
+                    not the maintainer-submitted report.
+                  </p>
+                </>
+              )}
             </div>
           )}
-          {(selected as any).published_package_id && (
+          {selected.published_package_id && (
             <div className="border-t border-border pt-4">
               <span className="text-sm text-green-400">Published</span>
               <a
