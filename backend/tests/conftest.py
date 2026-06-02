@@ -39,9 +39,15 @@ SEED_CAPABILITY_IDS = [
 async def engine():
     eng = create_async_engine(TEST_DATABASE_URL)
     async with eng.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        # Enable pg_trgm extension (required for typosquatting similarity queries)
         from sqlalchemy import text
+        # Drop all tables with CASCADE to avoid use_alter FK ordering issues
+        await conn.execute(text(
+            "DO $$ DECLARE r RECORD; BEGIN "
+            "FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP "
+            "EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE'; "
+            "END LOOP; END $$"
+        ))
+        # Enable pg_trgm extension (required for typosquatting similarity queries)
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         # Sequence is created by alembic migration 026; create_all() on a
         # bare schema does not know about it, so create it manually here so
@@ -58,7 +64,12 @@ async def engine():
             )
     yield eng
     async with eng.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        await conn.execute(text(
+            "DO $$ DECLARE r RECORD; BEGIN "
+            "FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP "
+            "EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE'; "
+            "END LOOP; END $$"
+        ))
     await eng.dispose()
 
 
