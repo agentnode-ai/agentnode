@@ -141,11 +141,15 @@ def run_tool(
     # Refresh trust level if TTL expired (best-effort, fail-open on network error)
     entry = _maybe_refresh_trust(slug, entry, lockfile_path)
 
-    # P0.1 fail-closed sandbox gate. Community/unverified code may not run without
-    # a container runtime. NOTE: when a runtime IS available this gate passes and
-    # the tool currently runs ON THE HOST — a TEMPORARY P0.1 bridge, NOT a security
-    # decision that grants host execution. P0.2 MUST replace this with actual
-    # sandbox routing (execute inside the container), not just availability-checking.
+    # P0.1 fail-closed sandbox gate. P0.1 runs NOTHING in a container — it only
+    # blocks. For community/unverified tiers this is fully fail-closed: no real
+    # sandbox image is pinned yet, so check_available() is False and they are
+    # blocked here (sandbox_unavailable) until P0.2 adds real container routing.
+    # curated runs on the host; trusted runs on the host with a transition warning.
+    # GUARDRAIL for P0.2: add container routing together with (or before) pinning a
+    # real image — otherwise availability flips to True with no routing and
+    # community code would silently run on the host (the host bridge we deliberately
+    # keep closed under "community code runs isolated or not at all").
     if entry.get("package_type") != "skill":
         from agentnode_sdk.sandbox import enforce_sandbox_policy, SandboxRequiredError
         try:
