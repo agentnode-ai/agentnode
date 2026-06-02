@@ -18,6 +18,7 @@ class McpSubmission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     verification_report = Column(JSONB, nullable=False)
     status = Column(VARCHAR(40), nullable=False, default="pending")
     reviewer_notes = Column(Text)
+    maintainer_feedback = Column(Text)
     reviewed_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     reviewed_at = Column(TIMESTAMP(timezone=True))
     published_package_id = Column(UUID(as_uuid=True), ForeignKey("packages.id", ondelete="SET NULL"))

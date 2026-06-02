@@ -99,7 +99,7 @@ async def submit_mcp(
         raise AppError(
             "MCP_DUPLICATE_SUBMISSION",
             f"An open submission for {pkg_name}@{pkg_version} already exists (status: {existing.status}). "
-            f"Wait for review or ask admin to reject the existing submission before resubmitting.",
+            f"Check status: agentnode mcp status {existing.id}",
             409,
         )
 
@@ -132,6 +132,66 @@ async def submit_mcp(
         status=submission.status,
         package_name=pkg_name,
         message=msg,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Maintainer status endpoint (publisher-scoped)
+# ---------------------------------------------------------------------------
+
+class MaintainerSubmissionStatus(BaseModel):
+    id: str
+    package_name: str
+    package_registry: str
+    package_version: str | None
+    source_repo: str | None
+    status: str
+    report_status: str | None
+    report_summary: str | None
+    actions: list[dict] | None
+    maintainer_feedback: str | None
+    reviewed_at: str | None
+    published_package_id: str | None
+    created_at: str
+
+
+@router.get(
+    "/submissions/{submission_id}",
+    response_model=MaintainerSubmissionStatus,
+    dependencies=[Depends(rate_limit(20, 60))],
+)
+async def get_own_submission(
+    submission_id: UUID,
+    user: User = Depends(require_publisher),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get status of own submission. Publisher-scoped — only the submitting publisher can view."""
+    row = (await session.execute(
+        select(McpSubmission).where(
+            McpSubmission.id == submission_id,
+            McpSubmission.publisher_id == user.publisher.id,
+        )
+    )).scalar_one_or_none()
+
+    if not row:
+        raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found or not owned by your publisher", 404)
+
+    report = row.verification_report or {}
+
+    return MaintainerSubmissionStatus(
+        id=str(row.id),
+        package_name=row.package_name,
+        package_registry=row.package_registry,
+        package_version=row.package_version,
+        source_repo=row.source_repo,
+        status=row.status,
+        report_status=report.get("status"),
+        report_summary=report.get("summary"),
+        actions=report.get("actions"),
+        maintainer_feedback=row.maintainer_feedback,
+        reviewed_at=row.reviewed_at.isoformat() if row.reviewed_at else None,
+        published_package_id=str(row.published_package_id) if row.published_package_id else None,
+        created_at=row.created_at.isoformat() if row.created_at else "",
     )
 
 
@@ -169,13 +229,15 @@ class SubmissionDetail(BaseModel):
     manifest: dict
     verification_report: dict
     reviewer_notes: str | None
+    maintainer_feedback: str | None
     created_at: str
     updated_at: str
 
 
 class ReviewRequest(BaseModel):
     status: str = Field(..., description="New status: approved, rejected, needs_changes")
-    notes: str | None = None
+    notes: str | None = Field(None, description="Internal reviewer notes (admin-only)")
+    maintainer_feedback: str | None = Field(None, description="Message visible to the submitting maintainer")
 
 
 class ReviewResponse(BaseModel):
@@ -261,6 +323,7 @@ async def get_submission(
         manifest=row.manifest_raw,
         verification_report=row.verification_report,
         reviewer_notes=row.reviewer_notes,
+        maintainer_feedback=row.maintainer_feedback,
         created_at=row.created_at.isoformat() if row.created_at else "",
         updated_at=row.updated_at.isoformat() if row.updated_at else "",
     )
@@ -290,6 +353,7 @@ async def review_submission(
 
     row.status = body.status
     row.reviewer_notes = body.notes
+    row.maintainer_feedback = body.maintainer_feedback
     row.reviewed_by_id = user.id
     row.reviewed_at = datetime.now(timezone.utc)
     row.updated_at = datetime.now(timezone.utc)

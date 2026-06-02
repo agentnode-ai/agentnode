@@ -68,6 +68,7 @@ export default function McpSubmissionsPage() {
   const [selected, setSelected] = useState<SubmissionDetail | null>(null);
   const [reviewStatus, setReviewStatus] = useState("");
   const [reviewNotes, setReviewNotes] = useState("");
+  const [maintainerFeedback, setMaintainerFeedback] = useState("");
   const [loading, setLoading] = useState(false);
 
   const loadSubmissions = useCallback(async () => {
@@ -92,6 +93,7 @@ export default function McpSubmissionsPage() {
       setSelected(data);
       setReviewStatus(data.status);
       setReviewNotes(data.reviewer_notes || "");
+      setMaintainerFeedback((data as any).maintainer_feedback || "");
     }
   };
 
@@ -101,7 +103,7 @@ export default function McpSubmissionsPage() {
     const res = await fetchWithAuth(`/admin/mcp/submissions/${selected.id}/review`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: reviewStatus, notes: reviewNotes || null }),
+      body: JSON.stringify({ status: reviewStatus, notes: reviewNotes || null, maintainer_feedback: maintainerFeedback || null }),
     });
     setLoading(false);
     if (res.ok) {
@@ -338,13 +340,26 @@ export default function McpSubmissionsPage() {
                 </button>
               ))}
             </div>
-            <textarea
-              value={reviewNotes}
-              onChange={(e) => setReviewNotes(e.target.value)}
-              placeholder="Review notes (optional)"
-              rows={3}
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted/50 focus:border-primary/30 focus:outline-none"
-            />
+            <div>
+              <label className="text-xs text-muted mb-1 block">Message to maintainer (visible to submitter)</label>
+              <textarea
+                value={maintainerFeedback}
+                onChange={(e) => setMaintainerFeedback(e.target.value)}
+                placeholder="e.g. Please fix PyPI project URLs and resubmit"
+                rows={2}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted/50 focus:border-primary/30 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted mb-1 block">Internal notes (admin-only, not visible to maintainer)</label>
+              <textarea
+                value={reviewNotes}
+                onChange={(e) => setReviewNotes(e.target.value)}
+                placeholder="Internal review notes..."
+                rows={2}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted/50 focus:border-primary/30 focus:outline-none"
+              />
+            </div>
             <button
               onClick={submitReview}
               disabled={loading || !reviewStatus || reviewStatus === selected.status}
