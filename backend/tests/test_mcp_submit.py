@@ -636,3 +636,111 @@ async def test_registry_allowlist_blocks_foreign_host():
     from app.mcp.registry_verify import _http_get_json
     with pytest.raises(RegistryUnavailable):
         await _http_get_json("https://evil.example.com/registry/foo")
+
+
+# ---------------------------------------------------------------------------
+# 9. Command re-pinning (Sprint A.1) — npm/npx only, catalog reproducibility
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("command,expected", [
+    (["npx", "-y", "test-mcp"], ["npx", "-y", "test-mcp@1.0.0"]),
+    (["npx", "test-mcp"], ["npx", "test-mcp@1.0.0"]),
+    (["npx", "-y", "test-mcp@0.9.0"], ["npx", "-y", "test-mcp@1.0.0"]),
+])
+def test_rewrite_npm_unscoped(command, expected):
+    from app.mcp.registry_verify import _rewrite_npm_command
+    new, status = _rewrite_npm_command(command, "test-mcp", "1.0.0")
+    assert status == "pinned"
+    assert new == expected
+
+
+def test_rewrite_npm_scoped():
+    from app.mcp.registry_verify import _rewrite_npm_command
+    new, status = _rewrite_npm_command(["npx", "-y", "@scope/pkg"], "@scope/pkg", "2.3.4")
+    assert status == "pinned"
+    assert new == ["npx", "-y", "@scope/pkg@2.3.4"]
+    new2, _ = _rewrite_npm_command(["npx", "-y", "@scope/pkg@1.0.0"], "@scope/pkg", "2.3.4")
+    assert new2 == ["npx", "-y", "@scope/pkg@2.3.4"]
+
+
+def test_rewrite_non_npx_not_supported():
+    from app.mcp.registry_verify import _rewrite_npm_command
+    new, status = _rewrite_npm_command(["uvx", "blender-mcp"], "blender-mcp", "1.0.0")
+    assert status == "not_supported"
+    assert new is None
+
+
+def test_rewrite_ambiguous_not_supported():
+    from app.mcp.registry_verify import _rewrite_npm_command
+    # package token appears twice -> refuse rather than guess
+    new, status = _rewrite_npm_command(["npx", "mcp", "--flag", "mcp@2"], "mcp", "3.0.0")
+    assert status == "not_supported"
+    assert new is None
+
+
+@pytest.mark.asyncio
+async def test_publish_pins_unpinned_command(client, session):
+    """Unpinned command is resolved and the PUBLISHED catalog entry pins it;
+    the submission keeps the original command for audit."""
+    token, _ = await setup_publisher_user(client, "pin@test.dev", "pinpub", "TestPass123!", "pub-pin", "Pin")
+    manifest = _mcp_manifest("test-mcp", ["npx", "-y", "test-mcp"],
+                             "https://github.com/test/test-mcp", "mcp-pin")
+    submit_resp = await client.post("/v1/mcp/submit",
+                                    json={"manifest": manifest, "verification_report": TESTED_REPORT},
+                                    headers=_auth(token))
+    assert submit_resp.status_code == 201
+    sub_id = submit_resp.json()["id"]
+
+    sv = (await client.get(f"/v1/mcp/submissions/{sub_id}", headers=_auth(token))).json()["server_verification"]
+    assert sv["command_rewrite"] == "pinned"
+    assert sv["pinned_command"] == ["npx", "-y", "test-mcp@1.0.0"]
+
+    admin_token = await _make_admin(client, session, "adminpin@test.dev", "adminpin")
+    await client.put(f"/v1/admin/mcp/submissions/{sub_id}/review",
+                     json={"status": "approved"}, headers=_auth(admin_token))
+    pub = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
+    assert pub.status_code == 200, pub.json()
+
+    # Published PackageVersion carries the pinned command...
+    from app.packages.models import Package, PackageVersion
+    from sqlalchemy import select as sa_select
+    pv = (await session.execute(
+        sa_select(PackageVersion).join(Package, Package.id == PackageVersion.package_id)
+        .where(Package.slug == "mcp-pin")
+    )).scalars().first()
+    assert pv is not None
+    assert pv.manifest_raw["mcp_server"]["command"] == ["npx", "-y", "test-mcp@1.0.0"]
+
+    # ...but the submission keeps the original unpinned command (audit trail)
+    detail = (await client.get(f"/v1/admin/mcp/submissions/{sub_id}", headers=_auth(admin_token))).json()
+    assert detail["manifest"]["mcp_server"]["command"] == ["npx", "-y", "test-mcp"]
+
+
+@pytest.mark.asyncio
+async def test_pypi_command_rewrite_not_supported(client, session, monkeypatch):
+    """PyPI/uvx is left unchanged with a clear warning, not blocked."""
+    async def fake_pypi(name):
+        return {
+            "info": {"version": "1.5.6",
+                     "project_urls": {"Repository": "https://github.com/test/py-mcp"}},
+            "releases": {"1.5.6": []},
+        }
+    monkeypatch.setattr("app.mcp.registry_verify._fetch_pypi", fake_pypi)
+
+    token, _ = await setup_publisher_user(client, "py@test.dev", "pypub", "TestPass123!", "pub-py", "Py")
+    manifest = copy.deepcopy(MCP_MANIFEST)
+    manifest["package_id"] = "mcp-py"
+    manifest["mcp_server"] = {
+        "command": ["uvx", "py-mcp@1.5.6"], "transport": "stdio",
+        "pypi_package": "py-mcp", "source_repo": "https://github.com/test/py-mcp", "env_keys": [],
+    }
+    report = {**TESTED_REPORT, "package": {"registry": "pypi", "name": "py-mcp", "version": "1.5.6"}}
+    resp = await client.post("/v1/mcp/submit",
+                             json={"manifest": manifest, "verification_report": report},
+                             headers=_auth(token))
+    assert resp.status_code == 201
+    sid = resp.json()["id"]
+    sv = (await client.get(f"/v1/mcp/submissions/{sid}", headers=_auth(token))).json()["server_verification"]
+    assert sv["command_rewrite"] == "not_supported"
+    assert sv["pinned_command"] is None
+    assert "command_rewrite_not_supported" in sv["warnings"]

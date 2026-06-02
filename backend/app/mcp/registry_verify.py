@@ -62,6 +62,37 @@ def _command_version(command: list | None) -> str | None:
     return None
 
 
+# npm launch runners whose package argument we can safely re-pin.
+_NPM_RUNNERS = {"npx"}
+
+
+def _rewrite_npm_command(
+    command: list | None, npm_package: str | None, resolved_version: str | None
+) -> tuple[list | None, str]:
+    """Re-pin an npx command's package argument to ``<package>@<resolved_version>``.
+
+    Matches the command element against the known ``npm_package`` name (exact, or
+    ``name@<anything>``) instead of parsing argv structurally. Returns
+    (new_command, "pinned") on success, or (None, "not_supported") for anything we
+    cannot rewrite without risk: non-npx runner, the package token not found
+    exactly once, or missing inputs. Never raises; never blocks publish.
+    """
+    if not (command and isinstance(command, list) and npm_package and resolved_version):
+        return None, "not_supported"
+    if command[0] not in _NPM_RUNNERS:
+        return None, "not_supported"
+    prefix = npm_package + "@"
+    matches = [
+        i for i, e in enumerate(command)
+        if isinstance(e, str) and (e == npm_package or e.startswith(prefix))
+    ]
+    if len(matches) != 1:
+        return None, "not_supported"
+    new = list(command)
+    new[matches[0]] = f"{npm_package}@{resolved_version}"
+    return new, "pinned"
+
+
 async def _http_get_json(url: str) -> dict | None:
     """GET a registry URL. Returns parsed JSON, or None on 404.
 
@@ -116,12 +147,14 @@ def _blank(npm_name: str | None, pypi_name: str | None, declared_repo: str | Non
         "repo_consistency": "indeterminate",
         "maintainer_list": [],
         "command_pinning": "indeterminate",
+        "pinned_command": None,        # rewritten command pinning resolved_version (npm only)
+        "command_rewrite": "not_supported",  # pinned | not_supported
         "warnings": [],
         "errors": [],
     }
 
 
-async def _verify_npm(name: str, pinned: str | None, sv: dict) -> None:
+async def _verify_npm(name: str, command: list | None, pinned: str | None, sv: dict) -> None:
     data = await _fetch_npm(name)
     if data is None:
         sv["errors"].append(f"{name} not found on npm")
@@ -161,6 +194,13 @@ async def _verify_npm(name: str, pinned: str | None, sv: dict) -> None:
     sv["maintainer_list"] = [
         m.get("name", "") for m in (data.get("maintainers") or []) if isinstance(m, dict)
     ]
+
+    # Re-pin the launch command to the resolved version so the catalog entry is
+    # reproducible. npm/npx only; anything else stays as-is (not_supported).
+    new_cmd, rewrite = _rewrite_npm_command(command, name, sv["resolved_version"])
+    sv["command_rewrite"] = rewrite
+    if new_cmd is not None:
+        sv["pinned_command"] = new_cmd
 
 
 async def _verify_pypi(name: str, pinned: str | None, sv: dict) -> None:
@@ -234,13 +274,18 @@ async def verify_registry(manifest: dict) -> dict:
 
     try:
         if npm_name:
-            await _verify_npm(npm_name, pinned, sv)
+            await _verify_npm(npm_name, command, pinned, sv)
         else:
             await _verify_pypi(pypi_name, pinned, sv)
     except RegistryUnavailable as e:
         sv["server_status"] = "unavailable"
         sv["errors"].append(f"Registry unavailable: {e}")
         return sv
+
+    # Flag when we resolved a version but could not auto-pin the command
+    # (PyPI/uvx/non-npx/ambiguous). Publish is not blocked; admin/maintainer see it.
+    if sv["version_exists"] and sv["command_rewrite"] == "not_supported":
+        sv["warnings"].append("command_rewrite_not_supported")
 
     declared = _gh(declared_repo)
     registry = _gh(sv["registry_repo_url"])

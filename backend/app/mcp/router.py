@@ -1,4 +1,5 @@
 """MCP submission endpoints."""
+import copy
 import logging
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -487,7 +488,13 @@ async def publish_submission(
     if blocks:
         raise AppError("MCP_PUBLISH_BLOCKED", "; ".join(blocks), 400)
 
-    manifest = row.manifest_raw
+    # Publish on a copy so the original (audit) submission keeps the raw command.
+    # If the server resolved a pinned npm command, the catalog entry uses it for
+    # reproducibility (server_verification.pinned_command, npm/npx only).
+    manifest = copy.deepcopy(row.manifest_raw)
+    pinned_cmd = (row.server_verification or {}).get("pinned_command")
+    if pinned_cmd and isinstance(manifest.get("mcp_server"), dict):
+        manifest["mcp_server"]["command"] = pinned_cmd
     slug = manifest.get("package_id", row.package_name)
     version = manifest.get("version", row.package_version or "0.1.0")
 
