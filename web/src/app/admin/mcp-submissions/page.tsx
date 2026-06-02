@@ -49,6 +49,12 @@ interface SubmissionDetail {
   manifest: Record<string, unknown>;
   verification_report: Record<string, unknown>;
   server_verification: ServerVerification | null;
+  ownership: {
+    status: string; // verified | expired | missing
+    method: string | null; // manual_admin | registry_challenge
+    verified_at: string | null;
+    expires_at: string | null;
+  };
   reviewer_notes: string | null;
   maintainer_feedback: string | null;
   published_package_id: string | null;
@@ -173,6 +179,27 @@ export default function McpSubmissionsPage() {
     if (res.ok) {
       setSelected(null);
       loadSubmissions();
+    }
+  };
+
+  const verifyOwnership = async () => {
+    if (!selected) return;
+    const reason = window.prompt(
+      "Reason for manual ownership verification (audited, stored on the claim):"
+    );
+    if (!reason) return;
+    setLoading(true);
+    const res = await fetchWithAuth(`/admin/mcp/submissions/${selected.id}/verify-ownership`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    });
+    setLoading(false);
+    if (res.ok) {
+      await loadDetail(selected.id);
+    } else {
+      const err = await res.json().catch(() => ({ error: { message: res.statusText } }));
+      alert(`Failed: ${err.error?.message || "Unknown error"}`);
     }
   };
 
@@ -578,11 +605,46 @@ export default function McpSubmissionsPage() {
 
           {/* Publish to Catalog */}
           {selected.status === "approved" && !selected.published_package_id && (
-            <div className="border-t border-border pt-4">
+            <div className="border-t border-border pt-4 space-y-2">
+              <p className="text-xs">
+                Package ownership:{" "}
+                <span
+                  className={
+                    selected.ownership.status === "verified"
+                      ? "text-green-400"
+                      : selected.ownership.status === "expired"
+                        ? "text-amber-400"
+                        : "text-red-400"
+                  }
+                >
+                  {selected.ownership.status === "verified"
+                    ? selected.ownership.method === "manual_admin"
+                      ? "manually verified by admin"
+                      : "registry challenge verified"
+                    : selected.ownership.status}
+                </span>
+                <span className="ml-2 text-muted">(independent of repository consistency)</span>
+              </p>
+
               {selected.server_verification?.server_status === "mismatch" ? (
                 <p className="text-xs text-red-400">
                   Publishing blocked: the server-verification mismatch must be resolved first.
                 </p>
+              ) : selected.ownership.status !== "verified" ? (
+                <div>
+                  <button
+                    onClick={verifyOwnership}
+                    disabled={loading}
+                    className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-300 hover:bg-amber-500/20 disabled:opacity-50 transition-colors"
+                  >
+                    {loading ? "Saving..." : "Mark ownership manually verified"}
+                  </button>
+                  <p className="mt-1 text-xs text-muted">
+                    Package control is not proven. Publishing requires a verified ownership
+                    claim — confirm it manually (audited) or wait for a registry challenge.
+                    Repository consistency does not count as ownership.
+                  </p>
+                </div>
               ) : (
                 <>
                   <button
@@ -593,8 +655,8 @@ export default function McpSubmissionsPage() {
                     {loading ? "Publishing..." : "Publish to Catalog"}
                   </button>
                   <p className="mt-1 text-xs text-muted">
-                    Publishes to the registry. The publish gate uses server verification,
-                    not the maintainer-submitted report.
+                    Publishes to the registry. The publish gate uses server verification and a
+                    verified ownership claim, not the maintainer-submitted report.
                   </p>
                 </>
               )}

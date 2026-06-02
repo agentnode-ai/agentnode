@@ -1,7 +1,7 @@
 """MCP submission endpoints."""
 import copy
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -14,8 +14,40 @@ from app.auth.models import User
 from app.database import get_session
 from app.shared.exceptions import AppError
 from app.shared.rate_limit import rate_limit
-from app.mcp.models import McpSubmission
-from app.mcp.registry_verify import verify_registry, derive_status
+from app.mcp.models import McpSubmission, PublisherPackageClaim
+from app.mcp.registry_verify import verify_registry, derive_status, normalize_package_name
+
+OWNERSHIP_CLAIM_TTL_DAYS = 180
+
+
+async def _latest_verified_claim(session: AsyncSession, submission: McpSubmission):
+    """Most recent verified ownership claim matching this submission's
+    (publisher, registry, normalized package name). Expiry is checked by the
+    caller so 'expired' can be distinguished from 'missing'."""
+    norm = normalize_package_name(submission.package_registry, submission.package_name)
+    return (await session.execute(
+        select(PublisherPackageClaim).where(
+            PublisherPackageClaim.publisher_id == submission.publisher_id,
+            PublisherPackageClaim.registry == submission.package_registry,
+            PublisherPackageClaim.package_name_normalized == norm,
+            PublisherPackageClaim.status == "verified",
+        ).order_by(PublisherPackageClaim.verified_at.desc())
+    )).scalars().first()
+
+
+def _ownership_view(claim: PublisherPackageClaim | None) -> dict:
+    """Ownership (package_control) status for the admin UI — independent of
+    server_verification.repo_consistency."""
+    if claim is None:
+        return {"status": "missing", "method": None, "verified_at": None, "expires_at": None}
+    expired = claim.expires_at is not None and claim.expires_at <= datetime.now(timezone.utc)
+    return {
+        "status": "expired" if expired else "verified",
+        "method": claim.method,
+        "verified_at": claim.verified_at.isoformat() if claim.verified_at else None,
+        "expires_at": claim.expires_at.isoformat() if claim.expires_at else None,
+    }
+
 
 router = APIRouter(prefix="/v1/mcp", tags=["mcp"])
 admin_router = APIRouter(prefix="/v1/admin/mcp", tags=["admin-mcp"])
@@ -252,6 +284,7 @@ class SubmissionDetail(BaseModel):
     manifest: dict
     verification_report: dict
     server_verification: dict | None
+    ownership: dict
     reviewer_notes: str | None
     maintainer_feedback: str | None
     published_package_id: str | None
@@ -339,6 +372,8 @@ async def get_submission(
     if not row:
         raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
 
+    ownership = _ownership_view(await _latest_verified_claim(session, row))
+
     return SubmissionDetail(
         id=str(row.id),
         package_name=row.package_name,
@@ -349,6 +384,7 @@ async def get_submission(
         manifest=row.manifest_raw,
         verification_report=row.verification_report,
         server_verification=row.server_verification,
+        ownership=ownership,
         reviewer_notes=row.reviewer_notes,
         maintainer_feedback=row.maintainer_feedback,
         published_package_id=str(row.published_package_id) if row.published_package_id else None,
@@ -409,13 +445,15 @@ class PublishResponse(BaseModel):
     message: str
 
 
-def _verify_publish_gate(submission: McpSubmission) -> list[str]:
+def _verify_publish_gate(submission: McpSubmission, ownership_claim: PublisherPackageClaim | None) -> list[str]:
     """Validate all publish gate rules. Returns list of blocking reasons.
 
-    Registry facts (package_exists, version, repo_consistency) come from
-    ``server_verification`` — authoritative, server-derived. The client report is
-    only consulted for the protocol-test attestation and self-declared actions,
-    and is explicitly NOT trusted for registry facts.
+    Three independent axes, never substituted for one another:
+    - registry facts (package_exists/version/repo_consistency) from
+      ``server_verification`` — authoritative, server-derived;
+    - package_control from ``ownership_claim`` (publisher_package_claims) — the
+      ONLY source for ownership. repo_consistency must never satisfy it;
+    - runtime attestation from the client ``verification_report`` — advisory.
     """
     blocks: list[str] = []
 
@@ -460,6 +498,13 @@ def _verify_publish_gate(submission: McpSubmission) -> list[str]:
         codes = [a.get("code", "?") for a in high_actions]
         blocks.append(f"Has {len(high_actions)} high-severity action(s): {', '.join(codes)}")
 
+    # --- Package control (ownership) — a SEPARATE axis. repo_consistency must
+    # NEVER satisfy this; only a verified, non-expired publisher_package_claim does. ---
+    if ownership_claim is None:
+        blocks.append("No verified ownership claim — package control is not proven (repo_consistency does not count)")
+    elif ownership_claim.expires_at is not None and ownership_claim.expires_at <= datetime.now(timezone.utc):
+        blocks.append("Ownership claim has expired — re-verify package control")
+
     return blocks
 
 
@@ -484,7 +529,8 @@ async def publish_submission(
     if not row:
         raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
 
-    blocks = _verify_publish_gate(row)
+    ownership_claim = await _latest_verified_claim(session, row)
+    blocks = _verify_publish_gate(row, ownership_claim)
     if blocks:
         raise AppError("MCP_PUBLISH_BLOCKED", "; ".join(blocks), 400)
 
@@ -592,4 +638,72 @@ async def reverify_submission(
         server_status=sv.get("server_status"),
         status=row.status,
         message=f"Re-verified: server status '{sv.get('server_status')}', submission now '{row.status}'.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ownership (package_control) — manual admin verification (Step 1)
+# ---------------------------------------------------------------------------
+
+class VerifyOwnershipRequest(BaseModel):
+    reason: str = Field(..., min_length=1, description="Audit reason for the manual ownership decision")
+
+
+class VerifyOwnershipResponse(BaseModel):
+    claim_id: str
+    status: str
+    message: str
+
+
+@admin_router.post(
+    "/submissions/{submission_id}/verify-ownership",
+    response_model=VerifyOwnershipResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
+async def verify_ownership_manual(
+    submission_id: UUID,
+    body: VerifyOwnershipRequest,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Admin explicitly attests package ownership (method=manual_admin).
+
+    This satisfies the ownership (package_control) dimension of the publish gate
+    for this publisher+package. It is an explicit, audited decision — NOT derived
+    from repo_consistency. Creates a time-bounded verified claim.
+    """
+    row = (await session.execute(
+        select(McpSubmission).where(McpSubmission.id == submission_id)
+    )).scalar_one_or_none()
+    if not row:
+        raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
+
+    now = datetime.now(timezone.utc)
+    claim = PublisherPackageClaim(
+        id=uuid4(),
+        publisher_id=row.publisher_id,
+        registry=row.package_registry,
+        package_name=row.package_name,
+        package_name_normalized=normalize_package_name(row.package_registry, row.package_name),
+        method="manual_admin",
+        strength="manual",
+        status="verified",
+        evidence={"basis": "manual_admin", "submission_id": str(submission_id), "reason": body.reason},
+        verified_at=now,
+        verified_by_id=user.id,
+        expires_at=now + timedelta(days=OWNERSHIP_CLAIM_TTL_DAYS),
+    )
+    session.add(claim)
+    await session.flush()
+    await session.commit()
+
+    logger.info(
+        "MCP ownership manually verified: %s/%s by admin %s (claim %s)",
+        row.package_registry, row.package_name, user.email, claim.id,
+    )
+
+    return VerifyOwnershipResponse(
+        claim_id=str(claim.id),
+        status="verified",
+        message=f"Ownership of {row.package_name} marked manually verified (audited).",
     )

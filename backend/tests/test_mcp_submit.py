@@ -147,6 +147,31 @@ async def _make_admin(client, session, email, username):
     return token
 
 
+async def _verify_ownership(client, admin_token, sub_id, reason="verified by admin"):
+    return await client.post(
+        f"/v1/admin/mcp/submissions/{sub_id}/verify-ownership",
+        json={"reason": reason}, headers=_auth(admin_token),
+    )
+
+
+async def _approved(client, session, sfx, manifest=None, report=None):
+    """Create a fresh publisher + admin, submit, and admin-approve. Unique
+    identities per suffix so tests don't collide. Returns (admin_token,
+    pub_token, publisher_data, submission_id)."""
+    manifest = manifest if manifest is not None else MCP_MANIFEST
+    report = report if report is not None else TESTED_REPORT
+    pub_token, pub = await setup_publisher_user(
+        client, f"{sfx}@test.dev", f"{sfx}pub", "TestPass123!", f"pub-{sfx}", f"Pub {sfx}")
+    sr = await client.post("/v1/mcp/submit",
+                           json={"manifest": manifest, "verification_report": report},
+                           headers=_auth(pub_token))
+    sub_id = sr.json()["id"]
+    admin_token = await _make_admin(client, session, f"adm{sfx}@test.dev", f"adm{sfx}")
+    await client.put(f"/v1/admin/mcp/submissions/{sub_id}/review",
+                     json={"status": "approved"}, headers=_auth(admin_token))
+    return admin_token, pub_token, pub, sub_id
+
+
 # ---------------------------------------------------------------------------
 # 1. Submit Auth
 # ---------------------------------------------------------------------------
@@ -350,6 +375,7 @@ async def _create_admin_and_approved_submission(client, session):
 @pytest.mark.asyncio
 async def test_publish_approved_submission(client, session):
     admin_token, pub_token, sub_id = await _create_admin_and_approved_submission(client, session)
+    await _verify_ownership(client, admin_token, sub_id)  # ownership now required to publish
 
     resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
     assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.json()}"
@@ -698,6 +724,7 @@ async def test_publish_pins_unpinned_command(client, session):
     admin_token = await _make_admin(client, session, "adminpin@test.dev", "adminpin")
     await client.put(f"/v1/admin/mcp/submissions/{sub_id}/review",
                      json={"status": "approved"}, headers=_auth(admin_token))
+    await _verify_ownership(client, admin_token, sub_id)
     pub = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
     assert pub.status_code == 200, pub.json()
 
@@ -744,3 +771,143 @@ async def test_pypi_command_rewrite_not_supported(client, session, monkeypatch):
     assert sv["command_rewrite"] == "not_supported"
     assert sv["pinned_command"] is None
     assert "command_rewrite_not_supported" in sv["warnings"]
+
+
+# ---------------------------------------------------------------------------
+# 10. Ownership / package_control (Step 1: manual_admin)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_publish_blocked_without_ownership_claim(client, session):
+    """THE headline: repo_consistency=match (test-mcp) + approved + server-verified,
+    but NO ownership claim -> publish still blocked. repo_consistency != ownership."""
+    admin_token, _, _, sub_id = await _approved(client, session, "noown")
+    detail = (await client.get(f"/v1/admin/mcp/submissions/{sub_id}", headers=_auth(admin_token))).json()
+    assert detail["server_verification"]["repo_consistency"] == "match"
+    assert detail["ownership"]["status"] == "missing"
+
+    resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
+    assert resp.status_code == 400
+    assert "ownership" in resp.json()["error"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_publish_allowed_with_manual_ownership(client, session):
+    admin_token, _, _, sub_id = await _approved(client, session, "hasown")
+    vo = await _verify_ownership(client, admin_token, sub_id, "confirmed npm maintainer")
+    assert vo.status_code == 200
+    resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
+    assert resp.status_code == 200, resp.json()
+
+
+@pytest.mark.asyncio
+async def test_publish_blocked_expired_claim(client, session):
+    from uuid import UUID as _UUID
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from sqlalchemy import update as _update
+    from app.mcp.models import PublisherPackageClaim
+
+    admin_token, _, _, sub_id = await _approved(client, session, "expd")
+    cid = (await _verify_ownership(client, admin_token, sub_id)).json()["claim_id"]
+    await session.execute(
+        _update(PublisherPackageClaim).where(PublisherPackageClaim.id == _UUID(cid))
+        .values(expires_at=_dt.now(_tz.utc) - _td(days=1))
+    )
+    await session.commit()
+
+    resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
+    assert resp.status_code == 400
+    assert "expired" in resp.json()["error"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_publish_blocked_claim_for_other_package(client, session):
+    """A verified claim exists for the same publisher but a DIFFERENT package -> the
+    target submission is still blocked."""
+    admin_token, pub_token, _, sub_main = await _approved(client, session, "wpkg")
+    other = _mcp_manifest("norepo-mcp", ["npx", "-y", "norepo-mcp@2.0.0"],
+                          "https://github.com/whoever/norepo-mcp", "mcp-wpkg-other")
+    sr2 = await client.post("/v1/mcp/submit",
+                            json={"manifest": other, "verification_report": TESTED_REPORT},
+                            headers=_auth(pub_token))
+    await _verify_ownership(client, admin_token, sr2.json()["id"])  # claim for norepo-mcp
+
+    resp = await client.post(f"/v1/admin/mcp/submissions/{sub_main}/publish", headers=_auth(admin_token))
+    assert resp.status_code == 400
+    assert "ownership" in resp.json()["error"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_publish_blocked_claim_for_other_publisher(client, session):
+    """Publisher B proves ownership of the package; publisher A's submission is still blocked."""
+    admin_token, _, _, sub_a = await _approved(client, session, "owna")
+    pub_b_token, _ = await setup_publisher_user(
+        client, "ownb@test.dev", "ownbpub", "TestPass123!", "pub-ownb", "Own B")
+    sub_b = (await client.post("/v1/mcp/submit",
+                               json={"manifest": MCP_MANIFEST, "verification_report": TESTED_REPORT},
+                               headers=_auth(pub_b_token))).json()["id"]
+    await _verify_ownership(client, admin_token, sub_b)  # claim under publisher B
+
+    resp = await client.post(f"/v1/admin/mcp/submissions/{sub_a}/publish", headers=_auth(admin_token))
+    assert resp.status_code == 400
+    assert "ownership" in resp.json()["error"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_ownership_match_uses_normalized_name(client, session):
+    """PEP 503: a claim proven for 'Foo_Bar' satisfies a submission for 'foo.bar'."""
+    pub_token, _ = await setup_publisher_user(
+        client, "norm@test.dev", "normpub", "TestPass123!", "pub-norm", "Norm")
+    admin_token = await _make_admin(client, session, "admnorm@test.dev", "admnorm")
+
+    def _pypi_manifest(name, pkg_id):
+        m = copy.deepcopy(MCP_MANIFEST)
+        m["package_id"] = pkg_id
+        m["mcp_server"] = {"command": ["uvx", name], "transport": "stdio",
+                           "pypi_package": name, "source_repo": "https://github.com/test/foo-bar", "env_keys": []}
+        return m
+
+    rep = {**TESTED_REPORT, "package": {"registry": "pypi", "name": "foo-bar"}}
+    sub1 = (await client.post("/v1/mcp/submit",
+                              json={"manifest": _pypi_manifest("Foo_Bar", "mcp-foobar-1"), "verification_report": rep},
+                              headers=_auth(pub_token))).json()["id"]
+    await _verify_ownership(client, admin_token, sub1)  # claim normalized -> foo-bar
+
+    sub2 = (await client.post("/v1/mcp/submit",
+                              json={"manifest": _pypi_manifest("foo.bar", "mcp-foobar-2"), "verification_report": rep},
+                              headers=_auth(pub_token))).json()["id"]
+    detail = (await client.get(f"/v1/admin/mcp/submissions/{sub2}", headers=_auth(admin_token))).json()
+    assert detail["ownership"]["status"] == "verified"
+    assert detail["ownership"]["method"] == "manual_admin"
+
+
+@pytest.mark.asyncio
+async def test_manual_claim_stores_audit(client, session):
+    from uuid import UUID as _UUID
+    from sqlalchemy import select as _select
+    from app.mcp.models import PublisherPackageClaim
+
+    admin_token, _, _, sub_id = await _approved(client, session, "stores")
+    cid = (await _verify_ownership(client, admin_token, sub_id, "checked npm maintainer list")).json()["claim_id"]
+    claim = (await session.execute(
+        _select(PublisherPackageClaim).where(PublisherPackageClaim.id == _UUID(cid))
+    )).scalar_one()
+    assert claim.verified_by_id is not None
+    assert claim.method == "manual_admin"
+    assert claim.strength == "manual"
+    assert claim.evidence["reason"] == "checked npm maintainer list"
+    assert claim.evidence["submission_id"] == sub_id
+
+
+@pytest.mark.asyncio
+async def test_ownership_shown_separate_from_repo_consistency(client, session):
+    """Admin detail surfaces ownership independently of repo_consistency."""
+    admin_token, _, _, sub_id = await _approved(client, session, "sep")
+    before = (await client.get(f"/v1/admin/mcp/submissions/{sub_id}", headers=_auth(admin_token))).json()
+    assert before["server_verification"]["repo_consistency"] == "match"
+    assert before["ownership"]["status"] == "missing"
+
+    await _verify_ownership(client, admin_token, sub_id)
+    after = (await client.get(f"/v1/admin/mcp/submissions/{sub_id}", headers=_auth(admin_token))).json()
+    assert after["ownership"]["status"] == "verified"
+    assert after["server_verification"]["repo_consistency"] == "match"  # unchanged

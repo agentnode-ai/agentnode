@@ -22,3 +22,25 @@ class McpSubmission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     reviewed_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     reviewed_at = Column(TIMESTAMP(timezone=True))
     published_package_id = Column(UUID(as_uuid=True), ForeignKey("packages.id", ondelete="SET NULL"))
+
+
+class PublisherPackageClaim(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Proof that a publisher controls a specific npm/PyPI package — the
+    `package_control` axis. Kept STRICTLY separate from server_verification's
+    `repo_consistency` (which only proves manifest/registry agree on a repo).
+    Step 1: method=manual_admin only; challenge fields are prepared but unused.
+    """
+    __tablename__ = "publisher_package_claims"
+
+    publisher_id = Column(UUID(as_uuid=True), ForeignKey("publishers.id", ondelete="CASCADE"), nullable=False)
+    registry = Column(VARCHAR(20), nullable=False)            # npm | pypi
+    package_name = Column(VARCHAR(200), nullable=False)       # as submitted
+    package_name_normalized = Column(VARCHAR(200), nullable=False)  # match key
+    method = Column(VARCHAR(30), nullable=False)              # manual_admin (registry_challenge later)
+    strength = Column(VARCHAR(20), nullable=False)            # manual (strong later)
+    status = Column(VARCHAR(20), nullable=False, default="verified")  # verified | rejected | expired
+    evidence = Column(JSONB)
+    challenge_token_hash = Column(VARCHAR(128))               # prepared for registry_challenge, unused in Step 1
+    verified_at = Column(TIMESTAMP(timezone=True))
+    verified_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    expires_at = Column(TIMESTAMP(timezone=True))

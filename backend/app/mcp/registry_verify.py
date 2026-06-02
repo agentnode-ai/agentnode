@@ -32,6 +32,21 @@ _GITHUB = re.compile(r"github\.com/([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)")
 _TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 
 
+_PYPI_NORM = re.compile(r"[-_.]+")
+
+
+def normalize_package_name(registry: str, name: str) -> str:
+    """Canonical match key for a package name.
+
+    PyPI: PEP 503 — lowercase, runs of -_. collapse to a single -.
+    npm: lowercase (npm enforces lowercase; @scope/name is preserved).
+    """
+    n = (name or "").strip()
+    if registry == "pypi":
+        return _PYPI_NORM.sub("-", n).lower()
+    return n.lower()
+
+
 class RegistryUnavailable(Exception):
     """Registry could not be reached or returned an unexpected error.
 
