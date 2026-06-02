@@ -1,0 +1,278 @@
+"""Server-side registry re-verification for MCP submissions.
+
+Authoritative source of truth for registry-checkable facts. Re-derives what the
+client ``agentnode mcp verify`` *claimed*, WITHOUT executing any MCP code — pure
+npm/PyPI metadata lookups plus manifest inspection.
+
+The client ``verification_report`` is advisory (maintainer-attested). The output
+of this module (``server_verification``) is what the publish gate trusts.
+
+Note on honesty: ``repo_consistency`` proves only that the manifest's
+``source_repo`` and the registry's repository URL point at the same GitHub repo.
+It does NOT prove the submitter controls that package or repo — true ownership
+is a separate, later problem. ``shasum``/``integrity`` are recorded provenance
+(what npm reported); the tarball is not downloaded or hashed here.
+"""
+from __future__ import annotations
+
+import re
+from datetime import datetime, timezone
+
+import httpx
+
+NPM_REGISTRY = "https://registry.npmjs.org"
+PYPI_REGISTRY = "https://pypi.org/pypi"
+_ALLOWED_HOSTS = {"registry.npmjs.org", "pypi.org"}
+
+# npm (optional @scope/name) or PyPI name. Reject anything that could inject a
+# scheme/host or path traversal once appended to the registry base URL.
+_SAFE_NAME = re.compile(r"^@?[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)?$")
+_GITHUB = re.compile(r"github\.com/([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)")
+
+_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+
+
+class RegistryUnavailable(Exception):
+    """Registry could not be reached or returned an unexpected error.
+
+    Distinct from a 404 (which is an authoritative "does not exist"). Unavailable
+    must never be treated as ``passed`` — it maps to ``server_status=unavailable``.
+    """
+
+
+def _gh(url: str | None) -> str | None:
+    """Extract ``owner/repo`` (lowercased, no .git) from a GitHub URL, or None."""
+    if not url:
+        return None
+    m = _GITHUB.search(url)
+    return m.group(1).removesuffix(".git").lower() if m else None
+
+
+def _command_version(command: list | None) -> str | None:
+    """Extract a pinned version from the launch command (mirrors the CLI verifier)."""
+    for part in command or []:
+        if not isinstance(part, str):
+            continue
+        if "@" in part and not part.startswith("@"):
+            return part.split("@")[-1]
+        if part.startswith("@"):
+            parts = part.split("@")
+            if len(parts) == 3:  # @scope/name@version
+                return parts[2]
+    return None
+
+
+async def _http_get_json(url: str) -> dict | None:
+    """GET a registry URL. Returns parsed JSON, or None on 404.
+
+    Raises RegistryUnavailable on network error, timeout, non-404 HTTP error,
+    disallowed host, or unparseable body.
+    """
+    host = httpx.URL(url).host
+    if host not in _ALLOWED_HOSTS:
+        raise RegistryUnavailable(f"host not allowed: {host}")
+    try:
+        async with httpx.AsyncClient(
+            timeout=_TIMEOUT,
+            follow_redirects=False,
+            limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
+        ) as cx:
+            resp = await cx.get(url)
+    except httpx.HTTPError as e:
+        raise RegistryUnavailable(str(e)) from e
+    if resp.status_code == 404:
+        return None
+    if resp.status_code >= 400:
+        raise RegistryUnavailable(f"HTTP {resp.status_code}")
+    try:
+        return resp.json()
+    except Exception as e:  # pragma: no cover - defensive
+        raise RegistryUnavailable(f"bad json: {e}") from e
+
+
+async def _fetch_npm(name: str) -> dict | None:
+    """Fetch the npm packument, or None on 404. Raises RegistryUnavailable."""
+    return await _http_get_json(f"{NPM_REGISTRY}/{name}")
+
+
+async def _fetch_pypi(name: str) -> dict | None:
+    """Fetch the PyPI project JSON, or None on 404. Raises RegistryUnavailable."""
+    return await _http_get_json(f"{PYPI_REGISTRY}/{name}/json")
+
+
+def _blank(npm_name: str | None, pypi_name: str | None, declared_repo: str | None) -> dict:
+    return {
+        "server_status": "indeterminate",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "registry": "npm" if npm_name else ("pypi" if pypi_name else None),
+        "package_name": npm_name or pypi_name,
+        "package_exists": False,
+        "resolved_version": None,
+        "version_exists": False,
+        "shasum": None,
+        "integrity": None,
+        "registry_repo_url": None,
+        "declared_source_repo": declared_repo,
+        "repo_consistency": "indeterminate",
+        "maintainer_list": [],
+        "command_pinning": "indeterminate",
+        "warnings": [],
+        "errors": [],
+    }
+
+
+async def _verify_npm(name: str, pinned: str | None, sv: dict) -> None:
+    data = await _fetch_npm(name)
+    if data is None:
+        sv["errors"].append(f"{name} not found on npm")
+        return
+    sv["package_exists"] = True
+    versions = data.get("versions") or {}
+
+    if pinned:
+        sv["command_pinning"] = "pinned"
+        if pinned in versions:
+            sv["resolved_version"] = pinned
+            sv["version_exists"] = True
+        else:
+            sv["errors"].append(f"Pinned version {pinned} not published on npm")
+            return
+    else:
+        latest = (data.get("dist-tags") or {}).get("latest")
+        if latest and latest in versions:
+            sv["resolved_version"] = latest
+            sv["version_exists"] = True
+            sv["command_pinning"] = "unpinned_resolved"
+            sv["warnings"].append(f"Command not pinned; resolved latest = {latest}")
+        else:
+            sv["command_pinning"] = "indeterminate"
+            sv["warnings"].append("Command not pinned and no resolvable latest version")
+            return
+
+    dist = (versions.get(sv["resolved_version"]) or {}).get("dist") or {}
+    sv["shasum"] = dist.get("shasum")
+    sv["integrity"] = dist.get("integrity")
+
+    repo = data.get("repository")
+    if isinstance(repo, str):
+        sv["registry_repo_url"] = repo
+    elif isinstance(repo, dict):
+        sv["registry_repo_url"] = repo.get("url")
+    sv["maintainer_list"] = [
+        m.get("name", "") for m in (data.get("maintainers") or []) if isinstance(m, dict)
+    ]
+
+
+async def _verify_pypi(name: str, pinned: str | None, sv: dict) -> None:
+    data = await _fetch_pypi(name)
+    if data is None:
+        sv["errors"].append(f"{name} not found on PyPI")
+        return
+    sv["package_exists"] = True
+    info = data.get("info") or {}
+    releases = data.get("releases") or {}
+
+    if pinned:
+        sv["command_pinning"] = "pinned"
+        if pinned in releases:
+            sv["resolved_version"] = pinned
+            sv["version_exists"] = True
+        else:
+            sv["errors"].append(f"Pinned version {pinned} not published on PyPI")
+            return
+    else:
+        latest = info.get("version")
+        if latest:
+            sv["resolved_version"] = latest
+            sv["version_exists"] = True
+            sv["command_pinning"] = "unpinned_resolved"
+            sv["warnings"].append(f"Command not pinned; resolved latest = {latest}")
+        else:
+            sv["command_pinning"] = "indeterminate"
+            sv["warnings"].append("Command not pinned and no resolvable latest version")
+            return
+
+    project_urls = info.get("project_urls") or {}
+    sv["registry_repo_url"] = (
+        project_urls.get("Repository") or project_urls.get("Source")
+        or project_urls.get("Source Code") or project_urls.get("GitHub")
+        or project_urls.get("Homepage") or info.get("home_page") or None
+    )
+
+
+async def verify_registry(manifest: dict) -> dict:
+    """Re-derive registry-checkable facts server-side. Never executes MCP code.
+
+    Returns a ``server_verification`` dict with a tri-state-plus ``server_status``:
+    ``verified`` | ``mismatch`` | ``indeterminate`` | ``unavailable``.
+
+    - mismatch:      registry contradicts the manifest (package/version missing,
+                     or source_repo points elsewhere). Blocks publish.
+    - indeterminate: facts confirmed but ownership link unprovable (registry has
+                     no repo URL, or none declared). Does not block; admin decides.
+    - unavailable:   registry unreachable. Retryable; never counts as passed.
+    """
+    mcp = manifest.get("mcp_server") or {}
+    command = mcp.get("command") or []
+    declared_repo = mcp.get("source_repo") or None
+    npm_name = mcp.get("npm_package")
+    pypi_name = mcp.get("pypi_package")
+
+    sv = _blank(npm_name, pypi_name, declared_repo)
+
+    name = npm_name or pypi_name
+    if not name:
+        sv["errors"].append("No npm_package or pypi_package declared in mcp_server")
+        sv["server_status"] = "mismatch"
+        return sv
+    if not _SAFE_NAME.match(name):
+        sv["errors"].append(f"Invalid package name: {name!r}")
+        sv["server_status"] = "mismatch"
+        return sv
+
+    pinned = _command_version(command)
+
+    try:
+        if npm_name:
+            await _verify_npm(npm_name, pinned, sv)
+        else:
+            await _verify_pypi(pypi_name, pinned, sv)
+    except RegistryUnavailable as e:
+        sv["server_status"] = "unavailable"
+        sv["errors"].append(f"Registry unavailable: {e}")
+        return sv
+
+    declared = _gh(declared_repo)
+    registry = _gh(sv["registry_repo_url"])
+    if declared and registry:
+        sv["repo_consistency"] = "match" if declared == registry else "mismatch"
+    else:
+        sv["repo_consistency"] = "indeterminate"
+
+    if sv["errors"] or not sv["package_exists"] or not sv["version_exists"]:
+        sv["server_status"] = "mismatch"
+    elif sv["repo_consistency"] == "mismatch":
+        sv["server_status"] = "mismatch"
+    elif sv["repo_consistency"] == "indeterminate":
+        sv["server_status"] = "indeterminate"
+    else:
+        sv["server_status"] = "verified"
+
+    return sv
+
+
+def derive_status(server_verification: dict, report: dict) -> str:
+    """Combined submission status: server facts authoritative, client report advisory.
+
+    Precedence: server ``mismatch`` always wins (-> action_required). Otherwise the
+    client-attested status drives: clean (TESTED/RESOLVED, no high actions) -> pending,
+    everything else -> action_required. indeterminate/unavailable -> pending (the
+    publish gate blocks them anyway; re-verify resolves unavailable).
+    """
+    actions = report.get("actions") or []
+    client_high = any(a.get("severity") == "high" for a in actions)
+    if server_verification.get("server_status") == "mismatch":
+        return "action_required"
+    if report.get("status") in ("TESTED", "RESOLVED") and not client_high:
+        return "pending"
+    return "action_required"

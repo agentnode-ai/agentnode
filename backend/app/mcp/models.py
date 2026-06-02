@@ -14,7 +14,8 @@ class McpSubmission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     package_version = Column(VARCHAR(50))
     source_repo = Column(Text)
     manifest_raw = Column(JSONB, nullable=False)
-    verification_report = Column(JSONB, nullable=False)
+    verification_report = Column(JSONB, nullable=False)  # client report, advisory
+    server_verification = Column(JSONB)  # backend-derived registry facts, authoritative
     status = Column(VARCHAR(40), nullable=False, default="pending")
     reviewer_notes = Column(Text)
     maintainer_feedback = Column(Text)

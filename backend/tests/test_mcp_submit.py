@@ -1,9 +1,13 @@
-"""Tests for MCP Self-Service Flow: submit, status, admin review, duplicate detection."""
+"""Tests for MCP Self-Service Flow: submit, status, admin review, duplicate detection,
+and server-side registry re-verification (the trust gate)."""
+import copy
+
 import pytest
 import pytest_asyncio
 
 from tests.conftest import register_and_login, create_publisher, setup_publisher_user
 from app.mcp.models import McpSubmission  # noqa: F401
+from app.mcp.registry_verify import RegistryUnavailable
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +84,67 @@ ACTION_REQUIRED_REPORT = {
 
 def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+# ---------------------------------------------------------------------------
+# Registry mock: server-side verification calls _fetch_npm/_fetch_pypi. We patch
+# that boundary so tests are deterministic and never touch the network. The
+# hardened httpx client (allowlist/timeouts) is exercised by its own unit test.
+# ---------------------------------------------------------------------------
+
+_FAKE_NPM = {
+    # Honest package: registry repo matches the manifest source_repo -> verified
+    "test-mcp": {
+        "versions": {"1.0.0": {"dist": {"shasum": "abc123", "integrity": "sha512-xxx"}}},
+        "dist-tags": {"latest": "1.0.0"},
+        "repository": {"url": "git+https://github.com/test/test-mcp.git"},
+        "maintainers": [{"name": "test"}],
+    },
+    # Exists, but registry repo points at a DIFFERENT owner than the manifest claims
+    "evil-mcp": {
+        "versions": {"1.0.0": {"dist": {"shasum": "def456"}}},
+        "dist-tags": {"latest": "1.0.0"},
+        "repository": {"url": "https://github.com/realowner/evil-mcp"},
+        "maintainers": [{"name": "realowner"}],
+    },
+    # Exists, but registry has no repository URL -> repo_consistency indeterminate
+    "norepo-mcp": {
+        "versions": {"2.0.0": {"dist": {"shasum": "ghi789"}}},
+        "dist-tags": {"latest": "2.0.0"},
+        "maintainers": [],
+    },
+    # "ghost-mcp" is intentionally absent -> npm 404
+}
+
+
+@pytest.fixture(autouse=True)
+def mock_registry(monkeypatch):
+    async def fake_npm(name):
+        return _FAKE_NPM.get(name)  # None => 404 (package does not exist)
+
+    async def fake_pypi(name):
+        return None
+
+    monkeypatch.setattr("app.mcp.registry_verify._fetch_npm", fake_npm)
+    monkeypatch.setattr("app.mcp.registry_verify._fetch_pypi", fake_pypi)
+
+
+def _mcp_manifest(npm_package, command, source_repo, package_id):
+    m = copy.deepcopy(MCP_MANIFEST)
+    m["package_id"] = package_id
+    m["mcp_server"]["npm_package"] = npm_package
+    m["mcp_server"]["command"] = command
+    m["mcp_server"]["source_repo"] = source_repo
+    return m
+
+
+async def _make_admin(client, session, email, username):
+    token = await register_and_login(client, email, username, "AdminPass123!")
+    from sqlalchemy import update as sa_update
+    from app.auth.models import User
+    await session.execute(sa_update(User).where(User.username == username).values(is_admin=True))
+    await session.commit()
+    return token
 
 
 # ---------------------------------------------------------------------------
@@ -287,8 +352,6 @@ async def test_publish_approved_submission(client, session):
     admin_token, pub_token, sub_id = await _create_admin_and_approved_submission(client, session)
 
     resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
-    if resp.status_code != 200:
-        print(f"PUBLISH ERROR: {resp.json()}")
     assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.json()}"
     data = resp.json()
     assert data["package_slug"] == "mcp-test-server"
@@ -402,3 +465,174 @@ async def test_non_mcp_toolpack_still_requires_entrypoint():
     valid_mcp, errors_mcp, _ = await validate_manifest(mcp_manifest)
     entrypoint_errors = [e for e in errors_mcp if "entrypoint" in e.lower()]
     assert not entrypoint_errors, f"MCP should skip entrypoint validation, got: {entrypoint_errors}"
+
+
+# ---------------------------------------------------------------------------
+# 8. Server-side registry re-verification (the trust gate)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_forged_owner_overridden_by_server(client, session):
+    """Client report claims owner_verified=true, but the registry repo points
+    elsewhere. Server marks mismatch; submission lands action_required."""
+    token, _ = await setup_publisher_user(client, "ev@test.dev", "evpub", "TestPass123!", "pub-ev", "Ev")
+    manifest = _mcp_manifest("evil-mcp", ["npx", "-y", "evil-mcp@1.0.0"],
+                             "https://github.com/attacker/evil-mcp", "mcp-evil")
+    resp = await client.post("/v1/mcp/submit",
+                             json={"manifest": manifest, "verification_report": TESTED_REPORT},
+                             headers=_auth(token))
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "action_required"  # forged green report overridden
+
+    sid = resp.json()["id"]
+    sv = (await client.get(f"/v1/mcp/submissions/{sid}", headers=_auth(token))).json()["server_verification"]
+    assert sv["server_status"] == "mismatch"
+    assert sv["repo_consistency"] == "mismatch"
+
+
+@pytest.mark.asyncio
+async def test_fake_package_overridden_by_server(client, session):
+    """Client claims package_exists=true, but npm returns 404 -> mismatch."""
+    token, _ = await setup_publisher_user(client, "gh@test.dev", "ghpub", "TestPass123!", "pub-gh", "Gh")
+    manifest = _mcp_manifest("ghost-mcp", ["npx", "-y", "ghost-mcp@1.0.0"],
+                             "https://github.com/test/ghost-mcp", "mcp-ghost")
+    resp = await client.post("/v1/mcp/submit",
+                             json={"manifest": manifest, "verification_report": TESTED_REPORT},
+                             headers=_auth(token))
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "action_required"
+
+    sid = resp.json()["id"]
+    sv = (await client.get(f"/v1/mcp/submissions/{sid}", headers=_auth(token))).json()["server_verification"]
+    assert sv["server_status"] == "mismatch"
+    assert sv["package_exists"] is False
+
+
+@pytest.mark.asyncio
+async def test_fake_pinned_version_overridden_by_server(client, session):
+    """Command pins a version that is not published -> mismatch."""
+    token, _ = await setup_publisher_user(client, "fv@test.dev", "fvpub", "TestPass123!", "pub-fv", "Fv")
+    manifest = _mcp_manifest("test-mcp", ["npx", "-y", "test-mcp@9.9.9"],
+                             "https://github.com/test/test-mcp", "mcp-fv")
+    resp = await client.post("/v1/mcp/submit",
+                             json={"manifest": manifest, "verification_report": TESTED_REPORT},
+                             headers=_auth(token))
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "action_required"
+
+    sid = resp.json()["id"]
+    sv = (await client.get(f"/v1/mcp/submissions/{sid}", headers=_auth(token))).json()["server_verification"]
+    assert sv["server_status"] == "mismatch"
+    assert sv["package_exists"] is True
+    assert sv["version_exists"] is False
+
+
+@pytest.mark.asyncio
+async def test_unpinned_command_resolves_version(client, session):
+    """Unpinned command is a warning, not a block: server resolves latest."""
+    token, _ = await setup_publisher_user(client, "up@test.dev", "uppub", "TestPass123!", "pub-up", "Up")
+    manifest = _mcp_manifest("test-mcp", ["npx", "-y", "test-mcp"],
+                             "https://github.com/test/test-mcp", "mcp-up")
+    resp = await client.post("/v1/mcp/submit",
+                             json={"manifest": manifest, "verification_report": TESTED_REPORT},
+                             headers=_auth(token))
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "pending"
+
+    sid = resp.json()["id"]
+    sv = (await client.get(f"/v1/mcp/submissions/{sid}", headers=_auth(token))).json()["server_verification"]
+    assert sv["server_status"] == "verified"
+    assert sv["resolved_version"] == "1.0.0"
+    assert sv["command_pinning"] == "unpinned_resolved"
+
+
+@pytest.mark.asyncio
+async def test_registry_repo_missing_is_indeterminate(client, session):
+    """Registry has no repo URL: indeterminate, NOT blocked."""
+    token, _ = await setup_publisher_user(client, "nr@test.dev", "nrpub", "TestPass123!", "pub-nr", "Nr")
+    manifest = _mcp_manifest("norepo-mcp", ["npx", "-y", "norepo-mcp@2.0.0"],
+                             "https://github.com/whoever/norepo-mcp", "mcp-norepo")
+    resp = await client.post("/v1/mcp/submit",
+                             json={"manifest": manifest, "verification_report": TESTED_REPORT},
+                             headers=_auth(token))
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "pending"
+
+    sid = resp.json()["id"]
+    sv = (await client.get(f"/v1/mcp/submissions/{sid}", headers=_auth(token))).json()["server_verification"]
+    assert sv["server_status"] == "indeterminate"
+    assert sv["repo_consistency"] == "indeterminate"
+
+
+@pytest.mark.asyncio
+async def test_registry_unavailable_is_not_passed(client, session, monkeypatch):
+    """Registry down -> unavailable (never silently 'passed'), submit still succeeds."""
+    async def boom(name):
+        raise RegistryUnavailable("registry down")
+    monkeypatch.setattr("app.mcp.registry_verify._fetch_npm", boom)
+
+    token, _ = await setup_publisher_user(client, "un@test.dev", "unpub", "TestPass123!", "pub-un", "Un")
+    resp = await client.post("/v1/mcp/submit",
+                             json={"manifest": MCP_MANIFEST, "verification_report": TESTED_REPORT},
+                             headers=_auth(token))
+    assert resp.status_code == 201  # not a 500
+    sid = resp.json()["id"]
+    sv = (await client.get(f"/v1/mcp/submissions/{sid}", headers=_auth(token))).json()["server_verification"]
+    assert sv["server_status"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_publish_gate_uses_server_not_client_report(client, session):
+    """The headline guarantee: a fully-green client report cannot publish if the
+    server says the package does not exist."""
+    token, _ = await setup_publisher_user(client, "pg@test.dev", "pgpub", "TestPass123!", "pub-pg", "Pg")
+    manifest = _mcp_manifest("ghost-mcp", ["npx", "-y", "ghost-mcp@1.0.0"],
+                             "https://github.com/test/ghost-mcp", "mcp-ghost-pub")
+    submit_resp = await client.post("/v1/mcp/submit",
+                                    json={"manifest": manifest, "verification_report": TESTED_REPORT},
+                                    headers=_auth(token))
+    sub_id = submit_resp.json()["id"]
+
+    admin_token = await _make_admin(client, session, "adminpg@test.dev", "adminpg")
+    # Force-approve despite server mismatch (admin override of status)
+    await client.put(f"/v1/admin/mcp/submissions/{sub_id}/review",
+                     json={"status": "approved"}, headers=_auth(admin_token))
+
+    resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
+    assert resp.status_code == 400
+    msg = resp.json()["error"]["message"]
+    assert "mismatch" in msg or "package exists" in msg
+
+
+@pytest.mark.asyncio
+async def test_reverify_recovers_unavailable(client, session, monkeypatch):
+    """A submission stuck on 'unavailable' recovers via the re-verify endpoint."""
+    async def boom(name):
+        raise RegistryUnavailable("registry down")
+    monkeypatch.setattr("app.mcp.registry_verify._fetch_npm", boom)
+
+    token, _ = await setup_publisher_user(client, "rv@test.dev", "rvpub", "TestPass123!", "pub-rv", "Rv")
+    submit_resp = await client.post("/v1/mcp/submit",
+                                    json={"manifest": MCP_MANIFEST, "verification_report": TESTED_REPORT},
+                                    headers=_auth(token))
+    sub_id = submit_resp.json()["id"]
+    sv = (await client.get(f"/v1/mcp/submissions/{sub_id}", headers=_auth(token))).json()["server_verification"]
+    assert sv["server_status"] == "unavailable"
+
+    # Registry comes back; admin re-verifies
+    async def ok(name):
+        return _FAKE_NPM.get(name)
+    monkeypatch.setattr("app.mcp.registry_verify._fetch_npm", ok)
+
+    admin_token = await _make_admin(client, session, "adminrv@test.dev", "adminrv")
+    resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/reverify", headers=_auth(admin_token))
+    assert resp.status_code == 200
+    assert resp.json()["server_status"] == "verified"
+
+
+@pytest.mark.asyncio
+async def test_registry_allowlist_blocks_foreign_host():
+    """Defense-in-depth: the registry client refuses any host outside the allowlist."""
+    from app.mcp.registry_verify import _http_get_json
+    with pytest.raises(RegistryUnavailable):
+        await _http_get_json("https://evil.example.com/registry/foo")

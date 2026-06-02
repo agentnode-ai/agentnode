@@ -14,6 +14,7 @@ from app.database import get_session
 from app.shared.exceptions import AppError
 from app.shared.rate_limit import rate_limit
 from app.mcp.models import McpSubmission
+from app.mcp.registry_verify import verify_registry, derive_status
 
 router = APIRouter(prefix="/v1/mcp", tags=["mcp"])
 admin_router = APIRouter(prefix="/v1/admin/mcp", tags=["admin-mcp"])
@@ -75,8 +76,14 @@ async def submit_mcp(
 
     pkg_name = mcp_server.get("npm_package") or mcp_server.get("pypi_package") or "unknown"
     pkg_registry = "npm" if mcp_server.get("npm_package") else "pypi"
-    pkg_version = report.get("package", {}).get("version")
     source_repo = mcp_server.get("source_repo")
+
+    # Server-side re-verification: re-derive registry-checkable facts ourselves.
+    # The client report is advisory; this is authoritative. No code is executed.
+    server_verification = await verify_registry(manifest)
+    # Resolved version is authoritative; fall back to the client claim only if the
+    # registry was unavailable and we could not resolve anything.
+    pkg_version = server_verification.get("resolved_version") or report.get("package", {}).get("version")
 
     # Duplicate check: block if an open submission exists for same package+version
     open_statuses = ("pending", "action_required", "needs_changes", "approved")
@@ -95,12 +102,14 @@ async def submit_mcp(
                 "MCP_ALREADY_APPROVED",
                 f"{pkg_name}@{pkg_version} was already approved (submission {str(existing.id)[:8]}).",
                 409,
+                details={"existing_submission_id": str(existing.id), "existing_status": existing.status},
             )
         raise AppError(
             "MCP_DUPLICATE_SUBMISSION",
             f"An open submission for {pkg_name}@{pkg_version} already exists (status: {existing.status}). "
             f"Check status: agentnode mcp status {existing.id}",
             409,
+            details={"existing_submission_id": str(existing.id), "existing_status": existing.status},
         )
 
     submission = McpSubmission(
@@ -112,20 +121,30 @@ async def submit_mcp(
         source_repo=source_repo,
         manifest_raw=manifest,
         verification_report=report,
-        status="pending" if report_status in ("TESTED", "RESOLVED") else "action_required",
+        server_verification=server_verification,
+        status=derive_status(server_verification, report),
     )
     session.add(submission)
     await session.flush()
     await session.commit()
 
-    logger.info("MCP submission %s by publisher %s: %s (%s)", submission.id, user.publisher.slug, pkg_name, submission.status)
+    logger.info(
+        "MCP submission %s by publisher %s: %s (%s, server=%s)",
+        submission.id, user.publisher.slug, pkg_name, submission.status,
+        server_verification.get("server_status"),
+    )
 
     if submission.status == "pending":
         msg = f"Submission received. {pkg_name} is queued for catalog review."
     else:
-        actions = report.get("actions", [])
-        high_count = sum(1 for a in actions if a.get("severity") == "high")
-        msg = f"Submission received with {high_count} required action(s). Fix and resubmit for faster review."
+        sstatus = server_verification.get("server_status")
+        if sstatus == "mismatch":
+            reasons = "; ".join(server_verification.get("errors") or []) or "registry contradicts manifest"
+            msg = f"Submission received but server verification failed: {reasons}. Fix and resubmit."
+        else:
+            actions = report.get("actions", [])
+            high_count = sum(1 for a in actions if a.get("severity") == "high")
+            msg = f"Submission received with {high_count} required action(s). Fix and resubmit for faster review."
 
     return McpSubmitResponse(
         id=str(submission.id),
@@ -149,6 +168,7 @@ class MaintainerSubmissionStatus(BaseModel):
     report_status: str | None
     report_summary: str | None
     actions: list[dict] | None
+    server_verification: dict | None
     maintainer_feedback: str | None
     reviewed_at: str | None
     published_package_id: str | None
@@ -188,6 +208,7 @@ async def get_own_submission(
         report_status=report.get("status"),
         report_summary=report.get("summary"),
         actions=report.get("actions"),
+        server_verification=row.server_verification,
         maintainer_feedback=row.maintainer_feedback,
         reviewed_at=row.reviewed_at.isoformat() if row.reviewed_at else None,
         published_package_id=str(row.published_package_id) if row.published_package_id else None,
@@ -207,6 +228,7 @@ class SubmissionSummary(BaseModel):
     source_repo: str | None
     status: str
     report_status: str | None
+    server_status: str | None
     report_summary: str | None
     actions_high: int
     actions_medium: int
@@ -228,6 +250,7 @@ class SubmissionDetail(BaseModel):
     status: str
     manifest: dict
     verification_report: dict
+    server_verification: dict | None
     reviewer_notes: str | None
     maintainer_feedback: str | None
     published_package_id: str | None
@@ -286,6 +309,7 @@ async def list_submissions(
             source_repo=s.source_repo,
             status=s.status,
             report_status=report.get("status"),
+            server_status=(s.server_verification or {}).get("server_status"),
             report_summary=report.get("summary"),
             actions_high=sum(1 for a in actions if a.get("severity") == "high"),
             actions_medium=sum(1 for a in actions if a.get("severity") == "medium"),
@@ -323,6 +347,7 @@ async def get_submission(
         status=row.status,
         manifest=row.manifest_raw,
         verification_report=row.verification_report,
+        server_verification=row.server_verification,
         reviewer_notes=row.reviewer_notes,
         maintainer_feedback=row.maintainer_feedback,
         published_package_id=str(row.published_package_id) if row.published_package_id else None,
@@ -383,11 +408,14 @@ class PublishResponse(BaseModel):
     message: str
 
 
-REQUIRED_CHECKS = {"package_exists", "version_exists", "owner_verified", "version_pinned"}
-
-
 def _verify_publish_gate(submission: McpSubmission) -> list[str]:
-    """Validate all publish gate rules. Returns list of blocking reasons."""
+    """Validate all publish gate rules. Returns list of blocking reasons.
+
+    Registry facts (package_exists, version, repo_consistency) come from
+    ``server_verification`` — authoritative, server-derived. The client report is
+    only consulted for the protocol-test attestation and self-declared actions,
+    and is explicitly NOT trusted for registry facts.
+    """
     blocks: list[str] = []
 
     if submission.status != "approved":
@@ -399,28 +427,37 @@ def _verify_publish_gate(submission: McpSubmission) -> list[str]:
     manifest = submission.manifest_raw or {}
     if manifest.get("runtime") != "mcp":
         blocks.append("Manifest runtime is not 'mcp'")
-
     if not isinstance(manifest.get("mcp_server"), dict):
         blocks.append("Manifest missing mcp_server block")
 
+    # --- Server-verified registry facts (authoritative) ---
+    sv = submission.server_verification or {}
+    if not sv:
+        blocks.append("No server verification on record — run re-verify first")
+    else:
+        sstatus = sv.get("server_status")
+        if sstatus == "mismatch":
+            reasons = "; ".join(sv.get("errors") or []) or "registry contradicts manifest"
+            blocks.append(f"Server verification status is 'mismatch': {reasons}")
+        elif sstatus == "unavailable":
+            blocks.append("Server verification incomplete (registry was unavailable) — re-verify before publishing")
+        if not sv.get("package_exists"):
+            blocks.append("Server could not confirm the package exists on the registry")
+        if not sv.get("resolved_version"):
+            blocks.append("Server could not resolve a published version")
+        # repo_consistency: 'mismatch' blocks; 'indeterminate' is allowed (admin warning, not a hard block)
+        if sv.get("repo_consistency") == "mismatch":
+            blocks.append("source_repo does not match registry metadata (repo_consistency mismatch)")
+
+    # --- Maintainer-attested protocol test (not server-verifiable without execution) ---
     report = submission.verification_report or {}
-
     if report.get("status") != "TESTED":
-        blocks.append(f"Verification status is '{report.get('status')}', must be 'TESTED'")
+        blocks.append(f"Maintainer-attested status is '{report.get('status')}', must be 'TESTED'")
 
-    actions = report.get("actions", [])
-    high_actions = [a for a in actions if a.get("severity") == "high"]
+    high_actions = [a for a in report.get("actions", []) if a.get("severity") == "high"]
     if high_actions:
         codes = [a.get("code", "?") for a in high_actions]
         blocks.append(f"Has {len(high_actions)} high-severity action(s): {', '.join(codes)}")
-
-    checks = {c["name"]: c for c in report.get("checks", []) if isinstance(c, dict)}
-    for required in REQUIRED_CHECKS:
-        check = checks.get(required)
-        if not check:
-            blocks.append(f"Missing required check: {required}")
-        elif not check.get("passed"):
-            blocks.append(f"Required check failed: {required}")
 
     return blocks
 
@@ -491,4 +528,61 @@ async def publish_submission(
         package_slug=pkg.slug,
         package_id=str(pkg.id),
         message=f"{pkg.slug}@{pv.version_number} published to catalog.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Re-verification (recover from 'unavailable', refresh before approving)
+# ---------------------------------------------------------------------------
+
+class ReverifyResponse(BaseModel):
+    id: str
+    server_status: str | None
+    status: str
+    message: str
+
+
+@admin_router.post(
+    "/submissions/{submission_id}/reverify",
+    response_model=ReverifyResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
+async def reverify_submission(
+    submission_id: UUID,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Re-run server-side registry verification for a submission.
+
+    Recovers submissions stuck on ``unavailable`` (registry was down at submit
+    time) and lets an admin refresh the registry facts before approving. Does not
+    touch already-published or admin-decided submissions beyond refreshing facts;
+    re-derives status only while still in the open queue.
+    """
+    row = (await session.execute(
+        select(McpSubmission).where(McpSubmission.id == submission_id)
+    )).scalar_one_or_none()
+
+    if not row:
+        raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
+
+    sv = await verify_registry(row.manifest_raw or {})
+    row.server_verification = sv
+    if sv.get("resolved_version"):
+        row.package_version = sv["resolved_version"]
+    if row.status in ("pending", "action_required"):
+        row.status = derive_status(sv, row.verification_report or {})
+    row.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+
+    logger.info(
+        "MCP submission %s re-verified by %s: server=%s status=%s",
+        submission_id, user.email, sv.get("server_status"), row.status,
+    )
+
+    return ReverifyResponse(
+        id=str(row.id),
+        server_status=sv.get("server_status"),
+        status=row.status,
+        message=f"Re-verified: server status '{sv.get('server_status')}', submission now '{row.status}'.",
     )
