@@ -2,8 +2,7 @@
 from sqlalchemy import Column, ForeignKey, Text, VARCHAR
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 
-from app.database import Base
-from app.shared.models import UUIDPrimaryKeyMixin, TimestampMixin
+from app.shared.models import Base, UUIDPrimaryKeyMixin, TimestampMixin
 
 
 class McpSubmission(Base, UUIDPrimaryKeyMixin, TimestampMixin):

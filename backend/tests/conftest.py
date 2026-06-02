@@ -22,6 +22,7 @@ from app.packages.models import (  # noqa: F401
 )
 from app.webhooks.models import Webhook, WebhookDelivery  # noqa: F401
 from app.admin.models import AdminAuditLog  # noqa: F401
+from app.mcp.models import McpSubmission  # noqa: F401
 from app.billing.models import ReviewRequest, ProcessedStripeEvent  # noqa: F401
 from app.blog.models import BlogPost, BlogImage, BlogCategory, BlogPostType  # noqa: F401
 
