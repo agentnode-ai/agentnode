@@ -357,3 +357,48 @@ async def test_publish_with_high_action_blocked(client, session):
     resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
     assert resp.status_code == 400
     assert "high-severity" in resp.json()["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# 7. Regression: entrypoint validation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_non_mcp_toolpack_still_requires_entrypoint():
+    """Regression: runtime=mcp skips entrypoint validation, but python toolpacks must not."""
+    from app.packages.validator import validate_manifest
+
+    non_mcp_manifest = {
+        "manifest_version": "0.3",
+        "package_id": "test-python-pack",
+        "name": "Test Python Pack",
+        "package_type": "toolpack",
+        "runtime": "python",
+        "install_mode": "package",
+        "version": "1.0.0",
+        "publisher": "test",
+        "summary": "A Python toolpack without entrypoint for regression testing.",
+        "capabilities": {
+            "tools": [{
+                "name": "my_tool",
+                "capability_id": "general",
+                "description": "Test",
+                "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
+            }],
+            "resources": [],
+            "prompts": [],
+        },
+        "permissions": {"network": {"level": "none"}, "filesystem": {"level": "none"}, "code_execution": {"level": "none"}},
+        "tags": ["test"],
+        "categories": ["general"],
+        "compatibility": {"frameworks": ["generic"]},
+    }
+    valid, errors, _ = await validate_manifest(non_mcp_manifest)
+    assert not valid, "Python toolpack without entrypoint should be invalid"
+    assert any("entrypoint" in e.lower() for e in errors)
+
+    mcp_manifest = {**non_mcp_manifest, "runtime": "mcp", "package_id": "test-mcp-pack",
+                     "mcp_server": {"command": ["npx", "-y", "test@1.0"], "transport": "stdio", "npm_package": "test"}}
+    valid_mcp, errors_mcp, _ = await validate_manifest(mcp_manifest)
+    entrypoint_errors = [e for e in errors_mcp if "entrypoint" in e.lower()]
+    assert not entrypoint_errors, f"MCP should skip entrypoint validation, got: {entrypoint_errors}"
