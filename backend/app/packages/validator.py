@@ -1296,7 +1296,11 @@ def _validate_entrypoints(manifest: dict, manifest_version: str | None, errors: 
 
     v0.1: package-level entrypoint required, must be module.path format.
     v0.2: per-tool entrypoints supported. Multi-tool packs MUST have tool-level entrypoints.
+    MCP: entrypoints are not required (code is external on npm/PyPI).
     """
+    if manifest.get("runtime") == "mcp":
+        return
+
     pkg_entrypoint = manifest.get("entrypoint", "")
     tools = manifest.get("capabilities", {}).get("tools", [])
 

@@ -112,6 +112,36 @@ export default function McpSubmissionsPage() {
     }
   };
 
+  const publishToCatalog = async () => {
+    if (!selected) return;
+    const report = selected.verification_report as Record<string, unknown>;
+    const actions = (report.actions || []) as Array<{ severity: string }>;
+    const mediumCount = actions.filter((a) => a.severity === "medium").length;
+
+    if (mediumCount > 0) {
+      const confirmed = window.confirm(
+        `This submission has ${mediumCount} medium-severity warning(s). Publish anyway?`
+      );
+      if (!confirmed) return;
+    }
+
+    setLoading(true);
+    const res = await fetchWithAuth(`/admin/mcp/submissions/${selected.id}/publish`, {
+      method: "POST",
+    });
+    setLoading(false);
+
+    if (res.ok) {
+      const data = await res.json();
+      alert(`Published: ${data.package_slug} — ${data.message}`);
+      setSelected(null);
+      loadSubmissions();
+    } else {
+      const err = await res.json().catch(() => ({ error: { message: res.statusText } }));
+      alert(`Publish failed: ${err.error?.message || "Unknown error"}`);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -368,6 +398,33 @@ export default function McpSubmissionsPage() {
               {loading ? "Saving..." : "Save Review"}
             </button>
           </div>
+
+          {/* Publish to Catalog */}
+          {selected.status === "approved" && !(selected as any).published_package_id && (
+            <div className="border-t border-border pt-4">
+              <button
+                onClick={publishToCatalog}
+                disabled={loading}
+                className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {loading ? "Publishing..." : "Publish to Catalog"}
+              </button>
+              <p className="mt-1 text-xs text-muted">
+                Creates a package entry visible in the registry.
+              </p>
+            </div>
+          )}
+          {(selected as any).published_package_id && (
+            <div className="border-t border-border pt-4">
+              <span className="text-sm text-green-400">Published</span>
+              <a
+                href={`/packages/${selected.package_name}`}
+                className="ml-2 text-xs text-primary hover:underline"
+              >
+                View package
+              </a>
+            </div>
+          )}
         </div>
       )}
     </div>

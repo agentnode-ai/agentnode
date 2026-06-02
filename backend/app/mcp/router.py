@@ -230,6 +230,7 @@ class SubmissionDetail(BaseModel):
     verification_report: dict
     reviewer_notes: str | None
     maintainer_feedback: str | None
+    published_package_id: str | None
     created_at: str
     updated_at: str
 
@@ -324,6 +325,7 @@ async def get_submission(
         verification_report=row.verification_report,
         reviewer_notes=row.reviewer_notes,
         maintainer_feedback=row.maintainer_feedback,
+        published_package_id=str(row.published_package_id) if row.published_package_id else None,
         created_at=row.created_at.isoformat() if row.created_at else "",
         updated_at=row.updated_at.isoformat() if row.updated_at else "",
     )
@@ -367,4 +369,126 @@ async def review_submission(
         id=str(row.id),
         status=row.status,
         message=f"Submission {row.package_name} marked as {body.status}.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Catalog publication
+# ---------------------------------------------------------------------------
+
+class PublishResponse(BaseModel):
+    submission_id: str
+    package_slug: str
+    package_id: str
+    message: str
+
+
+REQUIRED_CHECKS = {"package_exists", "version_exists", "owner_verified", "version_pinned"}
+
+
+def _verify_publish_gate(submission: McpSubmission) -> list[str]:
+    """Validate all publish gate rules. Returns list of blocking reasons."""
+    blocks: list[str] = []
+
+    if submission.status != "approved":
+        blocks.append(f"Submission status is '{submission.status}', must be 'approved'")
+
+    if submission.published_package_id is not None:
+        blocks.append("Already published")
+
+    manifest = submission.manifest_raw or {}
+    if manifest.get("runtime") != "mcp":
+        blocks.append("Manifest runtime is not 'mcp'")
+
+    if not isinstance(manifest.get("mcp_server"), dict):
+        blocks.append("Manifest missing mcp_server block")
+
+    report = submission.verification_report or {}
+
+    if report.get("status") != "TESTED":
+        blocks.append(f"Verification status is '{report.get('status')}', must be 'TESTED'")
+
+    actions = report.get("actions", [])
+    high_actions = [a for a in actions if a.get("severity") == "high"]
+    if high_actions:
+        codes = [a.get("code", "?") for a in high_actions]
+        blocks.append(f"Has {len(high_actions)} high-severity action(s): {', '.join(codes)}")
+
+    checks = {c["name"]: c for c in report.get("checks", []) if isinstance(c, dict)}
+    for required in REQUIRED_CHECKS:
+        check = checks.get(required)
+        if not check:
+            blocks.append(f"Missing required check: {required}")
+        elif not check.get("passed"):
+            blocks.append(f"Required check failed: {required}")
+
+    return blocks
+
+
+@admin_router.post(
+    "/submissions/{submission_id}/publish",
+    response_model=PublishResponse,
+    dependencies=[Depends(rate_limit(5, 60))],
+)
+async def publish_submission(
+    submission_id: UUID,
+    user: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Publish an approved MCP submission to the catalog via publish_package()."""
+    from app.packages.models import Package, PackageVersion
+    from app.packages.service import publish_package
+
+    row = (await session.execute(
+        select(McpSubmission).where(McpSubmission.id == submission_id)
+    )).scalar_one_or_none()
+
+    if not row:
+        raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
+
+    blocks = _verify_publish_gate(row)
+    if blocks:
+        raise AppError("MCP_PUBLISH_BLOCKED", "; ".join(blocks), 400)
+
+    manifest = row.manifest_raw
+    slug = manifest.get("package_id", row.package_name)
+    version = manifest.get("version", row.package_version or "0.1.0")
+
+    # Check if package+version already exists in catalog
+    existing = (await session.execute(
+        select(PackageVersion.id)
+        .join(Package, Package.id == PackageVersion.package_id)
+        .where(Package.slug == slug, PackageVersion.version_number == version)
+    )).scalar_one_or_none()
+
+    if existing:
+        raise AppError(
+            "MCP_ALREADY_IN_CATALOG",
+            f"{slug}@{version} already exists in the catalog",
+            409,
+        )
+
+    try:
+        pkg, pv, warnings = await publish_package(
+            manifest=manifest,
+            publisher_id=row.publisher_id,
+            session=session,
+            artifact_bytes=None,
+        )
+    except AppError:
+        raise
+    except Exception as e:
+        raise AppError("MCP_PUBLISH_FAILED", f"Publish failed: {e}", 500)
+
+    row.published_package_id = pkg.id
+    row.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+
+    logger.info("MCP submission %s published as %s by admin %s", submission_id, pkg.slug, user.email)
+
+    return PublishResponse(
+        submission_id=str(row.id),
+        package_slug=pkg.slug,
+        package_id=str(pkg.id),
+        message=f"{pkg.slug}@{pv.version_number} published to catalog.",
     )

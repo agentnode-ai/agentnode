@@ -20,7 +20,7 @@ MCP_MANIFEST = {
     "version": "0.1.0",
     "visibility": "public",
     "publisher": "pub-a",
-    "summary": "A test MCP server",
+    "summary": "A test MCP server for automated testing of the submit flow.",
     "mcp_server": {
         "command": ["npx", "-y", "test-mcp@1.0.0"],
         "transport": "stdio",
@@ -28,7 +28,16 @@ MCP_MANIFEST = {
         "source_repo": "https://github.com/test/test-mcp",
         "env_keys": [],
     },
-    "capabilities": {"tools": [], "resources": [], "prompts": []},
+    "capabilities": {
+        "tools": [{
+            "name": "test_tool",
+            "capability_id": "general",
+            "description": "A test tool",
+            "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+        }],
+        "resources": [],
+        "prompts": [],
+    },
     "permissions": {
         "network": {"level": "none"},
         "filesystem": {"level": "none"},
@@ -44,7 +53,14 @@ TESTED_REPORT = {
     "summary": "test-mcp: all checks passed.",
     "manifest_version": "0.3",
     "package": {"registry": "npm", "name": "test-mcp", "version": "1.0.0"},
-    "checks": [{"name": "schema", "passed": True, "detail": "v0.3"}],
+    "checks": [
+        {"name": "schema", "passed": True, "detail": "v0.3"},
+        {"name": "package_exists", "passed": True, "detail": "test-mcp on npm"},
+        {"name": "version_exists", "passed": True, "detail": "1.0.0"},
+        {"name": "version_pinned", "passed": True, "detail": "npx -y test-mcp@1.0.0"},
+        {"name": "owner_verified", "passed": True, "detail": "test/test-mcp matches registry"},
+        {"name": "protocol_test", "passed": True, "detail": "1 tools discovered"},
+    ],
     "actions": [],
     "permissions": {"declared": {"network": "none", "filesystem": "none", "code_execution": "none"}},
     "tools_snapshot": [{"name": "test_tool", "description": "A test tool"}],
@@ -238,3 +254,106 @@ async def test_admin_can_review(client, session):
     assert data["status"] == "approved"
     assert data["maintainer_feedback"] == "Approved for catalog."
     assert "Looks good internally" not in str(data)
+
+
+# ---------------------------------------------------------------------------
+# 6. Catalog Publication
+# ---------------------------------------------------------------------------
+
+async def _create_admin_and_approved_submission(client, session):
+    """Helper: create a publisher, submit, admin-approve. Returns (admin_token, publisher_token, sub_id)."""
+    pub_token, _ = await setup_publisher_user(client, "pubcat@test.dev", "pubcat", "TestPass123!", "pub-cat", "Pub Cat")
+    submit_resp = await client.post("/v1/mcp/submit", json={"manifest": MCP_MANIFEST, "verification_report": TESTED_REPORT}, headers=_auth(pub_token))
+    assert submit_resp.status_code == 201
+    sub_id = submit_resp.json()["id"]
+
+    admin_token = await register_and_login(client, "admincat@test.dev", "admincat", "AdminPass123!")
+    from sqlalchemy import update as sa_update
+    from app.auth.models import User
+    await session.execute(sa_update(User).where(User.username == "admincat").values(is_admin=True))
+    await session.commit()
+
+    review_resp = await client.put(
+        f"/v1/admin/mcp/submissions/{sub_id}/review",
+        json={"status": "approved"},
+        headers=_auth(admin_token),
+    )
+    assert review_resp.status_code == 200
+    return admin_token, pub_token, sub_id
+
+
+@pytest.mark.asyncio
+async def test_publish_approved_submission(client, session):
+    admin_token, pub_token, sub_id = await _create_admin_and_approved_submission(client, session)
+
+    resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
+    if resp.status_code != 200:
+        print(f"PUBLISH ERROR: {resp.json()}")
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.json()}"
+    data = resp.json()
+    assert data["package_slug"] == "mcp-test-server"
+    assert data["package_id"]
+
+    # Maintainer sees published status
+    status_resp = await client.get(f"/v1/mcp/submissions/{sub_id}", headers=_auth(pub_token))
+    assert status_resp.json()["published_package_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_publish_pending_blocked(client, session):
+    """Cannot publish a pending (non-approved) submission."""
+    pub_token, _ = await setup_publisher_user(client, "pend@test.dev", "pend", "TestPass123!", "pub-pend", "Pend")
+    submit_resp = await client.post("/v1/mcp/submit", json={"manifest": MCP_MANIFEST, "verification_report": TESTED_REPORT}, headers=_auth(pub_token))
+    sub_id = submit_resp.json()["id"]
+
+    admin_token = await register_and_login(client, "adminpend@test.dev", "adminpend", "AdminPass123!")
+    from sqlalchemy import update as sa_update
+    from app.auth.models import User
+    await session.execute(sa_update(User).where(User.username == "adminpend").values(is_admin=True))
+    await session.commit()
+
+    resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
+    assert resp.status_code == 400
+    assert "approved" in resp.json()["error"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_publish_resolved_blocked(client, session):
+    """Cannot publish a submission with RESOLVED (no protocol test)."""
+    resolved_report = {**TESTED_REPORT, "status": "RESOLVED"}
+    pub_token, _ = await setup_publisher_user(client, "resol@test.dev", "resol", "TestPass123!", "pub-resol", "Resol")
+    submit_resp = await client.post("/v1/mcp/submit", json={"manifest": MCP_MANIFEST, "verification_report": resolved_report}, headers=_auth(pub_token))
+    sub_id = submit_resp.json()["id"]
+
+    admin_token = await register_and_login(client, "adminresol@test.dev", "adminresol", "AdminPass123!")
+    from sqlalchemy import update as sa_update
+    from app.auth.models import User
+    await session.execute(sa_update(User).where(User.username == "adminresol").values(is_admin=True))
+    await session.commit()
+
+    # Approve first
+    await client.put(f"/v1/admin/mcp/submissions/{sub_id}/review", json={"status": "approved"}, headers=_auth(admin_token))
+
+    # Try publish — should fail because RESOLVED not TESTED
+    resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
+    assert resp.status_code == 400
+    assert "TESTED" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_publish_with_high_action_blocked(client, session):
+    """Cannot publish a submission with high-severity actions."""
+    pub_token, _ = await setup_publisher_user(client, "hact@test.dev", "hact", "TestPass123!", "pub-hact", "HighAct")
+    submit_resp = await client.post("/v1/mcp/submit", json={"manifest": MCP_MANIFEST, "verification_report": ACTION_REQUIRED_REPORT}, headers=_auth(pub_token))
+    sub_id = submit_resp.json()["id"]
+
+    admin_token = await register_and_login(client, "adminhact@test.dev", "adminhact", "AdminPass123!")
+    from sqlalchemy import update as sa_update
+    from app.auth.models import User
+    await session.execute(sa_update(User).where(User.username == "adminhact").values(is_admin=True))
+    await session.commit()
+
+    await client.put(f"/v1/admin/mcp/submissions/{sub_id}/review", json={"status": "approved"}, headers=_auth(admin_token))
+    resp = await client.post(f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token))
+    assert resp.status_code == 400
+    assert "high-severity" in resp.json()["error"]["message"]

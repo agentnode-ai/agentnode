@@ -189,11 +189,11 @@ async def publish_package(
                 details=qg_errors,
             )
     else:
-        # No artifact provided — warn publisher clearly
-        publish_warnings.append(
-            "No artifact uploaded. This package will be published as metadata-only "
-            "(not installable). Upload a .tar.gz artifact to make it installable by agents."
-        )
+        if manifest.get("runtime") != "mcp":
+            publish_warnings.append(
+                "No artifact uploaded. This package will be published as metadata-only "
+                "(not installable). Upload a .tar.gz artifact to make it installable by agents."
+            )
 
     slug = manifest["package_id"]
     version_str = manifest["version"]
