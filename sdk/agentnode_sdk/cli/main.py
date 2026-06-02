@@ -45,6 +45,11 @@ def main(argv: list[str] | None = None) -> int:
     mcp_verify_p.add_argument("path", nargs="?", default=".", help="Directory or file path")
     mcp_verify_p.add_argument("--test", action="store_true", help="Run protocol test (starts the MCP)")
     mcp_verify_p.add_argument("--json", dest="json_output", action="store_true", help="JSON report output")
+    mcp_submit_p = mcp_sub.add_parser("submit", help="Submit MCP for catalog review")
+    mcp_submit_p.add_argument("path", nargs="?", default=".", help="Directory containing agentnode.yaml")
+    mcp_submit_p.add_argument("--test", action="store_true", help="Run protocol test before submitting")
+    mcp_submit_p.add_argument("--token", default=None, help="API key (default: AGENTNODE_API_KEY)")
+    mcp_submit_p.add_argument("--dry-run", action="store_true", help="Verify only, don't submit")
 
     # reset
     sub.add_parser("reset", help="Reset configuration")
@@ -225,6 +230,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.mcp_command == "verify":
                 from agentnode_sdk.cli.mcp_verify import cmd_mcp_verify
                 return cmd_mcp_verify(args.path, test=args.test, json_output=args.json_output)
+            if args.mcp_command == "submit":
+                from agentnode_sdk.cli.mcp_submit import cmd_mcp_submit
+                return cmd_mcp_submit(args.path, token=args.token, test=args.test, dry_run=args.dry_run)
             mcp_parser.print_help()
             return 0
         if args.command == "reset":

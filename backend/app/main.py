@@ -75,6 +75,7 @@ from app.compatibility.router import router as compatibility_router
 from app.credentials.router import router as credentials_router
 from app.support.router import router as support_router
 from app.webhooks.router import router as webhooks_router
+from app.mcp.router import router as mcp_router
 
 
 @asynccontextmanager
@@ -195,6 +196,7 @@ app.include_router(invites_admin_router)
 app.include_router(compatibility_router)
 app.include_router(credentials_router)
 app.include_router(support_router)
+app.include_router(mcp_router)
 
 
 @app.get("/health")
