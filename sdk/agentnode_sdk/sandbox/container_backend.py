@@ -28,10 +28,14 @@ def sandbox_volume_name(slug: str, version: str | None, artifact_hash: str | Non
     base = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{slug}-{version or '0'}").strip("-._") or "pack"
     return f"agentnode-pack-{base}-{short}"
 
-# Pinned base image. The digest is a PLACEHOLDER — the real image is chosen and
-# pinned by digest in P0.2 (and `check_available` will require it present).
+# Pinned base image, by DIGEST (never a tag, never :latest, never auto-pull).
+# GHCR namespace. The digest is a PLACEHOLDER (all zeros) so `_image_present()`
+# (and thus `check_available()`) stays False in every real environment until the
+# operator builds+pushes the image and pins the REAL digest here — Sprint A, in
+# the SAME change where routing is already active (the guardrail). Build/push/pin
+# procedure: see sdk/sandbox-image/README.md.
 _BASE_IMAGE = (
-    "agentnode/sandbox@sha256:"
+    "ghcr.io/agentnode-ai/sandbox@sha256:"
     "0000000000000000000000000000000000000000000000000000000000000000"
 )
 
@@ -46,7 +50,6 @@ _HARDENED_FLAGS = [
     "--pids-limit", "256",
     "--memory", "512m",
     "--cpus", "1",
-    "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
 ]
 
 _PROBE_TIMEOUT = 5  # seconds; check_available must stay fast (no long ops, no pull)
@@ -119,6 +122,12 @@ class ContainerBackend(SandboxBackend):
             argv.append("-i")
         argv += list(_HARDENED_FLAGS)
 
+        # Writable /tmp under the read-only rootfs; size overridable via
+        # spec.limits["tmp_size"] (the toolpack BUILD bumps this for large PEP-517
+        # builds; MCP/toolpack runs keep the 64m default).
+        tmp_size = (spec.limits or {}).get("tmp_size", "64m")
+        argv += ["--tmpfs", f"/tmp:rw,noexec,nosuid,size={tmp_size}"]
+
         if spec.name:
             argv += ["--name", spec.name, "--label", "agentnode-sandbox"]
 
@@ -131,8 +140,9 @@ class ContainerBackend(SandboxBackend):
         # Clean HOME — the host home (~/.agentnode, .ssh, browser, APPDATA) is
         # NEVER mounted. A fresh ephemeral home is provided instead.
         if spec.clean_home:
+            home_size = (spec.limits or {}).get("home_size", "16m")
             argv += ["-e", "HOME=/sandbox-home",
-                     "--tmpfs", "/sandbox-home:rw,size=16m"]
+                     "--tmpfs", f"/sandbox-home:rw,size={home_size}"]
 
         for m in spec.mounts:  # explicit mounts only
             argv += ["-v", f"{m.src}:{m.dst}:{'ro' if m.read_only else 'rw'}"]

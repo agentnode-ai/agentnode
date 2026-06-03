@@ -107,8 +107,9 @@ def test_install_builds_in_container_into_volume_not_host(monkeypatch, tmp_path)
     assert argv[0] == "docker"
     assert f"{pkg_dir}:/src:ro" in argv
     assert f"{vol}:/install:rw" in argv
-    assert argv[-7:] == [
-        "pip", "install", "--no-input", "--no-cache-dir", "--target", "/install", "/src",
+    assert argv[-9:] == [
+        "python", "-m", "pip", "install", "--no-input", "--no-cache-dir",
+        "--target", "/install", "/src",
     ]
     assert "--network" not in argv  # build keeps network (pip fetches deps)
 

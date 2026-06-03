@@ -213,6 +213,12 @@ def main(argv: list[str] | None = None) -> int:
     # serve
     sub.add_parser("serve", help="Start MCP server (stdio)")
 
+    # Sandbox runtime image — explicit pull only (no auto-pull). Full guided
+    # setup/repair UX is Sprint B.
+    sandbox_parser = sub.add_parser("sandbox", help="Sandbox runtime image management")
+    sandbox_sub = sandbox_parser.add_subparsers(dest="sandbox_action")
+    sandbox_sub.add_parser("pull", help="Pull the pinned sandbox image (explicit, no auto-pull)")
+
     args = parser.parse_args(argv)
 
     if args.no_color:
@@ -241,6 +247,12 @@ def main(argv: list[str] | None = None) -> int:
                 from agentnode_sdk.cli.mcp_submit import cmd_mcp_submit
                 return cmd_mcp_submit(args.path, token=args.token, test=args.test, dry_run=args.dry_run)
             mcp_parser.print_help()
+            return 0
+        if args.command == "sandbox":
+            if args.sandbox_action == "pull":
+                from agentnode_sdk.cli.sandbox_commands import cmd_sandbox_pull
+                return cmd_sandbox_pull()
+            sandbox_parser.print_help()
             return 0
         if args.command == "reset":
             return commands.cmd_reset()

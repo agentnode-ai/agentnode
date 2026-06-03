@@ -253,6 +253,37 @@ def pip_install(python: str, package_dir: Path, verbose: bool = False) -> None:
         raise RuntimeError("pip install timed out after 120 seconds")
 
 
+def _make_container_readable(root: Path) -> None:
+    """Widen perms on a TEMPORARY extracted+verified artifact dir so the sandbox
+    container's unprivileged user (uid 1000) can read it when mounted at /src:ro.
+
+    ``tempfile.mkdtemp()`` creates mode 0700, so uid 1000 inside the container
+    can't read the mount (mirrors the proven recipe in
+    ``backend/app/verification/sandbox.py``). Dirs → 0o755 (traverse), files →
+    0o644 (read).
+
+    SCOPE — this is applied ONLY to the ephemeral, hash-verified artifact
+    directory under our own tempdir. It must NEVER be applied to a user
+    workspace, to ``~/.agentnode``, or to any user-chosen local path. Do not
+    reuse this for a future local-dev / workspace mount.
+    """
+    try:
+        os.chmod(root, 0o755)
+    except OSError:
+        pass
+    for dpath, dirs, files in os.walk(root):
+        for d in dirs:
+            try:
+                os.chmod(os.path.join(dpath, d), 0o755)
+            except OSError:
+                pass
+        for f in files:
+            try:
+                os.chmod(os.path.join(dpath, f), 0o644)
+            except OSError:
+                pass
+
+
 def _container_build_into_volume(
     slug: str,
     version: str,
@@ -294,17 +325,26 @@ def _container_build_into_volume(
     # Start from a clean volume so a re-install never layers onto a stale build.
     _rm_volume()
 
+    # The extracted artifact dir is 0700 (mkdtemp) → uid 1000 in the container
+    # can't read the /src:ro mount. Widen perms on this ephemeral verified dir.
+    _make_container_readable(package_dir)
+
     # The BUILD container mounts the verified source (ro) + the volume (rw). pip
     # must fetch dependencies, so the build keeps network=default; the RUN
     # container's network is separately derived from the declared permission.
+    # Use `python -m pip` (not bare `pip`) so it resolves via the image's python.
+    # A larger /tmp tmpfs + TMPDIR give PEP-517 isolated builds room under the
+    # read-only rootfs (only /tmp and the volume are writable).
     spec = backend.build_process_spec(
-        ["pip", "install", "--no-input", "--no-cache-dir", "--target", "/install", "/src"],
+        ["python", "-m", "pip", "install", "--no-input", "--no-cache-dir",
+         "--target", "/install", "/src"],
         network="default",
         mounts=[
             MountSpec(src=str(package_dir), dst="/src", read_only=True),
             MountSpec(src=volume, dst="/install", read_only=False),
         ],
-        env={"PIP_NO_CACHE_DIR": "1"},
+        env={"PIP_NO_CACHE_DIR": "1", "TMPDIR": "/tmp"},
+        limits={"tmp_size": "512m"},
         clean_home=True,
     )
     returncode, stdout, stderr = backend.run_process(spec, timeout=PIP_TIMEOUT)
