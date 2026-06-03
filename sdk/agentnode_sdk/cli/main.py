@@ -218,6 +218,10 @@ def main(argv: list[str] | None = None) -> int:
     sandbox_parser = sub.add_parser("sandbox", help="Sandbox runtime image management")
     sandbox_sub = sandbox_parser.add_subparsers(dest="sandbox_action")
     sandbox_sub.add_parser("pull", help="Pull the pinned sandbox image (explicit, no auto-pull)")
+    sandbox_doctor_p = sandbox_sub.add_parser("doctor", help="Diagnose sandbox readiness (optionally for a package)")
+    sandbox_doctor_p.add_argument("slug", nargs="?", default=None, help="Package slug for a per-package check")
+    sandbox_doctor_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output (performs no actions)")
+    sandbox_sub.add_parser("status", help="One-line sandbox readiness")
 
     args = parser.parse_args(argv)
 
@@ -252,6 +256,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.sandbox_action == "pull":
                 from agentnode_sdk.cli.sandbox_commands import cmd_sandbox_pull
                 return cmd_sandbox_pull()
+            if args.sandbox_action == "doctor":
+                from agentnode_sdk.cli.sandbox_commands import cmd_sandbox_doctor
+                return cmd_sandbox_doctor(args.slug, json_output=args.json_output)
+            if args.sandbox_action == "status":
+                from agentnode_sdk.cli.sandbox_commands import cmd_sandbox_status
+                return cmd_sandbox_status()
             sandbox_parser.print_help()
             return 0
         if args.command == "reset":

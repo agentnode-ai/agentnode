@@ -130,12 +130,30 @@ def cmd_doctor(fix: bool = False, json_output: bool = False) -> int:
     else:
         lock_info = "not found"
 
+    # Sandbox readiness (one-liner; full detail via `agentnode sandbox doctor`).
+    from agentnode_sdk.cli.sandbox_commands import _is_placeholder_digest
+    from agentnode_sdk.sandbox.container_backend import _BASE_IMAGE, ContainerBackend
+    _sb = ContainerBackend().check_available()
+    if _sb.available:
+        sandbox_ok, sandbox_detail = True, "ready"
+    elif _is_placeholder_digest(_BASE_IMAGE):
+        sandbox_ok, sandbox_detail = False, "no pinned image -> agentnode sandbox doctor"
+    elif _sb.backend == "none":
+        sandbox_ok, sandbox_detail = False, "no Docker/Podman -> agentnode sandbox doctor"
+    elif not _sb.daemon_ok:
+        sandbox_ok, sandbox_detail = False, f"{_sb.backend} daemon down -> agentnode sandbox doctor"
+    elif not _sb.image_available:
+        sandbox_ok, sandbox_detail = False, "image not pulled -> agentnode sandbox pull"
+    else:
+        sandbox_ok, sandbox_detail = False, f"{_sb.reason or 'needs setup'} -> agentnode sandbox doctor"
+
     health = {
         "config": {"ok": cfg_found and cfg_valid, "detail": "valid" if cfg_found and cfg_valid else "not found" if not cfg_found else "invalid"},
         "sdk": {"ok": True, "version": sdk_version},
         "python": {"ok": True, "version": py_version},
         "registry": {"ok": registry_ok, "detail": registry_status},
         "lockfile": {"ok": lockfile.is_file(), "packages": pkg_count},
+        "sandbox": {"ok": sandbox_ok, "detail": sandbox_detail},
     }
 
     if json_output:
@@ -161,6 +179,7 @@ def cmd_doctor(fix: bool = False, json_output: bool = False) -> int:
     _doctor_check("Python", True, py_version)
     _doctor_check("Registry", registry_ok, registry_status)
     _doctor_check("Lockfile", lockfile.is_file(), f"{pkg_count} packages" if lockfile.is_file() else "not found")
+    _doctor_check("Sandbox", sandbox_ok, sandbox_detail)
     print()
 
     # --- Installed Capabilities ---
