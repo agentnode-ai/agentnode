@@ -113,6 +113,66 @@ except Exception as exc:
 '''
 
 
+# P0.3: SDK-free wrapper executed INSIDE the container. The container image has
+# python + the built package on PYTHONPATH (the mounted volume) but NOT the
+# AgentNode SDK and NOT the lockfile. So this wrapper cannot call load_tool();
+# the host resolves the entrypoint to (module, [candidate functions]) STRING-ONLY
+# (no import) and passes them on stdin. The container only does importlib +
+# getattr. Output shape matches _SUBPROCESS_WRAPPER ({ok, result, logs}).
+_CONTAINER_WRAPPER = '''\
+import importlib
+import io
+import json
+import sys
+
+def _safe_serialize(obj):
+    try:
+        json.dumps(obj)
+        return obj
+    except (TypeError, ValueError, OverflowError):
+        return {"__agentnode_fallback_repr__": True, "repr": repr(obj)[:2000]}
+
+try:
+    _payload = json.loads(sys.stdin.read())
+    _module = _payload["module"]
+    _functions = _payload.get("functions") or []
+    kwargs = _payload.get("kwargs") or {}
+
+    mod = importlib.import_module(_module)
+    func = None
+    for _name in _functions:
+        cand = getattr(mod, _name, None)
+        if callable(cand):
+            func = cand
+            break
+    if func is None:
+        raise ImportError(
+            "none of the candidate functions " + repr(_functions)
+            + " found in module '" + _module + "'"
+        )
+
+    captured = io.StringIO()
+    real_stdout = sys.stdout
+    sys.stdout = captured
+    try:
+        result = func(**kwargs)
+    finally:
+        sys.stdout = real_stdout
+
+    logs = captured.getvalue()
+    payload = {"ok": True, "result": _safe_serialize(result)}
+    if logs:
+        payload["logs"] = logs[:10000]
+    json.dump(payload, real_stdout)
+
+except Exception as exc:
+    json.dump(
+        {"ok": False, "error": type(exc).__name__ + ": " + str(exc)},
+        sys.__stdout__,
+    )
+'''
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -141,6 +201,41 @@ def run_python(
     Returns:
         :class:`RunToolResult` with execution details.
     """
+    # P0.3: community (sandbox-required) toolpacks run in an ephemeral container
+    # that mounts ONLY the pre-built per-pack-version volume (read-only). This is
+    # checked BEFORE mode resolution so an explicit mode='direct' can NEVER bypass
+    # isolation for community code. curated/trusted fall through to the host path.
+    # Missing/None/unknown trust → sandbox-required (never host), mirroring the
+    # runner.run_tool gate and policy.requires_sandbox.
+    from agentnode_sdk.sandbox import SandboxRequiredError, requires_sandbox
+    dispatch_trust = (
+        entry.get("trust_level") if entry is not None
+        else _get_trust_level(slug, lockfile_path)
+    )
+    if requires_sandbox(dispatch_trust):
+        t0 = time.monotonic()
+        try:
+            result, error, timed_out = _run_container(
+                slug, tool_name, kwargs, timeout, entry, lockfile_path,
+            )
+            elapsed = (time.monotonic() - t0) * 1000
+            return RunToolResult(
+                success=error is None,
+                result=result,
+                error=error,
+                mode_used="sandbox",
+                duration_ms=round(elapsed, 1),
+                timed_out=timed_out,
+            )
+        except SandboxRequiredError as exc:
+            elapsed = (time.monotonic() - t0) * 1000
+            return RunToolResult(
+                success=False,
+                error=str(exc),
+                mode_used="sandbox_unavailable",
+                duration_ms=round(elapsed, 1),
+            )
+
     # Resolve auto-mode
     resolved = mode
     if mode == "auto":
@@ -333,3 +428,140 @@ def _filtered_env() -> dict[str, str]:
     This prevents leaking API keys, tokens, and cloud credentials.
     """
     return {k: v for k, v in os.environ.items() if k in _ENV_ALLOWLIST}
+
+
+# ---------------------------------------------------------------------------
+# Container execution (P0.3) — community toolpacks in an ephemeral container
+# ---------------------------------------------------------------------------
+
+def _resolve_container_target(entry: dict, tool_name: str | None) -> tuple[str, list[str]]:
+    """Resolve ``(module, [candidate_function_names])`` STRING-ONLY (no import).
+
+    Mirrors ``installer.load_tool()``'s precedence so the container calls the same
+    function the host would — but using only the lockfile strings, since the
+    container has neither the SDK nor the lockfile:
+      - v0.2 per-tool entrypoint match → that module + its function;
+      - v0.1 (tool_name given, no ``tools`` list) → package module, try ``tool_name``
+        first then the default function (``run``), matching load_tool's getattr order;
+      - no tool_name → package entrypoint module + its function.
+    """
+    from agentnode_sdk.installer import _resolve_entrypoint
+
+    tools = entry.get("tools") or []
+    if tool_name:
+        for t in tools:
+            if t.get("name") == tool_name and t.get("entrypoint"):
+                module, func = _resolve_entrypoint(t["entrypoint"])
+                return module, [func]
+        ep = entry.get("entrypoint")
+        if ep and not tools:
+            module, func = _resolve_entrypoint(ep)
+            cands = [tool_name] if tool_name == func else [tool_name, func]
+            return module, cands
+        raise AgentNodeToolError(
+            f"Tool '{tool_name}' has no resolvable entrypoint in the lockfile.",
+            tool_name=tool_name,
+        )
+
+    ep = entry.get("entrypoint")
+    if not ep:
+        raise AgentNodeToolError(
+            "Package has no entrypoint in the lockfile.", tool_name=None,
+        )
+    module, func = _resolve_entrypoint(ep)
+    return module, [func]
+
+
+def _run_container(
+    slug: str,
+    tool_name: str | None,
+    kwargs: dict,
+    timeout: float,
+    entry: dict | None,
+    lockfile_path: Path | None,
+) -> tuple[Any, str | None, bool]:
+    """Run a community toolpack inside an ephemeral container that mounts ONLY
+    the pre-built per-pack-version volume (read-only). Returns
+    ``(result, error_message, timed_out)``.
+
+    Fail-closed everywhere — NEVER a host fallback:
+      * volume gate: the lockfile must claim ``sandboxed`` AND the recorded
+        ``sandbox_volume`` must equal the name recomputed from slug+version+hash,
+        AND ``<runtime> volume inspect`` must succeed. Otherwise → reinstall error.
+      * no container runtime → ``SandboxRequiredError`` (raised; the caller maps it
+        to ``sandbox_unavailable``).
+    Host-FS/HOME/secrets are isolated (clean HOME, only the volume mounted, no env
+    passthrough). Network is derived from the declared ``network_level`` permission
+    (allowlist; unknown = deny).
+    """
+    from agentnode_sdk.sandbox import (
+        SandboxRequiredError,
+        get_default_backend,
+        network_for_level,
+        sandbox_volume_name,
+    )
+    from agentnode_sdk.sandbox.types import MountSpec
+
+    if entry is None:
+        entry = read_lockfile(lockfile_path).get("packages", {}).get(slug) or {}
+
+    _reinstall = (
+        "Sandbox volume missing or stale. Reinstall this toolpack to rebuild it "
+        f"in the sandbox (run: agentnode install {slug})."
+    )
+
+    # --- Volume gate: do NOT blindly trust lockfile.sandbox_volume ----------
+    expected_vol = sandbox_volume_name(slug, entry.get("version"), entry.get("artifact_hash"))
+    if not entry.get("sandboxed") or entry.get("sandbox_volume") != expected_vol:
+        return None, _reinstall, False
+
+    backend = get_default_backend()
+    availability = backend.check_available()
+    if not availability.available:
+        raise SandboxRequiredError(
+            "Community toolpack execution requires a container runtime (Docker or "
+            f"Podman). {availability.reason or 'None detected'} — refusing to run "
+            "untrusted code on the host."
+        )
+
+    runtime = availability.backend or "docker"
+    try:
+        insp = subprocess.run(
+            [runtime, "volume", "inspect", expected_vol],
+            capture_output=True, timeout=10,
+        )
+    except Exception as exc:
+        return None, f"Could not verify sandbox volume: {exc}", False
+    if insp.returncode != 0:
+        return None, _reinstall, False
+
+    # --- Resolve target + network (allowlist; unknown = deny) ---------------
+    module, functions = _resolve_container_target(entry, tool_name)
+    network = network_for_level((entry.get("permissions") or {}).get("network_level"))
+
+    spec = backend.build_process_spec(
+        ["python", "-c", _CONTAINER_WRAPPER],
+        network=network,
+        mounts=[MountSpec(src=expected_vol, dst="/pack", read_only=True)],
+        env={"PYTHONPATH": "/pack"},
+        clean_home=True,
+        interactive=True,  # -i so the runtime forwards our stdin JSON payload
+    )
+    input_json = json.dumps({"module": module, "functions": functions, "kwargs": kwargs})
+
+    returncode, stdout, stderr = backend.run_process(
+        spec, input_text=input_json, timeout=timeout,
+    )
+    if returncode == -1:
+        return None, f"Tool timed out after {timeout}s", True
+    if returncode != 0:
+        return None, f"Sandbox exited with code {returncode}: {stderr.strip()[:2000]}", False
+    if not stdout.strip():
+        return None, f"Tool produced no output. stderr: {stderr.strip()[:2000]}", False
+    try:
+        output = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None, f"Invalid JSON from sandbox: {stdout[:500]}", False
+    if output.get("ok"):
+        return output.get("result"), None, False
+    return None, output.get("error", "Unknown error"), False

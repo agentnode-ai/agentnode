@@ -140,11 +140,14 @@ class TestUserConfirmsToolRuns:
         mock_fn = MagicMock(return_value={"ok": True})
         mock_load.return_value = mock_fn
 
+        # trusted → host direct path so the (mocked) tool actually executes after
+        # the guard callback approves. Community tiers route to the container,
+        # which doesn't use load_tool; this test targets the confirm→execute flow.
         lf = _write_lockfile(tmp_path, {
             "exec-pack": {
                 "version": "1.0",
                 "entrypoint": "exec_pack.tool",
-                "trust_level": "verified",
+                "trust_level": "trusted",
                 "tools": [{"name": "run_cmd", "action_type": "execute"}],
             },
         })

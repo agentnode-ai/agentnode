@@ -27,15 +27,32 @@ def _mock_io(monkeypatch, tmp_path, pip_calls):
 
 
 @pytest.mark.parametrize("tier", ["verified", "unverified", None, "weird"])
-def test_nontrusted_toolpack_blocked_and_no_build(monkeypatch, tmp_path, tier):
-    pip_calls = []
-    _mock_io(monkeypatch, tmp_path, pip_calls)
-    with pytest.raises(RuntimeError, match="non-trusted|curated/trusted|sandbox"):
-        installer.install_package(
-            slug="evil", version="1.0", artifact_url="https://x/p.tar.gz",
-            artifact_hash="sha256:abc123", entrypoint="pk.tool", trust_level=tier,
-        )
-    assert pip_calls == []  # the package's build code never ran
+def test_nontrusted_toolpack_failclosed_when_no_sandbox(monkeypatch, tmp_path, tier):
+    """P0.3: a non-trusted toolpack is built INSIDE the container; with NO
+    container runtime the build is fail-closed (never falls back to a host build)."""
+    from agentnode_sdk.sandbox import set_default_backend
+    from agentnode_sdk.sandbox.backend import SandboxBackend
+    from agentnode_sdk.sandbox.types import SandboxAvailability
+
+    class _Unavailable(SandboxBackend):
+        def check_available(self):
+            return SandboxAvailability(available=False, backend="none",
+                                       reason="no container runtime found")
+        def wrap_command(self, spec):  # pragma: no cover - never reached
+            raise AssertionError("must not wrap/run without a sandbox")
+
+    set_default_backend(_Unavailable())  # overrides the conftest available-backend
+    try:
+        pip_calls = []
+        _mock_io(monkeypatch, tmp_path, pip_calls)
+        with pytest.raises(RuntimeError, match="non-trusted|container runtime|host build"):
+            installer.install_package(
+                slug="evil", version="1.0", artifact_url="https://x/p.tar.gz",
+                artifact_hash="sha256:abc123", entrypoint="pk.tool", trust_level=tier,
+            )
+        assert pip_calls == []  # the package's build code never ran on the host
+    finally:
+        set_default_backend(None)
 
 
 @pytest.mark.parametrize("tier", ["trusted", "curated"])

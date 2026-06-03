@@ -253,6 +253,70 @@ def pip_install(python: str, package_dir: Path, verbose: bool = False) -> None:
         raise RuntimeError("pip install timed out after 120 seconds")
 
 
+def _container_build_into_volume(
+    slug: str,
+    version: str,
+    package_dir: Path,
+    artifact_hash: str,
+) -> str:
+    """P0.3: build a non-trusted toolpack INSIDE the container into a deterministic
+    volume. setup.py / PEP-517 hooks run isolated, NEVER on the host.
+
+    Returns the volume name (recorded in the lockfile and re-checked at run time).
+    Fail-closed: raises ``SandboxRequiredError`` if no container runtime is
+    available — there is no host build fallback for community code.
+    """
+    from agentnode_sdk.sandbox import (
+        SandboxRequiredError,
+        get_default_backend,
+        sandbox_volume_name,
+    )
+    from agentnode_sdk.sandbox.types import MountSpec
+
+    backend = get_default_backend()
+    availability = backend.check_available()
+    if not availability.available:
+        raise SandboxRequiredError(
+            f"Refusing to build non-trusted package '{slug}@{version}' on the host: "
+            "community toolpack builds require a container runtime (Docker or Podman). "
+            f"{availability.reason or 'None detected'} — no host build fallback."
+        )
+
+    runtime = availability.backend or "docker"
+    volume = sandbox_volume_name(slug, version, artifact_hash)
+
+    def _rm_volume() -> None:
+        try:
+            subprocess.run([runtime, "volume", "rm", volume], capture_output=True, timeout=30)
+        except Exception:
+            pass
+
+    # Start from a clean volume so a re-install never layers onto a stale build.
+    _rm_volume()
+
+    # The BUILD container mounts the verified source (ro) + the volume (rw). pip
+    # must fetch dependencies, so the build keeps network=default; the RUN
+    # container's network is separately derived from the declared permission.
+    spec = backend.build_process_spec(
+        ["pip", "install", "--no-input", "--no-cache-dir", "--target", "/install", "/src"],
+        network="default",
+        mounts=[
+            MountSpec(src=str(package_dir), dst="/src", read_only=True),
+            MountSpec(src=volume, dst="/install", read_only=False),
+        ],
+        env={"PIP_NO_CACHE_DIR": "1"},
+        clean_home=True,
+    )
+    returncode, stdout, stderr = backend.run_process(spec, timeout=PIP_TIMEOUT)
+    if returncode != 0:
+        _rm_volume()  # don't leave a half-built volume behind
+        raise RuntimeError(
+            f"Sandboxed build failed for '{slug}@{version}' (exit {returncode}): "
+            f"{(stderr or stdout).strip()[:2000]}"
+        )
+    return volume
+
+
 # ---------------------------------------------------------------------------
 # Lockfile management
 # ---------------------------------------------------------------------------
@@ -473,16 +537,11 @@ def install_package(
             key_status=key_status,
         )
 
-    # P0.0: building a non-trusted package runs its setup.py / PEP-517 hooks as
-    # arbitrary code on the host BEFORE any sandbox exists. Block native builds
-    # for community packages; sandboxed builds (P0.3) will re-enable them safely.
-    if (trust_level or "").lower() not in _HOST_BUILD_TIERS:
-        raise RuntimeError(
-            f"Refusing to build non-trusted package '{slug}@{version}' on the host: "
-            f"only curated/trusted packages may run build hooks natively. Sandboxed "
-            f"builds for community packages are pending (P0.3)."
-        )
-
+    # P0.0/P0.3: building a package runs its setup.py / PEP-517 hooks as arbitrary
+    # code. curated/trusted may build natively on the host (vetted tiers); every
+    # other tier (community/unverified/unknown) is built INSIDE the container into a
+    # deterministic per-pack-version volume (P0.3) — never on the host. The branch
+    # is taken at the build step below, after the hash and signature gates pass.
     tmpdir = Path(tempfile.mkdtemp(prefix="agentnode-"))
     try:
         tar_path = tmpdir / "package.tar.gz"
@@ -549,8 +608,18 @@ def install_package(
             lock_entry["_signatures"] = signatures
         _verify_publisher_signature(slug, lock_entry, key_status=key_status)
 
-        # Step 7: pip install — only reached after every gate passed
-        pip_install(python, package_dir, verbose=verbose)
+        # Step 7: build — only reached after every gate (hash + signature) passed.
+        # curated/trusted build natively on the host; every other tier is built
+        # INSIDE the container into a deterministic volume (fail-closed if no
+        # runtime — never a host build for community code).
+        if (trust_level or "").lower() in _HOST_BUILD_TIERS:
+            pip_install(python, package_dir, verbose=verbose)
+        else:
+            sandbox_volume = _container_build_into_volume(
+                slug, version, package_dir, f"sha256:{local_hash}",
+            )
+            lock_entry["sandboxed"] = True
+            lock_entry["sandbox_volume"] = sandbox_volume
 
         # Step 8: seal + write lockfile (only after a successful install)
         from agentnode_sdk.lock_integrity import seal_entry

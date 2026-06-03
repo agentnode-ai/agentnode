@@ -23,6 +23,27 @@ _HOST_TOLERATED_TIERS = {"trusted"}
 
 _UNAVAILABLE = SandboxAvailability(available=False, backend="none", reason="")
 
+# Network permission allowlist — UNKNOWN = DENY. P0.3 turns the declared
+# ``network_level`` permission into REAL container enforcement (--network none),
+# not just a UI label. Only these explicitly-recognized "has network" levels
+# (the vocabulary actually used across lock_integrity/validate/risk_profile)
+# grant the container a network. Everything else — "none", missing, None, or any
+# unrecognized value — is physically isolated. An unknown value is NEVER a
+# silent network grant.
+_NETWORK_GRANT_LEVELS = {
+    "restricted", "internal", "external", "full", "unrestricted", "limited",
+}
+
+
+def network_for_level(network_level: str | None) -> str:
+    """Map a declared ``network_level`` permission to a ProcessSpec network mode.
+
+    Allowlist semantics (unknown = deny): a recognized network-granting level →
+    ``"default"`` (network allowed); anything else (``none``/missing/``None``/
+    unknown) → ``"none"`` (``--network none``, no socket).
+    """
+    return "default" if (network_level or "").strip().lower() in _NETWORK_GRANT_LEVELS else "none"
+
 _default_backend: SandboxBackend | None = None
 
 

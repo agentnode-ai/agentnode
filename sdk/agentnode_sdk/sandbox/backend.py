@@ -48,8 +48,19 @@ class SandboxBackend(ABC):
     def wrap_command(self, spec: ProcessSpec) -> list[str]:
         """Return the argv that runs ``spec.command`` in isolation (no execution)."""
 
-    def run_process(self, spec: ProcessSpec):  # pragma: no cover - P0.3
-        raise NotImplementedError("one-shot sandboxed run is P0.3 (toolpack)")
+    def run_process(
+        self,
+        spec: ProcessSpec,
+        input_text: str | None = None,
+        timeout: float = 120.0,
+    ) -> tuple[int, str, str]:
+        """One-shot sandboxed exec. Returns ``(returncode, stdout, stderr)``.
+
+        Implemented by :class:`ContainerBackend` (P0.3). Used for BOTH the
+        toolpack build (pip install into the volume) and the per-call run
+        (``python -c <wrapper>`` with JSON on stdin → JSON on stdout).
+        """
+        raise NotImplementedError("one-shot sandboxed run requires a real backend")
 
     def run_mcp_process(self, spec: ProcessSpec):  # pragma: no cover - P0.2
         raise NotImplementedError("long-lived sandboxed MCP run is P0.2")

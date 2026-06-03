@@ -1346,9 +1346,24 @@ def cmd_remove(capability: str, yes: bool = False) -> int:
             return 1
         pkg_entry = lock["packages"][capability]
         pkg_type = pkg_entry.get("package_type", "")
+        sandbox_volume = pkg_entry.get("sandbox_volume")
 
         del lock["packages"][capability]
         atomic_write_json(lock_path, lock)
+
+    # P0.3: a community toolpack built into a sandbox volume — remove it too so an
+    # uninstall doesn't leave the built code cached on disk (best-effort).
+    if sandbox_volume:
+        import subprocess
+        from agentnode_sdk.sandbox import get_default_backend
+        runtime = get_default_backend().check_available().backend or "docker"
+        try:
+            subprocess.run(
+                [runtime, "volume", "rm", sandbox_volume],
+                capture_output=True, timeout=30,
+            )
+        except Exception:
+            pass
 
     if pkg_type == "skill":
         from agentnode_sdk.installer import remove_skill_directory

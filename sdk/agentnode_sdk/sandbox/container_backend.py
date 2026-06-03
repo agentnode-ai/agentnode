@@ -6,11 +6,27 @@ P0.1 implements detection (`check_available`, cached, no image pull) and the pur
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 
 from agentnode_sdk.sandbox.backend import SandboxBackend
 from agentnode_sdk.sandbox.types import ProcessSpec, SandboxAvailability
+
+
+def sandbox_volume_name(slug: str, version: str | None, artifact_hash: str | None) -> str:
+    """Deterministic per-pack-version sandbox volume name.
+
+    ``agentnode-pack-<slug>-<version>-<artifact_hash_short>`` — sanitized to the
+    docker/podman volume-name charset. The hash short ties the cache to the EXACT
+    verified artifact, so a different artifact (even same slug+version) yields a
+    different volume and can never silently reuse a stale build. The run path
+    recomputes this name from the lockfile fields and compares before trusting a
+    volume (see ``python_runner._run_container``).
+    """
+    short = (artifact_hash or "").split(":")[-1][:8] or "nohash"
+    base = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{slug}-{version or '0'}").strip("-._") or "pack"
+    return f"agentnode-pack-{base}-{short}"
 
 # Pinned base image. The digest is a PLACEHOLDER — the real image is chosen and
 # pinned by digest in P0.2 (and `check_available` will require it present).
@@ -126,3 +142,34 @@ class ContainerBackend(SandboxBackend):
         argv.append(self._image)
         argv += list(spec.command)
         return argv
+
+    # -- one-shot execution (P0.3) -------------------------------------------
+
+    def run_process(
+        self,
+        spec: ProcessSpec,
+        input_text: str | None = None,
+        timeout: float = 120.0,
+    ) -> tuple[int, str, str]:
+        """Build the hardened argv and run it once, capturing stdout/stderr.
+
+        Returns ``(returncode, stdout, stderr)``. A timeout returns
+        ``(-1, partial_stdout, stderr + marker)`` so callers can distinguish it.
+        Used for BOTH the toolpack build (pip install into the volume) and the
+        per-call run (``python -c <wrapper>``, JSON stdin → JSON stdout).
+        """
+        argv = self.wrap_command(spec)
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            out, err = proc.communicate(input=input_text, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            return -1, out or "", (err or "") + f"\n[sandbox timed out after {timeout}s]"
+        return proc.returncode, out or "", err or ""

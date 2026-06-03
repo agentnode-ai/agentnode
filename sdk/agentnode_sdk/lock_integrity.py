@@ -47,6 +47,11 @@ CANONICAL_FIELDS = (
     "prompts",
     "resources",
     "assets",
+    # P0.3: how a community toolpack was isolated at install. Sealed so a tampered
+    # lockfile (flip sandboxed, repoint the volume) breaks integrity; the run-time
+    # volume gate (recompute name from slug+version+hash) is the second layer.
+    "sandboxed",
+    "sandbox_volume",
 )
 
 CANONICAL_FIELDS_V2 = CANONICAL_FIELDS + ("_signatures",)

@@ -166,7 +166,11 @@ class TestRunToolDirect:
 
     @patch("agentnode_sdk.runtimes.python_runner.load_tool", side_effect=ImportError("not installed"))
     def test_error_wraps_in_result(self, mock_load, tmp_path, bypass_policy):
-        lf = _write_lockfile(tmp_path, {})
+        # trusted → host direct path (community tiers route to the container).
+        lf = _write_lockfile(tmp_path, {
+            "missing-pack": {"version": "1.0", "trust_level": "trusted",
+                             "entrypoint": "missing_pack.tool"},
+        })
         result = run_tool("missing-pack", mode="direct", lockfile_path=lf)
 
         assert result.success is False
@@ -179,13 +183,18 @@ class TestRunToolDirect:
 
 class TestRunToolSubprocess:
     def test_returns_result(self, tmp_path):
-        """Full subprocess round-trip with a real child process."""
+        """Full subprocess round-trip with a real child process.
+
+        Uses a host tier (trusted) — P0.3 routes community tiers into the
+        container instead of the host subprocess; this test targets the host
+        ``_run_subprocess`` wrapper, which now serves curated/trusted only.
+        """
         # Write a lockfile pointing at a real module (json — stdlib)
         lf = _write_lockfile(tmp_path, {
             "json-pack": {
                 "version": "1.0",
                 "entrypoint": "json",
-                "trust_level": "verified",
+                "trust_level": "trusted",
                 "permissions": {"network_level": "none", "filesystem_level": "none",
                                 "code_execution_level": "none"},
             },
@@ -208,7 +217,7 @@ class TestRunToolSubprocess:
     def test_timeout(self, tmp_path):
         """Subprocess that hangs gets killed."""
         lf = _write_lockfile(tmp_path, {
-            "hang-pack": {"version": "1.0", "entrypoint": "time", "trust_level": "verified",
+            "hang-pack": {"version": "1.0", "entrypoint": "time", "trust_level": "trusted",
                           "permissions": {"network_level": "none", "filesystem_level": "none",
                                           "code_execution_level": "none"}},
         })
@@ -222,7 +231,7 @@ class TestRunToolSubprocess:
     def test_nonzero_exit(self, tmp_path, monkeypatch):
         """Non-zero exit code from subprocess produces error."""
         lf = _write_lockfile(tmp_path, {
-            "bad-pack": {"version": "1.0", "entrypoint": "bad_module", "trust_level": "verified",
+            "bad-pack": {"version": "1.0", "entrypoint": "bad_module", "trust_level": "trusted",
                          "permissions": {"network_level": "none", "filesystem_level": "none",
                                          "code_execution_level": "none"}},
         })
@@ -232,8 +241,10 @@ class TestRunToolSubprocess:
         # Should have an error since bad_module doesn't exist
         assert result.success is False
 
-    def test_auto_verified_uses_subprocess(self, tmp_path):
-        """Auto mode with verified trust should pick subprocess."""
+    def test_auto_verified_routes_to_sandbox(self, tmp_path):
+        """P0.3: verified (community) no longer runs on the host — it routes into
+        the container. With no built sandbox volume the run is fail-closed
+        ("reinstall to sandbox"), but it is NEVER a host subprocess."""
         lf = _write_lockfile(tmp_path, {
             "test-pack": {
                 "version": "1.0",
@@ -242,7 +253,10 @@ class TestRunToolSubprocess:
             },
         })
         result = run_tool("test-pack", mode="auto", timeout=10.0, lockfile_path=lf, s='"hi"')
-        assert result.mode_used == "subprocess"
+        assert result.mode_used == "sandbox"      # routed to the container path
+        assert result.mode_used != "subprocess"   # never the host subprocess
+        assert result.success is False            # no volume built → fail-closed
+        assert "sandbox" in (result.error or "").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -274,12 +288,15 @@ class TestRunToolAuto:
         result = run_tool("t-pack", mode="auto", timeout=5.0, lockfile_path=lf)
         assert result.mode_used == "subprocess"
 
-    def test_missing_trust_falls_to_subprocess(self, tmp_path, bypass_policy):
+    def test_missing_trust_routes_to_sandbox(self, tmp_path, bypass_policy):
+        """P0.3: missing/unknown trust is sandbox-required (never host). Routes to
+        the container path; fail-closed without a built volume."""
         lf = _write_lockfile(tmp_path, {
             "old-pack": {"version": "1.0", "entrypoint": "old_pack.tool"},
         })
         result = run_tool("old-pack", mode="auto", timeout=5.0, lockfile_path=lf)
-        assert result.mode_used == "subprocess"
+        assert result.mode_used == "sandbox"
+        assert result.mode_used != "subprocess"
 
     def test_explicit_direct_still_works(self, tmp_path):
         """mode='direct' remains the explicit opt-in for in-process execution."""

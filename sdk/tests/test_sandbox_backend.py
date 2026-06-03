@@ -122,9 +122,25 @@ def test_nosandbox_backend_refuses_to_wrap():
         NoSandboxBackend().wrap_command(ProcessSpec(command=["x"]))
 
 
-def test_run_methods_not_implemented_in_p01():
+def test_run_mcp_process_not_implemented():
+    # run_process is implemented in ContainerBackend as of P0.3 (toolpack run);
+    # the long-lived MCP path stays on mcp_runner's own launcher (P0.2), so
+    # run_mcp_process remains NotImplemented here.
     be = ContainerBackend(runtime="docker")
     with pytest.raises(NotImplementedError):
-        be.run_process(ProcessSpec(command=["x"]))
-    with pytest.raises(NotImplementedError):
         be.run_mcp_process(ProcessSpec(command=["x"]))
+
+
+def test_base_run_process_not_implemented():
+    # The abstract base still fails closed: a backend without a real run_process
+    # must never silently execute anything.
+    from agentnode_sdk.sandbox.backend import SandboxBackend
+
+    class _Bare(SandboxBackend):
+        def check_available(self):  # pragma: no cover - trivial
+            raise NotImplementedError
+        def wrap_command(self, spec):  # pragma: no cover - trivial
+            raise NotImplementedError
+
+    with pytest.raises(NotImplementedError):
+        _Bare().run_process(ProcessSpec(command=["x"]))
