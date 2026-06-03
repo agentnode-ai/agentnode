@@ -332,12 +332,18 @@ def _container_build_into_volume(
     # The BUILD container mounts the verified source (ro) + the volume (rw). pip
     # must fetch dependencies, so the build keeps network=default; the RUN
     # container's network is separately derived from the declared permission.
-    # Use `python -m pip` (not bare `pip`) so it resolves via the image's python.
-    # A larger /tmp tmpfs + TMPDIR give PEP-517 isolated builds room under the
-    # read-only rootfs (only /tmp and the volume are writable).
+    #
+    # setuptools writes its `build/` dir into the source tree (cwd), but /src is
+    # mounted read-only (and the rootfs is read-only). So copy the verified source
+    # into a writable /tmp dir first and build from there — /src stays read-only
+    # (the build can't mutate the verified artifact). `python -m pip` (not bare
+    # `pip`) resolves via the image's python; a larger /tmp tmpfs + TMPDIR give the
+    # copy + build room under the read-only rootfs (only /tmp and the volume are
+    # writable).
     spec = backend.build_process_spec(
-        ["python", "-m", "pip", "install", "--no-input", "--no-cache-dir",
-         "--target", "/install", "/src"],
+        ["sh", "-c",
+         "cp -r /src /tmp/build-src && "
+         "python -m pip install --no-input --no-cache-dir --target /install /tmp/build-src"],
         network="default",
         mounts=[
             MountSpec(src=str(package_dir), dst="/src", read_only=True),

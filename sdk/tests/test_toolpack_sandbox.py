@@ -107,10 +107,14 @@ def test_install_builds_in_container_into_volume_not_host(monkeypatch, tmp_path)
     assert argv[0] == "docker"
     assert f"{pkg_dir}:/src:ro" in argv
     assert f"{vol}:/install:rw" in argv
-    assert argv[-9:] == [
-        "python", "-m", "pip", "install", "--no-input", "--no-cache-dir",
-        "--target", "/install", "/src",
-    ]
+    # Build runs via `sh -c`: copy the read-only /src into writable /tmp, then
+    # pip install --target /install from the copy (setuptools writes build/ in cwd,
+    # which must be writable — /src stays read-only).
+    assert argv[-3] == "sh" and argv[-2] == "-c"
+    build_script = argv[-1]
+    assert "cp -r /src /tmp/build-src" in build_script
+    assert "pip install" in build_script
+    assert "--target /install /tmp/build-src" in build_script
     assert "--network" not in argv  # build keeps network (pip fetches deps)
 
 

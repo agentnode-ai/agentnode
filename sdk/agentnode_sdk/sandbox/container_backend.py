@@ -29,14 +29,15 @@ def sandbox_volume_name(slug: str, version: str | None, artifact_hash: str | Non
     return f"agentnode-pack-{base}-{short}"
 
 # Pinned base image, by DIGEST (never a tag, never :latest, never auto-pull).
-# GHCR namespace. The digest is a PLACEHOLDER (all zeros) so `_image_present()`
-# (and thus `check_available()`) stays False in every real environment until the
-# operator builds+pushes the image and pins the REAL digest here — Sprint A, in
-# the SAME change where routing is already active (the guardrail). Build/push/pin
-# procedure: see sdk/sandbox-image/README.md.
+# ACTIVATED 2026-06-03: built on the Hetzner host, pushed to GHCR, and pinned here
+# in the SAME state where routing is already active (P0.2/P0.3) — the guardrail.
+# The image is acquired only by an explicit `agentnode sandbox pull` (no auto-pull);
+# if it is absent/unpullable on a host, `_image_present()` -> `check_available()`
+# stays False and community execution remains fail-closed (never a host fallback).
+# Build/push/pin procedure + reproducible-build note: sdk/sandbox-image/README.md.
 _BASE_IMAGE = (
     "ghcr.io/agentnode-ai/sandbox@sha256:"
-    "0000000000000000000000000000000000000000000000000000000000000000"
+    "6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
 )
 
 # Hardened flags, mirrored from backend/app/verification/sandbox.py (proven recipe).
