@@ -39,6 +39,13 @@ def set_default_backend(backend: SandboxBackend | None) -> None:
     _default_backend = backend
 
 
+def requires_sandbox(trust_level: str | None) -> bool:
+    """True for tiers that must run inside a sandbox (everything not curated/
+    trusted). Missing / None / unknown → True (never host) by construction."""
+    tier = (trust_level or "").lower()
+    return tier not in _HOST_ALLOWED_TIERS and tier not in _HOST_TOLERATED_TIERS
+
+
 def require_sandbox_for_tier(
     trust_level: str | None, availability: SandboxAvailability
 ) -> None:

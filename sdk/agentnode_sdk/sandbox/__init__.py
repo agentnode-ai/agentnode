@@ -17,6 +17,7 @@ from agentnode_sdk.sandbox.policy import (
     enforce_sandbox_policy,
     get_default_backend,
     require_sandbox_for_tier,
+    requires_sandbox,
     set_default_backend,
 )
 
@@ -29,6 +30,7 @@ __all__ = [
     "NoSandboxBackend",
     "ContainerBackend",
     "require_sandbox_for_tier",
+    "requires_sandbox",
     "enforce_sandbox_policy",
     "get_default_backend",
     "set_default_backend",

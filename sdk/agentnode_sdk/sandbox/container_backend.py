@@ -103,6 +103,9 @@ class ContainerBackend(SandboxBackend):
             argv.append("-i")
         argv += list(_HARDENED_FLAGS)
 
+        if spec.name:
+            argv += ["--name", spec.name, "--label", "agentnode-sandbox"]
+
         if spec.network == "none":
             argv += ["--network", "none"]
         elif spec.network == "restricted":

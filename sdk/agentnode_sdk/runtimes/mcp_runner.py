@@ -9,12 +9,14 @@ import atexit
 import itertools
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from agentnode_sdk.models import RunToolResult
 from agentnode_sdk.policy import PolicyResult, audit_decision
@@ -27,28 +29,72 @@ _request_id = itertools.count(1)
 class MCPServerProcess:
     """A managed MCP server subprocess communicating via stdio JSON-RPC."""
 
-    def __init__(self, slug: str, command: list[str]):
+    def __init__(self, slug: str, command: list[str], trust_level: str | None = None):
         self.slug = slug
         self.command = command
+        # Safe default: trust_level missing/None/unknown -> sandbox-required, NEVER
+        # host (resolved in start() via sandbox.policy). Default must not be a host tier.
+        self.trust_level = trust_level
         self._process: subprocess.Popen | None = None
         self._lock = threading.Lock()
         self._last_used = time.monotonic()
+        self._container_name: str | None = None
+        self._runtime: str | None = None
 
     def start(self, timeout: float = 10.0, env_keys: list[str] | None = None) -> None:
-        """Start the MCP server subprocess."""
-        env = _mcp_env(env_keys)
+        """Start the MCP server subprocess.
+
+        Community/unverified/unknown tiers run INSIDE a container (P0.2). This is
+        the central enforcement+routing point — it covers the agent path (via the
+        pool) AND direct CLI use (e.g. `agentnode mcp doctor`), closing the
+        run_tool-only gate gap. curated -> host; trusted -> host (transition).
+        """
+        from agentnode_sdk.sandbox import enforce_sandbox_policy, get_default_backend
+        from agentnode_sdk.sandbox.policy import requires_sandbox
+        from agentnode_sdk.sandbox.types import ProcessSpec
+
+        # Fail-closed gate: community without a runtime is blocked here, not on host.
+        enforce_sandbox_policy(self.trust_level, runtime_hint="mcp")
 
         # Windows: CREATE_NEW_PROCESS_GROUP for clean shutdown
         kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
 
+        if requires_sandbox(self.trust_level):
+            # Containerized path. P0.2 isolates host-FS, HOME and secrets — NOT the
+            # network (npx/uvx fetch live). No host env, no mounts, clean container HOME.
+            if env_keys:
+                raise RuntimeError(
+                    f"MCP '{self.slug}' requests credentials (env_keys), but secret "
+                    "brokering into the sandbox is not available yet (P1) — refusing "
+                    "to expose secrets to untrusted code."
+                )
+            safe_slug = re.sub(r"[^a-zA-Z0-9_.-]", "-", self.slug)[:40]
+            name = f"agentnode-mcp-{safe_slug}-{uuid4().hex[:8]}"
+            backend = get_default_backend()
+            spec = ProcessSpec(
+                command=list(self.command), network="default", clean_home=True,
+                interactive=True, env={}, mounts=[], name=name,
+            )
+            launch = backend.wrap_command(spec)
+            self._container_name = name
+            self._runtime = launch[0]
+            # The docker/podman CLIENT inherits the host env (to find the runtime);
+            # the CONTAINER env is fully controlled by wrap_command's -e flags.
+            popen_env = None
+            logger.info("MCP '%s' started sandboxed via %s", self.slug, self._runtime)
+        else:
+            # Host path: curated (allowed) / trusted (transition). Existing behaviour.
+            launch = self.command
+            popen_env = _mcp_env(env_keys)
+
         self._process = subprocess.Popen(
-            self.command,
+            launch,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=env,
+            env=popen_env,
             text=True,
             **kwargs,
         )
@@ -93,18 +139,30 @@ class MCPServerProcess:
         return resp.get("result")
 
     def stop(self, timeout: float = 5.0) -> None:
-        """Gracefully stop the server, kill if needed."""
-        if not self._process or self._process.poll() is not None:
-            return
-        try:
-            self._process.stdin.close()
-            self._process.wait(timeout=timeout)
-        except (subprocess.TimeoutExpired, OSError):
-            self._process.kill()
+        """Gracefully stop the server, kill if needed, and remove the container."""
+        proc = self._process
+        if proc and proc.poll() is None:
             try:
-                self._process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
+                proc.stdin.close()
+                proc.wait(timeout=timeout)
+            except (subprocess.TimeoutExpired, OSError):
+                proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+        # Force-remove the container — killing the `docker run` client does NOT
+        # reliably stop the container. Best-effort, idempotent (--rm may already
+        # have removed it). Guarded so the host path is unaffected.
+        if self._container_name and self._runtime:
+            try:
+                subprocess.run(
+                    [self._runtime, "rm", "-f", self._container_name],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
                 pass
+            self._container_name = None
 
     def health_check(self) -> bool:
         """Check if the server process is still alive."""
@@ -159,6 +217,7 @@ class MCPProcessPool:
     def get_or_start(
         self, slug: str, command: list[str],
         timeout: float = 10.0, env_keys: list[str] | None = None,
+        trust_level: str | None = None,
     ) -> MCPServerProcess:
         """Get an existing server or start a new one."""
         with self._lock:
@@ -170,7 +229,7 @@ class MCPProcessPool:
             if server:
                 server.stop()
 
-            server = MCPServerProcess(slug, command)
+            server = MCPServerProcess(slug, command, trust_level=trust_level)
             server.start(timeout=timeout, env_keys=env_keys)
             self._servers[slug] = server
             return server
@@ -269,7 +328,9 @@ def run_mcp(
             )
 
         pool = _get_global_pool()
-        server = pool.get_or_start(slug, command, env_keys=env_keys)
+        server = pool.get_or_start(
+            slug, command, env_keys=env_keys, trust_level=entry.get("trust_level")
+        )
 
         # Resolve tool name
         name = tool_name

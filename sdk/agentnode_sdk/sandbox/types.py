@@ -45,6 +45,7 @@ class ProcessSpec:
     limits: dict[str, str] = field(default_factory=dict)
     clean_home: bool = True            # never inherit the host HOME
     interactive: bool = False          # keep stdin open (long-lived MCP stdio)
+    name: str | None = None            # container name (for stop/cleanup)
 
 
 class SandboxRequiredError(RuntimeError):

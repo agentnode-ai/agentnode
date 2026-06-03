@@ -120,7 +120,10 @@ def cmd_mcp_doctor(
         else:
             try:
                 from agentnode_sdk.runtimes.mcp_runner import MCPServerProcess, _mcp_env
-                server = MCPServerProcess(slug, mcp_command)
+                # Pass trust_level so the doctor path is enforced/routed at start()
+                # (closes the run_tool-gate bypass: community MCPs are sandboxed or
+                # fail-closed, never started directly on the host).
+                server = MCPServerProcess(slug, mcp_command, trust_level=entry.get("trust_level"))
                 server.start(timeout=15, env_keys=env_keys)
                 server.stop()
                 record("start", True, "server starts and handshake passed")

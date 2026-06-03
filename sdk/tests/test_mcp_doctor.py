@@ -135,7 +135,9 @@ def test_all_pass_with_start(mcp_lockfile, monkeypatch, capsys):
     assert result == 0
     out = capsys.readouterr().out
     assert "Ready to run" in out
-    MockCls.assert_called_once_with("mcp-test", ["npx", "-y", "test-mcp-server@1.0.0"])
+    MockCls.assert_called_once_with(
+        "mcp-test", ["npx", "-y", "test-mcp-server@1.0.0"], trust_level=None
+    )
     mock_server.start.assert_called_once()
     mock_server.stop.assert_called_once()
 
