@@ -95,7 +95,10 @@ def cmd_sandbox_pull() -> int:
         print("  Pull timed out.\n")
         return 1
     if result.returncode != 0:
-        print("  Pull failed.\n")
+        print(
+            "  Pull failed. If the image is private or you are not authenticated,\n"
+            "  log in first: docker login ghcr.io   (otherwise check network/registry access).\n"
+        )
         return 1
 
     after = ContainerBackend().check_available()

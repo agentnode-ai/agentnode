@@ -235,3 +235,16 @@ def test_status_needs_setup_no_runtime(monkeypatch, capsys):
     _patch_backend(monkeypatch, _av_no_runtime())
     assert cmd_sandbox_status() == 1
     assert "Docker" in capsys.readouterr().out
+
+
+# === pull failure surfaces an auth/private hint ===============================
+
+def test_pull_failure_hints_auth(monkeypatch, capsys):
+    # real (non-placeholder) digest via autouse; runtime present; pull returns nonzero
+    _patch_backend(monkeypatch, _av_image_missing())
+    monkeypatch.setattr(sc.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"returncode": 1})())
+    rc = sc.cmd_sandbox_pull()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "docker login ghcr.io" in out

@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.11.0 — Execution Sandbox (isolated or not at all)
+
+The execution plane is now sandboxed. Community/unverified code (toolpack
+builds, toolpack runs, MCP servers) runs inside a hardened container or **not at
+all** — never directly on the host. This closes the exec-sandbox security bow
+(P0.0–P0.3) and activates it against a real, digest-pinned image.
+
+### Added
+
+- **Container sandbox** for community execution: install-time builds, toolpack
+  runs (built into a per-version volume, run read-only), and MCP servers run in
+  a hardened container (`--read-only`, `--cap-drop=ALL`, `--user 1000:1000`,
+  `--network none` by default, clean HOME, no host mounts, no secrets).
+- **Digest-pinned runner image** — `ghcr.io/agentnode-ai/sandbox@sha256:…`
+  (never a tag/`latest`, no auto-pull). Acquired explicitly via
+  `agentnode sandbox pull`.
+- **`agentnode sandbox` CLI** — `pull` (explicit image pull), `doctor [slug]`
+  (diagnose readiness / explain why a package is blocked), `status` (one-line).
+  A "Sandbox" line was added to `agentnode doctor`.
+- Real network-permission enforcement for toolpack runs (allowlist; unknown =
+  deny → `--network none`).
+
+### BREAKING / Upgrade Notes
+
+> This is a behavioral breaking change for users upgrading from 0.5.x. It is
+> intentional and security-driven.
+
+- **Community code now runs isolated or fail-closed.** Toolpacks and MCP servers
+  from community/unverified publishers require a container runtime (Docker or
+  Podman) **and** the pinned sandbox image (`agentnode sandbox pull`). Without
+  them, execution is **blocked (`sandbox_unavailable`)** — there is **no host
+  fallback**. In 0.5.x this code ran directly on the host; it no longer does.
+- **Set up the sandbox** to keep community packages working: install Docker or
+  Podman, then run `agentnode sandbox pull`. Run `agentnode sandbox doctor` to
+  see exactly what's missing. Curated/trusted packages continue to run on the
+  host (no sandbox required).
+- **Guard/policy may now prompt or deny** actions that 0.5.x allowed silently
+  (pre-execution policy, action-type classification, rate limits, input guard).
+- **No lockfile migration needed** — existing 0.5.x `agentnode.lock` files load
+  unchanged; entries without integrity/sandbox fields are not blocked.
+- CLI is **additive** (no commands removed or renamed).
+
+_(PyPI jumps 0.5.1 → 0.11.0; the 0.6–0.10 changes below were tagged in git but
+not previously published.)_
+
 ## 0.10.1 — AsyncAgentNode Registry Trust Parity
 
 - **AsyncAgentNode** now verifies registry response signatures on
