@@ -93,3 +93,13 @@ def test_missing_artifact_hash_blocked(monkeypatch, tmp_path):
             artifact_hash=None, entrypoint="pk.tool", trust_level="trusted",
         )
     assert pip_calls == []
+
+
+def test_resolve_python_prefers_sys_executable():
+    """0.11.1 bugfix: the host build must target the interpreter actually running
+    AgentNode, so `agentnode install` + `agentnode run` use the SAME Python. In a
+    pipx / unactivated venv, $VIRTUAL_ENV is unset and `python` on PATH is a
+    DIFFERENT interpreter — the pack would install into the wrong env and the run
+    couldn't import it. resolve_python() must return sys.executable."""
+    import sys
+    assert installer.resolve_python() == sys.executable

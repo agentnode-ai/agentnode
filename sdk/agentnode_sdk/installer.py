@@ -40,15 +40,26 @@ PIP_TIMEOUT = 120
 # ---------------------------------------------------------------------------
 
 def resolve_python() -> str:
-    """Find a usable Python 3 interpreter.
+    """Find a usable Python 3 interpreter for the host package build.
 
     Resolution order:
+    0. ``sys.executable`` — the interpreter actually running AgentNode, so a host
+       build (``agentnode install``) installs into the SAME environment that
+       ``agentnode run`` later imports from. This fixes pipx / unactivated-venv
+       installs, where ``$VIRTUAL_ENV`` is unset and ``python`` on PATH is a
+       DIFFERENT interpreter (the package would install into the wrong env and
+       ``agentnode run`` would fail to import it).
     1. $VIRTUAL_ENV/bin/python (or Scripts/python.exe on Windows)
     2. .venv/bin/python in cwd
     3. python3 on PATH
     4. python on PATH
     """
     is_windows = sys.platform == "win32"
+
+    # 0. The interpreter actually running AgentNode — guarantees install and run
+    #    use the same Python. Most reliable; prefer it over PATH/venv heuristics.
+    if sys.executable and os.path.isfile(sys.executable):
+        return sys.executable
 
     # 1. Active virtual environment
     venv = os.environ.get("VIRTUAL_ENV")

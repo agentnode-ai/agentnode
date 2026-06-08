@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.11.1 — Bugfix + hardening
+
+### Fixed
+
+- **Install targets the running interpreter.** `installer.resolve_python()` now
+  returns `sys.executable` first, so the host build (`agentnode install` of a
+  trusted/curated pack) and `agentnode run` use the **same** Python. Previously
+  it resolved `$VIRTUAL_ENV → ./.venv → PATH python3 → PATH python` and never
+  the interpreter actually running AgentNode, so under **pipx** or an
+  **unactivated venv** the pack installed into a different environment and the
+  run could not import it. The existing fallbacks are kept for the rare case of
+  an empty `sys.executable`. Host build path only — the community/sandbox path
+  builds with `python -m pip` inside the container and was never affected.
+
+### Hardened
+
+- **Agent execution-vector invariant documented + regression-tested.** An
+  agent's own entrypoint code runs on the host (not via `SandboxBackend`), so
+  the `trust >= trusted` gate in `run_agent` is a security invariant. Added an
+  audit comment at the gate (no logic change) and a named regression test
+  asserting that `None`/unknown/`unverified`/`verified`/`preview` agents are
+  refused while `trusted`/`curated` pass — locking the gate against silent
+  lowering that would run community code unsandboxed.
+
 ## 0.11.0 — Execution Sandbox (isolated or not at all)
 
 The execution plane is now sandboxed. Community/unverified code (toolpack

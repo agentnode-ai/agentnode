@@ -1245,6 +1245,15 @@ def run_agent(
         )
 
     # --- 2. Agent-specific policy: trust >= trusted ---
+    # SECURITY INVARIANT (audit 2026-06): an agent's OWN entrypoint code runs on
+    # the HOST — in a thread (_execute_with_timeout) or a child process
+    # (_execute_with_process) — NOT inside SandboxBackend. The exec-sandbox bow
+    # (P0.0-P0.3) isolates the agent's *tool calls* (they re-enter run_tool's
+    # gate), but NOT the agent's own orchestration code. So `trust >= trusted` is
+    # the ONLY thing keeping community/unverified agent code off the host. Do NOT
+    # lower this gate without first routing agent execution through SandboxBackend,
+    # or community code runs unsandboxed (reintroducing the RCE class the sandbox
+    # bow closed). Locked by test_agent_runner's execution-vector regression test.
     trust_level = entry.get("trust_level", "unverified")
     if not _trust_meets_minimum(trust_level, "trusted"):
         _audit_agent_run(

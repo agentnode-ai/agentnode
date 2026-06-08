@@ -320,6 +320,33 @@ class TestRunAgentTrustPolicy:
 
 
 # ---------------------------------------------------------------------------
+# run_agent() — execution-vector invariant (0.11.1 hardening, audit 2026-06)
+# ---------------------------------------------------------------------------
+# An agent's OWN entrypoint code runs on the HOST (thread _execute_with_timeout /
+# process _execute_with_process), NOT through SandboxBackend. The exec-sandbox
+# bow does NOT cover the agent's own code. So `trust >= trusted` at the gate
+# (agent_runner.py ~1248) is a SECURITY INVARIANT: lowering it would run
+# community/unverified agent code unsandboxed on the host. These tests lock the
+# gate against silent regressions — any non-(trusted|curated) level, including an
+# unrecognized or missing one, must be refused with a trust-level error.
+
+class TestRunAgentExecutionVectorInvariant:
+    @pytest.mark.parametrize("trust_level", [None, "unknown", "unverified", "verified", "preview"])
+    def test_community_or_unknown_agent_refused(self, trust_level):
+        entry = _agent_entry(trust_level=trust_level)
+        result = run_agent("test-agent", entry=entry)
+        assert result.success is False
+        assert "trust level" in (result.error or "")
+
+    @pytest.mark.parametrize("trust_level", ["trusted", "curated"])
+    def test_trusted_or_curated_agent_not_gated(self, trust_level):
+        entry = _agent_entry(trust_level=trust_level)
+        result = run_agent("test-agent", entry=entry)
+        # Passes the trust gate (may still fail later at entrypoint loading).
+        assert "trust level" not in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
 # run_agent() — execution
 # ---------------------------------------------------------------------------
 
