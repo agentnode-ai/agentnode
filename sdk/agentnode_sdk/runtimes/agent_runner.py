@@ -559,10 +559,7 @@ class AgentContext:
                         tc_args = {}
 
                 # Parse slug:tool_name from the tool call name
-                if ":" in tc_name:
-                    slug, tool_name = tc_name.split(":", 1)
-                else:
-                    slug, tool_name = tc_name, None
+                slug, tool_name = _parse_tool_reference(tc_name)
 
                 tool_result = self.try_tool(slug, tool_name, **tc_args)
 
@@ -2203,11 +2200,13 @@ def _parse_literal(value: str) -> Any:
 # ---------------------------------------------------------------------------
 
 def _parse_tool_reference(ref: str) -> tuple[str, str | None]:
-    """Parse 'slug:tool_name' or 'slug' into (slug, tool_name)."""
-    if ":" in ref:
-        slug, tool_name = ref.split(":", 1)
-        return slug, tool_name
-    return ref, None
+    """Parse 'slug:tool_name' or 'slug' into (slug, tool_name).
+
+    Thin wrapper over the shared :func:`agentnode_sdk.references.parse_tool_reference`
+    so the agent runtime and the CLI run path stay in lock-step.
+    """
+    from agentnode_sdk.references import parse_tool_reference
+    return parse_tool_reference(ref)
 
 
 def _resolve_input_mapping(

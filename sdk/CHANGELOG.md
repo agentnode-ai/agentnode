@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.11.2 — CLI run resolution fixes
+
+### Fixed
+
+- **`agentnode run <slug>` auto-selects a single-tool pack's tool.** When a
+  toolpack declares exactly one tool with an entrypoint, `run <slug>` (no tool
+  name) now resolves that tool instead of a non-existent default `run` function
+  (which raised `ImportError: Function 'run' not found`). Multi-tool packs are
+  unchanged — the runner does not guess among several tools. Applied
+  consistently to the host (`load_tool`) and container (`_resolve_container_target`)
+  paths via a shared `_default_tool_entrypoint` helper.
+- **`agentnode run <slug>:<tool>` resolves the real package trust/lockfile.**
+  The `slug:tool` form is now split at the CLI boundary, so the lockfile entry
+  and trust level come from the real slug instead of being treated as an unknown
+  (and therefore `unverified`) package. The sandbox/trust gate is unchanged and
+  still keys on the real slug — community/unverified packages stay
+  sandbox-mandatory or fail-closed. Slug/tool parsing is now a shared
+  `references.parse_tool_reference` helper used by both the CLI and the agent
+  runtime.
+
 ## 0.11.1 — Bugfix + hardening
 
 ### Fixed

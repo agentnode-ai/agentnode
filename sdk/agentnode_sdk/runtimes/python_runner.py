@@ -445,7 +445,7 @@ def _resolve_container_target(entry: dict, tool_name: str | None) -> tuple[str, 
         first then the default function (``run``), matching load_tool's getattr order;
       - no tool_name → package entrypoint module + its function.
     """
-    from agentnode_sdk.installer import _resolve_entrypoint
+    from agentnode_sdk.installer import _resolve_entrypoint, _default_tool_entrypoint
 
     tools = entry.get("tools") or []
     if tool_name:
@@ -463,7 +463,7 @@ def _resolve_container_target(entry: dict, tool_name: str | None) -> tuple[str, 
             tool_name=tool_name,
         )
 
-    ep = entry.get("entrypoint")
+    ep = _default_tool_entrypoint(entry)
     if not ep:
         raise AgentNodeToolError(
             "Package has no entrypoint in the lockfile.", tool_name=None,

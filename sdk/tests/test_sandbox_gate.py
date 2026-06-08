@@ -82,6 +82,20 @@ def test_other_nontrusted_blocked_when_unavailable(tmp_path, trust):
     assert res.mode_used == "sandbox_unavailable"
 
 
+def test_cli_community_slug_tool_still_failclosed(tmp_path, monkeypatch, capsys):
+    """0.11.2: splitting `slug:tool` at the CLI must NOT bypass the sandbox gate.
+    A community (unverified) pack run as `slug:tool` with no container runtime
+    stays fail-closed — cmd_run forwards the REAL slug, whose trust the gate reads."""
+    from agentnode_sdk.cli import commands
+    set_default_backend(_FakeBackend(available=False))
+    lf = _write_lockfile(tmp_path, "evil-pack", "unverified")
+    monkeypatch.setattr(installer, "_lockfile_path", lambda: lf)
+    rc = commands.cmd_run("evil-pack:dotool", input_data='{"x":1}', json_output=True)
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "sandbox_unavailable" in out
+
+
 def test_curated_not_blocked_when_unavailable(tmp_path, monkeypatch):
     set_default_backend(_FakeBackend(available=False))
     _stub_check_run_deny(monkeypatch)

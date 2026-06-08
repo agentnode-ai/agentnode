@@ -837,6 +837,13 @@ def cmd_run(
     if " " in capability.strip():
         return _cmd_run_smart(capability, raw=raw, explain=explain, dry_run=dry_run, json_output=json_output)
 
+    # Slug mode: support `slug:tool`. Split at the CLI boundary so trust and the
+    # lockfile entry resolve on the REAL slug (slugs are kebab-case and never
+    # contain ':'); the tool name is forwarded to run_tool. The sandbox/trust
+    # gate is unchanged — it keys on the real slug's entry just like a bare slug.
+    from agentnode_sdk.references import parse_tool_reference
+    slug, tool_name = parse_tool_reference(capability)
+
     if input_data and file_path:
         print("--input and --file are mutually exclusive.", file=sys.stderr)
         return 1
@@ -875,10 +882,10 @@ def cmd_run(
         is_interactive = os.environ.get("AGENTNODE_NON_INTERACTIVE", "").lower() not in ("true", "1")
         callback = cli_confirmation_callback if is_interactive else None
 
-        result = run_tool(capability, confirmation_callback=callback, **data)
+        result = run_tool(slug, tool_name=tool_name, confirmation_callback=callback, **data)
 
         if result.mode_used == "policy_denied" and result.policy:
-            _print_guard_block(capability, None, result)
+            _print_guard_block(slug, tool_name, result)
             return 1
 
         if explain and hasattr(result, "policy") and result.policy:

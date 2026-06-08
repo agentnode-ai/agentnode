@@ -339,6 +339,21 @@ def test_resolve_target_v01_package_default():
     assert _resolve_container_target(entry, None) == ("mod.tool", ["run"])
 
 
+def test_resolve_target_single_tool_autoselect():
+    # 0.11.2: single-tool pack, no tool_name → auto-select the sole tool (not run)
+    entry = {"entrypoint": "wc.tool",
+             "tools": [{"name": "count_words", "entrypoint": "wc.tool:count_words"}]}
+    assert _resolve_container_target(entry, None) == ("wc.tool", ["count_words"])
+
+
+def test_resolve_target_multi_tool_keeps_package_default():
+    # 0.11.2: multi-tool, no tool_name → package-level entrypoint (unchanged)
+    entry = {"entrypoint": "mod.tool:dispatch",
+             "tools": [{"name": "a", "entrypoint": "mod.tool:a"},
+                       {"name": "b", "entrypoint": "mod.tool:b"}]}
+    assert _resolve_container_target(entry, None) == ("mod.tool", ["dispatch"])
+
+
 def test_resolve_target_v02_colon_function():
     entry = {"entrypoint": "mod.tool:describe", "tools": []}
     assert _resolve_container_target(entry, None) == ("mod.tool", ["describe"])

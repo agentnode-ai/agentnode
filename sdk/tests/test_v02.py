@@ -69,6 +69,48 @@ class TestLoadTool:
                 func = load_tool("my-pack")
                 assert func == mock_module.run
 
+    def test_load_single_tool_autoselect(self, tmp_path):
+        """0.11.2: single-tool pack — load_tool(slug) with no tool_name
+        auto-selects the sole tool's entrypoint instead of the default `run`."""
+        self._write_lockfile(tmp_path, {
+            "word-counter-pack": {
+                "version": "1.0.0",
+                "entrypoint": "wc.tool",  # colon-less → old code defaulted to run()
+                "tools": [
+                    {"name": "count_words", "entrypoint": "wc.tool:count_words"},
+                ],
+            }
+        })
+        # spec=[...] so the module has NO `run` attr — old behavior would raise.
+        mock_module = MagicMock(spec=["count_words"])
+        mock_module.count_words = lambda text="": {"words": 0}
+
+        with patch("agentnode_sdk.installer._lockfile_path", return_value=tmp_path / "agentnode.lock"):
+            with patch("agentnode_sdk.installer.importlib.import_module", return_value=mock_module):
+                func = load_tool("word-counter-pack")
+                assert func == mock_module.count_words
+
+    def test_load_multi_tool_uses_package_entrypoint(self, tmp_path):
+        """0.11.2: multi-tool pack — load_tool(slug) with no tool_name still uses
+        the package-level entrypoint (no guessing among tools). Unchanged."""
+        self._write_lockfile(tmp_path, {
+            "multi-pack": {
+                "version": "1.0.0",
+                "entrypoint": "multi.tool:dispatch",
+                "tools": [
+                    {"name": "a", "entrypoint": "multi.tool:a"},
+                    {"name": "b", "entrypoint": "multi.tool:b"},
+                ],
+            }
+        })
+        mock_module = MagicMock(spec=["dispatch", "a", "b"])
+        mock_module.dispatch = lambda **k: "dispatched"
+
+        with patch("agentnode_sdk.installer._lockfile_path", return_value=tmp_path / "agentnode.lock"):
+            with patch("agentnode_sdk.installer.importlib.import_module", return_value=mock_module):
+                func = load_tool("multi-pack")
+                assert func == mock_module.dispatch
+
     def test_load_v02_with_tool_name(self, tmp_path):
         """v0.2 pack — load_tool(slug, tool_name) returns specific function."""
         self._write_lockfile(tmp_path, {

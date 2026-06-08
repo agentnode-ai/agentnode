@@ -1036,6 +1036,21 @@ def _resolve_entrypoint(entrypoint: str) -> tuple[str, str]:
     return entrypoint, "run"
 
 
+def _default_tool_entrypoint(entry: dict) -> str | None:
+    """Entrypoint to use when no explicit ``tool_name`` is given.
+
+    Auto-selects the sole tool when the pack declares EXACTLY one tool with an
+    entrypoint, so ``agentnode run <slug>`` works for single-tool packs without
+    the caller knowing the tool name. Otherwise falls back to the package-level
+    entrypoint — multi-tool packs are unchanged (the runner must not guess
+    among several tools). Returns ``None`` when neither is available.
+    """
+    tools = entry.get("tools") or []
+    if len(tools) == 1 and tools[0].get("entrypoint"):
+        return tools[0]["entrypoint"]
+    return entry.get("entrypoint")
+
+
 def load_tool(slug: str, tool_name: str | None = None, *, _internal: bool = False) -> Any:
     """Load an installed package's tool function.
 
@@ -1101,8 +1116,9 @@ def load_tool(slug: str, tool_name: str | None = None, *, _internal: bool = Fals
             f"Available tools: {[t.get('name') for t in pkg.get('tools', [])]}"
         )
 
-    # v0.1 fallback / single-tool: use package-level entrypoint
-    entrypoint = pkg.get("entrypoint")
+    # No tool_name: auto-select the sole tool when exactly one is declared,
+    # else fall back to the package-level entrypoint (multi-tool unchanged).
+    entrypoint = _default_tool_entrypoint(pkg)
     if not entrypoint:
         raise ImportError(f"Package '{slug}' has no entrypoint in lockfile.")
 
