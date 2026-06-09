@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from agentnode_sdk.sandbox.types import (
     MountSpec,
@@ -9,6 +10,9 @@ from agentnode_sdk.sandbox.types import (
     SandboxAvailability,
     SandboxRequiredError,
 )
+
+if TYPE_CHECKING:
+    from agentnode_sdk.sandbox.agent_session import AgentSandboxSession
 
 
 class SandboxBackend(ABC):
@@ -64,6 +68,18 @@ class SandboxBackend(ABC):
 
     def run_mcp_process(self, spec: ProcessSpec):  # pragma: no cover - P0.2
         raise NotImplementedError("long-lived sandboxed MCP run is P0.2")
+
+    def open_agent_session(self, spec: ProcessSpec) -> "AgentSandboxSession":
+        """Open a long-lived bidirectional session to a sandboxed AGENT process.
+
+        Default is **fail-closed**: a backend that cannot isolate must never run
+        agent code on the host. Implemented by :class:`ContainerBackend`.
+        Sprint B1: nothing in production calls this yet (``run_agent`` is
+        unchanged) — it only adds the capability.
+        """
+        raise SandboxRequiredError(
+            "No sandbox backend available — refusing to run agent code on the host."
+        )
 
 
 class NoSandboxBackend(SandboxBackend):

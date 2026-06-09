@@ -6,12 +6,15 @@ P0.1 implements detection (`check_available`, cached, no image pull) and the pur
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
+import threading
 
+from agentnode_sdk.sandbox.agent_session import AgentSandboxSession
 from agentnode_sdk.sandbox.backend import SandboxBackend
-from agentnode_sdk.sandbox.types import ProcessSpec, SandboxAvailability
+from agentnode_sdk.sandbox.types import ProcessSpec, SandboxAvailability, SandboxRequiredError
 
 
 def sandbox_volume_name(slug: str, version: str | None, artifact_hash: str | None) -> str:
@@ -184,3 +187,80 @@ class ContainerBackend(SandboxBackend):
             out, err = proc.communicate()
             return -1, out or "", (err or "") + f"\n[sandbox timed out after {timeout}s]"
         return proc.returncode, out or "", err or ""
+
+    # -- long-lived agent session (B1) ---------------------------------------
+
+    def open_agent_session(self, spec: ProcessSpec) -> AgentSandboxSession:
+        """Start the container from ``spec`` and return a bidirectional session.
+
+        Fail-closed: if no runtime/image is available, raise — never run agent
+        code on the host. The caller supplies the hardened spec (network=none,
+        env={}, the agent volume RO at /pack, clean_home, interactive) and the
+        ``python -c <wrapper>`` command.
+        """
+        avail = self.check_available()
+        if not avail.available:
+            raise SandboxRequiredError(
+                "Agent sandbox requires a container runtime + the pinned image. "
+                f"{avail.reason or 'none available'} — refusing to run agent code "
+                "on the host."
+            )
+        argv = self.wrap_command(spec)
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return _ContainerAgentSession(proc, runtime=avail.backend, name=spec.name)
+
+
+class _ContainerAgentSession(AgentSandboxSession):
+    """A long-lived bidirectional session over a container's stdio (line-framed
+    JSON). The agent's own stdout/stderr are redirected inside the wrapper, so the
+    container's real stdout carries only protocol lines."""
+
+    def __init__(self, proc: "subprocess.Popen", *, runtime: str | None = None,
+                 name: str | None = None):
+        self._proc = proc
+        self._runtime = runtime
+        self._name = name
+
+    def send(self, message: dict) -> None:
+        if not self._proc.stdin:
+            raise RuntimeError("agent session is not writable")
+        self._proc.stdin.write(json.dumps(message) + "\n")
+        self._proc.stdin.flush()
+
+    def recv(self, timeout: float) -> dict | None:
+        out = self._proc.stdout
+        if not out:
+            return None
+        box: list = [None]
+        t = threading.Thread(target=lambda: box.__setitem__(0, out.readline()), daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            raise TimeoutError(f"no agent message within {timeout}s")
+        line = box[0]
+        if not line:
+            return None
+        return json.loads(line)
+
+    def close(self) -> None:
+        try:
+            if self._proc.poll() is None:
+                self._proc.kill()
+        except Exception:
+            pass
+        # Killing the `docker run` client does not reliably stop the container;
+        # force-remove by name (best-effort, idempotent under --rm).
+        if self._name and self._runtime:
+            try:
+                subprocess.run(
+                    [self._runtime, "rm", "-f", self._name],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                pass

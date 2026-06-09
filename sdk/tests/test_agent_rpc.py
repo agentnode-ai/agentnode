@@ -148,13 +148,23 @@ class TestAgentRpcHostRun:
 # ---------------------------------------------------------------------------
 
 def test_no_production_importer_of_agent_rpc_modules():
+    """B1 update: the backend now legitimately uses ``agent_session`` (the session
+    capability lives in the sandbox backend). But ``agent_rpc`` (the host loop) is
+    still wired by NOTHING in production (that is B2's run_agent routing), and
+    ``agent_session`` must NOT leak outside the sandbox backend."""
     import agentnode_sdk
     root = Path(agentnode_sdk.__file__).parent
-    pat = re.compile(r"\bagent_(session|rpc)\b")
-    offenders = []
+    rpc_pat = re.compile(r"\bagent_rpc\b")
+    sess_pat = re.compile(r"\bagent_session\b")
+    # files where each name may legitimately appear
+    rpc_allowed = {"agent_rpc.py"}
+    sess_allowed = {"agent_session.py", "agent_rpc.py", "backend.py", "container_backend.py"}
+    rpc_offenders, sess_offenders = [], []
     for p in root.rglob("*.py"):
-        if p.name in ("agent_session.py", "agent_rpc.py"):
-            continue  # the new pair may reference each other
-        if pat.search(p.read_text(encoding="utf-8")):
-            offenders.append(str(p.relative_to(root)))
-    assert offenders == [], f"agent-rpc modules imported by production: {offenders}"
+        txt = p.read_text(encoding="utf-8")
+        if p.name not in rpc_allowed and rpc_pat.search(txt):
+            rpc_offenders.append(str(p.relative_to(root)))
+        if p.name not in sess_allowed and sess_pat.search(txt):
+            sess_offenders.append(str(p.relative_to(root)))
+    assert rpc_offenders == [], f"agent_rpc imported by production (B2 not done): {rpc_offenders}"
+    assert sess_offenders == [], f"agent_session leaked outside the sandbox backend: {sess_offenders}"
