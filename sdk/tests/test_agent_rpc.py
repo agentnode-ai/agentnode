@@ -148,16 +148,16 @@ class TestAgentRpcHostRun:
 # ---------------------------------------------------------------------------
 
 def test_no_production_importer_of_agent_rpc_modules():
-    """B1 update: the backend now legitimately uses ``agent_session`` (the session
-    capability lives in the sandbox backend). But ``agent_rpc`` (the host loop) is
-    still wired by NOTHING in production (that is B2's run_agent routing), and
-    ``agent_session`` must NOT leak outside the sandbox backend."""
+    """B2a update: ``agent_rpc`` (the host loop) is now legitimately wired into the
+    agent run path by ``agent_sandbox.py`` (the B2a routing); it must NOT appear
+    anywhere else. ``agent_session`` stays confined to the sandbox backend. (B1
+    added agent_session to the backend; B2a adds agent_rpc to agent_sandbox.)"""
     import agentnode_sdk
     root = Path(agentnode_sdk.__file__).parent
     rpc_pat = re.compile(r"\bagent_rpc\b")
     sess_pat = re.compile(r"\bagent_session\b")
     # files where each name may legitimately appear
-    rpc_allowed = {"agent_rpc.py"}
+    rpc_allowed = {"agent_rpc.py", "agent_sandbox.py"}
     sess_allowed = {"agent_session.py", "agent_rpc.py", "backend.py", "container_backend.py"}
     rpc_offenders, sess_offenders = [], []
     for p in root.rglob("*.py"):
