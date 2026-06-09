@@ -111,6 +111,31 @@ class TestLoadTool:
                 func = load_tool("multi-pack")
                 assert func == mock_module.dispatch
 
+    def test_load_multi_tool_no_toolname_lists_tools(self, tmp_path):
+        """0.11.3: multi-tool pack run without a tool name and an unresolvable
+        package entrypoint → helpful error listing tools + slug:tool hint.
+        Message-only; dispatch behaviour unchanged."""
+        self._write_lockfile(tmp_path, {
+            "multi-pack": {
+                "version": "1.0.0",
+                "entrypoint": "multi.tool",  # colon-less → 'run', which won't exist
+                "tools": [
+                    {"name": "a", "entrypoint": "multi.tool:a"},
+                    {"name": "b", "entrypoint": "multi.tool:b"},
+                ],
+            }
+        })
+        mock_module = MagicMock(spec=["a", "b"])  # no 'run' attribute
+
+        with patch("agentnode_sdk.installer._lockfile_path", return_value=tmp_path / "agentnode.lock"):
+            with patch("agentnode_sdk.installer.importlib.import_module", return_value=mock_module):
+                with pytest.raises(ImportError) as ei:
+                    load_tool("multi-pack")
+        msg = str(ei.value)
+        assert "multiple tools" in msg
+        assert "'a'" in msg and "'b'" in msg
+        assert "multi-pack:<tool>" in msg
+
     def test_load_v02_with_tool_name(self, tmp_path):
         """v0.2 pack — load_tool(slug, tool_name) returns specific function."""
         self._write_lockfile(tmp_path, {

@@ -1051,6 +1051,20 @@ def _default_tool_entrypoint(entry: dict) -> str | None:
     return entry.get("entrypoint")
 
 
+def _multi_tool_hint(entry: dict, slug: str = "<slug>") -> str:
+    """Trailing hint for resolution-failure errors: if the pack exposes MORE than
+    one tool, point the user at ``agentnode run <slug>:<tool>`` and list the tools.
+    Empty string for single-tool / no-tools packs. Message-only — does not change
+    which entrypoint is chosen."""
+    names = [t.get("name") for t in (entry.get("tools") or []) if t.get("name")]
+    if len(names) > 1:
+        return (
+            f" This package exposes multiple tools: {names}. "
+            f"Run a specific one with: agentnode run {slug}:<tool>."
+        )
+    return ""
+
+
 def load_tool(slug: str, tool_name: str | None = None, *, _internal: bool = False) -> Any:
     """Load an installed package's tool function.
 
@@ -1120,7 +1134,10 @@ def load_tool(slug: str, tool_name: str | None = None, *, _internal: bool = Fals
     # else fall back to the package-level entrypoint (multi-tool unchanged).
     entrypoint = _default_tool_entrypoint(pkg)
     if not entrypoint:
-        raise ImportError(f"Package '{slug}' has no entrypoint in lockfile.")
+        raise ImportError(
+            f"Package '{slug}' has no entrypoint in lockfile."
+            + _multi_tool_hint(pkg, slug)
+        )
 
     module_path, func_name = _resolve_entrypoint(entrypoint)
     mod = _import_module(module_path, slug)
@@ -1129,6 +1146,7 @@ def load_tool(slug: str, tool_name: str | None = None, *, _internal: bool = Fals
         raise ImportError(
             f"Function '{func_name}' not found in module '{module_path}' "
             f"for package '{slug}'."
+            + _multi_tool_hint(pkg, slug)
         )
     return func
 

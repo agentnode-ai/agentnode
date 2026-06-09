@@ -595,7 +595,14 @@ class TestFieldClassification:
     """Every field in a real lockfile entry must be either canonical,
     mutable, or the _integrity seal itself."""
 
-    KNOWN_FIELDS = set(CANONICAL_FIELDS) | set(MUTABLE_FIELDS) | {"_integrity", "_signatures"}
+    # V3 = canonical V1 + _signatures + publisher_slug (all integrity-sealed).
+    KNOWN_FIELDS = set(CANONICAL_FIELDS_V3) | set(MUTABLE_FIELDS) | {"_integrity"}
+
+    def test_known_fields_cover_v3(self):
+        """Regression: V3 canonical fields (incl. _signatures, publisher_slug)
+        must be classified, else a real lockfile carrying them trips the check."""
+        assert "publisher_slug" in self.KNOWN_FIELDS
+        assert "_signatures" in self.KNOWN_FIELDS
 
     def test_toolpack_entry_fields_classified(self):
         e = seal_entry(_make_entry())

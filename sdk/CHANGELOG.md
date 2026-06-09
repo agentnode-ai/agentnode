@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.11.3 — Test hygiene + multi-tool run guidance
+
+### Fixed
+
+- **Stale lock-integrity field-classification test.** `test_real_lockfile_fields_classified`
+  used the V1 `CANONICAL_FIELDS` set, so it flagged the V3 field `publisher_slug`
+  as "unclassified" on real lockfiles and failed. The integrity model itself
+  already seals `publisher_slug` (`CANONICAL_FIELDS_V3`); only the test was stale.
+  Updated to `CANONICAL_FIELDS_V3` — no change to the integrity model.
+
+### Changed
+
+- **Clearer `agentnode run <slug>` error for multi-tool packs.** When a package
+  exposes more than one tool and resolution fails without an explicit tool name,
+  the error now lists the available tools and points at
+  `agentnode run <slug>:<tool>` instead of a generic "no entrypoint" / "Function
+  'run' not found". Message-only — single-tool auto-select and multi-tool dispatch
+  behaviour are unchanged. Applied consistently to the host and container paths.
+
 ## 0.11.2 — CLI run resolution fixes
 
 ### Fixed

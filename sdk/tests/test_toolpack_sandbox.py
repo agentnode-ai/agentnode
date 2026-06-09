@@ -354,6 +354,16 @@ def test_resolve_target_multi_tool_keeps_package_default():
     assert _resolve_container_target(entry, None) == ("mod.tool", ["dispatch"])
 
 
+def test_resolve_target_multi_tool_no_entrypoint_hints():
+    # 0.11.3: multi-tool pack with NO package-level entrypoint → helpful hint
+    # listing tools + slug:tool (message-only; container path mirrors the host).
+    from agentnode_sdk.exceptions import AgentNodeToolError
+    entry = {"tools": [{"name": "a", "entrypoint": "m:a"},
+                       {"name": "b", "entrypoint": "m:b"}]}
+    with pytest.raises(AgentNodeToolError, match="multiple tools"):
+        _resolve_container_target(entry, None)
+
+
 def test_resolve_target_v02_colon_function():
     entry = {"entrypoint": "mod.tool:describe", "tools": []}
     assert _resolve_container_target(entry, None) == ("mod.tool", ["describe"])
