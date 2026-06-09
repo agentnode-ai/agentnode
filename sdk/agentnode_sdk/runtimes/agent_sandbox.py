@@ -99,14 +99,24 @@ def run_agent_sandboxed(slug, entry, agent_config, *, goal=None, run_id=None, **
 
     # B2a: STRICT host-side allowlist (the agent's declared tool_access). A
     # community agent with no declared allowlist gets no tool access — broadening
-    # "unrestricted" community agents is a later decision. LLM broker is B2b, so
-    # call_llm fails cleanly here.
-    session = backend.open_agent_session(spec)
+    # "unrestricted" community agents is a later decision.
+    # B2b-1: LLM calls go through the host-side broker (the provider key stays on
+    # the host, never in the container).
+    from agentnode_sdk.runtimes.agent_llm_broker import host_llm_broker
+
+    # Fail-closed: a sandbox-START failure (e.g. the runtime vanished between the
+    # availability check and the launch) returns a clean sandbox_unavailable —
+    # it never raises out and never falls back to the host.
+    try:
+        session = backend.open_agent_session(spec)
+    except Exception as exc:
+        return _fail(f"Could not start the agent sandbox: {exc}")
+
     try:
         host = AgentRpcHost(
             allowed_packages=allowed or [],
             max_tool_calls=max_tool_calls,
-            llm_broker=None,
+            llm_broker=host_llm_broker,
         )
         out = host.run(
             session,

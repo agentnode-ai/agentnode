@@ -194,7 +194,27 @@ class TestRunAgentSandboxed:
         assert r.success is False
         assert session.closed is True   # finally ran despite the error
 
-    def test_call_llm_without_broker_clean_error(self, monkeypatch):
+    def test_call_llm_no_provider_fail_closed(self, monkeypatch):
+        """B2b-1: broker wired but NO provider → the agent's call_llm makes the
+        run fail-closed (generic error, never host)."""
+        entry, cfg = _sandboxed_entry()
+        session = FakeSession(agent_script=[
+            {"id": 1, "type": "call_llm", "messages": [{"role": "user", "content": "hi"}]},
+            {"id": 0, "type": "result", "ok": True, "value": {"done": True}},
+        ])
+        backend = _FakeBackend(available=True, session=session)
+        monkeypatch.setattr("agentnode_sdk.sandbox.get_default_backend", lambda: backend)
+        monkeypatch.setattr("agentnode_sdk.runtimes.agent_runner._auto_detect_llm", lambda *a, **k: None)
+        _mock_volume_inspect_ok(monkeypatch)
+        r = run_agent_sandboxed("comm-agent", entry, cfg)
+        assert r.success is False
+        assert r.mode_used == "agent_sandbox"
+        assert session.closed is True
+
+    def test_call_llm_succeeds_with_broker(self, monkeypatch):
+        """call_llm is serviced HOST-side by the broker; the completion (NOT the
+        provider key) is returned to the agent, and no key crosses into the
+        container env."""
         entry, cfg = _sandboxed_entry()
         session = FakeSession(agent_script=[
             {"id": 1, "type": "call_llm", "messages": [{"role": "user", "content": "hi"}]},
@@ -203,11 +223,51 @@ class TestRunAgentSandboxed:
         backend = _FakeBackend(available=True, session=session)
         monkeypatch.setattr("agentnode_sdk.sandbox.get_default_backend", lambda: backend)
         _mock_volume_inspect_ok(monkeypatch)
+
+        class _Msg:
+            content = "completion text"
+
+        class _Choice:
+            message = _Msg()
+
+        class _Resp:
+            choices = [_Choice()]
+
+        class _Cmp:
+            @staticmethod
+            def create(**kw):
+                return _Resp()
+
+        class _Chat:
+            completions = _Cmp()
+
+        class _Client:
+            chat = _Chat()
+
+        monkeypatch.setattr("agentnode_sdk.runtimes.agent_runner._auto_detect_llm",
+                            lambda *a, **k: {"client": _Client(), "provider": "openai", "model": "x"})
         run_agent_sandboxed("comm-agent", entry, cfg)
-        # the host's response to the agent's call_llm was a clean refusal
-        refusals = [m for m in session.sent
-                    if m.get("type") == "response" and not m.get("ok")]
-        assert any("broker" in (m.get("error") or "") for m in refusals)
+        responses = [m for m in session.sent if m.get("type") == "response" and m.get("ok")]
+        assert any((m.get("completion") or {}).get("content") == "completion text" for m in responses)
+        # no provider key crossed into the container env
+        assert "OPENAI_API_KEY" not in (backend.opened_spec.env or {})
+        assert "ANTHROPIC_API_KEY" not in (backend.opened_spec.env or {})
+
+    def test_open_session_failure_fail_closed(self, monkeypatch):
+        """R1: a sandbox-START failure returns a clean sandbox_unavailable —
+        never raises, never host."""
+        entry, cfg = _sandboxed_entry()
+
+        class _RaisingBackend(_FakeBackend):
+            def open_agent_session(self, spec):
+                raise OSError("container runtime vanished")
+
+        monkeypatch.setattr("agentnode_sdk.sandbox.get_default_backend",
+                            lambda: _RaisingBackend(available=True))
+        _mock_volume_inspect_ok(monkeypatch)
+        r = run_agent_sandboxed("comm-agent", entry, cfg)
+        assert r.success is False
+        assert r.mode_used == "sandbox_unavailable"
 
 
 def test_no_host_exec_in_sandbox_path():
