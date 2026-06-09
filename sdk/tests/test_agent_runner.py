@@ -1886,3 +1886,87 @@ class TestMarkUntrustedToolOutput:
         assert detected is True
         assert "[TOOL OUTPUT - untrusted data" in content
         assert "sk-secret123" in content  # content preserved, not stripped
+
+
+# ---------------------------------------------------------------------------
+# Agent Execution Boundary (Sprint 1 — audit + boundary lock, no behaviour change)
+# ---------------------------------------------------------------------------
+# These tests lock the *structure* that makes today's agent execution safe (see
+# docs/security/agent-execution-boundary.md): run_agent is the sole gated entry,
+# the private host-exec functions have no other callers, agent sub-calls re-enter
+# the gated runner, trust comes from the lockfile (not kwargs), and a trusted
+# agent currently sees the host env (a documented exposure, not a new behaviour).
+
+def _agentnode_sources():
+    import agentnode_sdk
+    from pathlib import Path
+    root = Path(agentnode_sdk.__file__).parent
+    return root, list(root.rglob("*.py"))
+
+
+class TestAgentExecutionBoundary:
+    def test_run_agent_only_called_from_runner(self):
+        """run_agent() is the single gated entry point — only runner.py calls it
+        (agent_runner.py defines it). Any other caller is a new execution path."""
+        import re
+        root, files = _agentnode_sources()
+        offenders = []
+        for p in files:
+            if p.name in ("agent_runner.py", "runner.py"):
+                continue  # definition + the one gated dispatch
+            if re.search(r"\brun_agent\s*\(", p.read_text(encoding="utf-8")):
+                offenders.append(str(p.relative_to(root)))
+        assert offenders == [], f"run_agent() called outside runner.py: {offenders}"
+
+    def test_private_agent_exec_has_no_external_callers(self):
+        """The host-exec primitives must stay private to agent_runner.py."""
+        root, files = _agentnode_sources()
+        names = ["_execute_with_timeout", "_execute_with_process", "_load_agent_entrypoint"]
+        offenders = []
+        for p in files:
+            if p.name == "agent_runner.py":
+                continue
+            txt = p.read_text(encoding="utf-8")
+            offenders += [f"{p.relative_to(root)}:{n}" for n in names if n in txt]
+        assert offenders == [], f"private agent-exec referenced outside agent_runner.py: {offenders}"
+
+    def test_runner_routes_agent_packages_to_run_agent(self):
+        """runner.run_tool dispatches package_type=='agent' into the gated run_agent."""
+        root, _ = _agentnode_sources()
+        src = (root / "runner.py").read_text(encoding="utf-8")
+        assert 'package_type") == "agent"' in src
+        assert "run_agent(" in src
+
+    def test_agent_subcalls_route_through_gated_runner(self):
+        """An agent's tool/sub-agent calls re-enter agentnode_sdk.runner.run_tool
+        (the gated pipeline), not a private host-exec path."""
+        root, _ = _agentnode_sources()
+        src = (root / "runtimes" / "agent_runner.py").read_text(encoding="utf-8")
+        assert "from agentnode_sdk.runner import run_tool" in src
+
+    def test_trust_level_kwarg_cannot_forge_gate(self):
+        """The gate reads entry['trust_level'] (from the lockfile). A trust_level
+        passed as a kwarg lands in the agent's args, NOT the gate — it cannot
+        elevate an unverified agent."""
+        entry = _agent_entry(trust_level="unverified")
+        result = run_agent("test-agent", entry=entry, trust_level="curated")
+        assert result.success is False
+        assert "trust level" in (result.error or "")
+
+    def test_trusted_agent_sees_host_env(self, monkeypatch, tmp_path):
+        """CHARACTERIZATION (documents current boundary, not a new behaviour):
+        a trusted agent's orchestration code runs on the host and sees the host
+        os.environ. If env filtering is ever added, that is a conscious change and
+        this test must change with it."""
+        _write_agent_module(tmp_path, "agent_env", """
+            import os
+            def run(context, **kwargs):
+                return {"saw_sentinel": os.environ.get("AGENTNODE_BOUNDARY_SENTINEL")}
+        """)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setenv("AGENTNODE_BOUNDARY_SENTINEL", "host-secret-xyz")
+        entry = _agent_entry(trust_level="trusted")
+        entry["agent"]["entrypoint"] = "agent_env.core:run"
+        result = run_agent("test-agent", entry=entry)
+        assert result.success is True
+        assert result.result == {"saw_sentinel": "host-secret-xyz"}
