@@ -286,12 +286,38 @@ def _post_publish(
     }
 
 
+def _confirm_publish(
+    pkg_id: str, version: str, registry: str, *, yes: bool, interactive: bool
+) -> bool:
+    """Final consent gate before an external publish. Returns True to proceed.
+
+    - ``yes``: explicit bypass for CI/automation → proceed.
+    - not ``interactive``: refuse — never publish non-interactively without --yes.
+    - interactive: prompt ``[y/N]``, default No.
+    """
+    if yes:
+        return True
+    if not interactive:
+        print(
+            "  Refusing to publish non-interactively. "
+            "Re-run with --yes to confirm in CI/automation.",
+            file=sys.stderr,
+        )
+        return False
+    answer = input(f"  Publish {pkg_id}@{version} to {registry}? [y/N] ").strip().lower()
+    if answer in ("y", "yes"):
+        return True
+    print("  Publish cancelled.")
+    return False
+
+
 def cmd_publish(
     path_str: str,
     *,
     dry_run: bool = False,
     skip_validate: bool = False,
     token: str | None = None,
+    yes: bool = False,
 ) -> int:
     """Publish a package to the AgentNode registry."""
     from agentnode_sdk.cli.validate import validate_package_dir
@@ -388,6 +414,19 @@ def cmd_publish(
             file=sys.stderr,
         )
         return 1
+
+    # Publish confirm gate — publish is an external, hard-to-undo action.
+    # Detect interactivity robustly (CI/pipes have a non-TTY stdin even without
+    # AGENTNODE_NON_INTERACTIVE set); non-interactive requires explicit --yes.
+    registry = _resolve_api_base().replace("https://", "").replace("http://", "")
+    interactive = sys.stdin.isatty() and os.environ.get(
+        "AGENTNODE_NON_INTERACTIVE", ""
+    ).lower() not in ("true", "1")
+    if not _confirm_publish(pkg_id, version, registry, yes=yes, interactive=interactive):
+        # interactive decline = clean cancel (0); non-interactive without --yes
+        # = refusal (1). When yes=True the gate always proceeds, so we never land
+        # here in that case.
+        return 0 if interactive else 1
 
     try:
         sig_block = _sign_for_publish(pkg_id, manifest, artifact_bytes)

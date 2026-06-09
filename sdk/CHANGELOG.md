@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.11.4 — Publish confirm gate
+
+### Added
+
+- **`agentnode publish` now asks for confirmation before publishing.** After the
+  preview, the command prompts `Publish <pkg>@<version> to <registry>? [y/N]`
+  (default No) and only uploads on explicit `y`. A new `--yes`/`-y` flag skips
+  the prompt for CI/automation. `--dry-run` is unchanged (never prompts, never
+  publishes). Prevents accidental publishes of the wrong package/version/folder.
+
+### BREAKING / Upgrade Notes
+
+- **Non-interactive publish now requires `--yes`.** Previously `agentnode publish`
+  in a non-interactive context (CI, piped stdin, or `AGENTNODE_NON_INTERACTIVE=1`)
+  uploaded silently. It now **refuses** without `--yes` and exits non-zero.
+  Automation that publishes must add `--yes`. Interactive use is unaffected
+  beyond the new prompt.
+
 ## 0.11.3 — Test hygiene + multi-tool run guidance
 
 ### Fixed

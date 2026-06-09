@@ -4,7 +4,9 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import tarfile
+import types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -15,6 +17,7 @@ from agentnode_sdk.cli.publish import (
     PUBLISH_EXCLUDE_FILES,
     PUBLISH_EXCLUDE_SUFFIXES,
     _build_artifact,
+    _confirm_publish,
     _should_exclude,
     cmd_publish,
 )
@@ -259,7 +262,7 @@ class TestCmdPublish:
             "message": "Published test-pack@1.0.0",
         }
         with patch("agentnode_sdk.cli.publish._post_publish", return_value=mock_resp):
-            rc = cmd_publish(str(tmp_path), token="test-key-123")
+            rc = cmd_publish(str(tmp_path), token="test-key-123", yes=True)
         assert rc == 0
         out = capsys.readouterr().out
         assert "Published test-pack@1.0.0" in out
@@ -276,7 +279,7 @@ class TestCmdPublish:
             "details": [],
         }
         with patch("agentnode_sdk.cli.publish._post_publish", return_value=mock_resp):
-            rc = cmd_publish(str(tmp_path), token="test-key-123")
+            rc = cmd_publish(str(tmp_path), token="test-key-123", yes=True)
         assert rc == 1
         out = capsys.readouterr().out
         assert "already exists" in out
@@ -484,7 +487,7 @@ class TestCmdPublishSigning:
             return mock_resp
 
         with patch("agentnode_sdk.cli.publish._post_publish", side_effect=capture_post):
-            rc = cmd_publish(str(tmp_path), token="test-key")
+            rc = cmd_publish(str(tmp_path), token="test-key", yes=True)
 
         assert rc == 0
         assert "_signatures" in captured_manifest
@@ -517,7 +520,7 @@ class TestCmdPublishSigning:
             return {"slug": "test-pack", "version": "1.0.0", "message": "ok"}
 
         with patch("agentnode_sdk.cli.publish._post_publish", side_effect=capture_post):
-            rc = cmd_publish(str(tmp_path), token="test-key")
+            rc = cmd_publish(str(tmp_path), token="test-key", yes=True)
 
         assert rc == 0
 
@@ -544,7 +547,7 @@ class TestCmdPublishSigning:
 
         with patch("agentnode_sdk.cli.publish._sign_for_publish", side_effect=RuntimeError("key error")):
             with patch("agentnode_sdk.cli.publish._post_publish", return_value=mock_resp):
-                rc = cmd_publish(str(tmp_path), token="test-key")
+                rc = cmd_publish(str(tmp_path), token="test-key", yes=True)
 
         assert rc == 0
         err = capsys.readouterr().err
@@ -591,3 +594,85 @@ class TestPublisherSlugRegressionGuards:
         from agentnode_sdk.cli.publish import manifest_to_entry
         entry = manifest_to_entry(MINIMAL_MANIFEST, "sha256:abc123")
         assert "publisher_slug" not in entry
+
+
+# ---------------------------------------------------------------------------
+# Publish confirm gate (0.11.4)
+# ---------------------------------------------------------------------------
+
+class TestConfirmPublishHelper:
+    """The decision logic in isolation — the security-critical part."""
+
+    def test_yes_bypasses(self):
+        assert _confirm_publish("p", "1.0", "reg", yes=True, interactive=False) is True
+
+    def test_non_interactive_without_yes_refuses(self, capsys):
+        assert _confirm_publish("p", "1.0", "reg", yes=False, interactive=False) is False
+        assert "non-interactively" in capsys.readouterr().err
+
+    def test_interactive_y_proceeds(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+        assert _confirm_publish("p", "1.0", "reg", yes=False, interactive=True) is True
+
+    def test_interactive_yes_word_proceeds(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "YES")
+        assert _confirm_publish("p", "1.0", "reg", yes=False, interactive=True) is True
+
+    def test_interactive_n_cancels(self, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+        assert _confirm_publish("p", "1.0", "reg", yes=False, interactive=True) is False
+        assert "cancelled" in capsys.readouterr().out
+
+    def test_interactive_enter_default_cancels(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "")
+        assert _confirm_publish("p", "1.0", "reg", yes=False, interactive=True) is False
+
+
+class TestCmdPublishConfirmGate:
+    """End-to-end wiring: the gate must sit before _post_publish."""
+
+    def test_non_interactive_without_yes_refuses(self, tmp_path, capsys, monkeypatch):
+        _write_manifest(tmp_path)
+        (tmp_path / "tools.py").write_text("def run(): pass")
+        # force non-tty deterministically (independent of pytest -s)
+        monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
+        with patch("agentnode_sdk.cli.publish._post_publish") as mock_post:
+            rc = cmd_publish(str(tmp_path), token="test-key")  # no --yes
+        assert rc == 1
+        mock_post.assert_not_called()
+        assert "non-interactively" in capsys.readouterr().err
+
+    def test_non_interactive_with_yes_publishes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path / "config"))
+        _write_manifest(tmp_path)
+        (tmp_path / "tools.py").write_text("def run(): pass")
+        monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
+        resp = {"slug": "test-pack", "version": "1.0.0", "message": "Published"}
+        with patch("agentnode_sdk.cli.publish._post_publish", return_value=resp) as mock_post:
+            rc = cmd_publish(str(tmp_path), token="test-key", yes=True)
+        assert rc == 0
+        mock_post.assert_called_once()
+
+    def test_interactive_decline_does_not_publish(self, tmp_path, monkeypatch):
+        _write_manifest(tmp_path)
+        (tmp_path / "tools.py").write_text("def run(): pass")
+        monkeypatch.delenv("AGENTNODE_NON_INTERACTIVE", raising=False)
+        monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+        with patch("agentnode_sdk.cli.publish._post_publish") as mock_post:
+            rc = cmd_publish(str(tmp_path), token="test-key")
+        assert rc == 0
+        mock_post.assert_not_called()
+
+    def test_interactive_accept_publishes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path / "config"))
+        _write_manifest(tmp_path)
+        (tmp_path / "tools.py").write_text("def run(): pass")
+        monkeypatch.delenv("AGENTNODE_NON_INTERACTIVE", raising=False)
+        monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+        resp = {"slug": "test-pack", "version": "1.0.0", "message": "Published"}
+        with patch("agentnode_sdk.cli.publish._post_publish", return_value=resp) as mock_post:
+            rc = cmd_publish(str(tmp_path), token="test-key")
+        assert rc == 0
+        mock_post.assert_called_once()

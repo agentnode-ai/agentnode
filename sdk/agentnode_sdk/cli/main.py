@@ -154,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     publish_parser.add_argument("--dry-run", action="store_true", help="Validate and build without uploading")
     publish_parser.add_argument("--skip-validate", action="store_true", help="Continue despite validation errors")
     publish_parser.add_argument("--token", default=None, help="API key (default: AGENTNODE_API_KEY env)")
+    publish_parser.add_argument("--yes", "-y", action="store_true", help="Skip the confirmation prompt (required for non-interactive/CI publish)")
 
     # record-cases
     record_parser = sub.add_parser("record-cases", help="Record VCR cassettes for API verification cases")
@@ -338,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
             return commands.cmd_verify_local(args.path)
         if args.command == "publish":
             from agentnode_sdk.cli.publish import cmd_publish
-            return cmd_publish(args.path, dry_run=args.dry_run, skip_validate=args.skip_validate, token=args.token)
+            return cmd_publish(args.path, dry_run=args.dry_run, skip_validate=args.skip_validate, token=args.token, yes=args.yes)
         if args.command == "record-cases":
             return commands.cmd_record_cases(args.path, strict=args.strict)
         if args.command == "inspect":
