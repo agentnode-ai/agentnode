@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.12.0 — Sandboxed community agents (flag-gated)
+
+### Added
+
+- **Agent sandbox (default OFF):** with `AGENTNODE_AGENT_SANDBOX=1` (or config
+  `agent_sandbox.enabled: true`), `verified`/`unverified` community agents run
+  **sandbox-or-fail-closed** in the pinned container image — never on the host,
+  with **no host fallback** anywhere on the path. Tool calls cross an
+  allowlisted RPC back to the host's gated runner (the host owns allowlist and
+  limits); `trusted`/`curated` agents are unchanged. With the flag OFF
+  (default), community agents remain refused exactly as in 0.11.4.
+- **Host-side LLM broker:** sandboxed agents request completions via RPC; the
+  provider call runs host-side and **provider API keys never enter the
+  container** (the container env is only `PYTHONPATH=/pack`).
+- **`llm_access` manifest block (default-deny):** a sandboxed agent gets NO
+  host LLM unless its manifest declares `llm_access.enabled: true` — analogous
+  to `tool_access`. Caps: `max_calls`, `max_input_chars`, `max_output_chars`;
+  optional `allowed_models` checks the HOST-chosen model (the agent never picks
+  a model; absent = unrestricted, `[]` = refuse-all, manifest+host = both must
+  allow). The host ceiling (`agent_sandbox.llm` in `~/.agentnode/config.json`)
+  always wins — it can lower caps, restrict models, or disable access entirely.
+  Refused/failed LLM calls return **graceful per-call errors** the agent can
+  catch; they never crash the run and never fall back to the host.
+- **Audit:** every sandboxed run writes ONE aggregated, sanitized record to
+  `~/.agentnode/audit.jsonl` (`event: agent_run`, `source: agent_sandbox`) —
+  counters, caps, and fixed reason codes only; **never prompts, keys, raw
+  provider errors, or agent-authored error text**. Fail-closed refusals
+  (missing volume/runtime, session-start failure) are audited too.
+- Agent manifest template (`agentnode init`) now documents the opt-in
+  `llm_access` block with the caps and `allowed_models`.
+
+### Changed
+
+- `agentnode init` agent template includes the `llm_access` example (newly
+  scaffolded packages only; existing manifests are unaffected — an absent
+  `llm_access` simply means deny).
+
+### Hardened
+
+- The sandbox path is fail-closed end to end: missing/stale volume, missing
+  container runtime or pinned image, sandbox-start failure, or a host-loop
+  error all return a clean `sandbox_unavailable`/error result — community
+  agent code never executes on the host.
+- LLM broker errors are generic and leak-free (no key, no provider internals,
+  no prompt echo). A model-allowlist refusal never calls the provider (no
+  charge), and the host-side model name is never sent into the sandbox.
+
+### BREAKING / Upgrade Notes
+
+- **None.** With the flag OFF (default), behavior is identical to 0.11.4.
+  There are no flag-ON users yet (the flag ships first in this release).
+- Enabling the agent sandbox requires a container runtime plus the pinned
+  public sandbox image — `agentnode sandbox pull` to fetch it,
+  `agentnode sandbox doctor` for diagnosis.
+- Operational note for managed hosts (e.g. Coolify): automatic image pruning
+  can remove the pinned sandbox image, degrading community execution to
+  fail-closed until it is re-pulled. Keep the image pinned (e.g. a minimal
+  keep-alive holder container referencing the digest) or re-pull on a
+  schedule.
+
 ## 0.11.4 — Publish confirm gate
 
 ### Added
