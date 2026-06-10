@@ -41,6 +41,9 @@ DEFAULTS: dict[str, Any] = {
         "compute": "allow",
         "unknown": "prompt",
     },
+    "agent_sandbox": {
+        "enabled": False,
+    },
 }
 
 VALID_VALUES: dict[str, tuple[str, ...]] = {
@@ -61,6 +64,7 @@ VALID_VALUES: dict[str, tuple[str, ...]] = {
     "guard.read": ("allow", "prompt", "deny"),
     "guard.compute": ("allow", "prompt", "deny"),
     "guard.unknown": ("allow", "prompt", "deny"),
+    "agent_sandbox.enabled": ("true", "false"),
 }
 
 
@@ -82,6 +86,7 @@ CONFIG_DESCRIPTIONS: dict[str, str] = {
     "guard.read": "Guard policy for tools that read data",
     "guard.compute": "Guard policy for tools that perform computation",
     "guard.unknown": "Guard policy for tools with unknown action type",
+    "agent_sandbox.enabled": "Route community (verified/unverified) agents through the container sandbox",
 }
 
 
@@ -138,6 +143,14 @@ def _merge_defaults(data: dict) -> dict[str, Any]:
         for extra_key in ("rate_limits", "agent_overrides", "tool_overrides"):
             if extra_key in data["guard"]:
                 cfg["guard"][extra_key] = data["guard"][extra_key]
+    if isinstance(data.get("agent_sandbox"), dict):
+        if "enabled" in data["agent_sandbox"]:
+            cfg["agent_sandbox"]["enabled"] = data["agent_sandbox"]["enabled"]
+        # The nested llm ceiling (max_calls/max_input_chars/max_output_chars/
+        # allowed_models/enabled) holds ints/lists — pass it through verbatim,
+        # like the guard extra keys above.
+        if isinstance(data["agent_sandbox"].get("llm"), dict):
+            cfg["agent_sandbox"]["llm"] = data["agent_sandbox"]["llm"]
     return cfg
 
 
@@ -201,7 +214,7 @@ def set_value(cfg: dict[str, Any], key: str, value: str) -> dict[str, Any]:
             f"Allowed: {', '.join(allowed)}"
         )
 
-    bool_keys = ("credentials.require_before_auto_install",)
+    bool_keys = ("credentials.require_before_auto_install", "agent_sandbox.enabled")
     actual_value: Any = value.lower() == "true" if key in bool_keys else value.lower()
 
     parts = key.split(".")

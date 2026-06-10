@@ -244,3 +244,102 @@ def test_config_path_env_dir_override(tmp_path, monkeypatch):
     custom_dir = tmp_path / "custom_dir"
     monkeypatch.setenv("AGENTNODE_CONFIG", str(custom_dir))
     assert config_path() == custom_dir / "config.json"
+
+
+# --- agent_sandbox section (0.12.1 hotfix: _merge_defaults must not strip it) ---
+
+
+class TestAgentSandboxConfigSection:
+    """Regression tests for the shipped 0.12.0 bug: a hand-written
+    agent_sandbox section was silently stripped by _merge_defaults, so the
+    documented config path (agent_sandbox.enabled) and the C2 host LLM
+    ceiling (agent_sandbox.llm) never reached their consumers."""
+
+    def test_defaults_include_agent_sandbox_disabled(self):
+        cfg = default_config()
+        assert cfg["agent_sandbox"]["enabled"] is False
+
+    def test_handwritten_section_survives_load(self, isolated_config):
+        isolated_config.parent.mkdir(parents=True, exist_ok=True)
+        isolated_config.write_text(
+            json.dumps({"agent_sandbox": {"enabled": True}}), encoding="utf-8")
+        loaded = load_config()
+        assert loaded["agent_sandbox"]["enabled"] is True
+
+    def test_nested_llm_ceiling_survives_load(self, isolated_config):
+        llm = {"enabled": True, "max_calls": 3, "max_input_chars": 1000,
+               "allowed_models": ["gpt-4o-mini"]}
+        isolated_config.parent.mkdir(parents=True, exist_ok=True)
+        isolated_config.write_text(
+            json.dumps({"agent_sandbox": {"enabled": True, "llm": llm}}),
+            encoding="utf-8")
+        loaded = load_config()
+        assert loaded["agent_sandbox"]["llm"] == llm
+
+    def test_save_load_roundtrip_preserves_section(self, isolated_config):
+        cfg = default_config()
+        cfg["agent_sandbox"] = {"enabled": True, "llm": {"max_calls": 5}}
+        save_config(cfg)
+        loaded = load_config()
+        assert loaded["agent_sandbox"]["enabled"] is True
+        assert loaded["agent_sandbox"]["llm"] == {"max_calls": 5}
+
+    def test_set_value_true_stores_real_bool(self):
+        cfg = default_config()
+        set_value(cfg, "agent_sandbox.enabled", "true")
+        assert cfg["agent_sandbox"]["enabled"] is True
+
+    def test_set_value_false_stores_real_bool_not_truthy_string(self):
+        # without the bool_keys entry this stored the string "false",
+        # which bool() would read as ENABLED
+        cfg = default_config()
+        set_value(cfg, "agent_sandbox.enabled", "false")
+        assert cfg["agent_sandbox"]["enabled"] is False
+        assert cfg["agent_sandbox"]["enabled"] is not True
+        assert not isinstance(cfg["agent_sandbox"]["enabled"], str)
+
+    def test_set_value_rejects_garbage(self):
+        cfg = default_config()
+        with pytest.raises(ValueError):
+            set_value(cfg, "agent_sandbox.enabled", "maybe")
+
+    def test_flag_enabled_via_config_file_alone(self, isolated_config, monkeypatch):
+        # the REAL integration: file on disk -> load_config -> flag reader
+        # (the old routing tests mocked load_config, which hid this bug)
+        from agentnode_sdk.runtimes.agent_sandbox import _agent_sandbox_enabled
+        monkeypatch.delenv("AGENTNODE_AGENT_SANDBOX", raising=False)
+        isolated_config.parent.mkdir(parents=True, exist_ok=True)
+        isolated_config.write_text(
+            json.dumps({"agent_sandbox": {"enabled": True}}), encoding="utf-8")
+        assert _agent_sandbox_enabled() is True
+
+    def test_flag_disabled_via_config_file_false(self, isolated_config, monkeypatch):
+        from agentnode_sdk.runtimes.agent_sandbox import _agent_sandbox_enabled
+        monkeypatch.delenv("AGENTNODE_AGENT_SANDBOX", raising=False)
+        isolated_config.parent.mkdir(parents=True, exist_ok=True)
+        isolated_config.write_text(
+            json.dumps({"agent_sandbox": {"enabled": False}}), encoding="utf-8")
+        assert _agent_sandbox_enabled() is False
+
+    def test_llm_ceiling_reaches_policy_resolution(self, isolated_config):
+        # file on disk -> load_config -> resolve_llm_policy: the host ceiling
+        # must clamp a greedy manifest (dead config before this fix)
+        from agentnode_sdk.runtimes.agent_llm_policy import resolve_llm_policy
+        isolated_config.parent.mkdir(parents=True, exist_ok=True)
+        isolated_config.write_text(
+            json.dumps({"agent_sandbox": {"llm": {"max_calls": 2}}}),
+            encoding="utf-8")
+        host_cfg = load_config()
+        pol = resolve_llm_policy(
+            {"llm_access": {"enabled": True, "max_calls": 999}}, host_cfg)
+        assert pol.max_calls == 2
+
+    def test_other_sections_unchanged(self, isolated_config):
+        isolated_config.parent.mkdir(parents=True, exist_ok=True)
+        isolated_config.write_text(
+            json.dumps({"guard": {"delete": "deny"},
+                        "agent_sandbox": {"enabled": True}}), encoding="utf-8")
+        loaded = load_config()
+        assert loaded["guard"]["delete"] == "deny"
+        assert loaded["guard"]["read"] == "allow"          # defaults intact
+        assert loaded["trust"]["minimum_trust_level"] == "verified"
