@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.12.1 — agent_sandbox config fix
+
+### Fixed
+
+- **`agent_sandbox` config section was stripped during `load_config()`.** The
+  config loader rebuilt the file from defaults and silently dropped a
+  hand-written `agent_sandbox` section, so the documented
+  `agent_sandbox.enabled: true` config path never took effect (only the
+  `AGENTNODE_AGENT_SANDBOX` env var worked), and the host LLM ceiling
+  (`agent_sandbox.llm.*`) never reached policy resolution. Both now survive
+  loading; the nested `llm` ceiling is passed through verbatim.
+- **`agentnode config set agent_sandbox.enabled true|false` now works** (the
+  key was missing from the allowed-keys whitelist) and stores a **real
+  boolean** — previously a stored string `"false"` would have been truthy,
+  i.e. read as enabled.
+
+### Upgrade Notes
+
+- No breaking changes. No behavior change unless you use the `agent_sandbox`
+  config path; the env var `AGENTNODE_AGENT_SANDBOX` behaves exactly as
+  before. The agent sandbox remains **default OFF**.
+
 ## 0.12.0 — Sandboxed community agents (flag-gated)
 
 ### Added
