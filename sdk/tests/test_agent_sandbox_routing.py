@@ -7,7 +7,9 @@ the flag is ON, and that trusted/curated/unknown are unchanged.
 """
 from __future__ import annotations
 
+import json
 import types
+from unittest import mock
 
 import pytest
 
@@ -275,6 +277,138 @@ class TestRunAgentSandboxed:
         r = run_agent_sandboxed("comm-agent", entry, cfg)
         assert r.success is False
         assert r.mode_used == "sandbox_unavailable"
+
+
+class TestSandboxAudit:
+    """C2: ONE aggregated, sanitized audit record per sandboxed run — counters,
+    caps, and fixed reason codes only; never prompts/keys/raw provider errors."""
+
+    @staticmethod
+    def _records(audit_dir):
+        f = audit_dir / "audit.jsonl"
+        if not f.exists():
+            return []
+        return [json.loads(line) for line in
+                f.read_text(encoding="utf-8").strip().splitlines() if line]
+
+    def _run_with_audit(self, monkeypatch, tmp_path, entry, cfg, session, run_id="rid-1"):
+        audit_dir = tmp_path / ".agentnode"
+        backend = _FakeBackend(available=True, session=session)
+        monkeypatch.setattr("agentnode_sdk.sandbox.get_default_backend", lambda: backend)
+        _mock_volume_inspect_ok(monkeypatch)
+        with mock.patch("agentnode_sdk.config.config_dir", return_value=audit_dir):
+            r = run_agent_sandboxed("comm-agent", entry, cfg, run_id=run_id)
+        return r, self._records(audit_dir)
+
+    def test_one_aggregated_record_per_run(self, monkeypatch, tmp_path):
+        entry, cfg = _sandboxed_entry()  # no llm_access → default-deny
+        session = FakeSession(agent_script=[
+            {"id": 1, "type": "call_llm", "messages": [{"role": "user", "content": "hi"}]},
+            {"id": 2, "type": "run_tool", "slug": "evil-pack", "tool_name": None, "kwargs": {}},
+            {"id": 0, "type": "result", "ok": True, "value": {"done": True}},
+        ])
+        r, records = self._run_with_audit(monkeypatch, tmp_path, entry, cfg, session)
+        assert r.success is True
+        assert len(records) == 1                       # aggregated, not per-call
+        rec = records[0]
+        assert rec["event"] == "agent_run"
+        assert rec["slug"] == "comm-agent"
+        assert rec["action"] == "allow"
+        assert rec["reason"] == "agent_completed"
+        assert rec["source"] == "agent_sandbox"
+        assert rec["trust"] == "unverified"
+        assert rec["request_id"] == "rid-1"
+        assert rec["sandbox"] is True
+        assert rec["llm"]["enabled"] is False
+        assert rec["llm"]["refused_disabled"] == 1
+        assert rec["tool_calls"] == 0                  # evil-pack never ran
+        assert rec["tool_refusals"] == 1               # host-side allowlist refusal
+
+    def test_audit_no_prompt_secret_or_agent_error_leak(self, monkeypatch, tmp_path):
+        entry, cfg = _sandboxed_entry(llm_access={"enabled": True})
+        sentinel_prompt = "SENTINEL-PROMPT-DO-NOT-AUDIT"
+        secret = "sk-AUDIT-LEAK-TEST"
+        agent_error = "agent-authored error text"
+        session = FakeSession(agent_script=[
+            {"id": 1, "type": "call_llm", "messages": [{"role": "user", "content": sentinel_prompt}]},
+            {"id": 0, "type": "result", "ok": False, "error": agent_error},
+        ])
+
+        def boom(*a, **k):
+            raise RuntimeError(f"401 key={secret} url=https://internal/v1")
+
+        monkeypatch.setattr("agentnode_sdk.runtimes.agent_runner._auto_detect_llm", boom)
+        r, records = self._run_with_audit(monkeypatch, tmp_path, entry, cfg, session)
+        assert r.success is False
+        assert len(records) == 1
+        text = json.dumps(records)
+        assert sentinel_prompt not in text             # no prompt content
+        assert secret not in text                      # no key / raw provider error
+        assert agent_error not in text                 # no agent-authored text
+        assert records[0]["reason"] == "agent_error"   # fixed code instead
+        assert records[0]["llm"]["provider_errors"] == 1
+
+    def test_fail_closed_gate_audited(self, monkeypatch, tmp_path):
+        entry, cfg = _sandboxed_entry()
+        audit_dir = tmp_path / ".agentnode"
+        monkeypatch.setattr("agentnode_sdk.sandbox.get_default_backend",
+                            lambda: _FakeBackend(available=False))
+        with mock.patch("agentnode_sdk.config.config_dir", return_value=audit_dir):
+            r = run_agent_sandboxed("comm-agent", entry, cfg, run_id="rid-2")
+        assert r.success is False
+        recs = self._records(audit_dir)
+        assert len(recs) == 1
+        assert recs[0]["action"] == "deny"
+        assert recs[0]["reason"] == "backend_unavailable"
+        assert recs[0]["llm"] is None                  # LLM never engaged
+
+    def test_disallowed_model_graceful_and_audited(self, monkeypatch, tmp_path):
+        entry, cfg = _sandboxed_entry(
+            llm_access={"enabled": True, "allowed_models": ["allowed-model"]})
+        session = FakeSession(agent_script=[
+            {"id": 1, "type": "call_llm", "messages": [{"role": "user", "content": "hi"}]},
+            {"id": 0, "type": "result", "ok": True, "value": {"done": True}},
+        ])
+        created = {"n": 0}
+
+        class _Cmp:
+            @staticmethod
+            def create(**kw):
+                created["n"] += 1
+                raise AssertionError("provider must not be called")
+
+        class _Chat:
+            completions = _Cmp()
+
+        class _Client:
+            chat = _Chat()
+
+        monkeypatch.setattr(
+            "agentnode_sdk.runtimes.agent_runner._auto_detect_llm",
+            lambda *a, **k: {"client": _Client(), "provider": "openai", "model": "host-model-x"})
+        r, records = self._run_with_audit(monkeypatch, tmp_path, entry, cfg, session)
+        # graceful per-call refusal — run completed, no host model name to the agent
+        refusals = [m for m in session.sent
+                    if m.get("type") == "response" and m.get("ok") is False]
+        assert any("not allowed" in (m.get("error") or "") for m in refusals)
+        assert all("host-model-x" not in (m.get("error") or "") for m in refusals)
+        assert r.success is True
+        assert created["n"] == 0                       # provider never called
+        rec = records[0]
+        assert rec["llm"]["refused_model"] == 1
+        assert rec["llm"]["model"] == "host-model-x"   # host-side audit only
+        assert rec["llm"]["allowed_models"] == ["allowed-model"]
+
+    def test_audit_failure_never_breaks_run(self, monkeypatch, tmp_path):
+        entry, cfg = _sandboxed_entry()
+        session = FakeSession(agent_script=[
+            {"id": 0, "type": "result", "ok": True, "value": {"done": True}}])
+        backend = _FakeBackend(available=True, session=session)
+        monkeypatch.setattr("agentnode_sdk.sandbox.get_default_backend", lambda: backend)
+        _mock_volume_inspect_ok(monkeypatch)
+        with mock.patch("agentnode_sdk.config.config_dir", side_effect=OSError("disk full")):
+            r = run_agent_sandboxed("comm-agent", entry, cfg)
+        assert r.success is True and r.result == {"done": True}
 
 
 def test_no_host_exec_in_sandbox_path():

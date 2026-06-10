@@ -655,6 +655,21 @@ agent:
   tier: "llm_only"
   llm:
     required: true
+  llm_access:
+    # Host-brokered LLM access for SANDBOXED community runs (opt-in).
+    # When your agent runs sandboxed on someone else's machine, it can only
+    # reach their LLM credentials through the host broker, and only if you
+    # set enabled: true here. Default false = no access (calls fail gracefully).
+    # The host's own ceiling (agent_sandbox.llm in the host config) ALWAYS
+    # wins: it can lower these caps or disable access entirely.
+    enabled: false
+    max_calls: 20
+    max_input_chars: 24000
+    max_output_chars: 24000
+    # Optionally restrict which host-chosen models may serve this agent
+    # (the agent cannot pick a model; the host does). Omit = any host model.
+    # An explicit empty list means no model is acceptable.
+    # allowed_models: ["gpt-4o-mini", "claude-3-5-haiku-latest"]
   system_prompt: |
     You are a helpful agent that accomplishes goals step by step.
     Think carefully, use available tools, and return a clear result.

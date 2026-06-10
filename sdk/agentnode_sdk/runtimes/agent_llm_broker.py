@@ -7,8 +7,10 @@ only a structured completion. A PURE RELAY: it never interprets messages as host
 commands. Errors are GENERIC — the raw provider exception (which can contain the
 key, request URLs, or internal details) is never surfaced to the agent.
 
-Credential policy, per-agent scopes, rate/cost limits, and audit are NOT here —
-that is Sprint C. This module only proves the secure plumbing.
+Credential policy (caps, default-deny, audit) lives in ``agent_llm_policy`` —
+this module is only the secure provider plumbing. C2 adds one policy hook here:
+an optional ``allowed_models`` check, because the effective model (incl. the
+default fallback) is only known at this point.
 """
 from __future__ import annotations
 
@@ -27,8 +29,25 @@ class LlmBrokerError(RuntimeError):
     """Generic, leak-free LLM broker failure (no key, no provider internals)."""
 
 
-def host_llm_broker(messages: list) -> dict:
+class LlmModelNotAllowedError(LlmBrokerError):
+    """C2: the host-chosen model is outside the effective ``allowed_models`` set.
+
+    The MESSAGE stays generic (it crosses into the sandbox); the host-side model
+    name travels only on the ``model`` attribute, for audit.
+    """
+
+    def __init__(self, model: str = ""):
+        super().__init__("the host-configured LLM model is not allowed for this agent")
+        self.model = model
+
+
+def host_llm_broker(messages: list, *, allowed_models=None) -> dict:
     """Run one LLM completion HOST-side and return ``{"role","content"}``.
+
+    ``allowed_models`` (optional, C2 defense-in-depth): a set of model ids the
+    host-chosen model must be in — the agent never picks a model, this only
+    checks the one the host resolved (incl. the default fallback). Not allowed →
+    :class:`LlmModelNotAllowedError` WITHOUT calling the provider.
 
     Raises :class:`LlmBrokerError` (generic) on any failure — no provider /
     missing SDK / provider exception — never leaking the key or the raw provider
@@ -45,6 +64,10 @@ def host_llm_broker(messages: list) -> dict:
     model = binding.get("model") or _DEFAULT_MODELS.get(provider or "", "")
     if client is None or provider not in _DEFAULT_MODELS:
         raise LlmBrokerError("unsupported or unavailable LLM provider")
+
+    if allowed_models is not None and model not in allowed_models:
+        logger.warning("LLM broker refused a model outside allowed_models")
+        raise LlmModelNotAllowedError(model)
 
     try:
         if provider == "openai":
