@@ -44,6 +44,9 @@ DEFAULTS: dict[str, Any] = {
     "agent_sandbox": {
         "enabled": False,
     },
+    "llm": {
+        "default_provider": "openai",
+    },
 }
 
 VALID_VALUES: dict[str, tuple[str, ...]] = {
@@ -65,6 +68,7 @@ VALID_VALUES: dict[str, tuple[str, ...]] = {
     "guard.compute": ("allow", "prompt", "deny"),
     "guard.unknown": ("allow", "prompt", "deny"),
     "agent_sandbox.enabled": ("true", "false"),
+    "llm.default_provider": ("openai", "anthropic", "openrouter"),
 }
 
 
@@ -87,6 +91,7 @@ CONFIG_DESCRIPTIONS: dict[str, str] = {
     "guard.compute": "Guard policy for tools that perform computation",
     "guard.unknown": "Guard policy for tools with unknown action type",
     "agent_sandbox.enabled": "Route community (verified/unverified) agents through the container sandbox",
+    "llm.default_provider": "Which stored LLM credential to try first (vault resolution order)",
 }
 
 
@@ -151,6 +156,10 @@ def _merge_defaults(data: dict) -> dict[str, Any]:
         # like the guard extra keys above.
         if isinstance(data["agent_sandbox"].get("llm"), dict):
             cfg["agent_sandbox"]["llm"] = data["agent_sandbox"]["llm"]
+    if isinstance(data.get("llm"), dict):
+        for k in ("default_provider",):
+            if k in data["llm"]:
+                cfg["llm"][k] = data["llm"][k]
     return cfg
 
 

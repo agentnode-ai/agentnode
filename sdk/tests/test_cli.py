@@ -405,7 +405,10 @@ def test_auth_status_no_packages(capsys, saved_config):
     code = main(["auth", "status"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "No installed packages require credentials" in out
+    # UX-2: status now leads with the LLM-provider section; the connector
+    # wording gained the word "connector".
+    assert "LLM Providers" in out
+    assert "No installed packages require connector credentials" in out
 
 
 def test_auth_status_with_connector(capsys, saved_config, isolated_env):

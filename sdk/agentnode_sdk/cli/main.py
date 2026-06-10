@@ -63,10 +63,14 @@ def main(argv: list[str] | None = None) -> int:
     auth_sub = auth_parser.add_subparsers(dest="auth_action")
     auth_set_p = auth_sub.add_parser("set", help="Store a credential for a provider")
     auth_set_p.add_argument("provider")
+    auth_set_p.add_argument("--from-env", default=None, metavar="ENV_VAR",
+                            help="Import the key from this environment variable instead of prompting")
     auth_sub.add_parser("list", help="Show configured credentials")
     auth_rm_p = auth_sub.add_parser("remove", help="Remove a stored credential")
     auth_rm_p.add_argument("provider")
     auth_sub.add_parser("status", help="Check credential status for installed packages")
+    auth_test_p = auth_sub.add_parser("test", help="Validate a stored LLM key via a free provider endpoint")
+    auth_test_p.add_argument("provider")
 
     # config
     config_parser = sub.add_parser("config", help="View or modify settings")
@@ -270,15 +274,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "auth":
             from agentnode_sdk.cli.auth import (
                 cmd_auth_set, cmd_auth_list, cmd_auth_remove, cmd_auth_status,
+                cmd_auth_test,
             )
             if args.auth_action == "set":
-                return cmd_auth_set(args.provider)
+                return cmd_auth_set(args.provider, from_env=args.from_env)
             if args.auth_action == "list":
                 return cmd_auth_list()
             if args.auth_action == "remove":
                 return cmd_auth_remove(args.provider)
             if args.auth_action == "status":
                 return cmd_auth_status()
+            if args.auth_action == "test":
+                return cmd_auth_test(args.provider)
             return cmd_auth_list()
         if args.command == "config":
             if args.config_action == "list":

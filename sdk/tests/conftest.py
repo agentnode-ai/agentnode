@@ -17,6 +17,26 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _no_real_os_keychain():
+    """Tests must NEVER touch the real OS keychain (UX-2 vault).
+
+    Default: keychain reported unavailable → credential_store deterministically
+    uses file storage (the pre-vault behavior all legacy tests assume). Vault
+    tests opt back in by resetting ``_keyring_state["available"]`` to None AND
+    monkeypatching ``_get_keyring_backend`` to a fake — the probe then runs
+    against the fake, still never the real keychain.
+    """
+    from agentnode_sdk import credential_store as _cs
+
+    prev = _cs._keyring_state["available"]
+    _cs._keyring_state["available"] = False
+    try:
+        yield
+    finally:
+        _cs._keyring_state["available"] = prev
+
+
+@pytest.fixture(autouse=True)
 def _bootstrap_registry_keys():
     """Run all tests in bootstrap mode (empty REGISTRY_KEYS).
 
