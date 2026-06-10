@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.13.0 — Credential vault for LLM providers
+
+### Added
+
+- **OS-keychain credential storage:** `agentnode auth set openai|anthropic|openrouter`
+  now stores the key in the OS keychain (Windows Credential Manager, macOS
+  Keychain, Linux Secret Service). `credentials.json` keeps only non-secret
+  metadata for keychain-backed entries. If no keychain is available (e.g.
+  headless Linux/CI), storage falls back to the plaintext file (0600) — and
+  says so honestly.
+- **The LLM runtime now reads stored credentials:** `_auto_detect_llm` falls
+  back to the credential store when no env var is set — `agentnode auth set
+  openai` is finally picked up by host agents AND the sandboxed-agent LLM
+  broker (the key still never enters the sandbox container).
+- `agentnode auth test <provider>` — validates the effective key via a free
+  provider endpoint (no completion call, no cost). Exit codes: 0 valid,
+  1 rejected, 2 not configured, 3 indeterminate (network errors are never
+  reported as "invalid").
+- `agentnode auth set <provider> --from-env ENV_VAR` — import an existing
+  environment key into the store.
+- `llm.default_provider` config key — which stored credential to try first
+  (`openai`, `anthropic`, `openrouter`). OpenRouter bindings pin the
+  namespaced default model (`openai/gpt-4o-mini`).
+
+### Changed
+
+- `agentnode auth status` now leads with an LLM-provider section showing the
+  storage backend and the EFFECTIVE source per provider — including an
+  explicit "env var X — overrides stored credential" callout when an
+  environment variable shadows a stored key.
+- `agentnode auth list` shows a storage column (OS keychain / plaintext file).
+- Environment variables (and `~/.agentnode/.env`) always override stored
+  credentials — explicit/CI intent wins.
+
+### Hardened
+
+- Keys are never printed (masked last-4 only), never logged (provider/backend
+  errors are reported by type, never message), never echoed from provider
+  responses, and never enter the sandbox container, audit records, manifests,
+  or lockfiles. `auth test` never accepts a key as a CLI argument.
+- Keychain access is probed once per process with a timeout — a locked or
+  hanging Secret Service degrades cleanly to file storage instead of blocking.
+
+### Upgrade Notes
+
+- New dependency: `keyring>=24` (pure Python, installed automatically).
+- Honest scope of the OS keychain: it protects against other local users and
+  accidental file exposure; it does NOT protect against programs running as
+  the same user. The fallback is a plaintext file (0600) when no keychain is
+  available — neither mode is "encrypted at rest by AgentNode".
+- Existing plaintext credentials keep working unchanged. Nothing migrates on
+  read; a credential moves into the keychain the next time you `auth set` it.
+- No breaking changes.
+
 ## 0.12.1 — agent_sandbox config fix
 
 ### Fixed
