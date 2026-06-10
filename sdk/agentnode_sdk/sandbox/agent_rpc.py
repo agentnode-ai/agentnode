@@ -96,8 +96,9 @@ class AgentRpcHost:
         max_tool_calls: host-enforced tool-call limit.
         tool_runner: ``(slug, tool_name, kwargs) -> result_dict``. Defaults to the
             real gated ``runner.run_tool``. Inject a fake in tests.
-        llm_broker: ``(messages) -> completion_dict`` (the credential broker).
-            ``None`` → ``call_llm`` is refused (no broker in Sprint A).
+        llm_broker: ``(messages) -> completion_dict`` OR a structured
+            ``(messages) -> {"ok": bool, "completion"?: dict, "error"?: str}``
+            (the C1 policy broker). ``None`` → ``call_llm`` is refused.
     """
 
     def __init__(self, *, allowed_packages, max_tool_calls: int,
@@ -129,7 +130,17 @@ class AgentRpcHost:
             if self._llm_broker is None:
                 return _response(rid, ok=False, error="no LLM broker configured")
             self.events.append(("call_llm",))
-            return _response(rid, ok=True, completion=self._llm_broker(req.get("messages") or []))
+            out = self._llm_broker(req.get("messages") or [])
+            # C1: the broker may return a STRUCTURED {"ok", "completion"?|"error"?}
+            # (the policy broker) so a policy refusal / sanitized provider error
+            # comes back as a graceful per-call error the agent can catch — never
+            # a whole-run crash. A bare completion dict (legacy/direct broker) is
+            # still treated as success. Wire shape stays ok/error/completion.
+            if isinstance(out, dict) and "ok" in out:
+                if out["ok"]:
+                    return _response(rid, ok=True, completion=out.get("completion"))
+                return _response(rid, ok=False, error=out.get("error", "LLM call refused"))
+            return _response(rid, ok=True, completion=out)
         return _response(rid, ok=False, error=f"unknown request type: {rtype!r}")
 
     def run(self, session: AgentSandboxSession, *, init: dict,

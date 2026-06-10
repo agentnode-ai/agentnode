@@ -100,6 +100,9 @@ def test_agent_sandbox_e2e(monkeypatch, tmp_path):
         "goal": "e2e",
         "limits": {"max_tool_calls": 5, "max_runtime_seconds": 60},
         "tool_access": {"allowed_packages": ["e2e-allowlisted-pack"]},
+        # C1: LLM is opt-in (default-deny); the E2E agent uses call_llm, so it must
+        # declare llm_access. The host-config ceiling would still clamp this.
+        "llm_access": {"enabled": True},
     }
     entry = {
         "version": version, "artifact_hash": ahash, "trust_level": "unverified",

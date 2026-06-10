@@ -102,7 +102,19 @@ def run_agent_sandboxed(slug, entry, agent_config, *, goal=None, run_id=None, **
     # "unrestricted" community agents is a later decision.
     # B2b-1: LLM calls go through the host-side broker (the provider key stays on
     # the host, never in the container).
+    # C1: that broker is wrapped by a default-DENY credential policy — the agent
+    # reaches the host LLM key only if it declared llm_access.enabled, and the
+    # host-config ceiling (agent_sandbox.llm) always wins. Refusals come back as
+    # graceful per-call errors (the agent can catch them), never a host fallback.
     from agentnode_sdk.runtimes.agent_llm_broker import host_llm_broker
+    from agentnode_sdk.runtimes.agent_llm_policy import make_policy_broker, resolve_llm_policy
+
+    try:
+        from agentnode_sdk.config import load_config
+        host_cfg = load_config() or {}
+    except Exception:
+        host_cfg = {}
+    policy_broker = make_policy_broker(resolve_llm_policy(agent_config, host_cfg), host_llm_broker)
 
     # Fail-closed: a sandbox-START failure (e.g. the runtime vanished between the
     # availability check and the launch) returns a clean sandbox_unavailable —
@@ -116,7 +128,7 @@ def run_agent_sandboxed(slug, entry, agent_config, *, goal=None, run_id=None, **
         host = AgentRpcHost(
             allowed_packages=allowed or [],
             max_tool_calls=max_tool_calls,
-            llm_broker=host_llm_broker,
+            llm_broker=policy_broker,
         )
         out = host.run(
             session,

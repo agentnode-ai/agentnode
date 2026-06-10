@@ -109,6 +109,22 @@ class TestAgentRpcHostHandle:
         resp = h.handle({"id": 4, "type": "call_llm", "messages": []})
         assert resp["ok"] is False and "broker" in resp["error"]
 
+    def test_call_llm_structured_ok(self):
+        # C1: a broker returning {"ok": True, "completion": ...} maps to ok=True
+        h = _host(llm_broker=lambda m: {"ok": True, "completion": {"content": "hi"}})
+        resp = h.handle({"id": 6, "type": "call_llm", "messages": []})
+        assert resp["ok"] is True
+        assert resp["completion"]["content"] == "hi"
+
+    def test_call_llm_structured_refused_is_graceful(self):
+        # C1: a broker returning {"ok": False, "error": ...} maps to a graceful
+        # ok=False response (the agent can catch it), NOT a raise / run crash
+        h = _host(llm_broker=lambda m: {"ok": False, "error": "LLM call limit reached for this run"})
+        resp = h.handle({"id": 7, "type": "call_llm", "messages": []})
+        assert resp["ok"] is False
+        assert "limit" in resp["error"]
+        assert "completion" not in resp
+
     def test_unknown_request_type_refused(self):
         h = _host()
         resp = h.handle({"id": 5, "type": "exfiltrate"})

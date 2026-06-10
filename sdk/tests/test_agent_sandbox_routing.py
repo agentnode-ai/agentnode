@@ -58,7 +58,7 @@ class _FakeBackend:
 
 
 def _sandboxed_entry(slug="comm-agent", trust="unverified",
-                     entrypoint="comm_agent:run", allowed=None):
+                     entrypoint="comm_agent:run", allowed=None, llm_access=None):
     version, ahash = "1.0.0", "sha256:abc123"
     vol = sandbox_volume_name(slug, version, ahash)
     agent_cfg = {
@@ -66,6 +66,8 @@ def _sandboxed_entry(slug="comm-agent", trust="unverified",
         "limits": {"max_tool_calls": 5, "max_runtime_seconds": 30},
         "tool_access": {"allowed_packages": allowed},
     }
+    if llm_access is not None:
+        agent_cfg["llm_access"] = llm_access
     entry = {
         "version": version, "artifact_hash": ahash, "trust_level": trust,
         "package_type": "agent", "sandboxed": True, "sandbox_volume": vol,
@@ -194,28 +196,33 @@ class TestRunAgentSandboxed:
         assert r.success is False
         assert session.closed is True   # finally ran despite the error
 
-    def test_call_llm_no_provider_fail_closed(self, monkeypatch):
-        """B2b-1: broker wired but NO provider → the agent's call_llm makes the
-        run fail-closed (generic error, never host)."""
-        entry, cfg = _sandboxed_entry()
+    def test_default_deny_call_llm_graceful_run_continues(self, monkeypatch):
+        """C1: no llm_access → call_llm is refused host-side as a GRACEFUL per-call
+        error (ok=False); the run stays alive and reaches its result — no whole-run
+        crash, no host fallback."""
+        entry, cfg = _sandboxed_entry()  # no llm_access → default-deny
         session = FakeSession(agent_script=[
             {"id": 1, "type": "call_llm", "messages": [{"role": "user", "content": "hi"}]},
             {"id": 0, "type": "result", "ok": True, "value": {"done": True}},
         ])
         backend = _FakeBackend(available=True, session=session)
         monkeypatch.setattr("agentnode_sdk.sandbox.get_default_backend", lambda: backend)
-        monkeypatch.setattr("agentnode_sdk.runtimes.agent_runner._auto_detect_llm", lambda *a, **k: None)
         _mock_volume_inspect_ok(monkeypatch)
         r = run_agent_sandboxed("comm-agent", entry, cfg)
-        assert r.success is False
+        # the call_llm got a graceful refusal...
+        refusals = [m for m in session.sent
+                    if m.get("type") == "response" and m.get("ok") is False]
+        assert any("not granted" in (m.get("error") or "") for m in refusals)
+        # ...and the run continued to its result (stayed alive, never host)
+        assert r.success is True and r.result == {"done": True}
         assert r.mode_used == "agent_sandbox"
         assert session.closed is True
 
     def test_call_llm_succeeds_with_broker(self, monkeypatch):
-        """call_llm is serviced HOST-side by the broker; the completion (NOT the
-        provider key) is returned to the agent, and no key crosses into the
-        container env."""
-        entry, cfg = _sandboxed_entry()
+        """C1: with llm_access.enabled, call_llm is serviced HOST-side by the
+        policy broker; the completion (NOT the provider key) is returned to the
+        agent, and no key crosses into the container env."""
+        entry, cfg = _sandboxed_entry(llm_access={"enabled": True})
         session = FakeSession(agent_script=[
             {"id": 1, "type": "call_llm", "messages": [{"role": "user", "content": "hi"}]},
             {"id": 0, "type": "result", "ok": True, "value": {"done": True}},
