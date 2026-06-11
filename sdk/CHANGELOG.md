@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.14.0 — Setup wizard: guided credentials + sandbox onboarding
+
+### Added
+
+- **`agentnode setup` now guides through optional LLM credentials.** A new
+  wizard screen offers storing a provider key (OpenAI, Anthropic, OpenRouter —
+  or Skip, the default). Entry is via hidden getpass or an import from an
+  existing environment variable; the honest storage label (OS keychain /
+  plaintext file) is shown, and an optional key test runs against a free
+  endpoint (no completion call) without ever blocking the wizard.
+- **`agentnode setup` now includes a "Local sandbox" screen.** It shows the
+  doctor's diagnosis (runtime, daemon, pinned image, digest) with clear next
+  steps. If only the image is missing, the wizard offers the digest-pinned
+  pull — on a TTY and only after an explicit Yes (default No).
+- **Optional agent-sandbox enable prompt.** Only when the sandbox is fully
+  ready, the wizard asks "Enable sandboxed community agents now? [y/N]"
+  (default No). The choice is persisted with the wizard's normal save step;
+  cancelling saves nothing.
+- The summary and finish screens show credentials, sandbox status, and the
+  exact follow-up commands (`agentnode auth status`, `agentnode sandbox
+  doctor`, `agentnode sandbox pull`, `agentnode config set
+  agent_sandbox.enabled true`).
+
+### Hardened
+
+- No keys in wizard output (masked last-4 only), no keys in config files, no
+  keys via CLI arguments — entry is getpass or env import only.
+- No automatic Docker pull: the only pull path is the existing, fully guarded
+  `agentnode sandbox pull`, offered solely on a TTY after an explicit Yes.
+- The sandbox flag is never enabled without an explicit Yes, and never offered
+  when the sandbox is not ready.
+- Pull failures never abort setup; non-interactive sessions never block
+  (credential and sandbox prompts skip themselves with guidance).
+
+### BREAKING / Upgrade Notes
+
+- None. The wizard changes are additive; all defaults preserve previous
+  behavior (credentials skipped, sandbox flag stays off). No new dependency.
+
 ## 0.13.0 — Credential vault for LLM providers
 
 ### Added

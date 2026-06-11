@@ -38,7 +38,7 @@ from agentnode_sdk.runtime import AgentNodeRuntime
 Client = AgentNodeClient
 ToolError = AgentNodeToolError
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 __all__ = [
     "AgentNode",
     "AsyncAgentNode",
