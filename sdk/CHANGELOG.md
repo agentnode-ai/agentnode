@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.15.0 — Generic OpenAI-compatible LLM providers
+
+### Added
+
+- **Generic OpenAI-compatible provider registry.** The LLM runtime can now
+  bind any endpoint that speaks the OpenAI-compatible protocol. Custom
+  endpoints are plain config entries — `llm.providers.<name>` with
+  `base_url`, `model`, and optionally `api_key_env`/`requires_key` — no code
+  changes needed per provider.
+- **Built-in presets** for OpenRouter, DeepSeek, Mistral, Qwen, Gemini
+  (Google's OpenAI-compatible endpoint) and Ollama, each with the canonical
+  base URL, API-key environment variable, and a sensible default model
+  (overridable via `llm.providers.<name>.model`).
+- **Ollama as a key-free local provider** — the first agent path with no
+  account and no per-token cost. Opt-in only: select it explicitly with
+  `agentnode config set llm.default_provider ollama` (or configure it under
+  `llm.providers`); AgentNode never probes or binds it by surprise.
+- Per-provider credentials: each provider's environment variable (e.g.
+  `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`) and stored vault credentials both
+  work; the environment always overrides the stored key.
+
+### Changed
+
+- The OpenRouter binding now goes through the shared provider registry
+  (same behavior, including the namespaced default model — one code path
+  instead of a special case).
+- The sandboxed-agent LLM broker automatically inherits every compatible
+  provider: keys stay host-side, the container still sees only RPC
+  completions, and the C1/C2 access policy applies unchanged.
+
+### Hardened
+
+- No provider keys in logs or error messages (client failures are reported
+  by exception type only).
+- A custom provider without a configured model is skipped instead of
+  guessing — a wrong default model would fail confusingly at call time.
+- Keyless providers are never attempted unless explicitly selected or
+  configured.
+
+### BREAKING / Upgrade Notes
+
+- None. Existing OpenAI/Anthropic setups (env vars, vault, per-agent config)
+  behave identically; the new providers are purely additive.
+
 ## 0.14.0 — Setup wizard: guided credentials + sandbox onboarding
 
 ### Added
