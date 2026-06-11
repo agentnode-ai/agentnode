@@ -1,6 +1,6 @@
-"""UX-3A — setup wizard: optional LLM-credential screen + read-only sandbox
-status. All input/getpass mocked; no real provider calls, no real keychain
-(fake seam), no docker.
+"""UX-3A/3B — setup wizard: optional LLM-credential screen + local-sandbox
+screen. All input/getpass mocked; no real provider calls, no real keychain
+(fake seam), no real docker (doctor checks + pull are mocked seams).
 """
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import pytest
 from agentnode_sdk import credential_store as cs
 from agentnode_sdk.cli.setup_wizard import run_wizard
 from agentnode_sdk.config import config_exists, load_config
-from agentnode_sdk.sandbox.types import SandboxAvailability
 
 SECRET = "sk-WIZARD-SECRET-xyz9"
 
@@ -20,6 +19,20 @@ SECRET = "sk-WIZARD-SECRET-xyz9"
 # intro Enter, install behavior, network, filesystem, code_execution, advanced
 _PRE = ["", "", "", "", "", ""]
 _SAVE = [""]
+
+# doctor-check shapes for the mocked _build_env_checks seam
+CHECKS_NO_RUNTIME = ([{"check": "runtime", "ok": False,
+                       "detail": "no Docker or Podman found",
+                       "fix": "Install Docker or Podman"}], False, False)
+CHECKS_IMAGE_MISSING = ([{"check": "runtime", "ok": True, "detail": "docker"},
+                         {"check": "daemon", "ok": True, "detail": "reachable"},
+                         {"check": "image", "ok": False,
+                          "detail": "pinned sandbox image is not present locally",
+                          "fix": "agentnode sandbox pull"}], False, True)
+CHECKS_READY = ([{"check": "runtime", "ok": True, "detail": "docker"},
+                 {"check": "daemon", "ok": True, "detail": "reachable"},
+                 {"check": "image", "ok": True, "detail": "pinned image present"}],
+                True, False)
 
 
 class FakeKeyring:
@@ -46,11 +59,14 @@ def _isolated(tmp_path, monkeypatch):
         "agentnode_sdk.runtimes.agent_runner._load_agentnode_env", lambda: None)
     # wizard runs under pytest (no tty) — simulate an interactive terminal
     monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: True))
-    # read-only sandbox check: default "not found", never a real backend
+    # sandbox diagnosis: default "no runtime" (prompt-free path); NEVER real docker
     monkeypatch.setattr(
-        "agentnode_sdk.sandbox.get_default_backend",
-        lambda: types.SimpleNamespace(check_available=lambda: SandboxAvailability(
-            available=False, backend="none", reason="no container runtime")))
+        "agentnode_sdk.cli.sandbox_commands._build_env_checks",
+        lambda: CHECKS_NO_RUNTIME)
+    # any pull without an explicit test override = consent violation
+    monkeypatch.setattr(
+        "agentnode_sdk.cli.sandbox_commands.cmd_sandbox_pull",
+        lambda: pytest.fail("cmd_sandbox_pull called without explicit consent/override"))
     yield
 
 
@@ -197,37 +213,121 @@ def test_non_tty_skips_credential_screen(monkeypatch, capsys):
     assert cs.list_credentials() == {}
 
 
-# --- sandbox status (read-only) ---------------------------------------------------
+# --- sandbox screen (UX-3B) --------------------------------------------------------
 
-def test_sandbox_status_unavailable_shown(monkeypatch, capsys):
+def test_sandbox_no_runtime_friendly_no_prompts(monkeypatch, capsys):
+    # default fixture = no runtime: the screen consumes NO input and never pulls
     _wire(monkeypatch, _PRE + [""] + _SAVE)
     assert run_wizard() == 0
     out = capsys.readouterr().out
-    assert "Sandbox runtime" in out
-    assert "not found" in out
+    assert "no Docker or Podman found" in out
+    assert "Install Docker or Podman" in out
     assert "Trusted/curated" in out
     assert "agentnode sandbox doctor" in out
+    assert "not ready" in out
+    assert load_config()["agent_sandbox"]["enabled"] is False
 
 
-def test_sandbox_status_available_shown(monkeypatch, capsys):
-    monkeypatch.setattr(
-        "agentnode_sdk.sandbox.get_default_backend",
-        lambda: types.SimpleNamespace(check_available=lambda: SandboxAvailability(
-            available=True, backend="docker", reason="")))
-    _wire(monkeypatch, _PRE + [""] + _SAVE)
+def test_sandbox_ready_enable_default_no(monkeypatch, capsys):
+    monkeypatch.setattr("agentnode_sdk.cli.sandbox_commands._build_env_checks",
+                        lambda: CHECKS_READY)
+    # cred skip "", enable prompt "" (default No), save ""
+    _wire(monkeypatch, _PRE + ["", ""] + _SAVE)
     assert run_wizard() == 0
-    assert "available (docker)" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Sandbox ready" in out
+    assert "agent_sandbox.enabled true" in out          # later-command hint
+    cfg = load_config()
+    assert cfg["agent_sandbox"]["enabled"] is False     # default stays off
+    assert "Sandboxed community agents: " in out.replace("  ", " ") or "disabled" in out
 
 
-def test_wizard_never_pulls_or_enables_sandbox():
-    """Structural guard: UX-3A is read-only towards docker and the flag."""
+def test_sandbox_ready_enable_yes_persists_real_bool(monkeypatch, capsys):
+    monkeypatch.setattr("agentnode_sdk.cli.sandbox_commands._build_env_checks",
+                        lambda: CHECKS_READY)
+    _wire(monkeypatch, _PRE + ["", "y"] + _SAVE)
+    assert run_wizard() == 0
+    cfg = load_config()
+    assert cfg["agent_sandbox"]["enabled"] is True
+    assert not isinstance(cfg["agent_sandbox"]["enabled"], str)
+    assert "enabled" in capsys.readouterr().out
+
+
+def test_image_missing_user_declines_pull(monkeypatch, capsys):
+    monkeypatch.setattr("agentnode_sdk.cli.sandbox_commands._build_env_checks",
+                        lambda: CHECKS_IMAGE_MISSING)
+    pulls = []
+    monkeypatch.setattr("agentnode_sdk.cli.sandbox_commands.cmd_sandbox_pull",
+                        lambda: pulls.append(1) or 0)
+    # cred skip "", pull prompt "" (default No), save ""
+    _wire(monkeypatch, _PRE + ["", ""] + _SAVE)
+    assert run_wizard() == 0
+    assert pulls == []                                   # consent gate held
+    out = capsys.readouterr().out
+    assert "Skipped" in out
+    assert "Enable sandboxed community agents" not in out  # not ready -> not offered
+    assert load_config()["agent_sandbox"]["enabled"] is False
+
+
+def test_image_missing_user_accepts_pull_success(monkeypatch, capsys):
+    states = [CHECKS_IMAGE_MISSING, CHECKS_READY]        # before pull, after pull
+    monkeypatch.setattr("agentnode_sdk.cli.sandbox_commands._build_env_checks",
+                        lambda: states.pop(0))
+    pulls = []
+    monkeypatch.setattr("agentnode_sdk.cli.sandbox_commands.cmd_sandbox_pull",
+                        lambda: pulls.append(1) or 0)
+    # cred skip "", pull "y", enable "" (default No), save ""
+    _wire(monkeypatch, _PRE + ["", "y", ""] + _SAVE)
+    assert run_wizard() == 0
+    assert pulls == [1]                                  # exactly one explicit pull
+    out = capsys.readouterr().out
+    assert "Sandbox ready" in out                        # post-pull re-check
+    assert load_config()["agent_sandbox"]["enabled"] is False
+
+
+def test_pull_failure_is_non_blocking(monkeypatch, capsys):
+    monkeypatch.setattr("agentnode_sdk.cli.sandbox_commands._build_env_checks",
+                        lambda: CHECKS_IMAGE_MISSING)
+    monkeypatch.setattr("agentnode_sdk.cli.sandbox_commands.cmd_sandbox_pull",
+                        lambda: 1)
+    _wire(monkeypatch, _PRE + ["", "y"] + _SAVE)
+    assert run_wizard() == 0                             # wizard still completes
+    out = capsys.readouterr().out
+    assert "the wizard continues" in out
+    assert "Enable sandboxed community agents" not in out  # still not ready
+    assert load_config()["agent_sandbox"]["enabled"] is False
+
+
+def test_non_tty_no_pull_no_enable_prompt(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: False))
+    monkeypatch.setattr("agentnode_sdk.cli.sandbox_commands._build_env_checks",
+                        lambda: CHECKS_IMAGE_MISSING)
+    # non-TTY: credential screen self-skips AND sandbox screen consumes no input
+    _wire(monkeypatch, _PRE + _SAVE)
+    assert run_wizard() == 0
+    out = capsys.readouterr().out
+    assert "agentnode sandbox doctor" in out             # guidance instead of prompt
+    assert "Pull the pinned" not in out                  # no pull offer without tty
+
+
+def test_enable_not_persisted_on_save_cancel(monkeypatch):
+    monkeypatch.setattr("agentnode_sdk.cli.sandbox_commands._build_env_checks",
+                        lambda: CHECKS_READY)
+    # cred skip "", enable "y", save "n" -> nothing persisted
+    _wire(monkeypatch, _PRE + ["", "y", "n"])
+    assert run_wizard() == 1
+    assert not config_exists()
+
+
+def test_wizard_structural_guards():
+    """The wizard itself contains no docker calls and no direct config set_value;
+    the only pull path is the imported, fully guarded cmd_sandbox_pull."""
     import agentnode_sdk
     from pathlib import Path
     src = (Path(agentnode_sdk.__file__).parent / "cli" / "setup_wizard.py").read_text(encoding="utf-8")
-    assert "cmd_sandbox_pull" not in src
     assert "subprocess" not in src
-    assert "agent_sandbox.enabled" not in src
     assert "set_value" not in src
+    assert "cmd_sandbox_pull" in src                     # reuse, not reimplementation
 
 
 # --- config correctness ------------------------------------------------------------

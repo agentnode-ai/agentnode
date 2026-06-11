@@ -1,11 +1,17 @@
 """AgentNode setup wizard — interactive configuration.
 
-UX-3A: the wizard also offers (never requires) storing LLM provider keys via
-the credential vault, and finishes with a READ-ONLY sandbox status line. All
-credential handling reuses the existing auth/credential_store primitives:
-keys only via getpass or an env-var import (never argv), output only masked,
-honest storage labels (never "encrypted"), key tests non-blocking. The wizard
-performs NO docker pull and NEVER toggles the agent-sandbox flag (UX-3B).
+UX-3A: the wizard offers (never requires) storing LLM provider keys via the
+credential vault. All credential handling reuses the existing
+auth/credential_store primitives: keys only via getpass or an env-var import
+(never argv), output only masked, honest storage labels (never "encrypted"),
+key tests non-blocking.
+
+UX-3B: a "Local sandbox" screen reuses the doctor's read-only diagnosis. The
+ONLY operative action is an image pull through the existing, fully guarded
+``cmd_sandbox_pull`` — offered solely on a TTY after an explicit Yes (default
+No), and a pull failure never fails the wizard. The agent-sandbox flag is
+offered ONLY when the sandbox is fully ready (default No) and is persisted via
+the wizard's normal Save confirm. The wizard itself contains no docker calls.
 """
 from __future__ import annotations
 
@@ -134,17 +140,83 @@ def _credentials_screen() -> list[tuple[str, str]]:
     return stored
 
 
-def _sandbox_status_line() -> str:
-    """READ-ONLY sandbox runtime status (same check as the doctor). The wizard
-    never pulls, never starts anything, never changes agent_sandbox config."""
-    try:
-        from agentnode_sdk.sandbox import get_default_backend
-        avail = get_default_backend().check_available()
-        if avail.available:
-            return f"available ({avail.backend or 'docker'})"
-        return f"not found — {avail.reason or 'no container runtime'}"
-    except Exception:
-        return "status unknown"
+def _sandbox_screen(cfg: dict) -> tuple[str, bool]:
+    """Screen 6: local sandbox (UX-3B).
+
+    Diagnosis via the doctor's ``_build_env_checks`` (pure, read-only); the
+    ONLY action is an optional, TTY-confirmed image pull via the existing
+    ``cmd_sandbox_pull`` — the wizard itself never talks to docker. The enable
+    prompt (default No) is offered ONLY when the sandbox is fully ready, and
+    the flag rides the wizard's normal Save confirm (cancel persists nothing).
+
+    Returns (status line for Summary/Success, image_still_missing)."""
+    import sys
+
+    from agentnode_sdk.cli.sandbox_commands import _build_env_checks, cmd_sandbox_pull
+
+    print()
+    print(bold("  Local sandbox"))
+    print()
+    print("  Community packages run in an isolated container sandbox.")
+    print("  Trusted/curated packages run without it.")
+    print()
+
+    checks, ready, image_missing = _build_env_checks()
+
+    def _render(check_list):
+        for c in check_list:
+            mark = "[OK]" if c["ok"] else ("[--]" if c["ok"] is None else "[!!]")
+            print(f"  {mark} {c['check']}: {c['detail']}")
+            if c["ok"] is False and c.get("fix"):
+                print(dim(f"       -> {c['fix']}"))
+
+    _render(checks)
+    print()
+
+    if image_missing and not ready:
+        if sys.stdin.isatty():
+            print("  Pull the pinned AgentNode sandbox image now? [y/N]")
+            print(dim("  This downloads the digest-pinned sandbox image."))
+            print(dim("  It does not install Docker/Podman."))
+            print(dim("  It does not enable auto-pull."))
+            answer = _prompt("  > ", "n")
+            if answer.lower() == "y":
+                rc = cmd_sandbox_pull()
+                if rc == 0:
+                    checks, ready, image_missing = _build_env_checks()
+                else:
+                    # never a wizard failure — the user can pull later
+                    print(dim("  Pull failed or was skipped — the wizard continues."))
+                    print(dim("  Run `agentnode sandbox pull` later."))
+            else:
+                print(dim("  Skipped. Run `agentnode sandbox pull` when ready."))
+        else:
+            print(dim("  Non-interactive session — run `agentnode sandbox doctor` later."))
+
+    if ready:
+        print()
+        print("  Sandbox ready — community packages run isolated.")
+        print()
+        print("  Sandboxed community agents are currently disabled (default).")
+        print("  Enabling lets verified/unverified community agents run isolated;")
+        print("  without it they are refused.")
+        if sys.stdin.isatty():
+            en = _prompt("  Enable sandboxed community agents now? [y/N]: ", "n")
+            if en.lower() == "y":
+                cfg["agent_sandbox"]["enabled"] = True
+            else:
+                print(dim("  You can enable it later with "
+                          "`agentnode config set agent_sandbox.enabled true`."))
+        else:
+            print(dim("  Enable later with "
+                      "`agentnode config set agent_sandbox.enabled true`."))
+        return "ready", False
+
+    from agentnode_sdk.cli.sandbox_commands import _first_failure
+    fail = _first_failure(checks)
+    detail = (fail or {}).get("detail", "not ready")
+    print(dim("  Not ready — details and guidance: agentnode sandbox doctor"))
+    return f"not ready — {detail}", image_missing
 
 
 def _wizard_flow() -> dict | None:
@@ -214,7 +286,10 @@ def _wizard_flow() -> dict | None:
     # Screen 5: LLM credentials (optional — UX-3A)
     stored_providers = _credentials_screen()
 
-    # Screen 6: Summary
+    # Screen 6: Local sandbox (UX-3B)
+    sandbox_status, image_missing = _sandbox_screen(cfg)
+
+    # Screen 7: Summary
     print()
     print(section("Summary"))
     print(kv("Installation behavior", installation_behavior_label(cfg)))
@@ -224,6 +299,9 @@ def _wizard_flow() -> dict | None:
     else:
         creds_line = "none — add later with `agentnode auth set <provider>`"
     print(kv("LLM credentials", creds_line))
+    print(kv("Sandbox", sandbox_status))
+    print(kv("Sandboxed community agents",
+             "enabled" if cfg["agent_sandbox"]["enabled"] else "disabled"))
     print()
     print("  Permissions")
     print("  " + "-" * 11)
@@ -238,17 +316,22 @@ def _wizard_flow() -> dict | None:
 
     save_config(cfg)
 
-    # Screen 7: Success
+    # Screen 8: Success
     print()
     print(bold("  Configuration saved."))
     print()
-    print(kv("Sandbox runtime", _sandbox_status_line()))
+    print(kv("Sandbox", sandbox_status))
     print(dim("  Community packages need a local sandbox. Trusted/curated"))
-    print(dim("  packages can run without it. Details: agentnode sandbox doctor"))
+    print(dim("  packages can run without it."))
     print()
     print(dim("  Next steps:"))
     print(dim("    agentnode auth status                    check your credentials"))
     print(dim("    agentnode sandbox doctor                 check the sandbox runtime"))
+    if image_missing:
+        print(dim("    agentnode sandbox pull                   fetch the sandbox image"))
+    if not cfg["agent_sandbox"]["enabled"]:
+        print(dim("    agentnode config set agent_sandbox.enabled true"))
+        print(dim("                                             enable sandboxed community agents"))
     print(dim("    agentnode install word-counter-pack     install a first capability"))
     print(dim("    agentnode run word-counter-pack --input '{\"text\":\"hello\"}'"))
     print(dim("    agentnode doctor                         check your whole setup"))
