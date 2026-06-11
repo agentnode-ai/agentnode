@@ -300,7 +300,7 @@ def _wizard_flow() -> dict | None:
         creds_line = "none — add later with `agentnode auth set <provider>`"
     print(kv("LLM credentials", creds_line))
     print(kv("Sandbox", sandbox_status))
-    print(kv("Sandboxed community agents",
+    print(kv("Agent sandbox",
              "enabled" if cfg["agent_sandbox"]["enabled"] else "disabled"))
     print()
     print("  Permissions")
