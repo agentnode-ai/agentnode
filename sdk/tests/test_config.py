@@ -343,3 +343,34 @@ class TestAgentSandboxConfigSection:
         assert loaded["guard"]["delete"] == "deny"
         assert loaded["guard"]["read"] == "allow"          # defaults intact
         assert loaded["trust"]["minimum_trust_level"] == "verified"
+
+
+# --- llm.providers section (Endpoint-A) ---
+
+
+class TestLlmProvidersConfigSection:
+    def test_defaults_include_empty_providers(self):
+        cfg = default_config()
+        assert cfg["llm"]["providers"] == {}
+
+    def test_providers_survive_load(self, isolated_config):
+        providers = {"myvllm": {"base_url": "http://10.0.0.5:8000/v1",
+                                "model": "llama", "requires_key": False}}
+        isolated_config.parent.mkdir(parents=True, exist_ok=True)
+        isolated_config.write_text(
+            json.dumps({"llm": {"default_provider": "deepseek",
+                                "providers": providers}}), encoding="utf-8")
+        loaded = load_config()
+        assert loaded["llm"]["providers"] == providers
+        assert loaded["llm"]["default_provider"] == "deepseek"
+
+    def test_set_value_accepts_new_provider_names(self):
+        cfg = default_config()
+        for name in ("deepseek", "mistral", "qwen", "ollama"):
+            set_value(cfg, "llm.default_provider", name)
+            assert cfg["llm"]["default_provider"] == name
+
+    def test_set_value_rejects_garbage_provider(self):
+        cfg = default_config()
+        with pytest.raises(ValueError):
+            set_value(cfg, "llm.default_provider", "skynet")

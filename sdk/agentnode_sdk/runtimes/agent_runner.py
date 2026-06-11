@@ -241,64 +241,83 @@ def _create_llm_from_config(llm_config: dict) -> dict | None:
     return None
 
 
-def _llm_binding_from_vault() -> dict | None:
-    """Build an LLM binding from the credential store (UX-2 vault).
+def _llm_binding_from_providers() -> dict | None:
+    """Build an LLM binding from the provider registry + credential store
+    (UX-2 vault, generalized by Endpoint-A to any OpenAI-compatible endpoint:
+    OpenRouter/DeepSeek/Mistral/Qwen/Ollama/custom ``llm.providers.*``).
 
-    LAST resolution step — env vars always override the store (explicit/CI
-    intent wins; gh-CLI precedent). Tries the configured
-    ``llm.default_provider`` first, then the remaining providers in fixed
-    order. The key stays host-side; failures are logged by exception TYPE
+    LAST resolution step — the bare OPENAI/ANTHROPIC env vars and per-agent
+    config were already checked by the earlier steps. Within this step the
+    key resolves per provider env-var-first (explicit/CI intent), then vault.
+    Keyless providers (e.g. ollama) bind ONLY when explicitly selected via
+    ``llm.default_provider`` or configured under ``llm.providers`` — never by
+    probing. The key stays host-side; failures are logged by exception TYPE
     only (never the message — it could carry context)."""
+    import os
+
     try:
         from agentnode_sdk.config import load_config
-        default = ((load_config() or {}).get("llm") or {}).get("default_provider", "openai")
+        host_cfg = load_config() or {}
     except Exception:
-        default = "openai"
-    order = [default] + [p for p in ("openai", "anthropic", "openrouter") if p != default]
+        host_cfg = {}
+    llm_cfg = host_cfg.get("llm") or {}
+    default = llm_cfg.get("default_provider", "openai")
+    configured = llm_cfg.get("providers") if isinstance(llm_cfg.get("providers"), dict) else {}
 
     try:
         from agentnode_sdk.credential_store import get_llm_api_key
     except Exception:
         return None
+    from agentnode_sdk.llm_providers import known_provider_names, resolve_provider_spec
 
-    for provider in order:
-        try:
-            key = get_llm_api_key(provider)
-        except Exception:
-            key = None
-        if not key:
+    order = [default] + [n for n in known_provider_names(host_cfg) if n != default]
+    for name in order:
+        spec = resolve_provider_spec(name, host_cfg)
+        if spec is None:
             continue
-        if provider == "openai":
+
+        env_var = spec.get("api_key_env") or ""
+        key = os.environ.get(env_var) if env_var else None  # env beats vault
+        if not key:
             try:
-                from openai import OpenAI
-                return {"client": OpenAI(api_key=key), "provider": "openai", "model": ""}
-            except ImportError:
-                logger.debug("vault key for openai set but openai package not installed")
-            except Exception as exc:
-                logger.debug("Failed to create OpenAI client from vault: %s", type(exc).__name__)
-        elif provider == "anthropic":
+                key = get_llm_api_key(name)
+            except Exception:
+                key = None
+
+        if spec.get("requires_key", True):
+            if not key:
+                continue
+        elif not key and not (name == default or name in configured):
+            # keyless provider without explicit selection: never bind by surprise
+            continue
+
+        if name == "anthropic":
             try:
                 from anthropic import Anthropic
                 return {"client": Anthropic(api_key=key), "provider": "anthropic", "model": ""}
             except ImportError:
-                logger.debug("vault key for anthropic set but anthropic package not installed")
+                logger.debug("key for anthropic set but anthropic package not installed")
             except Exception as exc:
-                logger.debug("Failed to create Anthropic client from vault: %s", type(exc).__name__)
-        elif provider == "openrouter":
-            try:
-                from openai import OpenAI
-                # OpenRouter model ids are namespaced — the broker's bare
-                # "gpt-4o-mini" default would 404 there, so pin the
-                # namespaced equivalent explicitly in the binding.
-                return {
-                    "client": OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1"),
-                    "provider": "openai",
-                    "model": "openai/gpt-4o-mini",
-                }
-            except ImportError:
-                logger.debug("vault key for openrouter set but openai package not installed")
-            except Exception as exc:
-                logger.debug("Failed to create OpenRouter client from vault: %s", type(exc).__name__)
+                logger.debug("Failed to create Anthropic client: %s", type(exc).__name__)
+            continue
+
+        base_url = spec.get("base_url")
+        model = spec.get("default_model") or ""
+        if base_url and not model:
+            # compat endpoint without a model: never guess — the broker's bare
+            # OpenAI default would 404 on most compatible providers.
+            logger.debug("provider %s has a base_url but no model configured — skipped", name)
+            continue
+        try:
+            from openai import OpenAI
+            kwargs: dict = {"api_key": key or "ollama"}
+            if base_url:
+                kwargs["base_url"] = base_url
+            return {"client": OpenAI(**kwargs), "provider": "openai", "model": model}
+        except ImportError:
+            logger.debug("key for %s set but openai package not installed", name)
+        except Exception as exc:
+            logger.debug("Failed to create client for %s: %s", name, type(exc).__name__)
     return None
 
 
@@ -310,8 +329,10 @@ def _auto_detect_llm(slug: str = "") -> dict | None:
     2. ~/.agentnode/.env (loaded into env, no overwrite)
     3. OPENAI_API_KEY -> OpenAI client
     4. ANTHROPIC_API_KEY -> Anthropic client
-    5. Credential store (vault): openai/anthropic/openrouter — env always
-       overrides the store (UX-2)
+    5. Provider registry + credential store (vault): openai/anthropic plus
+       any OpenAI-compatible endpoint (openrouter/deepseek/mistral/qwen/
+       ollama/custom ``llm.providers.*``) — env always overrides the store
+       (UX-2/Endpoint-A)
 
     Returns a dict-style LLM binding {client, provider, model} or None.
     """
@@ -349,7 +370,7 @@ def _auto_detect_llm(slug: str = "") -> dict | None:
         except Exception as exc:
             logger.debug("Failed to create Anthropic client: %s", exc)
 
-    return _llm_binding_from_vault()
+    return _llm_binding_from_providers()
 
 
 # ---------------------------------------------------------------------------

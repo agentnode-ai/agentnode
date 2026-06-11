@@ -46,6 +46,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "llm": {
         "default_provider": "openai",
+        "providers": {},
     },
 }
 
@@ -68,7 +69,10 @@ VALID_VALUES: dict[str, tuple[str, ...]] = {
     "guard.compute": ("allow", "prompt", "deny"),
     "guard.unknown": ("allow", "prompt", "deny"),
     "agent_sandbox.enabled": ("true", "false"),
-    "llm.default_provider": ("openai", "anthropic", "openrouter"),
+    "llm.default_provider": (
+        "openai", "anthropic", "openrouter", "deepseek", "mistral", "qwen",
+        "gemini", "ollama",
+    ),
 }
 
 
@@ -160,6 +164,10 @@ def _merge_defaults(data: dict) -> dict[str, Any]:
         for k in ("default_provider",):
             if k in data["llm"]:
                 cfg["llm"][k] = data["llm"][k]
+        # llm.providers holds nested endpoint specs (base_url/model/...) —
+        # pass through verbatim, like agent_sandbox.llm above.
+        if isinstance(data["llm"].get("providers"), dict):
+            cfg["llm"]["providers"] = data["llm"]["providers"]
     return cfg
 
 
