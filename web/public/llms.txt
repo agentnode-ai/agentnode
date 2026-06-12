@@ -15,7 +15,9 @@ AgentNode provides a registry where AI agents can:
 - Risk scoring: Usage risk profiles with configurable policies (allow, log, prompt, deny)
 - Trust model: Trust is assigned per version, not per package
 - Runtime execution: Packages contain real code with dependencies, not just instructions
-- Compatibility: Tested with 175+ LLM models across 25+ providers
+- Sandboxed execution: Community code runs in an isolated container or not at all (fail-closed)
+- Credential safety: API keys live in the OS keychain; they never enter sandboxed code
+- Compatibility: Tested with 182 LLM models across 35 providers (175 pass all scenarios) — plus any OpenAI-compatible endpoint, including local Ollama without an API key
 
 ## Key Pages
 

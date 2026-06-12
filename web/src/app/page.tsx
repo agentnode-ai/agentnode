@@ -8,6 +8,8 @@ import { LifecycleDiagram } from "@/components/diagrams";
 import { TOTAL_MODELS, S_TIER_COUNT, PROVIDER_COUNT } from "@/app/compatibility/data";
 
 export const metadata: Metadata = {
+  // NOTE: the layout's title.template does NOT apply to the page in the same
+  // segment (Next.js behavior) — the root page needs the brand explicitly.
   title: "Verified Agent Skills for AI Agents | Auto-Detect & Install | AgentNode",
   description:
     "AI agents detect missing capabilities and install verified skills on demand. Trust-gated auto-upgrades with confidence scoring. Portable ANP format for LangChain, CrewAI, MCP, and Python.",

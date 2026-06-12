@@ -4,7 +4,7 @@ import PackageCard from "@/components/PackageCard";
 import { BACKEND_URL } from "@/lib/constants";
 
 export const metadata: Metadata = {
-  title: "AI Agents — AgentNode",
+  title: "AI Agents",
   description:
     "Discover pre-built AI agents on AgentNode. Research, writing, code review, security scanning, and more — ready to install and run in any framework.",
   alternates: {

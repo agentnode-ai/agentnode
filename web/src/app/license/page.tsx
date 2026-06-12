@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 export const metadata = {
-  title: "Open Source License — AgentNode Dual Licensing",
+  title: "Open Source License — Dual Licensing",
   description: "AgentNode open source licensing: MIT for CLI, SDK, and agent skill packs. BSL 1.1 for the backend registry. Free to use, modify, and redistribute.",
   alternates: {
     canonical: "/license",

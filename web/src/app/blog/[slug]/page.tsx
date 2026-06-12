@@ -48,7 +48,7 @@ async function resolveRedirect(slug: string): Promise<string | null> {
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
   const post = await getPost(slug);
-  if (!post) return { title: "Post not found — AgentNode" };
+  if (!post) return { title: "Post not found" };
 
   // If post belongs to a different type, metadata doesn't matter (will redirect)
   if (post.post_type && post.post_type.url_prefix !== "blog") {

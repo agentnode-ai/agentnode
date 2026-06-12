@@ -10,16 +10,15 @@ import {
 import CompatibilityTable from "./CompatibilityTable";
 
 export const metadata: Metadata = {
-  title: "Model Compatibility — Verified with 175+ Models",
-  description:
-    "AgentNode Runtime is tested against 182 LLM models across 32 providers. See which models pass all 4 tool-calling scenarios.",
+  // Stats come from ./data.ts — the single source of truth for these numbers.
+  title: `Model Compatibility — Verified with ${TOTAL_MODELS} Models`,
+  description: `AgentNode Runtime is tested against ${TOTAL_MODELS} LLM models across ${PROVIDER_COUNT} providers. See which models pass all 4 tool-calling scenarios.`,
   alternates: {
     canonical: "/compatibility",
   },
   openGraph: {
-    title: "Model Compatibility — Verified with 175+ Models | AgentNode",
-    description:
-      "AgentNode Runtime is tested against 182 LLM models across 32 providers. Full compatibility matrix with per-scenario results.",
+    title: `Model Compatibility — Verified with ${TOTAL_MODELS} Models | AgentNode`,
+    description: `AgentNode Runtime is tested against ${TOTAL_MODELS} LLM models across ${PROVIDER_COUNT} providers. Full compatibility matrix with per-scenario results.`,
     type: "website",
     url: "https://agentnode.net/compatibility",
     siteName: "AgentNode",

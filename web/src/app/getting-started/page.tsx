@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import AiStackLogos from "@/components/AiStackLogos";
+import { TOTAL_MODELS, S_TIER_COUNT, PROVIDER_COUNT } from "@/app/compatibility/data";
 
 export const metadata: Metadata = {
-  title: "Getting Started | AgentNode",
+  // The root layout template appends "| AgentNode" — no brand suffix here.
+  title: "Getting Started",
   description:
     "Install AgentNode, configure permissions, and let your agent learn new skills on its own. Works with ChatGPT, Claude, Gemini, LangChain, CrewAI, and more.",
   alternates: {
@@ -207,7 +209,7 @@ result = client.smart_run(
             handles everything &mdash; tool registration, system prompt, and the
             tool loop. Tested across{" "}
             <Link href="/compatibility" className="text-primary hover:text-foreground transition-colors">
-              175+ models
+              {S_TIER_COUNT}+ models
             </Link>
             . Native support for OpenAI, Anthropic, and Gemini.
             Any OpenAI-compatible provider (Mistral, DeepSeek, Qwen, Llama) works via OpenRouter.
@@ -340,29 +342,29 @@ print(result.content)`}
       <section className="border-b border-border bg-card/30">
         <div className="mx-auto max-w-4xl px-4 sm:px-6 py-20">
           <h2 className="mb-4 text-2xl font-bold text-foreground">
-            Verified with <span className="text-green-400">175+</span> models
+            Verified with <span className="text-green-400">{S_TIER_COUNT}+</span> models
           </h2>
           <p className="mb-12 max-w-2xl text-muted">
             Native runtime for OpenAI, Anthropic, and Gemini. Framework adapters
-            for LangChain, CrewAI, and MCP. Tested against 182 models from 32
-            providers &mdash; 96% achieve perfect tool-calling compatibility.
+            for LangChain, CrewAI, and MCP. Tested against {TOTAL_MODELS} models from {PROVIDER_COUNT}{" "}
+            providers &mdash; {Math.round((S_TIER_COUNT / TOTAL_MODELS) * 100)}% achieve perfect tool-calling compatibility.
           </p>
           <AiStackLogos />
           <div className="mx-auto mt-10 max-w-2xl grid grid-cols-4 gap-3">
             <div className="rounded-xl border border-border bg-background/50 p-3 text-center">
-              <div className="text-xl font-bold text-foreground">182</div>
+              <div className="text-xl font-bold text-foreground">{TOTAL_MODELS}</div>
               <div className="text-[11px] text-muted mt-0.5">Models</div>
             </div>
             <div className="rounded-xl border border-green-500/20 bg-green-500/5 p-3 text-center">
-              <div className="text-xl font-bold text-green-400">175</div>
+              <div className="text-xl font-bold text-green-400">{S_TIER_COUNT}</div>
               <div className="text-[11px] text-muted mt-0.5">Perfect</div>
             </div>
             <div className="rounded-xl border border-border bg-background/50 p-3 text-center">
-              <div className="text-xl font-bold text-foreground">32</div>
+              <div className="text-xl font-bold text-foreground">{PROVIDER_COUNT}</div>
               <div className="text-[11px] text-muted mt-0.5">Providers</div>
             </div>
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 text-center">
-              <div className="text-xl font-bold text-primary">96%</div>
+              <div className="text-xl font-bold text-primary">{Math.round((S_TIER_COUNT / TOTAL_MODELS) * 100)}%</div>
               <div className="text-[11px] text-muted mt-0.5">S-Tier</div>
             </div>
           </div>

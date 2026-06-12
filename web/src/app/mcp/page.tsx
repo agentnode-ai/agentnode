@@ -7,7 +7,7 @@ import McpCodeBlock from "./McpCodeBlock";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "MCP Servers - AgentNode",
+  title: "MCP Servers",
   description:
     "Discover and run MCP servers with AgentNode. Connect your AI agents to filesystems, databases, search APIs, GitHub, Slack, and more.",
   alternates: {

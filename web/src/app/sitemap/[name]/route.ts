@@ -3,6 +3,19 @@ import { NextRequest } from "next/server";
 import { BACKEND_URL } from "@/lib/constants";
 const SITE_URL = "https://agentnode.net";
 
+// Static pages that live in the Next.js app (not in the backend page table) —
+// merged into pages.xml so they are not invisible to crawlers.
+const STATIC_PAGES: { path: string; changefreq: string; priority: number }[] = [
+  { path: "/agents", changefreq: "weekly", priority: 0.8 },
+  { path: "/mcp", changefreq: "weekly", priority: 0.8 },
+  { path: "/compatibility", changefreq: "weekly", priority: 0.8 },
+  { path: "/faq", changefreq: "monthly", priority: 0.6 },
+  { path: "/getting-started", changefreq: "monthly", priority: 0.9 },
+];
+
+// Internal/test accounts that must never appear in the public sitemap.
+const PUBLISHER_BLOCKLIST = new Set(["e2e-test-pub-0320", "verify-publisher"]);
+
 interface SitemapItem {
   slug?: string;
   updated_at?: string;
@@ -32,12 +45,25 @@ export async function GET(
 
   try {
     if (sitemapName === "pages") {
-      const res = await fetch(`${BACKEND_URL}/v1/sitemap/pages`, { next: { revalidate: 300 } });
-      if (res.ok) {
-        const data = await res.json();
-        urls = (data.items as SitemapItem[]).map((item) =>
-          buildUrlEntry(item.path!, undefined, item.changefreq, item.priority)
-        );
+      const backendPaths = new Set<string>();
+      try {
+        const res = await fetch(`${BACKEND_URL}/v1/sitemap/pages`, { next: { revalidate: 300 } });
+        if (res.ok) {
+          const data = await res.json();
+          urls = (data.items as SitemapItem[]).map((item) =>
+            buildUrlEntry(item.path!, undefined, item.changefreq, item.priority)
+          );
+          for (const item of data.items as SitemapItem[]) {
+            if (item.path) backendPaths.add(item.path);
+          }
+        }
+      } catch {
+        // backend unreachable — still emit the static pages below
+      }
+      for (const page of STATIC_PAGES) {
+        if (!backendPaths.has(page.path)) {
+          urls.push(buildUrlEntry(page.path, undefined, page.changefreq, page.priority));
+        }
       }
     } else if (sitemapName === "packages") {
       const res = await fetch(`${BACKEND_URL}/v1/sitemap/packages`, { next: { revalidate: 300 } });
@@ -51,9 +77,11 @@ export async function GET(
       const res = await fetch(`${BACKEND_URL}/v1/sitemap/publishers`, { next: { revalidate: 300 } });
       if (res.ok) {
         const data = await res.json();
-        urls = (data.items as SitemapItem[]).map((item) =>
-          buildUrlEntry(`/publishers/${item.slug}`, item.updated_at, "weekly", 0.5)
-        );
+        urls = (data.items as SitemapItem[])
+          .filter((item) => !PUBLISHER_BLOCKLIST.has(item.slug ?? ""))
+          .map((item) =>
+            buildUrlEntry(`/publishers/${item.slug}`, item.updated_at, "weekly", 0.5)
+          );
       }
     } else {
       // Post type slug (e.g., "post", "tutorial", "changelog", "case-study")
