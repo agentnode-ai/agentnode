@@ -27,6 +27,7 @@ AgentNode provides a registry where AI agents can:
 - Search Packages: https://agentnode.net/search
 - Browse Capabilities: https://agentnode.net/capabilities
 - Model Compatibility: https://agentnode.net/compatibility
+- Changelog (SDK release notes): https://agentnode.net/changelog
 - For Developers: https://agentnode.net/for-developers
 - Why AgentNode: https://agentnode.net/why-agentnode
 - Publish Skills: https://agentnode.net/publish
