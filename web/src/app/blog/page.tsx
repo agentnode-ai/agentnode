@@ -75,7 +75,7 @@ export default async function BlogPage() {
   const regular = posts.filter((p) => !p.is_featured);
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-16">
+    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
       {/* Hero */}
       <div className="mb-12 text-center">
         <h1 className="mb-3 text-4xl font-bold tracking-tight sm:text-5xl">Blog</h1>

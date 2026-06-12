@@ -290,7 +290,7 @@ function CompareContent() {
   ];
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-12">
+    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
       {/* Header */}
       <div className="mb-8">
         <h1 className="mb-2 text-3xl font-bold text-foreground">
@@ -415,7 +415,7 @@ function CompareContent() {
 
 function CompareFallback() {
   return (
-    <div className="mx-auto max-w-6xl px-6 py-12">
+    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
       <div className="mb-8">
         <h1 className="mb-2 text-3xl font-bold text-foreground">
           Compare Packages

@@ -413,7 +413,7 @@ function SearchContent() {
   );
 
   return (
-    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-10">
+    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
       {/* Search header */}
       <div className="mb-8">
         <h1 className="mb-4 text-3xl font-bold text-foreground">
@@ -606,7 +606,7 @@ function SearchContent() {
 
 function SearchFallback() {
   return (
-    <div className="mx-auto max-w-6xl px-6 py-10">
+    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
       <div className="mb-8">
         <h1 className="mb-4 text-3xl font-bold text-foreground">
           Search Packages

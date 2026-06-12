@@ -141,7 +141,7 @@ export default function CompatibilityPage() {
 
       {/* Tier legend */}
       <section className="border-b border-border bg-card/30">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-10">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
           <h2 className="mb-6 text-lg font-semibold text-foreground text-center">Tier System</h2>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
             {TIER_INFO.map((t) => (
@@ -163,7 +163,7 @@ export default function CompatibilityPage() {
 
       {/* Scenarios explanation */}
       <section className="border-b border-border">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-10">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
           <h2 className="mb-6 text-lg font-semibold text-foreground text-center">
             Test Scenarios
           </h2>
@@ -185,7 +185,7 @@ export default function CompatibilityPage() {
 
       {/* Full matrix */}
       <section className="border-b border-border">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-10">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
           <CompatibilityTable data={COMPATIBILITY_DATA} />
         </div>
       </section>

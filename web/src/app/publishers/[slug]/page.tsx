@@ -55,7 +55,7 @@ export default async function PublisherPage({
 
   if (!publisher) {
     return (
-      <div className="mx-auto max-w-6xl px-6 py-24 text-center">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6 py-24 text-center">
         <h1 className="text-2xl font-bold text-foreground">Publisher not found</h1>
         <p className="mt-2 text-muted">No publisher with slug &quot;{slug}&quot; exists.</p>
       </div>
@@ -65,7 +65,7 @@ export default async function PublisherPage({
   const packages = await getPublisherPackages(slug);
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-12">
+    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">
           <h1 className="text-2xl font-bold text-foreground">{publisher.display_name}</h1>

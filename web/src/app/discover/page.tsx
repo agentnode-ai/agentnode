@@ -102,7 +102,7 @@ export default async function DiscoverPage() {
   const agentHits = agents?.hits ?? [];
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-12">
+    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
       {/* Page header */}
       <header className="mb-10">
         <h1 className="text-3xl font-bold text-foreground">Discover</h1>

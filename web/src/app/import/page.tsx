@@ -256,7 +256,7 @@ export default function ImportPage() {
       {/*  CONVERTER                                                    */}
       {/* ============================================================ */}
       <section className="border-b border-border">
-        <div className="mx-auto max-w-5xl px-4 sm:px-6 py-10">
+        <div className="mx-auto max-w-4xl px-4 sm:px-6 py-10">
           {/* Platform tabs */}
           <div className="mb-6 flex flex-wrap gap-2">
             {PLATFORMS.map((p) => (
@@ -342,7 +342,7 @@ export default function ImportPage() {
       {/* ============================================================ */}
       {result && (
         <section className="border-b border-border bg-card/30">
-          <div className="mx-auto max-w-5xl px-4 sm:px-6 py-10">
+          <div className="mx-auto max-w-4xl px-4 sm:px-6 py-10">
             {/* Draft-only banner */}
             {apiResponse ? (
               <div className="mb-6 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3 text-sm text-yellow-300">
@@ -638,7 +638,7 @@ export default function ImportPage() {
       {!result && (
         <>
           <section className="border-b border-border bg-card/30">
-            <div className="mx-auto max-w-5xl px-4 sm:px-6 py-14">
+            <div className="mx-auto max-w-4xl px-4 sm:px-6 py-14">
               <h2 className="mb-8 text-center text-2xl font-bold text-foreground">
                 From framework-locked to universally installable
               </h2>
@@ -683,7 +683,7 @@ export default function ImportPage() {
 
           {/* HOW IT WORKS */}
           <section className="border-b border-border">
-            <div className="mx-auto max-w-5xl px-4 sm:px-6 py-14">
+            <div className="mx-auto max-w-4xl px-4 sm:px-6 py-14">
               <h2 className="mb-10 text-center text-2xl font-bold text-foreground">
                 Three steps to a published package
               </h2>
@@ -721,7 +721,7 @@ export default function ImportPage() {
 
           {/* SOCIAL PROOF */}
           <section className="border-b border-border bg-card/30">
-            <div className="mx-auto max-w-5xl px-4 sm:px-6 py-14">
+            <div className="mx-auto max-w-4xl px-4 sm:px-6 py-14">
               <div className="grid gap-6 sm:grid-cols-3">
                 <div className="rounded-xl border border-border bg-card p-6 text-center">
                   <div className="text-3xl font-bold text-foreground">{packageCount ?? "77"}+</div>

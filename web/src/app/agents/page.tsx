@@ -151,7 +151,7 @@ export default async function AgentsPage() {
   const agents = await fetchAgents();
 
   return (
-    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-10">
+    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
       {/* Hero */}
       <header className="mb-16 text-center">
         <h1 className="text-4xl font-bold text-foreground sm:text-5xl">

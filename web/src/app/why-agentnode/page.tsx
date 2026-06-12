@@ -254,7 +254,7 @@ export default function WhyAgentNodePage() {
       <section className="relative overflow-hidden border-b border-border">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-primary/10 via-transparent to-transparent" />
 
-        <div className="relative mx-auto max-w-6xl px-6 pb-20 pt-24 sm:pt-32 text-center">
+        <div className="relative mx-auto max-w-6xl px-4 sm:px-6 pb-20 pt-24 sm:pt-32 text-center">
           <p className="mb-4 text-sm font-medium uppercase tracking-widest text-primary">
             Why AgentNode
           </p>
@@ -289,7 +289,7 @@ export default function WhyAgentNodePage() {
 
       {/* ───────────────── The Problem ───────────────── */}
       <section className="border-b border-border">
-        <div className="mx-auto max-w-6xl px-6 py-20">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-2 text-center text-2xl font-bold text-foreground sm:text-3xl">
             The Problem with the Status Quo
           </h2>
@@ -318,7 +318,7 @@ export default function WhyAgentNodePage() {
 
       {/* ───────────────── How AgentNode Is Different ───────────────── */}
       <section className="border-b border-border bg-card/30">
-        <div className="mx-auto max-w-6xl px-6 py-20">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-2 text-center text-2xl font-bold text-foreground sm:text-3xl">
             How AgentNode Is Different
           </h2>
@@ -355,7 +355,7 @@ export default function WhyAgentNodePage() {
 
       {/* ───────────────── Side-by-Side Comparison ───────────────── */}
       <section className="border-b border-border">
-        <div className="mx-auto max-w-6xl px-6 py-20">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-2 text-center text-2xl font-bold text-foreground sm:text-3xl">
             Side-by-Side Comparison
           </h2>
@@ -465,7 +465,7 @@ export default function WhyAgentNodePage() {
 
       {/* ───────────────── How It Works (Code) ───────────────── */}
       <section className="border-b border-border bg-card/30">
-        <div className="mx-auto max-w-6xl px-6 py-20">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-2 text-center text-2xl font-bold text-foreground sm:text-3xl">
             The Developer Experience
           </h2>
@@ -560,7 +560,7 @@ result = AgentNodeRuntime().run(
 
       {/* ───────────────── Open Source ───────────────── */}
       <section className="border-b border-border">
-        <div className="mx-auto max-w-6xl px-6 py-20">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-2 text-center text-2xl font-bold text-foreground sm:text-3xl">
             Open Source. Open Format. Open Registry.
           </h2>
@@ -606,7 +606,7 @@ result = AgentNodeRuntime().run(
 
       {/* ───────────────── For Teams ───────────────── */}
       <section className="border-b border-border bg-card/30">
-        <div className="mx-auto max-w-6xl px-6 py-20">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-2 text-center text-2xl font-bold text-foreground sm:text-3xl">
             Built for Teams and Production
           </h2>
@@ -725,7 +725,7 @@ result = AgentNodeRuntime().run(
 
       {/* ───────────────── Trust Levels Visual ───────────────── */}
       <section className="border-b border-border">
-        <div className="mx-auto max-w-6xl px-6 py-20">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <h2 className="mb-2 text-center text-2xl font-bold text-foreground sm:text-3xl">
             Trust You Can Verify
           </h2>
@@ -751,7 +751,7 @@ result = AgentNodeRuntime().run(
 
       {/* ───────────────── Bottom CTA ───────────────── */}
       <section>
-        <div className="mx-auto max-w-6xl px-6 py-24">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-24">
           <div className="flex flex-col items-center text-center">
             <h2 className="text-2xl font-bold text-foreground sm:text-3xl">
               Ready to stop searching and start{" "}

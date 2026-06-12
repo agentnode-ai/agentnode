@@ -225,7 +225,7 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
   };
 
   return (
-    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-10">
+    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
       {/* Breadcrumb */}
       <nav className="mb-6 text-sm text-muted">
         <Link href="/search" className="hover:text-foreground transition-colors">

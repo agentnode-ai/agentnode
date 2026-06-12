@@ -161,7 +161,7 @@ export default function ChangelogPage() {
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }} />
 
-      <div className="mx-auto max-w-3xl px-6 py-16">
+      <div className="mx-auto max-w-3xl px-4 sm:px-6 py-16">
         <header className="mb-10">
           <h1 className="mb-4 text-4xl font-bold tracking-tight text-foreground sm:text-5xl">
             AgentNode Changelog

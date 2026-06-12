@@ -170,7 +170,7 @@ export default function SupportPage() {
       />
       {/* Hero */}
       <section className="border-b border-border">
-        <div className="mx-auto max-w-4xl px-6 pb-16 pt-20 sm:pt-24 text-center">
+        <div className="mx-auto max-w-4xl px-4 sm:px-6 pb-16 pt-20 sm:pt-24 text-center">
           <p className="mb-4 text-sm font-medium uppercase tracking-widest text-primary">
             Support
           </p>
@@ -188,7 +188,7 @@ export default function SupportPage() {
 
       {/* FAQ */}
       <section className="border-b border-border">
-        <div className="mx-auto max-w-4xl px-6 py-16">
+        <div className="mx-auto max-w-4xl px-4 sm:px-6 py-16">
           <div className="space-y-12">
             {faqCategories.map((cat) => (
               <div key={cat.title}>
@@ -218,7 +218,7 @@ export default function SupportPage() {
 
       {/* CTA */}
       <section>
-        <div className="mx-auto max-w-4xl px-6 py-16 text-center">
+        <div className="mx-auto max-w-4xl px-4 sm:px-6 py-16 text-center">
           <h2 className="text-xl font-bold text-foreground">
             Didn&apos;t find your answer?
           </h2>

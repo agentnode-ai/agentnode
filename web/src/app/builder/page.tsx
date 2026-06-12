@@ -637,7 +637,7 @@ export default function BuilderPage() {
       {!result && (
         <>
           <section className="border-b border-border">
-            <div className="mx-auto max-w-5xl px-4 sm:px-6 py-16">
+            <div className="mx-auto max-w-4xl px-4 sm:px-6 py-16">
               <h2 className="mb-10 text-center text-2xl font-bold text-foreground sm:text-3xl">
                 How it works
               </h2>

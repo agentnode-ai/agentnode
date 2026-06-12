@@ -73,7 +73,7 @@ export function DraftReview({ form }: { form: PublishFormState }) {
   const loginReturnTo = `/publish?tab=${activeTab}`;
 
   return (
-    <div className="mx-auto max-w-3xl px-4 sm:px-6 py-12">
+    <div className="mx-auto max-w-4xl px-4 sm:px-6 py-12">
       <StepIndicator current={2} />
       {/* Header */}
       <div className="mb-6 flex items-center justify-between">

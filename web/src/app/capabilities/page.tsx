@@ -47,7 +47,7 @@ export default async function CapabilitiesPage() {
   const groupedCategories = groupByCategory(capabilities);
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-12">
+    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
       {/* Page header */}
       <div className="mb-10">
         <h1 className="mb-3 text-3xl font-bold text-foreground">

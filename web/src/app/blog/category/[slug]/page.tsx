@@ -41,7 +41,7 @@ export default async function CategoryPage({ params }: { params: Promise<{ slug:
   const name = slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-16">
+    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
       <div className="mb-10">
         <Link href="/blog" className="text-sm text-muted hover:text-foreground">← All posts</Link>
         <h1 className="mt-3 text-3xl font-bold">{name}</h1>
