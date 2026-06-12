@@ -566,11 +566,11 @@ result = runtime.run(
 
           <p className="mt-8 text-center text-sm text-muted">
             Higher trust levels mean automatic installation. See{" "}
-            <Link href="/docs#llm-runtime" className="text-primary hover:underline">
+            <Link href="/docs/llm-runtime" className="text-primary hover:underline">
               LLM Runtime docs
             </Link>{" "}
             or the{" "}
-            <Link href="/docs#runtime-quickstart" className="text-primary hover:underline">
+            <Link href="/docs/quickstart" className="text-primary hover:underline">
               Runtime QuickStart
             </Link>{" "}
             for the full SDK reference.

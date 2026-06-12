@@ -231,7 +231,7 @@ export default function CompatibilityPage() {
             </p>
             <div className="mt-8 flex flex-wrap justify-center gap-3">
               <Link
-                href="/docs#llm-runtime"
+                href="/docs/llm-runtime"
                 className="inline-flex h-11 items-center justify-center rounded-lg bg-primary px-6 text-sm font-medium text-white transition-colors hover:bg-primary/90"
               >
                 Runtime Docs

@@ -255,7 +255,7 @@ print(result.content)`}
           <p className="mt-4 text-sm text-muted">
             Works with Anthropic, Gemini, and any OpenAI-compatible provider &mdash;{" "}
             <Link
-              href="/docs#llm-runtime"
+              href="/docs/llm-runtime"
               className="text-primary hover:text-foreground transition-colors"
             >
               see the full Runtime docs

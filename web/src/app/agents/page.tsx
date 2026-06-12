@@ -170,7 +170,7 @@ export default async function AgentsPage() {
             Browse All Agents
           </Link>
           <Link
-            href="/docs#anp-manifest"
+            href="/docs/manifest"
             className="rounded-lg border border-border px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-primary/30"
           >
             Read the Spec
@@ -362,7 +362,7 @@ export default async function AgentsPage() {
             Publish an Agent
           </Link>
           <Link
-            href="/docs#anp-manifest"
+            href="/docs/manifest"
             className="rounded-lg border border-border px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-primary/30"
           >
             Manifest Reference

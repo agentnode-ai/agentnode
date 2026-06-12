@@ -156,7 +156,7 @@ export default function HomePage() {
                 <CopyInstallButton />
                 <div className="flex flex-wrap gap-3">
                   <Link
-                    href="/docs#installation"
+                    href="/docs/quickstart"
                     className="inline-flex h-11 items-center justify-center rounded-lg bg-primary px-6 text-sm font-medium text-white transition-colors hover:bg-primary/90"
                   >
                     Get Started
@@ -522,7 +522,7 @@ print(result.installed_slug) # "pdf-reader-pack"`}</code>
             Want more control?{" "}
             Use <code className="rounded bg-background/50 px-1 py-0.5 font-mono text-xs">detect_and_install()</code> to
             handle detection and installation separately.{" "}
-            <Link href="/docs#python-sdk" className="text-primary hover:text-foreground transition-colors">See docs</Link>
+            <Link href="/docs/python-sdk" className="text-primary hover:text-foreground transition-colors">See docs</Link>
           </p>
         </div>
       </section>
@@ -596,7 +596,7 @@ result = runtime.run(
           </div>
           <p className="mt-8 text-center text-sm text-muted">
             The LLM discovers, installs, and runs tools autonomously &mdash; no hardcoded tool calls.{" "}
-            <Link href="/docs#llm-runtime" className="text-primary hover:text-foreground transition-colors">
+            <Link href="/docs/llm-runtime" className="text-primary hover:text-foreground transition-colors">
               Runtime docs
             </Link>
           </p>
@@ -654,7 +654,7 @@ result = runtime.run(
                 Pre-execution policy gateway. Every install and run is checked
                 against trust levels, permissions, and environment context.
                 Fail-closed.{" "}
-                <a href="/docs#guard" className="text-primary hover:underline">
+                <a href="/docs/guard" className="text-primary hover:underline">
                   Learn more
                 </a>
               </p>
@@ -888,7 +888,7 @@ result = runtime.run(
             </p>
             <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row">
               <Link
-                href="/docs#installation"
+                href="/docs/quickstart"
                 className="inline-flex h-12 items-center justify-center rounded-lg bg-primary px-8 text-sm font-medium text-white transition-colors hover:bg-primary/90"
               >
                 Get Started
