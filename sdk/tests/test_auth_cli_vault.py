@@ -44,7 +44,9 @@ def _isolated(tmp_path, monkeypatch):
     # keep the test hermetic
     monkeypatch.setattr(
         "agentnode_sdk.runtimes.agent_runner._load_agentnode_env", lambda: None)
-    for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"):
+    for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
+                "DEEPSEEK_API_KEY", "MISTRAL_API_KEY", "DASHSCOPE_API_KEY",
+                "GEMINI_API_KEY", "OLLAMA_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     yield
 
@@ -205,6 +207,132 @@ def test_list_shows_storage_column_no_leak(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "OS keychain" in out
     assert SECRET not in out
+
+
+# --- Endpoint-B: registry-driven status/test ---------------------------------
+
+def test_status_shows_all_registry_providers(monkeypatch, capsys):
+    _use_keyring(monkeypatch, None)
+    assert cmd_auth_status() == 0
+    out = capsys.readouterr().out
+    for provider in ("openai", "anthropic", "openrouter", "deepseek",
+                     "mistral", "qwen", "gemini"):
+        assert provider in out
+    assert "ollama" in out
+    assert "local (keyless)" in out                   # never shown as "missing"
+    assert "not selected" in out
+
+
+def test_status_shows_ollama_selected(monkeypatch, capsys):
+    monkeypatch.setattr("agentnode_sdk.config.load_config",
+                        lambda: {"llm": {"default_provider": "ollama"}})
+    assert cmd_auth_status() == 0
+    out = capsys.readouterr().out
+    assert "selected via llm.default_provider" in out
+
+
+def test_status_shows_custom_provider(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "agentnode_sdk.config.load_config",
+        lambda: {"llm": {"providers": {"myvllm": {
+            "base_url": "http://10.0.0.5:8000/v1", "model": "llama"}}}})
+    assert cmd_auth_status() == 0
+    assert "myvllm" in capsys.readouterr().out
+
+
+@respx.mock
+def test_auth_test_deepseek_generic_models_probe(monkeypatch, capsys):
+    _use_keyring(monkeypatch, None)
+    cs.set_credential("deepseek", SECRET, auth_type="api_key")
+    route = respx.get("https://api.deepseek.com/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": []}))
+    assert cmd_auth_test("deepseek") == 0
+    assert route.calls.last.request.headers["Authorization"] == f"Bearer {SECRET}"
+    out = capsys.readouterr().out
+    assert SECRET not in out and "valid" in out
+
+
+@respx.mock
+def test_auth_test_deepseek_rejected_no_body_echo(monkeypatch, capsys):
+    _use_keyring(monkeypatch, None)
+    cs.set_credential("deepseek", SECRET, auth_type="api_key")
+    respx.get("https://api.deepseek.com/v1/models").mock(
+        return_value=httpx.Response(401, json={"error": f"bad key {SECRET}"}))
+    assert cmd_auth_test("deepseek") == 1
+    out = capsys.readouterr().out
+    assert SECRET not in out                          # body never echoed
+
+
+@respx.mock
+def test_auth_test_gemini_uses_compat_endpoint(monkeypatch):
+    _use_keyring(monkeypatch, None)
+    cs.set_credential("gemini", SECRET, auth_type="api_key")
+    route = respx.get(
+        "https://generativelanguage.googleapis.com/v1beta/openai/models").mock(
+        return_value=httpx.Response(200, json={"data": []}))
+    assert cmd_auth_test("gemini") == 0
+    assert route.called
+
+
+@respx.mock
+def test_auth_test_openrouter_still_auth_key_endpoint(monkeypatch):
+    # /models is unauthenticated on OpenRouter — the exception must survive
+    _use_keyring(monkeypatch, None)
+    cs.set_credential("openrouter", SECRET, auth_type="api_key")
+    route = respx.get("https://openrouter.ai/api/v1/auth/key").mock(
+        return_value=httpx.Response(200, json={"data": {}}))
+    assert cmd_auth_test("openrouter") == 0
+    assert route.called
+
+
+@respx.mock
+def test_auth_test_ollama_reachable_exit_0(monkeypatch, capsys):
+    route = respx.get("http://localhost:11434/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": []}))
+    assert cmd_auth_test("ollama") == 0               # keyless: no exit-2 gate
+    assert route.called
+    out = capsys.readouterr().out
+    assert "reachable" in out
+    assert "authorization" not in route.calls.last.request.headers  # keyless probe
+
+
+@respx.mock
+def test_auth_test_ollama_unreachable_exit_3_never_rejected(monkeypatch, capsys):
+    respx.get("http://localhost:11434/v1/models").mock(
+        side_effect=httpx.ConnectError("refused"))
+    assert cmd_auth_test("ollama") == 3               # unreachable ≠ rejected
+    out = capsys.readouterr().out
+    assert "running" in out                            # "is ... Ollama running?"
+
+
+@respx.mock
+def test_auth_test_custom_provider_via_config(monkeypatch):
+    _use_keyring(monkeypatch, None)
+    monkeypatch.setattr(
+        "agentnode_sdk.config.load_config",
+        lambda: {"llm": {"providers": {"myvllm": {
+            "base_url": "http://10.0.0.5:8000/v1", "model": "llama",
+            "requires_key": False}}}})
+    route = respx.get("http://10.0.0.5:8000/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": []}))
+    assert cmd_auth_test("myvllm") == 0
+    assert route.called
+
+
+def test_auth_test_unknown_provider_exit_2_b(monkeypatch):
+    assert cmd_auth_test("skynet") == 2
+
+
+def test_registry_is_single_source_of_truth():
+    """auth CLI and wizard must not hardcode provider env vars — those come
+    from the registry only."""
+    import agentnode_sdk
+    from pathlib import Path
+    for mod in ("cli/auth.py", "cli/setup_wizard.py"):
+        src = (Path(agentnode_sdk.__file__).parent / mod).read_text(encoding="utf-8")
+        for literal in ("DEEPSEEK_API_KEY", "MISTRAL_API_KEY", "DASHSCOPE_API_KEY",
+                        "GEMINI_API_KEY", "OPENROUTER_API_KEY", "OLLAMA_API_KEY"):
+            assert literal not in src, f"{literal} hardcoded in {mod}"
 
 
 def test_no_secret_in_logs(monkeypatch, caplog):

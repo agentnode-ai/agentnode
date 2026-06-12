@@ -93,6 +93,7 @@ def test_env_var_beats_vault(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-env-openai-key-1")
     binding = _auto_detect_llm()
     assert binding["provider"] == "openai"        # env won
+    assert binding["vendor"] == "openai"          # vendor on env paths too
     assert binding["client"].kwargs == {"api_key": "sk-env-openai-key-1"}
 
 
@@ -118,7 +119,8 @@ def test_vault_default_order_openai_first():
 def test_deepseek_binding_via_env(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds-env-key-001")
     binding = _auto_detect_llm()
-    assert binding["provider"] == "openai"            # openai-compatible shape
+    assert binding["provider"] == "openai"            # PROTOCOL (broker compat)
+    assert binding["vendor"] == "deepseek"            # real name (Endpoint-B)
     assert binding["model"] == "deepseek-chat"
     assert binding["client"].kwargs["base_url"] == "https://api.deepseek.com/v1"
     assert binding["client"].kwargs["api_key"] == "sk-ds-env-key-001"
@@ -185,6 +187,7 @@ def test_ollama_keyless_via_default_provider(monkeypatch):
         lambda: {"llm": {"default_provider": "ollama"}})
     binding = _auto_detect_llm()
     assert binding["provider"] == "openai"
+    assert binding["vendor"] == "ollama"
     assert binding["model"] == "llama3.2"
     assert binding["client"].kwargs["base_url"] == "http://localhost:11434/v1"
     assert binding["client"].kwargs["api_key"] == "ollama"    # dummy, keyless

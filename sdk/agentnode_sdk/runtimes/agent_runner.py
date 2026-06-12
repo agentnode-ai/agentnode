@@ -216,7 +216,10 @@ def _create_llm_from_config(llm_config: dict) -> dict | None:
             kwargs: dict = {"api_key": api_key}
             if provider == "openrouter":
                 kwargs["base_url"] = "https://openrouter.ai/api/v1"
-            return {"client": OpenAI(**kwargs), "provider": "openai", "model": model}
+            # "provider" is the PROTOCOL discriminator (broker compat);
+            # "vendor" carries the real provider name for logs/status.
+            return {"client": OpenAI(**kwargs), "provider": "openai",
+                    "model": model, "vendor": provider}
         except ImportError:
             logger.debug("openai package not installed")
         except Exception as exc:
@@ -224,7 +227,8 @@ def _create_llm_from_config(llm_config: dict) -> dict | None:
     elif provider == "anthropic":
         try:
             from anthropic import Anthropic
-            return {"client": Anthropic(api_key=api_key), "provider": "anthropic", "model": model}
+            return {"client": Anthropic(api_key=api_key), "provider": "anthropic",
+                    "model": model, "vendor": "anthropic"}
         except ImportError:
             logger.debug("anthropic package not installed")
         except Exception as exc:
@@ -232,7 +236,8 @@ def _create_llm_from_config(llm_config: dict) -> dict | None:
     elif provider == "gemini":
         try:
             from google import genai
-            return {"client": genai.Client(api_key=api_key), "provider": "gemini", "model": model}
+            return {"client": genai.Client(api_key=api_key), "provider": "gemini",
+                    "model": model, "vendor": "gemini"}
         except ImportError:
             logger.debug("google-genai package not installed")
         except Exception as exc:
@@ -294,7 +299,8 @@ def _llm_binding_from_providers() -> dict | None:
         if name == "anthropic":
             try:
                 from anthropic import Anthropic
-                return {"client": Anthropic(api_key=key), "provider": "anthropic", "model": ""}
+                return {"client": Anthropic(api_key=key), "provider": "anthropic",
+                        "model": "", "vendor": "anthropic"}
             except ImportError:
                 logger.debug("key for anthropic set but anthropic package not installed")
             except Exception as exc:
@@ -313,7 +319,10 @@ def _llm_binding_from_providers() -> dict | None:
             kwargs: dict = {"api_key": key or "ollama"}
             if base_url:
                 kwargs["base_url"] = base_url
-            return {"client": OpenAI(**kwargs), "provider": "openai", "model": model}
+            # "provider" = protocol (broker compat); "vendor" = real name for
+            # logs/status. Host-side only — never crosses into the sandbox.
+            return {"client": OpenAI(**kwargs), "provider": "openai",
+                    "model": model, "vendor": name}
         except ImportError:
             logger.debug("key for %s set but openai package not installed", name)
         except Exception as exc:
@@ -353,7 +362,7 @@ def _auto_detect_llm(slug: str = "") -> dict | None:
         try:
             from openai import OpenAI
             client = OpenAI(api_key=openai_key)
-            return {"client": client, "provider": "openai", "model": ""}
+            return {"client": client, "provider": "openai", "model": "", "vendor": "openai"}
         except ImportError:
             logger.debug("OPENAI_API_KEY set but openai package not installed")
         except Exception as exc:
@@ -364,7 +373,7 @@ def _auto_detect_llm(slug: str = "") -> dict | None:
         try:
             from anthropic import Anthropic
             client = Anthropic(api_key=anthropic_key)
-            return {"client": client, "provider": "anthropic", "model": ""}
+            return {"client": client, "provider": "anthropic", "model": "", "vendor": "anthropic"}
         except ImportError:
             logger.debug("ANTHROPIC_API_KEY set but anthropic package not installed")
         except Exception as exc:

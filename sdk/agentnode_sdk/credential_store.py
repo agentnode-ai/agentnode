@@ -47,12 +47,19 @@ CREDENTIALS_FILE = "credentials.json"
 CURRENT_VERSION = 1
 
 # Canonical env vars for the LLM providers the host runtime understands.
+# DERIVED from the provider registry (single source of truth, Endpoint-B).
 # Env always OVERRIDES the stored credential (explicit/CI intent wins).
-LLM_PROVIDER_ENV: dict[str, str] = {
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
-}
+def _derive_llm_provider_env() -> dict[str, str]:
+    from agentnode_sdk.llm_providers import KNOWN_PROVIDERS
+
+    return {
+        name: spec["api_key_env"]
+        for name, spec in KNOWN_PROVIDERS.items()
+        if spec.get("api_key_env")
+    }
+
+
+LLM_PROVIDER_ENV: dict[str, str] = _derive_llm_provider_env()
 
 # One keychain item per provider: service "agentnode:<provider>", a fixed
 # username. (NOT service="agentnode" + username=provider — Windows WinVault

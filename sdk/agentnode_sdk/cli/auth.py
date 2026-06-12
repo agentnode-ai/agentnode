@@ -10,7 +10,6 @@ import os
 import sys
 
 from agentnode_sdk.credential_store import (
-    LLM_PROVIDER_ENV,
     has_credential,
     list_credentials,
     load_credentials,
@@ -30,17 +29,28 @@ def _storage_short(storage: str) -> str:
     return "OS keychain" if storage == "keyring" else "plaintext file"
 
 
-def _llm_effective_source(provider: str) -> tuple[str | None, str]:
+def _host_config() -> dict:
+    try:
+        from agentnode_sdk.config import load_config
+        return load_config() or {}
+    except Exception:
+        return {}
+
+
+def _llm_effective_source(provider: str, host_config: dict | None = None) -> tuple[str | None, str]:
     """(effective key or None, human-readable source) for an LLM provider.
 
     Mirrors the runtime's resolution: env (incl. ~/.agentnode/.env) overrides
-    the stored credential. Uses metadata only for the stored check here —
+    the stored credential. Env var names come from the provider REGISTRY
+    (single source of truth). Uses metadata only for the stored check here —
     the real keychain read happens in ``auth test``."""
+    from agentnode_sdk.llm_providers import resolve_provider_spec
     from agentnode_sdk.runtimes.agent_runner import _load_agentnode_env
     _load_agentnode_env()
 
-    env_var = LLM_PROVIDER_ENV[provider]
-    env_key = os.environ.get(env_var) or None
+    spec = resolve_provider_spec(provider, host_config) or {}
+    env_var = spec.get("api_key_env") or ""
+    env_key = (os.environ.get(env_var) or None) if env_var else None
     meta = load_credentials().get("providers", {}).get(provider)
     stored = isinstance(meta, dict)
     storage = (meta or {}).get("storage", "file")
@@ -52,6 +62,19 @@ def _llm_effective_source(provider: str) -> tuple[str | None, str]:
     if stored:
         return None, _storage_short(storage)
     return None, "not configured"
+
+
+def _registry_key_providers(host_config: dict | None) -> list[str]:
+    """Key-requiring providers from the registry (presets + custom config
+    entries), in stable registry order."""
+    from agentnode_sdk.llm_providers import known_provider_names, resolve_provider_spec
+
+    names: list[str] = []
+    for name in known_provider_names(host_config):
+        spec = resolve_provider_spec(name, host_config)
+        if spec and spec.get("requires_key", True):
+            names.append(name)
+    return names
 
 
 def _resolve_auth_type(provider: str) -> str:
@@ -132,15 +155,25 @@ def cmd_auth_remove(provider: str) -> int:
 
 def cmd_auth_status() -> int:
     # --- LLM providers (host runtime / sandbox broker) -----------------------
+    host_cfg = _host_config()
     print()
     print(section("LLM Providers"))
     print(f"  {'Provider':<14}{'Status':<16}{'Effective source'}")
     print(f"  {'--------':<14}{'------':<16}{'----------------'}")
-    for provider in sorted(LLM_PROVIDER_ENV):
-        key, source = _llm_effective_source(provider)
+    for provider in _registry_key_providers(host_cfg):
+        key, source = _llm_effective_source(provider, host_cfg)
         configured = key is not None or source not in ("not configured",)
         status = "configured" if configured else "missing"
         print(f"  {provider:<14}{status:<16}{source}")
+    # ollama: keyless local provider — selection is config, not a credential
+    llm_cfg = host_cfg.get("llm") or {}
+    if llm_cfg.get("default_provider") == "ollama":
+        ollama_source = "selected via llm.default_provider"
+    elif "ollama" in (llm_cfg.get("providers") or {}):
+        ollama_source = "configured via llm.providers"
+    else:
+        ollama_source = "not selected — agentnode config set llm.default_provider ollama"
+    print(f"  {'ollama':<14}{'local (keyless)':<16}{ollama_source}")
     print(dim("  Env vars always override stored credentials. "
               "Test a key: agentnode auth test <provider>"))
 
@@ -183,61 +216,97 @@ def cmd_auth_status() -> int:
 
 
 # Free, cost-less validation endpoints (no completion call, no charge).
-# anthropic REQUIRES the anthropic-version header (a 400 without it would be
-# misread as a bad key); openrouter's /models is UNAUTHENTICATED (validates
-# nothing) — /auth/key is the correct probe.
-_TEST_REQUESTS = {
-    "openai": lambda key: (
+# GENERIC rule for OpenAI-compatible providers: GET {base_url}/models with a
+# Bearer token (authenticated on deepseek/mistral/qwen/gemini and most custom
+# endpoints). EXCEPTIONS: openai (official URL), anthropic (REQUIRES the
+# anthropic-version header — a 400 without it would be misread as a bad key),
+# openrouter (its /models is UNAUTHENTICATED, validates nothing — /auth/key is
+# the correct probe).
+_TEST_EXCEPTIONS = {
+    "openai": lambda key, spec: (
         "https://api.openai.com/v1/models",
         {"Authorization": f"Bearer {key}"},
     ),
-    "anthropic": lambda key: (
+    "anthropic": lambda key, spec: (
         "https://api.anthropic.com/v1/models",
         {"x-api-key": key, "anthropic-version": "2023-06-01"},
     ),
-    "openrouter": lambda key: (
+    "openrouter": lambda key, spec: (
         "https://openrouter.ai/api/v1/auth/key",
         {"Authorization": f"Bearer {key}"},
     ),
 }
 
 
+def _test_request(provider: str, key: str | None, spec: dict) -> tuple[str, dict] | None:
+    if provider in _TEST_EXCEPTIONS:
+        return _TEST_EXCEPTIONS[provider](key, spec)
+    base = (spec.get("base_url") or "").rstrip("/")
+    if not base:
+        return None  # no compat endpoint to probe
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    return (base + "/models", headers)
+
+
 def cmd_auth_test(provider: str) -> int:
     """Validate the EFFECTIVE key for an LLM provider (env beats vault) via a
-    free endpoint. Exit codes: 0 valid / 1 rejected (401/403) / 2 not
-    configured or unsupported / 3 indeterminate (network/5xx — never reported
-    as invalid). Never prints the key (masked last-4 only) and never echoes
-    the provider's response body (it can contain key fragments)."""
+    free endpoint — registry-driven, so custom ``llm.providers`` entries work
+    too. Exit codes: 0 valid (key providers) / reachable (keyless) · 1
+    rejected (401/403, key providers only) · 2 not configured or unsupported ·
+    3 indeterminate (network/5xx — never reported as invalid; for keyless
+    providers this means unreachable). Never prints the key (masked last-4
+    only), never echoes provider response bodies (they can contain key
+    fragments), never starts anything."""
     provider = provider.lower().strip()
-    if provider not in _TEST_REQUESTS:
-        supported = ", ".join(sorted(_TEST_REQUESTS))
-        print(f"  auth test supports: {supported}", file=sys.stderr)
+    host_cfg = _host_config()
+    from agentnode_sdk.llm_providers import resolve_provider_spec
+    spec = resolve_provider_spec(provider, host_cfg)
+    if spec is None:
+        print(f"  Unknown provider '{provider}'. Known: see `agentnode auth status`; "
+              "custom endpoints go under llm.providers.<name>.", file=sys.stderr)
         return 2
 
-    key, source = _llm_effective_source(provider)
-    if key is None:
-        # No env override — resolve the stored credential (real keychain read).
-        from agentnode_sdk.credential_store import get_llm_api_key
-        key = get_llm_api_key(provider)
-    if not key:
-        print(f"\n  {provider}: not configured. Run `agentnode auth set {provider}`.\n")
-        return 2
+    requires_key = spec.get("requires_key", True)
+    if requires_key:
+        key, source = _llm_effective_source(provider, host_cfg)
+        if key is None:
+            # No env override — resolve the stored credential (real keychain read).
+            from agentnode_sdk.credential_store import get_llm_api_key
+            key = get_llm_api_key(provider)
+        if not key:
+            print(f"\n  {provider}: not configured. Run `agentnode auth set {provider}`.\n")
+            return 2
+        shown = f"{_masked(key)}, {source}"
+    else:
+        key, shown = None, "local (keyless)"
 
-    url, headers = _TEST_REQUESTS[provider](key)
+    req = _test_request(provider, key, spec)
+    if req is None:
+        print(f"\n  {provider}: no endpoint to probe (no base_url configured).\n")
+        return 2
+    url, headers = req
+
     import httpx
     try:
         resp = httpx.get(url, headers=headers, timeout=10.0)
     except Exception:
-        print(f"\n  {provider} ({_masked(key)}, {source}): could not reach the "
-              "provider — key validity unknown.\n")
+        if not requires_key:
+            print(f"\n  {provider} ({shown}): could not reach {url} — "
+                  "is the local server (e.g. Ollama) running?\n")
+        else:
+            print(f"\n  {provider} ({shown}): could not reach the "
+                  "provider — key validity unknown.\n")
         return 3
     if resp.status_code == 200:
-        print(f"\n  {provider} ({_masked(key)}, {source}): key is valid.\n")
+        if requires_key:
+            print(f"\n  {provider} ({shown}): key is valid.\n")
+        else:
+            print(f"\n  {provider} ({shown}): endpoint is reachable.\n")
         return 0
-    if resp.status_code in (401, 403):
-        print(f"\n  {provider} ({_masked(key)}, {source}): key was rejected by "
+    if requires_key and resp.status_code in (401, 403):
+        print(f"\n  {provider} ({shown}): key was rejected by "
               f"the provider (HTTP {resp.status_code}).\n")
         return 1
-    print(f"\n  {provider} ({_masked(key)}, {source}): unexpected provider "
-          f"response (HTTP {resp.status_code}) — key validity unknown.\n")
+    print(f"\n  {provider} ({shown}): unexpected response "
+          f"(HTTP {resp.status_code}) — status unknown.\n")
     return 3

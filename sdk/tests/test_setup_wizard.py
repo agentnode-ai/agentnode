@@ -53,7 +53,9 @@ class FakeKeyring:
 def _isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path / "config.json"))
     # hermetic: no real env keys, no real ~/.agentnode/.env, no real keychain
-    for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"):
+    for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
+                "DEEPSEEK_API_KEY", "MISTRAL_API_KEY", "DASHSCOPE_API_KEY",
+                "GEMINI_API_KEY", "OLLAMA_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
         "agentnode_sdk.runtimes.agent_runner._load_agentnode_env", lambda: None)
@@ -211,6 +213,59 @@ def test_non_tty_skips_credential_screen(monkeypatch, capsys):
     assert "Non-interactive session" in out
     assert "agentnode auth set <provider>" in out
     assert cs.list_credentials() == {}
+
+
+# --- Endpoint-B: registry provider list + keyless ollama ---------------------------
+
+def test_wizard_deepseek_happy_path(monkeypatch, capsys):
+    fake = _use_fake_keyring(monkeypatch)
+    # choice 4 = deepseek, test "n", add another "" (default n), save ""
+    _wire(monkeypatch, _PRE + ["4", "n", ""] + _SAVE, getpass_values=[SECRET])
+    assert run_wizard() == 0
+    out = capsys.readouterr().out
+    assert SECRET not in out
+    assert fake.store[("agentnode:deepseek", "token")] == SECRET
+    assert "deepseek (OS keychain)" in out
+
+
+def test_wizard_deepseek_env_import(monkeypatch, capsys):
+    _use_fake_keyring(monkeypatch)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", SECRET)
+    # choice 4, import "" (default y), test "n", another "", save ""
+    _wire(monkeypatch, _PRE + ["4", "", "n", ""] + _SAVE)
+    assert run_wizard() == 0
+    out = capsys.readouterr().out
+    assert "Found DEEPSEEK_API_KEY" in out
+    assert SECRET not in out
+    assert cs.get_llm_api_key("deepseek") == SECRET
+
+
+def test_wizard_ollama_keyless_no_getpass(monkeypatch, capsys):
+    # choice 8 = ollama, use? "" (default y), another "", save "" — NO getpass
+    # value provided: any getpass call would raise StopIteration and fail.
+    _wire(monkeypatch, _PRE + ["8", "", ""] + _SAVE)
+    assert run_wizard() == 0
+    out = capsys.readouterr().out
+    assert "no API key" in out
+    assert "Enter API key" not in out                  # never prompted for a key
+    assert "ollama (local, keyless)" in out            # summary line
+    cfg = load_config()
+    assert cfg["llm"]["default_provider"] == "ollama"  # persisted via Save
+    assert cs.list_credentials() == {}                 # no credential stored
+
+
+def test_wizard_ollama_cancel_persists_nothing(monkeypatch):
+    # choice 8, use "" (yes), another "", save "n" -> nothing persisted
+    _wire(monkeypatch, _PRE + ["8", "", "", "n"])
+    assert run_wizard() == 1
+    assert not config_exists()
+
+
+def test_wizard_skip_default_is_nine(monkeypatch, capsys):
+    # explicit "9" skips, same as the "" default
+    _wire(monkeypatch, _PRE + ["9"] + _SAVE)
+    assert run_wizard() == 0
+    assert "none — add later" in capsys.readouterr().out
 
 
 # --- sandbox screen (UX-3B) --------------------------------------------------------

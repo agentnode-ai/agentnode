@@ -22,7 +22,14 @@ from agentnode_sdk.config import (
 )
 from agentnode_sdk.cli.output import bold, dim, kv, section
 
-_LLM_CHOICES = {"1": "openai", "2": "anthropic", "3": "openrouter"}
+# Key-provider menu (grouped for readability); choice 8 = ollama (keyless,
+# handled separately — never a key prompt), choice 9 = skip (the default).
+_LLM_CHOICES = {
+    "1": "openai", "2": "anthropic", "3": "openrouter",
+    "4": "deepseek", "5": "mistral", "6": "qwen", "7": "gemini",
+}
+_OLLAMA_CHOICE = "8"
+_SKIP_CHOICE = "9"
 
 
 def run_wizard() -> int:
@@ -59,15 +66,16 @@ def _store_llm_key(provider: str) -> str | None:
     import os
 
     from agentnode_sdk.cli.auth import _masked, _storage_short, cmd_auth_test
-    from agentnode_sdk.credential_store import LLM_PROVIDER_ENV, set_credential
+    from agentnode_sdk.credential_store import set_credential
 
-    env_var = LLM_PROVIDER_ENV[provider]
+    from agentnode_sdk.llm_providers import resolve_provider_spec
+    env_var = (resolve_provider_spec(provider) or {}).get("api_key_env") or ""
     try:
         from agentnode_sdk.runtimes.agent_runner import _load_agentnode_env
         _load_agentnode_env()
     except Exception:
         pass
-    env_val = (os.environ.get(env_var) or "").strip()
+    env_val = (os.environ.get(env_var) or "").strip() if env_var else ""
 
     token = ""
     if env_val:
@@ -101,9 +109,11 @@ def _store_llm_key(provider: str) -> str | None:
     return _storage_short(storage)
 
 
-def _credentials_screen() -> list[tuple[str, str]]:
-    """Screen 5: LLM credentials (optional, default = skip). Returns the
-    (provider, storage label) pairs stored in this run."""
+def _credentials_screen(cfg: dict) -> list[tuple[str, str]]:
+    """Screen 5: LLM credentials (optional, default = skip). Key providers
+    come from the registry-backed menu; ollama is a keyless CONFIG selection
+    (written to the wizard cfg, persisted only via the normal Save confirm).
+    Returns the (provider, storage label) pairs selected in this run."""
     import sys
 
     print()
@@ -120,19 +130,38 @@ def _credentials_screen() -> list[tuple[str, str]]:
         return []
 
     stored: list[tuple[str, str]] = []
+    all_options = list(_LLM_CHOICES) + [_OLLAMA_CHOICE, _SKIP_CHOICE]
     while True:
-        print("  [1] OpenAI   [2] Anthropic   [3] OpenRouter   [4] Skip for now")
-        c = _choice("  Choice", ["1", "2", "3", "4"], "4")
-        if c == "4":
+        print("  Recommended:  [1] OpenAI    [2] Anthropic   [3] OpenRouter")
+        print("  More:         [4] DeepSeek  [5] Mistral     [6] Qwen      [7] Gemini")
+        print("  Local:        [8] Ollama — keyless, requires a running Ollama")
+        print("  [9] Skip for now")
+        c = _choice("  Choice", all_options, _SKIP_CHOICE)
+        if c == _SKIP_CHOICE:
             break
-        provider = _LLM_CHOICES[c]
-        if any(p == provider for p, _ in stored):
-            print(f"  {provider} already added in this run.")
+        if c == _OLLAMA_CHOICE:
+            # keyless local provider: a config selection, NOT a credential.
+            # No key prompt, no probing, no starting anything.
+            if any(p == "ollama" for p, _ in stored):
+                print("  ollama already selected in this run.")
+            else:
+                print("  Ollama runs models locally — no API key, no per-token cost.")
+                print(dim("  Requires a running Ollama (https://ollama.com); the wizard"))
+                print(dim("  does not start or probe it."))
+                use = _prompt("  Use Ollama as your default LLM provider? [Y/n]: ", "y")
+                if use.lower() != "n":
+                    cfg["llm"]["default_provider"] = "ollama"
+                    stored.append(("ollama", "local, keyless"))
+                    print(dim("  Selected. Test later with `agentnode auth test ollama`."))
         else:
-            label = _store_llm_key(provider)
-            if label is not None:
-                stored.append((provider, label))
-        if len(stored) >= len(_LLM_CHOICES):
+            provider = _LLM_CHOICES[c]
+            if any(p == provider for p, _ in stored):
+                print(f"  {provider} already added in this run.")
+            else:
+                label = _store_llm_key(provider)
+                if label is not None:
+                    stored.append((provider, label))
+        if len(stored) >= len(_LLM_CHOICES) + 1:
             break
         more = _prompt("  Add another provider? [y/N]: ", "n")
         if more.lower() != "y":
@@ -283,8 +312,9 @@ def _wizard_flow() -> dict | None:
         c = _choice("  Choice", ["1", "2", "3"], "1")
         cfg["trust"]["minimum_trust_level"] = {"1": "verified", "2": "trusted", "3": "curated"}[c]
 
-    # Screen 5: LLM credentials (optional — UX-3A)
-    stored_providers = _credentials_screen()
+    # Screen 5: LLM credentials (optional — UX-3A; provider list from the
+    # registry incl. keyless ollama — Endpoint-B)
+    stored_providers = _credentials_screen(cfg)
 
     # Screen 6: Local sandbox (UX-3B)
     sandbox_status, image_missing = _sandbox_screen(cfg)
