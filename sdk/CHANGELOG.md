@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.16.0 — Registry providers in auth CLI and setup wizard
+
+### Added
+
+- **`agentnode auth status` now surfaces all registry providers** — OpenAI,
+  Anthropic, OpenRouter, DeepSeek, Mistral, Qwen, Gemini — with their storage
+  backend and effective source, plus **Ollama as a local keyless provider**
+  (shown as selected/configured/not selected instead of "missing"). Custom
+  providers configured under `llm.providers.<name>` appear automatically.
+- **`agentnode auth test` supports the registry providers.** Compatible
+  providers are validated with a free, no-completion `GET {base_url}/models`
+  probe; `agentnode auth test ollama` is a keyless reachability check
+  (exit 0 reachable, exit 3 unreachable — never "rejected", and it never
+  starts Ollama). Custom configured endpoints can be tested the same way.
+- **The setup wizard lists all registry providers**, grouped for readability
+  (Recommended / More / Local), with Skip remaining the default. Selecting
+  Ollama never asks for an API key — it sets `llm.default_provider` through
+  the wizard's normal save step.
+- Additive `vendor` field in host-side LLM bindings: logs and tooling can now
+  show the real provider name; the protocol discriminator used by the broker
+  is unchanged.
+
+### Changed
+
+- The auth CLI and the setup wizard now use the provider registry as their
+  single source of truth — no hardcoded provider lists or environment
+  variable names remain in those surfaces.
+- OpenRouter keeps its dedicated `/auth/key` validation path (its `/models`
+  endpoint is unauthenticated and validates nothing).
+
+### Hardened
+
+- Provider response bodies are never printed (they can echo key fragments);
+  keys are never printed, logged, or exposed in exceptions.
+- Ollama is never started or probed automatically — only an explicit
+  `agentnode auth test ollama` performs a localhost reachability check.
+- The `vendor` field stays host-side and does not change the broker/sandbox
+  wire shape.
+
+### BREAKING / Upgrade Notes
+
+- None. All changes are additive; existing `auth` and `setup` flows behave
+  identically for the previously supported providers.
+
 ## 0.15.0 — Generic OpenAI-compatible LLM providers
 
 ### Added
