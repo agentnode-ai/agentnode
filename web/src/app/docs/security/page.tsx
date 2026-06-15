@@ -114,10 +114,12 @@ export default function SecurityPage() {
             Community agents
           </p>
           <p className="mt-1 text-sm text-muted">
-            Gated behind an explicit opt-in flag (default OFF). When enabled,
-            community agents run sandbox-or-fail-closed with a host-side LLM
-            broker — provider API keys never enter the container. When
-            disabled, community agents are refused entirely.
+            Community-agent sandboxing is gated behind an explicit opt-in flag
+            (default OFF). When enabled, community agents run
+            sandbox-or-fail-closed with a host-side LLM broker — provider API
+            keys never enter the container. When disabled, community agents are
+            refused entirely. Trusted and curated agents run on the host like
+            other trusted/curated code, so not every agent is sandboxed.
           </p>
         </div>
       </div>
@@ -127,12 +129,12 @@ export default function SecurityPage() {
         <Row
           label="Container sandbox"
           status="enforced"
-          description="Community-tier code (toolpack builds, toolpack runs, MCP servers) executes in a hardened container: read-only filesystem, non-root user, all capabilities dropped, network disabled by default, no host mounts, no secrets. If the sandbox is unavailable, execution is denied — never downgraded to the host."
+          description="Community-tier code (toolpack builds, toolpack runs, MCP servers, opt-in community agents) executes in a hardened container: read-only filesystem, non-root user, all capabilities dropped, no host mounts, no secrets. Network isolation is stricter for toolpacks and agent sandboxes (network off by default, unknown = deny) than for MCP server processes, whose containers may use the default network because npx/uvx servers often need package and registry access — filesystem, host, and secret isolation still apply to them. If the sandbox is unavailable, execution is denied — never downgraded to the host."
         />
         <Row
           label="Network allowlist"
           status="enforced"
-          description="Community toolpack runs get network access only for explicitly allowlisted domains; unknown or undeclared destinations mean the container runs with networking disabled (unknown = deny)."
+          description="Community toolpack and agent-sandbox containers get a network only when the package declares a recognized network level; unknown, missing, or 'none' values mean the container runs with networking fully disabled (--network none, unknown = deny). MCP server containers are the exception noted above — filesystem, host, and secret isolation still apply to them."
         />
         <Row
           label="Pinned sandbox image"
@@ -211,7 +213,7 @@ export default function SecurityPage() {
         <Row
           label="Network access"
           status="not-enforced"
-          description="For trusted/curated host execution, 'network: none' declarations are policy-checked but not OS-enforced — a trusted tool could still make HTTP requests. For community packages this IS enforced: the sandbox runs with networking disabled unless allowlisted."
+          description="For trusted/curated host execution, 'network: none' declarations are policy-checked but not OS-enforced — a trusted tool could still make HTTP requests. For community toolpacks and agent sandboxes this IS enforced: the container runs with networking disabled unless a network level is declared (MCP server containers are the documented exception)."
         />
         <Row
           label="Filesystem access"
