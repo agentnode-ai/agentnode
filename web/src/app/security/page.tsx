@@ -5,7 +5,10 @@ const DESCRIPTION =
   "How AgentNode keeps AI agents safe: untrusted code runs sandboxed or fail-closed, keys stay in your OS keychain, every package is verified. Local-first.";
 
 export const metadata: Metadata = {
-  title: "Security & Trust | AgentNode",
+  // Plain string (no brand suffix): the root layout title template
+  // "%s | AgentNode" appends it, so the rendered <title> has exactly one
+  // "| AgentNode". Top-level pages must NOT include the suffix themselves.
+  title: "Security & Trust",
   description: DESCRIPTION,
   alternates: { canonical: "/security" },
   openGraph: {
