@@ -1,14 +1,17 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import {
   DocsShell,
   DocsJsonLd,
+  SectionHeading,
   CodeBlock,
   DocTable,
   C,
 } from "@/components/docs";
 
 const TITLE = "CLI Reference";
-const DESCRIPTION = "Reference for the AgentNode command line: setup, search, install, run, publish, validate, doctor, audit, auth and more — with flags and examples.";
+const DESCRIPTION =
+  "The AgentNode CLI reference, grouped by task: setup, search, install, run, auth, guard, sandbox, publish and more — with real flags and examples.";
 const PATH = "/docs/cli";
 
 export const metadata: Metadata = {
@@ -24,496 +27,173 @@ export const metadata: Metadata = {
   },
 };
 
+const SETUP_ROWS = [
+  ["agentnode setup", "Interactive wizard: pick a provider, optionally store a key, and check sandbox readiness. Skippable — defaults work."],
+  ["agentnode config list", "Show all settings with their descriptions and allowed values."],
+  ["agentnode config get <key>", "Read one config value."],
+  ["agentnode config set <key> <value>", "Set a config value, e.g. config set llm.default_provider ollama."],
+  ["agentnode doctor [--fix] [--json]", "Diagnose your setup and detect missing capabilities. --fix auto-installs suggestions."],
+  ["agentnode reset", "Reset the local configuration to defaults."],
+];
+
+const FIND_ROWS = [
+  ["agentnode search <query>", "Full-text search of the registry."],
+  ["agentnode discover [--trending] [--new] [--category <c>] [--type toolpack|agent]", "Browse trending, newly published, or categorized packages."],
+  ["agentnode resolve <capability...> [--framework <f>] [--json]", "Rank packages for one or more capability IDs using the scoring engine."],
+  ["agentnode recommend [--json]", "Suggest packages that complement what you already have installed."],
+  ["agentnode install <slug> [--version <v>] [--yes]", "Install a package: policy check, download, SHA-256 verify, lockfile update."],
+  ["agentnode run <slug | task> [--input <json>] [--file <path>] [--explain] [--dry-run] [--raw] [--json]", "Run an installed tool (by slug) or a natural-language task. Runs in subprocess isolation."],
+  ["agentnode remove <slug> [--yes]", "Remove an installed package from the lockfile."],
+];
+
+const INSPECT_ROWS = [
+  ["agentnode inspect <slug> [--json]", "Security report for an installed package: trust, permissions, risk, signature, policy/guard preview."],
+  ["agentnode capabilities", "List installed packages. capabilities show <name> prints details for one."],
+  ["agentnode skill list", "List installed skills. skill show <slug> [--render KEY=VALUE] [--raw] renders a skill prompt."],
+  ["agentnode logs [run_id] [--limit <n>] [--json]", "Show agent run logs, or details for one run_id."],
+  ["agentnode audit [--limit <n>] [--event <e>] [--slug <s>] [--action allow|deny|prompt] [--tool <t>] [--json]", "Read the Guard/policy decision trail from ~/.agentnode/audit.jsonl."],
+];
+
+const TRUST_ROWS = [
+  ["agentnode auth set <provider> [--from-env <VAR>]", "Store a provider credential (entered hidden). --from-env imports an existing env var."],
+  ["agentnode auth list", "Show configured credentials (no secrets shown)."],
+  ["agentnode auth status", "Show every provider and its effective source (env vs stored)."],
+  ["agentnode auth test <provider>", "Validate a key via a free endpoint; for Ollama, a localhost reachability check."],
+  ["agentnode auth remove <provider>", "Delete a stored credential."],
+  ["agentnode guard policy|status [--json]", "Show the resolved guard policy, or the recent guard activity summary."],
+  ["agentnode guard set <action> <allow|prompt|deny> [--tool <key>]", "Set a guard action policy, globally or per tool."],
+  ["agentnode guard unset [<action>] --tool <key>", "Remove a per-tool guard override (one action, or all for that tool)."],
+  ["agentnode guard check <slug/tool> [--action <a>] [--json]", "Dry-run the guard decision for a tool without executing it."],
+  ["agentnode guard reset", "Reset guard policies to defaults."],
+  ["agentnode lock seal [--force]", "Compute integrity hashes for all lockfile entries."],
+  ["agentnode lock verify [--strict] [--online] [--json]", "Verify lockfile integrity; --online checks publisher key status against the registry."],
+  ["agentnode sandbox pull", "Explicitly pull the digest-pinned sandbox image (no auto-pull)."],
+  ["agentnode sandbox doctor [<slug>] [--json]", "Diagnose sandbox readiness, optionally for one package."],
+  ["agentnode sandbox status", "One-line sandbox readiness check."],
+];
+
+const PUBLISH_ROWS = [
+  ["agentnode init [name] [--type local|api|file|agent|skill]", "Scaffold a new package from a template."],
+  ["agentnode validate [path]", "Validate a manifest offline; check cases and predict the maximum achievable tier."],
+  ["agentnode record-cases [path] [--strict]", "Record VCR cassettes for API verification cases. --strict fails on detected secrets."],
+  ["agentnode verify-local [path]", "Run the full verification pipeline locally (install, import, smoke, tests, scoring)."],
+  ["agentnode publish [path] [--dry-run] [--skip-validate] [--token <key>] [--yes]", "Publish a package to the registry. --yes is required for non-interactive/CI publish."],
+  ["agentnode mcp doctor <slug> [--skip-start] [--json]", "Check an MCP server's readiness."],
+  ["agentnode mcp verify [path] [--test] [--json]", "Verify an MCP agentnode.yaml manifest; --test runs a protocol test."],
+  ["agentnode mcp submit [path] [--test] [--token <key>] [--dry-run]", "Submit an MCP server for catalog review."],
+  ["agentnode mcp status <submission_id> [--token <key>] [--json]", "Check the status of an MCP submission."],
+];
+
 export default function Page() {
   return (
     <>
       <DocsJsonLd title={TITLE} description={DESCRIPTION} path={PATH} />
       <DocsShell title={TITLE}>
-          <section>
-            <p className="mb-6 text-sm text-muted">
-              Complete reference for all 18 commands in the AgentNode CLI.
-            </p>
+        <section>
+          <p className="text-sm leading-relaxed text-muted">
+            The <C>agentnode</C> CLI ships with the SDK (<C>pip install
+            agentnode-sdk</C>). Commands are grouped by task below. Running{" "}
+            <C>agentnode</C> with no command shows a status dashboard; global
+            flags <C>--version</C> and <C>--no-color</C> apply to every command.
+          </p>
+          <p className="mt-4 mb-3 text-sm leading-relaxed text-muted">
+            The five you will use most:
+          </p>
+          <CodeBlock title="terminal">{`$ agentnode setup                  # one-time interactive setup
+$ agentnode search "pdf"           # find a capability
+$ agentnode install pdf-reader-pack
+$ agentnode run pdf-reader-pack --input '{"file_path":"report.pdf"}'
+$ agentnode auth status            # check configured providers`}</CodeBlock>
+          <p className="mt-3 text-sm leading-relaxed text-muted">
+            New here? Start with the{" "}
+            <Link href="/docs/quickstart" className="text-primary hover:underline">
+              Quick Start
+            </Link>{" "}
+            — this page is the full reference.
+          </p>
+        </section>
 
-            {/* setup */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode setup
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Run the setup wizard to configure your local environment.
-                Sets up defaults for trust policy, credential storage, and
-                other settings.
-              </p>
-              <CodeBlock title="terminal">{`$ agentnode setup`}</CodeBlock>
-            </div>
+        <section>
+          <SectionHeading id="setup">Setup &amp; configuration</SectionHeading>
+          <DocTable headers={["Command", "Description"]} rows={SETUP_ROWS} />
+        </section>
 
-            {/* search */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode search &lt;query&gt;
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Search the registry for packages matching a text query.
-              </p>
-              <DocTable
-                headers={["Flag", "Description"]}
-                rows={[
-                  ["--framework <name>", "Filter by framework (langchain, crewai, generic)"],
-                  ["--trust <level>", "Minimum trust level (unverified, verified, trusted, curated)"],
-                  ["--runtime <name>", "Filter by runtime (python)"],
-                  ["--capability <id>", "Filter by capability ID"],
-                  ["--publisher <slug>", "Filter by publisher namespace"],
-                  ["--limit <n>", "Maximum results (default: 20)"],
-                  ["--json", "Output as JSON"],
-                ]}
-              />
-              <div className="mt-3">
-                <CodeBlock title="terminal">{`$ agentnode search "email automation" --framework langchain --trust verified`}</CodeBlock>
-              </div>
-            </div>
+        <section>
+          <SectionHeading id="find-install-run">Find, install &amp; run</SectionHeading>
+          <DocTable headers={["Command", "Description"]} rows={FIND_ROWS} />
+        </section>
 
-            {/* resolve */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode resolve &lt;capability_id...&gt;
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Resolve one or more capability IDs to ranked package
-                recommendations using the scoring engine.
-              </p>
-              <DocTable
-                headers={["Flag", "Description"]}
-                rows={[
-                  ["--framework <name>", "Preferred framework for scoring"],
-                  ["--trust <level>", "Minimum trust level"],
-                  ["--json", "Output as JSON"],
-                ]}
-              />
-              <div className="mt-3">
-                <CodeBlock title="terminal">{`$ agentnode resolve pdf_extraction email_sending --framework crewai`}</CodeBlock>
-              </div>
-            </div>
+        <section>
+          <SectionHeading id="inspect-history">Inspect &amp; history</SectionHeading>
+          <DocTable headers={["Command", "Description"]} rows={INSPECT_ROWS} />
+        </section>
 
-            {/* install */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode install &lt;slug&gt; [slug...]
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Install one or more packs. Supports version pinning with{" "}
-                <C>slug@version</C>.
-              </p>
-              <CodeBlock title="terminal">{`$ agentnode install pdf-reader-pack
-$ agentnode install pdf-reader-pack@1.1.0
-$ agentnode install pdf-reader-pack web-search-pack`}</CodeBlock>
-            </div>
+        <section>
+          <SectionHeading id="trust-safety">Trust &amp; safety</SectionHeading>
+          <DocTable headers={["Command", "Description"]} rows={TRUST_ROWS} />
+        </section>
 
-            {/* update */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode update &lt;slug&gt;
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Update an installed pack to its latest version.
-              </p>
-              <CodeBlock title="terminal">{`$ agentnode update pdf-reader-pack
-Updating pdf-reader-pack 1.2.0 -> 1.3.0... done`}</CodeBlock>
-            </div>
+        <section>
+          <SectionHeading id="build-publish">Build &amp; publish</SectionHeading>
+          <DocTable headers={["Command", "Description"]} rows={PUBLISH_ROWS} />
+          <p className="mt-3 text-sm leading-relaxed text-muted">
+            Full publishing walkthrough:{" "}
+            <Link href="/docs/publishing" className="text-primary hover:underline">
+              Publishing Guide
+            </Link>{" "}
+            and{" "}
+            <Link href="/docs/verification" className="text-primary hover:underline">
+              Package Verification
+            </Link>
+            .
+          </p>
+        </section>
 
-            {/* rollback */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode rollback &lt;slug&gt;@&lt;version&gt;
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Roll back an installed pack to a specific previous version.
-              </p>
-              <CodeBlock title="terminal">{`$ agentnode rollback pdf-reader-pack@1.2.0
-Rolling back pdf-reader-pack 1.3.0 -> 1.2.0... done`}</CodeBlock>
-            </div>
+        <section>
+          <SectionHeading id="advanced">Advanced</SectionHeading>
+          <DocTable
+            headers={["Command", "Description"]}
+            rows={[
+              ["agentnode serve", "Run AgentNode itself as an MCP server over stdio."],
+            ]}
+          />
+        </section>
 
-            {/* info */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode info &lt;slug&gt;
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Display detailed metadata about a package: version history,
-                publisher, trust level, permissions, capabilities, and
-                compatibility.
-              </p>
-              <CodeBlock title="terminal">{`$ agentnode info pdf-reader-pack`}</CodeBlock>
-            </div>
-
-            {/* explain */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode explain &lt;slug&gt;
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Explain a package in plain language: what it does, what
-                permissions it requires, which frameworks it supports, and
-                typical use cases. Designed for deciding whether to install.
-              </p>
-              <CodeBlock title="terminal">{`$ agentnode explain pdf-reader-pack`}</CodeBlock>
-            </div>
-
-            {/* audit */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode audit
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                View and manage the{" "}
-                <a href="/docs/guard" className="text-primary hover:underline">
-                  AgentNode Guard
-                </a>{" "}
-                policy decision audit trail. Every install and run decision
-                is logged to <C>~/.agentnode/audit.jsonl</C>.
-              </p>
-              <DocTable
-                headers={["Subcommand", "Description"]}
-                rows={[
-                  ["audit show", "Show recent audit entries (default: last 20)"],
-                  ["audit show --limit 50", "Show more entries"],
-                  ["audit show --json", "Output raw JSON for scripting"],
-                  ["audit stats", "Summary: allow/deny/prompt counts, top packages"],
-                  ["audit clear --yes", "Delete the audit log"],
-                ]}
-              />
-              <div className="mt-3">
-                <CodeBlock title="terminal">{`$ agentnode audit show
-TIMESTAMP            EVENT             SLUG                      ACTION    SOURCE                  TRUST
-───────────────────────────────────────────────────────────────────────────────────────────────────────────
-2026-04-16 14:23:01  client_install    pdf-reader-pack           allow     default                 trusted
-2026-04-16 14:23:05  run_tool          pdf-reader-pack           allow     default                 trusted
-2026-04-16 14:25:12  client_install    untrusted-pack            deny      trust_level             unverified
-
-$ agentnode audit stats
-  Total entries:  142
-  Period:         2026-04-10 → 2026-04-16
-  Actions:   allow  118  (83.1%)   deny  19  (13.4%)   prompt  5  (3.5%)`}</CodeBlock>
-              </div>
-            </div>
-
-            {/* doctor */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode doctor
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Analyze your local setup, check for outdated packs, missing
-                dependencies, configuration issues, and suggest improvements.
-              </p>
-              <CodeBlock title="terminal">{`$ agentnode doctor
-Checking environment...
-  Python:     3.11.5      OK
-  SDK:        0.5.2       OK
-  Config:     found       OK
-  Lockfile:   found       OK
-
-  1 suggestion: pdf-reader-pack (1.2.0 -> 1.3.0 available)`}</CodeBlock>
-            </div>
-
-            {/* list */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode list
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Show all locally installed packs with versions and trust levels.
-              </p>
-              <CodeBlock title="terminal">{`$ agentnode list
-Installed packages:
-  pdf-reader-pack    v1.0.0  trusted
-  web-search-pack    v1.0.0  trusted
-  email-drafter-pack v1.0.0  verified`}</CodeBlock>
-            </div>
-
-            {/* publish */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode publish [directory]
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Publish a pack to the registry. Validates the manifest, builds
-                the artifact, and uploads to the AgentNode registry. Server-side
-                verification (security scanning, quality gate, indexing) runs
-                after upload.
-              </p>
-              <DocTable
-                headers={["Flag", "Description"]}
-                rows={[
-                  ["--dry-run", "Validate and build artifact without uploading"],
-                  ["--skip-validate", "Continue past validation errors (does not skip hard failures like missing manifest)"],
-                  ["--token <key>", "API key for authentication (overrides AGENTNODE_API_KEY env var)"],
-                ]}
-              />
-              <div className="mt-3">
-                <CodeBlock title="terminal">{`$ agentnode publish .
-$ agentnode publish ./my-pack --dry-run
-$ agentnode publish . --token ank_your_key`}</CodeBlock>
-              </div>
-            </div>
-
-            {/* init */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode init [name]
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Scaffold a new package from a template. Creates a Gold-ready project structure
-                with manifest, source code, tests, and verification cases pre-configured.
-              </p>
-              <DocTable
-                headers={["Flag", "Description"]}
-                rows={[
-                  ["--type <type>", "Template type: local, api, file, or agent"],
-                ]}
-              />
-              <div className="mt-3">
-                <CodeBlock title="terminal">{`$ agentnode init my-api-connector --type api
-Created my-api-connector/
-  agentnode.yaml, pyproject.toml, src/, tests/, fixtures/
-  Template: api (with VCR cassette support)
-  Next: implement your tool, then run agentnode record-cases .`}</CodeBlock>
-              </div>
-            </div>
-
-            {/* validate */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode validate [directory]
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Validate a package manifest offline. Checks syntax, required fields,
-                verification cases, cassette file existence, and predicts the maximum
-                achievable tier (Gold eligibility).
-              </p>
-              <CodeBlock title="terminal">{`$ agentnode validate .
-
-Validating my-pack@1.0.0
-  [PASS] Manifest syntax valid
-  [PASS] Required fields present
-  [PASS] Verification cases defined (2 cases)
-  [PASS] Cassette files exist
-
-  Max tier              Gold
-  Mode                  fixture`}</CodeBlock>
-            </div>
-
-            {/* record-cases */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode record-cases [directory]
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Record VCR cassettes for API verification cases. Makes real API calls and
-                saves responses as YAML fixtures. These cassettes are replayed during
-                verification for deterministic testing without network access.
-              </p>
-              <DocTable
-                headers={["Flag", "Description"]}
-                rows={[
-                  ["--strict", "Exit with error if cassettes contain secrets or possible tokens"],
-                ]}
-              />
-              <div className="mt-3">
-                <CodeBlock title="terminal">{`$ agentnode record-cases .
-
-Recording cassettes for my-api-pack
-  [OK] search_query -> fixtures/cassettes/search.yaml
-  [OK] empty_query -> fixtures/cassettes/empty.yaml
-
-  Cassette Warnings
-  [DYNAMIC] Fields that may change between runs:
-    - interactions[0].response.headers.Date
-
-  Next: agentnode verify-local .`}</CodeBlock>
-              </div>
-              <div className="mt-3 rounded-md border border-warning/20 bg-warning/5 px-3 py-2 text-xs text-muted">
-                Review cassettes for leaked credentials before committing. The{" "}
-                <C>--strict</C> flag blocks on detected secrets and can be used in CI.
-              </div>
-            </div>
-
-            {/* verify-local */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode verify-local [directory]
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Run the full verification pipeline locally. Simulates exactly what the
-                server does: install, import, smoke test (run cases), pytest, contract
-                validation, reliability, and determinism scoring. Shows the predicted
-                tier and score.
-              </p>
-              <CodeBlock title="terminal">{`$ agentnode verify-local .
-
-Verifying my-pack@1.0.0
-
-  Pipeline
-  [PASS] Install      Installed in venv
-  [PASS] Import       Import OK
-  [PASS] Smoke        ok
-  [PASS] Tests        4 passed in 0.5s
-  [PASS] Contract
-  [PASS] Reliability  100.0%
-  [PASS] Determinism  100.0%
-
-  Score                 95/95
-  Tier                  Gold
-  Mode                  fixture
-
-  This package will reach Gold tier after publishing.`}</CodeBlock>
-            </div>
-
-            {/* report */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode report &lt;slug&gt;
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Generate a full security report for a package, including trust
-                history, scan results, dependency analysis, and permission
-                audit.
-              </p>
-              <CodeBlock title="terminal">{`$ agentnode report pdf-reader-pack`}</CodeBlock>
-            </div>
-
-            {/* recommend */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode recommend
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Analyze your installed packs and suggest additional capabilities
-                that complement your current setup.
-              </p>
-              <CodeBlock title="terminal">{`$ agentnode recommend
-Based on your installed packs, you might also need:
-  document_summary    -> document-summarizer-pack   trusted
-  data_visualization  -> data-visualizer-pack       verified`}</CodeBlock>
-            </div>
-
-            {/* resolve-upgrade */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode resolve-upgrade
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Find higher-scored or more trusted alternatives for your
-                currently installed packs.
-              </p>
-              <CodeBlock title="terminal">{`$ agentnode resolve-upgrade
-Checking for upgrades...
-  pdf-extractor-pack -> pdf-reader-pack (higher trust, better score)`}</CodeBlock>
-            </div>
-
-            {/* policy-check */}
-            <div className="mb-8 rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode policy-check &lt;slug&gt;
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Check whether a package meets specified policy constraints.
-              </p>
-              <DocTable
-                headers={["Flag", "Description"]}
-                rows={[
-                  ["--trust <level>", "Required minimum trust level"],
-                  ["--no-network", "Require no network access"],
-                  ["--no-code-execution", "Require no code execution"],
-                  ["--no-filesystem-write", "Require no filesystem write access"],
-                ]}
-              />
-              <div className="mt-3">
-                <CodeBlock title="terminal">{`$ agentnode policy-check pdf-reader-pack --trust trusted --no-network`}</CodeBlock>
-              </div>
-            </div>
-
-            {/* auth */}
-            <div className="rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode auth &lt;provider&gt;
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Store a local API token for a connector provider (e.g. GitHub,
-                Slack). Tokens are saved to{" "}
-                <C>~/.agentnode/credentials.json</C> with 0600 permissions.
-                No AgentNode account required.
-              </p>
-              <DocTable
-                headers={["Subcommand / Flag", "Description"]}
-                rows={[
-                  ["auth <provider>", "Store a token for the given provider (interactive prompt)"],
-                  ["auth list", "List locally stored credentials"],
-                  ["auth remove <provider>", "Remove a locally stored credential"],
-                  ["--validate", "Validate the token against the provider's API before saving"],
-                ]}
-              />
-              <div className="mt-3">
-                <CodeBlock title="terminal">{`$ agentnode auth github --validate
-? Paste your GitHub token: ********
-✓ Token validated — stored for github`}</CodeBlock>
-              </div>
-            </div>
-
-            {/* credentials */}
-            <div className="rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode credentials &lt;subcommand&gt;
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Manage server-side OAuth credentials stored in the AgentNode
-                backend. These are obtained via OAuth flows and proxied through
-                the API — your tool never sees the raw token.
-              </p>
-              <DocTable
-                headers={["Subcommand / Flag", "Description"]}
-                rows={[
-                  ["credentials list", "List all server-side credentials"],
-                  ["credentials test <id>", "Test connectivity for a credential"],
-                  ["credentials delete <id>", "Revoke and delete a credential"],
-                  ["--json", "Output as JSON (available on all subcommands)"],
-                ]}
-              />
-              <div className="mt-3">
-                <CodeBlock title="terminal">{`$ agentnode credentials list
-Credentials (2):
-  a1b2c3d4  github     active  domains=[api.github.com]
-  e5f6g7h8  slack      active  domains=[slack.com]`}</CodeBlock>
-              </div>
-            </div>
-
-            {/* import */}
-            <div className="rounded-lg border border-border bg-card p-5">
-              <h4 className="mb-1 font-mono text-sm font-bold text-primary">
-                agentnode import &lt;file&gt; --from &lt;platform&gt;
-              </h4>
-              <p className="mb-3 text-sm text-muted">
-                Import existing tools from other frameworks and generate an ANP
-                manifest automatically. See{" "}
-                <a
-                  href="/docs/import"
-                  className="text-primary hover:underline"
-                >
-                  Import Tools
-                </a>{" "}
-                for full details.
-              </p>
-              <DocTable
-                headers={["Flag", "Description"]}
-                rows={[
-                  ["--from <platform>", "Source platform: mcp, langchain, openai, crewai, clawhub, skillssh"],
-                  ["--output <dir>", "Output directory for generated manifest (default: current directory)"],
-                ]}
-              />
-              <div className="mt-3">
-                <CodeBlock title="terminal">{`$ agentnode import my_tools.py --from langchain`}</CodeBlock>
-              </div>
-            </div>
-          </section>
+        <section>
+          <SectionHeading id="related">Related</SectionHeading>
+          <ul className="list-disc space-y-2 pl-5 text-sm leading-relaxed text-muted">
+            <li>
+              <Link href="/docs/quickstart" className="text-primary hover:underline">
+                Quick Start
+              </Link>{" "}
+              — the guided first-run path.
+            </li>
+            <li>
+              <Link href="/docs/credentials" className="text-primary hover:underline">
+                Credentials &amp; Connectors
+              </Link>{" "}
+              — details behind <C>agentnode auth</C>.
+            </li>
+            <li>
+              <Link href="/docs/sandbox" className="text-primary hover:underline">
+                Execution Sandbox
+              </Link>{" "}
+              — details behind <C>agentnode sandbox</C>.
+            </li>
+            <li>
+              <Link href="/docs/guard" className="text-primary hover:underline">
+                AgentNode Guard
+              </Link>{" "}
+              — details behind <C>agentnode guard</C> and <C>agentnode audit</C>.
+            </li>
+            <li>
+              <Link href="/docs/python-sdk" className="text-primary hover:underline">
+                Python SDK
+              </Link>{" "}
+              — the programmatic equivalent of these commands.
+            </li>
+          </ul>
+        </section>
       </DocsShell>
     </>
   );
