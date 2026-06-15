@@ -30,6 +30,7 @@ AgentNode provides a registry where AI agents can:
 - Changelog (SDK release notes): https://agentnode.net/changelog
 - For Developers: https://agentnode.net/for-developers
 - Why AgentNode: https://agentnode.net/why-agentnode
+- Security & Trust: https://agentnode.net/security
 - Publish Skills: https://agentnode.net/publish
 - Blog: https://agentnode.net/blog
 - Tutorials: https://agentnode.net/tutorials
