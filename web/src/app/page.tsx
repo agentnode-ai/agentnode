@@ -429,50 +429,6 @@ export default function HomePage() {
       </section>
 
       {/* ============================================================ */}
-      {/*  BEFORE / AFTER                                              */}
-      {/* ============================================================ */}
-      <section className="border-b border-border">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
-          <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
-            Close capability gaps instantly
-          </h2>
-          <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
-            Turn limited agents into modular systems that grow with every task.
-          </p>
-          <div className="mx-auto grid max-w-3xl gap-6 sm:grid-cols-2">
-            {/* Before */}
-            <div className="rounded-xl border border-border bg-card p-6">
-              <div className="mb-4 text-sm font-semibold uppercase tracking-wider text-muted">
-                Before
-              </div>
-              <ul className="space-y-3">
-                {["Fails on missing libraries", "No idea what's missing", "Manual installs for every gap", "Limited, static capabilities"].map((item) => (
-                  <li key={item} className="flex items-center gap-3 text-sm text-muted">
-                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-red-500/10 text-xs text-red-400">✕</span>
-                    {item}
-                  </li>
-                ))}
-              </ul>
-            </div>
-            {/* After */}
-            <div className="rounded-xl border border-primary/30 bg-primary/5 p-6">
-              <div className="mb-4 text-sm font-semibold uppercase tracking-wider text-primary">
-                After AgentNode
-              </div>
-              <ul className="space-y-3">
-                {["Detects missing capabilities", "Installs verified skills automatically", "Retries with the new capability", "Extends itself under your control"].map((item) => (
-                  <li key={item} className="flex items-center gap-3 text-sm text-foreground">
-                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-green-500/10 text-xs text-green-400">✓</span>
-                    {item}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ============================================================ */}
       {/*  HOW IT WORKS — Agent autonomy flow                          */}
       {/* ============================================================ */}
       <section className="border-b border-border bg-card/30">
@@ -502,9 +458,6 @@ export default function HomePage() {
                   wrap any callable. If it fails due to a missing capability,
                   AgentNode takes over.
                 </p>
-                <code className="block overflow-x-auto rounded-lg border border-border bg-[#0d1117] px-4 py-3 font-mono text-sm text-gray-300">
-                  result = client.smart_run(fn, auto_upgrade_policy=&quot;safe&quot;)
-                </code>
               </div>
             </div>
 
@@ -524,9 +477,6 @@ export default function HomePage() {
                   AgentNode analyzes the error, detects the missing capability
                   with confidence scoring, and installs the best verified match.
                 </p>
-                <code className="block overflow-x-auto rounded-lg border border-border bg-[#0d1117] px-4 py-3 font-mono text-sm text-gray-300">
-                  # Automatic: detect → resolve → trust check → install
-                </code>
               </div>
             </div>
 
@@ -546,9 +496,6 @@ export default function HomePage() {
                   exactly once. The result includes full transparency: what was
                   detected, what was installed, and timing.
                 </p>
-                <code className="block overflow-x-auto rounded-lg border border-border bg-[#0d1117] px-4 py-3 font-mono text-sm text-gray-300">
-                  print(result.success, result.installed_slug, result.duration_ms)
-                </code>
               </div>
             </div>
           </div>
@@ -688,7 +635,7 @@ result = runtime.run(
             Not just a registry. A policy-controlled runtime.
           </h2>
           <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
-            Everything your agent needs to grow — safely and autonomously.
+            Everything your agent needs to grow — under your policies and trust tiers.
           </p>
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {/* Row 1: Core — Self-extension */}
@@ -938,14 +885,14 @@ result = runtime.run(
               A policy-controlled runtime
             </h2>
             <p className="mt-6 text-lg leading-relaxed text-muted">
-              Today, agents detect missing capabilities and safely acquire
-              verified skills on demand. With ANP, those capabilities are
+              Today, agents detect missing capabilities and acquire verified
+              skills under configured guardrails. With ANP, those capabilities are
               portable, reusable, and designed to work across agent systems.
             </p>
             <p className="mt-4 text-base leading-relaxed text-muted">
               AgentNode is no longer just a tool registry. It&apos;s a runtime
-              that installs and executes capabilities — safely, predictably,
-              and governed by your policies.
+              that installs and executes capabilities — predictably, governed
+              by your policies and trust tiers.
             </p>
           </div>
         </div>
