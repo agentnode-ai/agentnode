@@ -101,8 +101,11 @@ function packageTypeLabel(pkg: any): string {
 
 // Build conservative, claim-clean SoftwareApplication JSON-LD. Only neutral,
 // data-backed facts — deliberately NO aggregateRating / review / offers / price /
-// isAccessibleForFree / downloadUrl / installUrl / operatingSystem and NO trust,
-// verification, sandbox or permission signals.
+// isAccessibleForFree / downloadUrl / installUrl and NO trust, verification,
+// sandbox or permission signals. operatingSystem IS set for cross-platform
+// runtimes (python/mcp): together with applicationCategory it is the one honest
+// attribute that satisfies Google's "two or more of offers / aggregateRating /
+// applicationCategory / operatingSystem" rule without faking ratings or prices.
 function buildPackageJsonLd(pkg: any, slug: string) {
   const description =
     pkg.summary ||
@@ -128,6 +131,12 @@ function buildPackageJsonLd(pkg: any, slug: string) {
   const runtime = pkg.blocks?.compatibility?.runtime;
   if (runtime === "mcp") ld.softwareRequirements = "Model Context Protocol (MCP) host";
   else if (runtime === "python") ld.softwareRequirements = "Python";
+
+  // Cross-platform runtimes only (python, mcp). Honest, neutral; second qualifying
+  // attribute (with applicationCategory) for Google's "two or more" rule.
+  if (runtime === "python" || runtime === "mcp") {
+    ld.operatingSystem = "macOS, Windows, Linux";
+  }
 
   // SPDX URL when recognized, otherwise plain text; never interpreted as price/free.
   const lic = typeof pkg.license_model === "string" ? pkg.license_model.trim() : "";
