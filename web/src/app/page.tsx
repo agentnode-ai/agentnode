@@ -136,17 +136,17 @@ export default function HomePage() {
             {/* Left: copy */}
             <div className="flex max-w-xl flex-col items-center text-center lg:items-start lg:text-left">
               <h1 className="animate-fade-in text-4xl font-bold leading-tight tracking-tight text-foreground sm:text-5xl">
-                Verified <span className="text-primary">Agent Skills</span> for Every AI Agent
+                Give AI agents <span className="text-primary">new capabilities</span> — without losing control.
               </h1>
               <p className="animate-fade-in-delay-1 mt-6 text-lg leading-relaxed text-foreground/80">
-                AgentNode is a verified registry for AI agent skills and tools.
-                Agents discover missing capabilities, install verified skills at
-                runtime, and run them safely with built-in risk scoring, policy
-                controls, and trust verification. Works with LangChain, CrewAI,
-                MCP, and plain Python.
+                Agents discover and install verified capabilities at runtime,
+                governed by trust tiers, policy checks, and lockfiles. Untrusted
+                community code is sandboxed or refused when isolation is
+                required. Works with LangChain, CrewAI, MCP, and Python.
               </p>
               <p className="animate-fade-in-delay-1 mt-3 text-sm text-foreground/70">
-                Tools run locally on your machine. No data is sent to AgentNode.
+                Tools run locally on your machine. Your tool inputs, outputs, and
+                prompts never reach AgentNode.
               </p>
               <p className="animate-fade-in-delay-1 mt-1 text-sm text-muted">
                 Powered by ANP. One portable package format for all AI agents.
@@ -642,7 +642,7 @@ result = runtime.run(
                 Scored and verified
               </h3>
               <p className="text-sm leading-relaxed text-muted">
-                Every package is sandbox-tested and scored 0&ndash;100 on publish.
+                Every package is tested in an isolated environment and scored 0&ndash;100 on publish.
                 Broken tools are quarantined. Verified tools earn higher trust tiers.
               </p>
             </div>
@@ -691,15 +691,15 @@ result = runtime.run(
             Every tool verified. Every score earned.
           </h2>
           <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
-            We don&apos;t just list tools &mdash; we install them in a sandbox, run them, and
-            score them 0&ndash;100. Broken packages are quarantined. Passing packages earn
-            trust tiers based on their score.
+            We don&apos;t just list tools &mdash; we install and run them in an isolated
+            test environment, and score them 0&ndash;100. Broken packages are quarantined.
+            Passing packages earn trust tiers based on their score.
           </p>
 
           {/* 4-step visual */}
           <div className="mx-auto max-w-3xl grid grid-cols-2 sm:grid-cols-4 gap-3 mb-10">
             {[
-              { icon: "\u2714", label: "Install", desc: "Clean sandbox" },
+              { icon: "\u2714", label: "Install", desc: "Isolated env" },
               { icon: "\u2714", label: "Import", desc: "Entrypoints load" },
               { icon: "\u2714", label: "Smoke Test", desc: "Tools called" },
               { icon: "\u2714", label: "Score", desc: "Reliability proven" },
@@ -767,7 +767,7 @@ result = runtime.run(
               <ul className="space-y-2">
                 <li className="flex items-start gap-2 text-sm text-muted">
                   <span className="text-primary mt-0.5 shrink-0">&bull;</span>
-                  No mocking &mdash; real sandbox execution
+                  No mocking &mdash; real execution in an isolated environment
                 </li>
                 <li className="flex items-start gap-2 text-sm text-muted">
                   <span className="text-primary mt-0.5 shrink-0">&bull;</span>
@@ -787,7 +787,8 @@ result = runtime.run(
 
           <p className="mt-8 text-center text-sm text-muted">
             A registry is only useful if the tools inside it work.{" "}
-            <span className="text-foreground font-medium">AgentNode doesn&apos;t just check &mdash; it proves it, scores it, and keeps checking.</span>
+            <span className="text-foreground font-medium">AgentNode doesn&apos;t just check &mdash; it proves it, scores it, and keeps checking.</span>{" "}
+            <Link href="/security" className="text-primary hover:text-foreground transition-colors">Read the security model</Link>
           </p>
         </div>
       </section>
