@@ -118,10 +118,9 @@ export default function Page() {
 
             <SubHeading>Accounts & API keys</SubHeading>
             <p className="mb-3 text-sm text-muted">
-              An AgentNode account is needed only for write operations
-              (installing, publishing) and server-side credentials. Read-only
-              operations like search, info, and explain work without any
-              authentication.
+              An AgentNode account is needed only for publishing and
+              server-side credentials. Searching, installing, and running
+              packages work without an account or authentication.
             </p>
             <p className="mb-3 text-sm text-muted">
               <strong>API keys</strong> are the primary authentication
@@ -131,7 +130,7 @@ export default function Page() {
             <ul className="mb-4 list-inside list-disc space-y-2 text-sm text-muted">
               <li>
                 <strong>Create</strong> an API key in your account settings on
-                the website or via <C>agentnode api-keys create &lt;label&gt;</C>
+                the website.
               </li>
               <li>
                 <strong>Set</strong> it as an environment variable
