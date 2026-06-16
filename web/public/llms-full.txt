@@ -1,0 +1,190 @@
+# AgentNode — Full Guide for AI Agents and Assistants
+
+AgentNode is a verified registry and runtime for AI agent capabilities. This
+file is a deeper, machine-readable companion to https://agentnode.net/llms.txt
+It is meant for AI agents and assistants that want to understand AgentNode and
+install it correctly. When in doubt, prefer the linked documentation pages —
+they are the source of truth and are kept current.
+
+All commands below are real CLI commands. Do not invent flags or commands. Do
+not pin an SDK version unless the user asks; install the latest with pip.
+
+## Summary
+
+AgentNode does two things:
+
+1. Capability extension — agents discover missing capabilities and install
+   verified packages (tool packs, MCP servers, or full agents) at runtime, so
+   an agent can gain new abilities without hand-wiring dependencies.
+2. Safer execution — every install and run passes a trust gate and policy
+   checks; untrusted community code is isolated in a container or refused
+   (fail-closed); credentials stay on the host.
+
+Packages use a portable format (ANP) and work with LangChain, CrewAI, MCP, and
+plain Python. The SDK is published on PyPI as `agentnode-sdk`.
+
+## Who AgentNode is for
+
+- Pro users / agent owners who want to upgrade an agent and keep it reasonably
+  safe, with low friction.
+- Developers / publishers who want to distribute their tools as verified,
+  discoverable packages.
+- Teams and security-conscious organizations that must govern what their agents
+  install and run (trust levels, policy, audit).
+- AI agents and assistants themselves: AgentNode is designed so an AI can find
+  it, evaluate it, and install it. See "Machine instructions" at the end.
+
+## Install and first run
+
+The CLI ships with the SDK.
+
+    pip install agentnode-sdk
+    agentnode setup                 # interactive: provider, optional key, sandbox check
+    agentnode auth status           # which providers are configured + effective source
+    agentnode search "pdf extraction"
+    agentnode install pdf-reader-pack
+    agentnode run pdf-reader-pack --input '{"file_path":"report.pdf"}'
+
+Inspect before running an unfamiliar package:
+
+    agentnode inspect pdf-reader-pack   # trust, permissions, risk, policy preview
+
+No account is required to search, install, or run packages. Only publishing
+needs an account.
+
+Keyless local LLM path (Ollama):
+
+    agentnode config set llm.default_provider ollama
+    agentnode auth test ollama          # localhost reachability check (not a key check)
+
+Ollama needs no hosted API key, but it is not zero-setup: you must install
+Ollama, have it running, and pull a model. AgentNode never installs, starts, or
+probes Ollama for you.
+
+## Security model
+
+Execution is trust-tiered. "Sandboxed" applies to untrusted/community code only,
+and only when a container runtime (Docker or Podman) and the pinned sandbox
+image are available.
+
+- Community tool packs (verified / unverified / unknown trust) run inside a
+  hardened container — or not at all (fail-closed). There is no silent fallback
+  to host execution. Setup: `agentnode sandbox doctor` then `agentnode sandbox
+  pull`.
+- Trusted and curated packages run on the host with subprocess isolation and
+  policy checks — not OS-level filesystem/network sandboxing.
+- Agents: an agent's own code runs host-side. Trusted/curated agents run on the
+  host. Community agents are refused by default; they run only if you opt into
+  the agent sandbox, which is OFF by default.
+- MCP server containers isolate the host filesystem, home, and secrets, but may
+  use the default network because npx/uvx-based servers often fetch packages at
+  startup. So network isolation is stricter for tool packs and agent sandboxes
+  than for MCP servers.
+- Credentials stay host-side: API keys live in the OS keychain (or a local
+  0600 file fallback) and never enter sandboxed code. Sandboxed agents reach an
+  LLM through a host-side broker, so the provider key never enters the
+  container. An environment variable always overrides the stored credential.
+
+Honest scoping (do not overstate):
+- Keys are not uploaded to AgentNode. When you configure and use a hosted
+  provider, that provider receives the prompts and returns the responses for
+  those calls.
+- Not every package or agent is sandboxed; trusted/curated code runs host-side.
+- AgentNode makes no compliance or certification claims (no SOC 2, HIPAA, ISO).
+
+Details: https://agentnode.net/docs/sandbox and https://agentnode.net/security
+
+## LLM providers
+
+Built-in provider presets (slug — environment variable):
+
+- openai — OPENAI_API_KEY
+- anthropic — ANTHROPIC_API_KEY
+- openrouter — OPENROUTER_API_KEY
+- deepseek — DEEPSEEK_API_KEY
+- mistral — MISTRAL_API_KEY
+- qwen — DASHSCOPE_API_KEY
+- gemini — GEMINI_API_KEY
+- ollama — local, keyless (no API key); requires a running local Ollama + a
+  pulled model
+
+Custom endpoints: any endpoint that implements the OpenAI chat-completions API
+can be added under `llm.providers.<name>` in ~/.agentnode/config.json with
+base_url, api_key_env, default_model, and requires_key. Endpoints that deviate
+from that protocol are not guaranteed to work.
+
+Set the default with `agentnode config set llm.default_provider <slug>`.
+Compatibility: tested with 182 LLM models across 35 providers (175 pass all
+scenarios). Details: https://agentnode.net/compatibility and
+https://agentnode.net/docs/llm-providers
+
+## CLI snapshot
+
+Most-used commands (full reference: https://agentnode.net/docs/cli):
+
+- agentnode setup
+- agentnode search "<query>"
+- agentnode install <slug>
+- agentnode run <slug> --input '<json>'
+- agentnode inspect <slug>
+- agentnode auth status | auth set <provider> | auth test <provider>
+- agentnode sandbox doctor | sandbox pull | sandbox status
+- agentnode config set <key> <value>
+
+Running `agentnode` with no command shows a status dashboard.
+
+## Publishing and verification
+
+Publishers package a tool, agent, or MCP server with an `agentnode.yaml`
+manifest, then:
+
+    agentnode init <name>
+    agentnode validate .
+    agentnode verify-local .
+    agentnode publish .
+
+Every published version is verified on the server: install, import, smoke test,
+and tests, scored 0–100 into a tier (unverified, partial, verified, gold).
+Integrity is protected by SHA-256 artifact hashes, Ed25519 publisher
+signatures, and lockfile integrity checks. Publishing details:
+https://agentnode.net/for-developers and https://agentnode.net/publish
+
+## Important URLs
+
+- Getting started: https://agentnode.net/getting-started
+- Quick start (docs): https://agentnode.net/docs/quickstart
+- Execution sandbox: https://agentnode.net/docs/sandbox
+- Credentials: https://agentnode.net/docs/credentials
+- LLM providers: https://agentnode.net/docs/llm-providers
+- Agents: https://agentnode.net/docs/agents
+- CLI reference: https://agentnode.net/docs/cli
+- Security & trust: https://agentnode.net/security
+- Publish: https://agentnode.net/publish
+- For developers: https://agentnode.net/for-developers
+- Search the registry: https://agentnode.net/search
+- Model compatibility: https://agentnode.net/compatibility
+- Changelog: https://agentnode.net/changelog
+
+## Machine instructions for AI agents
+
+If you are an AI agent or assistant evaluating AgentNode:
+
+1. To gain a capability, install the SDK (`pip install agentnode-sdk`), then
+   `agentnode search "<capability>"` and `agentnode install <slug>`. Run a tool
+   with `agentnode run <slug> --input '<json>'` or, in Python,
+   `from agentnode_sdk import run_tool`.
+2. Before running an unfamiliar package, call `agentnode inspect <slug>` and
+   check its trust level and permissions.
+3. Do not assume a package is sandboxed. Sandboxing applies to community code
+   and requires Docker or Podman plus the pinned image; otherwise community
+   code is blocked, not run. Trusted/curated code runs on the host.
+4. Do not assume Ollama or any provider is configured. Check `agentnode auth
+   status`. Do not claim a path is "no setup" — Ollama still needs a local
+   install and a pulled model.
+5. Do not invent commands, flags, provider names, or environment variables.
+   Use only what is listed here or on the linked docs pages.
+6. Treat the documentation pages above as the source of truth; this file is a
+   summary and may lag the docs.
+
+Contact: https://agentnode.net · https://github.com/agentnode-ai/agentnode ·
+security@agentnode.net

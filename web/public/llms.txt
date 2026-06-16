@@ -2,6 +2,8 @@
 
 AgentNode is the verified registry for AI agent skills and tools. Agents discover, install, and run capabilities at runtime with built-in verification, risk scoring, and policy controls.
 
+For a deeper machine-readable guide for AI agents, see: https://agentnode.net/llms-full.txt
+
 ## What AgentNode Does
 
 AgentNode provides a registry where AI agents can:
