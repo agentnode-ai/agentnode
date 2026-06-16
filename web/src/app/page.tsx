@@ -241,6 +241,82 @@ export default function HomePage() {
       </section>
 
       {/* ============================================================ */}
+      {/*  AUDIENCES — who AgentNode is for                            */}
+      {/* ============================================================ */}
+      <section className="border-b border-border">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
+          <h2 className="mb-4 text-center text-2xl font-bold text-foreground sm:text-3xl">
+            Built for every side of the agent ecosystem
+          </h2>
+          <p className="mx-auto mb-12 max-w-2xl text-center text-muted">
+            Whether you build capabilities, govern them, or are an agent that needs them.
+          </p>
+          <div className="grid gap-6 sm:grid-cols-3">
+            {/* Builders & publishers */}
+            <div className="rounded-xl border border-border bg-card p-6">
+              <h3 className="mb-2 text-base font-semibold text-foreground">
+                For builders &amp; publishers
+              </h3>
+              <p className="mb-4 text-sm leading-relaxed text-muted">
+                Package Tool Packs, Skills, and Agents once, then publish them so
+                any compatible agent can discover and install them.
+              </p>
+              <div className="flex flex-col gap-1.5 text-sm">
+                <Link href="/publish" className="text-primary transition-colors hover:text-foreground">
+                  Publish a package &rarr;
+                </Link>
+                <Link href="/for-developers" className="text-primary transition-colors hover:text-foreground">
+                  Developer overview &rarr;
+                </Link>
+              </div>
+            </div>
+            {/* Teams & security reviewers */}
+            <div className="rounded-xl border border-border bg-card p-6">
+              <h3 className="mb-2 text-base font-semibold text-foreground">
+                For teams &amp; security reviewers
+              </h3>
+              <p className="mb-4 text-sm leading-relaxed text-muted">
+                Evaluate trust tiers, policy checks, lockfiles, and verification
+                results &mdash; untrusted community code is sandboxed or refused
+                when isolation is required.
+              </p>
+              <div className="flex flex-col gap-1.5 text-sm">
+                <Link href="/security" className="text-primary transition-colors hover:text-foreground">
+                  Security model &rarr;
+                </Link>
+                <Link href="/compatibility" className="text-primary transition-colors hover:text-foreground">
+                  Model compatibility &rarr;
+                </Link>
+              </div>
+            </div>
+            {/* AI agents */}
+            <div className="rounded-xl border border-border bg-card p-6">
+              <h3 className="mb-2 text-base font-semibold text-foreground">
+                For AI agents
+              </h3>
+              <p className="mb-4 text-sm leading-relaxed text-muted">
+                Machine-readable guides help an AI discover AgentNode, pick the
+                right docs, and install it without unsafe assumptions.
+              </p>
+              <div className="flex flex-col gap-1.5 text-sm">
+                <a
+                  href="/llms-full.txt"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary transition-colors hover:text-foreground"
+                >
+                  Read llms-full.txt &rarr;
+                </a>
+                <Link href="/docs/quickstart" className="text-primary transition-colors hover:text-foreground">
+                  Quick Start &rarr;
+                </Link>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ============================================================ */}
       {/*  WORKS WITH YOUR AI STACK — Logos + Verified stats            */}
       {/* ============================================================ */}
       <section className="border-b border-border bg-card/30">
