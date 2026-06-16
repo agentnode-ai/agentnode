@@ -1,16 +1,17 @@
 import Link from "next/link";
 
 export const metadata = {
-  title: "FAQ — AgentNode Help & Frequently Asked Questions",
+  // root layout title template appends "| AgentNode"
+  title: "Frequently Asked Questions",
   description:
-    "Find answers to common questions about AgentNode — accounts, publishing, reviews, SDK, billing, and security. Can't find your answer? Open a support ticket.",
+    "Answers about AgentNode: getting started, API keys and providers, Ollama, credentials, trust tiers, the sandbox, publishing, and AI-agent discovery.",
   alternates: {
     canonical: "/faq",
   },
   openGraph: {
-    title: "FAQ — AgentNode Help & Questions",
+    title: "Frequently Asked Questions | AgentNode",
     description:
-      "Answers to common questions about AgentNode — accounts, publishing, reviews, SDK, billing, and security.",
+      "Answers about AgentNode: getting started, providers and keys, trust and security, publishing, and AI-agent discovery.",
     type: "website",
     url: "https://agentnode.net/faq",
     siteName: "AgentNode",
@@ -21,126 +22,152 @@ export const metadata = {
   },
 };
 
-const faqCategories = [
+interface FaqLink {
+  href: string;
+  label: string;
+}
+interface FaqItem {
+  q: string;
+  a: string;
+  links?: FaqLink[];
+}
+interface FaqCategory {
+  title: string;
+  items: FaqItem[];
+}
+
+const faqCategories: FaqCategory[] = [
   {
-    title: "Getting Started",
+    title: "Basics",
     items: [
       {
-        q: "How do I create an AgentNode account?",
-        a: 'Click "Sign up" in the top navigation, enter your email and a password, then verify your email address via the link we send you. That\'s it — you can start browsing and installing packages immediately.',
+        q: "What is AgentNode?",
+        a: "AgentNode is a verified registry and runtime for AI agent capabilities. Agents discover, install, and run verified packages — tool packs, MCP servers, and agents — at runtime, governed by trust tiers, policy checks, and lockfiles.",
+        links: [{ href: "/getting-started", label: "Get started" }],
       },
       {
-        q: "How do I get an API key?",
-        a: "Go to your Dashboard and scroll to the API Keys section. Click \"Create API Key\", give it an optional label, and copy the key. You'll only see the full key once, so store it securely.",
+        q: "Who is AgentNode for?",
+        a: "Four audiences: people who want to give an agent new capabilities, developers who publish packages, teams who must govern what agents run, and AI agents themselves, which can read a machine-readable setup guide.",
       },
       {
-        q: "How do I become a publisher?",
-        a: 'In your Dashboard, click "Create Publisher Profile" and choose a slug (e.g. @my-org). Once created, you can publish packages under that publisher name.',
+        q: "Is AgentNode a framework?",
+        a: "No. AgentNode is a registry plus a runtime that works with LangChain, CrewAI, MCP, and plain Python. You keep your framework; AgentNode supplies and governs the capabilities.",
       },
       {
-        q: "Do I need a publisher profile to install packages?",
-        a: "No. Any registered user can search, resolve, and install packages. A publisher profile is only required if you want to publish your own packages.",
+        q: "How do I start?",
+        a: "Install the SDK with pip install agentnode-sdk, run agentnode setup, then search, install, and run a package. No account is needed to search, install, or run.",
+        links: [
+          { href: "/getting-started", label: "Start hub" },
+          { href: "/docs/quickstart", label: "Quick Start" },
+        ],
       },
     ],
   },
   {
-    title: "Publishing",
+    title: "Capabilities and package types",
     items: [
+      {
+        q: "What can agents install?",
+        a: "Tool packs, Skills, MCP servers, and full Agents — all in the portable ANP package format, discoverable by capability.",
+        links: [{ href: "/search", label: "Browse the registry" }],
+      },
+      {
+        q: "What is the difference between a Tool Pack, Skill, MCP server, and Agent?",
+        a: "A tool pack provides callable tool functions; a skill provides prompt templates and assets; an MCP server is an external Model Context Protocol tool process; an agent orchestrates an LLM and tools toward a goal.",
+        links: [{ href: "/docs/agents", label: "Agents" }],
+      },
       {
         q: "How do I publish a package?",
-        a: 'You can use the AI Builder to generate a package from a description, the Import tool to convert existing LangChain/MCP/CrewAI code, or the CLI with "agentnode publish". All methods produce a standard ANP package.',
-      },
-      {
-        q: "What is the ANP manifest?",
-        a: "The manifest (agentnode.yaml) describes your package: name, version, capabilities, permissions, entrypoints, and framework compatibility. It's human-readable YAML and is required for every package.",
-      },
-      {
-        q: "How does versioning work?",
-        a: "AgentNode uses semantic versioning (semver). Each publish creates a new version. You cannot overwrite an existing version — publish a new version number instead. Versions can be yanked but not deleted.",
-      },
-      {
-        q: "What happens during verification?",
-        a: "Every version goes through a 4-step pipeline on publish: Install (pip install), Import (module loads), Smoke Test (entrypoint executes), and Unit Tests (your tests pass). Results are shown as verification badges.",
-      },
-      {
-        q: "My package was quarantined. What do I do?",
-        a: "Quarantine means our security scanner flagged potential issues (embedded secrets, undeclared network access, etc.). An admin will review it. You'll receive an email with details. If cleared, the package becomes publicly available again.",
+        a: "Scaffold with agentnode init, validate it, run agentnode verify-local, then agentnode publish. Publishing requires an AgentNode account and an API key; browsing, installing, and running do not.",
+        links: [
+          { href: "/publish", label: "Publish" },
+          { href: "/for-developers", label: "For developers" },
+        ],
       },
     ],
   },
   {
-    title: "Reviews",
+    title: "Providers, keys, and local models",
     items: [
       {
-        q: "What review tiers are available?",
-        a: "Three tiers: Security Review (code security audit), Compatibility Review (framework compatibility testing), and Full Review (comprehensive security + compatibility + documentation review).",
+        q: "Do I need an API key?",
+        a: "No account or key is required to search, install, or run packages. You need a provider key only if you use a hosted LLM (such as OpenAI or Anthropic); an AgentNode API key is required only to publish.",
       },
       {
-        q: "How much do reviews cost?",
-        a: "Pricing depends on the tier. Security reviews start at $49, Compatibility at $29, and Full Reviews at $99. Express processing (48h turnaround) is available for an additional fee.",
+        q: "Can I use Ollama without a hosted API key?",
+        a: "Yes. Ollama runs models locally with no hosted API key — once Ollama is installed, running, and a model is pulled. AgentNode never installs or starts it for you.",
+        links: [{ href: "/docs/llm-providers", label: "LLM Providers" }],
       },
       {
-        q: "How long does a review take?",
-        a: "Standard reviews are completed within 7 business days. Express reviews target 48-hour turnaround. You'll receive email notifications when your review is assigned and completed.",
+        q: "Where are credentials stored?",
+        a: "In your OS keychain, or a local file with owner-only (0600) permissions as a fallback. An environment variable always overrides the stored value. Keys are not uploaded to AgentNode, though a hosted provider receives your prompts and responses when you use it.",
+        links: [{ href: "/docs/credentials", label: "Credentials" }],
       },
       {
-        q: "What outcomes are possible?",
-        a: 'Reviews can result in: Approved (badge granted), Changes Requested (fix issues and resubmit), or Rejected (does not meet standards). If rejected or if you\'re unsatisfied, refunds are available.',
+        q: "Which providers and models work?",
+        a: "Built-in: OpenAI, Anthropic, OpenRouter, DeepSeek, Mistral, Qwen, Gemini, plus local Ollama and custom OpenAI-compatible endpoints. The runtime is tested across 182 models from 35 providers (175 pass all scenarios).",
+        links: [
+          { href: "/docs/llm-providers", label: "LLM Providers" },
+          { href: "/compatibility", label: "Compatibility" },
+        ],
       },
     ],
   },
   {
-    title: "SDK & CLI",
+    title: "Trust and security",
     items: [
       {
-        q: "How do I install the SDK?",
-        a: 'Run "pip install agentnode-sdk". The SDK provides programmatic access to search, resolve, install, and use packages from Python. It supports async operations and API key authentication.',
+        q: "Are packages sandboxed?",
+        a: "Untrusted community packages run in a hardened container or not at all (fail-closed), when a container runtime and the pinned image are available. Trusted and curated packages run host-side with policy checks and subprocess isolation — not OS-level sandboxing.",
+        links: [
+          { href: "/docs/sandbox", label: "Execution sandbox" },
+          { href: "/security", label: "Security model" },
+        ],
       },
       {
-        q: "How do I install the CLI?",
-        a: 'The CLI is included in the Python SDK. Run "pip install agentnode-sdk" and the "agentnode" command will be available in your terminal for searching, installing, publishing, and managing packages.',
+        q: "Are agents sandboxed?",
+        a: "An agent's own code runs host-side, so trusted and curated agents run on the host. Community agents are refused by default — they run only if you opt into the agent sandbox, which is off by default.",
+        links: [{ href: "/docs/agents", label: "Agents" }],
       },
       {
-        q: "Which frameworks are supported?",
-        a: "AgentNode packages work with LangChain, CrewAI, MCP (Model Context Protocol), and plain Python. The SDK auto-detects framework compatibility during resolution.",
+        q: "What do verified, trusted, and curated mean?",
+        a: "They are trust levels: unverified (metadata validated only), verified (security-scanned, publisher confirmed), trusted (proven reliable over time), and curated (reviewed by AgentNode). Package versions are also scored into verification tiers.",
+        links: [{ href: "/security", label: "Security model" }],
       },
       {
-        q: "Can I use AgentNode with my LLM provider?",
-        a: "Yes. The AgentNodeRuntime supports OpenAI, Anthropic, and any OpenRouter-compatible provider. Check the compatibility page for the full list of tested models.",
+        q: "What happens if a package is untrusted?",
+        a: "When runtime isolation is required, it is sandboxed-or-fail-closed: it runs in a container, or — if no sandbox is available — it is blocked, never silently run on the host.",
+        links: [{ href: "/docs/sandbox", label: "Execution sandbox" }],
+      },
+      {
+        q: "What does AgentNode Guard do?",
+        a: "Guard is a pre-execution policy gateway. Every install and run is checked against trust level, permissions, and environment, and tool actions are classified allow / prompt / deny with rate limits. It is fail-closed.",
+        links: [{ href: "/docs/cli", label: "Guard commands" }],
+      },
+      {
+        q: "Does AgentNode have compliance certifications?",
+        a: "AgentNode does not currently claim SOC 2, HIPAA, ISO, or similar compliance certifications. It is local-first, with trust tiers, publisher signatures, lockfile integrity, and sandbox-or-fail-closed isolation for untrusted code.",
+        links: [{ href: "/security", label: "Security model" }],
       },
     ],
   },
   {
-    title: "Billing",
+    title: "AI agents and discovery",
     items: [
       {
-        q: "How do payments work?",
-        a: "Payments are processed through Stripe. When you request a review, you're redirected to a Stripe checkout page. We accept all major credit cards.",
+        q: "How do AI agents discover AgentNode?",
+        a: "Through machine-readable files: /llms.txt and a deeper /llms-full.txt guide that explains setup, security boundaries, and the install commands for AI agents.",
+        links: [{ href: "/llms-full.txt", label: "llms-full.txt" }],
       },
       {
-        q: "Can I get a refund?",
-        a: "Yes. If a review hasn't started yet, you can request a full refund. Partial refunds are available after review completion if you're unsatisfied with the service. Contact support for refund requests.",
-      },
-      {
-        q: "Is there a free tier?",
-        a: "Browsing, searching, installing, and publishing packages is completely free. Only paid code reviews have a cost. The platform itself has no subscription fees.",
-      },
-    ],
-  },
-  {
-    title: "Security",
-    items: [
-      {
-        q: "How do I report a security vulnerability?",
-        a: "Email security@agentnode.net with details. Do not open a public issue. We follow responsible disclosure and will respond within 48 hours.",
-      },
-      {
-        q: "What happens when a package is quarantined?",
-        a: "Quarantined packages are hidden from search and installation. The publisher is notified and an admin reviews the flagged issues. Packages can be cleared (made public again) or permanently rejected.",
-      },
-      {
-        q: "Does AgentNode support two-factor authentication?",
-        a: "Yes. Enable 2FA in your Dashboard using any TOTP-compatible authenticator app (Google Authenticator, Authy, 1Password, etc.). Backup codes are provided during setup.",
+        q: "Where should I read next?",
+        a: "Start with Getting Started and the Quick Start, then the security model and the CLI reference.",
+        links: [
+          { href: "/getting-started", label: "Getting Started" },
+          { href: "/docs/quickstart", label: "Quick Start" },
+          { href: "/security", label: "Security" },
+          { href: "/docs/cli", label: "CLI Reference" },
+        ],
       },
     ],
   },
@@ -178,10 +205,9 @@ export default function SupportPage() {
             How can we help?
           </h1>
           <p className="mx-auto mt-4 max-w-2xl text-muted">
-            AgentNode is a platform for installing, verifying, and running AI
-            agent tools across different frameworks. Below you will find answers
-            to common questions about accounts, publishing, reviews, the SDK and
-            CLI, billing, and security.
+            Answers to common questions about getting started, providers and
+            keys, trust and security, and publishing — with links to the full
+            documentation.
           </p>
         </div>
       </section>
@@ -205,7 +231,32 @@ export default function SupportPage() {
                         {item.q}
                       </summary>
                       <div className="border-t border-border px-5 py-4 text-sm leading-relaxed text-muted">
-                        {item.a}
+                        <p>{item.a}</p>
+                        {item.links && (
+                          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
+                            {item.links.map((l) =>
+                              l.href.endsWith(".txt") ? (
+                                <a
+                                  key={l.href}
+                                  href={l.href}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-primary transition-colors hover:text-foreground"
+                                >
+                                  {l.label} &rarr;
+                                </a>
+                              ) : (
+                                <Link
+                                  key={l.href}
+                                  href={l.href}
+                                  className="text-primary transition-colors hover:text-foreground"
+                                >
+                                  {l.label} &rarr;
+                                </Link>
+                              )
+                            )}
+                          </div>
+                        )}
                       </div>
                     </details>
                   ))}
