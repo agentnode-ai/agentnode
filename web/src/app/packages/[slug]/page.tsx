@@ -65,23 +65,26 @@ async function fetchVersions(slug: string): Promise<any[]> {
 
 import { timeAgo } from "@/lib/time";
 
-export async function generateMetadata({ params, searchParams }: PageProps): Promise<Metadata> {
-  const { slug } = await params;
-  const { v } = await searchParams;
-  const pkg = await fetchPackage(slug, v);
-  if (!pkg) return { title: "Package Not Found" };
+// Absolute origin for JSON-LD url/author.url (relative paths aren't valid there).
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://agentnode.net";
 
-  // Type-aware title. Real package_type enum is agent | toolpack | upgrade;
-  // connector is derived from the connector block and character from tags, MCP
-  // from runtime. Derived specials (MCP, character, connector) are checked
-  // BEFORE generic package_type so they are not masked (e.g. a character
-  // modeled as package_type "agent" + a character tag). No "AgentNode" in the
-  // string — the root layout template appends "| AgentNode".
-  const mcpTitle = pkg.blocks?.compatibility?.runtime === "mcp";
-  const titleTags: string[] = pkg.tags ?? [];
-  const typeLabel = mcpTitle
+// Common SPDX identifiers we are confident enough about to emit as an SPDX URL.
+// Anything else falls back to plain text (or is omitted) — never a pricing claim.
+const SPDX_LICENSES = new Set([
+  "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "GPL-2.0", "GPL-3.0",
+  "LGPL-2.1", "LGPL-3.0", "AGPL-3.0", "MPL-2.0", "ISC", "Unlicense",
+  "BSL-1.0", "CC0-1.0", "CC-BY-4.0",
+]);
+
+// Single source of truth for the package type label, shared by <title> and the
+// SoftwareApplication JSON-LD. Derived specials (MCP, character, connector) are
+// checked BEFORE the generic package_type enum (agent | toolpack | upgrade) so
+// they are not masked (e.g. a character modeled as package_type "agent" + tag).
+function packageTypeLabel(pkg: any): string {
+  const tags: string[] = pkg.tags ?? [];
+  return pkg.blocks?.compatibility?.runtime === "mcp"
     ? "MCP Server"
-    : titleTags.some((t: string) => t === "character" || t === "persona")
+    : tags.some((t: string) => t === "character" || t === "persona")
       ? "AI Character"
       : pkg.blocks?.connector
         ? "Connector"
@@ -94,7 +97,78 @@ export async function generateMetadata({ params, searchParams }: PageProps): Pro
               : pkg.package_type === "upgrade"
                 ? "Agent Upgrade"
                 : "Agent Package";
-  const title = `${pkg.name} — ${typeLabel}`;
+}
+
+// Build conservative, claim-clean SoftwareApplication JSON-LD. Only neutral,
+// data-backed facts — deliberately NO aggregateRating / review / offers / price /
+// isAccessibleForFree / downloadUrl / installUrl / operatingSystem and NO trust,
+// verification, sandbox or permission signals.
+function buildPackageJsonLd(pkg: any, slug: string) {
+  const description =
+    pkg.summary ||
+    `${pkg.name} — an agent package on AgentNode. Install it in compatible AI agent frameworks.`;
+
+  const ld: Record<string, unknown> = {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    name: pkg.name,
+    description,
+    url: `${SITE_URL}/packages/${slug}`,
+    applicationCategory: "DeveloperApplication",
+    applicationSubCategory: packageTypeLabel(pkg),
+  };
+
+  const version = pkg.latest_version?.version_number;
+  if (version) ld.softwareVersion = version;
+
+  const publishedAt = pkg.latest_version?.published_at;
+  if (publishedAt) ld.datePublished = publishedAt;
+
+  // Neutral runtime requirement — no credential / provider / Docker / sandbox claim.
+  const runtime = pkg.blocks?.compatibility?.runtime;
+  if (runtime === "mcp") ld.softwareRequirements = "Model Context Protocol (MCP) host";
+  else if (runtime === "python") ld.softwareRequirements = "Python";
+
+  // SPDX URL when recognized, otherwise plain text; never interpreted as price/free.
+  const lic = typeof pkg.license_model === "string" ? pkg.license_model.trim() : "";
+  if (lic) {
+    ld.license = SPDX_LICENSES.has(lic)
+      ? `https://spdx.org/licenses/${lic}.html`
+      : lic;
+  }
+
+  const tags: string[] = pkg.tags ?? [];
+  if (tags.length) ld.keywords = tags.join(", ");
+
+  const publisher = pkg.publisher ?? {};
+  const authorName = publisher.display_name || publisher.name;
+  if (authorName) {
+    const author: Record<string, unknown> = {
+      "@type": "Organization",
+      name: authorName,
+    };
+    if (publisher.slug) author.url = `${SITE_URL}/publishers/${publisher.slug}`;
+    ld.author = author;
+  }
+
+  const sameAs = [pkg.source_url, pkg.homepage_url].filter(
+    (u: unknown): u is string => typeof u === "string" && u.length > 0
+  );
+  if (sameAs.length) ld.sameAs = sameAs;
+
+  return ld;
+}
+
+export async function generateMetadata({ params, searchParams }: PageProps): Promise<Metadata> {
+  const { slug } = await params;
+  const { v } = await searchParams;
+  const pkg = await fetchPackage(slug, v);
+  if (!pkg) return { title: "Package Not Found" };
+
+  // Type-aware title — shares packageTypeLabel() with the JSON-LD so the
+  // <title> and structured data never drift. No "AgentNode" in the string;
+  // the root layout template appends "| AgentNode".
+  const title = `${pkg.name} — ${packageTypeLabel(pkg)}`;
   const description = pkg.summary || `${pkg.name} — an agent package on AgentNode. Install it in compatible AI agent frameworks.`;
 
   // P1-SEO2: Set a canonical URL for each package detail page.
@@ -247,8 +321,17 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
     connector: { bg: "bg-orange-500/10", border: "border-orange-500/20", text: "text-orange-400", label: "Connector" },
   };
 
+  const jsonLd = buildPackageJsonLd(pkg, slug);
+
   return (
     <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
+      {/* SoftwareApplication structured data (conservative, claim-clean) */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c"),
+        }}
+      />
       {/* Breadcrumb */}
       <nav className="mb-6 text-sm text-muted">
         <Link href="/search" className="hover:text-foreground transition-colors">
