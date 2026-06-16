@@ -72,7 +72,7 @@ export async function generateMetadata({ params, searchParams }: PageProps): Pro
   if (!pkg) return { title: "Package Not Found" };
 
   const title = `${pkg.name} — Agent Skill for AI Agents`;
-  const description = pkg.summary || `${pkg.name} is a verified agent skill on AgentNode. Install it in any AI agent framework.`;
+  const description = pkg.summary || `${pkg.name} — an agent package on AgentNode. Install it in compatible AI agent frameworks.`;
 
   // P1-SEO2: Set a canonical URL for each package detail page.
   // Without this, Google indexes the `?v=<version>` variant and the
@@ -442,7 +442,7 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
               </div>
 
               <p className="text-xs text-muted/70">
-                When started, this MCP server runs as a local subprocess via {mcpTransport} transport.
+                When started, this MCP server runs locally on your machine via {mcpTransport} transport.
               </p>
             </section>
           ) : (
@@ -462,7 +462,7 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
 
           <p className="text-xs text-muted -mt-4">
             {isMcp
-              ? "This MCP server runs locally on your machine as a subprocess. AgentNode provides discovery metadata — the executable code is maintained by its npm publisher."
+              ? "This MCP server runs locally on your machine. AgentNode provides discovery metadata — the executable code is maintained by its npm publisher."
               : "Runs locally on your machine. No execution data is sent to AgentNode. Permissions are checked before execution."
             }
             {" "}<a href="/docs/security" className="text-primary/70 hover:text-primary hover:underline">Learn how this works</a>
@@ -827,8 +827,12 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                 ))}
               </div>
               <p className="mt-3 text-xs text-muted">
-                Permissions are policy-checked before execution.
-                Network and filesystem access are not sandboxed at runtime.{" "}
+                Permissions are policy-checked before execution. For trusted and
+                curated packages that run on the host, network and filesystem
+                access are policy-checked but not OS-sandboxed. When runtime
+                isolation is required for untrusted/community code, AgentNode uses
+                sandbox-or-fail-closed if the required container runtime and
+                pinned image are available.{" "}
                 <a href="/docs/security" className="text-primary hover:underline">
                   Learn more
                 </a>
