@@ -71,7 +71,30 @@ export async function generateMetadata({ params, searchParams }: PageProps): Pro
   const pkg = await fetchPackage(slug, v);
   if (!pkg) return { title: "Package Not Found" };
 
-  const title = `${pkg.name} — Agent Skill for AI Agents`;
+  // Type-aware title. Real package_type enum is agent | toolpack | upgrade;
+  // connector is derived from the connector block and character from tags, MCP
+  // from runtime. Derived specials (MCP, character, connector) are checked
+  // BEFORE generic package_type so they are not masked (e.g. a character
+  // modeled as package_type "agent" + a character tag). No "AgentNode" in the
+  // string — the root layout template appends "| AgentNode".
+  const mcpTitle = pkg.blocks?.compatibility?.runtime === "mcp";
+  const titleTags: string[] = pkg.tags ?? [];
+  const typeLabel = mcpTitle
+    ? "MCP Server"
+    : titleTags.some((t: string) => t === "character" || t === "persona")
+      ? "AI Character"
+      : pkg.blocks?.connector
+        ? "Connector"
+        : pkg.package_type === "agent"
+          ? "AI Agent"
+          : pkg.package_type === "skill"
+            ? "Agent Skill"
+            : pkg.package_type === "toolpack"
+              ? "Agent Tool Pack"
+              : pkg.package_type === "upgrade"
+                ? "Agent Upgrade"
+                : "Agent Package";
+  const title = `${pkg.name} — ${typeLabel}`;
   const description = pkg.summary || `${pkg.name} — an agent package on AgentNode. Install it in compatible AI agent frameworks.`;
 
   // P1-SEO2: Set a canonical URL for each package detail page.
