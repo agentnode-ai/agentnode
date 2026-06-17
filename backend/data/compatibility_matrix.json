@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-06-07T03:03:56Z",
-  "source_version": "batch-2026-06-07T00:00Z",
+  "generated_at": "2026-04-08",
+  "source_version": "batch-2026-04-08",
   "total_models": 182,
   "s_tier_count": 175,
   "pass_rate": 96,
@@ -13,6 +13,8 @@
     "X": 11
   },
   "provider_count": 35,
+  "provider_count_total": 35,
+  "provider_count_visible": 32,
   "providers": [
     {
       "name": "ai21",

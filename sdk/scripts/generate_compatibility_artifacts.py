@@ -142,7 +142,15 @@ def atomic_write(target: Path, content: str) -> None:
 # ── Backend JSON ──────────────────────────────────────────────────────────────
 
 def generate_backend(models: list[dict], snapshot: dict, output_dir: Path | None = None) -> None:
-    grouped = group_by_provider(models)
+    # API stays backwards-compatible: providers includes scored AND excluded (X-tier /
+    # error) models, so all tested providers (35) and X-tier entries remain in the
+    # /v1/compatibility response — unlike the frontend, which hides X. (provider_count
+    # below = provider_count_total = the providers-array length.)
+    combined = sorted(
+        snapshot["models"] + snapshot.get("excluded_models", []),
+        key=lambda m: m["model"],
+    )
+    grouped = group_by_provider(combined)
 
     now = snapshot["tested_at"]
     providers = []
