@@ -186,6 +186,12 @@ export default function CompatibilityPage() {
       {/* Full matrix */}
       <section className="border-b border-border">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
+          <p className="mx-auto mb-6 max-w-3xl text-center text-sm text-muted">
+            All {PROVIDER_COUNT} tested providers are counted in the totals above.
+            Providers whose tested models only returned API or execution errors are
+            excluded from the visible table below, so fewer provider groups may
+            appear here than the total number of providers tested.
+          </p>
           <CompatibilityTable data={COMPATIBILITY_DATA} />
         </div>
       </section>
