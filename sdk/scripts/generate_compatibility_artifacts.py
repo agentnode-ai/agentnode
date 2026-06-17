@@ -1,16 +1,19 @@
-"""Generate compatibility artifacts from merged_matrix.json.
+"""Generate compatibility artifacts from the central snapshot.
 
-Source of truth: sdk/.artifacts/batch_reports/merged_matrix.json
+Source of truth: sdk/data/compatibility/current.json  (built by merge_batches.py)
 Outputs:
   - backend/data/compatibility_matrix.json  (API data)
   - web/src/app/compatibility/data.ts       (Frontend TypeScript)
   - sdk/agentnode_sdk/compatibility.py       (SDK recommend_model)
+  - web/public/llms.txt, web/public/llms-full.txt  (marker-injected compat line)
+
+Dates (LAST_UPDATED / generated_at) come from the snapshot's `tested_at` — never now() —
+so old data can never be re-stamped as fresh.
 
 Usage:
     python sdk/scripts/generate_compatibility_artifacts.py
-    python sdk/scripts/generate_compatibility_artifacts.py --target backend
-    python sdk/scripts/generate_compatibility_artifacts.py --target frontend
-    python sdk/scripts/generate_compatibility_artifacts.py --target sdk
+    python sdk/scripts/generate_compatibility_artifacts.py --target frontend|backend|sdk|llms
+    python sdk/scripts/generate_compatibility_artifacts.py --target frontend --output-dir /tmp
 """
 from __future__ import annotations
 
@@ -21,18 +24,25 @@ import shutil
 import sys
 import tempfile
 from collections import defaultdict
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-SOURCE = ROOT / "sdk" / ".artifacts" / "batch_reports" / "merged_matrix.json"
+SOURCE = ROOT / "sdk" / "data" / "compatibility" / "current.json"
 
 TARGETS = {
     "backend": ROOT / "backend" / "data" / "compatibility_matrix.json",
     "frontend": ROOT / "web" / "src" / "app" / "compatibility" / "data.ts",
     "sdk": ROOT / "sdk" / "agentnode_sdk" / "compatibility.py",
 }
+
+# Static public files: the compat line lives between these markers and is regenerated.
+LLMS_TARGETS = {
+    "llms": ROOT / "web" / "public" / "llms.txt",
+    "llms-full": ROOT / "web" / "public" / "llms-full.txt",
+}
+_COMPAT_START = "<!-- compat:start (auto-generated from current.json — do not edit by hand) -->"
+_COMPAT_END = "<!-- compat:end -->"
 
 # Curated recommendations (provider -> {best, cheapest})
 _RECOMMENDED = {
@@ -64,14 +74,20 @@ SCENARIO_KEYS = {
 }
 
 
-def load_matrix() -> list[dict[str, Any]]:
+def load_snapshot() -> dict[str, Any]:
     if not SOURCE.exists():
         print(f"ERROR: Source file not found: {SOURCE}", file=sys.stderr)
         sys.exit(1)
     with open(SOURCE) as f:
         data = json.load(f)
-    if not isinstance(data, list):
-        print("ERROR: merged_matrix.json must be a JSON array", file=sys.stderr)
+    if not isinstance(data, dict) or "models" not in data:
+        print("ERROR: current.json must be an object with a 'models' array", file=sys.stderr)
+        sys.exit(1)
+    required = ("tested_at", "run_id", "total_models", "s_tier_count", "pass_rate",
+               "provider_count_total", "provider_count_visible", "tier_counts")
+    missing = [k for k in required if k not in data]
+    if missing:
+        print(f"ERROR: current.json missing fields: {missing}", file=sys.stderr)
         sys.exit(1)
     return data
 
@@ -125,11 +141,10 @@ def atomic_write(target: Path, content: str) -> None:
 
 # ── Backend JSON ──────────────────────────────────────────────────────────────
 
-def generate_backend(models: list[dict], output_dir: Path | None = None) -> None:
+def generate_backend(models: list[dict], snapshot: dict, output_dir: Path | None = None) -> None:
     grouped = group_by_provider(models)
-    stats = compute_stats(models)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = snapshot["tested_at"]
     providers = []
     for provider_name, provider_models in grouped.items():
         model_entries = []
@@ -148,9 +163,14 @@ def generate_backend(models: list[dict], output_dir: Path | None = None) -> None
 
     result = {
         "generated_at": now,
-        "source_version": f"batch-{now[:10]}T00:00Z",
-        **stats,
-        "provider_count": len(grouped),
+        "source_version": snapshot["run_id"],
+        "total_models": snapshot["total_models"],
+        "s_tier_count": snapshot["s_tier_count"],
+        "pass_rate": snapshot["pass_rate"],
+        "tier_counts": snapshot["tier_counts"],
+        "provider_count": snapshot["provider_count_total"],
+        "provider_count_total": snapshot["provider_count_total"],
+        "provider_count_visible": snapshot["provider_count_visible"],
         "providers": providers,
     }
 
@@ -165,10 +185,10 @@ def generate_backend(models: list[dict], output_dir: Path | None = None) -> None
 
 # ── Frontend TypeScript ───────────────────────────────────────────────────────
 
-def generate_frontend(models: list[dict], output_dir: Path | None = None) -> None:
+def generate_frontend(models: list[dict], snapshot: dict, output_dir: Path | None = None) -> None:
     grouped = group_by_provider(models)
     stats = compute_stats(models)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = snapshot["tested_at"]
 
     lines = [
         "// Auto-generated from batch verification results",
@@ -193,7 +213,7 @@ def generate_frontend(models: list[dict], output_dir: Path | None = None) -> Non
         f'export const LAST_UPDATED = "{today}";',
         f"export const TOTAL_MODELS = {stats['total_models']};",
         f"export const S_TIER_COUNT = {stats['s_tier_count']};",
-        f"export const PROVIDER_COUNT = {len(grouped)};",
+        f"export const PROVIDER_COUNT = {snapshot['provider_count_total']};",
         "",
         "export const COMPATIBILITY_DATA: ProviderData[] = [",
     ]
@@ -272,7 +292,7 @@ def _tier_passes(tier: str, minimum: str) -> bool:
     return _TIER_ORDER.get(tier, 99) <= _TIER_ORDER.get(minimum, 0)
 
 
-# Generated from merged_matrix.json — provider -> [(model, tier), ...]
+# Generated from current.json — provider -> [(model, tier), ...]
 _TIER_DATA: dict[str, list[tuple[str, str]]] = {{
 {chr(10).join(tier_data_lines)}
 }}
@@ -354,13 +374,47 @@ def recommend_model(
     print(f"  [ok] sdk: {target}")
 
 
+# ── Static public files (llms.txt / llms-full.txt) ───────────────────────────
+
+def _llms_block(snapshot: dict, full: bool) -> str:
+    n = snapshot["total_models"]
+    p = snapshot["provider_count_total"]
+    s = snapshot["s_tier_count"]
+    if full:
+        return (
+            f"Compatibility: tested with {n} LLM models across {p} providers ({s} pass all\n"
+            f"scenarios). Details: https://agentnode.net/compatibility and\n"
+            f"https://agentnode.net/docs/llm-providers"
+        )
+    return (
+        f"- Compatibility: Tested with {n} LLM models across {p} providers "
+        f"({s} pass all scenarios) — plus any OpenAI-compatible endpoint, including "
+        f"local Ollama without an API key"
+    )
+
+
+def generate_llms(snapshot: dict, output_dir: Path | None = None) -> None:
+    for key, src in LLMS_TARGETS.items():
+        text = src.read_text(encoding="utf-8")
+        if _COMPAT_START not in text or _COMPAT_END not in text:
+            print(f"ERROR: compat markers not found in {src}", file=sys.stderr)
+            sys.exit(1)
+        pre, rest = text.split(_COMPAT_START, 1)
+        _, post = rest.split(_COMPAT_END, 1)
+        block = _llms_block(snapshot, full=(key == "llms-full"))
+        new = f"{pre}{_COMPAT_START}\n{block}\n{_COMPAT_END}{post}"
+        target = (output_dir / src.name) if output_dir else src
+        atomic_write(target, new)
+        print(f"  [ok] {key}: {target}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate compatibility artifacts")
     parser.add_argument(
         "--target",
-        choices=["all", "backend", "frontend", "sdk"],
+        choices=["all", "backend", "frontend", "sdk", "llms"],
         default="all",
         help="Which artifact to generate (default: all)",
     )
@@ -368,27 +422,29 @@ def main() -> None:
         "--output-dir",
         type=Path,
         default=None,
-        help="Override output directory (for backend target only)",
+        help="Override output directory (dry-run; writes copies there instead of the real files)",
     )
     args = parser.parse_args()
 
     print(f"Loading {SOURCE} ...")
-    models = load_matrix()
-    grouped = group_by_provider(models)
-    stats = compute_stats(models)
+    snapshot = load_snapshot()
+    models = snapshot["models"]
     print(
-        f"  {stats['total_models']} models, {stats['s_tier_count']} S-tier, "
-        f"{len(grouped)} providers"
+        f"  {snapshot['total_models']} models, {snapshot['s_tier_count']} S-tier, "
+        f"{snapshot['provider_count_total']} providers "
+        f"(visible {snapshot['provider_count_visible']}, tested_at {snapshot['tested_at']})"
     )
 
     output_dir = args.output_dir
 
     if args.target in ("all", "backend"):
-        generate_backend(models, output_dir if args.target == "backend" else None)
+        generate_backend(models, snapshot, output_dir)
     if args.target in ("all", "frontend"):
-        generate_frontend(models)
+        generate_frontend(models, snapshot, output_dir)
     if args.target in ("all", "sdk"):
-        generate_sdk(models)
+        generate_sdk(models, output_dir)
+    if args.target in ("all", "llms"):
+        generate_llms(snapshot, output_dir)
 
     print("Done.")
 

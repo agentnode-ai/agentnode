@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { TOTAL_MODELS, S_TIER_COUNT, PROVIDER_COUNT } from "@/app/compatibility/data";
 
 export const metadata = {
   // root layout title template appends "| AgentNode"
@@ -105,7 +106,7 @@ const faqCategories: FaqCategory[] = [
       },
       {
         q: "Which providers and models work?",
-        a: "Built-in: OpenAI, Anthropic, OpenRouter, DeepSeek, Mistral, Qwen, Gemini, plus local Ollama and custom OpenAI-compatible endpoints. The runtime is tested across 182 models from 35 providers (175 pass all scenarios).",
+        a: `Built-in: OpenAI, Anthropic, OpenRouter, DeepSeek, Mistral, Qwen, Gemini, plus local Ollama and custom OpenAI-compatible endpoints. The runtime is tested across ${TOTAL_MODELS} models from ${PROVIDER_COUNT} providers (${S_TIER_COUNT} pass all scenarios).`,
         links: [
           { href: "/docs/llm-providers", label: "LLM Providers" },
           { href: "/compatibility", label: "Compatibility" },

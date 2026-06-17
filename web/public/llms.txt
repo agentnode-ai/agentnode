@@ -19,7 +19,9 @@ AgentNode provides a registry where AI agents can:
 - Runtime execution: Packages contain real code with dependencies, not just instructions
 - Sandboxed execution: Community code runs in an isolated container or not at all (fail-closed)
 - Credential safety: API keys live in the OS keychain; they never enter sandboxed code
+<!-- compat:start (auto-generated from current.json — do not edit by hand) -->
 - Compatibility: Tested with 182 LLM models across 35 providers (175 pass all scenarios) — plus any OpenAI-compatible endpoint, including local Ollama without an API key
+<!-- compat:end -->
 
 ## Key Pages
 

@@ -114,9 +114,11 @@ base_url, api_key_env, default_model, and requires_key. Endpoints that deviate
 from that protocol are not guaranteed to work.
 
 Set the default with `agentnode config set llm.default_provider <slug>`.
+<!-- compat:start (auto-generated from current.json — do not edit by hand) -->
 Compatibility: tested with 182 LLM models across 35 providers (175 pass all
 scenarios). Details: https://agentnode.net/compatibility and
 https://agentnode.net/docs/llm-providers
+<!-- compat:end -->
 
 ## CLI snapshot
 

@@ -1,0 +1,5061 @@
+{
+  "run_id": "batch-2026-04-08",
+  "tested_at": "2026-04-08",
+  "generated_by": "merge_batches.py bootstrap from April merged_matrix.json",
+  "source_hash": "bdf8b63a411c66d581f862a8881c9fb7cd6fbd1a3259b227e739d9c024b6e171",
+  "total_models": 182,
+  "s_tier_count": 175,
+  "pass_rate": 96,
+  "provider_count_total": 35,
+  "provider_count_visible": 32,
+  "excluded_provider_count": 3,
+  "tier_counts": {
+    "A": 2,
+    "B": 1,
+    "C": 3,
+    "F": 1,
+    "S": 175,
+    "X": 11
+  },
+  "models": [
+    {
+      "model": "ai21/jamba-large-1.7",
+      "tier": "C",
+      "passed": 1,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": ""
+    },
+    {
+      "model": "alibaba/tongyi-deepresearch-30b-a3b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "allenai/olmo-3.1-32b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "amazon/nova-2-lite-v1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "amazon/nova-lite-v1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "amazon/nova-micro-v1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "amazon/nova-premier-v1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "amazon/nova-pro-v1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "anthropic/claude-3-haiku",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "anthropic/claude-3.7-sonnet",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "anthropic/claude-haiku-4.5",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "anthropic/claude-opus-4",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "anthropic/claude-opus-4.1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "anthropic/claude-opus-4.5",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "anthropic/claude-opus-4.6",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "anthropic/claude-sonnet-4",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "anthropic/claude-sonnet-4.5",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "anthropic/claude-sonnet-4.6",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "arcee-ai/trinity-mini",
+      "tier": "C",
+      "passed": 1,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": ""
+    },
+    {
+      "model": "bytedance-seed/seed-1.6",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "bytedance-seed/seed-1.6-flash",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "bytedance-seed/seed-2.0-lite",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "bytedance-seed/seed-2.0-mini",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "cohere/command-r-08-2024",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "cohere/command-r-plus-08-2024",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "deepseek/deepseek-chat",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "deepseek/deepseek-chat-v3-0324",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "deepseek/deepseek-chat-v3.1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "deepseek/deepseek-r1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "deepseek/deepseek-r1-0528",
+      "tier": "A",
+      "passed": 3,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "deepseek/deepseek-v3.1-terminus",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "deepseek/deepseek-v3.2",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "deepseek/deepseek-v3.2-exp",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "essentialai/rnj-1-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "google/gemini-2.0-flash-001",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "google/gemini-2.0-flash-lite-001",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "google/gemini-2.5-flash",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "google/gemini-2.5-flash-lite",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "google/gemini-2.5-pro",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "google/gemma-4-26b-a4b-it",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "google/gemma-4-31b-it",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "inception/mercury",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "inception/mercury-2",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "inception/mercury-coder",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "kwaipilot/kat-coder-pro-v2",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "meituan/longcat-flash-chat",
+      "tier": "C",
+      "passed": 1,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": ""
+    },
+    {
+      "model": "meta-llama/llama-3-8b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "meta-llama/llama-3.1-70b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "meta-llama/llama-3.1-8b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "meta-llama/llama-3.3-70b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "meta-llama/llama-4-maverick",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "meta-llama/llama-4-scout",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "minimax/minimax-m1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "minimax/minimax-m2",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "minimax/minimax-m2.1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "minimax/minimax-m2.5",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "minimax/minimax-m2.7",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/codestral-2508",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/devstral-2512",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/devstral-medium",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/devstral-small",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/ministral-14b-2512",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/ministral-3b-2512",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/ministral-8b-2512",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/mistral-large",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/mistral-large-2407",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/mistral-large-2411",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/mistral-large-2512",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/mistral-medium-3",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/mistral-medium-3.1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/mistral-nemo",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/mistral-saba",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/mistral-small-2603",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/mistral-small-3.2-24b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/mistral-small-creative",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/mixtral-8x22b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/mixtral-8x7b-instruct",
+      "tier": "F",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/pixtral-large-2411",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "mistralai/voxtral-small-24b-2507",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "moonshotai/kimi-k2",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "moonshotai/kimi-k2-0905",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "moonshotai/kimi-k2.5",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "nex-agi/deepseek-v3.1-nex-n1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "nvidia/llama-3.1-nemotron-70b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "nvidia/nemotron-3-nano-30b-a3b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "nvidia/nemotron-nano-9b-v2",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-3.5-turbo",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-3.5-turbo-0613",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-3.5-turbo-16k",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-4",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-4-turbo",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-4.1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-4.1-mini",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-4.1-nano",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-4o",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-4o-2024-05-13",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-4o-2024-08-06",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-4o-2024-11-20",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-4o-mini",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-4o-mini-2024-07-18",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-5",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-5-mini",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-5-nano",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-5-pro",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-5.1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-5.1-chat",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-5.2",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-5.2-chat",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-5.3-chat",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-5.4",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-5.4-mini",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-5.4-nano",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-oss-120b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-oss-20b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/gpt-oss-safeguard-20b",
+      "tier": "B",
+      "passed": 2,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/o1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/o3",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/o3-mini",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/o3-mini-high",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/o3-pro",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/o4-mini",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openai/o4-mini-high",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openrouter/auto",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "openrouter/free",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "prime-intellect/intellect-3",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen-2.5-72b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen-2.5-7b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen-max",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen-plus",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen-plus-2025-07-28",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen-turbo",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-14b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-235b-a22b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-235b-a22b-2507",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-30b-a3b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-32b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-8b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-coder",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-coder-30b-a3b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-coder-flash",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-coder-next",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-coder-plus",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-max",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3-next-80b-a3b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3.5-122b-a10b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3.5-27b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3.5-35b-a3b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3.5-397b-a17b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3.5-9b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3.5-flash-02-23",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwen3.5-plus-02-15",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "qwen/qwq-32b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "rekaai/reka-edge",
+      "tier": "A",
+      "passed": 3,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "relace/relace-search",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "stepfun/step-3.5-flash",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "tngtech/deepseek-r1t2-chimera",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "upstage/solar-pro-3",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "x-ai/grok-3",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "x-ai/grok-3-beta",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "x-ai/grok-3-mini",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "x-ai/grok-3-mini-beta",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "x-ai/grok-4",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "x-ai/grok-4-fast",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "x-ai/grok-4.1-fast",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "x-ai/grok-4.20",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "x-ai/grok-code-fast-1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "xiaomi/mimo-v2-flash",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "xiaomi/mimo-v2-omni",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "xiaomi/mimo-v2-pro",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "z-ai/glm-4-32b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "z-ai/glm-4.5",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "z-ai/glm-4.5-air",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "z-ai/glm-4.5v",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "z-ai/glm-4.6",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "z-ai/glm-4.6v",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "z-ai/glm-4.7",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "z-ai/glm-4.7-flash",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "z-ai/glm-5",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "z-ai/glm-5-turbo",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    },
+    {
+      "model": "z-ai/glm-5v-turbo",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": ""
+    }
+  ],
+  "providers": [
+    {
+      "name": "ai21",
+      "models": [
+        {
+          "model": "ai21/jamba-large-1.7",
+          "tier": "C",
+          "passed": 1,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "FAIL",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "alibaba",
+      "models": [
+        {
+          "model": "alibaba/tongyi-deepresearch-30b-a3b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "allenai",
+      "models": [
+        {
+          "model": "allenai/olmo-3.1-32b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "amazon",
+      "models": [
+        {
+          "model": "amazon/nova-2-lite-v1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "amazon/nova-lite-v1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "amazon/nova-micro-v1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "amazon/nova-premier-v1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "amazon/nova-pro-v1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "anthropic",
+      "models": [
+        {
+          "model": "anthropic/claude-3-haiku",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "anthropic/claude-3.7-sonnet",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "anthropic/claude-haiku-4.5",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "anthropic/claude-opus-4",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "anthropic/claude-opus-4.1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "anthropic/claude-opus-4.5",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "anthropic/claude-opus-4.6",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "anthropic/claude-sonnet-4",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "anthropic/claude-sonnet-4.5",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "anthropic/claude-sonnet-4.6",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "arcee-ai",
+      "models": [
+        {
+          "model": "arcee-ai/trinity-mini",
+          "tier": "C",
+          "passed": 1,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "FAIL",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "FAIL",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "bytedance-seed",
+      "models": [
+        {
+          "model": "bytedance-seed/seed-1.6",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "bytedance-seed/seed-1.6-flash",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "bytedance-seed/seed-2.0-lite",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "bytedance-seed/seed-2.0-mini",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "cohere",
+      "models": [
+        {
+          "model": "cohere/command-r-08-2024",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "cohere/command-r-plus-08-2024",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "deepseek",
+      "models": [
+        {
+          "model": "deepseek/deepseek-chat",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "deepseek/deepseek-chat-v3-0324",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "deepseek/deepseek-chat-v3.1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "deepseek/deepseek-r1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "deepseek/deepseek-r1-0528",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "deepseek/deepseek-v3.1-terminus",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "deepseek/deepseek-v3.2",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "deepseek/deepseek-v3.2-exp",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "essentialai",
+      "models": [
+        {
+          "model": "essentialai/rnj-1-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "google",
+      "models": [
+        {
+          "model": "google/gemini-2.0-flash-001",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "google/gemini-2.0-flash-lite-001",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "google/gemini-2.5-flash",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "google/gemini-2.5-flash-lite",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "google/gemini-2.5-pro",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "google/gemma-4-26b-a4b-it",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "google/gemma-4-31b-it",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "inception",
+      "models": [
+        {
+          "model": "inception/mercury",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "inception/mercury-2",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "inception/mercury-coder",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "kwaipilot",
+      "models": [
+        {
+          "model": "kwaipilot/kat-coder-pro-v2",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "meituan",
+      "models": [
+        {
+          "model": "meituan/longcat-flash-chat",
+          "tier": "C",
+          "passed": 1,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "FAIL",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "FAIL",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "meta-llama",
+      "models": [
+        {
+          "model": "meta-llama/llama-3-8b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "meta-llama/llama-3.1-70b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "meta-llama/llama-3.1-8b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "meta-llama/llama-3.3-70b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "meta-llama/llama-4-maverick",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "meta-llama/llama-4-scout",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "minimax",
+      "models": [
+        {
+          "model": "minimax/minimax-m1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "minimax/minimax-m2",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "minimax/minimax-m2.1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "minimax/minimax-m2.5",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "minimax/minimax-m2.7",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "mistralai",
+      "models": [
+        {
+          "model": "mistralai/codestral-2508",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/devstral-2512",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/devstral-medium",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/devstral-small",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/ministral-14b-2512",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/ministral-3b-2512",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/ministral-8b-2512",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/mistral-large",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/mistral-large-2407",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/mistral-large-2411",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/mistral-large-2512",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/mistral-medium-3",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/mistral-medium-3.1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/mistral-nemo",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/mistral-saba",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/mistral-small-2603",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/mistral-small-3.2-24b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/mistral-small-creative",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/mixtral-8x22b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/mixtral-8x7b-instruct",
+          "tier": "F",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "FAIL",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "FAIL",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/pixtral-large-2411",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "mistralai/voxtral-small-24b-2507",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "moonshotai",
+      "models": [
+        {
+          "model": "moonshotai/kimi-k2",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "moonshotai/kimi-k2-0905",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "moonshotai/kimi-k2.5",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "nex-agi",
+      "models": [
+        {
+          "model": "nex-agi/deepseek-v3.1-nex-n1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "nvidia",
+      "models": [
+        {
+          "model": "nvidia/llama-3.1-nemotron-70b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "nvidia/nemotron-3-nano-30b-a3b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "nvidia/nemotron-nano-9b-v2",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "openai",
+      "models": [
+        {
+          "model": "openai/gpt-3.5-turbo",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-3.5-turbo-0613",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-3.5-turbo-16k",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-4",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-4-turbo",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-4.1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-4.1-mini",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-4.1-nano",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-4o",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-4o-2024-05-13",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-4o-2024-08-06",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-4o-2024-11-20",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-4o-mini",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-4o-mini-2024-07-18",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-5",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-5-mini",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-5-nano",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-5-pro",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-5.1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-5.1-chat",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-5.2",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-5.2-chat",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-5.3-chat",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-5.4",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-5.4-mini",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-5.4-nano",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-oss-120b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-oss-20b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/gpt-oss-safeguard-20b",
+          "tier": "B",
+          "passed": 2,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/o1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/o3",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/o3-mini",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/o3-mini-high",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/o3-pro",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/o4-mini",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openai/o4-mini-high",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "openrouter",
+      "models": [
+        {
+          "model": "openrouter/auto",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "openrouter/free",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "prime-intellect",
+      "models": [
+        {
+          "model": "prime-intellect/intellect-3",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "qwen",
+      "models": [
+        {
+          "model": "qwen/qwen-2.5-72b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen-2.5-7b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen-max",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen-plus",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen-plus-2025-07-28",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen-turbo",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-14b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-235b-a22b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-235b-a22b-2507",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-30b-a3b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-30b-a3b-instruct-2507",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-32b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-8b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-coder",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-coder-30b-a3b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-coder-flash",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-coder-next",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-coder-plus",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-max",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3-next-80b-a3b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3.5-122b-a10b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3.5-27b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3.5-35b-a3b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3.5-397b-a17b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3.5-9b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3.5-flash-02-23",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwen3.5-plus-02-15",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "qwen/qwq-32b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "rekaai",
+      "models": [
+        {
+          "model": "rekaai/reka-edge",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "relace",
+      "models": [
+        {
+          "model": "relace/relace-search",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "stepfun",
+      "models": [
+        {
+          "model": "stepfun/step-3.5-flash",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "tngtech",
+      "models": [
+        {
+          "model": "tngtech/deepseek-r1t2-chimera",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "upstage",
+      "models": [
+        {
+          "model": "upstage/solar-pro-3",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "x-ai",
+      "models": [
+        {
+          "model": "x-ai/grok-3",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "x-ai/grok-3-beta",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "x-ai/grok-3-mini",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "x-ai/grok-3-mini-beta",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "x-ai/grok-4",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "x-ai/grok-4-fast",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "x-ai/grok-4.1-fast",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "x-ai/grok-4.20",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "x-ai/grok-code-fast-1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "xiaomi",
+      "models": [
+        {
+          "model": "xiaomi/mimo-v2-flash",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "xiaomi/mimo-v2-omni",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "xiaomi/mimo-v2-pro",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    },
+    {
+      "name": "z-ai",
+      "models": [
+        {
+          "model": "z-ai/glm-4-32b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "z-ai/glm-4.5",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "z-ai/glm-4.5-air",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "z-ai/glm-4.5v",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "z-ai/glm-4.6",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "z-ai/glm-4.6v",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "z-ai/glm-4.7",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "z-ai/glm-4.7-flash",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "z-ai/glm-5",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "z-ai/glm-5-turbo",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        },
+        {
+          "model": "z-ai/glm-5v-turbo",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": ""
+        }
+      ]
+    }
+  ],
+  "excluded_models": [
+    {
+      "model": "anthropic/claude-3.5-haiku",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 544-char responses, no tools called"
+    },
+    {
+      "model": "arcee-ai/virtuoso-large",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 36-char responses, no tools called"
+    },
+    {
+      "model": "baidu/ernie-4.5-21b-a3b",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "Timeout: scenarios exceeded 180s without tool calls"
+    },
+    {
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 36-char responses, no tools called"
+    },
+    {
+      "model": "openai/gpt-4-0314",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 36-char responses, no tools called"
+    },
+    {
+      "model": "openai/gpt-5.2-pro",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 337-char responses, no tools called"
+    },
+    {
+      "model": "openai/gpt-5.4-pro",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 375-char responses, no tools called"
+    },
+    {
+      "model": "sao10k/l3-euryale-70b",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 339-char responses, no tools called"
+    },
+    {
+      "model": "sao10k/l3.1-euryale-70b",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 348-char responses, no tools called"
+    },
+    {
+      "model": "thedrummer/rocinante-12b",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 36-char responses, no tools called"
+    },
+    {
+      "model": "thedrummer/unslopnemo-12b",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 36-char responses, no tools called"
+    }
+  ]
+}
