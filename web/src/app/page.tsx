@@ -281,6 +281,9 @@ export default function HomePage() {
                 when isolation is required.
               </p>
               <div className="flex flex-col gap-1.5 text-sm">
+                <Link href="/for-companies" className="text-primary transition-colors hover:text-foreground">
+                  For companies &rarr;
+                </Link>
                 <Link href="/security" className="text-primary transition-colors hover:text-foreground">
                   Security model &rarr;
                 </Link>

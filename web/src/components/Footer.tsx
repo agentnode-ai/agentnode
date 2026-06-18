@@ -18,6 +18,7 @@ const FOOTER_COLUMNS: FooterColumn[] = [
       { href: "/getting-started", label: "Getting Started" },
       { href: "/compatibility", label: "Model Compatibility" },
       { href: "/security", label: "Security" },
+      { href: "/for-companies", label: "For Companies" },
       { href: "/changelog", label: "Changelog" },
     ],
   },
