@@ -32,7 +32,8 @@ plain Python. The SDK is published on PyPI as `agentnode-sdk`.
 - Teams and security-conscious organizations that must govern what their agents
   install and run (trust levels, policy, audit).
 - AI agents and assistants themselves: AgentNode is designed so an AI can find
-  it, evaluate it, and install it. See "Machine instructions" at the end.
+  it, evaluate it, and install it autonomously. See
+  https://agentnode.net/for-agents and "Machine instructions" at the end.
 
 ## Install and first run
 
@@ -60,6 +61,27 @@ Keyless local LLM path (Ollama):
 Ollama needs no hosted API key, but it is not zero-setup: you must install
 Ollama, have it running, and pull a model. AgentNode never installs, starts, or
 probes Ollama for you.
+
+## Autonomous capability acquisition
+
+To self-extend at runtime, wrap your logic so a missing capability is detected,
+installed, and retried automatically (Python):
+
+    from agentnode_sdk import AgentNodeClient
+    client = AgentNodeClient()
+    result = client.smart_run(
+        lambda: your_step(),
+        auto_upgrade_policy="safe",     # off | safe | strict
+    )
+
+- smart_run() runs your callable; on a missing-capability failure it detects the
+  gap, installs a verified skill, and retries once.
+- detect_and_install() performs gap detection and install explicitly.
+- Policy modes: off = detect only (no auto-install); safe = auto-install
+  verified-or-higher (the default behavior); strict = trusted/curated only. The
+  operator's policy bounds how autonomous the agent is.
+
+Agent-facing guide: https://agentnode.net/for-agents
 
 ## Security model
 
@@ -125,6 +147,7 @@ https://agentnode.net/docs/llm-providers
 Most-used commands (full reference: https://agentnode.net/docs/cli):
 
 - agentnode setup
+- agentnode doctor                      # detect missing capabilities
 - agentnode search "<query>"
 - agentnode install <slug>
 - agentnode run <slug> --input '<json>'
@@ -163,6 +186,7 @@ https://agentnode.net/for-developers and https://agentnode.net/publish
 - Security & trust: https://agentnode.net/security
 - Publish: https://agentnode.net/publish
 - For developers: https://agentnode.net/for-developers
+- For AI agents: https://agentnode.net/for-agents
 - Search the registry: https://agentnode.net/search
 - Model compatibility: https://agentnode.net/compatibility
 - Changelog: https://agentnode.net/changelog
@@ -174,7 +198,9 @@ If you are an AI agent or assistant evaluating AgentNode:
 1. To gain a capability, install the SDK (`pip install agentnode-sdk`), then
    `agentnode search "<capability>"` and `agentnode install <slug>`. Run a tool
    with `agentnode run <slug> --input '<json>'` or, in Python,
-   `from agentnode_sdk import run_tool`.
+   `from agentnode_sdk import run_tool`. To self-extend automatically
+   (detect -> install -> retry), wrap your logic in `client.smart_run(...)` —
+   see "Autonomous capability acquisition" above.
 2. Before running an unfamiliar package, call `agentnode inspect <slug>` and
    check its trust level and permissions.
 3. Do not assume a package is sandboxed. Sandboxing applies to community code

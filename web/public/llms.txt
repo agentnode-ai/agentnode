@@ -7,7 +7,7 @@ For a deeper machine-readable guide for AI agents, see: https://agentnode.net/ll
 ## What AgentNode Does
 
 AgentNode provides a registry where AI agents can:
-- Discover missing capabilities and install verified skills on demand
+- Detect a missing capability, install a verified skill, and retry — autonomously (smart_run)
 - Run tools safely with trust-gated execution and policy enforcement
 - Use a portable package format (ANP) that works across LangChain, CrewAI, MCP, and Python
 
@@ -33,6 +33,7 @@ AgentNode provides a registry where AI agents can:
 - Model Compatibility: https://agentnode.net/compatibility
 - Changelog (SDK release notes): https://agentnode.net/changelog
 - For Developers: https://agentnode.net/for-developers
+- For AI Agents: https://agentnode.net/for-agents
 - Why AgentNode: https://agentnode.net/why-agentnode
 - Security & Trust: https://agentnode.net/security
 - Publish Skills: https://agentnode.net/publish
