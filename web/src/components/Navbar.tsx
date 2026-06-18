@@ -26,6 +26,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: "/compatibility", label: "Model Compatibility" },
       { href: "/security", label: "Security" },
       { href: "/for-companies", label: "For Companies" },
+      { href: "/for-agents", label: "For Agents" },
       { href: "/changelog", label: "Changelog" },
     ],
   },

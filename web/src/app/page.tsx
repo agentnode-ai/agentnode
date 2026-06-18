@@ -302,6 +302,9 @@ export default function HomePage() {
                 right docs, and install it without unsafe assumptions.
               </p>
               <div className="flex flex-col gap-1.5 text-sm">
+                <Link href="/for-agents" className="text-primary transition-colors hover:text-foreground">
+                  For AI agents &rarr;
+                </Link>
                 <a
                   href="/llms-full.txt"
                   target="_blank"
