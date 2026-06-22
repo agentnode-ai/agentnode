@@ -140,6 +140,31 @@ def test_community_mcp_with_env_keys_is_blocked(monkeypatch):
     assert _FakePopen.instances == []  # never launched with secrets
 
 
+def test_community_mcp_with_env_keys_refusal_is_precise_and_safe(monkeypatch):
+    """Stage 3A: credentialed community MCP fails closed with CredentialedMcpRefused +
+    a value-free reason, WITHOUT reading the secret value and WITHOUT starting egress."""
+    import agentnode_sdk.sandbox.egress as egress
+    from agentnode_sdk.runtimes.mcp_consent import CredentialedMcpRefused, REASON_PENDING
+
+    _use_available_container(monkeypatch)
+    # If any code reads the key VALUE from the environment, this sentinel would surface.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-SENTINEL-MUST-NOT-BE-READ")
+    # The egress proxy must NOT be started in the refusal path.
+    called = []
+    monkeypatch.setattr(egress, "start_egress_proxy", lambda *a, **k: called.append((a, k)))
+
+    server = MCPServerProcess("secret-mcp", MCP_CMD, trust_level="verified")
+    with pytest.raises(CredentialedMcpRefused) as ei:
+        server.start(env_keys=["OPENAI_API_KEY"])
+
+    assert ei.value.reason == REASON_PENDING
+    msg = str(ei.value)
+    assert "OPENAI_API_KEY" in msg                 # NAME is fine to show
+    assert "sk-SENTINEL-MUST-NOT-BE-READ" not in msg  # VALUE never appears
+    assert _FakePopen.instances == []              # no container launched with a key
+    assert called == []                            # no egress proxy started
+
+
 def test_no_runtime_is_fail_closed(monkeypatch):
     _use_unavailable(monkeypatch)
     with pytest.raises(SandboxRequiredError):

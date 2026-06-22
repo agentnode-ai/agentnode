@@ -65,10 +65,23 @@ class MCPServerProcess:
             # Containerized path. P0.2 isolates host-FS, HOME and secrets — NOT the
             # network (npx/uvx fetch live). No host env, no mounts, clean container HOME.
             if env_keys:
-                raise RuntimeError(
-                    f"MCP '{self.slug}' requests credentials (env_keys), but secret "
-                    "brokering into the sandbox is not available yet (P1) — refusing "
-                    "to expose secrets to untrusted code."
+                # Stage 3A: credentialed community MCPs stay fail-closed, now with a
+                # precise, value-free reason. No secret is read, no key is injected,
+                # no egress proxy is started — that wiring is Stage 3B (gated behind
+                # pre-install/sealed volume + verified allowed_domains). env_keys are
+                # NAMES only here; they are never resolved to values.
+                from agentnode_sdk.runtimes.mcp_consent import (
+                    CredentialedMcpRefused,
+                    redact_env_keys,
+                    refusal_reason,
+                )
+                reason = refusal_reason()
+                raise CredentialedMcpRefused(
+                    reason,
+                    f"MCP '{self.slug}' requests credentials "
+                    f"({redact_env_keys(env_keys)}), but secret brokering into a "
+                    f"sandboxed community MCP is not enabled ({reason}) — refusing to "
+                    "expose secrets to untrusted code.",
                 )
             safe_slug = re.sub(r"[^a-zA-Z0-9_.-]", "-", self.slug)[:40]
             name = f"agentnode-mcp-{safe_slug}-{uuid4().hex[:8]}"
