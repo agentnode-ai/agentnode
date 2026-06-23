@@ -391,48 +391,10 @@ _PYPI_VERSION = re.compile(
     r"^[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$"
 )
 
-# Stage 4A: deterministic tree-hash of the built /install volume, computed INSIDE the
-# container (no host tool, no secrets). Robust + UNAMBIGUOUS: each entry is a JSON
-# object (so weird filenames with tabs/newlines are escaped) hashed length-prefixed,
-# binding relative path + type (f/d/l) + octal mode (executable bit) + symlink target +
-# regular-file content sha256. mtime/owner are excluded (non-deterministic). Entries are
-# globally sorted by path → order-independent. Fail-closed: any error exits non-zero
-# (the outer `set -e` propagates → caller tears down the volume and raises). This is the
-# value sealed as ``mcp_preinstall.artifact_hash`` (Stage 4B verifies content↔hash).
-_MCP_HASH_PY = r'''
-import os, stat, json, hashlib
-root = "/install"
-entries = []
-for dirpath, dirnames, filenames in os.walk(root):
-    for name in dirnames + filenames:
-        p = os.path.join(dirpath, name)
-        rel = os.path.relpath(p, root)
-        mode = os.lstat(p).st_mode
-        perm = oct(stat.S_IMODE(mode))
-        if stat.S_ISLNK(mode):
-            rec = {"p": rel, "t": "l", "m": perm, "link": os.readlink(p)}
-        elif stat.S_ISDIR(mode):
-            rec = {"p": rel, "t": "d", "m": perm}
-        elif stat.S_ISREG(mode):
-            fh = hashlib.sha256()
-            with open(p, "rb") as f:
-                for chunk in iter(lambda: f.read(65536), b""):
-                    fh.update(chunk)
-            rec = {"p": rel, "t": "f", "m": perm, "sha": fh.hexdigest()}
-        else:
-            rec = {"p": rel, "t": "o", "m": perm}
-        entries.append(rec)
-entries.sort(key=lambda r: r["p"])
-h = hashlib.sha256()
-for rec in entries:
-    line = json.dumps(rec, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    h.update(len(line).to_bytes(8, "big"))
-    h.update(line)
-print("HASH:" + h.hexdigest())
-bindir = os.path.join(root, "bin")
-bins = sorted(os.listdir(bindir)) if os.path.isdir(bindir) else []
-print("BINS:" + ",".join(bins))
-'''
+# Stage 4A/4B: the deterministic tree-hasher lives in the SHARED module so the build
+# hash (here) and the run-time verify hash (Stage 4B) can never drift. See
+# agentnode_sdk.sandbox.mcp_preinstall._MCP_HASH_PY for the full description.
+from agentnode_sdk.sandbox.mcp_preinstall import _MCP_HASH_PY  # noqa: E402
 
 
 def _reject_unpinned_version(version: str) -> None:

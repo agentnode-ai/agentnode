@@ -29,12 +29,16 @@ _request_id = itertools.count(1)
 class MCPServerProcess:
     """A managed MCP server subprocess communicating via stdio JSON-RPC."""
 
-    def __init__(self, slug: str, command: list[str], trust_level: str | None = None):
+    def __init__(self, slug: str, command: list[str], trust_level: str | None = None,
+                 entry: dict | None = None):
         self.slug = slug
         self.command = command
         # Safe default: trust_level missing/None/unknown -> sandbox-required, NEVER
         # host (resolved in start() via sandbox.policy). Default must not be a host tier.
         self.trust_level = trust_level
+        # Stage 4B: the lockfile entry (preinstall fields + permissions). When it signals
+        # preinstall intent, start() runs the fail-closed sealed-volume path.
+        self.entry = entry or {}
         self._process: subprocess.Popen | None = None
         self._lock = threading.Lock()
         self._last_used = time.monotonic()
@@ -83,13 +87,25 @@ class MCPServerProcess:
                     f"sandboxed community MCP is not enabled ({reason}) — refusing to "
                     "expose secrets to untrusted code.",
                 )
+            from agentnode_sdk.sandbox.mcp_preinstall import has_preinstall_intent
+
             safe_slug = re.sub(r"[^a-zA-Z0-9_.-]", "-", self.slug)[:40]
             name = f"agentnode-mcp-{safe_slug}-{uuid4().hex[:8]}"
             backend = get_default_backend()
-            spec = ProcessSpec(
-                command=list(self.command), network="default", clean_home=True,
-                interactive=True, env={}, mounts=[], name=name,
-            )
+
+            if has_preinstall_intent(self.entry):
+                # Stage 4B: preinstalled MCP — run from the read-only, integrity-verified,
+                # descriptor- AND content-bound sealed volume. FAIL-CLOSED: any problem
+                # raises; there is NO fallback to the registry-fetch (npx/uvx) mcp_command
+                # path, no key, no auto-created/rebuilt volume, no permissive network.
+                spec = self._preinstalled_spec(backend, name)
+            else:
+                # Existing path: non-preinstalled community MCP fetches at runtime
+                # (npx/uvx). Open network; clean HOME; no host env, no mounts, no secrets.
+                spec = ProcessSpec(
+                    command=list(self.command), network="default", clean_home=True,
+                    interactive=True, env={}, mounts=[], name=name,
+                )
             launch = backend.wrap_command(spec)
             self._container_name = name
             self._runtime = launch[0]
@@ -131,6 +147,81 @@ class MCPServerProcess:
 
         # Send initialized notification
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def _preinstalled_spec(self, backend, name: str):
+        """Stage 4B: gate + verify the sealed pre-install volume, then return the hardened
+        ProcessSpec to launch the MCP from it. FAIL-CLOSED — any problem raises and there
+        is NO fallback to the registry-fetch mcp_command path, no key, no auto-created or
+        rebuilt volume, no permissive network."""
+        import subprocess as _sp
+
+        from agentnode_sdk.lock_integrity import verify_entry
+        from agentnode_sdk.sandbox import network_for_level
+        from agentnode_sdk.sandbox.mcp_preinstall import (
+            PreinstallError,
+            validate_preinstall_fields,
+            verify_volume_content,
+        )
+        from agentnode_sdk.sandbox.types import (
+            MountSpec,
+            ProcessSpec,
+            SandboxRequiredError,
+        )
+
+        entry = self.entry or {}
+        mcp_version = entry.get("version")
+
+        # a. lockfile integrity must verify
+        ir = verify_entry(self.slug, entry)
+        if ir.status != "verified":
+            raise PreinstallError(
+                f"lockfile integrity for '{self.slug}' is {ir.status!r}, not verified — "
+                "refusing to run a preinstalled MCP from an unverified lockfile."
+            )
+
+        # b+c. pure shape/command validation + descriptor-bound volume-name gate. The
+        #      MCP/ANP version (mcp_version) and the manager package_version are kept
+        #      distinct by validate_preinstall_fields/mcp_sandbox_volume_name.
+        pspec = validate_preinstall_fields(self.slug, mcp_version, entry)
+
+        # d. runtime present + volume EXISTS — `volume inspect` BEFORE any -v mount so the
+        #    runtime never silently auto-creates an empty volume of that name.
+        availability = backend.check_available()
+        if not availability.available:
+            raise SandboxRequiredError(
+                "Preinstalled MCP execution requires a container runtime + the pinned "
+                f"image. {availability.reason or 'None detected'} — refusing host fallback."
+            )
+        runtime = availability.backend or "docker"
+        try:
+            insp = _sp.run(
+                [runtime, "volume", "inspect", pspec.volume],
+                capture_output=True, timeout=10,
+            )
+        except Exception as exc:
+            raise PreinstallError(f"could not verify sandbox volume: {exc}")
+        if insp.returncode != 0:
+            raise PreinstallError(
+                f"sandbox volume '{pspec.volume}' is missing — reinstall required "
+                f"(run: agentnode install {self.slug})."
+            )
+
+        # e. content<->hash verifier container (network=none, RO /install, env={}) runs
+        #    BEFORE the MCP container; mismatch/missing ⇒ refuse.
+        verify_volume_content(backend, pspec.volume, pspec.artifact_hash)
+
+        # f. hardened launch spec: RO volume at /install, policy network (missing/unknown
+        #    ⇒ none, never default), minimal module-resolution env only, clean HOME.
+        net = network_for_level((entry.get("permissions") or {}).get("network_level"))
+        env = (
+            {"NODE_PATH": "/install/lib/node_modules"} if pspec.manager == "npm"
+            else {"PYTHONPATH": "/install"}
+        )
+        return ProcessSpec(
+            command=list(pspec.command), network=net, clean_home=True, interactive=True,
+            env=env, mounts=[MountSpec(src=pspec.volume, dst="/install", read_only=True)],
+            name=name,
+        )
 
     def call_tool(self, name: str, args: dict, timeout: float = 30.0) -> Any:
         """Call a tool on the MCP server."""
@@ -230,7 +321,7 @@ class MCPProcessPool:
     def get_or_start(
         self, slug: str, command: list[str],
         timeout: float = 10.0, env_keys: list[str] | None = None,
-        trust_level: str | None = None,
+        trust_level: str | None = None, entry: dict | None = None,
     ) -> MCPServerProcess:
         """Get an existing server or start a new one."""
         with self._lock:
@@ -242,7 +333,7 @@ class MCPProcessPool:
             if server:
                 server.stop()
 
-            server = MCPServerProcess(slug, command, trust_level=trust_level)
+            server = MCPServerProcess(slug, command, trust_level=trust_level, entry=entry)
             server.start(timeout=timeout, env_keys=env_keys)
             self._servers[slug] = server
             return server
@@ -342,7 +433,8 @@ def run_mcp(
 
         pool = _get_global_pool()
         server = pool.get_or_start(
-            slug, command, env_keys=env_keys, trust_level=entry.get("trust_level")
+            slug, command, env_keys=env_keys, trust_level=entry.get("trust_level"),
+            entry=entry,
         )
 
         # Resolve tool name
