@@ -52,6 +52,13 @@ CANONICAL_FIELDS = (
     # volume gate (recompute name from slug+version+hash) is the second layer.
     "sandboxed",
     "sandbox_volume",
+    # Stage 4A: MCP pre-install into a sealed volume. Appended at the end so entries
+    # WITHOUT these fields hash identically to pre-Stage-4 (backward-compatible —
+    # _build_canonical omits absent fields). mcp_command is NOT changed by 4A.
+    "mcp_preinstalled",
+    "mcp_preinstall",
+    "mcp_sandbox_volume",
+    "mcp_preinstall_command",
 )
 
 CANONICAL_FIELDS_V2 = CANONICAL_FIELDS + ("_signatures",)
@@ -75,6 +82,10 @@ SENSITIVE_FIELDS: dict[str, str] = {
     "mcp_env_keys": "MCP environment key declarations changed",
     "remote_endpoint": "Remote endpoint changed",
     "package_type": "Package type changed",
+    "mcp_preinstall": "MCP preinstall descriptor changed",
+    "mcp_sandbox_volume": "MCP sandbox volume changed",
+    "mcp_preinstalled": "MCP preinstall status changed",
+    "mcp_preinstall_command": "MCP preinstall command changed",
 }
 
 PERMISSION_ESCALATIONS: dict[str, tuple[str, set[str]]] = {

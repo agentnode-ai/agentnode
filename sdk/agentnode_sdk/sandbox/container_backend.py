@@ -6,6 +6,7 @@ P0.1 implements detection (`check_available`, cached, no image pull) and the pur
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -30,6 +31,23 @@ def sandbox_volume_name(slug: str, version: str | None, artifact_hash: str | Non
     short = (artifact_hash or "").split(":")[-1][:8] or "nohash"
     base = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{slug}-{version or '0'}").strip("-._") or "pack"
     return f"agentnode-pack-{base}-{short}"
+
+
+def mcp_sandbox_volume_name(
+    slug: str, version: str | None, manager: str, package: str, pkg_version: str
+) -> str:
+    """Deterministic per-MCP-preinstall sandbox volume name (Stage 4A).
+
+    ``agentnode-mcp-<slug>-<version>-<ident12>`` where ``ident12`` is a sha256 over
+    slug+version+manager+package+pkg_version. The name is **descriptor-bound** (those
+    inputs) — a different descriptor never reuses another's volume. The built-tree
+    CONTENT is bound separately via the sealed ``mcp_preinstall.artifact_hash``; the
+    run-time content↔hash verification is Stage 4B. Mirrors ``sandbox_volume_name``.
+    """
+    ident = f"{slug}|{version or '0'}|{manager}|{package}|{pkg_version}"
+    short = hashlib.sha256(ident.encode("utf-8")).hexdigest()[:12]
+    base = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{slug}-{version or '0'}").strip("-._")[:40] or "mcp"
+    return f"agentnode-mcp-{base}-{short}"
 
 # Pinned base image, by DIGEST (never a tag, never :latest, never auto-pull).
 # ACTIVATED 2026-06-03: built on the Hetzner host, pushed to GHCR, and pinned here

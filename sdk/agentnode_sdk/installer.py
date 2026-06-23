@@ -9,6 +9,8 @@ import hashlib
 import importlib
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -375,6 +377,217 @@ def _container_build_into_volume(
 
 
 # ---------------------------------------------------------------------------
+# MCP pre-install (Stage 4A) — descriptor validation + build into sealed volume
+# ---------------------------------------------------------------------------
+
+# npm package: optional @scope/, then a name; lowercase per npm rules.
+_NPM_PACKAGE = re.compile(r"^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
+# strict semver x.y.z with optional -prerelease / +build (no ranges/operators/tags).
+_NPM_SEMVER = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$")
+# PEP 503 normalized name.
+_PYPI_PACKAGE = re.compile(r"^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$")
+# exact PEP 440 release (no operators): N(.N)*, optional pre/post/dev — NOT a specifier.
+_PYPI_VERSION = re.compile(
+    r"^[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$"
+)
+
+# Stage 4A: deterministic tree-hash of the built /install volume, computed INSIDE the
+# container (no host tool, no secrets). Robust + UNAMBIGUOUS: each entry is a JSON
+# object (so weird filenames with tabs/newlines are escaped) hashed length-prefixed,
+# binding relative path + type (f/d/l) + octal mode (executable bit) + symlink target +
+# regular-file content sha256. mtime/owner are excluded (non-deterministic). Entries are
+# globally sorted by path → order-independent. Fail-closed: any error exits non-zero
+# (the outer `set -e` propagates → caller tears down the volume and raises). This is the
+# value sealed as ``mcp_preinstall.artifact_hash`` (Stage 4B verifies content↔hash).
+_MCP_HASH_PY = r'''
+import os, stat, json, hashlib
+root = "/install"
+entries = []
+for dirpath, dirnames, filenames in os.walk(root):
+    for name in dirnames + filenames:
+        p = os.path.join(dirpath, name)
+        rel = os.path.relpath(p, root)
+        mode = os.lstat(p).st_mode
+        perm = oct(stat.S_IMODE(mode))
+        if stat.S_ISLNK(mode):
+            rec = {"p": rel, "t": "l", "m": perm, "link": os.readlink(p)}
+        elif stat.S_ISDIR(mode):
+            rec = {"p": rel, "t": "d", "m": perm}
+        elif stat.S_ISREG(mode):
+            fh = hashlib.sha256()
+            with open(p, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    fh.update(chunk)
+            rec = {"p": rel, "t": "f", "m": perm, "sha": fh.hexdigest()}
+        else:
+            rec = {"p": rel, "t": "o", "m": perm}
+        entries.append(rec)
+entries.sort(key=lambda r: r["p"])
+h = hashlib.sha256()
+for rec in entries:
+    line = json.dumps(rec, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    h.update(len(line).to_bytes(8, "big"))
+    h.update(line)
+print("HASH:" + h.hexdigest())
+bindir = os.path.join(root, "bin")
+bins = sorted(os.listdir(bindir)) if os.path.isdir(bindir) else []
+print("BINS:" + ",".join(bins))
+'''
+
+
+def _reject_unpinned_version(version: str) -> None:
+    """Raise ValueError for anything that is not an exact, pinned release —
+    floating/latest/wildcards/ranges/operators/dist-tags/url/vcs/workspace specs."""
+    v = (version or "").strip()
+    low = v.lower()
+    if not v or low in ("latest", "*", "x", "current", "stable"):
+        raise ValueError(f"floating version not allowed: {version!r}")
+    if any(ch in v for ch in "^~<>= |@:/\\ \t"):
+        raise ValueError(f"version operator/range/spec not allowed: {version!r}")
+    if "||" in v or " - " in v:
+        raise ValueError(f"version range not allowed: {version!r}")
+    if re.search(r"(^|\.)[xX*]($|\.)", v):
+        raise ValueError(f"wildcard version not allowed: {version!r}")
+    for tok in ("git+", "http://", "https://", "file:", "workspace:", "link:",
+                "github:", "git:", "git@"):
+        if tok in low:
+            raise ValueError(f"url/vcs/workspace spec not allowed: {version!r}")
+
+
+def validate_mcp_install(descriptor: Any) -> tuple[str, str, str]:
+    """Validate an ``mcp_install`` descriptor (pure; no I/O, no command parsing).
+
+    Returns the canonical ``(manager, package, version)`` or raises ``ValueError``.
+    ``mcp_install`` is the ONLY source — ``mcp_command`` is never parsed. Only
+    ``npm``/``pypi`` with an exact pinned version are accepted; floating/latest/
+    ranges/operators/git/url/branch/tag/file/workspace specs are refused.
+    """
+    if not isinstance(descriptor, dict):
+        raise ValueError("mcp_install must be an object")
+    extra = set(descriptor) - {"manager", "package", "version"}
+    if extra:
+        raise ValueError(f"mcp_install has unexpected keys: {sorted(extra)}")
+    manager = descriptor.get("manager")
+    package = descriptor.get("package")
+    version = descriptor.get("version")
+    if not all(isinstance(x, str) for x in (manager, package, version)):
+        raise ValueError("mcp_install.manager/package/version must all be strings")
+    manager = manager.strip().lower()
+    package = package.strip()
+    version = version.strip()
+    if manager not in ("npm", "pypi"):
+        raise ValueError(f"mcp_install.manager must be 'npm' or 'pypi', got {manager!r}")
+    if not package:
+        raise ValueError("mcp_install.package must be non-empty")
+    _reject_unpinned_version(version)
+    if manager == "npm":
+        if not _NPM_PACKAGE.match(package):
+            raise ValueError(f"invalid npm package name: {package!r}")
+        if not _NPM_SEMVER.match(version):
+            raise ValueError(f"npm version must be exact semver x.y.z, got {version!r}")
+    else:  # pypi
+        norm = re.sub(r"[-_.]+", "-", package.lower())
+        if "[" in package or "]" in package or not _PYPI_PACKAGE.match(norm):
+            raise ValueError(f"invalid pypi package name: {package!r}")
+        if not _PYPI_VERSION.match(version):
+            raise ValueError(
+                f"pypi version must be an exact PEP 440 release (no operators), got {version!r}"
+            )
+        package = norm
+    return manager, package, version
+
+
+def _container_build_mcp_volume(
+    slug: str, version: str, manager: str, package: str, pkg_version: str,
+) -> tuple[str, str, list[str]]:
+    """Stage 4A: build a pinned MCP package INSIDE the container into a deterministic
+    sealed volume. Returns ``(volume, tree_hash, preinstall_command)``.
+
+    Build security: pinned base image; ``network="default"`` ONLY for this build (the
+    later run path is unaffected); clean HOME, empty env — NO host HOME, NO .npmrc/
+    .pypirc, NO SSH/git/token files, NO host credentials; ONLY the rw target volume is
+    mounted (install is by name from the registry, no /src). Fail-closed: raises
+    ``SandboxRequiredError`` if no runtime/image — no host build fallback.
+    """
+    from agentnode_sdk.sandbox import SandboxRequiredError, get_default_backend
+    from agentnode_sdk.sandbox.container_backend import mcp_sandbox_volume_name
+    from agentnode_sdk.sandbox.types import MountSpec
+
+    backend = get_default_backend()
+    availability = backend.check_available()
+    if not availability.available:
+        raise SandboxRequiredError(
+            f"Refusing to pre-install MCP '{slug}@{version}': a container runtime "
+            f"(Docker or Podman) + the pinned image are required. "
+            f"{availability.reason or 'None detected'} — no host build fallback."
+        )
+
+    runtime = availability.backend or "docker"
+    volume = mcp_sandbox_volume_name(slug, version, manager, package, pkg_version)
+
+    def _rm_volume() -> None:
+        try:
+            subprocess.run([runtime, "volume", "rm", volume], capture_output=True, timeout=30)
+        except Exception:
+            pass
+
+    _rm_volume()  # clean volume so a re-install never layers onto a stale build
+
+    if manager == "npm":
+        install_cmd = f"npm install -g --prefix /install '{package}@{pkg_version}'"
+    else:
+        install_cmd = f"uv pip install --target /install '{package}=={pkg_version}'"
+
+    # Install by name (network=default; install noise → stderr), then run our
+    # deterministic Python tree-hasher (no host tool, no secrets) which prints the two
+    # marker lines `HASH:` and `BINS:` on stdout. `python3 -c <code>` is shell-quoted via
+    # shlex so the embedded code is passed verbatim regardless of its content.
+    script = (
+        "set -e; "
+        f"{install_cmd} 1>&2; "
+        f"python3 -c {shlex.quote(_MCP_HASH_PY)}"
+    )
+    spec = backend.build_process_spec(
+        ["sh", "-c", script],
+        network="default",
+        mounts=[MountSpec(src=volume, dst="/install", read_only=False)],
+        env={},
+        limits={"tmp_size": "512m"},
+        clean_home=True,
+    )
+    returncode, stdout, stderr = backend.run_process(spec, timeout=PIP_TIMEOUT)
+    if returncode != 0:
+        _rm_volume()
+        raise RuntimeError(
+            f"MCP pre-install build failed for '{slug}@{version}' (exit {returncode}): "
+            f"{(stderr or stdout).strip()[:2000]}"
+        )
+
+    tree_hash = ""
+    bins: list[str] = []
+    for line in (stdout or "").splitlines():
+        if line.startswith("HASH:"):
+            tree_hash = line[len("HASH:"):].strip()
+        elif line.startswith("BINS:"):
+            bins = [b for b in line[len("BINS:"):].strip().split(",") if b]
+    if not tree_hash or not bins:
+        _rm_volume()
+        raise RuntimeError(
+            f"MCP pre-install produced no entrypoint for '{slug}@{version}' "
+            f"(bins={bins or 'none'}) — refusing to seal an unusable volume."
+        )
+
+    # Resolve the entrypoint bin: prefer one matching the package's short name, else
+    # the single bin, else the first (sorted). Stored for Stage 4B — NOT consumed in 4A.
+    short = package.split("/")[-1]
+    chosen = next((b for b in bins if b == short), bins[0] if len(bins) == 1 else
+                  next((b for b in bins if short in b), sorted(bins)[0]))
+    interp = "node" if manager == "npm" else "python"
+    preinstall_command = [interp, f"/install/bin/{chosen}"]
+    return volume, f"sha256:{tree_hash}", preinstall_command
+
+
+# ---------------------------------------------------------------------------
 # Lockfile management
 # ---------------------------------------------------------------------------
 
@@ -509,6 +722,8 @@ def install_package(
     publisher_slug: str | None = None,
     # MCP env keys (declared by manifest, stored for runtime UX)
     mcp_env_keys: list[str] | None = None,
+    # Stage 4A: optional MCP pre-install descriptor {manager, package, version}
+    mcp_install: dict | None = None,
     # TG-2: registry-reported key status (install-time revocation)
     key_status: str | None = None,
 ) -> dict[str, Any]:
@@ -535,6 +750,7 @@ def install_package(
             package_type=package_type,
             mcp_command=mcp_command,
             mcp_env_keys=mcp_env_keys,
+            mcp_install=mcp_install,
             capability_ids=capability_ids,
             tools=tools,
             trust_level=trust_level,
@@ -716,6 +932,7 @@ def _install_mcp(
     package_type: str = "toolpack",
     mcp_command: list[str] | None = None,
     mcp_env_keys: list[str] | None = None,
+    mcp_install: dict | None = None,
     capability_ids: list[str] | None = None,
     tools: list[dict[str, str]] | None = None,
     trust_level: str | None = None,
@@ -728,7 +945,8 @@ def _install_mcp(
     publisher_slug: str | None = None,
     key_status: str | None = None,
 ) -> dict[str, Any]:
-    """Install an MCP package (metadata-only, no artifact download)."""
+    """Install an MCP package (metadata-only, unless an mcp_install descriptor opts
+    into Stage 4A pre-install into a sealed volume)."""
     if not mcp_command:
         raise RuntimeError(
             f"MCP package {slug}@{version} has no mcp_command. "
@@ -785,6 +1003,28 @@ def _install_mcp(
                     sig["publisher_slug"] = publisher_slug
         lock_entry["_signatures"] = signatures
     _verify_publisher_signature(slug, lock_entry, key_status=key_status)
+
+    # Stage 4A: optional pre-install into a sealed volume — runs AFTER the publisher
+    # signature/policy gate (verify-before-build), mirroring the toolpack path. An
+    # invalid or blocked signature raises above, so NO registry fetch / build / volume
+    # write ever happens for it. `mcp_install` is the ONLY source (mcp_command is NEVER
+    # parsed). Absent -> metadata-only (no preinstall fields). Present-but-invalid ->
+    # raise before any build. The existing `mcp_command` is left UNCHANGED; the resolved
+    # local entrypoint goes into the NEW, run-path-unused `mcp_preinstall_command`.
+    if mcp_install is not None:
+        mgr, pkg, pkg_ver = validate_mcp_install(mcp_install)
+        volume, tree_hash, preinstall_command = _container_build_mcp_volume(
+            slug, version, mgr, pkg, pkg_ver,
+        )
+        lock_entry["mcp_preinstalled"] = True
+        lock_entry["mcp_preinstall"] = {
+            "manager": mgr,
+            "package": pkg,
+            "version": pkg_ver,
+            "artifact_hash": tree_hash,
+        }
+        lock_entry["mcp_sandbox_volume"] = volume
+        lock_entry["mcp_preinstall_command"] = preinstall_command
 
     from agentnode_sdk.lock_integrity import seal_entry
     lock_entry = seal_entry(lock_entry)

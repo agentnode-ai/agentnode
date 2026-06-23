@@ -763,9 +763,13 @@ class AgentNodeClient:
 
         mcp_command = None
         mcp_env_keys = None
+        mcp_install = None
         if meta.mcp_server and isinstance(meta.mcp_server, dict):
             mcp_command = meta.mcp_server.get("command")
             mcp_env_keys = meta.mcp_server.get("env_keys")
+            # Stage 4A: optional pre-install descriptor (validated downstream; absent
+            # -> metadata-only). Read-only of metadata; carries no secret.
+            mcp_install = meta.mcp_server.get("install")
 
         result = install_package(
             slug=slug,
@@ -786,6 +790,7 @@ class AgentNodeClient:
             runtime=meta.runtime,
             mcp_command=mcp_command,
             mcp_env_keys=mcp_env_keys,
+            mcp_install=mcp_install,
         )
 
         return InstallResult(
