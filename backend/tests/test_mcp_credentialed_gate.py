@@ -208,3 +208,111 @@ async def test_verify_registry_blocks_malformed_permissions():
     sv = await verify_registry({"mcp_server": NPM_FULL, "permissions": "bad"})
     assert sv["server_status"] == "mismatch"
     assert any("permissions" in e for e in sv["errors"])
+
+
+# ---- Stage 5.1: credentialed HAPPY paths — verify_registry confirms exactly
+# install.manager / install.package / install.version, NOT npm_package/pypi_package or
+# command-resolved latest. The registry boundary (_fetch_npm/_fetch_pypi) is monkeypatched
+# with RECORDING stubs (mirrors test_mcp_submit.py); no httpx, no network. The registry's
+# advertised latest (9.9.9) is deliberately != install.version and the command is left
+# UNPINNED — the only place old (command/latest) vs new (install) behaviour can diverge.
+
+class _Recorder:
+    """Async stand-in for _fetch_npm/_fetch_pypi: records each requested name and returns
+    a canned packument/project JSON (or None => 404)."""
+
+    def __init__(self, payloads: dict):
+        self.payloads = payloads
+        self.calls: list[str] = []
+
+    async def __call__(self, name: str):
+        self.calls.append(name)
+        return self.payloads.get(name)
+
+
+async def test_verify_registry_credentialed_npm_verifies_install(monkeypatch):
+    npm = _Recorder({"@scope/some-mcp": {
+        "versions": {
+            "1.2.3": {"dist": {"shasum": "abc123", "integrity": "sha512-xxx"}},
+            "9.9.9": {"dist": {"shasum": "zzz999"}},
+        },
+        "dist-tags": {"latest": "9.9.9"},  # != install.version on purpose
+        "repository": {"url": "git+https://github.com/owner/repo.git"},
+        "maintainers": [{"name": "owner"}],
+    }})
+    pypi = _Recorder({})
+    monkeypatch.setattr("app.mcp.registry_verify._fetch_npm", npm)
+    monkeypatch.setattr("app.mcp.registry_verify._fetch_pypi", pypi)
+
+    sv = await verify_registry({"mcp_server": dict(
+        NPM_FULL,
+        command=["npx", "-y", "@scope/some-mcp"],  # UNPINNED
+        source_repo="https://github.com/owner/repo",
+    )})
+
+    # the install descriptor is the authoritative source: install.package on install.manager
+    assert npm.calls == ["@scope/some-mcp"]
+    assert pypi.calls == []
+    assert sv["registry"] == "npm"
+    assert sv["package_name"] == "@scope/some-mcp"
+    # install.version is verified, NOT the command-resolved latest 9.9.9
+    assert sv["resolved_version"] == "1.2.3"
+    assert sv["command_pinning"] == "pinned"
+    assert sv["package_exists"] is True
+    assert sv["version_exists"] is True
+    assert sv["server_status"] == "verified"
+
+
+async def test_verify_registry_credentialed_pypi_verifies_install(monkeypatch):
+    pypi = _Recorder({"some-mcp": {
+        "info": {
+            "version": "9.9.9",  # advertised latest != install.version on purpose
+            "project_urls": {"Repository": "https://github.com/owner/repo"},
+        },
+        "releases": {"1.0.0": [], "9.9.9": []},
+    }})
+    npm = _Recorder({})
+    monkeypatch.setattr("app.mcp.registry_verify._fetch_npm", npm)
+    monkeypatch.setattr("app.mcp.registry_verify._fetch_pypi", pypi)
+
+    sv = await verify_registry({"mcp_server": dict(
+        PYPI_FULL,
+        command=["uvx", "some-mcp"],  # not version-decisive
+        source_repo="https://github.com/owner/repo",
+    )})
+
+    # manager comes from install.manager (pypi) — the npm branch is never touched
+    assert pypi.calls == ["some-mcp"]
+    assert npm.calls == []
+    assert sv["registry"] == "pypi"
+    assert sv["package_name"] == "some-mcp"
+    # install.version is verified, NOT the advertised latest 9.9.9
+    assert sv["resolved_version"] == "1.0.0"
+    assert sv["command_pinning"] == "pinned"
+    assert sv["package_exists"] is True
+    assert sv["version_exists"] is True
+    assert sv["server_status"] == "verified"
+
+
+async def test_verify_registry_credentialed_install_version_must_exist(monkeypatch):
+    # install.version is the EXACT version the server checks: if it is not published, the
+    # result is mismatch — never a silent fallback to the registry's latest (9.9.9).
+    npm = _Recorder({"@scope/some-mcp": {
+        "versions": {"9.9.9": {"dist": {"shasum": "zzz999"}}},  # 1.2.3 NOT published
+        "dist-tags": {"latest": "9.9.9"},
+        "repository": {"url": "git+https://github.com/owner/repo.git"},
+    }})
+    pypi = _Recorder({})
+    monkeypatch.setattr("app.mcp.registry_verify._fetch_npm", npm)
+    monkeypatch.setattr("app.mcp.registry_verify._fetch_pypi", pypi)
+
+    sv = await verify_registry({"mcp_server": dict(
+        NPM_FULL,
+        command=["npx", "-y", "@scope/some-mcp"],  # UNPINNED — must not rescue via latest
+        source_repo="https://github.com/owner/repo",
+    )})
+
+    assert npm.calls == ["@scope/some-mcp"]
+    assert sv["server_status"] == "mismatch"
+    assert sv["resolved_version"] is None  # never the latest 9.9.9
+    assert any("1.2.3" in e for e in sv["errors"])
