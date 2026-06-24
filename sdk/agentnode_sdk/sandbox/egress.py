@@ -50,44 +50,12 @@ class EgressHandle:
 def validate_allowed_domains(domains) -> tuple:
     """Return a canonical, de-duplicated tuple of bare hostnames, or raise ValueError.
 
-    Rejects: empty input, non-strings, scheme/port/path/wildcard/@/whitespace,
-    IP literals (incl. loopback/private/link-local/metadata), ``localhost``,
-    single-label names, and invalid labels. Hosts are lowercased + trailing-dot
-    stripped (so uppercase is normalized, not rejected).
+    Stage 5: delegates to the shared, lifecycle-free ``domain_policy`` canonicalizer so
+    Stage-2 egress and Stage-5 install-seal share ONE source of truth (no drift).
+    ``DomainPolicyError`` subclasses ``ValueError``, so existing callers are unaffected.
     """
-    if not domains:
-        raise ValueError("allowed_domains must be non-empty (an egress proxy needs an allowlist)")
-    out = []
-    for d in domains:
-        if not isinstance(d, str):
-            raise ValueError(f"domain must be a string: {d!r}")
-        h = d.strip().lower().rstrip(".")
-        if not h:
-            raise ValueError(f"empty domain: {d!r}")
-        if any(c in h for c in ("/", ":", "*", "?", "#", "@", "\\", " ", "\t")):
-            raise ValueError(f"bare hostname only (no scheme/port/path/wildcard): {d!r}")
-        try:
-            ipaddress.ip_address(h)
-        except ValueError:
-            pass  # not an IP literal -> good
-        else:
-            raise ValueError(f"IP literals are not allowed (use a hostname): {d!r}")
-        if h == "localhost":
-            raise ValueError("localhost is not allowed")
-        labels = h.split(".")
-        if len(labels) < 2:
-            raise ValueError(f"need a fully-qualified domain (>=2 labels): {d!r}")
-        for lab in labels:
-            if not _LABEL.match(lab):
-                raise ValueError(f"invalid domain label {lab!r} in {d!r}")
-        out.append(h)
-    seen = set()
-    res = []
-    for h in out:
-        if h not in seen:
-            seen.add(h)
-            res.append(h)
-    return tuple(res)
+    from agentnode_sdk.sandbox.domain_policy import canonicalize_allowed_domains
+    return canonicalize_allowed_domains(domains)
 
 
 # ----------------------------------------------------------------------------

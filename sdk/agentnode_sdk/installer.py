@@ -686,6 +686,8 @@ def install_package(
     mcp_env_keys: list[str] | None = None,
     # Stage 4A: optional MCP pre-install descriptor {manager, package, version}
     mcp_install: dict | None = None,
+    # Stage 5: optional publisher-declared egress allowlist (mcp_server.allowed_domains)
+    mcp_allowed_domains: list | None = None,
     # TG-2: registry-reported key status (install-time revocation)
     key_status: str | None = None,
 ) -> dict[str, Any]:
@@ -713,6 +715,7 @@ def install_package(
             mcp_command=mcp_command,
             mcp_env_keys=mcp_env_keys,
             mcp_install=mcp_install,
+            mcp_allowed_domains=mcp_allowed_domains,
             capability_ids=capability_ids,
             tools=tools,
             trust_level=trust_level,
@@ -895,6 +898,7 @@ def _install_mcp(
     mcp_command: list[str] | None = None,
     mcp_env_keys: list[str] | None = None,
     mcp_install: dict | None = None,
+    mcp_allowed_domains: list | None = None,
     capability_ids: list[str] | None = None,
     tools: list[dict[str, str]] | None = None,
     trust_level: str | None = None,
@@ -908,7 +912,8 @@ def _install_mcp(
     key_status: str | None = None,
 ) -> dict[str, Any]:
     """Install an MCP package (metadata-only, unless an mcp_install descriptor opts
-    into Stage 4A pre-install into a sealed volume)."""
+    into Stage 4A pre-install into a sealed volume; Stage 5 also seals the
+    publisher-declared egress allowlist as mcp_allowed_domains)."""
     if not mcp_command:
         raise RuntimeError(
             f"MCP package {slug}@{version} has no mcp_command. "
@@ -978,15 +983,31 @@ def _install_mcp(
         volume, tree_hash, preinstall_command = _container_build_mcp_volume(
             slug, version, mgr, pkg, pkg_ver,
         )
-        lock_entry["mcp_preinstalled"] = True
-        lock_entry["mcp_preinstall"] = {
+        mcp_preinstall = {
             "manager": mgr,
             "package": pkg,
             "version": pkg_ver,
             "artifact_hash": tree_hash,
         }
+        # Stage 5: the sealed descriptor MUST be exactly the validated mcp_install — the
+        # volume + run-time gates are bound to it. Defensive (built from the same source);
+        # any divergence is fail-closed, nothing written.
+        if (mcp_preinstall["manager"], mcp_preinstall["package"], mcp_preinstall["version"]) \
+                != (mgr, pkg, pkg_ver):
+            raise RuntimeError(
+                f"mcp_preinstall descriptor does not match mcp_install for '{slug}@{version}'"
+            )
+        lock_entry["mcp_preinstalled"] = True
+        lock_entry["mcp_preinstall"] = mcp_preinstall
         lock_entry["mcp_sandbox_volume"] = volume
         lock_entry["mcp_preinstall_command"] = preinstall_command
+        # Stage 5: seal the publisher-declared egress allowlist (canonicalized). NOT
+        # consumed at run time yet (that is Stage 3B); sealed so 3B trusts it.
+        if mcp_allowed_domains is not None:
+            from agentnode_sdk.sandbox.domain_policy import canonicalize_allowed_domains
+            lock_entry["mcp_allowed_domains"] = list(
+                canonicalize_allowed_domains(mcp_allowed_domains)
+            )
 
     from agentnode_sdk.lock_integrity import seal_entry
     lock_entry = seal_entry(lock_entry)

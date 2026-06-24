@@ -59,6 +59,9 @@ CANONICAL_FIELDS = (
     "mcp_preinstall",
     "mcp_sandbox_volume",
     "mcp_preinstall_command",
+    # Stage 5: the publisher-attested, canonicalized egress allowlist, sealed at install
+    # so a future Stage 3B trusts a tamper-evident value (NOT consumed at run time yet).
+    "mcp_allowed_domains",
 )
 
 CANONICAL_FIELDS_V2 = CANONICAL_FIELDS + ("_signatures",)
@@ -86,6 +89,7 @@ SENSITIVE_FIELDS: dict[str, str] = {
     "mcp_sandbox_volume": "MCP sandbox volume changed",
     "mcp_preinstalled": "MCP preinstall status changed",
     "mcp_preinstall_command": "MCP preinstall command changed",
+    "mcp_allowed_domains": "MCP egress allowlist changed",
 }
 
 PERMISSION_ESCALATIONS: dict[str, tuple[str, set[str]]] = {
