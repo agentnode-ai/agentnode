@@ -113,9 +113,13 @@ def test_exception_is_runtimeerror_with_reason():
     assert "human message" in str(exc)
 
 
-def test_no_allowed_symbol_exists():
-    # Stage 3A invariant: the module exposes no allow/grant path.
+def test_runtime_refusal_invariant_holds():
+    # 3B-1 supersedes the 3A "no allow path" invariant: a consent RESOLVER now exists
+    # (consent layer). But the RUNTIME refusal is unchanged — refusal_reason never yields an
+    # allow, and CredentialedMcpRefused remains the runtime gate (live execution stays
+    # refused until 3B-2).
     import agentnode_sdk.runtimes.mcp_consent as m
-    assert not any(
-        n.lower() in ("allow", "grant", "is_allowed", "approve") for n in dir(m)
-    )
+    assert hasattr(m, "resolve_consent")  # consent layer landed in 3B-1
+    for ok in (True, False):
+        assert m.refusal_reason(allowed_domains_ok=ok) not in ("", "allowed", "ok")
+    assert issubclass(m.CredentialedMcpRefused, RuntimeError)

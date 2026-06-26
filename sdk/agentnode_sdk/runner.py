@@ -315,7 +315,10 @@ def run_tool(
                          entry=entry, lockfile_path=lockfile_path, **kwargs)
     elif runtime == "mcp":
         from agentnode_sdk.runtimes.mcp_runner import run_mcp
-        res = run_mcp(slug, tool_name, timeout=timeout, entry=entry, **kwargs)
+        # Stage 3B-1: thread the confirmation callback so the consent layer can prompt (TTY)
+        # / honor a stored grant. INERT in 3B-1 — credentialed MCPs stay runtime-refused.
+        res = run_mcp(slug, tool_name, timeout=timeout, entry=entry,
+                      confirmation_callback=confirmation_callback, **kwargs)
     elif runtime == "remote":
         from agentnode_sdk.runtimes.remote_runner import run_remote
         res = run_remote(slug, tool_name, timeout=timeout, entry=entry, **kwargs)

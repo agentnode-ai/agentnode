@@ -15,6 +15,63 @@ def _check(label: str, ok: bool, detail: str) -> None:
     print(f"  {color}{marker}\033[0m {label}: {detail}")
 
 
+def cmd_mcp_revoke(slug: str | None = None, revoke_all: bool = False,
+                   key: str | None = None, json_output: bool = False) -> int:
+    """Revoke stored consent grant(s) for a credentialed MCP (Stage 3B-1). Immediate.
+    Never reads or prints a secret value (none are stored)."""
+    from agentnode_sdk.runtimes import mcp_consent_store as store
+    try:
+        if revoke_all:
+            n = store.revoke_all()
+        elif slug:
+            n = store.revoke(slug, key=key)
+        else:
+            print("Specify an MCP <slug> or --all.", file=sys.stderr)
+            return 1
+    except store.GrantStoreError as e:
+        print(f"Grant store error: {e}", file=sys.stderr)
+        return 1
+    print(f"Revoked {n} consent grant(s).")
+    return 0
+
+
+def cmd_mcp_grants(json_output: bool = False) -> int:
+    """List stored consent grants — METADATA ONLY (slug/version/lifetime/domains/key-NAMES).
+    Never displays a secret value (none are stored)."""
+    from agentnode_sdk.runtimes import mcp_consent_store as store
+    try:
+        grants = store.list_grants()
+    except store.GrantStoreError as e:
+        print(f"Grant store error: {e}", file=sys.stderr)
+        return 1
+    view = [{
+        "slug": g.get("slug"),
+        "version": g.get("version"),
+        "lifetime": g.get("lifetime"),
+        "expires_at": g.get("expires_at"),
+        "revoked": bool(g.get("revoked")),
+        "env_key_names": g.get("env_key_names"),
+        "allowed_domains": g.get("allowed_domains"),
+        "consent_key": (g.get("consent_key") or "")[:12],
+    } for g in grants]
+    if json_output:
+        print(json.dumps(view, indent=2))
+        return 0
+    if not view:
+        print("No consent grants.")
+        return 0
+    for v in view:
+        if v["revoked"]:
+            status = "revoked"
+        elif v["expires_at"] is None:
+            status = "forever"
+        else:
+            status = "active"
+        print(f"  {v['slug']}@{v['version']} [{v['lifetime']}/{status}] "
+              f"keys={v['env_key_names']} domains={v['allowed_domains']} ck={v['consent_key']}…")
+    return 0
+
+
 def cmd_mcp_doctor(
     slug: str,
     json_output: bool = False,

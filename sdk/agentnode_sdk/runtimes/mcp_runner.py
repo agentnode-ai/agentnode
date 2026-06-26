@@ -30,7 +30,7 @@ class MCPServerProcess:
     """A managed MCP server subprocess communicating via stdio JSON-RPC."""
 
     def __init__(self, slug: str, command: list[str], trust_level: str | None = None,
-                 entry: dict | None = None):
+                 entry: dict | None = None, confirmation_callback=None):
         self.slug = slug
         self.command = command
         # Safe default: trust_level missing/None/unknown -> sandbox-required, NEVER
@@ -39,6 +39,9 @@ class MCPServerProcess:
         # Stage 4B: the lockfile entry (preinstall fields + permissions). When it signals
         # preinstall intent, start() runs the fail-closed sealed-volume path.
         self.entry = entry or {}
+        # Stage 3B-1: consent callback threaded for the (future 3B-2) consent layer. RESERVED
+        # and UNUSED in 3B-1 — start() still refuses credentialed execution; no prompt here.
+        self._consent_callback = confirmation_callback
         self._process: subprocess.Popen | None = None
         self._lock = threading.Lock()
         self._last_used = time.monotonic()
@@ -322,6 +325,7 @@ class MCPProcessPool:
         self, slug: str, command: list[str],
         timeout: float = 10.0, env_keys: list[str] | None = None,
         trust_level: str | None = None, entry: dict | None = None,
+        confirmation_callback=None,
     ) -> MCPServerProcess:
         """Get an existing server or start a new one."""
         with self._lock:
@@ -333,7 +337,8 @@ class MCPProcessPool:
             if server:
                 server.stop()
 
-            server = MCPServerProcess(slug, command, trust_level=trust_level, entry=entry)
+            server = MCPServerProcess(slug, command, trust_level=trust_level, entry=entry,
+                                      confirmation_callback=confirmation_callback)
             server.start(timeout=timeout, env_keys=env_keys)
             self._servers[slug] = server
             return server
@@ -395,6 +400,7 @@ def run_mcp(
     *,
     timeout: float = 30.0,
     entry: dict,
+    confirmation_callback=None,
     **kwargs: Any,
 ) -> RunToolResult:
     """Run a tool on an MCP server subprocess.
@@ -434,7 +440,7 @@ def run_mcp(
         pool = _get_global_pool()
         server = pool.get_or_start(
             slug, command, env_keys=env_keys, trust_level=entry.get("trust_level"),
-            entry=entry,
+            entry=entry, confirmation_callback=confirmation_callback,
         )
 
         # Resolve tool name

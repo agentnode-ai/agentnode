@@ -54,6 +54,13 @@ def main(argv: list[str] | None = None) -> int:
     mcp_submit_p.add_argument("--test", action="store_true", help="Run protocol test before submitting")
     mcp_submit_p.add_argument("--token", default=None, help="API key (default: AGENTNODE_API_KEY)")
     mcp_submit_p.add_argument("--dry-run", action="store_true", help="Verify only, don't submit")
+    # Stage 3B-1: consent-grant management for credentialed MCPs (metadata only, no secrets)
+    mcp_revoke_p = mcp_sub.add_parser("revoke", help="Revoke stored consent grant(s) for a credentialed MCP")
+    mcp_revoke_p.add_argument("slug", nargs="?", default=None, help="MCP package slug")
+    mcp_revoke_p.add_argument("--all", action="store_true", help="Revoke ALL consent grants")
+    mcp_revoke_p.add_argument("--key", default=None, help="Revoke only this consent_key")
+    mcp_grants_p = mcp_sub.add_parser("grants", help="List stored consent grants (metadata only)")
+    mcp_grants_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
 
     # reset
     sub.add_parser("reset", help="Reset configuration")
@@ -255,6 +262,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.mcp_command == "submit":
                 from agentnode_sdk.cli.mcp_submit import cmd_mcp_submit
                 return cmd_mcp_submit(args.path, token=args.token, test=args.test, dry_run=args.dry_run)
+            if args.mcp_command == "revoke":
+                from agentnode_sdk.cli.mcp_commands import cmd_mcp_revoke
+                return cmd_mcp_revoke(slug=args.slug, revoke_all=args.all, key=args.key)
+            if args.mcp_command == "grants":
+                from agentnode_sdk.cli.mcp_commands import cmd_mcp_grants
+                return cmd_mcp_grants(json_output=args.json_output)
             mcp_parser.print_help()
             return 0
         if args.command == "sandbox":
