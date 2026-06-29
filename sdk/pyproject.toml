@@ -40,3 +40,6 @@ dev = ["pytest", "pytest-asyncio", "respx"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["agentnode_sdk"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
