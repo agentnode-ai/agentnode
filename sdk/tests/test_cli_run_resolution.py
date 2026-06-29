@@ -5,7 +5,7 @@ from agentnode_sdk.models import RunToolResult
 
 
 def _spy_run_tool(captured):
-    def fake(slug, tool_name=None, confirmation_callback=None, **kwargs):
+    def fake(slug, tool_name=None, confirmation_callback=None, mcp_consent_callback=None, **kwargs):
         captured["slug"] = slug
         captured["tool_name"] = tool_name
         captured["kwargs"] = kwargs

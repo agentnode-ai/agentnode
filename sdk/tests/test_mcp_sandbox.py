@@ -141,10 +141,12 @@ def test_community_mcp_with_env_keys_is_blocked(monkeypatch):
 
 
 def test_community_mcp_with_env_keys_refusal_is_precise_and_safe(monkeypatch):
-    """Stage 3A: credentialed community MCP fails closed with CredentialedMcpRefused +
-    a value-free reason, WITHOUT reading the secret value and WITHOUT starting egress."""
+    """Stage 3B-2b: a credentialed but NON-preinstalled community MCP fails closed with
+    CredentialedMcpRefused + the precise reason `credentialed_requires_preinstall`,
+    refused BEFORE reading the secret value and BEFORE starting egress (no runtime
+    registry-fetch with a secret)."""
     import agentnode_sdk.sandbox.egress as egress
-    from agentnode_sdk.runtimes.mcp_consent import CredentialedMcpRefused, REASON_PENDING
+    from agentnode_sdk.runtimes.mcp_consent import CredentialedMcpRefused
 
     _use_available_container(monkeypatch)
     # If any code reads the key VALUE from the environment, this sentinel would surface.
@@ -153,13 +155,13 @@ def test_community_mcp_with_env_keys_refusal_is_precise_and_safe(monkeypatch):
     called = []
     monkeypatch.setattr(egress, "start_egress_proxy", lambda *a, **k: called.append((a, k)))
 
+    # No entry ⇒ not preinstalled ⇒ refused at the very first gate (before consent/egress/secret).
     server = MCPServerProcess("secret-mcp", MCP_CMD, trust_level="verified")
     with pytest.raises(CredentialedMcpRefused) as ei:
         server.start(env_keys=["OPENAI_API_KEY"])
 
-    assert ei.value.reason == REASON_PENDING
+    assert ei.value.reason == "credentialed_requires_preinstall"
     msg = str(ei.value)
-    assert "OPENAI_API_KEY" in msg                 # NAME is fine to show
     assert "sk-SENTINEL-MUST-NOT-BE-READ" not in msg  # VALUE never appears
     assert _FakePopen.instances == []              # no container launched with a key
     assert called == []                            # no egress proxy started

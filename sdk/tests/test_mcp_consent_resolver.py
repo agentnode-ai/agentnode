@@ -160,11 +160,12 @@ def test_credentialed_mcp_still_runtime_refused(monkeypatch):
             "gh-mcp", ["npx", "-y", "gh-mcp"], trust_level="verified",
             entry={"version": "1", "mcp_env_keys": ["GITHUB_TOKEN"],
                    "mcp_allowed_domains": ["api.github.com"]},
-            confirmation_callback=cb,
+            mcp_consent_callback=cb,
         )
         with pytest.raises(CredentialedMcpRefused):
             proc.start(env_keys=["GITHUB_TOKEN"])
-        # inert: no container launched, and the consent callback was NEVER invoked in 3B-1
+        # 3B-2b: a credentialed but NON-preinstalled MCP is refused BEFORE consent — so no
+        # container is launched and the consent callback is never invoked.
         assert launched == []
         assert consent_calls == []
     finally:

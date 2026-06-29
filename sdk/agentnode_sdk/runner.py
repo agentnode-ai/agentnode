@@ -89,6 +89,7 @@ def run_tool(
     timeout: float = 30.0,
     lockfile_path: Path | None = None,
     confirmation_callback: Callable | None = None,
+    mcp_consent_callback: Callable | None = None,
     **kwargs: Any,
 ) -> RunToolResult:
     """Run an installed tool, dispatching to the appropriate runtime.
@@ -315,10 +316,11 @@ def run_tool(
                          entry=entry, lockfile_path=lockfile_path, **kwargs)
     elif runtime == "mcp":
         from agentnode_sdk.runtimes.mcp_runner import run_mcp
-        # Stage 3B-1: thread the confirmation callback so the consent layer can prompt (TTY)
-        # / honor a stored grant. INERT in 3B-1 — credentialed MCPs stay runtime-refused.
+        # Stage 3B-2b: thread the DEDICATED consent callback (NOT the guard bool callback) so the
+        # credentialed live path can prompt (TTY) or honor a stored grant. None ⇒ non-TTY (resolver
+        # then requires a valid stored grant; otherwise fail-closed).
         res = run_mcp(slug, tool_name, timeout=timeout, entry=entry,
-                      confirmation_callback=confirmation_callback, **kwargs)
+                      mcp_consent_callback=mcp_consent_callback, **kwargs)
     elif runtime == "remote":
         from agentnode_sdk.runtimes.remote_runner import run_remote
         res = run_remote(slug, tool_name, timeout=timeout, entry=entry, **kwargs)
