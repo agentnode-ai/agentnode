@@ -7,6 +7,7 @@ these methods. If the auth model changes to SameSite=none or cookie-based
 GET mutations, this decision must be revisited.
 """
 
+import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
