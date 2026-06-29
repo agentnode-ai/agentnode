@@ -66,6 +66,12 @@ class ProcessSpec:
     interactive: bool = False          # keep stdin open (long-lived MCP stdio)
     name: str | None = None            # container name (for stop/cleanup)
     egress: EgressSpec | None = None   # required iff network=="egress" (Stage 1, inert)
+    # Stage 3B-2a: env-var NAMES to pass through by name (docker `--env NAME`, NO value on argv —
+    # the value is read from the controlled docker-client env at run time). NAMES only, never
+    # values, never KEY=value. Allowed ONLY with network=="egress"; wrap_command enforces this
+    # and that names are disjoint from `env`. INERT in 3B-2a (no live caller; credentialed run
+    # stays refused) — the live secret flow is 3B-2b.
+    env_passthrough: list[str] = field(default_factory=list)
 
 
 class SandboxRequiredError(RuntimeError):

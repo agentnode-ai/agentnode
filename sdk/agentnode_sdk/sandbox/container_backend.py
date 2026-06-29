@@ -17,6 +17,9 @@ from agentnode_sdk.sandbox.agent_session import AgentSandboxSession
 from agentnode_sdk.sandbox.backend import SandboxBackend
 from agentnode_sdk.sandbox.types import ProcessSpec, SandboxAvailability, SandboxRequiredError
 
+# Stage 3B-2a: a valid env-var NAME for name-only secret pass-through (`--env NAME`).
+_ENV_PASSTHROUGH_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 def sandbox_volume_name(slug: str, version: str | None, artifact_hash: str | None) -> str:
     """Deterministic per-pack-version sandbox volume name.
@@ -203,6 +206,36 @@ class ContainerBackend(SandboxBackend):
             for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
                 argv += ["-e", f"{var}={purl}"]
             argv += ["-e", "NO_PROXY=", "-e", "no_proxy="]
+
+        # Stage 3B-2a: name-only secret pass-through. Emit `--env NAME` (NO value) — docker reads
+        # the value from the controlled docker-client env at run time; the VALUE never lands on
+        # argv. Fail-closed: ONLY with network=="egress"; each name must be a valid env-var name
+        # and DISJOINT from the literal `env` (a secret name must never be emitted as KEY=value).
+        if spec.env_passthrough:
+            if spec.network != "egress":
+                raise SandboxRequiredError(
+                    "env_passthrough requires network='egress' — refusing to pass secrets by "
+                    "name on an open/none/restricted network."
+                )
+            _seen: set[str] = set()
+            for name in spec.env_passthrough:
+                if not isinstance(name, str) or not _ENV_PASSTHROUGH_NAME.match(name):
+                    # VALUE-FREE: never echo the offending entry (no {name!r}, no length, no
+                    # prefix). A caller may have mistakenly passed a secret VALUE instead of an
+                    # env-var NAME; it must never reach the error message / logs.
+                    raise SandboxRequiredError(
+                        "invalid env_passthrough name — refusing name-only pass-through "
+                        "(offending entry not echoed)."
+                    )
+                if name in spec.env:
+                    raise SandboxRequiredError(
+                        "an env_passthrough name is also a literal env key — refusing "
+                        "(a secret name must never be emitted as KEY=value)."
+                    )
+                if name in _seen:
+                    continue
+                _seen.add(name)
+                argv += ["--env", name]
 
         argv.append(self._image)
         argv += list(spec.command)
