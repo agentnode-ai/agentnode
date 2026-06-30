@@ -34,6 +34,35 @@ interface UserInfo {
   };
 }
 
+interface ReviewResult {
+  security_passed?: boolean;
+  compatibility_passed?: boolean;
+  docs_passed?: boolean;
+  required_changes?: string[];
+  reviewer_summary?: string;
+}
+
+interface ReviewSummary {
+  id: string;
+  package_slug: string | null;
+  package_name: string | null;
+  version: string | null;
+  tier: string;
+  express: boolean;
+  price_cents: number;
+  status: string;
+  review_notes: string | null;
+  review_result: ReviewResult | null;
+  paid_at: string | null;
+  reviewed_at: string | null;
+}
+
+interface VersionInfo {
+  is_yanked?: boolean;
+  quarantine_status?: string;
+  version_number?: string;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<UserInfo | null>(null);
@@ -88,7 +117,7 @@ export default function DashboardPage() {
   const [loadingPackages, setLoadingPackages] = useState(false);
 
   // Manual Reviews
-  const [myReviews, setMyReviews] = useState<any[]>([]);
+  const [myReviews, setMyReviews] = useState<ReviewSummary[]>([]);
   const [loadingReviews, setLoadingReviews] = useState(false);
   const [reviewForm, setReviewForm] = useState({ package_slug: "", version: "", tier: "security", express: false });
   const [requestingReview, setRequestingReview] = useState(false);
@@ -409,7 +438,7 @@ export default function DashboardPage() {
         const data = await res.json();
         // Filter out yanked and rejected versions
         const activeVersions = (data.versions || []).filter(
-          (v: any) => !v.is_yanked && v.quarantine_status !== "rejected"
+          (v: VersionInfo) => !v.is_yanked && v.quarantine_status !== "rejected"
         );
         setReviewVersions(activeVersions);
         if (activeVersions.length > 0) setReviewForm(f => ({ ...f, version: activeVersions[0].version_number }));
@@ -1079,7 +1108,7 @@ export default function DashboardPage() {
             <p className="text-sm text-muted">Loading reviews...</p>
           ) : myReviews.length > 0 ? (
             <div className="space-y-2">
-              {myReviews.map((r: any) => {
+              {myReviews.map((r) => {
                 const isPaid = !!r.paid_at;
                 const isInProgress = ["in_review", "approved", "changes_requested", "rejected"].includes(r.status);
                 const isCompleted = ["approved", "changes_requested", "rejected"].includes(r.status);

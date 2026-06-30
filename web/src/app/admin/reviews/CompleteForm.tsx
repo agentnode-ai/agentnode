@@ -41,7 +41,7 @@ export default function CompleteForm({ reviewId, onSuccess, onCancel }: Complete
     setSubmitting(true);
     setError("");
     try {
-      const review_result: Record<string, any> = {
+      const review_result: Record<string, unknown> = {
         security_passed: securityPassed,
         compatibility_passed: compatibilityPassed,
         docs_passed: docsPassed,

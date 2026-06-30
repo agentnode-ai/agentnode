@@ -25,7 +25,7 @@ export default function RefundForm({ reviewId, priceCents, onSuccess, onCancel }
     setSubmitting(true);
     setError("");
     try {
-      const body: Record<string, any> = { reason: reason.trim() };
+      const body: Record<string, unknown> = { reason: reason.trim() };
       if (refundType === "partial") {
         const cents = Math.round(parseFloat(amount) * 100);
         if (isNaN(cents) || cents <= 0) {

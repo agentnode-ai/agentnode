@@ -66,8 +66,8 @@ function CredentialsPageInner() {
       }
       const data = await res.json();
       setCredentials(data.credentials || []);
-    } catch (err: any) {
-      setError(err.message || "Failed to load credentials");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load credentials");
     } finally {
       setLoading(false);
     }
@@ -80,10 +80,10 @@ function CredentialsPageInner() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: TestResult = await res.json();
       setTestResults((prev) => ({ ...prev, [id]: data }));
-    } catch (err: any) {
+    } catch (err: unknown) {
       setTestResults((prev) => ({
         ...prev,
-        [id]: { reachable: false, message: err.message || "Test failed" },
+        [id]: { reachable: false, message: err instanceof Error ? err.message : "Test failed" },
       }));
     } finally {
       setTestingId(null);
@@ -97,8 +97,8 @@ function CredentialsPageInner() {
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       setCredentials((prev) => prev.filter((c) => c.id !== id));
       setConfirmDeleteId(null);
-    } catch (err: any) {
-      setError(err.message || "Failed to delete credential");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to delete credential");
     } finally {
       setDeletingId(null);
     }
