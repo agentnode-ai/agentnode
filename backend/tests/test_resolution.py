@@ -4,6 +4,9 @@ import json
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import update
+
+from app.publishers.models import Publisher
 
 TEST_USER = {
     "email": "resolver@agentnode.dev",
@@ -62,7 +65,7 @@ def make_manifest(slug, capabilities, framework="generic", runtime="python"):
     }
 
 
-async def setup_publisher(client):
+async def setup_publisher(client, session):
     await client.post("/v1/auth/register", json=TEST_USER)
     login = await client.post(
         "/v1/auth/login",
@@ -77,14 +80,23 @@ async def setup_publisher(client):
         json=TEST_PUBLISHER,
         headers={"Authorization": f"Bearer {token}"},
     )
+    # Make the publisher trusted to bypass new-publisher quarantine so the
+    # published version is resolvable. Mirrors tests/test_install.py; the
+    # product quarantine behaviour itself is unchanged.
+    await session.execute(
+        update(Publisher)
+        .where(Publisher.slug == TEST_PUBLISHER["slug"])
+        .values(trust_level="trusted")
+    )
+    await session.commit()
     return token
 
 
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_resolve_single_capability(mock_meili, mock_s3, client):
-    token = await setup_publisher(client)
+async def test_resolve_single_capability(mock_meili, mock_s3, client, session):
+    token = await setup_publisher(client, session)
 
     # Publish a package with pdf_extraction
     manifest = make_manifest("pdf-reader", ["pdf_extraction"])
@@ -111,8 +123,8 @@ async def test_resolve_single_capability(mock_meili, mock_s3, client):
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_resolve_multiple_packages_ranked(mock_meili, mock_s3, client):
-    token = await setup_publisher(client)
+async def test_resolve_multiple_packages_ranked(mock_meili, mock_s3, client, session):
+    token = await setup_publisher(client, session)
 
     # Package A: has pdf_extraction + web_search
     m1 = make_manifest("multi-tool", ["pdf_extraction", "web_search"])
@@ -147,8 +159,8 @@ async def test_resolve_multiple_packages_ranked(mock_meili, mock_s3, client):
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_resolve_framework_filter(mock_meili, mock_s3, client):
-    token = await setup_publisher(client)
+async def test_resolve_framework_filter(mock_meili, mock_s3, client, session):
+    token = await setup_publisher(client, session)
 
     m1 = make_manifest("langchain-pdf", ["pdf_extraction"], framework="langchain")
     await client.post(
@@ -203,8 +215,8 @@ async def test_resolve_empty_capabilities(client):
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_resolve_with_limit(mock_meili, mock_s3, client):
-    token = await setup_publisher(client)
+async def test_resolve_with_limit(mock_meili, mock_s3, client, session):
+    token = await setup_publisher(client, session)
 
     # Use very distinct slugs to avoid typosquatting detection
     slugs = ["alpha-pdf-reader", "beta-doc-extractor", "gamma-text-parser"]

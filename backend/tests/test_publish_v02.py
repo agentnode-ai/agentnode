@@ -4,6 +4,9 @@ import json
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import update
+
+from app.publishers.models import Publisher
 
 
 TEST_USER = {
@@ -139,7 +142,7 @@ V01_MANIFEST = {
 }
 
 
-async def get_auth_token(client) -> str:
+async def get_auth_token(client, session=None) -> str:
     await client.post("/v1/auth/register", json=TEST_USER)
     login = await client.post(
         "/v1/auth/login",
@@ -154,6 +157,16 @@ async def get_auth_token(client) -> str:
         json=TEST_PUBLISHER,
         headers={"Authorization": f"Bearer {token}"},
     )
+    # When a test needs the published version to be installable, mark the
+    # publisher trusted to bypass new-publisher quarantine. Mirrors
+    # tests/test_install.py; the product quarantine behaviour is unchanged.
+    if session is not None:
+        await session.execute(
+            update(Publisher)
+            .where(Publisher.slug == TEST_PUBLISHER["slug"])
+            .values(trust_level="trusted")
+        )
+        await session.commit()
     return token
 
 
@@ -304,9 +317,9 @@ async def test_install_info_v01_null_entrypoints(mock_meili, mock_s3, client):
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_install_v02_returns_tools(mock_meili, mock_s3, client):
+async def test_install_v02_returns_tools(mock_meili, mock_s3, client, session):
     """POST /v1/packages/{slug}/install should return tools list for v0.2."""
-    token = await get_auth_token(client)
+    token = await get_auth_token(client, session)
     await publish(client, token, V02_MULTI_TOOL_MANIFEST)
 
     resp = await client.post(
@@ -331,9 +344,9 @@ async def test_install_v02_returns_tools(mock_meili, mock_s3, client):
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_install_v01_returns_empty_tools(mock_meili, mock_s3, client):
+async def test_install_v01_returns_empty_tools(mock_meili, mock_s3, client, session):
     """POST /v1/packages/{slug}/install should return empty tools for v0.1."""
-    token = await get_auth_token(client)
+    token = await get_auth_token(client, session)
     await publish(client, token, V01_MANIFEST)
 
     resp = await client.post(
