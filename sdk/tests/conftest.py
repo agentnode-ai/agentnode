@@ -6,6 +6,7 @@ for structured provider comparison and regression tracking.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -80,22 +81,22 @@ def _default_sandbox_available():
 
 
 @pytest.fixture(autouse=True)
-def _reset_guard_state_between_tests():
-    """H7a: reset guard config cache + rate limits before AND after every test.
+def _non_sensitive_test_env(monkeypatch):
+    """H7a-v2: make the default test environment non-sensitive.
 
-    Defensive test-state isolation ONLY — it resets cached state, sets NO env var, NO
-    policy, and mocks NO guard decision. The guard config cache keys on a file
-    (mtime_ns, size) signature that can be defeated under fast/CI test execution, letting
-    a stale default policy (execute=prompt) bleed into later tests that don't explicitly
-    reset it. A per-test reset makes guard behavior deterministic regardless of order.
+    policy._detect_environment() treats any env var matching _SECRET_PREFIXES as
+    has_secrets=True and escalates low-trust/network or undeclared-permission runs to
+    policy_prompt. GitHub Actions may provide such variables ambiently, so tests must
+    not depend on the runner's secret-shaped environment.
+
+    Tests that intentionally exercise has_secrets set their own secret env vars inside
+    the test body after this fixture has run.
     """
-    from agentnode_sdk.guard import reset_guard_config_cache, reset_rate_limits
+    from agentnode_sdk.policy import _SECRET_PREFIXES
 
-    reset_guard_config_cache()
-    reset_rate_limits()
-    yield
-    reset_guard_config_cache()
-    reset_rate_limits()
+    for key in list(os.environ):
+        if any(key.startswith(prefix) for prefix in _SECRET_PREFIXES):
+            monkeypatch.delenv(key, raising=False)
 
 
 # ---------------------------------------------------------------------------
