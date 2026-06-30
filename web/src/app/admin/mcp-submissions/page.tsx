@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { fetchWithAuth } from "@/lib/api";
 
 interface Submission {
@@ -142,7 +142,7 @@ export default function McpSubmissionsPage() {
   const [maintainerFeedback, setMaintainerFeedback] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const loadSubmissions = useCallback(async () => {
+  const loadSubmissions = async () => {
     const params = new URLSearchParams();
     if (filterStatus) params.set("status", filterStatus);
     const res = await fetchWithAuth(`/admin/mcp/submissions?${params}`);
@@ -151,11 +151,24 @@ export default function McpSubmissionsPage() {
       setSubmissions(data.submissions);
       setTotal(data.total);
     }
-  }, [filterStatus]);
+  };
 
   useEffect(() => {
-    loadSubmissions();
-  }, [loadSubmissions]);
+    let cancelled = false;
+    (async () => {
+      const params = new URLSearchParams();
+      if (filterStatus) params.set("status", filterStatus);
+      const res = await fetchWithAuth(`/admin/mcp/submissions?${params}`);
+      if (res.ok && !cancelled) {
+        const data = await res.json();
+        setSubmissions(data.submissions);
+        setTotal(data.total);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [filterStatus]);
 
   const loadDetail = async (id: string) => {
     const res = await fetchWithAuth(`/admin/mcp/submissions/${id}`);
