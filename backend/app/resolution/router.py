@@ -26,7 +26,11 @@ from app.resolution.schemas import (
 router = APIRouter(prefix="/v1", tags=["resolution"])
 
 
-@router.post("/resolve", response_model=ResolveResponse, dependencies=[Depends(rate_limit_authenticated(60, 60))])
+@router.post(
+    "/resolve",
+    response_model=ResolveResponse,
+    dependencies=[Depends(rate_limit_authenticated(60, 60))],
+)
 async def resolve_capabilities(
     body: ResolveRequestSchema,
     session: AsyncSession = Depends(get_session),
@@ -73,6 +77,7 @@ async def resolve_capabilities(
 
 # --- POST /v1/check-policy (Spec §8.5) ---
 
+
 class PolicySchema(BaseModel):
     min_trust: str | None = None
     allow_shell: bool = True
@@ -97,14 +102,17 @@ async def check_policy(
         select(Package)
         .options(
             selectinload(Package.publisher),
-            selectinload(Package.latest_version)
-            .selectinload(PackageVersion.permissions),
+            selectinload(Package.latest_version).selectinload(
+                PackageVersion.permissions
+            ),
         )
         .where(Package.slug == body.package_slug)
     )
     pkg = result.scalar_one_or_none()
     if not pkg:
-        raise AppError("PACKAGE_NOT_FOUND", f"Package '{body.package_slug}' not found", 404)
+        raise AppError(
+            "PACKAGE_NOT_FOUND", f"Package '{body.package_slug}' not found", 404
+        )
 
     pv = pkg.latest_version
     if not pv:
@@ -148,6 +156,7 @@ async def check_policy(
 
 # --- POST /v1/resolve-upgrade (Spec §8.5) ---
 
+
 class ResolveUpgradeRequest(BaseModel):
     current_capabilities: list[str] = Field(..., min_length=1)
     framework: str | None = None
@@ -155,7 +164,9 @@ class ResolveUpgradeRequest(BaseModel):
     policy: PolicySchema = Field(default_factory=PolicySchema)
 
 
-@router.post("/resolve-upgrade", dependencies=[Depends(rate_limit_authenticated(60, 60))])
+@router.post(
+    "/resolve-upgrade", dependencies=[Depends(rate_limit_authenticated(60, 60))]
+)
 async def resolve_upgrade(
     body: ResolveUpgradeRequest,
     user: User = Depends(get_current_user),
@@ -178,10 +189,12 @@ async def resolve_upgrade(
             select(Package)
             .options(
                 selectinload(Package.publisher),
-                selectinload(Package.latest_version)
-                .selectinload(PackageVersion.permissions),
-                selectinload(Package.latest_version)
-                .selectinload(PackageVersion.upgrade_metadata),
+                selectinload(Package.latest_version).selectinload(
+                    PackageVersion.permissions
+                ),
+                selectinload(Package.latest_version).selectinload(
+                    PackageVersion.upgrade_metadata
+                ),
             )
             .where(Package.slug.in_(slugs))
         )
@@ -226,18 +239,20 @@ async def resolve_upgrade(
             elif perm.network_level == "unrestricted":
                 risk_level = "medium"
 
-        recommended.append({
-            "package_slug": s.slug,
-            "package_name": s.name,
-            "version": s.version,
-            "compatibility_score": s.score,
-            "trust_level": trust_level,
-            "risk_level": risk_level,
-            "policy_result": policy_result.result,
-            "policy_reasons": policy_result.reasons,
-            "install_command": f"agentnode install {s.slug}",
-            "dependencies": [],
-        })
+        recommended.append(
+            {
+                "package_slug": s.slug,
+                "package_name": s.name,
+                "version": s.version,
+                "compatibility_score": s.score,
+                "trust_level": trust_level,
+                "risk_level": risk_level,
+                "policy_result": policy_result.result,
+                "policy_reasons": policy_result.reasons,
+                "install_command": f"agentnode install {s.slug}",
+                "dependencies": [],
+            }
+        )
 
     return {"recommended": recommended}
 
@@ -247,6 +262,7 @@ async def resolve_upgrade(
 #   /resolve  = exact capability matching, strict scoring, policy-aware
 #   /recommend = broader discovery, includes related capabilities,
 #                filters already-installed packages, explains reasoning
+
 
 class RecommendRequest(BaseModel):
     missing_capabilities: list[str] = Field(default_factory=list)
@@ -283,9 +299,7 @@ async def recommend(
 
     # 2) If agent_description provided, infer capabilities from keywords
     if body.agent_description:
-        all_tax = await session.execute(
-            select(CapabilityTaxonomy)
-        )
+        all_tax = await session.execute(select(CapabilityTaxonomy))
         taxonomy = all_tax.scalars().all()
         desc_lower = body.agent_description.lower()
         for cap in taxonomy:
@@ -302,16 +316,16 @@ async def recommend(
     related_caps = []
     if cap_ids_to_resolve:
         tax_result = await session.execute(
-            select(CapabilityTaxonomy)
-            .where(CapabilityTaxonomy.id.in_(cap_ids_to_resolve))
+            select(CapabilityTaxonomy).where(
+                CapabilityTaxonomy.id.in_(cap_ids_to_resolve)
+            )
         )
         requested_taxonomy = tax_result.scalars().all()
         categories = {t.category for t in requested_taxonomy if t.category}
 
         if categories:
             related_result = await session.execute(
-                select(CapabilityTaxonomy)
-                .where(
+                select(CapabilityTaxonomy).where(
                     CapabilityTaxonomy.category.in_(categories),
                     CapabilityTaxonomy.id.notin_(seen_caps),
                 )
@@ -334,7 +348,9 @@ async def recommend(
         if all_slugs:
             cap_result = await session.execute(
                 select(Package.slug, Capability.capability_id)
-                .join(PackageVersion, Capability.package_version_id == PackageVersion.id)
+                .join(
+                    PackageVersion, Capability.package_version_id == PackageVersion.id
+                )
                 .join(Package, PackageVersion.package_id == Package.id)
                 .where(Package.slug.in_(all_slugs))
             )
@@ -353,24 +369,32 @@ async def recommend(
                 all_caps = slug_caps_map.get(s.slug, [])
                 also_provides = [c for c in all_caps if c != cap_id]
 
-                packages.append({
-                    "slug": s.slug,
-                    "name": s.name,
-                    "version": s.version,
-                    "compatibility_score": s.score,
-                    "trust_level": s.trust_level,
-                    "reason": f"Provides {cap_id} capability"
-                    + (f" (+ {', '.join(also_provides[:3])})" if also_provides else ""),
-                    "also_provides": also_provides,
-                    "install_command": f"agentnode install {s.slug}",
-                })
+                packages.append(
+                    {
+                        "slug": s.slug,
+                        "name": s.name,
+                        "version": s.version,
+                        "compatibility_score": s.score,
+                        "trust_level": s.trust_level,
+                        "reason": f"Provides {cap_id} capability"
+                        + (
+                            f" (+ {', '.join(also_provides[:3])})"
+                            if also_provides
+                            else ""
+                        ),
+                        "also_provides": also_provides,
+                        "install_command": f"agentnode install {s.slug}",
+                    }
+                )
 
             if packages:
-                recommendations.append({
-                    "capability_id": cap_id,
-                    "source": "requested",
-                    "packages": packages,
-                })
+                recommendations.append(
+                    {
+                        "capability_id": cap_id,
+                        "source": "requested",
+                        "packages": packages,
+                    }
+                )
 
     # 5) Suggest related capabilities the user didn't ask for — single batched call
     related_subset = related_caps[:5]
@@ -399,11 +423,13 @@ async def recommend(
                 if s.slug not in installed_set and cap_id in s.matched_capabilities
             ]
             if packages:
-                recommendations.append({
-                    "capability_id": cap_id,
-                    "source": "related",
-                    "packages": packages,
-                })
+                recommendations.append(
+                    {
+                        "capability_id": cap_id,
+                        "source": "related",
+                        "packages": packages,
+                    }
+                )
 
     # Deduplicate and limit
     seen_slugs: set[str] = set()
@@ -419,7 +445,7 @@ async def recommend(
             final.append(rec)
 
     return {
-        "recommendations": final[:body.limit],
+        "recommendations": final[: body.limit],
         "total_packages": len(seen_slugs),
     }
 

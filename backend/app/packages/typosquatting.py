@@ -4,6 +4,7 @@ Uses PostgreSQL pg_trgm for efficient fuzzy matching instead of loading
 all slugs into memory.  The pure-Python helpers (check_typosquatting) are
 kept for unit tests that don't need a database.
 """
+
 from difflib import SequenceMatcher
 
 from sqlalchemy import text
@@ -11,17 +12,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # Common character substitutions used in typosquatting attacks
-HOMOGRAPH_MAP = str.maketrans({
-    "l": "1", "1": "l",
-    "o": "0", "0": "o",
-    "i": "1",
-    "s": "5", "5": "s",
-    "e": "3", "3": "e",
-    "a": "4", "4": "a",
-    "t": "7", "7": "t",
-    "b": "6", "6": "b",
-    "g": "9", "9": "g",
-})
+HOMOGRAPH_MAP = str.maketrans(
+    {
+        "l": "1",
+        "1": "l",
+        "o": "0",
+        "0": "o",
+        "i": "1",
+        "s": "5",
+        "5": "s",
+        "e": "3",
+        "3": "e",
+        "a": "4",
+        "4": "a",
+        "t": "7",
+        "7": "t",
+        "b": "6",
+        "6": "b",
+        "g": "9",
+        "9": "g",
+    }
+)
 
 
 def _normalize(slug: str) -> str:
@@ -90,13 +101,13 @@ def check_typosquatting(new_slug: str, existing_slugs: list[str]) -> list[str]:
             elif len(norm_new) > len(norm_existing):
                 # One char inserted
                 for i in range(len(norm_new)):
-                    if norm_new[:i] + norm_new[i + 1:] == norm_existing:
+                    if norm_new[:i] + norm_new[i + 1 :] == norm_existing:
                         suspicious.append(existing)
                         break
             else:
                 # One char deleted
                 for i in range(len(norm_existing)):
-                    if norm_existing[:i] + norm_existing[i + 1:] == norm_new:
+                    if norm_existing[:i] + norm_existing[i + 1 :] == norm_new:
                         suspicious.append(existing)
                         break
 

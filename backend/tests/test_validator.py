@@ -1,4 +1,5 @@
 """Unit tests for ANP manifest validator."""
+
 import pytest
 
 from app.packages.validator import validate_manifest
@@ -16,12 +17,17 @@ VALID_MANIFEST = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "test_pack.tool",
     "capabilities": {
-        "tools": [{
-            "name": "test_tool",
-            "capability_id": "pdf_extraction",
-            "description": "Test tool",
-            "input_schema": {"type": "object", "properties": {"input": {"type": "string"}}},
-        }],
+        "tools": [
+            {
+                "name": "test_tool",
+                "capability_id": "pdf_extraction",
+                "description": "Test tool",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"input": {"type": "string"}},
+                },
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -101,7 +107,10 @@ async def test_runtime_must_be_python():
 
 @pytest.mark.asyncio
 async def test_no_tools():
-    m = {**VALID_MANIFEST, "capabilities": {"tools": [], "resources": [], "prompts": []}}
+    m = {
+        **VALID_MANIFEST,
+        "capabilities": {"tools": [], "resources": [], "prompts": []},
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is False
     assert any("at least 1 tool" in e for e in errors)
@@ -136,12 +145,17 @@ VALID_MCP_MANIFEST = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "mcp_test.server",
     "capabilities": {
-        "tools": [{
-            "name": "test_tool",
-            "capability_id": "general",
-            "description": "Test tool",
-            "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
-        }],
+        "tools": [
+            {
+                "name": "test_tool",
+                "capability_id": "general",
+                "description": "Test tool",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                },
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -184,7 +198,10 @@ async def test_mcp_missing_command():
 
 @pytest.mark.asyncio
 async def test_mcp_command_not_list():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "command": "npx foo"}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "command": "npx foo"},
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is False
     assert any("command" in e and "list" in e for e in errors)
@@ -192,7 +209,10 @@ async def test_mcp_command_not_list():
 
 @pytest.mark.asyncio
 async def test_mcp_command_empty_entry():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "command": ["npx", ""]}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "command": ["npx", ""]},
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is False
     assert any("empty" in e for e in errors)
@@ -200,7 +220,10 @@ async def test_mcp_command_empty_entry():
 
 @pytest.mark.asyncio
 async def test_mcp_command_too_many_elements():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "command": ["arg"] * 21}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "command": ["arg"] * 21},
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is False
     assert any("max 20" in e for e in errors)
@@ -208,7 +231,13 @@ async def test_mcp_command_too_many_elements():
 
 @pytest.mark.asyncio
 async def test_mcp_command_element_too_long():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "command": ["npx", "x" * 501]}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {
+            **VALID_MCP_MANIFEST["mcp_server"],
+            "command": ["npx", "x" * 501],
+        },
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is False
     assert any("500 characters" in e for e in errors)
@@ -216,7 +245,10 @@ async def test_mcp_command_element_too_long():
 
 @pytest.mark.asyncio
 async def test_mcp_command_total_size_exceeded():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "command": ["x" * 400] * 11}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "command": ["x" * 400] * 11},
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is False
     assert any("4000" in e for e in errors)
@@ -224,7 +256,13 @@ async def test_mcp_command_total_size_exceeded():
 
 @pytest.mark.asyncio
 async def test_mcp_command_null_bytes():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "command": ["npx", "foo\x00bar"]}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {
+            **VALID_MCP_MANIFEST["mcp_server"],
+            "command": ["npx", "foo\x00bar"],
+        },
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is False
     assert any("null" in e for e in errors)
@@ -232,7 +270,13 @@ async def test_mcp_command_null_bytes():
 
 @pytest.mark.asyncio
 async def test_mcp_command_unknown_executable_warning():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "command": ["custom-bin", "--serve"]}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {
+            **VALID_MCP_MANIFEST["mcp_server"],
+            "command": ["custom-bin", "--serve"],
+        },
+    }
     valid, errors, warnings = await validate_manifest(m)
     assert valid is True
     assert any("known MCP executable" in w for w in warnings)
@@ -240,7 +284,10 @@ async def test_mcp_command_unknown_executable_warning():
 
 @pytest.mark.asyncio
 async def test_mcp_command_relative_path_warning():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "command": ["./run.sh"]}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "command": ["./run.sh"]},
+    }
     valid, errors, warnings = await validate_manifest(m)
     assert valid is True
     assert any("relative path" in w for w in warnings)
@@ -248,7 +295,10 @@ async def test_mcp_command_relative_path_warning():
 
 @pytest.mark.asyncio
 async def test_mcp_invalid_transport():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "transport": "websocket"}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "transport": "websocket"},
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is False
     assert any("transport" in e for e in errors)
@@ -256,7 +306,13 @@ async def test_mcp_invalid_transport():
 
 @pytest.mark.asyncio
 async def test_mcp_source_repo_not_https():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "source_repo": "http://github.com/foo/bar"}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {
+            **VALID_MCP_MANIFEST["mcp_server"],
+            "source_repo": "http://github.com/foo/bar",
+        },
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is False
     assert any("https" in e for e in errors)
@@ -264,7 +320,13 @@ async def test_mcp_source_repo_not_https():
 
 @pytest.mark.asyncio
 async def test_mcp_source_repo_invalid_host():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "source_repo": "https://evil.com/foo/bar"}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {
+            **VALID_MCP_MANIFEST["mcp_server"],
+            "source_repo": "https://evil.com/foo/bar",
+        },
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is False
     assert any("host" in e for e in errors)
@@ -272,7 +334,13 @@ async def test_mcp_source_repo_invalid_host():
 
 @pytest.mark.asyncio
 async def test_mcp_source_repo_too_long():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "source_repo": "https://github.com/" + "x" * 1000}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {
+            **VALID_MCP_MANIFEST["mcp_server"],
+            "source_repo": "https://github.com/" + "x" * 1000,
+        },
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is False
     assert any("1000" in e for e in errors)
@@ -280,7 +348,13 @@ async def test_mcp_source_repo_too_long():
 
 @pytest.mark.asyncio
 async def test_mcp_env_keys_invalid_format():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "env_keys": ["valid_KEY", "invalid-key"]}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {
+            **VALID_MCP_MANIFEST["mcp_server"],
+            "env_keys": ["valid_KEY", "invalid-key"],
+        },
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is False
     assert any("env_keys" in e for e in errors)
@@ -288,7 +362,13 @@ async def test_mcp_env_keys_invalid_format():
 
 @pytest.mark.asyncio
 async def test_mcp_env_keys_valid():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "env_keys": ["API_KEY", "DATABASE_URL"]}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {
+            **VALID_MCP_MANIFEST["mcp_server"],
+            "env_keys": ["API_KEY", "DATABASE_URL"],
+        },
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is True
 
@@ -311,6 +391,12 @@ async def test_mcp_runtime_without_mcp_server_warning():
 
 @pytest.mark.asyncio
 async def test_mcp_gitlab_source_repo():
-    m = {**VALID_MCP_MANIFEST, "mcp_server": {**VALID_MCP_MANIFEST["mcp_server"], "source_repo": "https://gitlab.com/foo/bar"}}
+    m = {
+        **VALID_MCP_MANIFEST,
+        "mcp_server": {
+            **VALID_MCP_MANIFEST["mcp_server"],
+            "source_repo": "https://gitlab.com/foo/bar",
+        },
+    }
     valid, errors, _ = await validate_manifest(m)
     assert valid is True

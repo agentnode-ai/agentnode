@@ -6,6 +6,7 @@ user A, and tries to perform an action on user B's resource, asserting 403.
 
 Also verifies that an admin CAN override these restrictions where applicable.
 """
+
 import base64
 import json
 from unittest.mock import patch
@@ -64,13 +65,22 @@ MANIFEST_B = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "cross_test.tool",
     "capabilities": {
-        "tools": [{
-            "name": "test_tool",
-            "capability_id": "pdf_extraction",
-            "description": "Test tool",
-            "input_schema": {"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]},
-            "output_schema": {"type": "object", "properties": {"output": {"type": "string"}}},
-        }],
+        "tools": [
+            {
+                "name": "test_tool",
+                "capability_id": "pdf_extraction",
+                "description": "Test tool",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"input": {"type": "string"}},
+                    "required": ["input"],
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": {"output": {"type": "string"}},
+                },
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -86,7 +96,10 @@ MANIFEST_B = {
     "tags": ["test"],
     "categories": ["document-processing"],
     "dependencies": [],
-    "security": {"signature": "", "provenance": {"source_repo": "", "commit": "", "build_system": ""}},
+    "security": {
+        "signature": "",
+        "provenance": {"source_repo": "", "commit": "", "build_system": ""},
+    },
     "support": {"homepage": "", "issues": ""},
 }
 
@@ -94,10 +107,13 @@ MANIFEST_B = {
 async def _register_and_login(client, user_data: dict) -> str:
     """Register a user and return an access token."""
     await client.post("/v1/auth/register", json=user_data)
-    login_resp = await client.post("/v1/auth/login", json={
-        "email": user_data["email"],
-        "password": user_data["password"],
-    })
+    login_resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": user_data["email"],
+            "password": user_data["password"],
+        },
+    )
     return login_resp.json()["access_token"]
 
 
@@ -129,7 +145,9 @@ async def _setup_admin(client, session) -> str:
 
     # Promote to admin directly in DB
     await session.execute(
-        update(User).where(User.username == ADMIN_USER["username"]).values(is_admin=True)
+        update(User)
+        .where(User.username == ADMIN_USER["username"])
+        .values(is_admin=True)
     )
     await session.commit()
 
@@ -139,6 +157,7 @@ async def _setup_admin(client, session) -> str:
 # ============================================================
 # 1. Publisher A cannot update Publisher B's profile
 # ============================================================
+
 
 @pytest.mark.asyncio
 async def test_cannot_update_other_publishers_profile(client):
@@ -171,6 +190,7 @@ async def test_update_own_profile_succeeds(client):
 # ============================================================
 # 2. Publisher A cannot create webhooks for Publisher B
 # ============================================================
+
 
 @pytest.mark.asyncio
 async def test_webhook_isolation_between_publishers(client):
@@ -217,6 +237,7 @@ async def test_webhook_isolation_between_publishers(client):
 # 3. Publisher A cannot publish to Publisher B's package
 # ============================================================
 
+
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
@@ -246,6 +267,7 @@ async def test_cannot_publish_to_other_publishers_package(mock_meili, mock_s3, c
 # ============================================================
 # 4. Publisher A cannot yank Publisher B's version
 # ============================================================
+
 
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
@@ -294,6 +316,7 @@ async def test_owner_can_yank_own_version(mock_meili, mock_s3, client):
 # 5. Publisher A cannot deprecate Publisher B's package
 # ============================================================
 
+
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
@@ -339,6 +362,7 @@ async def test_owner_can_deprecate_own_package(mock_meili, mock_s3, client):
 # 6. Publisher A cannot register signing key for Publisher B
 # ============================================================
 
+
 @pytest.mark.asyncio
 async def test_cannot_register_signing_key_for_other_publisher(client):
     """PUT /v1/publishers/{B-slug}/signing-key by user A returns 403."""
@@ -371,10 +395,13 @@ async def test_owner_can_register_own_signing_key(client):
 # 7. Publisher A cannot update/edit Publisher B's package metadata
 # ============================================================
 
+
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_cannot_update_other_publishers_package_metadata(mock_meili, mock_s3, client):
+async def test_cannot_update_other_publishers_package_metadata(
+    mock_meili, mock_s3, client
+):
     """PATCH /v1/packages/{slug} by non-owner returns 403."""
     token_a, token_b = await _setup_two_publishers(client)
 
@@ -397,10 +424,13 @@ async def test_cannot_update_other_publishers_package_metadata(mock_meili, mock_
 # 8. Publisher A cannot view all versions (owner-only) of B's package
 # ============================================================
 
+
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_cannot_view_all_versions_of_other_publishers_package(mock_meili, mock_s3, client):
+async def test_cannot_view_all_versions_of_other_publishers_package(
+    mock_meili, mock_s3, client
+):
     """GET /v1/packages/{slug}/versions/all by non-owner returns 403."""
     token_a, token_b = await _setup_two_publishers(client)
 
@@ -421,6 +451,7 @@ async def test_cannot_view_all_versions_of_other_publishers_package(mock_meili, 
 # ============================================================
 # 9. Publisher A cannot request re-verification of B's package
 # ============================================================
+
 
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
@@ -447,6 +478,7 @@ async def test_cannot_reverify_other_publishers_package(mock_meili, mock_s3, cli
 # 10. Admin CAN perform cross-publisher actions
 # ============================================================
 
+
 @pytest.mark.asyncio
 async def test_admin_can_update_other_publishers_trust_level(client, session):
     """Admin can set trust level on any publisher via /v1/admin/ endpoints."""
@@ -465,7 +497,9 @@ async def test_admin_can_update_other_publishers_trust_level(client, session):
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_admin_can_quarantine_other_publishers_version(mock_meili, mock_s3, client, session):
+async def test_admin_can_quarantine_other_publishers_version(
+    mock_meili, mock_s3, client, session
+):
     """Admin can quarantine any publisher's package version."""
     _token_a, token_b = await _setup_two_publishers(client)
     admin_token = await _setup_admin(client, session)

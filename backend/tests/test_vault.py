@@ -1,4 +1,5 @@
 """Tests for credential vault encryption/decryption."""
+
 import pytest
 
 from cryptography.fernet import Fernet
@@ -60,6 +61,7 @@ class TestVaultEncryption:
         monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY", raising=False)
 
         from app.credentials.vault import encrypt
+
         with pytest.raises(RuntimeError, match="CREDENTIAL_ENCRYPTION_KEY is not set"):
             encrypt({"key": "value"})
 

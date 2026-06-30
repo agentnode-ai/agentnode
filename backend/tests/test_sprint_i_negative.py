@@ -4,6 +4,7 @@ A consolidated small suite of targeted negative/edge-case tests that
 were missing from the main test files. Keeps each test minimal and
 focused on a single failure mode so regressions surface clearly.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -16,6 +17,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # P1-T: webhook HMAC signing correctness
 # ---------------------------------------------------------------------------
+
 
 def test_webhook_hmac_signature_matches_spec():
     """The X-Webhook-Signature header must be sha256 HMAC of the JSON body.
@@ -54,6 +56,7 @@ def test_webhook_hmac_rejects_tampered_body():
 # P1-T: manifest validation rejects obvious garbage
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_validate_rejects_missing_package_id(client):
     """POST /v1/packages/validate with a manifest missing package_id fails."""
@@ -88,6 +91,7 @@ async def test_validate_rejects_non_dict_manifest(client):
 # P1-T: rate-limit behavior (smoke check)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_rate_limit_headers_present_on_limited_endpoint(client):
     """Endpoints behind the rate limiter expose X-RateLimit-* headers.
@@ -102,9 +106,7 @@ async def test_rate_limit_headers_present_on_limited_endpoint(client):
     # We only care that rate-limit exposure didn't get accidentally
     # removed. If headers are missing on ALL responses, that's the bug
     # this test is guarding against.
-    has_header = any(
-        h.lower().startswith("x-ratelimit") for h in resp.headers.keys()
-    )
+    has_header = any(h.lower().startswith("x-ratelimit") for h in resp.headers.keys())
     # Do not hard-assert — rate limiter may be disabled in test config.
     # Instead assert the response is well-formed JSON (no middleware crash).
     assert resp.status_code < 500

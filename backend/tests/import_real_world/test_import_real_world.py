@@ -9,6 +9,7 @@ Tests the importer against 20 realistic tool snippets across 5 buckets:
 
 Run with: pytest tests/import_real_world/ -v
 """
+
 from __future__ import annotations
 
 import ast
@@ -44,92 +45,110 @@ def _load_fixture(filename: str) -> str:
 EXPECTATIONS = [
     # ── Bucket 1: Simple happy path ──
     (
-        "lc01_simple_word_count.py", "langchain", {
+        "lc01_simple_word_count.py",
+        "langchain",
+        {
             "confidence": "high",
             "draft_ready": True,
             "min_tools": 1,
             "no_framework_imports": True,
             "code_valid": True,
             "changes_min": 1,
-        }
+        },
     ),
     (
-        "lc02_tool_with_defaults.py", "langchain", {
+        "lc02_tool_with_defaults.py",
+        "langchain",
+        {
             "confidence": "high",
             "draft_ready": True,
             "min_tools": 1,
             "deps_contain": ["requests"],
             "no_framework_imports": True,
             "code_valid": True,
-        }
+        },
     ),
     (
-        "lc03_two_tools.py", "langchain", {
+        "lc03_two_tools.py",
+        "langchain",
+        {
             "confidence": "high",
             "draft_ready": True,
             "min_tools": 2,
             "max_tools": 2,
             "no_framework_imports": True,
             "code_valid": True,
-        }
+        },
     ),
-
     # ── Bucket 2: BaseTool cases ──
     (
-        "lc04_basetool_dict_return.py", "langchain", {
+        "lc04_basetool_dict_return.py",
+        "langchain",
+        {
             "confidence": "high",
             "draft_ready": True,
             "min_tools": 1,
             "deps_contain": ["requests"],
             "no_framework_imports": True,
             "code_valid": True,
-        }
+        },
     ),
     (
-        "lc05_basetool_str_return.py", "langchain", {
+        "lc05_basetool_str_return.py",
+        "langchain",
+        {
             "confidence": "medium",
             "draft_ready": True,
             "min_tools": 1,
             "warning_contains": ["str", "wrapped"],
             "no_framework_imports": True,
             "code_valid": True,
-        }
+        },
     ),
     (
-        "lc06_basetool_args_schema.py", "langchain", {
+        "lc06_basetool_args_schema.py",
+        "langchain",
+        {
             "confidence": "high",
             "draft_ready": True,
             "min_tools": 1,
             "warning_contains": ["args_schema"],
             "no_framework_imports": True,
             "code_valid": True,
-        }
+        },
     ),
-
     # ── Bucket 3: Helpers / complex structure ──
     (
-        "lc07_helper_functions.py", "langchain", {
+        "lc07_helper_functions.py",
+        "langchain",
+        {
             "confidence": "high",
             "draft_ready": True,
             "min_tools": 1,
             "no_framework_imports": True,
             "code_valid": True,
-            "warning_absent": ["_clean_text", "_remove_stop_words"],  # helpers should NOT be unresolved
-        }
+            "warning_absent": [
+                "_clean_text",
+                "_remove_stop_words",
+            ],  # helpers should NOT be unresolved
+        },
     ),
     (
-        "lc08_helper_class.py", "langchain", {
+        "lc08_helper_class.py",
+        "langchain",
+        {
             "confidence": "high",
             "draft_ready": True,
             "min_tools": 1,
             "no_framework_imports": True,
             "code_valid": True,
-        }
+        },
     ),
-
     # ── Bucket 4: Edge cases (medium expected) ──
     (
-        "lc09_env_vars.py", "langchain", {
+        "lc09_env_vars.py",
+        "langchain",
+        {
             "confidence": "high",  # code is valid, env vars are just a warning
             "draft_ready": True,
             "min_tools": 1,
@@ -137,113 +156,134 @@ EXPECTATIONS = [
             "deps_contain": ["requests"],
             "no_framework_imports": True,
             "code_valid": True,
-        }
+        },
     ),
     (
-        "lc10_unresolved_symbols.py", "langchain", {
+        "lc10_unresolved_symbols.py",
+        "langchain",
+        {
             "confidence": "medium",
             "draft_ready": True,
             "min_tools": 1,
             "warning_contains": ["parse_record"],
             "code_valid": True,
-        }
+        },
     ),
     (
-        "lc11_missing_type_hints.py", "langchain", {
+        "lc11_missing_type_hints.py",
+        "langchain",
+        {
             "confidence": "medium",
             "draft_ready": True,
             "min_tools": 1,
             "warning_contains": ["type hint"],
             "code_valid": True,
-        }
+        },
     ),
     (
-        "lc12_try_except_import.py", "langchain", {
+        "lc12_try_except_import.py",
+        "langchain",
+        {
             "confidence": "high",
             "draft_ready": True,
             "min_tools": 1,
             "warning_contains": ["try/except"],
             "deps_contain": ["PyPDF2"],
             "code_valid": True,
-        }
+        },
     ),
-
     # ── Bucket 5: Hard blockers (low, draft_ready=False) ──
     (
-        "lc13_async_tool.py", "langchain", {
+        "lc13_async_tool.py",
+        "langchain",
+        {
             "confidence": "low",
             "draft_ready": False,
             "min_tools": 1,
             "warning_contains": ["async"],
-        }
+        },
     ),
     (
-        "lc14_self_reference.py", "langchain", {
+        "lc14_self_reference.py",
+        "langchain",
+        {
             "confidence": "low",
             "draft_ready": False,
             "min_tools": 1,
             "warning_contains": ["self.connection_string"],
-        }
+        },
     ),
     (
-        "lc15_relative_import.py", "langchain", {
+        "lc15_relative_import.py",
+        "langchain",
+        {
             "confidence": "low",
             "draft_ready": False,
             "warning_contains": ["relative import"],
-        }
+        },
     ),
     (
-        "lc16_structured_tool.py", "langchain", {
+        "lc16_structured_tool.py",
+        "langchain",
+        {
             "confidence": "low",
             "draft_ready": False,
             "warning_contains": ["StructuredTool.from_function"],
-        }
+        },
     ),
     (
-        "lc17_unknown_import_active.py", "langchain", {
+        "lc17_unknown_import_active.py",
+        "langchain",
+        {
             "confidence": "low",
             "draft_ready": False,
             "min_tools": 1,
             "unknown_contain": ["company_internal"],
             "warning_contains": ["company_internal"],
-        }
+        },
     ),
-
     # ── CrewAI ──
     (
-        "cr01_simple_named.py", "crewai", {
+        "cr01_simple_named.py",
+        "crewai",
+        {
             "confidence": "high",
             "draft_ready": True,
             "min_tools": 1,
             "no_framework_imports": True,
             "code_valid": True,
             "changes_min": 1,
-        }
+        },
     ),
     (
-        "cr02_no_arg_decorator.py", "crewai", {
+        "cr02_no_arg_decorator.py",
+        "crewai",
+        {
             "confidence": "high",
             "draft_ready": True,
             "min_tools": 1,
             "deps_contain": ["pandas"],
             "no_framework_imports": True,
             "code_valid": True,
-        }
+        },
     ),
     (
-        "cr03_with_helpers.py", "crewai", {
+        "cr03_with_helpers.py",
+        "crewai",
+        {
             "confidence": "high",
             "draft_ready": True,
             "min_tools": 1,
             "deps_contain": ["requests"],
             "no_framework_imports": True,
             "code_valid": True,
-        }
+        },
     ),
 ]
 
 
 # ── Parametrized test ─────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize(
     "filename,platform,expected",
@@ -302,8 +342,12 @@ def test_real_world_fixture(filename: str, platform: str, expected: dict):
     if expected.get("no_framework_imports"):
         tool_py = next((f for f in resp.code_files if f.path.endswith("tool.py")), None)
         if tool_py:
-            assert "langchain" not in tool_py.content, "Framework import 'langchain' in generated tool.py"
-            assert "crewai" not in tool_py.content, "Framework import 'crewai' in generated tool.py"
+            assert "langchain" not in tool_py.content, (
+                "Framework import 'langchain' in generated tool.py"
+            )
+            assert "crewai" not in tool_py.content, (
+                "Framework import 'crewai' in generated tool.py"
+            )
 
     # Generated code is syntactically valid
     if expected.get("code_valid"):
@@ -328,6 +372,7 @@ def test_real_world_fixture(filename: str, platform: str, expected: dict):
 
 
 # ── Summary report (runs after all parametrized tests) ────────────────
+
 
 def test_summary_report(capsys):
     """Generate a distribution summary across all fixtures."""
@@ -380,12 +425,16 @@ def test_summary_report(capsys):
         print("  IMPORT REAL-WORLD TEST SUMMARY")
         print("=" * 70)
         print(f"  Total fixtures: {total}")
-        print(f"  High:   {results['high']:>3}  ({results['high']*100//total}%)")
-        print(f"  Medium: {results['medium']:>3}  ({results['medium']*100//total}%)")
-        print(f"  Low:    {results['low']:>3}  ({results['low']*100//total}%)")
+        print(f"  High:   {results['high']:>3}  ({results['high'] * 100 // total}%)")
+        print(
+            f"  Medium: {results['medium']:>3}  ({results['medium'] * 100 // total}%)"
+        )
+        print(f"  Low:    {results['low']:>3}  ({results['low'] * 100 // total}%)")
         print(f"  Draft ready: {draft_ready_count}/{total}")
         print("-" * 70)
-        print(f"  {'Bucket':<12} {'Total':>6} {'High':>6} {'Med':>6} {'Low':>6} {'Ready':>6}")
+        print(
+            f"  {'Bucket':<12} {'Total':>6} {'High':>6} {'Med':>6} {'Low':>6} {'Ready':>6}"
+        )
         print("-" * 70)
         for bucket, stats in bucket_stats.items():
             if stats["total"] > 0:

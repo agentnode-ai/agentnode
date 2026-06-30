@@ -23,6 +23,7 @@ from app.trust.signatures import generate_keypair, sign_artifact_hash, verify_si
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_keypair() -> tuple[str, str, SigningKey]:
     """Return (private_b64, public_b64, SigningKey) for test use."""
     sk = SigningKey.generate()
@@ -41,7 +42,6 @@ def _artifact_hash(content: bytes = b"hello world") -> str:
 
 
 class TestValidSignature:
-
     def test_round_trip_sign_and_verify(self):
         """A signature produced by sign_artifact_hash verifies with the matching public key."""
         priv_b64, pub_b64, _ = _make_keypair()
@@ -82,7 +82,6 @@ class TestValidSignature:
 
 
 class TestInvalidSignature:
-
     def test_corrupted_signature_rejected(self):
         """Flipping a byte in the signature must fail verification."""
         priv_b64, pub_b64, _ = _make_keypair()
@@ -99,6 +98,7 @@ class TestInvalidSignature:
     def test_completely_random_signature_rejected(self):
         """A random 64-byte signature must fail."""
         import os
+
         _, pub_b64, _ = _make_keypair()
         random_sig = base64.b64encode(os.urandom(64)).decode()
         assert verify_signature(pub_b64, random_sig, _artifact_hash()) is False
@@ -122,7 +122,6 @@ class TestInvalidSignature:
 
 
 class TestTamperedContent:
-
     def test_different_artifact_hash_fails(self):
         """Signature for hash A must not verify against hash B."""
         priv_b64, pub_b64, _ = _make_keypair()
@@ -153,7 +152,6 @@ class TestTamperedContent:
 
 
 class TestWrongPublicKey:
-
     def test_wrong_key_rejects_valid_signature(self):
         """A valid signature must fail when verified with a different public key."""
         priv_a, pub_a, _ = _make_keypair()
@@ -187,7 +185,6 @@ class TestWrongPublicKey:
 
 
 class TestMissingSignature:
-
     def test_empty_string_signature(self):
         """An empty string signature must fail (not crash)."""
         _, pub_b64, _ = _make_keypair()
@@ -217,7 +214,6 @@ class TestMissingSignature:
 
 
 class TestMalformedInputs:
-
     def test_invalid_base64_signature(self):
         """Non-base64 signature string must return False, not raise."""
         _, pub_b64, _ = _make_keypair()
@@ -255,7 +251,6 @@ class TestMalformedInputs:
 
 
 class TestGenerateKeypair:
-
     def test_returns_valid_base64_strings(self):
         """Both returned keys must be valid base64."""
         priv_b64, pub_b64 = generate_keypair()

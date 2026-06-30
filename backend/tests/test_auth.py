@@ -26,31 +26,40 @@ async def test_register_duplicate_email(client):
 
 @pytest.mark.asyncio
 async def test_register_invalid_username(client):
-    resp = await client.post("/v1/auth/register", json={
-        "email": "test2@agentnode.dev",
-        "username": "AB",
-        "password": "TestPass123!",
-    })
+    resp = await client.post(
+        "/v1/auth/register",
+        json={
+            "email": "test2@agentnode.dev",
+            "username": "AB",
+            "password": "TestPass123!",
+        },
+    )
     assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
 async def test_register_short_password(client):
-    resp = await client.post("/v1/auth/register", json={
-        "email": "test3@agentnode.dev",
-        "username": "testuser3",
-        "password": "short",
-    })
+    resp = await client.post(
+        "/v1/auth/register",
+        json={
+            "email": "test3@agentnode.dev",
+            "username": "testuser3",
+            "password": "short",
+        },
+    )
     assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
 async def test_login(client):
     await client.post("/v1/auth/register", json=TEST_USER)
-    resp = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert "access_token" in data
@@ -61,20 +70,26 @@ async def test_login(client):
 @pytest.mark.asyncio
 async def test_login_wrong_password(client):
     await client.post("/v1/auth/register", json=TEST_USER)
-    resp = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": "wrongpassword",
-    })
+    resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": "wrongpassword",
+        },
+    )
     assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
 async def test_refresh_token(client):
     await client.post("/v1/auth/register", json=TEST_USER)
-    login_resp = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    login_resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     refresh_token = login_resp.json()["refresh_token"]
 
     resp = await client.post("/v1/auth/refresh", json={"refresh_token": refresh_token})
@@ -85,10 +100,13 @@ async def test_refresh_token(client):
 @pytest.mark.asyncio
 async def test_refresh_with_access_token_fails(client):
     await client.post("/v1/auth/register", json=TEST_USER)
-    login_resp = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    login_resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     access_token = login_resp.json()["access_token"]
 
     resp = await client.post("/v1/auth/refresh", json={"refresh_token": access_token})
@@ -98,10 +116,13 @@ async def test_refresh_with_access_token_fails(client):
 @pytest.mark.asyncio
 async def test_me(client):
     await client.post("/v1/auth/register", json=TEST_USER)
-    login_resp = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    login_resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     token = login_resp.json()["access_token"]
 
     resp = await client.get("/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
@@ -122,10 +143,13 @@ async def test_me_unauthenticated(client):
 @pytest.mark.asyncio
 async def test_create_api_key(client):
     await client.post("/v1/auth/register", json=TEST_USER)
-    login_resp = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    login_resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     token = login_resp.json()["access_token"]
 
     resp = await client.post(
@@ -143,10 +167,13 @@ async def test_create_api_key(client):
 @pytest.mark.asyncio
 async def test_api_key_auth(client):
     await client.post("/v1/auth/register", json=TEST_USER)
-    login_resp = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    login_resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     token = login_resp.json()["access_token"]
 
     key_resp = await client.post(
@@ -164,10 +191,13 @@ async def test_api_key_auth(client):
 @pytest.mark.asyncio
 async def test_2fa_setup_and_verify(client):
     await client.post("/v1/auth/register", json=TEST_USER)
-    login_resp = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    login_resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     token = login_resp.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -180,6 +210,7 @@ async def test_2fa_setup_and_verify(client):
 
     # Verify with correct code
     import pyotp
+
     totp = pyotp.TOTP(data["secret"])
     verify_resp = await client.post(
         "/v1/auth/2fa/verify",

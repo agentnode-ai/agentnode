@@ -1,4 +1,5 @@
 """ANP manifest validation — all rules from spec section 6. Supports v0.1 and v0.2."""
+
 import re
 
 from sqlalchemy import select
@@ -25,12 +26,22 @@ SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$
 # v0.1: module.path (e.g. pdf_reader_pack.tool)
 ENTRYPOINT_PATTERN_V1 = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)+$")
 # v0.2 tool-level: module.path:function (e.g. csv_analyzer_pack.tool:describe)
-ENTRYPOINT_PATTERN_V2 = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)+:[a-z_][a-z0-9_]*$")
+ENTRYPOINT_PATTERN_V2 = re.compile(
+    r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)+:[a-z_][a-z0-9_]*$"
+)
 
 VALID_MANIFEST_VERSIONS = {"0.1", "0.2", "0.3"}
 
 # Valid JSON Schema types
-VALID_JSON_SCHEMA_TYPES = {"string", "integer", "number", "boolean", "array", "object", "null"}
+VALID_JSON_SCHEMA_TYPES = {
+    "string",
+    "integer",
+    "number",
+    "boolean",
+    "array",
+    "object",
+    "null",
+}
 
 # --- v0.2 Manifest Normalization ---
 
@@ -90,6 +101,7 @@ def normalize_manifest(manifest: dict) -> dict:
 
 # --- JSON Schema Validation ---
 
+
 def _validate_json_schema(schema: dict, path: str, errors: list[str]) -> None:
     """Validate that a dict is a valid JSON Schema structure (basic checks)."""
     if not isinstance(schema, dict):
@@ -101,7 +113,9 @@ def _validate_json_schema(schema: dict, path: str, errors: list[str]) -> None:
         valid_types = VALID_JSON_SCHEMA_TYPES
         if isinstance(schema_type, str):
             if schema_type not in valid_types:
-                errors.append(f"{path}.type '{schema_type}' is not a valid JSON Schema type")
+                errors.append(
+                    f"{path}.type '{schema_type}' is not a valid JSON Schema type"
+                )
         elif isinstance(schema_type, list):
             for t in schema_type:
                 if t not in valid_types:
@@ -117,7 +131,9 @@ def _validate_json_schema(schema: dict, path: str, errors: list[str]) -> None:
         else:
             for prop_name, prop_schema in properties.items():
                 if not isinstance(prop_schema, dict):
-                    errors.append(f"{path}.properties.{prop_name} must be a JSON Schema object")
+                    errors.append(
+                        f"{path}.properties.{prop_name} must be a JSON Schema object"
+                    )
 
     # Validate required if present
     required = schema.get("required")
@@ -127,7 +143,9 @@ def _validate_json_schema(schema: dict, path: str, errors: list[str]) -> None:
         elif properties and isinstance(properties, dict):
             for req_field in required:
                 if req_field not in properties:
-                    errors.append(f"{path}.required field '{req_field}' not in properties")
+                    errors.append(
+                        f"{path}.required field '{req_field}' not in properties"
+                    )
 
 
 # --- Type Combination Validation (S5) ---
@@ -137,9 +155,9 @@ _VALID_COMBINATIONS = {
     ("toolpack", "python", "package"),
     ("toolpack", "mcp", "package"),
     ("toolpack", "remote", "remote_endpoint"),
-    ("agent", "python", "package"),       # only valid agent combo in v1
-    ("upgrade", "python", "package"),     # upgrade only as package
-    ("skill", "none", "prompt_only"),     # skill: prompt+assets, no code
+    ("agent", "python", "package"),  # only valid agent combo in v1
+    ("upgrade", "python", "package"),  # upgrade only as package
+    ("skill", "none", "prompt_only"),  # skill: prompt+assets, no code
 }
 
 
@@ -182,11 +200,15 @@ def _validate_type_combination(manifest: dict) -> list[str]:
         if "connector" in manifest:
             errors.append("skill packages must not have a 'connector:' section")
         if manifest.get("entrypoint"):
-            errors.append("skill packages must not have an entrypoint (no code execution)")
+            errors.append(
+                "skill packages must not have an entrypoint (no code execution)"
+            )
         caps = manifest.get("capabilities", {})
         prompts = caps.get("prompts", [])
         if not prompts:
-            errors.append("skill packages require at least 1 prompt in capabilities.prompts")
+            errors.append(
+                "skill packages require at least 1 prompt in capabilities.prompts"
+            )
 
         perms = manifest.get("permissions", {})
         if isinstance(perms, dict):
@@ -224,6 +246,7 @@ def _validate_type_combination(manifest: dict) -> list[str]:
 
 # --- Prompt Validation (S2, S6, S11) ---
 
+
 def _validate_prompts(prompts: list, errors: list[str], warnings: list[str]) -> None:
     """Validate capabilities.prompts[] entries."""
     if not isinstance(prompts, list):
@@ -246,9 +269,13 @@ def _validate_prompts(prompts: list, errors: list[str], warnings: list[str]) -> 
 
         # Prompts are NOT executable — reject entrypoint/input_schema
         if "entrypoint" in prompt:
-            errors.append(f"prompts[{i}].entrypoint is not allowed (prompts are non-executable)")
+            errors.append(
+                f"prompts[{i}].entrypoint is not allowed (prompts are non-executable)"
+            )
         if "input_schema" in prompt:
-            errors.append(f"prompts[{i}].input_schema is not allowed (prompts are non-executable)")
+            errors.append(
+                f"prompts[{i}].input_schema is not allowed (prompts are non-executable)"
+            )
 
         # Validate arguments (S11: typed PromptArgumentSpec)
         arguments = prompt.get("arguments")
@@ -268,20 +295,50 @@ def _validate_prompts(prompts: list, errors: list[str], warnings: list[str]) -> 
 VALID_ASSET_TYPES = {"document", "data", "template"}
 ASSET_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
 
-SKILL_ALLOWED_EXTENSIONS = frozenset({
-    ".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".xml",
-    ".html", ".css", ".svg", ".png", ".jpg", ".jpeg", ".webp",
-})
+SKILL_ALLOWED_EXTENSIONS = frozenset(
+    {
+        ".md",
+        ".txt",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".csv",
+        ".xml",
+        ".html",
+        ".css",
+        ".svg",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+    }
+)
 
-SKILL_FORBIDDEN_FILES = frozenset({
-    "package.json", "pyproject.toml", "setup.py", "setup.cfg",
-    "makefile", "dockerfile", "cargo.toml", "go.mod", "go.sum",
-    "gemfile", "rakefile", "cmakelists.txt", "meson.build",
-    "requirements.txt", "pipfile", "poetry.lock",
-})
+SKILL_FORBIDDEN_FILES = frozenset(
+    {
+        "package.json",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "makefile",
+        "dockerfile",
+        "cargo.toml",
+        "go.mod",
+        "go.sum",
+        "gemfile",
+        "rakefile",
+        "cmakelists.txt",
+        "meson.build",
+        "requirements.txt",
+        "pipfile",
+        "poetry.lock",
+    }
+)
 
 
-def _validate_skill_prompts(prompts: list, errors: list[str], warnings: list[str]) -> None:
+def _validate_skill_prompts(
+    prompts: list, errors: list[str], warnings: list[str]
+) -> None:
     """Validate capabilities.prompts[] for skill packages.
 
     Skill prompts require name + template. No capability_id required.
@@ -302,9 +359,13 @@ def _validate_skill_prompts(prompts: list, errors: list[str], warnings: list[str
             errors.append(f"prompts[{i}].template is required")
 
         if "entrypoint" in prompt:
-            errors.append(f"prompts[{i}].entrypoint is not allowed (prompts are non-executable)")
+            errors.append(
+                f"prompts[{i}].entrypoint is not allowed (prompts are non-executable)"
+            )
         if "input_schema" in prompt:
-            errors.append(f"prompts[{i}].input_schema is not allowed (prompts are non-executable)")
+            errors.append(
+                f"prompts[{i}].input_schema is not allowed (prompts are non-executable)"
+            )
 
         arguments = prompt.get("arguments")
         if arguments is not None:
@@ -338,7 +399,9 @@ def _validate_assets(assets: list, errors: list[str], warnings: list[str]) -> No
         if not asset_id or not isinstance(asset_id, str):
             errors.append(f"{prefix}.id is required")
         elif not ASSET_ID_PATTERN.match(asset_id):
-            errors.append(f"{prefix}.id must be lowercase alphanumeric with hyphens (got '{asset_id}')")
+            errors.append(
+                f"{prefix}.id must be lowercase alphanumeric with hyphens (got '{asset_id}')"
+            )
         elif asset_id in seen_ids:
             errors.append(f"{prefix}.id '{asset_id}' is duplicate")
         else:
@@ -348,7 +411,9 @@ def _validate_assets(assets: list, errors: list[str], warnings: list[str]) -> No
         if not asset_type:
             errors.append(f"{prefix}.type is required")
         elif asset_type not in VALID_ASSET_TYPES:
-            errors.append(f"{prefix}.type must be one of {sorted(VALID_ASSET_TYPES)} (got '{asset_type}')")
+            errors.append(
+                f"{prefix}.type must be one of {sorted(VALID_ASSET_TYPES)} (got '{asset_type}')"
+            )
 
         path = asset.get("path", "")
         if not path or not isinstance(path, str):
@@ -365,7 +430,10 @@ def _validate_assets(assets: list, errors: list[str], warnings: list[str]) -> No
 
 # --- Resource Validation (S2, S6, S10) ---
 
-def _validate_resources(resources: list, errors: list[str], warnings: list[str]) -> None:
+
+def _validate_resources(
+    resources: list, errors: list[str], warnings: list[str]
+) -> None:
     """Validate capabilities.resources[] entries."""
     if not isinstance(resources, list):
         errors.append("capabilities.resources must be an array")
@@ -395,9 +463,13 @@ def _validate_resources(resources: list, errors: list[str], warnings: list[str])
 
         # Resources are NOT executable — reject entrypoint/input_schema
         if "entrypoint" in resource:
-            errors.append(f"resources[{i}].entrypoint is not allowed (resources are non-executable)")
+            errors.append(
+                f"resources[{i}].entrypoint is not allowed (resources are non-executable)"
+            )
         if "input_schema" in resource:
-            errors.append(f"resources[{i}].input_schema is not allowed (resources are non-executable)")
+            errors.append(
+                f"resources[{i}].input_schema is not allowed (resources are non-executable)"
+            )
 
         # Optional: content_path for local content files (v0.4)
         content_path = resource.get("content_path")
@@ -405,14 +477,21 @@ def _validate_resources(resources: list, errors: list[str], warnings: list[str])
             if not isinstance(content_path, str):
                 errors.append(f"resources[{i}].content_path must be a string")
             elif ".." in content_path or content_path.startswith("/"):
-                errors.append(f"resources[{i}].content_path must be a relative path without '..'")
+                errors.append(
+                    f"resources[{i}].content_path must be a relative path without '..'"
+                )
             elif not content_path:
-                errors.append(f"resources[{i}].content_path must not be empty if specified")
+                errors.append(
+                    f"resources[{i}].content_path must not be empty if specified"
+                )
 
 
 # --- Connector Block Validation (S3, S8) ---
 
-def _validate_connector(connector: dict, errors: list[str], warnings: list[str]) -> None:
+
+def _validate_connector(
+    connector: dict, errors: list[str], warnings: list[str]
+) -> None:
     """Validate the optional connector: section."""
     if not isinstance(connector, dict):
         errors.append("connector: must be an object")
@@ -420,7 +499,9 @@ def _validate_connector(connector: dict, errors: list[str], warnings: list[str])
 
     # Required: provider
     if not connector.get("provider"):
-        errors.append("connector.provider is required when connector: section is present")
+        errors.append(
+            "connector.provider is required when connector: section is present"
+        )
 
     # auth_type: only api_key or oauth2 (NO "custom" in v0.3)
     auth_type = connector.get("auth_type")
@@ -454,7 +535,9 @@ def _validate_connector(connector: dict, errors: list[str], warnings: list[str])
                 errors.append("connector.health_check.endpoint is required")
             interval = health_check.get("interval_seconds")
             if interval is not None and (not isinstance(interval, int) or interval < 1):
-                errors.append("connector.health_check.interval_seconds must be a positive integer")
+                errors.append(
+                    "connector.health_check.interval_seconds must be a positive integer"
+                )
 
     # rate_limits: optional object
     rate_limits = connector.get("rate_limits")
@@ -464,7 +547,9 @@ def _validate_connector(connector: dict, errors: list[str], warnings: list[str])
         else:
             rpm = rate_limits.get("requests_per_minute")
             if rpm is not None and (not isinstance(rpm, int) or rpm < 1):
-                errors.append("connector.rate_limits.requests_per_minute must be a positive integer")
+                errors.append(
+                    "connector.rate_limits.requests_per_minute must be a positive integer"
+                )
 
 
 # --- Agent Block Validation (S4) ---
@@ -474,7 +559,9 @@ _ALLOWED_REPO_HOSTS = {"github.com", "gitlab.com"}
 _ENV_KEY_RE = re.compile(r"^[A-Z0-9_]{1,100}$")
 
 
-def _validate_mcp_server(mcp: dict, manifest: dict, errors: list[str], warnings: list[str]) -> None:
+def _validate_mcp_server(
+    mcp: dict, manifest: dict, errors: list[str], warnings: list[str]
+) -> None:
     """Validate mcp_server section (required for runtime=mcp)."""
     if not isinstance(mcp, dict):
         errors.append("mcp_server must be an object")
@@ -494,16 +581,24 @@ def _validate_mcp_server(mcp: dict, manifest: dict, errors: list[str], warnings:
     elif any(len(c) > 500 for c in command):
         errors.append("mcp_server.command: each element max 500 characters")
     elif any(not c.strip() for c in command):
-        errors.append("mcp_server.command: entries must not be empty or whitespace-only")
+        errors.append(
+            "mcp_server.command: entries must not be empty or whitespace-only"
+        )
     elif sum(len(c) for c in command) > 4000:
-        errors.append("mcp_server.command: total argv size must not exceed 4000 characters")
+        errors.append(
+            "mcp_server.command: total argv size must not exceed 4000 characters"
+        )
     elif any("\x00" in c for c in command):
         errors.append("mcp_server.command: entries must not contain null bytes")
     else:
         if command[0] not in _KNOWN_MCP_COMMAND_ROOTS:
-            warnings.append(f"mcp_server.command[0] '{command[0]}' is not a known MCP executable")
+            warnings.append(
+                f"mcp_server.command[0] '{command[0]}' is not a known MCP executable"
+            )
         if command[0].startswith(("./", "../", ".\\")):
-            warnings.append("mcp_server.command[0] uses relative path — portability and audit risk")
+            warnings.append(
+                "mcp_server.command[0] uses relative path — portability and audit risk"
+            )
 
     transport = mcp.get("transport", "stdio")
     if transport not in ("stdio", "sse"):
@@ -521,6 +616,7 @@ def _validate_mcp_server(mcp: dict, manifest: dict, errors: list[str], warnings:
             errors.append("mcp_server.source_repo: max 1000 characters")
         else:
             from urllib.parse import urlparse
+
             parsed = urlparse(source_repo)
             if parsed.scheme != "https":
                 errors.append("mcp_server.source_repo must be https://")
@@ -549,8 +645,7 @@ def _validate_agent(agent: dict, errors: list[str], warnings: list[str]) -> None
     # Entrypoint: required unless orchestration.mode=sequential
     orchestration = agent.get("orchestration")
     has_sequential = (
-        isinstance(orchestration, dict)
-        and orchestration.get("mode") == "sequential"
+        isinstance(orchestration, dict) and orchestration.get("mode") == "sequential"
     )
 
     entrypoint = agent.get("entrypoint", "")
@@ -589,7 +684,9 @@ def _validate_agent(agent: dict, errors: list[str], warnings: list[str]) -> None
                 if not isinstance(allowed, list):
                     errors.append("agent.tool_access.allowed_packages must be an array")
                 elif not all(isinstance(s, str) for s in allowed):
-                    errors.append("agent.tool_access.allowed_packages entries must be strings")
+                    errors.append(
+                        "agent.tool_access.allowed_packages entries must be strings"
+                    )
 
     # Optional: limits
     limits = agent.get("limits")
@@ -597,10 +694,16 @@ def _validate_agent(agent: dict, errors: list[str], warnings: list[str]) -> None
         if not isinstance(limits, dict):
             errors.append("agent.limits must be an object")
         else:
-            _validate_int_range(limits, "max_iterations", 1, 100, "agent.limits", errors)
+            _validate_int_range(
+                limits, "max_iterations", 1, 100, "agent.limits", errors
+            )
             # Allow 0 for llm_only agents that don't use tools
-            _validate_int_range(limits, "max_tool_calls", 0, 500, "agent.limits", errors)
-            _validate_int_range(limits, "max_runtime_seconds", 1, 3600, "agent.limits", errors)
+            _validate_int_range(
+                limits, "max_tool_calls", 0, 500, "agent.limits", errors
+            )
+            _validate_int_range(
+                limits, "max_runtime_seconds", 1, 3600, "agent.limits", errors
+            )
 
     # Optional: termination
     termination = agent.get("termination")
@@ -610,11 +713,17 @@ def _validate_agent(agent: dict, errors: list[str], warnings: list[str]) -> None
         else:
             stop_final = termination.get("stop_on_final_answer")
             if stop_final is not None and not isinstance(stop_final, bool):
-                errors.append("agent.termination.stop_on_final_answer must be a boolean")
+                errors.append(
+                    "agent.termination.stop_on_final_answer must be a boolean"
+                )
 
             _validate_int_range(
-                termination, "stop_on_consecutive_errors", 1, 10,
-                "agent.termination", errors,
+                termination,
+                "stop_on_consecutive_errors",
+                1,
+                10,
+                "agent.termination",
+                errors,
             )
 
     # Optional: state
@@ -652,7 +761,11 @@ def _validate_agent(agent: dict, errors: list[str], warnings: list[str]) -> None
 
     # Optional: tier validation
     tier = agent.get("tier")
-    if tier is not None and tier not in ("llm_only", "llm_plus_tools", "llm_plus_credentials"):
+    if tier is not None and tier not in (
+        "llm_only",
+        "llm_plus_tools",
+        "llm_plus_credentials",
+    ):
         errors.append(
             f"agent.tier must be 'llm_only', 'llm_plus_tools', or 'llm_plus_credentials' (got '{tier}')"
         )
@@ -684,7 +797,9 @@ def _validate_agent(agent: dict, errors: list[str], warnings: list[str]) -> None
 
 
 def _validate_agent_verification_cases(
-    verification: dict, errors: list[str], warnings: list[str],
+    verification: dict,
+    errors: list[str],
+    warnings: list[str],
 ) -> None:
     """Validate agent.verification section with test cases for Gold tier."""
     cases = verification.get("cases")
@@ -736,8 +851,12 @@ def _validate_agent_verification_cases(
 
             req_keys = expected.get("required_keys")
             if req_keys is not None:
-                if not isinstance(req_keys, list) or not all(isinstance(k, str) for k in req_keys):
-                    errors.append(f"{prefix}.expected.required_keys must be a list of strings")
+                if not isinstance(req_keys, list) or not all(
+                    isinstance(k, str) for k in req_keys
+                ):
+                    errors.append(
+                        f"{prefix}.expected.required_keys must be a list of strings"
+                    )
                 elif req_keys == ["done"]:
                     warnings.append(
                         f"{prefix}.expected.required_keys should include at least one "
@@ -752,20 +871,31 @@ def _validate_agent_verification_cases(
             if min_lengths is not None:
                 if not isinstance(min_lengths, dict):
                     errors.append(f"{prefix}.expected.min_lengths must be an object")
-                elif not all(isinstance(v, int) and v > 0 for v in min_lengths.values()):
-                    errors.append(f"{prefix}.expected.min_lengths values must be positive integers")
+                elif not all(
+                    isinstance(v, int) and v > 0 for v in min_lengths.values()
+                ):
+                    errors.append(
+                        f"{prefix}.expected.min_lengths values must be positive integers"
+                    )
 
             prompt_contains = expected.get("llm_prompt_contains")
             if prompt_contains is not None:
-                if not isinstance(prompt_contains, list) or not all(isinstance(s, str) for s in prompt_contains):
-                    errors.append(f"{prefix}.expected.llm_prompt_contains must be a list of strings")
+                if not isinstance(prompt_contains, list) or not all(
+                    isinstance(s, str) for s in prompt_contains
+                ):
+                    errors.append(
+                        f"{prefix}.expected.llm_prompt_contains must be a list of strings"
+                    )
 
 
 def _validate_tool_verification(
-    verification: dict, errors: list[str], warnings: list[str],
+    verification: dict,
+    errors: list[str],
+    warnings: list[str],
 ) -> None:
     """Validate tool-pack verification section (Phase B: Fixture Gold + unified cases)."""
     import re
+
     _CASSETTE_PATH_RE = re.compile(r"^fixtures/cassettes/[\w.-]+\.(yaml|yml|json)$")
 
     # verification.system_requirements — optional system deps for image selection
@@ -777,7 +907,9 @@ def _validate_tool_verification(
         else:
             for req in sys_reqs:
                 if not isinstance(req, str):
-                    errors.append("verification.system_requirements entries must be strings")
+                    errors.append(
+                        "verification.system_requirements entries must be strings"
+                    )
                 elif req not in _KNOWN_SYSTEM_REQUIREMENTS:
                     warnings.append(
                         f"verification.system_requirements: unknown requirement '{req}' "
@@ -847,20 +979,31 @@ def _validate_tool_verification(
             if not isinstance(expected, dict):
                 errors.append(f"{prefix}.expected must be an object")
             else:
-                if "return_type" in expected and not isinstance(expected["return_type"], str):
+                if "return_type" in expected and not isinstance(
+                    expected["return_type"], str
+                ):
                     errors.append(f"{prefix}.expected.return_type must be a string")
                 if "min_length" in expected:
                     ml = expected["min_length"]
                     if not isinstance(ml, int) or ml < 1:
-                        errors.append(f"{prefix}.expected.min_length must be a positive integer")
+                        errors.append(
+                            f"{prefix}.expected.min_length must be a positive integer"
+                        )
                 if "required_keys" in expected:
                     rk = expected["required_keys"]
-                    if not isinstance(rk, list) or not all(isinstance(k, str) for k in rk):
-                        errors.append(f"{prefix}.expected.required_keys must be a list of strings")
+                    if not isinstance(rk, list) or not all(
+                        isinstance(k, str) for k in rk
+                    ):
+                        errors.append(
+                            f"{prefix}.expected.required_keys must be a list of strings"
+                        )
 
 
 def _validate_tool_verification_cases(
-    cases, errors: list[str], warnings: list[str], cassette_re,
+    cases,
+    errors: list[str],
+    warnings: list[str],
+    cassette_re,
 ) -> None:
     """Validate verification.cases (new unified format)."""
     if not isinstance(cases, list):
@@ -903,7 +1046,9 @@ def _validate_tool_verification_cases(
             if not isinstance(cassette, str):
                 errors.append(f"{prefix}.cassette must be a string")
             elif ".." in cassette or cassette.startswith("/"):
-                errors.append(f"{prefix}.cassette must not contain '..' or absolute paths")
+                errors.append(
+                    f"{prefix}.cassette must not contain '..' or absolute paths"
+                )
             elif not cassette_re.match(cassette):
                 errors.append(
                     f"{prefix}.cassette must match 'fixtures/cassettes/<name>.yaml|json' "
@@ -915,35 +1060,47 @@ def _validate_tool_verification_cases(
             if not isinstance(expected, dict):
                 errors.append(f"{prefix}.expected must be an object")
             else:
-                if "return_type" in expected and not isinstance(expected["return_type"], str):
+                if "return_type" in expected and not isinstance(
+                    expected["return_type"], str
+                ):
                     errors.append(f"{prefix}.expected.return_type must be a string")
                 if "min_length" in expected:
                     ml = expected["min_length"]
                     if not isinstance(ml, int) or ml < 1:
-                        errors.append(f"{prefix}.expected.min_length must be a positive integer")
+                        errors.append(
+                            f"{prefix}.expected.min_length must be a positive integer"
+                        )
                 if "required_keys" in expected:
                     rk = expected["required_keys"]
-                    if not isinstance(rk, list) or not all(isinstance(k, str) for k in rk):
-                        errors.append(f"{prefix}.expected.required_keys must be a list of strings")
+                    if not isinstance(rk, list) or not all(
+                        isinstance(k, str) for k in rk
+                    ):
+                        errors.append(
+                            f"{prefix}.expected.required_keys must be a list of strings"
+                        )
                 if "min_lengths" in expected:
                     mls = expected["min_lengths"]
                     if not isinstance(mls, dict):
-                        errors.append(f"{prefix}.expected.min_lengths must be an object")
+                        errors.append(
+                            f"{prefix}.expected.min_lengths must be an object"
+                        )
                     else:
                         for k, v in mls.items():
                             if not isinstance(v, int) or v < 1:
-                                errors.append(f"{prefix}.expected.min_lengths.{k} must be a positive integer")
+                                errors.append(
+                                    f"{prefix}.expected.min_lengths.{k} must be a positive integer"
+                                )
 
 
 def _validate_orchestration_steps(
-    orchestration: dict, errors: list[str], warnings: list[str],
+    orchestration: dict,
+    errors: list[str],
+    warnings: list[str],
 ) -> None:
     """Validate orchestration.steps[] for sequential mode."""
     steps = orchestration.get("steps")
     if not steps:
-        errors.append(
-            "agent.orchestration.steps is required for sequential mode"
-        )
+        errors.append("agent.orchestration.steps is required for sequential mode")
         return
     if not isinstance(steps, list):
         errors.append("agent.orchestration.steps must be an array")
@@ -1037,8 +1194,12 @@ def _validate_when_expression(expr: str, prefix: str, errors: list[str]) -> None
 
 
 def _validate_int_range(
-    obj: dict, key: str, min_val: int, max_val: int,
-    prefix: str, errors: list[str],
+    obj: dict,
+    key: str,
+    min_val: int,
+    max_val: int,
+    prefix: str,
+    errors: list[str],
 ) -> None:
     """Validate an optional integer field is within range."""
     val = obj.get(key)
@@ -1047,12 +1208,17 @@ def _validate_int_range(
     if not isinstance(val, int) or isinstance(val, bool):
         errors.append(f"{prefix}.{key} must be an integer")
     elif val < min_val or val > max_val:
-        errors.append(f"{prefix}.{key} must be between {min_val} and {max_val} (got {val})")
+        errors.append(
+            f"{prefix}.{key} must be between {min_val} and {max_val} (got {val})"
+        )
 
 
 # --- Main Validation ---
 
-async def validate_manifest(manifest: dict, session: AsyncSession | None = None) -> tuple[bool, list[str], list[str]]:
+
+async def validate_manifest(
+    manifest: dict, session: AsyncSession | None = None
+) -> tuple[bool, list[str], list[str]]:
     """Validate an ANP manifest dict. Supports v0.1 and v0.2.
 
     Returns (valid, errors, warnings).
@@ -1114,12 +1280,16 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     # install_mode
     install_mode = manifest.get("install_mode", "")
     if install_mode not in VALID_INSTALL_MODES:
-        errors.append(f"install_mode must be one of {VALID_INSTALL_MODES} (got '{install_mode}')")
+        errors.append(
+            f"install_mode must be one of {VALID_INSTALL_MODES} (got '{install_mode}')"
+        )
 
     # hosting_type (MVP: only agentnode_hosted)
     hosting_type = manifest.get("hosting_type", "")
     if hosting_type not in VALID_HOSTING_TYPES:
-        errors.append(f"hosting_type must be 'agentnode_hosted' in MVP (got '{hosting_type}')")
+        errors.append(
+            f"hosting_type must be 'agentnode_hosted' in MVP (got '{hosting_type}')"
+        )
 
     # --- Type combination validation (S5) ---
     combo_errors = _validate_type_combination(manifest)
@@ -1133,7 +1303,9 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     capabilities = manifest.get("capabilities", {})
     tools = capabilities.get("tools", [])
     if pkg_type == "toolpack" and not tools:
-        errors.append("capabilities.tools must have at least 1 tool for toolpack packages")
+        errors.append(
+            "capabilities.tools must have at least 1 tool for toolpack packages"
+        )
     elif pkg_type == "upgrade" and tools:
         pass  # Already caught by _validate_type_combination / S9
     elif tools:
@@ -1153,23 +1325,33 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
             if not cap_id:
                 errors.append(f"tools[{i}].capability_id is required")
             elif valid_cap_ids is not None and cap_id not in valid_cap_ids:
-                warnings.append(f"tools[{i}].capability_id '{cap_id}' is new — will be added as uncategorized")
+                warnings.append(
+                    f"tools[{i}].capability_id '{cap_id}' is new — will be added as uncategorized"
+                )
 
             # Validate input_schema as JSON Schema
             input_schema = tool.get("input_schema")
             if input_schema is not None:
                 if not isinstance(input_schema, dict):
-                    errors.append(f"tools[{i}].input_schema must be a valid JSON Schema object")
+                    errors.append(
+                        f"tools[{i}].input_schema must be a valid JSON Schema object"
+                    )
                 else:
-                    _validate_json_schema(input_schema, f"tools[{i}].input_schema", errors)
+                    _validate_json_schema(
+                        input_schema, f"tools[{i}].input_schema", errors
+                    )
 
             # Validate output_schema if present
             output_schema = tool.get("output_schema")
             if output_schema is not None:
                 if not isinstance(output_schema, dict):
-                    errors.append(f"tools[{i}].output_schema must be a valid JSON Schema object")
+                    errors.append(
+                        f"tools[{i}].output_schema must be a valid JSON Schema object"
+                    )
                 else:
-                    _validate_json_schema(output_schema, f"tools[{i}].output_schema", errors)
+                    _validate_json_schema(
+                        output_schema, f"tools[{i}].output_schema", errors
+                    )
 
     # --- Prompt validation (S2, S6, S11) ---
     prompts = capabilities.get("prompts")
@@ -1220,29 +1402,43 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     if perms:
         network = perms.get("network", {})
         if network.get("level", "") not in VALID_NETWORK_LEVELS:
-            errors.append(f"permissions.network.level must be one of {VALID_NETWORK_LEVELS}")
+            errors.append(
+                f"permissions.network.level must be one of {VALID_NETWORK_LEVELS}"
+            )
 
         fs = perms.get("filesystem", {})
         if fs.get("level", "") not in VALID_FS_LEVELS:
-            errors.append(f"permissions.filesystem.level must be one of {VALID_FS_LEVELS}")
+            errors.append(
+                f"permissions.filesystem.level must be one of {VALID_FS_LEVELS}"
+            )
 
         exec_lvl = perms.get("code_execution", {})
         if exec_lvl.get("level", "") not in VALID_EXEC_LEVELS:
-            errors.append(f"permissions.code_execution.level must be one of {VALID_EXEC_LEVELS}")
+            errors.append(
+                f"permissions.code_execution.level must be one of {VALID_EXEC_LEVELS}"
+            )
 
         data = perms.get("data_access", {})
         if data.get("level", "") not in VALID_DATA_LEVELS:
-            errors.append(f"permissions.data_access.level must be one of {VALID_DATA_LEVELS}")
+            errors.append(
+                f"permissions.data_access.level must be one of {VALID_DATA_LEVELS}"
+            )
 
         approval = perms.get("user_approval", {})
         if approval.get("required", "") not in VALID_APPROVAL_LEVELS:
-            errors.append(f"permissions.user_approval.required must be one of {VALID_APPROVAL_LEVELS}")
+            errors.append(
+                f"permissions.user_approval.required must be one of {VALID_APPROVAL_LEVELS}"
+            )
 
         # Warn about high-risk permissions
         if network.get("level") == "unrestricted":
-            warnings.append("permissions.network.level is 'unrestricted' — packages with unrestricted network access receive lower trust scores")
+            warnings.append(
+                "permissions.network.level is 'unrestricted' — packages with unrestricted network access receive lower trust scores"
+            )
         if exec_lvl.get("level") == "shell":
-            warnings.append("permissions.code_execution.level is 'shell' — shell access is flagged in policy checks")
+            warnings.append(
+                "permissions.code_execution.level is 'shell' — shell access is flagged in policy checks"
+            )
     else:
         errors.append("permissions section is required")
 
@@ -1267,23 +1463,33 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
         slug_re = re.compile(r"^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$")
 
         if not rec_for:
-            errors.append("upgrade_metadata.recommended_for is required for upgrade packages")
+            errors.append(
+                "upgrade_metadata.recommended_for is required for upgrade packages"
+            )
         elif not isinstance(rec_for, list):
-            errors.append("upgrade_metadata.recommended_for must be an array of package slugs")
+            errors.append(
+                "upgrade_metadata.recommended_for must be an array of package slugs"
+            )
         else:
             for slug_val in rec_for:
                 if not isinstance(slug_val, str) or not slug_re.match(slug_val):
-                    errors.append(f"upgrade_metadata.recommended_for contains invalid slug: {slug_val!r}")
+                    errors.append(
+                        f"upgrade_metadata.recommended_for contains invalid slug: {slug_val!r}"
+                    )
                     break
 
         if replaces and isinstance(replaces, list):
             for slug_val in replaces:
                 if not isinstance(slug_val, str) or not slug_re.match(slug_val):
-                    errors.append(f"upgrade_metadata.replaces contains invalid slug: {slug_val!r}")
+                    errors.append(
+                        f"upgrade_metadata.replaces contains invalid slug: {slug_val!r}"
+                    )
                     break
 
         if not upgrade_meta.get("roles"):
-            warnings.append("upgrade_metadata.roles is recommended for upgrade packages")
+            warnings.append(
+                "upgrade_metadata.roles is recommended for upgrade packages"
+            )
 
     # --- v0.2 enrichment field validation (optional) ---
     _validate_enrichment_fields(manifest, errors, warnings)
@@ -1291,7 +1497,9 @@ async def validate_manifest(manifest: dict, session: AsyncSession | None = None)
     return len(errors) == 0, errors, warnings
 
 
-def _validate_entrypoints(manifest: dict, manifest_version: str | None, errors: list[str]) -> None:
+def _validate_entrypoints(
+    manifest: dict, manifest_version: str | None, errors: list[str]
+) -> None:
     """Validate entrypoints based on manifest version.
 
     v0.1: package-level entrypoint required, must be module.path format.
@@ -1333,21 +1541,29 @@ def _validate_entrypoints(manifest: dict, manifest_version: str | None, errors: 
                     f"tools[0].entrypoint must be module.path:function (got '{tool_ep}')"
                 )
             if not tool_ep and not pkg_entrypoint:
-                errors.append("Either package-level or tool-level entrypoint is required")
+                errors.append(
+                    "Either package-level or tool-level entrypoint is required"
+                )
         else:
             # 0 tools — package-level entrypoint required (will be caught by tools validation)
             if not pkg_entrypoint:
-                errors.append("Package-level entrypoint required when no tools define their own")
+                errors.append(
+                    "Package-level entrypoint required when no tools define their own"
+                )
 
     else:
         # v0.1: package-level entrypoint required, old format
         if not pkg_entrypoint:
             errors.append("entrypoint is required (e.g. 'my_pack.tool')")
         elif not ENTRYPOINT_PATTERN_V1.match(pkg_entrypoint):
-            errors.append(f"entrypoint must be a valid Python module path (got '{pkg_entrypoint}')")
+            errors.append(
+                f"entrypoint must be a valid Python module path (got '{pkg_entrypoint}')"
+            )
 
 
-def _validate_enrichment_fields(manifest: dict, errors: list[str], warnings: list[str]) -> None:
+def _validate_enrichment_fields(
+    manifest: dict, errors: list[str], warnings: list[str]
+) -> None:
     """Validate optional v0.2 enrichment fields."""
     # env_requirements
     env_reqs = manifest.get("env_requirements")
@@ -1371,7 +1587,9 @@ def _validate_enrichment_fields(manifest: dict, errors: list[str], warnings: lis
                 if not isinstance(uc, str):
                     errors.append(f"use_cases[{i}] must be a string")
                 elif len(uc.split()) < 2:
-                    warnings.append(f"use_cases[{i}]: use 'verb + object' format (e.g. 'Read Excel files')")
+                    warnings.append(
+                        f"use_cases[{i}]: use 'verb + object' format (e.g. 'Read Excel files')"
+                    )
 
     # examples
     examples = manifest.get("examples")
@@ -1390,6 +1608,7 @@ def _validate_enrichment_fields(manifest: dict, errors: list[str], warnings: lis
 
     # URL fields — must be http(s) to prevent javascript: XSS
     from app.shared.validators import is_safe_url
+
     for url_field in ("homepage_url", "docs_url", "source_url"):
         val = manifest.get(url_field)
         if val is not None:
@@ -1399,7 +1618,9 @@ def _validate_enrichment_fields(manifest: dict, errors: list[str], warnings: lis
                 errors.append(f"{url_field} must start with https:// or http://")
 
 
-def validate_artifact_quality(artifact_bytes: bytes, slug: str, *, package_type: str = "package") -> tuple[list[str], list[str]]:
+def validate_artifact_quality(
+    artifact_bytes: bytes, slug: str, *, package_type: str = "package"
+) -> tuple[list[str], list[str]]:
     """Quality Gate — validate artifact contains tests and required structure.
 
     Returns (errors, warnings). Errors block publishing.
@@ -1446,13 +1667,16 @@ def validate_artifact_quality(artifact_bytes: bytes, slug: str, *, package_type:
                         break
                 if manifest_member:
                     import yaml
+
                     manifest_data = yaml.safe_load(tar.extractfile(manifest_member))
                     if isinstance(manifest_data, dict):
                         for asset in manifest_data.get("assets", []):
                             if isinstance(asset, dict) and asset.get("path"):
                                 declared_assets.add(asset["path"])
                         caps = manifest_data.get("capabilities", {})
-                        for prompt in caps.get("prompts", []) if isinstance(caps, dict) else []:
+                        for prompt in (
+                            caps.get("prompts", []) if isinstance(caps, dict) else []
+                        ):
                             if isinstance(prompt, dict) and prompt.get("template"):
                                 declared_assets.add(prompt["template"])
         except Exception:
@@ -1493,7 +1717,8 @@ def validate_artifact_quality(artifact_bytes: bytes, slug: str, *, package_type:
 
     # Check for test files (agents exempt — verification generates auto-tests)
     test_files = [
-        f for f in normalized
+        f
+        for f in normalized
         if (f.startswith("tests/") or f.startswith("test/") or f.startswith("test_"))
         and f.endswith(".py")
         and not f.endswith("__init__.py")
@@ -1510,12 +1735,16 @@ def validate_artifact_quality(artifact_bytes: bytes, slug: str, *, package_type:
         f in ("pyproject.toml", "setup.py", "setup.cfg") for f in normalized
     )
     if not has_project_file:
-        warnings.append("No pyproject.toml or setup.py found — recommended for proper packaging")
+        warnings.append(
+            "No pyproject.toml or setup.py found — recommended for proper packaging"
+        )
 
     # Check for agentnode.yaml manifest in artifact
     has_manifest = any(f == "agentnode.yaml" for f in normalized)
     if not has_manifest:
-        warnings.append("No agentnode.yaml found in artifact — recommended to include manifest")
+        warnings.append(
+            "No agentnode.yaml found in artifact — recommended to include manifest"
+        )
 
     # Verify fixture cassette files exist if declared in manifest
     if has_manifest:
@@ -1530,6 +1759,7 @@ def validate_artifact_quality(artifact_bytes: bytes, slug: str, *, package_type:
                         break
                 if manifest_member:
                     import yaml
+
                     manifest_data = yaml.safe_load(tar.extractfile(manifest_member))
                     if isinstance(manifest_data, dict):
                         verification = manifest_data.get("verification", {})
@@ -1606,7 +1836,9 @@ def compute_gold_eligibility(manifest: dict) -> dict:
         for c in normalized.cases:
             cassette = c.get("cassette")
             if cassette and not cassette.startswith("fixtures/"):
-                missing.append(f"Cassette '{cassette}' should be under fixtures/cassettes/")
+                missing.append(
+                    f"Cassette '{cassette}' should be under fixtures/cassettes/"
+                )
 
     max_tier = "gold" if cases_count >= 2 else "verified"
 
@@ -1620,9 +1852,7 @@ def compute_gold_eligibility(manifest: dict) -> dict:
             "This package is Gold-eligible but has recommendations."
         )
     else:
-        explanation_parts.append(
-            "This package can reach Verified at most."
-        )
+        explanation_parts.append("This package can reach Verified at most.")
     if missing:
         explanation_parts.append("Fix: " + "; ".join(missing[:3]))
 

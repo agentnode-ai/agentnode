@@ -11,6 +11,7 @@ Flow:
   4. Backend verifies signature using stored public key
   5. CLI verifies again on install
 """
+
 from __future__ import annotations
 
 import base64
@@ -55,7 +56,9 @@ def verify_signature(
         verify_key = VerifyKey(public_key_bytes)
         verify_key.verify(message, signature_bytes)
     except BadSignatureError:
-        logger.warning("Signature verification: bad signature for hash %s", artifact_hash_hex[:12])
+        logger.warning(
+            "Signature verification: bad signature for hash %s", artifact_hash_hex[:12]
+        )
         return False
     except ValueError as e:
         # VerifyKey(...) raises ValueError on wrong-length key material

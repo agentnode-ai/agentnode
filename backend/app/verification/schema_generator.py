@@ -15,17 +15,26 @@ MAX_RECURSION_DEPTH = 3
 
 # ── Phase 2B: Enum value extraction from error messages ──
 
-_BRACKET_LIST_RE = re.compile(r"\[([^\[\]]+)\]")       # HIGH confidence
+_BRACKET_LIST_RE = re.compile(r"\[([^\[\]]+)\]")  # HIGH confidence
 _QUOTED_VALUE_RE = re.compile(r"""['"]([^'"]+)['"]""")  # HIGH (inside brackets)
-_COMMA_LIST_RE = re.compile(                             # MEDIUM confidence
+_COMMA_LIST_RE = re.compile(  # MEDIUM confidence
     r"(?:supported|available|valid|allowed|choose from|one of|options|values)"
-    r"[\w\s]*[:\s]+([a-z_][a-z0-9_, -]+)", re.IGNORECASE,
+    r"[\w\s]*[:\s]+([a-z_][a-z0-9_, -]+)",
+    re.IGNORECASE,
 )
 
 # Safety prefixes: read-only operations first, mutating last
 _SAFE_OPERATION_PREFIXES = (
-    "list", "get", "read", "search", "status",
-    "info", "show", "describe", "fetch", "count",
+    "list",
+    "get",
+    "read",
+    "search",
+    "status",
+    "info",
+    "show",
+    "describe",
+    "fetch",
+    "count",
 )
 
 # Relaxed value pattern for comma-separated lists (allows hyphens)
@@ -63,12 +72,14 @@ def extract_enum_values(error_msg: str) -> tuple[list[str], str]:
 
 def _sort_by_safety(values: list[str]) -> list[str]:
     """Sort enum values with safe (read-only) operations first."""
+
     def safety_key(v: str) -> tuple[int, str]:
         v_lower = v.lower()
         for i, prefix in enumerate(_SAFE_OPERATION_PREFIXES):
             if v_lower.startswith(prefix):
                 return (0, f"{i:02d}")
         return (1, v_lower)
+
     return sorted(values, key=safety_key)
 
 
@@ -103,6 +114,7 @@ def _find_operation_field_in_input(test_input: dict, schema: dict | None) -> str
         if field_name.lower() in _OPERATION_FIELDS:
             return field_name
     return None
+
 
 # Smart defaults based on common parameter names
 NAME_HINTS = {
@@ -276,17 +288,33 @@ def _generate_value(prop: dict, _depth: int = 0, name: str = "") -> object:
             if any(k in name_lower for k in ("file", "path", "document")):
                 if "pdf" in name_lower:
                     return "/tmp/agentnode_verify/test.pdf"
-                if "image" in name_lower or "img" in name_lower or "photo" in name_lower:
+                if (
+                    "image" in name_lower
+                    or "img" in name_lower
+                    or "photo" in name_lower
+                ):
                     return "/tmp/agentnode_verify/test.png"
-                if "audio" in name_lower or "sound" in name_lower or "wav" in name_lower:
+                if (
+                    "audio" in name_lower
+                    or "sound" in name_lower
+                    or "wav" in name_lower
+                ):
                     return "/tmp/agentnode_verify/test.wav"
                 if "video" in name_lower:
                     return "/tmp/agentnode_verify/test.mp4"
                 if "docx" in name_lower or "word" in name_lower:
                     return "/tmp/agentnode_verify/test.docx"
-                if "pptx" in name_lower or "powerpoint" in name_lower or "presentation" in name_lower:
+                if (
+                    "pptx" in name_lower
+                    or "powerpoint" in name_lower
+                    or "presentation" in name_lower
+                ):
                     return "/tmp/agentnode_verify/test.pptx"
-                if "xlsx" in name_lower or "excel" in name_lower or "spreadsheet" in name_lower:
+                if (
+                    "xlsx" in name_lower
+                    or "excel" in name_lower
+                    or "spreadsheet" in name_lower
+                ):
                     return "/tmp/agentnode_verify/test.xlsx"
             # Try partial name matching for strings (exact key match first)
             if name_lower in NAME_HINTS and isinstance(NAME_HINTS[name_lower], str):
@@ -294,7 +322,11 @@ def _generate_value(prop: dict, _depth: int = 0, name: str = "") -> object:
             # Partial match — only if the hint key is a SUFFIX of the name
             # (avoids "source" matching "source_file")
             for hint_key, hint_val in NAME_HINTS.items():
-                if isinstance(hint_val, str) and name_lower.endswith(hint_key) and hint_key != name_lower:
+                if (
+                    isinstance(hint_val, str)
+                    and name_lower.endswith(hint_key)
+                    and hint_key != name_lower
+                ):
                     return hint_val
             return "test"
         elif prop_type == "integer":
@@ -306,18 +338,32 @@ def _generate_value(prop: dict, _depth: int = 0, name: str = "") -> object:
         elif prop_type == "array":
             # Generate one example item if items schema available
             items_schema = prop.get("items")
-            if items_schema and isinstance(items_schema, dict) and _depth < MAX_RECURSION_DEPTH:
+            if (
+                items_schema
+                and isinstance(items_schema, dict)
+                and _depth < MAX_RECURSION_DEPTH
+            ):
                 item = _generate_value(items_schema, _depth + 1, "")
                 return [item] if item else []
             # Provide a reasonable default for common array-of-dict patterns
-            if any(k in name_lower for k in ("slides", "content", "blocks", "items", "rows", "entries")):
+            if any(
+                k in name_lower
+                for k in ("slides", "content", "blocks", "items", "rows", "entries")
+            ):
                 return [{"text": "Test content", "title": "Test"}]
             return []
         elif prop_type == "object":
             nested = generate_test_input(prop, _depth + 1)
             # Provide defaults for common object patterns with no sub-schema
-            if not nested and any(k in name_lower for k in ("source", "config", "data", "metadata")):
-                return {"type": "book", "title": "Test", "authors": ["Test Author"], "year": "2024"}
+            if not nested and any(
+                k in name_lower for k in ("source", "config", "data", "metadata")
+            ):
+                return {
+                    "type": "book",
+                    "title": "Test",
+                    "authors": ["Test Author"],
+                    "year": "2024",
+                }
             return nested
         else:
             return "test"

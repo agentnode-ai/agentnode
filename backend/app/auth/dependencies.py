@@ -30,10 +30,14 @@ async def get_current_user(
         # Fallback: try httpOnly cookie
         cookie_token = request.cookies.get("access_token")
         if cookie_token:
-            user = await _authenticate_jwt(session, cookie_token, expected_type="access")
+            user = await _authenticate_jwt(
+                session, cookie_token, expected_type="access"
+            )
 
     if not user:
-        raise AppError("AUTH_INVALID_CREDENTIALS", "Missing or invalid authentication", 401)
+        raise AppError(
+            "AUTH_INVALID_CREDENTIALS", "Missing or invalid authentication", 401
+        )
 
     if user.is_banned:
         raise AppError("AUTH_ACCOUNT_BANNED", "Your account has been suspended", 403)
@@ -58,7 +62,9 @@ async def optional_current_user(
         else:
             cookie_token = request.cookies.get("access_token")
             if cookie_token:
-                user = await _authenticate_jwt(session, cookie_token, expected_type="access")
+                user = await _authenticate_jwt(
+                    session, cookie_token, expected_type="access"
+                )
         if user and user.is_banned:
             return None
         return user
@@ -69,11 +75,14 @@ async def optional_current_user(
 async def require_publisher(user: User = Depends(get_current_user)) -> User:
     """Ensure the user has a publisher profile and is not suspended."""
     if not user.publisher:
-        raise AppError("PUBLISHER_REQUIRED", "You must create a publisher profile first", 403)
+        raise AppError(
+            "PUBLISHER_REQUIRED", "You must create a publisher profile first", 403
+        )
     if user.publisher.is_suspended:
-        raise AppError("PUBLISHER_SUSPENDED", "Your publisher account is suspended", 403)
+        raise AppError(
+            "PUBLISHER_SUSPENDED", "Your publisher account is suspended", 403
+        )
     return user
-
 
 
 async def require_admin(user: User = Depends(get_current_user)) -> User:
@@ -83,21 +92,27 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
-async def _authenticate_jwt(session: AsyncSession, token: str, expected_type: str = "access") -> User | None:
+async def _authenticate_jwt(
+    session: AsyncSession, token: str, expected_type: str = "access"
+) -> User | None:
     try:
         payload = decode_token(token)
     except Exception:
         raise AppError("AUTH_TOKEN_EXPIRED", "Token is invalid or expired", 401)
 
     if payload.get("token_type") != expected_type:
-        raise AppError("AUTH_INVALID_CREDENTIALS", f"Expected {expected_type} token", 401)
+        raise AppError(
+            "AUTH_INVALID_CREDENTIALS", f"Expected {expected_type} token", 401
+        )
 
     user_id = payload.get("sub")
     if not user_id:
         return None
 
     result = await session.execute(
-        select(User).options(selectinload(User.publisher)).where(User.id == UUID(user_id))
+        select(User)
+        .options(selectinload(User.publisher))
+        .where(User.id == UUID(user_id))
     )
     return result.scalar_one_or_none()
 
@@ -106,9 +121,7 @@ async def _authenticate_api_key(session: AsyncSession, key: str) -> User | None:
     import hmac as _hmac
 
     prefix = key[:8]
-    result = await session.execute(
-        select(ApiKey).where(ApiKey.key_prefix == prefix)
-    )
+    result = await session.execute(select(ApiKey).where(ApiKey.key_prefix == prefix))
     candidates = result.scalars().all()
 
     key_hash = hash_api_key(key)
@@ -121,7 +134,9 @@ async def _authenticate_api_key(session: AsyncSession, key: str) -> User | None:
             await session.flush()
             # Load user with publisher
             user_result = await session.execute(
-                select(User).options(selectinload(User.publisher)).where(User.id == candidate.user_id)
+                select(User)
+                .options(selectinload(User.publisher))
+                .where(User.id == candidate.user_id)
             )
             return user_result.scalar_one_or_none()
 

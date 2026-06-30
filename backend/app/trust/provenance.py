@@ -3,6 +3,7 @@
 Called as a background task after publish to verify that the claimed
 source repository and commit SHA actually exist on GitHub/GitLab.
 """
+
 from __future__ import annotations
 
 import logging
@@ -44,7 +45,9 @@ async def verify_github_commit(owner_repo: str, commit_sha: str) -> bool:
         return False
 
 
-async def verify_provenance(source_repo_url: str | None, commit_sha: str | None) -> dict:
+async def verify_provenance(
+    source_repo_url: str | None, commit_sha: str | None
+) -> dict:
     """Verify that the claimed provenance is real.
 
     Returns:

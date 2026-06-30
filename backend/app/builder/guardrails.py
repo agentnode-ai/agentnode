@@ -18,24 +18,75 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MALICIOUS_KEYWORDS = [
-    "malware", "ransomware", "keylogger", "keystroke logger", "trojan",
-    "backdoor", "rootkit", "botnet", "spyware", "adware", "worm",
-    "exploit", "zero-day", "0day", "privilege escalation", "priv esc",
-    "reverse shell", "bind shell", "shell code", "shellcode",
-    "payload", "dropper", "loader", "packer", "crypter", "obfuscate",
-    "ddos", "denial of service", "flood attack", "syn flood",
-    "brute force password", "credential stuffing", "password spray",
-    "phishing", "spear phishing", "social engineering",
-    "data exfiltration", "exfiltrate data", "steal data", "steal credentials",
-    "bypass authentication", "bypass security", "bypass firewall",
-    "disable antivirus", "disable defender", "kill process",
-    "crypto miner", "cryptominer", "mine bitcoin", "mine crypto",
-    "inject sql", "sql injection", "xss attack", "cross site scripting",
-    "man in the middle", "mitm", "arp spoof", "dns spoof",
-    "packet sniffer", "network sniffer", "wiretap",
-    "crack password", "hash crack", "rainbow table",
-    "remote access trojan", "rat tool",
-    "fork bomb", "zip bomb", "decompression bomb",
+    "malware",
+    "ransomware",
+    "keylogger",
+    "keystroke logger",
+    "trojan",
+    "backdoor",
+    "rootkit",
+    "botnet",
+    "spyware",
+    "adware",
+    "worm",
+    "exploit",
+    "zero-day",
+    "0day",
+    "privilege escalation",
+    "priv esc",
+    "reverse shell",
+    "bind shell",
+    "shell code",
+    "shellcode",
+    "payload",
+    "dropper",
+    "loader",
+    "packer",
+    "crypter",
+    "obfuscate",
+    "ddos",
+    "denial of service",
+    "flood attack",
+    "syn flood",
+    "brute force password",
+    "credential stuffing",
+    "password spray",
+    "phishing",
+    "spear phishing",
+    "social engineering",
+    "data exfiltration",
+    "exfiltrate data",
+    "steal data",
+    "steal credentials",
+    "bypass authentication",
+    "bypass security",
+    "bypass firewall",
+    "disable antivirus",
+    "disable defender",
+    "kill process",
+    "crypto miner",
+    "cryptominer",
+    "mine bitcoin",
+    "mine crypto",
+    "inject sql",
+    "sql injection",
+    "xss attack",
+    "cross site scripting",
+    "man in the middle",
+    "mitm",
+    "arp spoof",
+    "dns spoof",
+    "packet sniffer",
+    "network sniffer",
+    "wiretap",
+    "crack password",
+    "hash crack",
+    "rainbow table",
+    "remote access trojan",
+    "rat tool",
+    "fork bomb",
+    "zip bomb",
+    "decompression bomb",
 ]
 
 # Semantic exfiltration patterns — descriptions that disguise data theft as legitimate features
@@ -82,19 +133,27 @@ def validate_input(description: str) -> str | None:
     # Check malicious keywords
     for keyword in _MALICIOUS_KEYWORDS:
         if keyword in desc_lower:
-            logger.warning("Builder input blocked (malicious keyword: %s): %s", keyword, description[:100])
+            logger.warning(
+                "Builder input blocked (malicious keyword: %s): %s",
+                keyword,
+                description[:100],
+            )
             return "This description contains terms associated with malicious software. Please describe a legitimate capability."
 
     # Check prompt injection patterns
     for pattern in _INJECTION_PATTERNS:
         if re.search(pattern, desc_lower):
-            logger.warning("Builder input blocked (prompt injection): %s", description[:100])
+            logger.warning(
+                "Builder input blocked (prompt injection): %s", description[:100]
+            )
             return "This description contains patterns that could interfere with the generation process. Please rephrase."
 
     # Check semantic exfiltration patterns
     for pattern in _EXFILTRATION_PATTERNS:
         if re.search(pattern, desc_lower):
-            logger.warning("Builder input blocked (exfiltration pattern): %s", description[:100])
+            logger.warning(
+                "Builder input blocked (exfiltration pattern): %s", description[:100]
+            )
             return "This description appears to request data exfiltration capabilities. Please describe a legitimate capability."
 
     return None
@@ -119,7 +178,10 @@ _DANGEROUS_CODE_PATTERNS = [
     (r"marshal\.loads?\(", "marshal deserialization"),
     (r"compile\(.+exec", "code compilation"),
     (r"requests\.(get|post|put|delete|patch)\(", "HTTP request"),
-    (r"httpx\.(get|post|put|delete|patch|AsyncClient|Client)\(", "HTTP request (httpx)"),
+    (
+        r"httpx\.(get|post|put|delete|patch|AsyncClient|Client)\(",
+        "HTTP request (httpx)",
+    ),
     (r"urllib\.request\.(urlopen|Request)\(", "HTTP request (urllib)"),
     (r"os\.environ", "environment variable access"),
     (r"os\.getenv\(", "environment variable access"),
@@ -142,8 +204,16 @@ def scan_generated_code(code_files: list[dict]) -> list[dict]:
     findings: list[dict] = []
 
     for file_info in code_files:
-        path = file_info.get("path", "") if isinstance(file_info, dict) else getattr(file_info, "path", "")
-        content = file_info.get("content", "") if isinstance(file_info, dict) else getattr(file_info, "content", "")
+        path = (
+            file_info.get("path", "")
+            if isinstance(file_info, dict)
+            else getattr(file_info, "path", "")
+        )
+        content = (
+            file_info.get("content", "")
+            if isinstance(file_info, dict)
+            else getattr(file_info, "content", "")
+        )
 
         if not content or not path.endswith(".py"):
             continue
@@ -151,21 +221,25 @@ def scan_generated_code(code_files: list[dict]) -> list[dict]:
         for line_no, line in enumerate(content.splitlines(), start=1):
             for pattern, desc in _DANGEROUS_CODE_PATTERNS:
                 if re.search(pattern, line):
-                    findings.append({
-                        "severity": "medium",
-                        "finding_type": "dangerous_pattern",
-                        "description": f"{desc} in {path}:{line_no}",
-                        "file_path": path,
-                    })
+                    findings.append(
+                        {
+                            "severity": "medium",
+                            "finding_type": "dangerous_pattern",
+                            "description": f"{desc} in {path}:{line_no}",
+                            "file_path": path,
+                        }
+                    )
 
             for pattern, desc in _SECRET_PATTERNS:
                 if re.search(pattern, line):
-                    findings.append({
-                        "severity": "high",
-                        "finding_type": "secret_detected",
-                        "description": f"{desc} in {path}:{line_no}",
-                        "file_path": path,
-                    })
+                    findings.append(
+                        {
+                            "severity": "high",
+                            "finding_type": "secret_detected",
+                            "description": f"{desc} in {path}:{line_no}",
+                            "file_path": path,
+                        }
+                    )
 
     return findings
 

@@ -30,12 +30,17 @@ VALID_MANIFEST = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "test_pack.tool",
     "capabilities": {
-        "tools": [{
-            "name": "test_tool",
-            "capability_id": "pdf_extraction",
-            "description": "Test tool",
-            "input_schema": {"type": "object", "properties": {"input": {"type": "string"}}},
-        }],
+        "tools": [
+            {
+                "name": "test_tool",
+                "capability_id": "pdf_extraction",
+                "description": "Test tool",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"input": {"type": "string"}},
+                },
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -60,7 +65,6 @@ VALID_MANIFEST = {
 
 
 class TestUrlXssProtection:
-
     @pytest.mark.asyncio
     async def test_javascript_url_rejected(self):
         """javascript: URLs must be rejected at publish time."""
@@ -119,7 +123,6 @@ class TestUrlXssProtection:
 
 
 class TestSearchFilterInjection:
-
     def test_normal_filter_accepted(self):
         """Normal enum-like filter values pass validation."""
         req = SearchRequest(
@@ -154,8 +157,13 @@ class TestSearchFilterInjection:
         """Every filterable field must reject injection attempts."""
         injection = 'evil" OR 1=1 OR "'
         for field in (
-            "package_type", "capability_id", "framework",
-            "runtime", "trust_level", "verification_tier", "publisher_slug",
+            "package_type",
+            "capability_id",
+            "framework",
+            "runtime",
+            "trust_level",
+            "verification_tier",
+            "publisher_slug",
         ):
             with pytest.raises(Exception, match="Invalid filter value"):
                 SearchRequest(q="test", **{field: injection})
@@ -191,20 +199,23 @@ class TestSearchFilterInjection:
 
 
 class TestToolNameCodeInjection:
-
     def _generate_import_code(self, tool_name: str) -> str:
         """Generate the code that step_import would produce for a single tool."""
         from app.verification.steps import step_import
 
         # Create a mock sandbox to capture the generated code
         mock_sandbox = MagicMock()
-        mock_sandbox.run_python_code = MagicMock(return_value=(True, "All tool entrypoints verified"))
+        mock_sandbox.run_python_code = MagicMock(
+            return_value=(True, "All tool entrypoints verified")
+        )
 
-        tools = [{
-            "name": tool_name,
-            "entrypoint": "some.module:some_func",
-            "input_schema": {"type": "object", "properties": {}},
-        }]
+        tools = [
+            {
+                "name": tool_name,
+                "entrypoint": "some.module:some_func",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        ]
 
         step_import(mock_sandbox, tools)
         generated_code = mock_sandbox.run_python_code.call_args[0][0]
@@ -220,7 +231,7 @@ class TestToolNameCodeInjection:
         malicious = 'evil"; import os; os.system("rm -rf /"); x="'
         code = self._generate_import_code(malicious)
         # The malicious payload should NOT appear as unescaped code
-        assert 'import os; os.system' not in code.replace(json.dumps(malicious), "")
+        assert "import os; os.system" not in code.replace(json.dumps(malicious), "")
         # json.dumps properly escapes the quotes
         assert json.dumps(malicious) in code
 

@@ -8,6 +8,7 @@ signing), extracts the response body and signature header, then
 feeds them to the SDK's verify_registry_response() function.
 If the SDK accepts the signature, the body-byte invariant holds.
 """
+
 import base64
 import hashlib
 import sys
@@ -44,11 +45,19 @@ PUBLISHER_KEY_ID = "ed25519:" + hashlib.sha256(b"\x01" * 32).hexdigest()[:16]
 
 
 async def _setup_publisher(client) -> str:
-    user = {"email": "xverify@test.dev", "username": "xverify", "password": "TestPass123!"}
+    user = {
+        "email": "xverify@test.dev",
+        "username": "xverify",
+        "password": "TestPass123!",
+    }
     await client.post("/v1/auth/register", json=user)
-    login = await client.post("/v1/auth/login", json={
-        "email": user["email"], "password": user["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": user["email"],
+            "password": user["password"],
+        },
+    )
     token = login.json()["access_token"]
     await client.post(
         "/v1/publishers",
@@ -65,6 +74,7 @@ async def _setup_publisher(client) -> str:
 
 def _find_signing_middleware(app_or_mw):
     from app.shared.signing_middleware import RegistrySigningMiddleware
+
     mw = app_or_mw
     visited = set()
     while mw is not None:
@@ -117,14 +127,16 @@ async def test_sdk_verifies_backend_signature(client, _arm_signing, monkeypatch)
     )
     import agentnode_sdk.registry_trust as rt_module
 
-    test_registry_keys = MappingProxyType({
-        TEST_KEY_ID: RegistryKey(
-            key_id=TEST_KEY_ID,
-            algorithm="ed25519",
-            public_key=TEST_PUB_B64,
-            not_after="2099-12-31",
-        ),
-    })
+    test_registry_keys = MappingProxyType(
+        {
+            TEST_KEY_ID: RegistryKey(
+                key_id=TEST_KEY_ID,
+                algorithm="ed25519",
+                public_key=TEST_PUB_B64,
+                not_after="2099-12-31",
+            ),
+        }
+    )
     monkeypatch.setattr(rt_module, "REGISTRY_KEYS", test_registry_keys)
 
     result = verify_registry_response(
@@ -155,14 +167,16 @@ async def test_sdk_rejects_tampered_body(client, _arm_signing, monkeypatch):
     )
     import agentnode_sdk.registry_trust as rt_module
 
-    test_registry_keys = MappingProxyType({
-        TEST_KEY_ID: RegistryKey(
-            key_id=TEST_KEY_ID,
-            algorithm="ed25519",
-            public_key=TEST_PUB_B64,
-            not_after="2099-12-31",
-        ),
-    })
+    test_registry_keys = MappingProxyType(
+        {
+            TEST_KEY_ID: RegistryKey(
+                key_id=TEST_KEY_ID,
+                algorithm="ed25519",
+                public_key=TEST_PUB_B64,
+                not_after="2099-12-31",
+            ),
+        }
+    )
     monkeypatch.setattr(rt_module, "REGISTRY_KEYS", test_registry_keys)
 
     tampered = resp.content + b"x"
@@ -174,7 +188,9 @@ async def test_sdk_rejects_tampered_body(client, _arm_signing, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sdk_rejects_missing_header_enforcement(client, _arm_signing, monkeypatch):
+async def test_sdk_rejects_missing_header_enforcement(
+    client, _arm_signing, monkeypatch
+):
     """With REGISTRY_KEYS populated, missing header → MISSING (downgrade)."""
     from agentnode_sdk.registry_trust import (
         RegistryKey,
@@ -183,14 +199,16 @@ async def test_sdk_rejects_missing_header_enforcement(client, _arm_signing, monk
     )
     import agentnode_sdk.registry_trust as rt_module
 
-    test_registry_keys = MappingProxyType({
-        TEST_KEY_ID: RegistryKey(
-            key_id=TEST_KEY_ID,
-            algorithm="ed25519",
-            public_key=TEST_PUB_B64,
-            not_after="2099-12-31",
-        ),
-    })
+    test_registry_keys = MappingProxyType(
+        {
+            TEST_KEY_ID: RegistryKey(
+                key_id=TEST_KEY_ID,
+                algorithm="ed25519",
+                public_key=TEST_PUB_B64,
+                not_after="2099-12-31",
+            ),
+        }
+    )
     monkeypatch.setattr(rt_module, "REGISTRY_KEYS", test_registry_keys)
 
     result = verify_registry_response(

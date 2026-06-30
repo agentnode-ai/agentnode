@@ -1,4 +1,13 @@
-from sqlalchemy import Boolean, Column, Enum, ForeignKey, Integer, Numeric, Text, VARCHAR
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Enum,
+    ForeignKey,
+    Integer,
+    Numeric,
+    Text,
+    VARCHAR,
+)
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import relationship
 
@@ -31,7 +40,9 @@ class BlogCategory(Base, UUIDPrimaryKeyMixin):
     slug = Column(VARCHAR(100), nullable=False, unique=True)
     description = Column(VARCHAR(300), nullable=True)
     sort_order = Column(Integer, nullable=False, default=0)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default="now()")
+    created_at = Column(
+        TIMESTAMP(timezone=True), nullable=False, server_default="now()"
+    )
 
     posts = relationship("BlogPost", back_populates="category")
 
@@ -49,18 +60,32 @@ class BlogPost(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     seo_title = Column(VARCHAR(70), nullable=True)
     seo_description = Column(VARCHAR(170), nullable=True)
     og_image_url = Column(VARCHAR(500), nullable=True)
-    category_id = Column(UUID(as_uuid=True), ForeignKey("blog_categories.id", ondelete="SET NULL"), nullable=True, index=True)
+    category_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("blog_categories.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     tags = Column(JSONB, default=list)
-    author_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    author_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     status = Column(
-        Enum("draft", "published", "archived", name="blog_post_status", create_type=False),
+        Enum(
+            "draft", "published", "archived", name="blog_post_status", create_type=False
+        ),
         nullable=False,
         default="draft",
     )
     published_at = Column(TIMESTAMP(timezone=True), nullable=True)
     reading_time_min = Column(Integer, nullable=True)
     is_featured = Column(Boolean, nullable=False, default=False)
-    post_type_id = Column(UUID(as_uuid=True), ForeignKey("blog_post_types.id", ondelete="RESTRICT"), nullable=False, index=True)
+    post_type_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("blog_post_types.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     previous_url = Column(VARCHAR(500), nullable=True)
 
     category = relationship("BlogCategory", back_populates="posts")
@@ -72,7 +97,12 @@ class BlogPost(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 class BlogImage(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "blog_images"
 
-    post_id = Column(UUID(as_uuid=True), ForeignKey("blog_posts.id", ondelete="SET NULL"), nullable=True, index=True)
+    post_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("blog_posts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     object_key = Column(VARCHAR(500), nullable=False)
     url = Column(VARCHAR(500), nullable=False)
     alt_text = Column(VARCHAR(255), nullable=True)
@@ -82,6 +112,8 @@ class BlogImage(Base, UUIDPrimaryKeyMixin):
     title = Column(VARCHAR(255), nullable=True)
     original_filename = Column(VARCHAR(255), nullable=True)
     caption = Column(Text, nullable=True)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default="now()")
+    created_at = Column(
+        TIMESTAMP(timezone=True), nullable=False, server_default="now()"
+    )
 
     post = relationship("BlogPost", back_populates="images")

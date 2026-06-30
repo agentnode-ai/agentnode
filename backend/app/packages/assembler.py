@@ -1,4 +1,5 @@
 """Assembles the detail response for a package, including enrichment fields."""
+
 from app.packages.models import Package, PackageVersion
 from app.packages.schemas import (
     AgentConfigBlock,
@@ -75,11 +76,13 @@ def _build_verification_info(version: PackageVersion) -> VerificationInfo | None
         ]
         for name, step_status, duration in step_fields:
             if step_status and step_status not in ("skipped", "not_present"):
-                info.steps.append(VerificationStepInfo(
-                    name=name,
-                    status=step_status,
-                    duration_ms=duration,
-                ))
+                info.steps.append(
+                    VerificationStepInfo(
+                        name=name,
+                        status=step_status,
+                        duration_ms=duration,
+                    )
+                )
 
     return info
 
@@ -147,18 +150,22 @@ def assemble_package_detail(
 
         # Capabilities block
         for cap in version.capabilities:
-            blocks_caps.append(CapabilityBlock(
-                name=cap.name,
-                capability_id=cap.capability_id,
-                capability_type=cap.capability_type,
-                description=cap.description,
-                entrypoint=cap.entrypoint,
-                input_schema=cap.input_schema,
-                output_schema=cap.output_schema,
-            ))
+            blocks_caps.append(
+                CapabilityBlock(
+                    name=cap.name,
+                    capability_id=cap.capability_id,
+                    capability_type=cap.capability_type,
+                    description=cap.description,
+                    entrypoint=cap.entrypoint,
+                    input_schema=cap.input_schema,
+                    output_schema=cap.output_schema,
+                )
+            )
 
         # Prompts block — extract from manifest_raw (template + arguments live there)
-        raw_prompts = (version.manifest_raw or {}).get("capabilities", {}).get("prompts", [])
+        raw_prompts = (
+            (version.manifest_raw or {}).get("capabilities", {}).get("prompts", [])
+        )
         for p in raw_prompts:
             if not p.get("name") or not p.get("template"):
                 continue
@@ -173,30 +180,40 @@ def assemble_package_detail(
                     for a in p["arguments"]
                     if a.get("name")
                 ]
-            blocks_prompts.append(PromptBlock(
-                name=p["name"],
-                capability_id=p.get("capability_id", ""),
-                template=p["template"],
-                description=p.get("description"),
-                arguments=args,
-            ))
+            blocks_prompts.append(
+                PromptBlock(
+                    name=p["name"],
+                    capability_id=p.get("capability_id", ""),
+                    template=p["template"],
+                    description=p.get("description"),
+                    arguments=args,
+                )
+            )
 
         # Resources block — extract from manifest_raw (uri + mime_type live there)
-        raw_resources = (version.manifest_raw or {}).get("capabilities", {}).get("resources", [])
+        raw_resources = (
+            (version.manifest_raw or {}).get("capabilities", {}).get("resources", [])
+        )
         for r in raw_resources:
             if not r.get("name") or not r.get("uri"):
                 continue
-            blocks_resources.append(ResourceBlock(
-                name=r["name"],
-                capability_id=r.get("capability_id", ""),
-                uri=r["uri"],
-                description=r.get("description"),
-                mime_type=r.get("mime_type"),
-            ))
+            blocks_resources.append(
+                ResourceBlock(
+                    name=r["name"],
+                    capability_id=r.get("capability_id", ""),
+                    uri=r["uri"],
+                    description=r.get("description"),
+                    mime_type=r.get("mime_type"),
+                )
+            )
 
         # Connector block — extract from manifest_raw
         raw_connector = (version.manifest_raw or {}).get("connector")
-        if raw_connector and isinstance(raw_connector, dict) and raw_connector.get("provider"):
+        if (
+            raw_connector
+            and isinstance(raw_connector, dict)
+            and raw_connector.get("provider")
+        ):
             health = raw_connector.get("health_check", {})
             rate = raw_connector.get("rate_limits", {})
             blocks_connector = ConnectorBlock(
@@ -204,8 +221,12 @@ def assemble_package_detail(
                 auth_type=raw_connector.get("auth_type"),
                 scopes=raw_connector.get("scopes", []),
                 token_refresh=raw_connector.get("token_refresh", False),
-                health_check_endpoint=health.get("endpoint") if isinstance(health, dict) else None,
-                rate_limit_rpm=rate.get("requests_per_minute") if isinstance(rate, dict) else None,
+                health_check_endpoint=health.get("endpoint")
+                if isinstance(health, dict)
+                else None,
+                rate_limit_rpm=rate.get("requests_per_minute")
+                if isinstance(rate, dict)
+                else None,
             )
 
         # Recommended for block
@@ -234,7 +255,9 @@ def assemble_package_detail(
                 break
         deps = [d.dependency_package_slug for d in version.dependencies]
         runtime = version.runtime or "python"
-        blocks_compat = CompatibilityBlock(frameworks=frameworks, runtime=runtime, python=python_ver, dependencies=deps)
+        blocks_compat = CompatibilityBlock(
+            frameworks=frameworks, runtime=runtime, python=python_ver, dependencies=deps
+        )
 
         # Permissions block
         if version.permissions:
@@ -252,7 +275,9 @@ def assemble_package_detail(
             publisher_trust_level=pkg.publisher.trust_level,
             signature_present=bool(version.signature),
             provenance_present=bool(version.source_repo_url),
-            security_findings_count=len([f for f in version.security_findings if not f.is_resolved]),
+            security_findings_count=len(
+                [f for f in version.security_findings if not f.is_resolved]
+            ),
             verification_status=version.verification_status,
             last_updated=version.published_at,
         )
@@ -316,7 +341,9 @@ def assemble_package_detail(
             install=blocks_install,
             compatibility=blocks_compat,
             permissions=blocks_perms,
-            performance=PerformanceBlock(download_count=pkg.download_count, install_count=pkg.install_count),
+            performance=PerformanceBlock(
+                download_count=pkg.download_count, install_count=pkg.install_count
+            ),
             trust=blocks_trust,
         ),
         license_model=pkg.license_model,

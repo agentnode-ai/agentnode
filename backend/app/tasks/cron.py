@@ -23,6 +23,7 @@ MILESTONES = [100, 1_000, 5_000, 10_000, 50_000, 100_000]
 
 # --- Task: Download milestones (every hour) ---
 
+
 async def check_download_milestones():
     """Check if any packages crossed download milestones and send emails."""
     try:
@@ -36,6 +37,7 @@ async def check_download_milestones():
         # happy path and leaked a connection per failed iteration.
         from app.config import settings
         import redis.asyncio as aioredis
+
         redis = aioredis.from_url(settings.REDIS_URL)
         try:
             async with async_session_factory() as session:
@@ -47,8 +49,9 @@ async def check_download_milestones():
                 # lower one, so we can mark lower milestones as notified in bulk.
                 for milestone in sorted(MILESTONES, reverse=True):
                     result = await session.execute(
-                        select(Package.id, Package.slug, Package.publisher_id)
-                        .where(Package.download_count >= milestone)
+                        select(Package.id, Package.slug, Package.publisher_id).where(
+                            Package.download_count >= milestone
+                        )
                     )
                     rows = result.all()
                     if not rows:
@@ -62,7 +65,9 @@ async def check_download_milestones():
 
                         pub_email = await get_publisher_email(publisher_id)
                         if pub_email:
-                            await send_download_milestone_email(pub_email, slug, milestone)
+                            await send_download_milestone_email(
+                                pub_email, slug, milestone
+                            )
                             logger.info(f"Milestone email: {slug} reached {milestone}")
         finally:
             await redis.aclose()
@@ -72,11 +77,17 @@ async def check_download_milestones():
 
 # --- Task: Daily admin digest (every 24h) ---
 
+
 async def send_daily_admin_digest():
     """Send daily stats summary to all admins."""
     try:
         from app.auth.models import User
-        from app.packages.models import Installation, Package, PackageVersion, PackageReport
+        from app.packages.models import (
+            Installation,
+            Package,
+            PackageVersion,
+            PackageReport,
+        )
         from app.shared.email import send_admin_daily_digest, get_admin_emails
 
         now = datetime.now(timezone.utc)
@@ -84,29 +95,47 @@ async def send_daily_admin_digest():
 
         async with async_session_factory() as session:
             # New users in 24h
-            new_users = (await session.execute(
-                select(func.count(User.id)).where(User.created_at >= yesterday)
-            )).scalar() or 0
+            new_users = (
+                await session.execute(
+                    select(func.count(User.id)).where(User.created_at >= yesterday)
+                )
+            ).scalar() or 0
 
             # New packages in 24h
-            new_packages = (await session.execute(
-                select(func.count(Package.id)).where(Package.created_at >= yesterday)
-            )).scalar() or 0
+            new_packages = (
+                await session.execute(
+                    select(func.count(Package.id)).where(
+                        Package.created_at >= yesterday
+                    )
+                )
+            ).scalar() or 0
 
             # Open reports
-            open_reports = (await session.execute(
-                select(func.count(PackageReport.id)).where(PackageReport.status == "submitted")
-            )).scalar() or 0
+            open_reports = (
+                await session.execute(
+                    select(func.count(PackageReport.id)).where(
+                        PackageReport.status == "submitted"
+                    )
+                )
+            ).scalar() or 0
 
             # Quarantined versions
-            quarantined = (await session.execute(
-                select(func.count(PackageVersion.id)).where(PackageVersion.quarantine_status == "quarantined")
-            )).scalar() or 0
+            quarantined = (
+                await session.execute(
+                    select(func.count(PackageVersion.id)).where(
+                        PackageVersion.quarantine_status == "quarantined"
+                    )
+                )
+            ).scalar() or 0
 
             # Installations in last 24h (proxy for downloads)
-            downloads_24h = (await session.execute(
-                select(func.count(Installation.id)).where(Installation.installed_at >= yesterday)
-            )).scalar() or 0
+            downloads_24h = (
+                await session.execute(
+                    select(func.count(Installation.id)).where(
+                        Installation.installed_at >= yesterday
+                    )
+                )
+            ).scalar() or 0
 
         stats = {
             "new_users": new_users,
@@ -130,6 +159,7 @@ async def send_daily_admin_digest():
 
 
 # --- Task: Weekly publisher digest (every 7 days) ---
+
 
 async def send_weekly_publisher_digests():
     """Send weekly stats to all publishers."""
@@ -163,12 +193,17 @@ async def send_weekly_publisher_digests():
                 select(
                     Package.publisher_id,
                     func.count(Package.id).label("pkg_count"),
-                    func.coalesce(func.sum(Package.download_count), 0).label("total_downloads"),
+                    func.coalesce(func.sum(Package.download_count), 0).label(
+                        "total_downloads"
+                    ),
                 )
                 .where(Package.publisher_id.in_(pub_ids))
                 .group_by(Package.publisher_id)
             )
-            pkg_stats = {row.publisher_id: (row.pkg_count, row.total_downloads) for row in pkg_stats_result.all()}
+            pkg_stats = {
+                row.publisher_id: (row.pkg_count, row.total_downloads)
+                for row in pkg_stats_result.all()
+            }
 
             install_result = await session.execute(
                 select(
@@ -182,22 +217,26 @@ async def send_weekly_publisher_digests():
                 )
                 .group_by(Package.publisher_id)
             )
-            install_stats = {row.publisher_id: row.new_installs for row in install_result.all()}
+            install_stats = {
+                row.publisher_id: row.new_installs for row in install_result.all()
+            }
 
             # Build a plain-data payload with nothing that still references the session.
             for pub in valid_pubs:
                 pkg_count, total_downloads = pkg_stats.get(pub.id, (0, 0))
                 if pkg_count == 0:
                     continue
-                digest_payload.append((
-                    pub.user.email,
-                    pub.slug,
-                    {
-                        "downloads": int(total_downloads),
-                        "installs": int(install_stats.get(pub.id, 0)),
-                        "packages": int(pkg_count),
-                    },
-                ))
+                digest_payload.append(
+                    (
+                        pub.user.email,
+                        pub.slug,
+                        {
+                            "downloads": int(total_downloads),
+                            "installs": int(install_stats.get(pub.id, 0)),
+                            "packages": int(pkg_count),
+                        },
+                    )
+                )
 
         # Session is now closed. Safe to do slow SMTP work.
         sent = 0
@@ -215,6 +254,7 @@ async def send_weekly_publisher_digests():
 
 
 # --- Task: Reconcile install counts (daily) ---
+
 
 async def reconcile_install_counts():
     """Reconcile denormalized install_count from installations table.
@@ -242,7 +282,9 @@ async def reconcile_install_counts():
             )
             got_lock = bool(lock_res.scalar())
             if not got_lock:
-                logger.info("reconcile_install_counts: another worker holds the lock, skipping")
+                logger.info(
+                    "reconcile_install_counts: another worker holds the lock, skipping"
+                )
                 return
 
             try:
@@ -270,9 +312,13 @@ async def reconcile_install_counts():
                         drift = actual - current_count
                         logger.warning(
                             "install_count drift: %s old=%d computed=%d drift=%d",
-                            slug, current_count, actual, drift,
+                            slug,
+                            current_count,
+                            actual,
+                            drift,
                         )
                         from sqlalchemy import update
+
                         await session.execute(
                             update(Package)
                             .where(Package.id == pkg_id)
@@ -294,6 +340,7 @@ async def reconcile_install_counts():
 
 
 # --- Task: Cleanup stale verification dirs (every hour) ---
+
 
 def _pid_is_live(pid: int) -> bool:
     """Return True if a process with this pid is still alive on this host."""
@@ -320,6 +367,7 @@ async def cleanup_stale_verification_dirs():
     """
     try:
         import tempfile
+
         tmp_base = tempfile.gettempdir()
         pattern = os.path.join(tmp_base, "agentnode_verify_*")
         cutoff = time.time() - 1800  # 30 minutes ago
@@ -352,13 +400,15 @@ async def cleanup_stale_verification_dirs():
         if cleaned or skipped_live:
             logger.info(
                 "Verification dir cleanup: removed %d, skipped %d live",
-                cleaned, skipped_live,
+                cleaned,
+                skipped_live,
             )
     except Exception:
         logger.exception("cleanup_stale_verification_dirs failed")
 
 
 # --- Task: Scheduled reverification (Phase 4C, every 6h) ---
+
 
 async def scheduled_reverification():
     """Re-verify packages > N days old. Max batch_size per run."""
@@ -371,7 +421,9 @@ async def scheduled_reverification():
         from app.packages.models import PackageVersion
         from app.verification.pipeline import run_verification
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=settings.VERIFICATION_REVERIFY_DAYS)
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            days=settings.VERIFICATION_REVERIFY_DAYS
+        )
         batch_size = settings.VERIFICATION_REVERIFY_BATCH
 
         async with async_session_factory() as session:
@@ -405,6 +457,7 @@ async def scheduled_reverification():
 
 # --- Scheduler loop ---
 
+
 async def _run_periodic(interval_seconds: int, func, name: str):
     """Run a function periodically with error handling."""
     # Initial delay to let the app start up
@@ -426,6 +479,7 @@ def start_cron_tasks():
     # Cleanup stale verification dirs from previous process (crash recovery)
     try:
         import tempfile
+
         tmp_base = tempfile.gettempdir()
         pattern = os.path.join(tmp_base, "agentnode_verify_*")
         stale = [p for p in glob.glob(pattern) if os.path.isdir(p)]
@@ -438,29 +492,43 @@ def start_cron_tasks():
 
     loop = asyncio.get_running_loop()
 
-    _tasks.append(loop.create_task(
-        _run_periodic(3600, check_download_milestones, "download_milestones")
-    ))
-    _tasks.append(loop.create_task(
-        _run_periodic(86400, send_daily_admin_digest, "daily_admin_digest")
-    ))
-    _tasks.append(loop.create_task(
-        _run_periodic(604800, send_weekly_publisher_digests, "weekly_publisher_digest")
-    ))
+    _tasks.append(
+        loop.create_task(
+            _run_periodic(3600, check_download_milestones, "download_milestones")
+        )
+    )
+    _tasks.append(
+        loop.create_task(
+            _run_periodic(86400, send_daily_admin_digest, "daily_admin_digest")
+        )
+    )
+    _tasks.append(
+        loop.create_task(
+            _run_periodic(
+                604800, send_weekly_publisher_digests, "weekly_publisher_digest"
+            )
+        )
+    )
 
-    _tasks.append(loop.create_task(
-        _run_periodic(3600, cleanup_stale_verification_dirs, "verification_cleanup")
-    ))
+    _tasks.append(
+        loop.create_task(
+            _run_periodic(3600, cleanup_stale_verification_dirs, "verification_cleanup")
+        )
+    )
 
     # Phase 4C: Scheduled reverification every 6 hours
-    _tasks.append(loop.create_task(
-        _run_periodic(21600, scheduled_reverification, "scheduled_reverification")
-    ))
+    _tasks.append(
+        loop.create_task(
+            _run_periodic(21600, scheduled_reverification, "scheduled_reverification")
+        )
+    )
 
     # Daily install count reconciliation
-    _tasks.append(loop.create_task(
-        _run_periodic(86400, reconcile_install_counts, "reconcile_install_counts")
-    ))
+    _tasks.append(
+        loop.create_task(
+            _run_periodic(86400, reconcile_install_counts, "reconcile_install_counts")
+        )
+    )
 
     logger.info(f"Started {len(_tasks)} cron tasks")
 

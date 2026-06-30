@@ -1,4 +1,5 @@
 """Unit tests for ANP v0.2 manifest validation and normalization."""
+
 import pytest
 
 from app.packages.validator import normalize_manifest, validate_manifest
@@ -21,12 +22,17 @@ VALID_V01 = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "test_pack.tool",
     "capabilities": {
-        "tools": [{
-            "name": "test_tool",
-            "capability_id": "pdf_extraction",
-            "description": "Test tool",
-            "input_schema": {"type": "object", "properties": {"input": {"type": "string"}}},
-        }],
+        "tools": [
+            {
+                "name": "test_tool",
+                "capability_id": "pdf_extraction",
+                "description": "Test tool",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"input": {"type": "string"}},
+                },
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -56,12 +62,14 @@ VALID_V02_SINGLE_TOOL = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "single_tool_pack.tool",
     "capabilities": {
-        "tools": [{
-            "name": "do_thing",
-            "capability_id": "pdf_extraction",
-            "description": "Does the thing",
-            "entrypoint": "single_tool_pack.tool:do_thing",
-        }],
+        "tools": [
+            {
+                "name": "do_thing",
+                "capability_id": "pdf_extraction",
+                "description": "Does the thing",
+                "entrypoint": "single_tool_pack.tool:do_thing",
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -126,6 +134,7 @@ VALID_V02_MULTI_TOOL = {
 # normalize_manifest() tests
 # ---------------------------------------------------------------------------
 
+
 class TestNormalizeManifest:
     def test_v01_passes_through_unchanged(self):
         """v0.1 manifests must NOT be modified by normalization."""
@@ -174,7 +183,10 @@ class TestNormalizeManifest:
             "runtime": "python",
             "tags": ["my-tag"],
             "permissions": {
-                "network": {"level": "unrestricted", "allowed_domains": ["api.example.com"]},
+                "network": {
+                    "level": "unrestricted",
+                    "allowed_domains": ["api.example.com"],
+                },
             },
             "capabilities": {
                 "tools": [{"name": "t", "capability_id": "pdf_extraction"}],
@@ -184,14 +196,18 @@ class TestNormalizeManifest:
 
         assert result["tags"] == ["my-tag"]
         assert result["permissions"]["network"]["level"] == "unrestricted"
-        assert result["permissions"]["network"]["allowed_domains"] == ["api.example.com"]
+        assert result["permissions"]["network"]["allowed_domains"] == [
+            "api.example.com"
+        ]
 
     def test_v02_adds_resources_and_prompts_arrays(self):
         """capabilities should get resources/prompts arrays if missing."""
         compact = {
             "manifest_version": "0.2",
             "package_id": "x-pack",
-            "capabilities": {"tools": [{"name": "t", "capability_id": "pdf_extraction"}]},
+            "capabilities": {
+                "tools": [{"name": "t", "capability_id": "pdf_extraction"}]
+            },
         }
         result = normalize_manifest(compact)
         assert result["capabilities"]["resources"] == []
@@ -212,6 +228,7 @@ class TestNormalizeManifest:
 # ---------------------------------------------------------------------------
 # v0.1 backward compatibility tests
 # ---------------------------------------------------------------------------
+
 
 class TestV01BackwardCompatibility:
     @pytest.mark.asyncio
@@ -236,12 +253,15 @@ class TestV01BackwardCompatibility:
         m = {**VALID_V01, "entrypoint": "test_pack.tool:run"}
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
-        assert any("module path" in e.lower() or "entrypoint" in e.lower() for e in errors)
+        assert any(
+            "module path" in e.lower() or "entrypoint" in e.lower() for e in errors
+        )
 
 
 # ---------------------------------------------------------------------------
 # v0.2 Entrypoint validation tests
 # ---------------------------------------------------------------------------
+
 
 class TestV02Entrypoints:
     @pytest.mark.asyncio
@@ -256,12 +276,14 @@ class TestV02Entrypoints:
         m = {**VALID_V02_SINGLE_TOOL}
         m["capabilities"] = {
             **m["capabilities"],
-            "tools": [{
-                "name": "do_thing",
-                "capability_id": "pdf_extraction",
-                "description": "Does the thing",
-                # no tool-level entrypoint
-            }],
+            "tools": [
+                {
+                    "name": "do_thing",
+                    "capability_id": "pdf_extraction",
+                    "description": "Does the thing",
+                    # no tool-level entrypoint
+                }
+            ],
         }
         valid, errors, _ = await validate_manifest(m)
         assert valid is True, f"errors: {errors}"
@@ -282,12 +304,14 @@ class TestV02Entrypoints:
         del m["entrypoint"]
         m["capabilities"] = {
             **m["capabilities"],
-            "tools": [{
-                "name": "do_thing",
-                "capability_id": "pdf_extraction",
-                "description": "Does the thing",
-                # no entrypoint anywhere
-            }],
+            "tools": [
+                {
+                    "name": "do_thing",
+                    "capability_id": "pdf_extraction",
+                    "description": "Does the thing",
+                    # no entrypoint anywhere
+                }
+            ],
         }
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
@@ -355,12 +379,14 @@ class TestV02Entrypoints:
         m = {**VALID_V02_SINGLE_TOOL}
         m["capabilities"] = {
             **m["capabilities"],
-            "tools": [{
-                "name": "do_thing",
-                "capability_id": "pdf_extraction",
-                "description": "Does the thing",
-                "entrypoint": "just_a_module.path",  # missing :function
-            }],
+            "tools": [
+                {
+                    "name": "do_thing",
+                    "capability_id": "pdf_extraction",
+                    "description": "Does the thing",
+                    "entrypoint": "just_a_module.path",  # missing :function
+                }
+            ],
         }
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
@@ -372,12 +398,14 @@ class TestV02Entrypoints:
         m = {**VALID_V02_SINGLE_TOOL}
         m["capabilities"] = {
             **m["capabilities"],
-            "tools": [{
-                "name": "do_thing",
-                "capability_id": "pdf_extraction",
-                "description": "Does the thing",
-                "entrypoint": "my-pack.tool:run",  # hyphens not allowed
-            }],
+            "tools": [
+                {
+                    "name": "do_thing",
+                    "capability_id": "pdf_extraction",
+                    "description": "Does the thing",
+                    "entrypoint": "my-pack.tool:run",  # hyphens not allowed
+                }
+            ],
         }
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
@@ -402,6 +430,7 @@ class TestV02Entrypoints:
 # v0.2 normalization + validation integration
 # ---------------------------------------------------------------------------
 
+
 class TestV02NormalizeAndValidate:
     @pytest.mark.asyncio
     async def test_compact_v02_normalized_then_valid(self):
@@ -416,12 +445,14 @@ class TestV02NormalizeAndValidate:
             "summary": "A compact v0.2 manifest.",
             "entrypoint": "compact_test.tool",
             "capabilities": {
-                "tools": [{
-                    "name": "do_it",
-                    "capability_id": "pdf_extraction",
-                    "description": "Does it",
-                    "entrypoint": "compact_test.tool:do_it",
-                }],
+                "tools": [
+                    {
+                        "name": "do_it",
+                        "capability_id": "pdf_extraction",
+                        "description": "Does it",
+                        "entrypoint": "compact_test.tool:do_it",
+                    }
+                ],
             },
             "compatibility": {"frameworks": ["generic"]},
             "tags": ["test"],
@@ -444,12 +475,14 @@ class TestV02NormalizeAndValidate:
             "summary": "Missing defaults.",
             "entrypoint": "raw_compact.tool",
             "capabilities": {
-                "tools": [{
-                    "name": "t",
-                    "capability_id": "pdf_extraction",
-                    "description": "T",
-                    "entrypoint": "raw_compact.tool:t",
-                }],
+                "tools": [
+                    {
+                        "name": "t",
+                        "capability_id": "pdf_extraction",
+                        "description": "T",
+                        "entrypoint": "raw_compact.tool:t",
+                    }
+                ],
             },
             "compatibility": {"frameworks": ["generic"]},
             # No permissions, no runtime, no install_mode, no hosting_type
@@ -463,6 +496,7 @@ class TestV02NormalizeAndValidate:
 # ---------------------------------------------------------------------------
 # manifest_version acceptance
 # ---------------------------------------------------------------------------
+
 
 class TestManifestVersionAcceptance:
     @pytest.mark.asyncio
@@ -493,6 +527,7 @@ class TestManifestVersionAcceptance:
 # Edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestV02EdgeCases:
     @pytest.mark.asyncio
     async def test_v02_empty_tools_array_invalid(self):
@@ -509,11 +544,13 @@ class TestV02EdgeCases:
         m = {**VALID_V02_SINGLE_TOOL}
         m["capabilities"] = {
             **m["capabilities"],
-            "tools": [{
-                "capability_id": "pdf_extraction",
-                "description": "No name",
-                "entrypoint": "test.tool:fn",
-            }],
+            "tools": [
+                {
+                    "capability_id": "pdf_extraction",
+                    "description": "No name",
+                    "entrypoint": "test.tool:fn",
+                }
+            ],
         }
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
@@ -525,11 +562,13 @@ class TestV02EdgeCases:
         m = {**VALID_V02_SINGLE_TOOL}
         m["capabilities"] = {
             **m["capabilities"],
-            "tools": [{
-                "name": "some_tool",
-                "description": "No cap id",
-                "entrypoint": "test.tool:fn",
-            }],
+            "tools": [
+                {
+                    "name": "some_tool",
+                    "description": "No cap id",
+                    "entrypoint": "test.tool:fn",
+                }
+            ],
         }
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
@@ -541,20 +580,24 @@ class TestV02EdgeCases:
         m = {**VALID_V02_SINGLE_TOOL}
         m["capabilities"] = {
             **m["capabilities"],
-            "tools": [{
-                "name": "do_thing",
-                "capability_id": "pdf_extraction",
-                "description": "Does the thing",
-                "entrypoint": "single_tool_pack.tool:do_thing",
-                "input_schema": {"type": "invalid_type"},
-            }],
+            "tools": [
+                {
+                    "name": "do_thing",
+                    "capability_id": "pdf_extraction",
+                    "description": "Does the thing",
+                    "entrypoint": "single_tool_pack.tool:do_thing",
+                    "input_schema": {"type": "invalid_type"},
+                }
+            ],
         }
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("not a valid JSON Schema type" in e for e in errors)
 
     @pytest.mark.asyncio
-    async def test_v02_multi_tool_package_entrypoint_optional_when_all_tools_have_ep(self):
+    async def test_v02_multi_tool_package_entrypoint_optional_when_all_tools_have_ep(
+        self,
+    ):
         """Package-level entrypoint is optional when all tools have their own."""
         m = {**VALID_V02_MULTI_TOOL}
         del m["entrypoint"]  # remove package-level

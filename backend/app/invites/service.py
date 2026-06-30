@@ -17,6 +17,7 @@ INVITE_TTL_DAYS = 30
 
 # ── Event Logging ──
 
+
 async def log_event(
     session: AsyncSession,
     candidate_id: UUID,
@@ -57,8 +58,9 @@ STATUS_PRIORITY = [
 
 async def derive_outreach_status(session: AsyncSession, candidate_id: UUID) -> str:
     result = await session.execute(
-        select(CandidateEvent.event_type)
-        .where(CandidateEvent.candidate_id == candidate_id)
+        select(CandidateEvent.event_type).where(
+            CandidateEvent.candidate_id == candidate_id
+        )
     )
     event_types = {row[0] for row in result.all()}
 
@@ -70,20 +72,22 @@ async def derive_outreach_status(session: AsyncSession, candidate_id: UUID) -> s
 
 # ── Invite code generation ──
 
+
 def generate_invite_code() -> str:
     return secrets.token_urlsafe(20)
 
 
 # ── Invite queries ──
 
+
 async def get_invite_by_code(session: AsyncSession, code: str) -> InviteCode | None:
-    result = await session.execute(
-        select(InviteCode).where(InviteCode.code == code)
-    )
+    result = await session.execute(select(InviteCode).where(InviteCode.code == code))
     return result.scalar_one_or_none()
 
 
-async def get_active_invite_for_candidate(session: AsyncSession, candidate_id: UUID) -> InviteCode | None:
+async def get_active_invite_for_candidate(
+    session: AsyncSession, candidate_id: UUID
+) -> InviteCode | None:
     result = await session.execute(
         select(InviteCode).where(
             and_(
@@ -97,6 +101,7 @@ async def get_active_invite_for_candidate(session: AsyncSession, candidate_id: U
 
 # ── Claim ──
 
+
 async def claim_invite(
     session: AsyncSession,
     code: str,
@@ -104,9 +109,7 @@ async def claim_invite(
 ) -> dict:
     # Atomic: SELECT FOR UPDATE
     result = await session.execute(
-        select(InviteCode)
-        .where(InviteCode.code == code)
-        .with_for_update()
+        select(InviteCode).where(InviteCode.code == code).with_for_update()
     )
     invite = result.scalar_one_or_none()
 
@@ -119,7 +122,9 @@ async def claim_invite(
 
     # Already claimed by different user → 409
     if invite.status == "claimed":
-        raise AppError("INVITE_ALREADY_CLAIMED", "This invite has already been claimed", 409)
+        raise AppError(
+            "INVITE_ALREADY_CLAIMED", "This invite has already been claimed", 409
+        )
 
     # Expired or revoked
     if invite.status in ("expired", "revoked"):
@@ -141,12 +146,19 @@ async def claim_invite(
             .where(ImportCandidate.id == invite.candidate_id)
             .values(outreach_status="signed_up", updated_at=datetime.now(timezone.utc))
         )
-        await log_event(session, invite.candidate_id, "invite_claimed", {"invite_code": code}, actor_user_id=user_id)
+        await log_event(
+            session,
+            invite.candidate_id,
+            "invite_claimed",
+            {"invite_code": code},
+            actor_user_id=user_id,
+        )
 
     return invite.prefill_data or {}
 
 
 # ── Build prefill from candidate ──
+
 
 def build_prefill_from_candidate(candidate: ImportCandidate) -> dict:
     tools = candidate.detected_tools or []
@@ -164,7 +176,11 @@ def build_prefill_from_candidate(candidate: ImportCandidate) -> dict:
                 {
                     "name": t.get("name", "tool"),
                     "description": t.get("description", ""),
-                    **({"capability_id": t["capability_id"]} if t.get("capability_id") else {}),
+                    **(
+                        {"capability_id": t["capability_id"]}
+                        if t.get("capability_id")
+                        else {}
+                    ),
                 }
                 for t in tools
             ]
@@ -181,6 +197,7 @@ def build_prefill_from_candidate(candidate: ImportCandidate) -> dict:
 
 
 # ── Create invite for candidate ──
+
 
 async def create_invite_for_candidate(
     session: AsyncSession,
@@ -200,7 +217,13 @@ async def create_invite_for_candidate(
     existing = await get_active_invite_for_candidate(session, candidate_id)
     if existing:
         existing.status = "revoked"
-        await log_event(session, candidate_id, "invite_revoked", {"old_code": existing.code}, actor_user_id=actor_user_id)
+        await log_event(
+            session,
+            candidate_id,
+            "invite_revoked",
+            {"old_code": existing.code},
+            actor_user_id=actor_user_id,
+        )
 
     # Generate new invite
     code = generate_invite_code()
@@ -222,7 +245,13 @@ async def create_invite_for_candidate(
     candidate.contacted_at = now
     candidate.updated_at = now
 
-    await log_event(session, candidate_id, "invite_created", {"invite_code": code}, actor_user_id=actor_user_id)
+    await log_event(
+        session,
+        candidate_id,
+        "invite_created",
+        {"invite_code": code},
+        actor_user_id=actor_user_id,
+    )
 
     await session.flush()
 
@@ -231,6 +260,7 @@ async def create_invite_for_candidate(
 
 # ── Mark published ──
 
+
 async def mark_candidate_published(
     session: AsyncSession,
     candidate_id: UUID,
@@ -238,11 +268,13 @@ async def mark_candidate_published(
 ) -> None:
     # Idempotency: skip if event for this specific package already exists
     existing = await session.execute(
-        select(CandidateEvent.id).where(
+        select(CandidateEvent.id)
+        .where(
             CandidateEvent.candidate_id == candidate_id,
             CandidateEvent.event_type == "package_published",
             CandidateEvent.metadata_["package_id"].astext == str(package_id),
-        ).limit(1)
+        )
+        .limit(1)
     )
     if existing.scalar_one_or_none() is not None:
         return
@@ -257,35 +289,46 @@ async def mark_candidate_published(
             updated_at=now,
         )
     )
-    await log_event(session, candidate_id, "package_published", {"package_id": str(package_id)})
+    await log_event(
+        session, candidate_id, "package_published", {"package_id": str(package_id)}
+    )
 
 
 # ── Funnel aggregation ──
 
+
 async def get_funnel_stats(session: AsyncSession) -> dict:
     # Count candidates by outreach_status
     result = await session.execute(
-        select(ImportCandidate.outreach_status, func.count(ImportCandidate.id))
-        .group_by(ImportCandidate.outreach_status)
+        select(
+            ImportCandidate.outreach_status, func.count(ImportCandidate.id)
+        ).group_by(ImportCandidate.outreach_status)
     )
     status_counts = dict(result.all())
 
     # Count verified from events (not an outreach_status)
     verified_result = await session.execute(
-        select(func.count(func.distinct(CandidateEvent.candidate_id)))
-        .where(CandidateEvent.event_type == "verification_passed")
+        select(func.count(func.distinct(CandidateEvent.candidate_id))).where(
+            CandidateEvent.event_type == "verification_passed"
+        )
     )
     verified = verified_result.scalar() or 0
 
     # Count engaged from events (click without signup)
     engaged_result = await session.execute(
-        select(func.count(func.distinct(CandidateEvent.candidate_id)))
-        .where(CandidateEvent.event_type == "invite_link_clicked")
+        select(func.count(func.distinct(CandidateEvent.candidate_id))).where(
+            CandidateEvent.event_type == "invite_link_clicked"
+        )
     )
     engaged = engaged_result.scalar() or 0
 
     discovered = sum(status_counts.values())  # total candidates
-    contacted = status_counts.get("contacted", 0) + status_counts.get("engaged", 0) + status_counts.get("signed_up", 0) + status_counts.get("published", 0)
+    contacted = (
+        status_counts.get("contacted", 0)
+        + status_counts.get("engaged", 0)
+        + status_counts.get("signed_up", 0)
+        + status_counts.get("published", 0)
+    )
     signed_up = status_counts.get("signed_up", 0) + status_counts.get("published", 0)
     published = status_counts.get("published", 0)
 

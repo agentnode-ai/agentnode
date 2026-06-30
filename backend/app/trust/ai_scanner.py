@@ -170,8 +170,12 @@ async def ai_security_scan(
         # Validate and normalize findings
         valid_severities = {"critical", "high", "medium", "low"}
         valid_types = {
-            "manifest_mismatch", "malicious_code", "obfuscation",
-            "prompt_injection", "data_exfiltration", "excessive_permissions",
+            "manifest_mismatch",
+            "malicious_code",
+            "obfuscation",
+            "prompt_injection",
+            "data_exfiltration",
+            "excessive_permissions",
         }
         normalized: list[dict] = []
         for f in findings:
@@ -184,12 +188,14 @@ async def ai_security_scan(
             if finding_type not in valid_types:
                 finding_type = "malicious_code"
 
-            normalized.append({
-                "severity": severity,
-                "finding_type": f"ai_{finding_type}",
-                "description": f"[AI] {f.get('description', 'Security concern detected')}",
-                "category": "ai_scan",
-            })
+            normalized.append(
+                {
+                    "severity": severity,
+                    "finding_type": f"ai_{finding_type}",
+                    "description": f"[AI] {f.get('description', 'Security concern detected')}",
+                    "category": "ai_scan",
+                }
+            )
 
         logger.info("AI security scan: %d finding(s)", len(normalized))
         return normalized

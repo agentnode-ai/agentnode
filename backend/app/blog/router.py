@@ -70,7 +70,13 @@ def _post_to_list_item(post: BlogPost) -> dict:
         "slug": post.slug,
         "excerpt": post.excerpt,
         "cover_image_url": post.cover_image_url,
-        "category": {"id": post.category.id, "name": post.category.name, "slug": post.category.slug} if post.category else None,
+        "category": {
+            "id": post.category.id,
+            "name": post.category.name,
+            "slug": post.category.slug,
+        }
+        if post.category
+        else None,
         "post_type": _post_type_info(post.post_type),
         "author": {"id": post.author.id, "username": post.author.username},
         "status": post.status,
@@ -84,16 +90,18 @@ def _post_to_list_item(post: BlogPost) -> dict:
 
 def _post_to_detail(post: BlogPost) -> dict:
     d = _post_to_list_item(post)
-    d.update({
-        "content_json": post.content_json,
-        "content_html": post.content_html,
-        "cover_image_alt": post.cover_image_alt,
-        "seo_title": post.seo_title,
-        "seo_description": post.seo_description,
-        "og_image_url": post.og_image_url,
-        "tags": post.tags or [],
-        "previous_url": post.previous_url,
-    })
+    d.update(
+        {
+            "content_json": post.content_json,
+            "content_html": post.content_html,
+            "cover_image_alt": post.cover_image_alt,
+            "seo_title": post.seo_title,
+            "seo_description": post.seo_description,
+            "og_image_url": post.og_image_url,
+            "tags": post.tags or [],
+            "previous_url": post.previous_url,
+        }
+    )
     return d
 
 
@@ -109,7 +117,9 @@ def _load_post_query():
 _SKIP_OPTIMIZE_EXTS = {"svg", "ico", "gif"}
 
 
-def _optimize_image(data: bytes, ext: str, max_width: int = 1200, quality: int = 85) -> tuple[bytes, str, str]:
+def _optimize_image(
+    data: bytes, ext: str, max_width: int = 1200, quality: int = 85
+) -> tuple[bytes, str, str]:
     """Resize and compress a raster image before upload.
 
     Returns (optimised_bytes, new_content_type, new_extension).
@@ -138,7 +148,9 @@ def _optimize_image(data: bytes, ext: str, max_width: int = 1200, quality: int =
             out_format = "JPEG" if ext in ("jpg", "jpeg") else ext.upper()
             if out_format == "JPEG" and img.mode in ("RGBA", "LA", "PA"):
                 img = img.convert("RGB")
-            save_kwargs: dict = {"quality": quality} if out_format in ("JPEG", "WEBP") else {}
+            save_kwargs: dict = (
+                {"quality": quality} if out_format in ("JPEG", "WEBP") else {}
+            )
             img.save(buf, format=out_format, **save_kwargs)
             content_type = f"image/{'jpeg' if out_format == 'JPEG' else ext}"
             return buf.getvalue(), content_type, ext
@@ -159,7 +171,12 @@ async def _get_default_post_type_id(session: AsyncSession) -> uuid.UUID:
 
 # --- Post Types ---
 
-@admin_router.get("/post-types", response_model=list[PostTypeResponse], dependencies=[Depends(rate_limit(30, 60))])
+
+@admin_router.get(
+    "/post-types",
+    response_model=list[PostTypeResponse],
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def list_post_types_admin(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
@@ -170,47 +187,74 @@ async def list_post_types_admin(
     types = result.scalars().all()
 
     count_result = await session.execute(
-        select(BlogPost.post_type_id, func.count(BlogPost.id))
-        .group_by(BlogPost.post_type_id)
+        select(BlogPost.post_type_id, func.count(BlogPost.id)).group_by(
+            BlogPost.post_type_id
+        )
     )
     counts = dict(count_result.all())
 
     return [
         PostTypeResponse(
-            id=t.id, name=t.name, slug=t.slug, url_prefix=t.url_prefix,
-            description=t.description, icon=t.icon, has_archive=t.has_archive,
-            is_system=t.is_system, archive_title=t.archive_title,
+            id=t.id,
+            name=t.name,
+            slug=t.slug,
+            url_prefix=t.url_prefix,
+            description=t.description,
+            icon=t.icon,
+            has_archive=t.has_archive,
+            is_system=t.is_system,
+            archive_title=t.archive_title,
             archive_description=t.archive_description,
-            sitemap_priority=t.sitemap_priority, sitemap_changefreq=t.sitemap_changefreq,
-            sort_order=t.sort_order, post_count=counts.get(t.id, 0),
-            created_at=t.created_at, updated_at=t.updated_at,
+            sitemap_priority=t.sitemap_priority,
+            sitemap_changefreq=t.sitemap_changefreq,
+            sort_order=t.sort_order,
+            post_count=counts.get(t.id, 0),
+            created_at=t.created_at,
+            updated_at=t.updated_at,
         )
         for t in types
     ]
 
 
-@admin_router.post("/post-types", response_model=PostTypeResponse, dependencies=[Depends(rate_limit(10, 60))])
+@admin_router.post(
+    "/post-types",
+    response_model=PostTypeResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def create_post_type(
     body: PostTypeCreate,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     if body.url_prefix in RESERVED_URL_PREFIXES:
-        raise AppError("RESERVED_PREFIX", f"URL prefix '{body.url_prefix}' is reserved", 400)
+        raise AppError(
+            "RESERVED_PREFIX", f"URL prefix '{body.url_prefix}' is reserved", 400
+        )
 
     existing = await session.execute(
         select(BlogPostType).where(
-            (BlogPostType.slug == body.slug) | (BlogPostType.url_prefix == body.url_prefix)
+            (BlogPostType.slug == body.slug)
+            | (BlogPostType.url_prefix == body.url_prefix)
         )
     )
     if existing.scalar_one_or_none():
-        raise AppError("POST_TYPE_EXISTS", "Post type with this slug or url_prefix already exists", 409)
+        raise AppError(
+            "POST_TYPE_EXISTS",
+            "Post type with this slug or url_prefix already exists",
+            409,
+        )
 
     pt = BlogPostType(
-        name=body.name, slug=body.slug, url_prefix=body.url_prefix,
-        description=body.description, icon=body.icon, has_archive=body.has_archive,
-        archive_title=body.archive_title, archive_description=body.archive_description,
-        sitemap_priority=body.sitemap_priority, sitemap_changefreq=body.sitemap_changefreq,
+        name=body.name,
+        slug=body.slug,
+        url_prefix=body.url_prefix,
+        description=body.description,
+        icon=body.icon,
+        has_archive=body.has_archive,
+        archive_title=body.archive_title,
+        archive_description=body.archive_description,
+        sitemap_priority=body.sitemap_priority,
+        sitemap_changefreq=body.sitemap_changefreq,
         sort_order=body.sort_order,
     )
     session.add(pt)
@@ -218,17 +262,30 @@ async def create_post_type(
     await session.refresh(pt)
 
     return PostTypeResponse(
-        id=pt.id, name=pt.name, slug=pt.slug, url_prefix=pt.url_prefix,
-        description=pt.description, icon=pt.icon, has_archive=pt.has_archive,
-        is_system=pt.is_system, archive_title=pt.archive_title,
+        id=pt.id,
+        name=pt.name,
+        slug=pt.slug,
+        url_prefix=pt.url_prefix,
+        description=pt.description,
+        icon=pt.icon,
+        has_archive=pt.has_archive,
+        is_system=pt.is_system,
+        archive_title=pt.archive_title,
         archive_description=pt.archive_description,
-        sitemap_priority=pt.sitemap_priority, sitemap_changefreq=pt.sitemap_changefreq,
-        sort_order=pt.sort_order, post_count=0,
-        created_at=pt.created_at, updated_at=pt.updated_at,
+        sitemap_priority=pt.sitemap_priority,
+        sitemap_changefreq=pt.sitemap_changefreq,
+        sort_order=pt.sort_order,
+        post_count=0,
+        created_at=pt.created_at,
+        updated_at=pt.updated_at,
     )
 
 
-@admin_router.put("/post-types/{pt_id}", response_model=PostTypeResponse, dependencies=[Depends(rate_limit(10, 60))])
+@admin_router.put(
+    "/post-types/{pt_id}",
+    response_model=PostTypeResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def update_post_type(
     pt_id: uuid.UUID,
     body: PostTypeUpdate,
@@ -251,13 +308,28 @@ async def update_post_type(
     # Lock slug and url_prefix if posts assigned
     if post_count > 0:
         if "slug" in update_data and update_data["slug"] != pt.slug:
-            raise AppError("SLUG_LOCKED", "Cannot change slug when posts are assigned to this type", 400)
+            raise AppError(
+                "SLUG_LOCKED",
+                "Cannot change slug when posts are assigned to this type",
+                400,
+            )
         if "url_prefix" in update_data and update_data["url_prefix"] != pt.url_prefix:
-            raise AppError("PREFIX_LOCKED", "Cannot change url_prefix when posts are assigned to this type", 400)
+            raise AppError(
+                "PREFIX_LOCKED",
+                "Cannot change url_prefix when posts are assigned to this type",
+                400,
+            )
 
     # Check reserved prefix
-    if "url_prefix" in update_data and update_data["url_prefix"] in RESERVED_URL_PREFIXES:
-        raise AppError("RESERVED_PREFIX", f"URL prefix '{update_data['url_prefix']}' is reserved", 400)
+    if (
+        "url_prefix" in update_data
+        and update_data["url_prefix"] in RESERVED_URL_PREFIXES
+    ):
+        raise AppError(
+            "RESERVED_PREFIX",
+            f"URL prefix '{update_data['url_prefix']}' is reserved",
+            400,
+        )
 
     for key, value in update_data.items():
         setattr(pt, key, value)
@@ -267,13 +339,22 @@ async def update_post_type(
     await session.refresh(pt)
 
     return PostTypeResponse(
-        id=pt.id, name=pt.name, slug=pt.slug, url_prefix=pt.url_prefix,
-        description=pt.description, icon=pt.icon, has_archive=pt.has_archive,
-        is_system=pt.is_system, archive_title=pt.archive_title,
+        id=pt.id,
+        name=pt.name,
+        slug=pt.slug,
+        url_prefix=pt.url_prefix,
+        description=pt.description,
+        icon=pt.icon,
+        has_archive=pt.has_archive,
+        is_system=pt.is_system,
+        archive_title=pt.archive_title,
         archive_description=pt.archive_description,
-        sitemap_priority=pt.sitemap_priority, sitemap_changefreq=pt.sitemap_changefreq,
-        sort_order=pt.sort_order, post_count=post_count,
-        created_at=pt.created_at, updated_at=pt.updated_at,
+        sitemap_priority=pt.sitemap_priority,
+        sitemap_changefreq=pt.sitemap_changefreq,
+        sort_order=pt.sort_order,
+        post_count=post_count,
+        created_at=pt.created_at,
+        updated_at=pt.updated_at,
     )
 
 
@@ -295,7 +376,9 @@ async def delete_post_type(
         select(func.count(BlogPost.id)).where(BlogPost.post_type_id == pt.id)
     )
     if (count_result.scalar() or 0) > 0:
-        raise AppError("TYPE_HAS_POSTS", "Cannot delete post type with assigned posts", 400)
+        raise AppError(
+            "TYPE_HAS_POSTS", "Cannot delete post type with assigned posts", 400
+        )
 
     await session.delete(pt)
     await session.commit()
@@ -304,7 +387,12 @@ async def delete_post_type(
 
 # --- Categories ---
 
-@admin_router.get("/categories", response_model=list[CategoryResponse], dependencies=[Depends(rate_limit(30, 60))])
+
+@admin_router.get(
+    "/categories",
+    response_model=list[CategoryResponse],
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def list_categories(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
@@ -316,46 +404,76 @@ async def list_categories(
 
     # Count posts per category
     count_result = await session.execute(
-        select(BlogPost.category_id, func.count(BlogPost.id))
-        .group_by(BlogPost.category_id)
+        select(BlogPost.category_id, func.count(BlogPost.id)).group_by(
+            BlogPost.category_id
+        )
     )
     counts = dict(count_result.all())
 
     return [
         CategoryResponse(
-            id=c.id, name=c.name, slug=c.slug,
-            description=c.description, sort_order=c.sort_order,
+            id=c.id,
+            name=c.name,
+            slug=c.slug,
+            description=c.description,
+            sort_order=c.sort_order,
             post_count=counts.get(c.id, 0),
         )
         for c in categories
     ]
 
 
-@admin_router.post("/categories", response_model=CategoryResponse, dependencies=[Depends(rate_limit(10, 60))])
+@admin_router.post(
+    "/categories",
+    response_model=CategoryResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def create_category(
     body: CategoryCreate,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    existing = await session.execute(select(BlogCategory).where(BlogCategory.slug == body.slug))
+    existing = await session.execute(
+        select(BlogCategory).where(BlogCategory.slug == body.slug)
+    )
     if existing.scalar_one_or_none():
-        raise AppError("BLOG_CATEGORY_EXISTS", "Category with this slug already exists", 409)
+        raise AppError(
+            "BLOG_CATEGORY_EXISTS", "Category with this slug already exists", 409
+        )
 
-    cat = BlogCategory(name=body.name, slug=body.slug, description=body.description, sort_order=body.sort_order)
+    cat = BlogCategory(
+        name=body.name,
+        slug=body.slug,
+        description=body.description,
+        sort_order=body.sort_order,
+    )
     session.add(cat)
     await session.commit()
     await session.refresh(cat)
-    return CategoryResponse(id=cat.id, name=cat.name, slug=cat.slug, description=cat.description, sort_order=cat.sort_order, post_count=0)
+    return CategoryResponse(
+        id=cat.id,
+        name=cat.name,
+        slug=cat.slug,
+        description=cat.description,
+        sort_order=cat.sort_order,
+        post_count=0,
+    )
 
 
-@admin_router.put("/categories/{cat_id}", response_model=CategoryResponse, dependencies=[Depends(rate_limit(10, 60))])
+@admin_router.put(
+    "/categories/{cat_id}",
+    response_model=CategoryResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def update_category(
     cat_id: uuid.UUID,
     body: CategoryUpdate,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await session.execute(select(BlogCategory).where(BlogCategory.id == cat_id))
+    result = await session.execute(
+        select(BlogCategory).where(BlogCategory.id == cat_id)
+    )
     cat = result.scalar_one_or_none()
     if not cat:
         raise AppError("BLOG_CATEGORY_NOT_FOUND", "Category not found", 404)
@@ -372,10 +490,19 @@ async def update_category(
     await session.commit()
     await session.refresh(cat)
 
-    count_result = await session.execute(select(func.count(BlogPost.id)).where(BlogPost.category_id == cat.id))
+    count_result = await session.execute(
+        select(func.count(BlogPost.id)).where(BlogPost.category_id == cat.id)
+    )
     count = count_result.scalar() or 0
 
-    return CategoryResponse(id=cat.id, name=cat.name, slug=cat.slug, description=cat.description, sort_order=cat.sort_order, post_count=count)
+    return CategoryResponse(
+        id=cat.id,
+        name=cat.name,
+        slug=cat.slug,
+        description=cat.description,
+        sort_order=cat.sort_order,
+        post_count=count,
+    )
 
 
 @admin_router.delete("/categories/{cat_id}", dependencies=[Depends(rate_limit(5, 60))])
@@ -384,7 +511,9 @@ async def delete_category(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await session.execute(select(BlogCategory).where(BlogCategory.id == cat_id))
+    result = await session.execute(
+        select(BlogCategory).where(BlogCategory.id == cat_id)
+    )
     cat = result.scalar_one_or_none()
     if not cat:
         raise AppError("BLOG_CATEGORY_NOT_FOUND", "Category not found", 404)
@@ -396,7 +525,12 @@ async def delete_category(
 
 # --- Posts ---
 
-@admin_router.get("/posts", response_model=PostListResponse, dependencies=[Depends(rate_limit(30, 60))])
+
+@admin_router.get(
+    "/posts",
+    response_model=PostListResponse,
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def list_posts_admin(
     status: str | None = Query(None),
     category_id: uuid.UUID | None = Query(None),
@@ -420,17 +554,25 @@ async def list_posts_admin(
         count_q = count_q.join(BlogPostType).where(BlogPostType.slug == post_type)
 
     total = (await session.execute(count_q)).scalar() or 0
-    q = q.order_by(BlogPost.updated_at.desc()).offset((page - 1) * per_page).limit(per_page)
+    q = (
+        q.order_by(BlogPost.updated_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
     result = await session.execute(q)
     posts = result.scalars().all()
 
     return PostListResponse(
         posts=[PostListItem(**_post_to_list_item(p)) for p in posts],
-        total=total, page=page, per_page=per_page,
+        total=total,
+        page=page,
+        per_page=per_page,
     )
 
 
-@admin_router.post("/posts", response_model=PostDetail, dependencies=[Depends(rate_limit(10, 60))])
+@admin_router.post(
+    "/posts", response_model=PostDetail, dependencies=[Depends(rate_limit(10, 60))]
+)
 async def create_post(
     body: PostCreate,
     user: User = Depends(require_admin),
@@ -470,7 +612,11 @@ async def create_post(
     return PostDetail(**_post_to_detail(post))
 
 
-@admin_router.get("/posts/{post_id}", response_model=PostDetail, dependencies=[Depends(rate_limit(30, 60))])
+@admin_router.get(
+    "/posts/{post_id}",
+    response_model=PostDetail,
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def get_post_admin(
     post_id: uuid.UUID,
     user: User = Depends(require_admin),
@@ -483,7 +629,11 @@ async def get_post_admin(
     return PostDetail(**_post_to_detail(post))
 
 
-@admin_router.put("/posts/{post_id}", response_model=PostDetail, dependencies=[Depends(rate_limit(20, 60))])
+@admin_router.put(
+    "/posts/{post_id}",
+    response_model=PostDetail,
+    dependencies=[Depends(rate_limit(20, 60))],
+)
 async def update_post(
     post_id: uuid.UUID,
     body: PostUpdate,
@@ -539,7 +689,11 @@ async def delete_post(
     return {"ok": True}
 
 
-@admin_router.post("/posts/{post_id}/publish", response_model=PostDetail, dependencies=[Depends(rate_limit(10, 60))])
+@admin_router.post(
+    "/posts/{post_id}/publish",
+    response_model=PostDetail,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def publish_post(
     post_id: uuid.UUID,
     user: User = Depends(require_admin),
@@ -561,7 +715,11 @@ async def publish_post(
     return PostDetail(**_post_to_detail(post))
 
 
-@admin_router.post("/posts/{post_id}/unpublish", response_model=PostDetail, dependencies=[Depends(rate_limit(10, 60))])
+@admin_router.post(
+    "/posts/{post_id}/unpublish",
+    response_model=PostDetail,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def unpublish_post(
     post_id: uuid.UUID,
     user: User = Depends(require_admin),
@@ -583,7 +741,12 @@ async def unpublish_post(
 
 # --- Image Upload ---
 
-@admin_router.post("/images/upload", response_model=ImageResponse, dependencies=[Depends(rate_limit(20, 60))])
+
+@admin_router.post(
+    "/images/upload",
+    response_model=ImageResponse,
+    dependencies=[Depends(rate_limit(20, 60))],
+)
 async def upload_image(
     file: UploadFile = File(...),
     post_id: uuid.UUID | None = Query(None),
@@ -596,9 +759,17 @@ async def upload_image(
 
     # Restrict file extensions to prevent uploading disguised files
     ALLOWED_IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "svg", "ico", "avif"}
-    ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else "jpg"
+    ext = (
+        file.filename.rsplit(".", 1)[-1].lower()
+        if file.filename and "." in file.filename
+        else "jpg"
+    )
     if ext not in ALLOWED_IMAGE_EXTS:
-        raise AppError("BLOG_INVALID_FILE", f"File extension '.{ext}' not allowed. Use: {', '.join(sorted(ALLOWED_IMAGE_EXTS))}", 400)
+        raise AppError(
+            "BLOG_INVALID_FILE",
+            f"File extension '.{ext}' not allowed. Use: {', '.join(sorted(ALLOWED_IMAGE_EXTS))}",
+            400,
+        )
 
     data = await file.read()
     if len(data) > 10 * 1024 * 1024:  # 10 MB
@@ -643,16 +814,28 @@ async def upload_image(
     await session.refresh(image)
 
     return ImageResponse(
-        id=image.id, url=image.url, alt_text=image.alt_text,
-        file_size=image.file_size, width=image.width, height=image.height,
-        title=image.title, original_filename=image.original_filename,
-        caption=image.caption, post_id=image.post_id, created_at=image.created_at,
+        id=image.id,
+        url=image.url,
+        alt_text=image.alt_text,
+        file_size=image.file_size,
+        width=image.width,
+        height=image.height,
+        title=image.title,
+        original_filename=image.original_filename,
+        caption=image.caption,
+        post_id=image.post_id,
+        created_at=image.created_at,
     )
 
 
 # --- Image Management ---
 
-@admin_router.get("/images", response_model=ImageListResponse, dependencies=[Depends(rate_limit(30, 60))])
+
+@admin_router.get(
+    "/images",
+    response_model=ImageListResponse,
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def list_images(
     search: str | None = Query(None),
     sort_by: ImageSortBy | None = Query(None),
@@ -707,7 +890,11 @@ async def list_images(
     total = (await session.execute(count_q)).scalar() or 0
 
     # Sort
-    col = BlogImage.file_size if sort_by == ImageSortBy.file_size else BlogImage.created_at
+    col = (
+        BlogImage.file_size
+        if sort_by == ImageSortBy.file_size
+        else BlogImage.created_at
+    )
     order = col.asc() if sort_order == SortOrder.asc else col.desc()
     q = q.order_by(order)
 
@@ -718,14 +905,23 @@ async def list_images(
     return ImageListResponse(
         images=[
             ImageResponse(
-                id=img.id, url=img.url, alt_text=img.alt_text,
-                file_size=img.file_size, width=img.width, height=img.height,
-                title=img.title, original_filename=img.original_filename,
-                caption=img.caption, post_id=img.post_id, created_at=img.created_at,
+                id=img.id,
+                url=img.url,
+                alt_text=img.alt_text,
+                file_size=img.file_size,
+                width=img.width,
+                height=img.height,
+                title=img.title,
+                original_filename=img.original_filename,
+                caption=img.caption,
+                post_id=img.post_id,
+                created_at=img.created_at,
             )
             for img in images
         ],
-        total=total, page=page, per_page=per_page,
+        total=total,
+        page=page,
+        per_page=per_page,
     )
 
 
@@ -740,21 +936,42 @@ async def list_image_months(
             extract("month", BlogImage.created_at).label("m"),
         )
         .group_by("y", "m")
-        .order_by(extract("year", BlogImage.created_at).desc(), extract("month", BlogImage.created_at).desc())
+        .order_by(
+            extract("year", BlogImage.created_at).desc(),
+            extract("month", BlogImage.created_at).desc(),
+        )
     )
     rows = result.all()
 
     month_names = [
-        "", "January", "February", "March", "April", "May", "June",
-        "July", "August", "September", "October", "November", "December",
+        "",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
     ]
     return [
-        {"value": f"{int(r.y)}-{int(r.m):02d}", "label": f"{month_names[int(r.m)]} {int(r.y)}"}
+        {
+            "value": f"{int(r.y)}-{int(r.m):02d}",
+            "label": f"{month_names[int(r.m)]} {int(r.y)}",
+        }
         for r in rows
     ]
 
 
-@admin_router.put("/images/{image_id}", response_model=ImageResponse, dependencies=[Depends(rate_limit(20, 60))])
+@admin_router.put(
+    "/images/{image_id}",
+    response_model=ImageResponse,
+    dependencies=[Depends(rate_limit(20, 60))],
+)
 async def update_image(
     image_id: uuid.UUID,
     body: ImageUpdate,
@@ -773,10 +990,17 @@ async def update_image(
     await session.commit()
     await session.refresh(image)
     return ImageResponse(
-        id=image.id, url=image.url, alt_text=image.alt_text,
-        file_size=image.file_size, width=image.width, height=image.height,
-        title=image.title, original_filename=image.original_filename,
-        caption=image.caption, post_id=image.post_id, created_at=image.created_at,
+        id=image.id,
+        url=image.url,
+        alt_text=image.alt_text,
+        file_size=image.file_size,
+        width=image.width,
+        height=image.height,
+        title=image.title,
+        original_filename=image.original_filename,
+        caption=image.caption,
+        post_id=image.post_id,
+        created_at=image.created_at,
     )
 
 
@@ -808,9 +1032,7 @@ async def bulk_delete_images(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await session.execute(
-        select(BlogImage).where(BlogImage.id.in_(body.ids))
-    )
+    result = await session.execute(select(BlogImage).where(BlogImage.id.in_(body.ids)))
     found = list(result.scalars().all())
     found_ids = {img.id for img in found}
     not_found = len(body.ids) - len(found_ids)
@@ -840,7 +1062,11 @@ async def bulk_delete_images(
 public_router = APIRouter(prefix="/v1/blog", tags=["blog"])
 
 
-@public_router.get("/post-types", response_model=list[PostTypeResponse], dependencies=[Depends(rate_limit(60, 60))])
+@public_router.get(
+    "/post-types",
+    response_model=list[PostTypeResponse],
+    dependencies=[Depends(rate_limit(60, 60))],
+)
 async def list_post_types_public(
     session: AsyncSession = Depends(get_session),
 ):
@@ -858,19 +1084,32 @@ async def list_post_types_public(
 
     return [
         PostTypeResponse(
-            id=t.id, name=t.name, slug=t.slug, url_prefix=t.url_prefix,
-            description=t.description, icon=t.icon, has_archive=t.has_archive,
-            is_system=t.is_system, archive_title=t.archive_title,
+            id=t.id,
+            name=t.name,
+            slug=t.slug,
+            url_prefix=t.url_prefix,
+            description=t.description,
+            icon=t.icon,
+            has_archive=t.has_archive,
+            is_system=t.is_system,
+            archive_title=t.archive_title,
             archive_description=t.archive_description,
-            sitemap_priority=t.sitemap_priority, sitemap_changefreq=t.sitemap_changefreq,
-            sort_order=t.sort_order, post_count=counts.get(t.id, 0),
-            created_at=t.created_at, updated_at=t.updated_at,
+            sitemap_priority=t.sitemap_priority,
+            sitemap_changefreq=t.sitemap_changefreq,
+            sort_order=t.sort_order,
+            post_count=counts.get(t.id, 0),
+            created_at=t.created_at,
+            updated_at=t.updated_at,
         )
         for t in types
     ]
 
 
-@public_router.get("/posts", response_model=PostListResponse, dependencies=[Depends(rate_limit(60, 60))])
+@public_router.get(
+    "/posts",
+    response_model=PostListResponse,
+    dependencies=[Depends(rate_limit(60, 60))],
+)
 async def list_posts_public(
     category: str | None = Query(None),
     tag: str | None = Query(None),
@@ -893,17 +1132,27 @@ async def list_posts_public(
         count_q = count_q.join(BlogPostType).where(BlogPostType.slug == post_type)
 
     total = (await session.execute(count_q)).scalar() or 0
-    q = q.order_by(BlogPost.published_at.desc()).offset((page - 1) * per_page).limit(per_page)
+    q = (
+        q.order_by(BlogPost.published_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
     result = await session.execute(q)
     posts = result.scalars().all()
 
     return PostListResponse(
         posts=[PostListItem(**_post_to_list_item(p)) for p in posts],
-        total=total, page=page, per_page=per_page,
+        total=total,
+        page=page,
+        per_page=per_page,
     )
 
 
-@public_router.get("/posts/{slug}", response_model=PostDetail, dependencies=[Depends(rate_limit(60, 60))])
+@public_router.get(
+    "/posts/{slug}",
+    response_model=PostDetail,
+    dependencies=[Depends(rate_limit(60, 60))],
+)
 async def get_post_public(
     slug: str,
     session: AsyncSession = Depends(get_session),
@@ -917,7 +1166,11 @@ async def get_post_public(
     return PostDetail(**_post_to_detail(post))
 
 
-@public_router.get("/resolve", response_model=RedirectResponse, dependencies=[Depends(rate_limit(60, 60))])
+@public_router.get(
+    "/resolve",
+    response_model=RedirectResponse,
+    dependencies=[Depends(rate_limit(60, 60))],
+)
 async def resolve_redirect(
     path: str = Query(...),
     session: AsyncSession = Depends(get_session),
@@ -941,7 +1194,11 @@ async def resolve_redirect(
     return RedirectResponse(redirect_to=f"/{new_prefix}/{post.slug}")
 
 
-@public_router.get("/categories", response_model=list[CategoryResponse], dependencies=[Depends(rate_limit(60, 60))])
+@public_router.get(
+    "/categories",
+    response_model=list[CategoryResponse],
+    dependencies=[Depends(rate_limit(60, 60))],
+)
 async def list_categories_public(
     session: AsyncSession = Depends(get_session),
 ):
@@ -959,8 +1216,11 @@ async def list_categories_public(
 
     return [
         CategoryResponse(
-            id=c.id, name=c.name, slug=c.slug,
-            description=c.description, sort_order=c.sort_order,
+            id=c.id,
+            name=c.name,
+            slug=c.slug,
+            description=c.description,
+            sort_order=c.sort_order,
             post_count=counts.get(c.id, 0),
         )
         for c in categories

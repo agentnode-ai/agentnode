@@ -1,4 +1,5 @@
 """Integration tests for the resolution engine."""
+
 import json
 from unittest.mock import patch
 
@@ -54,16 +55,22 @@ def make_manifest(slug, capabilities, framework="generic", runtime="python"):
         "tags": ["test"],
         "categories": ["document-processing"],
         "dependencies": [],
-        "security": {"signature": "", "provenance": {"source_repo": "", "commit": "", "build_system": ""}},
+        "security": {
+            "signature": "",
+            "provenance": {"source_repo": "", "commit": "", "build_system": ""},
+        },
     }
 
 
 async def setup_publisher(client):
     await client.post("/v1/auth/register", json=TEST_USER)
-    login = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     token = login.json()["access_token"]
     await client.post(
         "/v1/publishers",
@@ -87,9 +94,12 @@ async def test_resolve_single_capability(mock_meili, mock_s3, client):
         headers={"Authorization": f"Bearer {token}"},
     )
 
-    resp = await client.post("/v1/resolve", json={
-        "capabilities": ["pdf_extraction"],
-    })
+    resp = await client.post(
+        "/v1/resolve",
+        json={
+            "capabilities": ["pdf_extraction"],
+        },
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["total"] == 1
@@ -120,9 +130,12 @@ async def test_resolve_multiple_packages_ranked(mock_meili, mock_s3, client):
         headers={"Authorization": f"Bearer {token}"},
     )
 
-    resp = await client.post("/v1/resolve", json={
-        "capabilities": ["pdf_extraction", "web_search"],
-    })
+    resp = await client.post(
+        "/v1/resolve",
+        json={
+            "capabilities": ["pdf_extraction", "web_search"],
+        },
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["total"] == 2
@@ -151,10 +164,13 @@ async def test_resolve_framework_filter(mock_meili, mock_s3, client):
         headers={"Authorization": f"Bearer {token}"},
     )
 
-    resp = await client.post("/v1/resolve", json={
-        "capabilities": ["pdf_extraction"],
-        "framework": "langchain",
-    })
+    resp = await client.post(
+        "/v1/resolve",
+        json={
+            "capabilities": ["pdf_extraction"],
+            "framework": "langchain",
+        },
+    )
     data = resp.json()
     assert data["total"] == 2
     # langchain-pdf should rank higher for langchain framework
@@ -163,18 +179,24 @@ async def test_resolve_framework_filter(mock_meili, mock_s3, client):
 
 @pytest.mark.asyncio
 async def test_resolve_no_match(client):
-    resp = await client.post("/v1/resolve", json={
-        "capabilities": ["nonexistent_capability"],
-    })
+    resp = await client.post(
+        "/v1/resolve",
+        json={
+            "capabilities": ["nonexistent_capability"],
+        },
+    )
     assert resp.status_code == 200
     assert resp.json()["total"] == 0
 
 
 @pytest.mark.asyncio
 async def test_resolve_empty_capabilities(client):
-    resp = await client.post("/v1/resolve", json={
-        "capabilities": [],
-    })
+    resp = await client.post(
+        "/v1/resolve",
+        json={
+            "capabilities": [],
+        },
+    )
     assert resp.status_code == 422
 
 
@@ -194,9 +216,12 @@ async def test_resolve_with_limit(mock_meili, mock_s3, client):
             headers={"Authorization": f"Bearer {token}"},
         )
 
-    resp = await client.post("/v1/resolve", json={
-        "capabilities": ["pdf_extraction"],
-        "limit": 2,
-    })
+    resp = await client.post(
+        "/v1/resolve",
+        json={
+            "capabilities": ["pdf_extraction"],
+            "limit": 2,
+        },
+    )
     data = resp.json()
     assert len(data["results"]) == 2

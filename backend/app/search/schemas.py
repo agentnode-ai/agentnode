@@ -4,10 +4,14 @@ from app.shared.validators import is_safe_filter_value
 
 # Allowed sort fields to prevent sort injection
 _ALLOWED_SORTS = {
-    "download_count:asc", "download_count:desc",
-    "install_count:asc", "install_count:desc",
-    "published_at:asc", "published_at:desc",
-    "name:asc", "name:desc",
+    "download_count:asc",
+    "download_count:desc",
+    "install_count:asc",
+    "install_count:desc",
+    "published_at:asc",
+    "published_at:desc",
+    "name:asc",
+    "name:desc",
 }
 
 
@@ -26,8 +30,14 @@ class SearchRequest(BaseModel):
     per_page: int = Field(20, ge=1, le=100)
 
     @field_validator(
-        "package_type", "capability_id", "framework", "runtime",
-        "trust_level", "verification_tier", "tag", "publisher_slug",
+        "package_type",
+        "capability_id",
+        "framework",
+        "runtime",
+        "trust_level",
+        "verification_tier",
+        "tag",
+        "publisher_slug",
         mode="before",
     )
     @classmethod

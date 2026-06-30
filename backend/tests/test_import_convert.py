@@ -1,4 +1,5 @@
 """Tests for the import conversion endpoint and service."""
+
 from __future__ import annotations
 
 import ast
@@ -21,7 +22,7 @@ def word_count(text: str) -> dict:
     return {"count": len(words)}
 '''
 
-BASETOOL_STR = '''
+BASETOOL_STR = """
 from langchain.tools import BaseTool
 
 class WebSearch(BaseTool):
@@ -31,7 +32,7 @@ class WebSearch(BaseTool):
         import requests
         resp = requests.get(f"https://api.example.com/search?q={query}")
         return resp.text
-'''
+"""
 
 UNRESOLVED = '''
 from langchain.tools import tool
@@ -54,10 +55,10 @@ async def fetch_url(url: str) -> dict:
             return {"content": await resp.text()}
 '''
 
-NO_PATTERN = '''
+NO_PATTERN = """
 def helper_function():
     return 42
-'''
+"""
 
 CREWAI_NAMED = '''
 from crewai_tools import tool
@@ -80,7 +81,7 @@ def process(data: str) -> dict:
     return {"result": helper(data)}
 '''
 
-SELF_REFERENCE = '''
+SELF_REFERENCE = """
 from langchain.tools import BaseTool
 
 class ApiTool(BaseTool):
@@ -91,7 +92,7 @@ class ApiTool(BaseTool):
         import requests
         resp = requests.get(endpoint, headers={"Authorization": self.api_key})
         return {"data": resp.json()}
-'''
+"""
 
 UNKNOWN_IMPORT_UNUSED = '''
 from langchain.tools import tool
@@ -106,6 +107,7 @@ def count(text: str) -> dict:
 
 
 # ── Tests ────────────────────────────────────────────────────────────
+
 
 class TestSimpleTool:
     """Fixture 1: Simple @tool -> high confidence, draft_ready=True"""
@@ -168,7 +170,11 @@ class TestBaseToolStr:
         resp = convert(req)
 
         tool_py = next(f for f in resp.code_files if f.path.endswith("tool.py"))
-        assert '{"result":' in tool_py.content or "{'result':" in tool_py.content or '"result"' in tool_py.content
+        assert (
+            '{"result":' in tool_py.content
+            or "{'result':" in tool_py.content
+            or '"result"' in tool_py.content
+        )
 
     def test_requests_in_dependencies(self):
         req = ConvertRequest(platform="langchain", content=BASETOOL_STR)
@@ -345,7 +351,9 @@ class TestOnlyConfirmedDepsInPyproject:
         req = ConvertRequest(platform="langchain", content=UNKNOWN_IMPORT_ACTIVE)
         resp = convert(req)
 
-        pyproject = next((f for f in resp.code_files if f.path == "pyproject.toml"), None)
+        pyproject = next(
+            (f for f in resp.code_files if f.path == "pyproject.toml"), None
+        )
         if pyproject:
             assert "my_internal_lib" not in pyproject.content
 
@@ -378,7 +386,7 @@ def safe_fetch(url: str) -> dict:
         return {"ok": False}
 '''
 
-STRUCTURED_TOOL = '''
+STRUCTURED_TOOL = """
 from langchain.tools import StructuredTool
 
 def do_search(query: str) -> dict:
@@ -389,7 +397,7 @@ search_tool = StructuredTool.from_function(
     name="search",
     description="Search"
 )
-'''
+"""
 
 NESTED_IMPORT = '''
 from langchain.tools import tool
@@ -618,14 +626,22 @@ def fire_and_forget(event: str) -> None:
 '''
 
     def test_list_str_gets_warning_and_wrap(self):
-        resp = convert(ConvertRequest(platform="langchain", content=self.RETURN_LIST_STR))
-        assert any("list" in w.lower() and "wrapped" in w.lower() for w in resp.warnings)
+        resp = convert(
+            ConvertRequest(platform="langchain", content=self.RETURN_LIST_STR)
+        )
+        assert any(
+            "list" in w.lower() and "wrapped" in w.lower() for w in resp.warnings
+        )
         assert resp.confidence.level == "medium"
         assert resp.draft_ready is True
 
     def test_list_generic_gets_warning_and_wrap(self):
-        resp = convert(ConvertRequest(platform="langchain", content=self.RETURN_LIST_GENERIC))
-        assert any("list" in w.lower() and "wrapped" in w.lower() for w in resp.warnings)
+        resp = convert(
+            ConvertRequest(platform="langchain", content=self.RETURN_LIST_GENERIC)
+        )
+        assert any(
+            "list" in w.lower() and "wrapped" in w.lower() for w in resp.warnings
+        )
         assert resp.confidence.level == "medium"
         assert resp.draft_ready is True
 
@@ -639,7 +655,9 @@ def fire_and_forget(event: str) -> None:
         resp = convert(ConvertRequest(platform="langchain", content=self.RETURN_UNION))
         assert resp.confidence.level == "low"
         assert resp.draft_ready is False
-        assert any("mixed" in w.lower() or "ambiguous" in w.lower() for w in resp.warnings)
+        assert any(
+            "mixed" in w.lower() or "ambiguous" in w.lower() for w in resp.warnings
+        )
 
     def test_none_is_medium(self):
         resp = convert(ConvertRequest(platform="langchain", content=self.RETURN_NONE))
@@ -655,13 +673,19 @@ def fire_and_forget(event: str) -> None:
     def test_non_dict_return_always_has_warning(self):
         """Invariant: non-dict return type must ALWAYS produce a warning."""
         for fixture in [
-            self.RETURN_LIST_STR, self.RETURN_LIST_GENERIC,
-            self.RETURN_TUPLE, self.RETURN_UNION, self.RETURN_NONE,
+            self.RETURN_LIST_STR,
+            self.RETURN_LIST_GENERIC,
+            self.RETURN_TUPLE,
+            self.RETURN_UNION,
+            self.RETURN_NONE,
         ]:
             resp = convert(ConvertRequest(platform="langchain", content=fixture))
             return_warnings = [
-                w for w in resp.warnings
-                if "return" in w.lower() or "wrapped" in w.lower() or "anp expects" in w.lower()
+                w
+                for w in resp.warnings
+                if "return" in w.lower()
+                or "wrapped" in w.lower()
+                or "anp expects" in w.lower()
             ]
             assert len(return_warnings) > 0, (
                 f"Non-dict return fixture produced no return-type warning. "
@@ -774,9 +798,15 @@ def search(query: str) -> dict:
         resp = convert(ConvertRequest(platform="langchain", content=source))
         assert resp.confidence.level == "low"
         assert resp.draft_ready is False
-        cred_warnings = [w for w in resp.warnings if "hardcoded credential" in w.lower()]
+        cred_warnings = [
+            w for w in resp.warnings if "hardcoded credential" in w.lower()
+        ]
         assert len(cred_warnings) >= 1
-        blocking = [w for w in resp.grouped_warnings if w.category == "blocking" and "credential" in w.message.lower()]
+        blocking = [
+            w
+            for w in resp.grouped_warnings
+            if w.category == "blocking" and "credential" in w.message.lower()
+        ]
         assert len(blocking) >= 1
 
     def test_hardcoded_bearer_token_blocks_draft(self):
@@ -825,7 +855,9 @@ def fetch(url: str) -> dict:
     return {"url": url}
 '''
         resp = convert(ConvertRequest(platform="langchain", content=source))
-        cred_warnings = [w for w in resp.warnings if "hardcoded credential" in w.lower()]
+        cred_warnings = [
+            w for w in resp.warnings if "hardcoded credential" in w.lower()
+        ]
         assert len(cred_warnings) == 0
         assert resp.confidence.level == "high"
 
@@ -843,7 +875,9 @@ def search(query: str) -> dict:
     return {"query": query}
 '''
         resp = convert(ConvertRequest(platform="langchain", content=source))
-        cred_warnings = [w for w in resp.warnings if "hardcoded credential" in w.lower()]
+        cred_warnings = [
+            w for w in resp.warnings if "hardcoded credential" in w.lower()
+        ]
         assert len(cred_warnings) == 0
 
     def test_non_credential_variable_not_flagged(self):
@@ -860,7 +894,9 @@ def fetch(url: str) -> dict:
     return {"url": url}
 '''
         resp = convert(ConvertRequest(platform="langchain", content=source))
-        cred_warnings = [w for w in resp.warnings if "hardcoded credential" in w.lower()]
+        cred_warnings = [
+            w for w in resp.warnings if "hardcoded credential" in w.lower()
+        ]
         assert len(cred_warnings) == 0
         assert resp.confidence.level == "high"
 
@@ -868,35 +904,37 @@ def fetch(url: str) -> dict:
         """Invariant: hardcoded credential must NEVER be draft_ready=true."""
         fixtures = [
             # sk- prefix
-            '''
+            """
 from langchain.tools import tool
 API_KEY = "sk-1234567890abcdef1234567890abcdef"
 @tool
 def run(q: str) -> dict:
     return {"q": q}
-''',
+""",
             # ghp_ prefix (GitHub token)
-            '''
+            """
 from langchain.tools import tool
 ACCESS_TOKEN = "ghp_ABCDEFghijklmnopqrstuvwxyz012345"
 @tool
 def run(q: str) -> dict:
     return {"q": q}
-''',
+""",
             # Long string with credential name
-            '''
+            """
 from crewai_tools import tool
 CLIENT_SECRET = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
 @tool("Test")
 def run(q: str) -> dict:
     return {"q": q}
-''',
+""",
         ]
         for fixture in fixtures:
-            resp = convert(ConvertRequest(
-                platform="langchain" if "langchain" in fixture else "crewai",
-                content=fixture,
-            ))
+            resp = convert(
+                ConvertRequest(
+                    platform="langchain" if "langchain" in fixture else "crewai",
+                    content=fixture,
+                )
+            )
             assert resp.draft_ready is False, (
                 f"Hardcoded credential fixture was draft_ready=True! "
                 f"Warnings: {resp.warnings}"
@@ -987,7 +1025,7 @@ def summarize_prompt(text: str) -> str:
     return f"Please summarize: {text}"
 '''
 
-MCP_LOW_LEVEL = '''
+MCP_LOW_LEVEL = """
 from mcp.server import Server
 import mcp.server.stdio
 
@@ -997,7 +1035,7 @@ server = Server("my-server")
 async def call_tool(name: str, arguments: dict):
     if name == "search":
         return [{"type": "text", "text": "result"}]
-'''
+"""
 
 MCP_HELPER = '''
 from mcp.server.fastmcp import FastMCP
@@ -1028,18 +1066,30 @@ class TestMCPSimple:
 
     def test_generated_code_valid(self):
         resp = convert(ConvertRequest(platform="mcp", content=MCP_SIMPLE))
-        tool_py = next(f for f in resp.code_files if f.path.endswith("tool.py") and "test" not in f.path)
+        tool_py = next(
+            f
+            for f in resp.code_files
+            if f.path.endswith("tool.py") and "test" not in f.path
+        )
         ast.parse(tool_py.content)
 
     def test_no_mcp_imports(self):
         resp = convert(ConvertRequest(platform="mcp", content=MCP_SIMPLE))
-        tool_py = next(f for f in resp.code_files if f.path.endswith("tool.py") and "test" not in f.path)
+        tool_py = next(
+            f
+            for f in resp.code_files
+            if f.path.endswith("tool.py") and "test" not in f.path
+        )
         assert "mcp" not in tool_py.content.lower()
         assert "FastMCP" not in tool_py.content
 
     def test_no_fastmcp_in_helpers(self):
         resp = convert(ConvertRequest(platform="mcp", content=MCP_SIMPLE))
-        tool_py = next(f for f in resp.code_files if f.path.endswith("tool.py") and "test" not in f.path)
+        tool_py = next(
+            f
+            for f in resp.code_files
+            if f.path.endswith("tool.py") and "test" not in f.path
+        )
         assert "FastMCP(" not in tool_py.content
 
 
@@ -1135,7 +1185,11 @@ class TestMCPHelper:
 
     def test_helper_in_output(self):
         resp = convert(ConvertRequest(platform="mcp", content=MCP_HELPER))
-        tool_py = next(f for f in resp.code_files if f.path.endswith("tool.py") and "test" not in f.path)
+        tool_py = next(
+            f
+            for f in resp.code_files
+            if f.path.endswith("tool.py") and "test" not in f.path
+        )
         assert "_normalize" in tool_py.content
 
     def test_no_unresolved_for_helper(self):
@@ -1145,70 +1199,108 @@ class TestMCPHelper:
 
 # ── OpenAI Converter Tests ──────────────────────────────────────────
 
-OPENAI_CHAT_COMPLETIONS = json.dumps([
-    {
-        "type": "function",
-        "function": {
-            "name": "get_weather",
-            "description": "Get the current weather in a location",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "location": {"type": "string", "description": "City name"},
-                    "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+OPENAI_CHAT_COMPLETIONS = json.dumps(
+    [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the current weather in a location",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string", "description": "City name"},
+                        "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
+                    },
+                    "required": ["location"],
                 },
-                "required": ["location"]
-            }
+            },
         }
-    }
-])
-
-OPENAI_MULTI = json.dumps([
-    {
-        "type": "function",
-        "function": {
-            "name": "search_web",
-            "description": "Search the web",
-            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "parse_pdf",
-            "description": "Extract text from a PDF",
-            "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]}
-        }
-    }
-])
-
-OPENAI_BARE = json.dumps({
-    "name": "create_issue",
-    "description": "Create a GitHub issue",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "title": {"type": "string", "description": "Issue title"},
-            "body": {"type": "string", "description": "Issue body"},
-            "labels": {"type": "array", "description": "Labels"}
-        },
-        "required": ["title"]
-    }
-})
-
-OPENAI_WRAPPER = json.dumps({
-    "tools": [
-        {"type": "function", "function": {"name": "tool_a", "description": "Does A", "parameters": {"type": "object", "properties": {"x": {"type": "string"}}}}},
-        {"type": "function", "function": {"name": "tool_b", "description": "Does B", "parameters": {"type": "object", "properties": {"y": {"type": "integer"}}}}}
     ]
-})
+)
+
+OPENAI_MULTI = json.dumps(
+    [
+        {
+            "type": "function",
+            "function": {
+                "name": "search_web",
+                "description": "Search the web",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "parse_pdf",
+                "description": "Extract text from a PDF",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"file_path": {"type": "string"}},
+                    "required": ["file_path"],
+                },
+            },
+        },
+    ]
+)
+
+OPENAI_BARE = json.dumps(
+    {
+        "name": "create_issue",
+        "description": "Create a GitHub issue",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Issue title"},
+                "body": {"type": "string", "description": "Issue body"},
+                "labels": {"type": "array", "description": "Labels"},
+            },
+            "required": ["title"],
+        },
+    }
+)
+
+OPENAI_WRAPPER = json.dumps(
+    {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "tool_a",
+                    "description": "Does A",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"x": {"type": "string"}},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "tool_b",
+                    "description": "Does B",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"y": {"type": "integer"}},
+                    },
+                },
+            },
+        ]
+    }
+)
 
 
 class TestOpenAIChatCompletions:
     """OpenAI: Chat Completions format -> medium confidence, draft_ready=False"""
 
     def test_basic_conversion(self):
-        resp = convert(ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS))
+        resp = convert(
+            ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS)
+        )
         assert resp.confidence.level == "medium"
         assert resp.draft_ready is False
         assert len(resp.detected_tools) == 1
@@ -1216,14 +1308,18 @@ class TestOpenAIChatCompletions:
         assert len(resp.code_files) == 5
 
     def test_params_extracted(self):
-        resp = convert(ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS))
+        resp = convert(
+            ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS)
+        )
         tool = resp.detected_tools[0]
         param_names = [p.name for p in tool.params]
         assert "location" in param_names
         assert "unit" in param_names
 
     def test_required_params(self):
-        resp = convert(ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS))
+        resp = convert(
+            ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS)
+        )
         tool = resp.detected_tools[0]
         location = next(p for p in tool.params if p.name == "location")
         unit = next(p for p in tool.params if p.name == "unit")
@@ -1231,20 +1327,30 @@ class TestOpenAIChatCompletions:
         assert unit.required is False
 
     def test_json_schema_preserved_in_manifest(self):
-        resp = convert(ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS))
+        resp = convert(
+            ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS)
+        )
         tools = resp.manifest_json["capabilities"]["tools"]
         schema = tools[0]["input_schema"]
         assert "required" in schema
         assert "location" in schema["properties"]
 
     def test_stub_code_generated(self):
-        resp = convert(ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS))
-        tool_py = next(f for f in resp.code_files if f.path.endswith("tool.py") and "test" not in f.path)
+        resp = convert(
+            ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS)
+        )
+        tool_py = next(
+            f
+            for f in resp.code_files
+            if f.path.endswith("tool.py") and "test" not in f.path
+        )
         assert "NotImplementedError" in tool_py.content
         assert "def get_weather" in tool_py.content
 
     def test_has_stub_warning(self):
-        resp = convert(ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS))
+        resp = convert(
+            ConvertRequest(platform="openai", content=OPENAI_CHAT_COMPLETIONS)
+        )
         assert any("stub" in w.lower() for w in resp.warnings)
 
 
@@ -1297,7 +1403,9 @@ class TestOpenAIInvalid:
     """OpenAI: Invalid JSON should return error"""
 
     def test_invalid_json(self):
-        resp = convert(ConvertRequest(platform="openai", content="this is not json {{{"))
+        resp = convert(
+            ConvertRequest(platform="openai", content="this is not json {{{")
+        )
         assert resp.confidence.level == "low"
         assert resp.draft_ready is False
         assert any("json" in w.lower() for w in resp.warnings)

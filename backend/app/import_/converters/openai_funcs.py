@@ -3,6 +3,7 @@
 Converts JSON-based OpenAI function definitions into ANP packages.
 Unlike LangChain/CrewAI/MCP converters, this operates on JSON, not Python AST.
 """
+
 from __future__ import annotations
 
 import json
@@ -146,16 +147,20 @@ def _extract_params_from_schema(parameters: dict) -> list[ToolParam]:
                 description = f"One of: {enum_str}"
 
         is_required = param_name in required_set
-        default_repr = None if is_required else _PYTHON_TYPE_TO_DEFAULT.get(python_type, "None")
+        default_repr = (
+            None if is_required else _PYTHON_TYPE_TO_DEFAULT.get(python_type, "None")
+        )
 
-        params.append(ToolParam(
-            name=param_name,
-            type_hint=python_type,
-            required=is_required,
-            default_repr=default_repr,
-            annotation_missing=False,
-            description=description,
-        ))
+        params.append(
+            ToolParam(
+                name=param_name,
+                type_hint=python_type,
+                required=is_required,
+                default_repr=default_repr,
+                annotation_missing=False,
+                description=description,
+            )
+        )
 
     return params
 
@@ -166,11 +171,11 @@ def _extract_params_from_schema(parameters: dict) -> list[ToolParam]:
 def _generate_stub_body(func_name: str, params: list[ToolParam]) -> str:
     """Generate a stub function body with NotImplementedError."""
     lines = [
-        f'    # TODO: Implement the logic for {func_name}',
-        '    raise NotImplementedError(',
+        f"    # TODO: Implement the logic for {func_name}",
+        "    raise NotImplementedError(",
         f'        "Function {func_name} is a stub generated from an OpenAI function schema. "',
         '        "Replace this with your actual implementation."',
-        '    )',
+        "    )",
     ]
     return "\n".join(lines) + "\n"
 
@@ -179,11 +184,11 @@ def _generate_tool_py(tools: list[ExtractedTool]) -> str:
     """Generate tool.py with stub implementations."""
     parts: list[str] = [
         '"""ANP tool module — generated from OpenAI function definitions.',
-        '',
-        'Each function below is a stub that needs implementation.',
-        'Replace the NotImplementedError with your actual logic.',
+        "",
+        "Each function below is a stub that needs implementation.",
+        "Replace the NotImplementedError with your actual logic.",
         '"""',
-        '',
+        "",
     ]
 
     for tool in tools:
@@ -314,19 +319,28 @@ def convert(
         if i < len(manifest_json.get("capabilities", {}).get("tools", [])):
             original_params = func_def.get("parameters", {})
             if original_params and isinstance(original_params, dict):
-                manifest_json["capabilities"]["tools"][i]["input_schema"] = original_params
+                manifest_json["capabilities"]["tools"][i]["input_schema"] = (
+                    original_params
+                )
 
     manifest_yaml = yaml_dump(manifest_json)
 
     # 7. Generate package files
     code_files = generate_package_files(
-        slug, module_name, tools, [], tool_py, manifest_yaml,
+        slug,
+        module_name,
+        tools,
+        [],
+        tool_py,
+        manifest_yaml,
     )
 
     # 8. Confidence: medium (stubs are valid but not functional)
     confidence = ConversionConfidence(
         level="medium",
-        reasons=["Generated from JSON schema — stub implementations require manual coding"],
+        reasons=[
+            "Generated from JSON schema — stub implementations require manual coding"
+        ],
     )
     draft_ready = False
     requires_review = True
@@ -364,8 +378,7 @@ def convert(
 
     # 11. Classify warnings
     grouped_warnings = [
-        WarningItem(message=w, category=classify_warning(w))
-        for w in warnings
+        WarningItem(message=w, category=classify_warning(w)) for w in warnings
     ]
 
     # 12. Telemetry
@@ -383,7 +396,11 @@ def convert(
         tools_detected=len(tools),
         warning_count=len(warnings),
         blocking_count=blocking_count,
-        warning_categories={"blocking": blocking_count, "review": review_count, "info": info_count},
+        warning_categories={
+            "blocking": blocking_count,
+            "review": review_count,
+            "info": info_count,
+        },
         unknown_imports_count=0,
         unresolved_symbols_count=0,
         manifest_version=manifest_version,

@@ -6,6 +6,7 @@ X-AgentNode-Signature header: ed25519:{key_id}:{base64_sig}.
 Degraded mode: if no signing key is configured or key is invalid,
 responses are served without the signature header. Never returns 500.
 """
+
 import base64
 import logging
 import re
@@ -51,7 +52,10 @@ class RegistrySigningMiddleware:
 
         if signing_key_b64:
             try:
-                from cryptography.hazmat.primitives.serialization import load_pem_private_key
+                from cryptography.hazmat.primitives.serialization import (
+                    load_pem_private_key,
+                )
+
                 pem_bytes = base64.b64decode(signing_key_b64)
                 self._private_key = load_pem_private_key(pem_bytes, password=None)
                 global _signing_ready
@@ -99,9 +103,7 @@ class RegistrySigningMiddleware:
                     header_value = f"ed25519:{self._key_id}:{sig_b64}"
 
                     headers = list(start_message.get("headers", []))
-                    headers.append(
-                        (b"x-agentnode-signature", header_value.encode())
-                    )
+                    headers.append((b"x-agentnode-signature", header_value.encode()))
                     await send({**start_message, "headers": headers})
                     await send(message)
                 else:

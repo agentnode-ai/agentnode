@@ -5,6 +5,7 @@ Security invariants (S12):
 - Never log raw secrets or encryption keys
 - Encryption errors fail closed (raise, never return partial data)
 """
+
 from __future__ import annotations
 
 import json

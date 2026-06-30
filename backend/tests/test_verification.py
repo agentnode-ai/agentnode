@@ -1,6 +1,5 @@
 """Tests for the verification pipeline."""
 
-
 from app.verification.schema_generator import (
     generate_test_input,
     generate_candidates,
@@ -30,8 +29,8 @@ from app.verification.smoke_context import (
 
 # --- schema_generator tests ---
 
-class TestSchemaGenerator:
 
+class TestSchemaGenerator:
     def test_empty_schema(self):
         assert generate_test_input(None) == {}
         assert generate_test_input({}) == {}
@@ -197,12 +196,14 @@ class TestSchemaGenerator:
 
 # --- steps tests (unit-level, no subprocess) ---
 
+
 class TestStepImportCodeGeneration:
     """Test that import step generates valid Python code."""
 
     def test_import_code_for_tools(self):
         from app.verification.steps import step_import
         from unittest.mock import MagicMock
+
         sandbox = MagicMock()
         sandbox.run_python_code.return_value = (True, "All tool entrypoints verified")
         tools = [
@@ -215,6 +216,7 @@ class TestStepImportCodeGeneration:
     def test_import_no_tools(self):
         from app.verification.steps import step_import
         from unittest.mock import MagicMock
+
         sandbox = MagicMock()
         ok, log = step_import(sandbox, [])
         assert ok is True
@@ -223,6 +225,7 @@ class TestStepImportCodeGeneration:
     def test_import_tools_without_entrypoint(self):
         from app.verification.steps import step_import
         from unittest.mock import MagicMock
+
         sandbox = MagicMock()
         tools = [{"name": "test", "entrypoint": None}]
         ok, log = step_import(sandbox, tools)
@@ -230,10 +233,10 @@ class TestStepImportCodeGeneration:
 
 
 class TestStepSmoke:
-
     def test_smoke_no_tools(self):
         from app.verification.steps import step_smoke
         from unittest.mock import MagicMock
+
         sandbox = MagicMock()
         status, log, reason, _candidate = step_smoke(sandbox, [])
         assert status == "skipped"
@@ -242,6 +245,7 @@ class TestStepSmoke:
         """Smoke step should return status string, not bool."""
         from app.verification.steps import step_smoke
         from unittest.mock import MagicMock
+
         sandbox = MagicMock()
         # Return SMOKE_JSON with ok status
         sandbox.run_python_code.return_value = (
@@ -268,6 +272,7 @@ class TestStepSmoke:
         """ValueError without input-rejection keywords → unknown_smoke_condition → inconclusive."""
         from app.verification.steps import step_smoke
         from unittest.mock import MagicMock
+
         sandbox = MagicMock()
         sandbox.run_python_code.return_value = (
             True,
@@ -277,7 +282,11 @@ class TestStepSmoke:
             {
                 "name": "tool1",
                 "entrypoint": "mod:func",
-                "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                    "required": ["x"],
+                },
             }
         ]
         status, log, reason, _candidate = step_smoke(sandbox, tools)
@@ -288,13 +297,18 @@ class TestStepSmoke:
         """Fatal errors (subprocess crash) should result in failed."""
         from app.verification.steps import step_smoke
         from unittest.mock import MagicMock
+
         sandbox = MagicMock()
         sandbox.run_python_code.return_value = (False, "Traceback: SyntaxError")
         tools = [
             {
                 "name": "tool1",
                 "entrypoint": "mod:func",
-                "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                    "required": ["x"],
+                },
             }
         ]
         status, log, reason, _candidate = step_smoke(sandbox, tools)
@@ -304,6 +318,7 @@ class TestStepSmoke:
         """Smoke should only test up to VERIFICATION_SMOKE_MAX_TOOLS tools."""
         from app.verification.steps import step_smoke
         from unittest.mock import MagicMock, patch
+
         sandbox = MagicMock()
         sandbox.run_python_code.return_value = (
             True,
@@ -314,7 +329,11 @@ class TestStepSmoke:
             {
                 "name": f"tool_{i}",
                 "entrypoint": f"mod{i}:func",
-                "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                    "required": ["x"],
+                },
             }
             for i in range(10)
         ]
@@ -330,10 +349,10 @@ class TestStepSmoke:
 
 
 class TestStepTests:
-
     def test_tests_no_test_dir(self):
         from app.verification.steps import step_tests
         from unittest.mock import MagicMock
+
         sandbox = MagicMock()
         sandbox.has_tests.return_value = False
         ok, log = step_tests(sandbox)
@@ -343,12 +362,17 @@ class TestStepTests:
 
 # --- Smoke classification tests (Phase 1 core) ---
 
+
 class TestClassifySmokeError:
     """7 core classification test cases from the Phase 1 plan."""
 
     def test_1_credential_boundary_with_env_reqs(self):
         """ValueError 'missing api key' + env_reqs=True → credential_boundary_reached, inconclusive."""
-        ctx = SmokeContext(tool_name="test", has_required_env_requirements=True, input_schema_present=True)
+        ctx = SmokeContext(
+            tool_name="test",
+            has_required_env_requirements=True,
+            input_schema_present=True,
+        )
         reason = classify_smoke_error("ValueError", "missing api key", ctx)
         assert reason == "credential_boundary_reached"
         assert REASON_VERDICTS[reason][0] == "inconclusive"
@@ -377,21 +401,27 @@ class TestClassifySmokeError:
     def test_5_type_error_contract_break_with_schema(self):
         """TypeError 'unexpected keyword argument' + schema=True → fatal_type_error, failed."""
         ctx = SmokeContext(tool_name="test", input_schema_present=True)
-        reason = classify_smoke_error("TypeError", "got an unexpected keyword argument 'foo'", ctx)
+        reason = classify_smoke_error(
+            "TypeError", "got an unexpected keyword argument 'foo'", ctx
+        )
         assert reason == "fatal_type_error"
         assert REASON_VERDICTS[reason][0] == "failed"
 
     def test_6_type_error_contract_break_without_schema(self):
         """TypeError 'unexpected keyword argument' + schema=False → schema_signature_mismatch, inconclusive."""
         ctx = SmokeContext(tool_name="test", input_schema_present=False)
-        reason = classify_smoke_error("TypeError", "got an unexpected keyword argument 'foo'", ctx)
+        reason = classify_smoke_error(
+            "TypeError", "got an unexpected keyword argument 'foo'", ctx
+        )
         assert reason == "schema_signature_mismatch"
         assert REASON_VERDICTS[reason][0] == "inconclusive"
 
     def test_7_file_not_found_is_not_passed(self):
         """FileNotFoundError → invalid_test_input (test input pointed to non-existent file), inconclusive."""
         ctx = SmokeContext(tool_name="test", declares_network_access=False)
-        reason = classify_smoke_error("FileNotFoundError", "No such file: /tmp/foo", ctx)
+        reason = classify_smoke_error(
+            "FileNotFoundError", "No such file: /tmp/foo", ctx
+        )
         assert reason == "invalid_test_input"
         assert REASON_VERDICTS[reason][0] == "inconclusive"
 
@@ -407,7 +437,9 @@ class TestClassifySmokeErrorExtended:
 
     def test_module_not_found_is_fatal(self):
         ctx = SmokeContext(tool_name="test")
-        reason = classify_smoke_error("ModuleNotFoundError", "No module named 'bar'", ctx)
+        reason = classify_smoke_error(
+            "ModuleNotFoundError", "No module named 'bar'", ctx
+        )
         assert reason == "fatal_import_during_smoke"
         assert REASON_VERDICTS[reason][0] == "failed"
 
@@ -425,7 +457,9 @@ class TestClassifySmokeErrorExtended:
 
     def test_attribute_error_no_attribute(self):
         ctx = SmokeContext(tool_name="test")
-        reason = classify_smoke_error("AttributeError", "'NoneType' object has no attribute 'run'", ctx)
+        reason = classify_smoke_error(
+            "AttributeError", "'NoneType' object has no attribute 'run'", ctx
+        )
         assert reason == "schema_signature_mismatch"
 
     def test_attribute_error_other(self):
@@ -436,23 +470,31 @@ class TestClassifySmokeErrorExtended:
     def test_type_error_generic(self):
         """Generic TypeError (not contract break) → unknown_smoke_condition."""
         ctx = SmokeContext(tool_name="test", input_schema_present=True)
-        reason = classify_smoke_error("TypeError", "cannot unpack non-iterable NoneType", ctx)
+        reason = classify_smoke_error(
+            "TypeError", "cannot unpack non-iterable NoneType", ctx
+        )
         assert reason == "unknown_smoke_condition"
 
     def test_value_error_with_input_rejection(self):
         ctx = SmokeContext(tool_name="test")
-        reason = classify_smoke_error("ValueError", "invalid value for parameter 'mode'", ctx)
+        reason = classify_smoke_error(
+            "ValueError", "invalid value for parameter 'mode'", ctx
+        )
         assert reason == "invalid_test_input"
 
     def test_value_error_ambiguous(self):
         ctx = SmokeContext(tool_name="test")
-        reason = classify_smoke_error("ValueError", "something went wrong internally", ctx)
+        reason = classify_smoke_error(
+            "ValueError", "something went wrong internally", ctx
+        )
         assert reason == "unknown_smoke_condition"
 
     def test_credential_pattern_takes_priority(self):
         """Credential keywords should take priority over operation keywords."""
         ctx = SmokeContext(tool_name="test")
-        reason = classify_smoke_error("ValueError", "api key is required for this operation", ctx)
+        reason = classify_smoke_error(
+            "ValueError", "api key is required for this operation", ctx
+        )
         assert reason == "credential_boundary_reached"
 
     def test_timeout_error_with_network(self):
@@ -468,12 +510,16 @@ class TestClassifySmokeErrorExtended:
     def test_value_error_missing_required_positional(self):
         """ValueError wrapping a missing-arg message → signature-level classification."""
         ctx = SmokeContext(tool_name="test", input_schema_present=True)
-        reason = classify_smoke_error("ValueError", "missing 2 required positional arguments", ctx)
+        reason = classify_smoke_error(
+            "ValueError", "missing 2 required positional arguments", ctx
+        )
         assert reason == "fatal_type_error"
 
     def test_value_error_missing_required_positional_no_schema(self):
         ctx = SmokeContext(tool_name="test", input_schema_present=False)
-        reason = classify_smoke_error("ValueError", "missing 2 required positional arguments", ctx)
+        reason = classify_smoke_error(
+            "ValueError", "missing 2 required positional arguments", ctx
+        )
         assert reason == "schema_signature_mismatch"
 
     def test_unknown_exception_type(self):
@@ -483,7 +529,6 @@ class TestClassifySmokeErrorExtended:
 
 
 class TestClassifyTimeout:
-
     def test_timeout_with_network(self):
         ctx = SmokeContext(tool_name="test", declares_network_access=True)
         assert classify_timeout(ctx) == "external_network_blocked"
@@ -518,7 +563,6 @@ class TestClassifyTimeout:
 
 
 class TestBuildSmokeContext:
-
     def test_basic_context(self):
         tool = {"name": "test-tool"}
         ctx = build_smoke_context(tool)
@@ -579,10 +623,16 @@ class TestBuildSmokeContext:
     def test_python_dependencies(self):
         tool = {
             "name": "test",
-            "python_dependencies": ["torch>=2.0", "numpy", "sentence-transformers[gpu]"],
+            "python_dependencies": [
+                "torch>=2.0",
+                "numpy",
+                "sentence-transformers[gpu]",
+            ],
         }
         ctx = build_smoke_context(tool)
-        assert ctx.python_dependencies == frozenset({"torch", "numpy", "sentence_transformers"})
+        assert ctx.python_dependencies == frozenset(
+            {"torch", "numpy", "sentence_transformers"}
+        )
 
 
 class TestToolResultFromCandidates:
@@ -590,6 +640,7 @@ class TestToolResultFromCandidates:
 
     def test_passed_wins(self):
         from app.verification.steps import _tool_result_from_candidates
+
         results = [
             {"reason": "unknown_smoke_condition", "verdict": "inconclusive"},
             {"reason": "ok", "verdict": "passed"},
@@ -601,6 +652,7 @@ class TestToolResultFromCandidates:
     def test_fatal_beats_inconclusive(self):
         """Rule 3: Fatal darf nie von Inconclusive überschrieben werden."""
         from app.verification.steps import _tool_result_from_candidates
+
         results = [
             {"reason": "fatal_runtime_error", "verdict": "failed"},
             {"reason": "unknown_smoke_condition", "verdict": "inconclusive"},
@@ -611,6 +663,7 @@ class TestToolResultFromCandidates:
 
     def test_inconclusive_only(self):
         from app.verification.steps import _tool_result_from_candidates
+
         results = [
             {"reason": "unsupported_operation_space", "verdict": "inconclusive"},
         ]
@@ -620,6 +673,7 @@ class TestToolResultFromCandidates:
 
     def test_empty_results(self):
         from app.verification.steps import _tool_result_from_candidates
+
         reason, verdict = _tool_result_from_candidates([])
         assert verdict == "inconclusive"
         assert reason == "invalid_test_input"
@@ -627,6 +681,7 @@ class TestToolResultFromCandidates:
     def test_passed_takes_priority_over_fatal(self):
         """If any candidate passed, tool passes regardless of other candidates."""
         from app.verification.steps import _tool_result_from_candidates
+
         results = [
             {"reason": "ok", "verdict": "passed"},
             {"reason": "fatal_type_error", "verdict": "failed"},
@@ -642,7 +697,9 @@ class TestReasonTaxonomy:
     def test_all_fatal_reasons_map_to_failed(self):
         for reason in FATAL_REASONS:
             assert reason in REASON_VERDICTS
-            assert REASON_VERDICTS[reason][0] == "failed", f"{reason} should map to failed"
+            assert REASON_VERDICTS[reason][0] == "failed", (
+                f"{reason} should map to failed"
+            )
 
     def test_reason_verdicts_complete(self):
         """All reasons map to valid statuses."""
@@ -653,6 +710,7 @@ class TestReasonTaxonomy:
 
 # --- Phase 2A tests ---
 
+
 class TestIsIncompleteSchema:
     """Block A: Schema Repair."""
 
@@ -660,13 +718,18 @@ class TestIsIncompleteSchema:
         assert is_incomplete_schema({"type": "object"}) is True
 
     def test_object_with_properties(self):
-        assert is_incomplete_schema({"type": "object", "properties": {"x": {}}}) is False
+        assert (
+            is_incomplete_schema({"type": "object", "properties": {"x": {}}}) is False
+        )
 
     def test_array_without_items(self):
         assert is_incomplete_schema({"type": "array"}) is True
 
     def test_array_with_items(self):
-        assert is_incomplete_schema({"type": "array", "items": {"type": "string"}}) is False
+        assert (
+            is_incomplete_schema({"type": "array", "items": {"type": "string"}})
+            is False
+        )
 
     def test_none_schema(self):
         assert is_incomplete_schema(None) is True
@@ -696,7 +759,9 @@ class TestFindOperationField:
     def test_operation_with_enum_skipped(self):
         schema = {
             "type": "object",
-            "properties": {"operation": {"type": "string", "enum": ["create", "delete"]}},
+            "properties": {
+                "operation": {"type": "string", "enum": ["create", "delete"]}
+            },
             "required": ["operation"],
         }
         assert _find_operation_field(schema) is None
@@ -769,7 +834,10 @@ class TestGenerateCandidatesPhase2A:
         example = {"operation": "create_event", "title": "Meeting"}
         schema = {
             "type": "object",
-            "properties": {"operation": {"type": "string"}, "title": {"type": "string"}},
+            "properties": {
+                "operation": {"type": "string"},
+                "title": {"type": "string"},
+            },
             "required": ["operation", "title"],
             "examples": [example],
         }
@@ -781,7 +849,10 @@ class TestGenerateCandidatesPhase2A:
         example = {"operation": "create_event", "title": "Test"}
         schema = {
             "type": "object",
-            "properties": {"operation": {"type": "string"}, "title": {"type": "string"}},
+            "properties": {
+                "operation": {"type": "string"},
+                "title": {"type": "string"},
+            },
             "required": ["operation", "title"],
             "examples": [example],
         }
@@ -831,7 +902,9 @@ class TestCollectStubPaths:
         assert binary == ["/tmp/foo.pdf"]
 
     def test_csv_file_collected(self):
-        text, binary = _collect_stub_paths({"file_path": "/tmp/data.csv", "format": "csv"})
+        text, binary = _collect_stub_paths(
+            {"file_path": "/tmp/data.csv", "format": "csv"}
+        )
         assert text == ["/tmp/data.csv"]
 
     def test_output_file_excluded(self):
@@ -847,10 +920,12 @@ class TestCollectStubPaths:
         assert binary == []
 
     def test_multiple_paths(self):
-        text, binary = _collect_stub_paths({
-            "path": "/tmp/test.txt",
-            "source_file": "/tmp/source.json",
-        })
+        text, binary = _collect_stub_paths(
+            {
+                "path": "/tmp/test.txt",
+                "source_file": "/tmp/source.json",
+            }
+        )
         assert len(text) == 2
         assert "/tmp/test.txt" in text
         assert "/tmp/source.json" in text
@@ -876,8 +951,8 @@ class TestCollectStubPaths:
 
 # --- Phase 2B: Active Enum Probe tests ---
 
-class TestExtractEnumValues:
 
+class TestExtractEnumValues:
     def test_bracket_list_quoted(self):
         msg = "ValueError: Invalid operation. Choose from ['create_event', 'list_events', 'delete_event']"
         values, confidence = extract_enum_values(msg)
@@ -926,7 +1001,6 @@ class TestExtractEnumValues:
 
 
 class TestSortBySafety:
-
     def test_read_only_first(self):
         values = ["delete_event", "list_events", "create_event", "get_event"]
         sorted_v = _sort_by_safety(values)
@@ -947,7 +1021,6 @@ class TestSortBySafety:
 
 
 class TestBuildProbeCandidate:
-
     def test_builds_from_bracket_list(self):
         base = {"operation": "list", "text": "hello"}
         msg = "Invalid operation. Choose from ['create_event', 'list_events', 'delete_event']"
@@ -968,7 +1041,6 @@ class TestBuildProbeCandidate:
 
 
 class TestFindOperationFieldInInput:
-
     def test_finds_operation_field(self):
         test_input = {"operation": "list", "text": "hello"}
         schema = {"type": "object", "properties": {"operation": {}, "text": {}}}
@@ -987,12 +1059,15 @@ class TestFindOperationFieldInInput:
 
 # --- Phase 3A: Reason Quality tests ---
 
+
 class TestClassifySmokeErrorPhase3A:
     """New classification tests for Phase 3A reasons."""
 
     def test_not_implemented_error(self):
         ctx = SmokeContext(tool_name="test")
-        reason = classify_smoke_error("NotImplementedError", "replace this with your implementation", ctx)
+        reason = classify_smoke_error(
+            "NotImplementedError", "replace this with your implementation", ctx
+        )
         assert reason == "not_implemented"
         assert REASON_VERDICTS[reason][0] == "inconclusive"
 
@@ -1003,7 +1078,9 @@ class TestClassifySmokeErrorPhase3A:
 
     def test_system_dependency_playwright(self):
         ctx = SmokeContext(tool_name="test")
-        reason = classify_smoke_error("Error", "BrowserType.launch failed: executable doesn't exist", ctx)
+        reason = classify_smoke_error(
+            "Error", "BrowserType.launch failed: executable doesn't exist", ctx
+        )
         assert reason == "missing_system_dependency"
         assert REASON_VERDICTS[reason][0] == "inconclusive"
 
@@ -1014,7 +1091,9 @@ class TestClassifySmokeErrorPhase3A:
 
     def test_system_dependency_ffmpeg(self):
         ctx = SmokeContext(tool_name="test")
-        reason = classify_smoke_error("FileNotFoundError", "ffmpeg not found on PATH", ctx)
+        reason = classify_smoke_error(
+            "FileNotFoundError", "ffmpeg not found on PATH", ctx
+        )
         assert reason == "missing_system_dependency"
 
     def test_binary_input_pdf(self):
@@ -1061,13 +1140,17 @@ class TestClassifySmokeErrorPhase3A:
     def test_browser_launch_is_system_dep(self):
         """Error + 'BrowserType.launch' → missing_system_dependency."""
         ctx = SmokeContext(tool_name="test")
-        reason = classify_smoke_error("Error", "BrowserType.launch: executable doesn't exist", ctx)
+        reason = classify_smoke_error(
+            "Error", "BrowserType.launch: executable doesn't exist", ctx
+        )
         assert reason == "missing_system_dependency"
 
     def test_value_error_invalid_without_binary(self):
         """ValueError + 'invalid value' without binary match → invalid_test_input."""
         ctx = SmokeContext(tool_name="test")
-        reason = classify_smoke_error("ValueError", "invalid value for parameter 'mode'", ctx)
+        reason = classify_smoke_error(
+            "ValueError", "invalid value for parameter 'mode'", ctx
+        )
         assert reason == "invalid_test_input"
 
 
@@ -1092,7 +1175,10 @@ class TestDominantReason:
         assert _dominant_reason(["ok", "ok", "ok"]) == "ok"
 
     def test_fatal_dominates(self):
-        assert _dominant_reason(["ok", "fatal_runtime_error", "ok"]) == "fatal_runtime_error"
+        assert (
+            _dominant_reason(["ok", "fatal_runtime_error", "ok"])
+            == "fatal_runtime_error"
+        )
 
     def test_specific_over_generic(self):
         assert _dominant_reason(["ok", "needs_credentials"]) == "needs_credentials"
@@ -1101,7 +1187,10 @@ class TestDominantReason:
         assert _dominant_reason([]) is None
 
     def test_unknown_last_resort(self):
-        assert _dominant_reason(["unknown_smoke_condition", "unknown_smoke_condition"]) == "unknown_smoke_condition"
+        assert (
+            _dominant_reason(["unknown_smoke_condition", "unknown_smoke_condition"])
+            == "unknown_smoke_condition"
+        )
 
 
 class TestStubPathsPhase3A:
@@ -1118,12 +1207,14 @@ class TestStubPathsPhase3A:
 
 # --- Phase 5-7A tests ---
 
+
 class TestScoringPhase6:
     """Phase 6B: ScoreResult with explanation and confidence."""
 
     def test_compute_score_result_passed(self):
         from app.verification.scoring import compute_score_result, ScoreResult
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.install_status = "passed"
         vr.import_status = "passed"
@@ -1153,6 +1244,7 @@ class TestScoringPhase6:
     def test_compute_score_result_credential_boundary(self):
         from app.verification.scoring import compute_score_result
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.install_status = "passed"
         vr.import_status = "passed"
@@ -1177,6 +1269,7 @@ class TestScoringPhase6:
     def test_tier_cap_smoke_not_passed(self):
         from app.verification.scoring import apply_tier_caps
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.smoke_status = "inconclusive"
         vr.smoke_reason = "unknown_smoke_condition"
@@ -1190,6 +1283,7 @@ class TestScoringPhase6:
 
     def test_cap_tier_never_promotes(self):
         from app.verification.scoring import cap_tier
+
         assert cap_tier("partial", "gold") == "partial"
         assert cap_tier("gold", "verified") == "verified"
         assert cap_tier("verified", "verified") == "verified"
@@ -1198,6 +1292,7 @@ class TestScoringPhase6:
     def test_gold_requires_all_conditions(self):
         from app.verification.scoring import _qualifies_for_gold
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.smoke_status = "passed"
         vr.smoke_reason = "ok"
@@ -1215,6 +1310,7 @@ class TestScoringPhase6:
     def test_backward_compatible_compute_tool_score(self):
         from app.verification.scoring import compute_tool_score
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.install_status = "passed"
         vr.import_status = "passed"
@@ -1244,6 +1340,7 @@ class TestContractValidation:
 
     def test_valid_contract(self):
         from app.verification.contract import validate_return
+
         smoke_data = {
             "status": "ok",
             "return_type": "dict",
@@ -1260,6 +1357,7 @@ class TestContractValidation:
 
     def test_none_return_invalid(self):
         from app.verification.contract import validate_return
+
         smoke_data = {
             "status": "ok",
             "return_type": "NoneType",
@@ -1275,6 +1373,7 @@ class TestContractValidation:
 
     def test_not_serializable_invalid(self):
         from app.verification.contract import validate_return
+
         smoke_data = {
             "status": "ok",
             "return_type": "MyObject",
@@ -1290,6 +1389,7 @@ class TestContractValidation:
     def test_binary_return_valid_contract(self):
         """bytes output is a valid return type even though not JSON-serializable."""
         from app.verification.contract import validate_return
+
         smoke_data = {
             "status": "ok",
             "return_type": "bytes",
@@ -1299,15 +1399,21 @@ class TestContractValidation:
             "return_keys": None,
             "return_length": None,
         }
-        result = validate_return(smoke_data, "screenshot_capture", {"url": "http://example.com"})
+        result = validate_return(
+            smoke_data, "screenshot_capture", {"url": "http://example.com"}
+        )
         assert result["valid"] is True
         assert result["points"] >= 8
         serial_check = next(c for c in result["checks"] if c["name"] == "serializable")
         assert serial_check["passed"] is True
-        assert "Binary" in serial_check["detail"] or "binary" in serial_check["detail"].lower()
+        assert (
+            "Binary" in serial_check["detail"]
+            or "binary" in serial_check["detail"].lower()
+        )
 
     def test_bytearray_return_valid_contract(self):
         from app.verification.contract import validate_return
+
         smoke_data = {
             "status": "ok",
             "return_type": "bytearray",
@@ -1322,6 +1428,7 @@ class TestContractValidation:
 
     def test_semantic_sanity_summary(self):
         from app.verification.contract import semantic_sanity_check
+
         hints = semantic_sanity_check(
             "summarize_text",
             {"text": "This is a long text " * 10},
@@ -1331,6 +1438,7 @@ class TestContractValidation:
 
     def test_semantic_sanity_no_false_positive(self):
         from app.verification.contract import semantic_sanity_check
+
         hints = semantic_sanity_check(
             "count_words",
             {"text": "hello world"},
@@ -1340,6 +1448,7 @@ class TestContractValidation:
 
     def test_error_status_returns_zero(self):
         from app.verification.contract import validate_return
+
         result = validate_return({"status": "error"}, "test", {})
         assert result["valid"] is False
         assert result["points"] == 0
@@ -1349,44 +1458,80 @@ class TestCredentialBoundaryDetection:
     """Phase 7A: Credential boundary detection."""
 
     def test_auth_exception_high_confidence(self):
-        from app.verification.smoke_context import classify_credential_boundary, SmokeContext
+        from app.verification.smoke_context import (
+            classify_credential_boundary,
+            SmokeContext,
+        )
+
         ctx = SmokeContext(tool_name="test")
-        reason, confidence = classify_credential_boundary("AuthenticationError", "invalid key", ctx)
+        reason, confidence = classify_credential_boundary(
+            "AuthenticationError", "invalid key", ctx
+        )
         assert reason == "credential_boundary_reached"
         assert confidence == "high"
 
     def test_api_key_error_high_confidence(self):
-        from app.verification.smoke_context import classify_credential_boundary, SmokeContext
+        from app.verification.smoke_context import (
+            classify_credential_boundary,
+            SmokeContext,
+        )
+
         ctx = SmokeContext(tool_name="test")
-        reason, confidence = classify_credential_boundary("APIKeyError", "missing key", ctx)
+        reason, confidence = classify_credential_boundary(
+            "APIKeyError", "missing key", ctx
+        )
         assert reason == "credential_boundary_reached"
         assert confidence == "high"
 
     def test_credential_pattern_with_env_reqs_high(self):
-        from app.verification.smoke_context import classify_credential_boundary, SmokeContext
+        from app.verification.smoke_context import (
+            classify_credential_boundary,
+            SmokeContext,
+        )
+
         ctx = SmokeContext(tool_name="test", has_required_env_requirements=True)
-        reason, confidence = classify_credential_boundary("ValueError", "api key required", ctx)
+        reason, confidence = classify_credential_boundary(
+            "ValueError", "api key required", ctx
+        )
         assert reason == "credential_boundary_reached"
         assert confidence == "high"
 
     def test_credential_pattern_without_env_reqs_medium(self):
-        from app.verification.smoke_context import classify_credential_boundary, SmokeContext
+        from app.verification.smoke_context import (
+            classify_credential_boundary,
+            SmokeContext,
+        )
+
         ctx = SmokeContext(tool_name="test", has_required_env_requirements=False)
-        reason, confidence = classify_credential_boundary("ValueError", "api key required", ctx)
+        reason, confidence = classify_credential_boundary(
+            "ValueError", "api key required", ctx
+        )
         assert reason == "credential_boundary_reached"
         assert confidence == "medium"
 
     def test_http_401_medium(self):
-        from app.verification.smoke_context import classify_credential_boundary, SmokeContext
+        from app.verification.smoke_context import (
+            classify_credential_boundary,
+            SmokeContext,
+        )
+
         ctx = SmokeContext(tool_name="test")
-        reason, confidence = classify_credential_boundary("HTTPError", "401 unauthorized", ctx)
+        reason, confidence = classify_credential_boundary(
+            "HTTPError", "401 unauthorized", ctx
+        )
         assert reason == "credential_boundary_reached"
         assert confidence == "medium"
 
     def test_no_credential_boundary(self):
-        from app.verification.smoke_context import classify_credential_boundary, SmokeContext
+        from app.verification.smoke_context import (
+            classify_credential_boundary,
+            SmokeContext,
+        )
+
         ctx = SmokeContext(tool_name="test")
-        reason, confidence = classify_credential_boundary("ValueError", "bad format", ctx)
+        reason, confidence = classify_credential_boundary(
+            "ValueError", "bad format", ctx
+        )
         assert reason is None
         assert confidence is None
 
@@ -1402,6 +1547,7 @@ class TestConfidenceLevel:
     def test_high_confidence(self):
         from app.verification.scoring import compute_confidence
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.smoke_status = "passed"
         vr.contract_valid = True
@@ -1415,6 +1561,7 @@ class TestConfidenceLevel:
     def test_low_confidence_inconclusive(self):
         from app.verification.scoring import compute_confidence
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.smoke_status = "inconclusive"
         vr.contract_valid = None
@@ -1431,6 +1578,7 @@ class TestPhaseAQuickWins:
 
     def test_openai_whisper_in_known_heavy_imports(self):
         from app.verification.smoke_context import KNOWN_HEAVY_IMPORTS
+
         assert "openai_whisper" in KNOWN_HEAVY_IMPORTS
 
     def test_classify_timeout_openai_whisper(self):
@@ -1443,6 +1591,7 @@ class TestPhaseAQuickWins:
 
     def test_audio_path_in_file_path_params(self):
         from app.verification.steps import _FILE_PATH_PARAMS
+
         assert "audio_path" in _FILE_PATH_PARAMS
 
     def test_audio_path_in_name_hints(self):
@@ -1456,6 +1605,7 @@ class TestPhaseAQuickWins:
 
     def test_wav_extension_recognized_as_binary(self):
         from app.verification.steps import _BINARY_EXTENSIONS
+
         assert ".wav" in _BINARY_EXTENSIONS
 
     def test_build_smoke_context_normalizes_openai_whisper(self):
@@ -1468,15 +1618,18 @@ class TestPhaseAQuickWins:
 
     def test_heavy_budget_config_exists(self):
         from app.config import settings
+
         assert hasattr(settings, "VERIFICATION_SMOKE_BUDGET_SECONDS_HEAVY")
         assert settings.VERIFICATION_SMOKE_BUDGET_SECONDS_HEAVY >= 120
 
     def test_model_cache_dir_config_exists(self):
         from app.config import settings
+
         assert hasattr(settings, "VERIFICATION_MODEL_CACHE_DIR")
 
     def test_browser_image_config_exists(self):
         from app.config import settings
+
         assert hasattr(settings, "VERIFICATION_CONTAINER_IMAGE_BROWSER")
 
 
@@ -1486,16 +1639,23 @@ class TestSmokeContainerization:
     def test_smoke_uses_enforced_in_container_mode(self):
         from app.verification.steps import step_smoke
         from unittest.mock import MagicMock, patch
+
         sandbox = MagicMock()
         sandbox.run_python_code_enforced.return_value = (
             True,
             'SMOKE_JSON:{"status":"ok","return_type":"dict"}',
         )
-        tools = [{
-            "name": "tool1",
-            "entrypoint": "mod:func",
-            "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
-        }]
+        tools = [
+            {
+                "name": "tool1",
+                "entrypoint": "mod:func",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                    "required": ["x"],
+                },
+            }
+        ]
         with patch("app.verification.steps.settings") as mock_settings:
             mock_settings.VERIFICATION_SANDBOX_MODE = "container"
             mock_settings.VERIFICATION_SMOKE_MAX_TOOLS = 5
@@ -1508,16 +1668,23 @@ class TestSmokeContainerization:
     def test_smoke_uses_subprocess_in_subprocess_mode(self):
         from app.verification.steps import step_smoke
         from unittest.mock import MagicMock, patch
+
         sandbox = MagicMock()
         sandbox.run_python_code.return_value = (
             True,
             'SMOKE_JSON:{"status":"ok","return_type":"dict"}',
         )
-        tools = [{
-            "name": "tool1",
-            "entrypoint": "mod:func",
-            "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
-        }]
+        tools = [
+            {
+                "name": "tool1",
+                "entrypoint": "mod:func",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                    "required": ["x"],
+                },
+            }
+        ]
         with patch("app.verification.steps.settings") as mock_settings:
             mock_settings.VERIFICATION_SANDBOX_MODE = "subprocess"
             mock_settings.VERIFICATION_SMOKE_MAX_TOOLS = 5
@@ -1530,51 +1697,73 @@ class TestSmokeContainerization:
     def test_smoke_passes_heavy_ml_to_enforced(self):
         from app.verification.steps import step_smoke
         from unittest.mock import MagicMock, patch
+
         sandbox = MagicMock()
         sandbox.run_python_code_enforced.return_value = (
             True,
             'SMOKE_JSON:{"status":"ok","return_type":"dict"}',
         )
-        tools = [{
-            "name": "tool1",
-            "entrypoint": "mod:func",
-            "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
-        }]
+        tools = [
+            {
+                "name": "tool1",
+                "entrypoint": "mod:func",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                    "required": ["x"],
+                },
+            }
+        ]
         with patch("app.verification.steps.settings") as mock_settings:
             mock_settings.VERIFICATION_SANDBOX_MODE = "container"
             mock_settings.VERIFICATION_SMOKE_MAX_TOOLS = 5
             mock_settings.VERIFICATION_SMOKE_BUDGET_SECONDS_HEAVY = 180
             status, log, reason, _candidate = step_smoke(sandbox, tools, heavy_ml=True)
         call_kwargs = sandbox.run_python_code_enforced.call_args
-        assert call_kwargs[1].get("heavy_ml") is True or call_kwargs.kwargs.get("heavy_ml") is True
+        assert (
+            call_kwargs[1].get("heavy_ml") is True
+            or call_kwargs.kwargs.get("heavy_ml") is True
+        )
 
     def test_smoke_passes_image_override_to_enforced(self):
         from app.verification.steps import step_smoke
         from unittest.mock import MagicMock, patch
+
         sandbox = MagicMock()
         sandbox.run_python_code_enforced.return_value = (
             True,
             'SMOKE_JSON:{"status":"ok","return_type":"dict"}',
         )
-        tools = [{
-            "name": "tool1",
-            "entrypoint": "mod:func",
-            "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
-        }]
+        tools = [
+            {
+                "name": "tool1",
+                "entrypoint": "mod:func",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                    "required": ["x"],
+                },
+            }
+        ]
         with patch("app.verification.steps.settings") as mock_settings:
             mock_settings.VERIFICATION_SANDBOX_MODE = "container"
             mock_settings.VERIFICATION_SMOKE_MAX_TOOLS = 5
             mock_settings.VERIFICATION_SMOKE_BUDGET_SECONDS = 60
             status, log, reason, _candidate = step_smoke(
-                sandbox, tools, image_override="custom-image:latest",
+                sandbox,
+                tools,
+                image_override="custom-image:latest",
             )
         call_kwargs = sandbox.run_python_code_enforced.call_args
-        assert call_kwargs[1].get("image_override") == "custom-image:latest" or \
-            call_kwargs.kwargs.get("image_override") == "custom-image:latest"
+        assert (
+            call_kwargs[1].get("image_override") == "custom-image:latest"
+            or call_kwargs.kwargs.get("image_override") == "custom-image:latest"
+        )
 
     def test_stability_uses_enforced_in_container_mode(self):
         from app.verification.steps import run_stability_check
         from unittest.mock import MagicMock, patch
+
         sandbox = MagicMock()
         sandbox.run_python_code_enforced.return_value = (
             True,
@@ -1584,7 +1773,13 @@ class TestSmokeContainerization:
         with patch("app.verification.steps.settings") as mock_settings:
             mock_settings.VERIFICATION_SANDBOX_MODE = "container"
             reliability, determinism, contract_valid, results = run_stability_check(
-                sandbox, "mod", "func", {"x": "test"}, 10, ctx, n=2,
+                sandbox,
+                "mod",
+                "func",
+                {"x": "test"},
+                10,
+                ctx,
+                n=2,
             )
         assert sandbox.run_python_code_enforced.call_count >= 2
         sandbox.run_python_code.assert_not_called()
@@ -1592,6 +1787,7 @@ class TestSmokeContainerization:
     def test_agent_cases_uses_enforced_in_container_mode(self):
         from app.verification.steps import run_agent_verification_cases
         from unittest.mock import MagicMock, patch
+
         sandbox = MagicMock()
         sandbox.run_python_code_enforced.return_value = (
             True,
@@ -1602,7 +1798,11 @@ class TestSmokeContainerization:
         with patch("app.verification.steps.settings") as mock_settings:
             mock_settings.VERIFICATION_SANDBOX_MODE = "container"
             run_agent_verification_cases(
-                sandbox, "mod", "func", cases, timeout=15,
+                sandbox,
+                "mod",
+                "func",
+                cases,
+                timeout=15,
                 agent_section=agent_section,
             )
         sandbox.run_python_code_enforced.assert_called()
@@ -1611,15 +1811,19 @@ class TestSmokeContainerization:
     def test_container_mode_fails_closed_when_runtime_missing(self):
         from app.verification.sandbox import VerificationSandbox
         from unittest.mock import patch
+
         sandbox = VerificationSandbox.__new__(VerificationSandbox)
         sandbox.pkg_dir = "/tmp/test"
         sandbox.work_dir = "/tmp/test"
         sandbox.venv_dir = "/tmp/test/venv"
         sandbox.python = "python"
         sandbox._installer = "pip"
-        with patch("app.config.CONTAINER_RUNTIME", None), \
-             patch.object(sandbox, "run_python_code") as mock_subprocess:
+        with (
+            patch("app.config.CONTAINER_RUNTIME", None),
+            patch.object(sandbox, "run_python_code") as mock_subprocess,
+        ):
             from app.config import settings as real_settings
+
             with patch.object(real_settings, "VERIFICATION_SANDBOX_MODE", "container"):
                 ok, log = sandbox.run_python_code_enforced("print('hi')")
             assert ok is False
@@ -1634,6 +1838,7 @@ class TestSmokeContainerization:
         import tarfile
         import io
         import stat
+
         sandbox = VerificationSandbox()
         try:
             buf = io.BytesIO()
@@ -1669,6 +1874,7 @@ class TestBinaryOutputScoring:
         """Binary outputs get 0.6 determinism (3/5) when all runs succeed."""
         from app.verification.scoring import compute_score_result
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.is_agent_package = False
         vr.is_agent_package = False
@@ -1699,6 +1905,7 @@ class TestBinaryOutputScoring:
         """JSON/dict outputs get full 5/5 when hashes match."""
         from app.verification.scoring import compute_score_result
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.is_agent_package = False
         vr.install_status = "passed"
@@ -1728,6 +1935,7 @@ class TestBinaryOutputScoring:
         """Binary output with partial determinism should still achieve Gold if score >= 90."""
         from app.verification.scoring import compute_score_result
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.is_agent_package = False
         vr.install_status = "passed"
@@ -1741,7 +1949,11 @@ class TestBinaryOutputScoring:
         vr.reliability = 1.0
         vr.determinism_score = 0.6
         vr.contract_valid = True
-        vr.contract_details = {"valid": True, "points": 10, "reason": "Binary output valid"}
+        vr.contract_details = {
+            "valid": True,
+            "points": 10,
+            "reason": "Binary output valid",
+        }
         vr.warnings_count = 0
         vr.stability_log = [
             {"ok": True, "type": "bytes", "hash": "aaa"},
@@ -1759,24 +1971,36 @@ class TestBinaryOutputScoring:
         """run_stability_check awards 0.6 determinism for binary outputs."""
         from app.verification.steps import run_stability_check
         from unittest.mock import MagicMock, patch
+
         sandbox = MagicMock()
         ctx = MagicMock()
         ctx.tool_name = "screenshot"
 
         call_count = [0]
+
         def mock_single_smoke(*args, **kwargs):
             call_count[0] += 1
             parsed = {
-                "status": "ok", "return_type": "bytes",
-                "return_hash": f"hash_{call_count[0]}", "is_none": False,
-                "is_serializable": False, "ms": 10,
+                "status": "ok",
+                "return_type": "bytes",
+                "return_hash": f"hash_{call_count[0]}",
+                "is_none": False,
+                "is_serializable": False,
+                "ms": 10,
             }
             return ("ok", None, None, parsed)
 
-        with patch("app.verification.steps._run_single_smoke", side_effect=mock_single_smoke):
+        with patch(
+            "app.verification.steps._run_single_smoke", side_effect=mock_single_smoke
+        ):
             reliability, determinism, contract_valid, results = run_stability_check(
-                sandbox, "mod", "fn", {"url": "http://example.com"},
-                timeout=10, ctx=ctx, n=3,
+                sandbox,
+                "mod",
+                "fn",
+                {"url": "http://example.com"},
+                timeout=10,
+                ctx=ctx,
+                n=3,
             )
         assert determinism == 0.6
         assert contract_valid is True
@@ -1785,24 +2009,36 @@ class TestBinaryOutputScoring:
         """run_stability_check uses strict hash comparison for JSON outputs."""
         from app.verification.steps import run_stability_check
         from unittest.mock import MagicMock, patch
+
         sandbox = MagicMock()
         ctx = MagicMock()
         ctx.tool_name = "formatter"
 
         call_count = [0]
+
         def mock_single_smoke(*args, **kwargs):
             call_count[0] += 1
             parsed = {
-                "status": "ok", "return_type": "dict",
-                "return_hash": f"hash_{call_count[0]}", "is_none": False,
-                "is_serializable": True, "ms": 10,
+                "status": "ok",
+                "return_type": "dict",
+                "return_hash": f"hash_{call_count[0]}",
+                "is_none": False,
+                "is_serializable": True,
+                "ms": 10,
             }
             return ("ok", None, None, parsed)
 
-        with patch("app.verification.steps._run_single_smoke", side_effect=mock_single_smoke):
+        with patch(
+            "app.verification.steps._run_single_smoke", side_effect=mock_single_smoke
+        ):
             reliability, determinism, contract_valid, results = run_stability_check(
-                sandbox, "mod", "fn", {"text": "hello"},
-                timeout=10, ctx=ctx, n=3,
+                sandbox,
+                "mod",
+                "fn",
+                {"text": "hello"},
+                timeout=10,
+                ctx=ctx,
+                n=3,
             )
         assert determinism == round(1.0 / 3, 2)
         assert contract_valid is True
@@ -1814,6 +2050,7 @@ class TestDeterminismNormalization:
     def test_normalize_sorts_dict_keys(self):
         """Dict keys are sorted recursively before hashing."""
         import hashlib
+
         def _normalize_for_hash(obj):
             if isinstance(obj, dict):
                 return {k: _normalize_for_hash(v) for k, v in sorted(obj.items())}
@@ -1831,6 +2068,7 @@ class TestDeterminismNormalization:
 
     def test_normalize_rounds_floats(self):
         import hashlib
+
         def _normalize_for_hash(obj):
             if isinstance(obj, dict):
                 return {k: _normalize_for_hash(v) for k, v in sorted(obj.items())}
@@ -1848,6 +2086,7 @@ class TestDeterminismNormalization:
 
     def test_normalize_preserves_list_order(self):
         """List ordering is preserved — only dict keys are sorted."""
+
         def _normalize_for_hash(obj):
             if isinstance(obj, dict):
                 return {k: _normalize_for_hash(v) for k, v in sorted(obj.items())}
@@ -1868,6 +2107,7 @@ class TestDeterminismNormalization:
         from app.verification.steps import _run_single_smoke
         from app.verification.smoke_context import SmokeContext
         from unittest.mock import MagicMock, patch
+
         sandbox = MagicMock()
         sandbox.run_python_code.return_value = (
             True,
@@ -1886,6 +2126,7 @@ class TestDeterminismNormalization:
         """Scoring reason mentions normalization for consistent structured output."""
         from app.verification.scoring import compute_score_result
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.is_agent_package = False
         vr.install_status = "passed"
@@ -1915,7 +2156,9 @@ class TestFixtureGold:
     """Tests for Phase B: Fixture Gold — VCR replay, fixture scoring, manifest validation."""
 
     def test_vcr_preamble_generated(self):
-        enter_code, exit_code = _build_vcr_replay_preamble("fixtures/cassettes/test.yaml")
+        enter_code, exit_code = _build_vcr_replay_preamble(
+            "fixtures/cassettes/test.yaml"
+        )
         assert "vcr" in enter_code.lower()
         assert "use_cassette" in enter_code
         assert "record_mode='none'" in enter_code or "record_mode" in enter_code
@@ -1948,6 +2191,7 @@ class TestFixtureGold:
     def test_fixture_gold_eligible_in_scoring(self):
         from app.verification.scoring import _qualifies_for_gold
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.smoke_status = "passed"
         vr.contract_valid = True
@@ -1961,6 +2205,7 @@ class TestFixtureGold:
     def test_real_mode_still_gold_eligible(self):
         from app.verification.scoring import _qualifies_for_gold
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.smoke_status = "passed"
         vr.contract_valid = True
@@ -1975,6 +2220,7 @@ class TestFixtureGold:
     def test_mock_mode_not_gold_eligible(self):
         from app.verification.scoring import _qualifies_for_gold
         from unittest.mock import MagicMock
+
         vr = MagicMock()
         vr.smoke_status = "passed"
         vr.contract_valid = True
@@ -1987,6 +2233,7 @@ class TestFixtureGold:
 
     def test_manifest_validation_valid_fixtures(self):
         from app.packages.validator import _validate_tool_verification
+
         errors, warnings = [], []
         verification = {
             "fixtures": [
@@ -2007,32 +2254,39 @@ class TestFixtureGold:
 
     def test_manifest_validation_cassette_path_traversal(self):
         from app.packages.validator import _validate_tool_verification
+
         errors, warnings = [], []
         verification = {
-            "fixtures": [{
-                "name": "evil-test",
-                "test_input": {"x": 1},
-                "cassette": "../../../etc/passwd",
-            }]
+            "fixtures": [
+                {
+                    "name": "evil-test",
+                    "test_input": {"x": 1},
+                    "cassette": "../../../etc/passwd",
+                }
+            ]
         }
         _validate_tool_verification(verification, errors, warnings)
         assert any(".." in e for e in errors)
 
     def test_manifest_validation_absolute_path_rejected(self):
         from app.packages.validator import _validate_tool_verification
+
         errors, warnings = [], []
         verification = {
-            "fixtures": [{
-                "name": "abs-test",
-                "test_input": {"x": 1},
-                "cassette": "/etc/cassette.yaml",
-            }]
+            "fixtures": [
+                {
+                    "name": "abs-test",
+                    "test_input": {"x": 1},
+                    "cassette": "/etc/cassette.yaml",
+                }
+            ]
         }
         _validate_tool_verification(verification, errors, warnings)
         assert any("absolute" in e or "/" in e for e in errors)
 
     def test_manifest_validation_test_input_override(self):
         from app.packages.validator import _validate_tool_verification
+
         errors, warnings = [], []
         verification = {
             "test_input": {"code": "password = 'hunter2'"},
@@ -2044,10 +2298,15 @@ class TestFixtureGold:
         tool = {
             "name": "scanner",
             "entrypoint": "pkg:run",
-            "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
+            "input_schema": {
+                "type": "object",
+                "properties": {"code": {"type": "string"}},
+                "required": ["code"],
+            },
             "_manual_test_input": {"code": "secret = 'hunter2'"},
         }
         from app.verification.schema_generator import generate_candidates
+
         candidates = generate_candidates(tool.get("input_schema"))
         manual = tool.get("_manual_test_input")
         if manual:
@@ -2057,5 +2316,6 @@ class TestFixtureGold:
     def test_run_stability_check_accepts_fixture_cassette(self):
         import inspect
         from app.verification.steps import run_stability_check
+
         sig = inspect.signature(run_stability_check)
         assert "fixture_cassette" in sig.parameters

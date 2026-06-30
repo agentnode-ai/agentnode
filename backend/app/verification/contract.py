@@ -51,38 +51,52 @@ def validate_return(smoke_data: dict, tool_name: str, input_data: dict) -> dict:
 
     # 1. Non-None check
     is_none = smoke_data.get("is_none", True)
-    checks.append({
-        "name": "non_none",
-        "passed": not is_none,
-        "detail": "Return value is not None" if not is_none else "Return value is None",
-    })
+    checks.append(
+        {
+            "name": "non_none",
+            "passed": not is_none,
+            "detail": "Return value is not None"
+            if not is_none
+            else "Return value is None",
+        }
+    )
     if is_none:
         all_passed = False
 
     # 2. Serializable check — binary types are valid but not JSON-serializable
     is_serializable = smoke_data.get("is_serializable", False)
     if is_binary:
-        checks.append({
-            "name": "serializable",
-            "passed": True,
-            "detail": f"Binary output ({return_type}) — JSON serialization not applicable",
-        })
+        checks.append(
+            {
+                "name": "serializable",
+                "passed": True,
+                "detail": f"Binary output ({return_type}) — JSON serialization not applicable",
+            }
+        )
     else:
-        checks.append({
-            "name": "serializable",
-            "passed": is_serializable,
-            "detail": "Output is JSON-serializable" if is_serializable else "Output is not JSON-serializable",
-        })
+        checks.append(
+            {
+                "name": "serializable",
+                "passed": is_serializable,
+                "detail": "Output is JSON-serializable"
+                if is_serializable
+                else "Output is not JSON-serializable",
+            }
+        )
         if not is_serializable:
             all_passed = False
 
     # 3. Type plausibility (return_type exists and is reasonable)
     type_ok = return_type is not None and return_type != "NoneType"
-    checks.append({
-        "name": "type_present",
-        "passed": type_ok,
-        "detail": f"Return type: {return_type}" if type_ok else "No return type detected",
-    })
+    checks.append(
+        {
+            "name": "type_present",
+            "passed": type_ok,
+            "detail": f"Return type: {return_type}"
+            if type_ok
+            else "No return type detected",
+        }
+    )
     if not type_ok:
         all_passed = False
 
@@ -105,11 +119,13 @@ def validate_return(smoke_data: dict, tool_name: str, input_data: dict) -> dict:
             structure_ok = False
             structure_detail = "String output is empty"
 
-    checks.append({
-        "name": "structure",
-        "passed": structure_ok,
-        "detail": structure_detail,
-    })
+    checks.append(
+        {
+            "name": "structure",
+            "passed": structure_ok,
+            "detail": structure_detail,
+        }
+    )
     if not structure_ok:
         all_passed = False
 
@@ -151,7 +167,9 @@ def validate_return(smoke_data: dict, tool_name: str, input_data: dict) -> dict:
 
 
 def semantic_sanity_check(
-    tool_name: str, input_data: dict, smoke_data: dict,
+    tool_name: str,
+    input_data: dict,
+    smoke_data: dict,
 ) -> list[str]:
     """Light heuristic checks based on tool name patterns.
 
@@ -187,13 +205,16 @@ def semantic_sanity_check(
     # Search/find should return list or dict
     if any(kw in name_lower for kw in ("search", "find", "query", "list")):
         if return_type == "str":
-            hints.append("Search/query tool returned plain string instead of structured data")
+            hints.append(
+                "Search/query tool returned plain string instead of structured data"
+            )
 
     return hints
 
 
 def validate_format(
-    tool_name: str, smoke_data: dict,
+    tool_name: str,
+    smoke_data: dict,
 ) -> dict | None:
     """Format validation for converter tools (Phase 6C).
 
@@ -203,7 +224,9 @@ def validate_format(
     name_lower = tool_name.lower()
 
     # Only apply to tools with format-related names
-    if not any(kw in name_lower for kw in ("convert", "to_json", "to_csv", "to_xml", "format")):
+    if not any(
+        kw in name_lower for kw in ("convert", "to_json", "to_csv", "to_xml", "format")
+    ):
         return None
 
     return_type = smoke_data.get("return_type", "")
@@ -214,24 +237,30 @@ def validate_format(
     # Check if output claiming to be JSON is actually valid JSON structure
     if "json" in name_lower and return_type == "str":
         # String output from a JSON tool — suspicious but could be serialized JSON
-        result["checks"].append({
-            "name": "json_format",
-            "passed": True,  # We can't verify content from metadata alone
-            "detail": "Output is string (may be serialized JSON)",
-        })
+        result["checks"].append(
+            {
+                "name": "json_format",
+                "passed": True,  # We can't verify content from metadata alone
+                "detail": "Output is string (may be serialized JSON)",
+            }
+        )
 
     # Non-empty output check
     if return_length is not None and return_length == 0:
-        result["checks"].append({
-            "name": "non_empty",
-            "passed": False,
-            "detail": "Converter produced empty output",
-        })
+        result["checks"].append(
+            {
+                "name": "non_empty",
+                "passed": False,
+                "detail": "Converter produced empty output",
+            }
+        )
     elif return_length is not None:
-        result["checks"].append({
-            "name": "non_empty",
-            "passed": True,
-            "detail": f"Output has length {return_length}",
-        })
+        result["checks"].append(
+            {
+                "name": "non_empty",
+                "passed": True,
+                "detail": f"Output has length {return_length}",
+            }
+        )
 
     return result if result["checks"] else None

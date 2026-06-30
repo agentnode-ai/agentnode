@@ -1,4 +1,5 @@
 """Integration tests for packages endpoints."""
+
 import io
 import json
 import tarfile
@@ -17,6 +18,7 @@ def _make_minimal_artifact() -> bytes:
         info.size = len(test_content)
         tar.addfile(info, io.BytesIO(test_content))
     return buf.getvalue()
+
 
 TEST_USER = {
     "email": "pkguser@agentnode.dev",
@@ -42,13 +44,22 @@ TEST_MANIFEST = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "test_pack.tool",
     "capabilities": {
-        "tools": [{
-            "name": "test_tool",
-            "capability_id": "pdf_extraction",
-            "description": "Test tool",
-            "input_schema": {"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]},
-            "output_schema": {"type": "object", "properties": {"output": {"type": "string"}}},
-        }],
+        "tools": [
+            {
+                "name": "test_tool",
+                "capability_id": "pdf_extraction",
+                "description": "Test tool",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"input": {"type": "string"}},
+                    "required": ["input"],
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": {"output": {"type": "string"}},
+                },
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -64,17 +75,23 @@ TEST_MANIFEST = {
     "tags": ["test"],
     "categories": ["document-processing"],
     "dependencies": [],
-    "security": {"signature": "", "provenance": {"source_repo": "", "commit": "", "build_system": ""}},
+    "security": {
+        "signature": "",
+        "provenance": {"source_repo": "", "commit": "", "build_system": ""},
+    },
     "support": {"homepage": "", "issues": ""},
 }
 
 
 async def get_auth_token(client) -> str:
     await client.post("/v1/auth/register", json=TEST_USER)
-    login_resp = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    login_resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     token = login_resp.json()["access_token"]
     await client.post(
         "/v1/publishers",
@@ -136,7 +153,10 @@ async def test_publish_new_package(mock_meili, mock_s3, client, session):
     # Mark publisher as trusted so versions are not quarantined
     from app.publishers.models import Publisher
     from sqlalchemy import select
-    result = await session.execute(select(Publisher).where(Publisher.slug == "pkg-publisher"))
+
+    result = await session.execute(
+        select(Publisher).where(Publisher.slug == "pkg-publisher")
+    )
     pub = result.scalar_one()
     pub.trust_level = "trusted"
     await session.flush()
@@ -224,12 +244,17 @@ async def test_publish_new_version(mock_meili, mock_s3, client):
 @patch("app.packages.service.upload_preview_file", return_value="previews/mock.py")
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_publish_with_artifact(mock_meili, mock_s3, mock_preview, client, session):
+async def test_publish_with_artifact(
+    mock_meili, mock_s3, mock_preview, client, session
+):
     token = await get_auth_token(client)
     # Mark publisher as trusted so versions are not quarantined
     from app.publishers.models import Publisher
     from sqlalchemy import select
-    result = await session.execute(select(Publisher).where(Publisher.slug == "pkg-publisher"))
+
+    result = await session.execute(
+        select(Publisher).where(Publisher.slug == "pkg-publisher")
+    )
     pub = result.scalar_one()
     pub.trust_level = "trusted"
     await session.flush()
@@ -276,7 +301,10 @@ async def test_publish_versions_list(mock_meili, mock_s3, client, session):
     # (new unverified publishers trigger auto-quarantine, hiding versions from public list)
     from app.publishers.models import Publisher
     from sqlalchemy import select
-    result = await session.execute(select(Publisher).where(Publisher.slug == "pkg-publisher"))
+
+    result = await session.execute(
+        select(Publisher).where(Publisher.slug == "pkg-publisher")
+    )
     pub = result.scalar_one()
     pub.trust_level = "trusted"
     await session.flush()

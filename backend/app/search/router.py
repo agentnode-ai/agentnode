@@ -60,7 +60,9 @@ def _build_search_cache_key(body: SearchRequest) -> str:
 SEARCH_CACHE_TTL = 60  # seconds
 
 
-@router.post("/search", response_model=SearchResponse, dependencies=[Depends(rate_limit(30, 60))])
+@router.post(
+    "/search", response_model=SearchResponse, dependencies=[Depends(rate_limit(30, 60))]
+)
 async def search_packages(body: SearchRequest, request: Request):
     """Full-text search over published packages via Meilisearch. Spec §8.2."""
     # Try Redis cache first
@@ -122,7 +124,9 @@ async def search_packages(body: SearchRequest, request: Request):
         )
         if resp.status_code != 200:
             logger.error(f"Meilisearch search failed: {resp.status_code} {resp.text}")
-            return SearchResponse(query=q, hits=[], total=0, page=page, per_page=per_page)
+            return SearchResponse(
+                query=q, hits=[], total=0, page=page, per_page=per_page
+            )
 
         data = resp.json()
     except Exception as e:
@@ -131,38 +135,44 @@ async def search_packages(body: SearchRequest, request: Request):
 
     hits = []
     for doc in data.get("hits", []):
-        hits.append(SearchHit(
-            slug=doc.get("slug", ""),
-            name=doc.get("name", ""),
-            package_type=doc.get("package_type", ""),
-            summary=doc.get("summary", ""),
-            publisher_name=doc.get("publisher_name", ""),
-            publisher_slug=doc.get("publisher_slug", ""),
-            trust_level=doc.get("trust_level", "unverified"),
-            latest_version=doc.get("latest_version"),
-            runtime=doc.get("runtime"),
-            capability_ids=doc.get("capability_ids", []),
-            tags=doc.get("tags", []),
-            frameworks=doc.get("frameworks", []),
-            download_count=doc.get("download_count", 0),
-            install_count=doc.get("install_count", 0),
-            is_deprecated=doc.get("is_deprecated", False),
-            verification_status=doc.get("verification_status"),
-            verification_score=doc.get("verification_score"),
-            verification_tier=doc.get("verification_tier"),
-            network_level=doc.get("network_level"),
-            filesystem_level=doc.get("filesystem_level"),
-            code_execution_level=doc.get("code_execution_level"),
-            has_connector=doc.get("has_connector"),
-        ))
+        hits.append(
+            SearchHit(
+                slug=doc.get("slug", ""),
+                name=doc.get("name", ""),
+                package_type=doc.get("package_type", ""),
+                summary=doc.get("summary", ""),
+                publisher_name=doc.get("publisher_name", ""),
+                publisher_slug=doc.get("publisher_slug", ""),
+                trust_level=doc.get("trust_level", "unverified"),
+                latest_version=doc.get("latest_version"),
+                runtime=doc.get("runtime"),
+                capability_ids=doc.get("capability_ids", []),
+                tags=doc.get("tags", []),
+                frameworks=doc.get("frameworks", []),
+                download_count=doc.get("download_count", 0),
+                install_count=doc.get("install_count", 0),
+                is_deprecated=doc.get("is_deprecated", False),
+                verification_status=doc.get("verification_status"),
+                verification_score=doc.get("verification_score"),
+                verification_tier=doc.get("verification_tier"),
+                network_level=doc.get("network_level"),
+                filesystem_level=doc.get("filesystem_level"),
+                code_execution_level=doc.get("code_execution_level"),
+                has_connector=doc.get("has_connector"),
+            )
+        )
 
     total = data.get("estimatedTotalHits", data.get("totalHits", len(hits)))
 
-    response = SearchResponse(query=q, hits=hits, total=total, page=page, per_page=per_page)
+    response = SearchResponse(
+        query=q, hits=hits, total=total, page=page, per_page=per_page
+    )
 
     # Cache the response
     try:
-        await redis.set(cache_key, json.dumps(response.model_dump(mode="json")), ex=SEARCH_CACHE_TTL)
+        await redis.set(
+            cache_key, json.dumps(response.model_dump(mode="json")), ex=SEARCH_CACHE_TTL
+        )
     except Exception:
         logger.warning("Redis cache write failed for %s", cache_key, exc_info=True)
 

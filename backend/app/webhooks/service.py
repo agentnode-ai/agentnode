@@ -1,4 +1,5 @@
 """Webhook delivery service — fires events to registered webhook URLs."""
+
 import hashlib
 import hmac
 import json
@@ -69,8 +70,7 @@ async def fire_event(
             )
         )
         targets: list[tuple[UUID, str, list[str] | None, str | None]] = [
-            (wh.id, wh.url, wh.events, wh.secret)
-            for wh in result.scalars().all()
+            (wh.id, wh.url, wh.events, wh.secret) for wh in result.scalars().all()
         ]
 
     if not targets:
@@ -87,7 +87,9 @@ async def fire_event(
         body = json.dumps({"event": event_type, "data": payload})
         headers = {"Content-Type": "application/json"}
         if wh_secret:
-            sig = hmac.new(wh_secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+            sig = hmac.new(
+                wh_secret.encode(), body.encode(), hashlib.sha256
+            ).hexdigest()
             headers["X-Webhook-Signature"] = f"sha256={sig}"
 
         status_code: str | None = None
@@ -103,7 +105,10 @@ async def fire_event(
         parsed = urlparse(wh_url)
         hostname = parsed.hostname or ""
         if not hostname or resolve_public_ip(hostname) is None:
-            logger.error("Webhook delivery refused for %s: host resolves to non-public IP", wh_url)
+            logger.error(
+                "Webhook delivery refused for %s: host resolves to non-public IP",
+                wh_url,
+            )
             status_code = "blocked"
         else:
             try:
@@ -114,13 +119,15 @@ async def fire_event(
                 logger.error(f"Webhook delivery failed for {wh_url}: {e}")
                 status_code = "error"
 
-        deliveries.append({
-            "webhook_id": wh_id,
-            "event_type": event_type,
-            "payload": payload,
-            "status_code": status_code,
-            "success": success,
-        })
+        deliveries.append(
+            {
+                "webhook_id": wh_id,
+                "event_type": event_type,
+                "payload": payload,
+                "status_code": status_code,
+                "success": success,
+            }
+        )
 
     if not deliveries:
         return

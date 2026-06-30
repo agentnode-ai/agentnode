@@ -125,7 +125,9 @@ The manifest "agent" block format:
 """
 
 
-async def generate_with_ai(description: str, package_type: str = "toolpack") -> BuilderGenerateResponse:
+async def generate_with_ai(
+    description: str, package_type: str = "toolpack"
+) -> BuilderGenerateResponse:
     """Generate a complete ANP v0.2 package using Claude Sonnet."""
     client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
@@ -143,7 +145,9 @@ async def generate_with_ai(description: str, package_type: str = "toolpack") -> 
     )
 
     raw = message.content[0].text
-    logger.info("AI response length: %d chars, stop_reason: %s", len(raw), message.stop_reason)
+    logger.info(
+        "AI response length: %d chars, stop_reason: %s", len(raw), message.stop_reason
+    )
     data = _extract_json(raw)
 
     package_id = data["package_id"]
@@ -155,16 +159,29 @@ async def generate_with_ai(description: str, package_type: str = "toolpack") -> 
         agent_code = data.get("tool_code") or data.get("agent_code", "")
         code_files = [
             CodeFile(path=f"src/{module_name}/agent.py", content=agent_code),
-            CodeFile(path=f"src/{module_name}/__init__.py", content=data.get("init_code", f'"""AgentNode agent package: {data["package_name"]}"""\n')),
+            CodeFile(
+                path=f"src/{module_name}/__init__.py",
+                content=data.get(
+                    "init_code",
+                    f'"""AgentNode agent package: {data["package_name"]}"""\n',
+                ),
+            ),
             CodeFile(path="pyproject.toml", content=data["pyproject"]),
             CodeFile(path="tests/test_agent.py", content=data.get("test_code", "")),
         ]
     else:
         code_files = [
             CodeFile(path=f"src/{module_name}/tool.py", content=data["tool_code"]),
-            CodeFile(path=f"src/{module_name}/__init__.py", content=data.get("init_code", f'"""AgentNode package: {data["package_name"]}"""\n')),
+            CodeFile(
+                path=f"src/{module_name}/__init__.py",
+                content=data.get(
+                    "init_code", f'"""AgentNode package: {data["package_name"]}"""\n'
+                ),
+            ),
             CodeFile(path="pyproject.toml", content=data["pyproject"]),
-            CodeFile(path=f"tests/test_{tool_name}.py", content=data.get("test_code", "")),
+            CodeFile(
+                path=f"tests/test_{tool_name}.py", content=data.get("test_code", "")
+            ),
         ]
 
     # Add README if generated
@@ -173,7 +190,9 @@ async def generate_with_ai(description: str, package_type: str = "toolpack") -> 
         code_files.append(CodeFile(path="README.md", content=readme_code))
 
     # --- Normalize AI manifest into publish-compatible format ---
-    manifest = _normalize_manifest(ai_manifest, data, package_id, module_name, tool_name)
+    manifest = _normalize_manifest(
+        ai_manifest, data, package_id, module_name, tool_name
+    )
 
     # Extract capability IDs from normalized manifest
     cap_ids: list[str] = []
@@ -208,7 +227,9 @@ async def generate_with_ai(description: str, package_type: str = "toolpack") -> 
     )
 
 
-def _normalize_manifest(ai: dict, data: dict, package_id: str, module_name: str, tool_name: str) -> dict:
+def _normalize_manifest(
+    ai: dict, data: dict, package_id: str, module_name: str, tool_name: str
+) -> dict:
     """Normalize an AI-generated manifest into publish-compatible format.
 
     The AI generates inconsistent manifest formats. This function ensures the
@@ -219,7 +240,12 @@ def _normalize_manifest(ai: dict, data: dict, package_id: str, module_name: str,
     - permissions with nested level keys
     """
     # --- Basic fields ---
-    name = ai.get("name") or ai.get("display_name") or ai.get("package_name") or data.get("package_name", "")
+    name = (
+        ai.get("name")
+        or ai.get("display_name")
+        or ai.get("package_name")
+        or data.get("package_name", "")
+    )
     summary = ai.get("summary") or ai.get("description") or ""
     description = ai.get("description") or summary
     version = ai.get("version") or "1.0.0"
@@ -245,17 +271,25 @@ def _normalize_manifest(ai: dict, data: dict, package_id: str, module_name: str,
         if isinstance(ai_caps, list):
             cap_ids = ai_caps  # capabilities: ["web_search", ...] format
         entrypoint = ai.get("entrypoint") or f"{module_name}.tool:{tool_name}"
-        tools.append({
-            "name": tool_name,
-            "description": description,
-            "capability_id": cap_ids[0] if cap_ids else "code_analysis",
-            "entrypoint": entrypoint,
-        })
+        tools.append(
+            {
+                "name": tool_name,
+                "description": description,
+                "capability_id": cap_ids[0] if cap_ids else "code_analysis",
+                "entrypoint": entrypoint,
+            }
+        )
 
     # --- Permissions ---
     perms = ai.get("permissions", {})
     normalized_perms = {}
-    for key in ("network", "filesystem", "code_execution", "data_access", "user_approval"):
+    for key in (
+        "network",
+        "filesystem",
+        "code_execution",
+        "data_access",
+        "user_approval",
+    ):
         val = perms.get(key, {})
         if isinstance(val, dict) and "level" in val:
             normalized_perms[key] = val
@@ -294,7 +328,9 @@ def _normalize_manifest(ai: dict, data: dict, package_id: str, module_name: str,
     if ai.get("examples") or data.get("examples"):
         result["examples"] = ai.get("examples") or data.get("examples")
     if ai.get("env_requirements") or data.get("env_requirements"):
-        result["env_requirements"] = ai.get("env_requirements") or data.get("env_requirements")
+        result["env_requirements"] = ai.get("env_requirements") or data.get(
+            "env_requirements"
+        )
 
     # readme_code from AI response → manifest
     readme_code = data.get("readme_code")
@@ -311,8 +347,15 @@ def _normalize_manifest(ai: dict, data: dict, package_id: str, module_name: str,
             "entrypoint": f"{module_name}.agent:run",
             "goal": description,
             "tool_access": {"allowed_packages": []},
-            "limits": {"max_iterations": 10, "max_tool_calls": 50, "max_runtime_seconds": 300},
-            "termination": {"stop_on_final_answer": True, "stop_on_consecutive_errors": 3},
+            "limits": {
+                "max_iterations": 10,
+                "max_tool_calls": 50,
+                "max_runtime_seconds": 300,
+            },
+            "termination": {
+                "stop_on_final_answer": True,
+                "stop_on_consecutive_errors": 3,
+            },
             "isolation": "thread",
             "state": {"persistence": "none"},
         }
@@ -348,10 +391,18 @@ def _normalize_tool(t: dict, module_name: str) -> dict:
 
 def _escape_yaml_str(s: str) -> str:
     """Escape a string for use inside YAML double quotes."""
-    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t").replace("\r", "\\r")
+    return (
+        s.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+        .replace("\r", "\\r")
+    )
 
 
-def _json_to_yaml(obj: dict | list | str | int | float | bool | None, indent: int = 0) -> str:
+def _json_to_yaml(
+    obj: dict | list | str | int | float | bool | None, indent: int = 0
+) -> str:
     """Convert a JSON-like dict to YAML string. Simple recursive converter."""
     lines: list[str] = []
     prefix = " " * indent
@@ -367,7 +418,8 @@ def _json_to_yaml(obj: dict | list | str | int | float | bool | None, indent: in
                 elif all(isinstance(v, (str, int, float, bool)) for v in value):
                     # Inline simple lists
                     formatted = ", ".join(
-                        f'"{_escape_yaml_str(v)}"' if isinstance(v, str) else str(v) for v in value
+                        f'"{_escape_yaml_str(v)}"' if isinstance(v, str) else str(v)
+                        for v in value
                     )
                     lines.append(f"{prefix}{key}: [{formatted}]")
                 else:
@@ -376,16 +428,26 @@ def _json_to_yaml(obj: dict | list | str | int | float | bool | None, indent: in
                         if isinstance(item, dict):
                             first = True
                             for k2, v2 in item.items():
-                                item_prefix = f"{prefix}  - " if first else f"{prefix}    "
+                                item_prefix = (
+                                    f"{prefix}  - " if first else f"{prefix}    "
+                                )
                                 first = False
                                 if isinstance(v2, (dict, list)):
                                     lines.append(f"{item_prefix}{k2}:")
                                     lines.append(_json_to_yaml(v2, indent + 6))
                                 else:
-                                    val_str = f'"{_escape_yaml_str(v2)}"' if isinstance(v2, str) else str(v2)
+                                    val_str = (
+                                        f'"{_escape_yaml_str(v2)}"'
+                                        if isinstance(v2, str)
+                                        else str(v2)
+                                    )
                                     lines.append(f"{item_prefix}{k2}: {val_str}")
                         else:
-                            val_str = f'"{_escape_yaml_str(item)}"' if isinstance(item, str) else str(item)
+                            val_str = (
+                                f'"{_escape_yaml_str(item)}"'
+                                if isinstance(item, str)
+                                else str(item)
+                            )
                             lines.append(f"{prefix}  - {val_str}")
             else:
                 if isinstance(value, str):

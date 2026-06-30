@@ -31,18 +31,22 @@ RUNNER_VERSION = "2.0.0"
 # passing verification run. Canonicalized to snake_case; the matching
 # prefix `Auto-quarantined: verification failed` covers the legacy reason
 # strings with extra detail in parentheses.  (P1-L4)
-AUTO_CLEARABLE_REASONS: frozenset[str] = frozenset({
-    "Auto-quarantined: verification failed",
-    "new_publisher_review",
-})
+AUTO_CLEARABLE_REASONS: frozenset[str] = frozenset(
+    {
+        "Auto-quarantined: verification failed",
+        "new_publisher_review",
+    }
+)
 _AUTO_CLEAR_PREFIX = "Auto-quarantined: verification failed"
 
 # Triggers that MUST NOT auto-clear quarantine — e.g. an owner-initiated
 # re-verify must not undo a quarantine the admin imposed. (P1-V1)
-_NON_AUTO_CLEARING_TRIGGERS: frozenset[str] = frozenset({
-    "owner_request",
-    "admin_reverify",
-})
+_NON_AUTO_CLEARING_TRIGGERS: frozenset[str] = frozenset(
+    {
+        "owner_request",
+        "admin_reverify",
+    }
+)
 
 # --- Platform error detection -------------------------------------------------
 # Errors matching these patterns are platform-side issues (misconfiguration,
@@ -79,13 +83,10 @@ async def _has_open_scanner_findings(session, version_id: UUID) -> bool:
     """
     from app.packages.models import SecurityFinding
 
-    stmt = (
-        select(func.count(SecurityFinding.id))
-        .where(
-            SecurityFinding.package_version_id == version_id,
-            SecurityFinding.is_resolved.is_(False),
-            SecurityFinding.severity.in_(("medium", "high", "critical")),
-        )
+    stmt = select(func.count(SecurityFinding.id)).where(
+        SecurityFinding.package_version_id == version_id,
+        SecurityFinding.is_resolved.is_(False),
+        SecurityFinding.severity.in_(("medium", "high", "critical")),
     )
     count = (await session.execute(stmt)).scalar() or 0
     return count > 0
@@ -109,17 +110,25 @@ async def _log_candidate_verification(package_id: UUID) -> None:
 
         # Idempotency: check if verification_passed already logged for this package
         existing = await session.execute(
-            select(CandidateEvent.id).where(
+            select(CandidateEvent.id)
+            .where(
                 CandidateEvent.candidate_id == candidate_id,
                 CandidateEvent.event_type == "verification_passed",
                 CandidateEvent.metadata_["package_id"].astext == str(package_id),
-            ).limit(1)
+            )
+            .limit(1)
         )
         if existing.scalar_one_or_none() is not None:
             return
 
-        await log_event(session, candidate_id, "verification_passed", {"package_id": str(package_id)})
+        await log_event(
+            session,
+            candidate_id,
+            "verification_passed",
+            {"package_id": str(package_id)},
+        )
         await session.commit()
+
 
 # Concurrency limiter — prevents VPS overload on parallel publishes
 _verification_semaphore: asyncio.Semaphore | None = None
@@ -128,7 +137,9 @@ _verification_semaphore: asyncio.Semaphore | None = None
 def _get_semaphore() -> asyncio.Semaphore:
     global _verification_semaphore
     if _verification_semaphore is None:
-        _verification_semaphore = asyncio.Semaphore(settings.VERIFICATION_MAX_CONCURRENT)
+        _verification_semaphore = asyncio.Semaphore(
+            settings.VERIFICATION_MAX_CONCURRENT
+        )
     return _verification_semaphore
 
 
@@ -165,7 +176,9 @@ def _compute_manifest_completeness(agent_section: dict) -> dict:
 
     # llm.required set: 2 pts
     llm_section = agent_section.get("llm", {})
-    llm_required = llm_section.get("required") if isinstance(llm_section, dict) else None
+    llm_required = (
+        llm_section.get("required") if isinstance(llm_section, dict) else None
+    )
     if llm_required is not None:
         score += 2
         details["llm_required"] = {"set": True, "points": 2}
@@ -187,17 +200,28 @@ def _compute_manifest_completeness(agent_section: dict) -> dict:
 def _read_python_dependencies(pkg_dir: str) -> list[str]:
     """Read Python dependency names from pyproject.toml in the package directory."""
     import os
+
     pyproject_path = os.path.join(pkg_dir, "pyproject.toml") if pkg_dir else ""
     if not pyproject_path or not os.path.isfile(pyproject_path):
         return []
     try:
         import tomllib
+
         with open(pyproject_path, "rb") as f:
             data = tomllib.load(f)
         deps = data.get("project", {}).get("dependencies", [])
         if isinstance(deps, list):
-            return [d.split(">")[0].split("<")[0].split("=")[0].split("[")[0].split("!")[0].split("~")[0].strip()
-                    for d in deps if isinstance(d, str)]
+            return [
+                d.split(">")[0]
+                .split("<")[0]
+                .split("=")[0]
+                .split("[")[0]
+                .split("!")[0]
+                .split("~")[0]
+                .strip()
+                for d in deps
+                if isinstance(d, str)
+            ]
     except Exception:
         pass
     return []
@@ -219,9 +243,17 @@ def _run_verification_sync(
     Returns a dict with all step results using status strings, not booleans.
     """
     from app.verification.sandbox import VerificationSandbox
-    from app.verification.steps import step_import, step_install, step_smoke, step_tests, run_stability_check, run_agent_verification_cases
+    from app.verification.steps import (
+        step_import,
+        step_install,
+        step_smoke,
+        step_tests,
+        run_stability_check,
+        run_agent_verification_cases,
+    )
     from app.verification.smoke_context import (
-        build_smoke_context, classify_credential_boundary,
+        build_smoke_context,
+        classify_credential_boundary,
     )
 
     sandbox = VerificationSandbox()
@@ -274,7 +306,9 @@ def _run_verification_sync(
             "import": sandbox.get_isolation_level("import"),
             "smoke": sandbox.get_isolation_level("smoke"),
             "tests": sandbox.get_isolation_level("tests"),
-            "overall": sandbox.get_isolation_level("import"),  # import is the primary enforced path
+            "overall": sandbox.get_isolation_level(
+                "import"
+            ),  # import is the primary enforced path
         }
 
         # Step 1: Install
@@ -306,10 +340,23 @@ def _run_verification_sync(
 
         # Detect heavy ML dependencies for timeout/resource adjustments
         from app.verification.smoke_context import KNOWN_HEAVY_IMPORTS
-        _normalized_deps = set(
-            d.replace("-", "_").lower().split("[")[0].split(">")[0].split("<")[0].split("=")[0].split("!")[0].split("~")[0].strip()
-            for d in python_deps
-        ) if python_deps else set()
+
+        _normalized_deps = (
+            set(
+                d.replace("-", "_")
+                .lower()
+                .split("[")[0]
+                .split(">")[0]
+                .split("<")[0]
+                .split("=")[0]
+                .split("!")[0]
+                .split("~")[0]
+                .strip()
+                for d in python_deps
+            )
+            if python_deps
+            else set()
+        )
         has_heavy_ml = bool(_normalized_deps & KNOWN_HEAVY_IMPORTS)
 
         # Detect browser requirement: explicit system_requirements or playwright dep
@@ -327,7 +374,8 @@ def _run_verification_sync(
             settings.VERIFICATION_CONTAINER_IMAGE_BROWSER if has_playwright else None
         )
         smoke_status, log, smoke_reason, smoke_passed_candidate = step_smoke(
-            sandbox, tools,
+            sandbox,
+            tools,
             heavy_ml=has_heavy_ml,
             image_override=image_override,
             playwright_fixture=has_playwright,
@@ -342,6 +390,7 @@ def _run_verification_sync(
         if smoke_reason in ("credential_boundary_reached", "needs_credentials"):
             # Parse the smoke log to find the confidence
             import json as _json
+
             for line in log.splitlines():
                 try:
                     entry = _json.loads(line)
@@ -372,11 +421,15 @@ def _run_verification_sync(
         elif smoke_reason in ("credential_boundary_reached", "needs_credentials"):
             result["verification_mode"] = "real_auto"
         else:
-            result["verification_mode"] = "real_auto" if not has_explicit_cases else "cases_real"
+            result["verification_mode"] = (
+                "real_auto" if not has_explicit_cases else "cases_real"
+            )
 
         logger.info(
             "verification_mode=%s has_explicit_cases=%s system_requirements=%s",
-            result["verification_mode"], has_explicit_cases, system_requirements,
+            result["verification_mode"],
+            has_explicit_cases,
+            system_requirements,
         )
 
         # Step 3b: Stability check (Phase 4A) — only if smoke passed
@@ -399,21 +452,32 @@ def _run_verification_sync(
                     # Use the candidate that actually passed smoke (including probe-discovered ones)
                     stability_candidate = smoke_passed_candidate
                     if not stability_candidate:
-                        from app.verification.schema_generator import generate_candidates
-                        candidates = generate_candidates(first_passed_tool.get("input_schema"))
+                        from app.verification.schema_generator import (
+                            generate_candidates,
+                        )
+
+                        candidates = generate_candidates(
+                            first_passed_tool.get("input_schema")
+                        )
                         stability_candidate = candidates[0] if candidates else None
 
                     # Extract fixture cassette from passed_candidate (don't mutate)
                     fixture_cassette = None
-                    if stability_candidate and "_fixture_cassette" in stability_candidate:
+                    if (
+                        stability_candidate
+                        and "_fixture_cassette" in stability_candidate
+                    ):
                         fixture_cassette = stability_candidate.get("_fixture_cassette")
                         stability_candidate = {
-                            k: v for k, v in stability_candidate.items()
+                            k: v
+                            for k, v in stability_candidate.items()
                             if not k.startswith("_fixture_")
                         }
 
                     ctx = build_smoke_context(first_passed_tool)
-                    module_path, func_name = first_passed_tool["entrypoint"].rsplit(":", 1)
+                    module_path, func_name = first_passed_tool["entrypoint"].rsplit(
+                        ":", 1
+                    )
                     if stability_candidate:
                         effective_budget = (
                             settings.VERIFICATION_SMOKE_BUDGET_SECONDS_HEAVY
@@ -428,10 +492,20 @@ def _run_verification_sync(
                                 per_run_timeout = min(60, max(15, int(remaining / 3)))
                             else:
                                 per_run_timeout = min(10, max(3, int(remaining / 3)))
-                            reliability, determinism, contract_valid, stability_results = run_stability_check(
-                                sandbox, module_path, func_name,
-                                stability_candidate, per_run_timeout,
-                                ctx, n=3, tool=first_passed_tool,
+                            (
+                                reliability,
+                                determinism,
+                                contract_valid,
+                                stability_results,
+                            ) = run_stability_check(
+                                sandbox,
+                                module_path,
+                                func_name,
+                                stability_candidate,
+                                per_run_timeout,
+                                ctx,
+                                n=3,
+                                tool=first_passed_tool,
                                 playwright_fixture=has_playwright,
                                 heavy_ml=has_heavy_ml,
                                 image_override=image_override,
@@ -445,17 +519,26 @@ def _run_verification_sync(
                             # Phase 6A: Contract validation
                             if stability_results:
                                 last_ok = next(
-                                    (r for r in reversed(stability_results) if r.get("ok")),
+                                    (
+                                        r
+                                        for r in reversed(stability_results)
+                                        if r.get("ok")
+                                    ),
                                     None,
                                 )
                                 if last_ok:
-                                    from app.verification.contract import validate_return
+                                    from app.verification.contract import (
+                                        validate_return,
+                                    )
+
                                     smoke_data = {
                                         "status": "ok",
                                         "return_type": last_ok.get("type"),
                                         "return_hash": last_ok.get("hash"),
                                         "is_none": last_ok.get("is_none", True),
-                                        "is_serializable": last_ok.get("is_serializable", False),
+                                        "is_serializable": last_ok.get(
+                                            "is_serializable", False
+                                        ),
                                         "return_keys": None,
                                         "return_length": None,
                                     }
@@ -465,18 +548,24 @@ def _run_verification_sync(
                                         stability_candidate,
                                     )
                                     result["contract_details"] = contract_result
-                                    result["contract_valid"] = contract_result.get("valid", False)
+                                    result["contract_valid"] = contract_result.get(
+                                        "valid", False
+                                    )
                 except Exception:
                     logger.exception("Stability check failed (non-fatal)")
 
         # Step 4: Tests — skip pytest for agents, run verification cases instead
         if is_agent and agent_section:
             result["tests_status"] = "skipped"
-            result["tests_log"] = "Skipped: agent packages use verification cases instead of pytest"
+            result["tests_log"] = (
+                "Skipped: agent packages use verification cases instead of pytest"
+            )
             result["tests_auto_generated"] = False
 
             # Manifest completeness scoring
-            result["manifest_completeness"] = _compute_manifest_completeness(agent_section)
+            result["manifest_completeness"] = _compute_manifest_completeness(
+                agent_section
+            )
 
             # Run verification cases if defined
             cases = (agent_section.get("verification") or {}).get("cases", [])
@@ -486,8 +575,12 @@ def _run_verification_sync(
                 if ep and ":" in ep:
                     module_path, func_name = ep.rsplit(":", 1)
                     cases_result = run_agent_verification_cases(
-                        sandbox, module_path, func_name,
-                        cases, timeout=15, agent_section=agent_section,
+                        sandbox,
+                        module_path,
+                        func_name,
+                        cases,
+                        timeout=15,
+                        agent_section=agent_section,
                         heavy_ml=has_heavy_ml,
                         image_override=image_override,
                     )
@@ -512,7 +605,9 @@ def _run_verification_sync(
                     result["tests_execution_mode"] = "container"
                 else:
                     result["tests_status"] = "not_executed"
-                    result["tests_log"] = "Tests present but not executed: no container sandbox available."
+                    result["tests_log"] = (
+                        "Tests present but not executed: no container sandbox available."
+                    )
                     result["tests_execution_mode"] = "skipped_no_container"
             elif sandbox.has_tests():
                 t0 = time.monotonic()
@@ -612,23 +707,33 @@ async def run_verification(
                     return
 
                 # Check artifact size limit
-                if pv.artifact_size_bytes and pv.artifact_size_bytes > settings.VERIFICATION_MAX_ARTIFACT_MB * 1024 * 1024:
+                if (
+                    pv.artifact_size_bytes
+                    and pv.artifact_size_bytes
+                    > settings.VERIFICATION_MAX_ARTIFACT_MB * 1024 * 1024
+                ):
                     pv.verification_status = "skipped"
                     await session.commit()
-                    logger.info(f"Skipping verification for {version_id}: artifact too large ({pv.artifact_size_bytes} bytes)")
+                    logger.info(
+                        f"Skipping verification for {version_id}: artifact too large ({pv.artifact_size_bytes} bytes)"
+                    )
                     return
 
                 # Race condition guard: check for already-running verification
                 now = datetime.now(timezone.utc)
-                stale_cutoff = now - timedelta(seconds=settings.VERIFICATION_TIMEOUT + 60)
+                stale_cutoff = now - timedelta(
+                    seconds=settings.VERIFICATION_TIMEOUT + 60
+                )
                 running_result = await session.execute(
-                    select(VerificationResult).where(
+                    select(VerificationResult)
+                    .where(
                         and_(
                             VerificationResult.package_version_id == version_id,
                             VerificationResult.status == "running",
                             VerificationResult.started_at > stale_cutoff,
                         )
-                    ).limit(1)
+                    )
+                    .limit(1)
                 )
                 if running_result.scalar_one_or_none() is not None:
                     logger.info(
@@ -648,9 +753,13 @@ async def run_verification(
                 )
                 for stale_vr in stale_result.scalars().all():
                     stale_vr.status = "error"
-                    stale_vr.error_summary = "Orphaned: exceeded timeout without completion"
+                    stale_vr.error_summary = (
+                        "Orphaned: exceeded timeout without completion"
+                    )
                     stale_vr.completed_at = now
-                    logger.warning(f"Marked orphaned verification {stale_vr.id} as error")
+                    logger.warning(
+                        f"Marked orphaned verification {stale_vr.id} as error"
+                    )
 
                 # Create a NEW result row (append-only history)
                 vr = VerificationResult(package_version_id=version_id)
@@ -668,6 +777,7 @@ async def run_verification(
                 # Download artifact and verify integrity
                 import hashlib
                 from app.shared.storage import download_artifact
+
                 artifact_bytes = await download_artifact(pv.artifact_object_key)
 
                 if pv.artifact_hash_sha256:
@@ -678,7 +788,9 @@ async def run_verification(
                             f"expected {pv.artifact_hash_sha256}, got {actual_hash}"
                         )
                         vr.status = "error"
-                        vr.error_summary = "Artifact integrity check failed: hash mismatch"
+                        vr.error_summary = (
+                            "Artifact integrity check failed: hash mismatch"
+                        )
                         vr.completed_at = datetime.now(timezone.utc)
                         pv.verification_status = "error"
                         await session.commit()
@@ -706,6 +818,7 @@ async def run_verification(
                 # For agents: skip capability-level tools (they share the agent entrypoint
                 # and expect AgentContext). Only test the __agent_entrypoint__ with MockContext.
                 from app.config import CONTAINER_RUNTIME
+
                 pkg_result_pre = await session.execute(
                     select(Package).where(Package.id == pv.package_id)
                 )
@@ -722,14 +835,16 @@ async def run_verification(
                             ep = f"{pv.entrypoint}:run"
                         if ep and ep not in seen_eps:
                             seen_eps.add(ep)
-                            tools.append({
-                                "name": cap.name,
-                                "entrypoint": ep,
-                                "input_schema": cap.input_schema,
-                                "env_requirements": pv.env_requirements,
-                                "examples": pv.examples,
-                                "network_level": network_level,
-                            })
+                            tools.append(
+                                {
+                                    "name": cap.name,
+                                    "entrypoint": ep,
+                                    "input_schema": cap.input_schema,
+                                    "env_requirements": pv.env_requirements,
+                                    "examples": pv.examples,
+                                    "network_level": network_level,
+                                }
+                            )
 
                 # For agent packages, verify the agent entrypoint with MockAgentContext
                 if is_agent_pkg:
@@ -737,31 +852,41 @@ async def run_verification(
                     agent_ep = agent_section.get("entrypoint", "")
                     if agent_ep and ":" in agent_ep and agent_ep not in seen_eps:
                         seen_eps.add(agent_ep)
-                        tools.append({
-                            "name": "__agent_entrypoint__",
-                            "entrypoint": agent_ep,
-                            "input_schema": None,
-                            "env_requirements": pv.env_requirements,
-                            "examples": None,
-                            "network_level": network_level,
-                            "_agent_section": agent_section,
-                        })
+                        tools.append(
+                            {
+                                "name": "__agent_entrypoint__",
+                                "entrypoint": agent_ep,
+                                "input_schema": None,
+                                "env_requirements": pv.env_requirements,
+                                "examples": None,
+                                "network_level": network_level,
+                                "_agent_section": agent_section,
+                            }
+                        )
 
                 # Normalize verification config via cases adapter
                 from app.verification.cases_adapter import normalize_verification_config
-                verification_config = manifest.get("verification", {}) if not is_agent_pkg else {}
+
+                verification_config = (
+                    manifest.get("verification", {}) if not is_agent_pkg else {}
+                )
                 normalized = normalize_verification_config(verification_config)
                 fixture_cases = [c for c in normalized.cases if c["mode"] == "fixture"]
                 real_cases = [c for c in normalized.cases if c["mode"] == "real"]
                 # step_smoke_fixtures expects "test_input" key, adapter produces "input"
-                smoke_fixtures = [
-                    {**c, "test_input": c["input"]} for c in fixture_cases
-                ] if fixture_cases else None
+                smoke_fixtures = (
+                    [{**c, "test_input": c["input"]} for c in fixture_cases]
+                    if fixture_cases
+                    else None
+                )
                 manual_test_input = real_cases[0]["input"] if real_cases else None
 
                 # Run verification in thread pool (subprocess.run blocks)
                 import functools
-                agent_section_for_sync = manifest.get("agent", {}) if is_agent_pkg else None
+
+                agent_section_for_sync = (
+                    manifest.get("agent", {}) if is_agent_pkg else None
+                )
                 start_time = time.monotonic()
                 loop = asyncio.get_running_loop()
                 step_results = await asyncio.wait_for(
@@ -769,7 +894,8 @@ async def run_verification(
                         None,
                         functools.partial(
                             _run_verification_sync,
-                            artifact_bytes, tools,
+                            artifact_bytes,
+                            tools,
                             is_agent=bool(is_agent_pkg),
                             agent_section=agent_section_for_sync,
                             container_available=container_available,
@@ -789,7 +915,9 @@ async def run_verification(
                 if _is_platform_error(step_results):
                     logger.error(
                         "PLATFORM ERROR during verification of %s (trigger=%s): %s",
-                        version_id, triggered_by, step_results.get("error_summary"),
+                        version_id,
+                        triggered_by,
+                        step_results.get("error_summary"),
                     )
                     # Record the result for debugging but do NOT change package status
                     vr.status = "error"
@@ -810,7 +938,12 @@ async def run_verification(
                     # Alert admins immediately
                     try:
                         from app.shared.email import send_platform_error_admin_alert
-                        error_log = step_results.get("import_log") or step_results.get("install_log") or ""
+
+                        error_log = (
+                            step_results.get("import_log")
+                            or step_results.get("install_log")
+                            or ""
+                        )
                         pkg_result = await session.execute(
                             select(Package).where(Package.id == pv.package_id)
                         )
@@ -831,7 +964,10 @@ async def run_verification(
                 install_status = step_results["install_status"]
                 import_status = step_results["import_status"]
 
-                if install_status in ("failed", "error") or import_status in ("failed", "error"):
+                if install_status in ("failed", "error") or import_status in (
+                    "failed",
+                    "error",
+                ):
                     final_status = "failed"
                 elif install_status == "passed" and import_status == "passed":
                     final_status = "passed"
@@ -869,6 +1005,7 @@ async def run_verification(
 
                 # Phase 5B: Environment info (includes isolation levels)
                 from app.config import SYSTEM_CAPABILITIES
+
                 vr.environment_info = {
                     "python_version": sys.version,
                     "system_capabilities": SYSTEM_CAPABILITIES,
@@ -898,6 +1035,7 @@ async def run_verification(
 
                 # Compute score (Phase 6B: full ScoreResult)
                 from app.verification.scoring import compute_score_result
+
                 score_result = compute_score_result(vr)
                 vr.verification_score = score_result.score
                 vr.verification_tier = score_result.tier
@@ -918,13 +1056,20 @@ async def run_verification(
                 # - other triggers (scheduled, runner_upgrade, owner_request):
                 #   downgrade-only — re-verify environment may differ from publish
                 from app.verification.scoring import TIER_ORDER
+
                 current_tier = pv.verification_tier
                 new_tier = score_result.tier
-                if triggered_by in ("publish", "admin_reverify") or current_tier is None:
+                if (
+                    triggered_by in ("publish", "admin_reverify")
+                    or current_tier is None
+                ):
                     if current_tier != new_tier:
                         logger.info(
                             "Tier update for %s: %s -> %s (trigger=%s)",
-                            version_id, current_tier, new_tier, triggered_by,
+                            version_id,
+                            current_tier,
+                            new_tier,
+                            triggered_by,
                         )
                     pv.verification_tier = new_tier
                 else:
@@ -933,23 +1078,32 @@ async def run_verification(
                     if new_rank < cur_rank:
                         logger.info(
                             "Retroactive tier downgrade for %s: %s -> %s (trigger=%s)",
-                            version_id, current_tier, new_tier, triggered_by,
+                            version_id,
+                            current_tier,
+                            new_tier,
+                            triggered_by,
                         )
                         pv.verification_tier = new_tier
                     else:
                         logger.info(
                             "Retroactive tier change blocked for %s: %s -> %s "
                             "is not a downgrade (trigger=%s) — keeping %s",
-                            version_id, current_tier, new_tier, triggered_by, current_tier,
+                            version_id,
+                            current_tier,
+                            new_tier,
+                            triggered_by,
+                            current_tier,
                         )
 
                 # Auto-quarantine on install/import failure (only for publish, not admin re-verify)
-                if final_status == "failed" and pv.quarantine_status == "none" and triggered_by == "publish":
+                if (
+                    final_status == "failed"
+                    and pv.quarantine_status == "none"
+                    and triggered_by == "publish"
+                ):
                     pv.quarantine_status = "quarantined"
                     pv.quarantined_at = datetime.now(timezone.utc)
-                    pv.quarantine_reason = (
-                        f"Auto-quarantined: verification failed ({step_results['error_summary']})"
-                    )
+                    pv.quarantine_reason = f"Auto-quarantined: verification failed ({step_results['error_summary']})"
                     logger.warning(
                         f"Auto-quarantined {version_id}: {step_results['error_summary']}"
                     )
@@ -972,14 +1126,20 @@ async def run_verification(
                         reason in AUTO_CLEARABLE_REASONS
                         or reason.startswith(f"{_AUTO_CLEAR_PREFIX} (")
                     )
-                    if is_auto_clearable and triggered_by in _NON_AUTO_CLEARING_TRIGGERS:
+                    if (
+                        is_auto_clearable
+                        and triggered_by in _NON_AUTO_CLEARING_TRIGGERS
+                    ):
                         logger.info(
                             "Quarantine NOT auto-cleared for %s: "
                             "triggered_by=%s is not allowed to auto-clear",
-                            version_id, triggered_by,
+                            version_id,
+                            triggered_by,
                         )
                         is_auto_clearable = False
-                    if is_auto_clearable and await _has_open_scanner_findings(session, version_id):
+                    if is_auto_clearable and await _has_open_scanner_findings(
+                        session, version_id
+                    ):
                         logger.warning(
                             "Quarantine NOT auto-cleared for %s: "
                             "open scanner findings present (P0-02 gate)",
@@ -993,7 +1153,10 @@ async def run_verification(
                             f"Auto-cleared quarantine for {version_id}: verification passed"
                         )
                         # Recalculate latest_version_id so the package page shows data
-                        from app.packages.version_queries import recalculate_latest_version_id
+                        from app.packages.version_queries import (
+                            recalculate_latest_version_id,
+                        )
+
                         await recalculate_latest_version_id(session, pv.package_id)
 
                         # Load package + publisher eagerly in one query. P1-L5:
@@ -1001,6 +1164,7 @@ async def run_verification(
                         # which raised `MissingGreenlet` under Meilisearch-sync
                         # refreshes that fired after the event-loop boundary.
                         from sqlalchemy.orm import selectinload
+
                         pkg_result2 = await session.execute(
                             select(Package)
                             .options(selectinload(Package.publisher))
@@ -1019,7 +1183,10 @@ async def run_verification(
                             # Sync to Meilisearch now that version is public
                             from app.packages.service import build_meili_document
                             from app.shared.meili import sync_package_to_meilisearch
-                            await sync_package_to_meilisearch(build_meili_document(pkg2, pv, pv.manifest_raw or {}))
+
+                            await sync_package_to_meilisearch(
+                                build_meili_document(pkg2, pv, pv.manifest_raw or {})
+                            )
                     else:
                         logger.info(
                             f"Quarantine NOT auto-cleared for {version_id}: "
@@ -1036,22 +1203,25 @@ async def run_verification(
                 if triggered_by == "admin_reverify" and admin_user_id is not None:
                     try:
                         from app.admin.models import AdminAuditLog
-                        session.add(AdminAuditLog(
-                            admin_user_id=admin_user_id,
-                            action="reverify_version_completed",
-                            target_type="package_version",
-                            target_id=str(version_id),
-                            metadata_={
-                                "outcome": final_status,
-                                "score": score_result.score,
-                                "tier": pv.verification_tier,
-                                "install_status": install_status,
-                                "import_status": import_status,
-                                "smoke_status": step_results["smoke_status"],
-                                "tests_status": step_results["tests_status"],
-                                "duration_ms": duration_ms,
-                            },
-                        ))
+
+                        session.add(
+                            AdminAuditLog(
+                                admin_user_id=admin_user_id,
+                                action="reverify_version_completed",
+                                target_type="package_version",
+                                target_id=str(version_id),
+                                metadata_={
+                                    "outcome": final_status,
+                                    "score": score_result.score,
+                                    "tier": pv.verification_tier,
+                                    "install_status": install_status,
+                                    "import_status": import_status,
+                                    "smoke_status": step_results["smoke_status"],
+                                    "tests_status": step_results["tests_status"],
+                                    "duration_ms": duration_ms,
+                                },
+                            )
+                        )
                         await session.commit()
                     except Exception:
                         logger.exception("Failed to write admin_reverify audit log")
@@ -1083,9 +1253,13 @@ async def run_verification(
                                 send_auto_quarantine_email,
                                 send_verification_failed_email,
                             )
+
                             pub_email = await get_publisher_email(pkg.publisher_id)
                             if pub_email:
-                                if triggered_by == "publish" and pv.quarantine_status == "quarantined":
+                                if (
+                                    triggered_by == "publish"
+                                    and pv.quarantine_status == "quarantined"
+                                ):
                                     # Actual quarantine happened — send quarantine email
                                     await send_auto_quarantine_email(
                                         pub_email, pkg.slug, pv.version_number, 0
@@ -1093,30 +1267,41 @@ async def run_verification(
                                 else:
                                     # Re-verify or non-quarantine failure — send informative email
                                     await send_verification_failed_email(
-                                        pub_email, pkg.slug, pv.version_number,
-                                        step_results.get("error_summary") or "Unknown error",
+                                        pub_email,
+                                        pkg.slug,
+                                        pv.version_number,
+                                        step_results.get("error_summary")
+                                        or "Unknown error",
                                     )
                     except Exception:
                         logger.exception("Failed to send verification failure email")
 
         except asyncio.TimeoutError:
-            logger.error(f"Verification timed out for {version_id} ({settings.VERIFICATION_TIMEOUT}s)")
+            logger.error(
+                f"Verification timed out for {version_id} ({settings.VERIFICATION_TIMEOUT}s)"
+            )
             try:
                 async with async_session_factory() as session:
                     from app.packages.models import PackageVersion
                     from app.verification.models import VerificationResult
 
-                    pv = (await session.execute(
-                        select(PackageVersion).where(PackageVersion.id == version_id)
-                    )).scalar_one_or_none()
+                    pv = (
+                        await session.execute(
+                            select(PackageVersion).where(
+                                PackageVersion.id == version_id
+                            )
+                        )
+                    ).scalar_one_or_none()
 
                     # Find the latest running result for this version
-                    vr = (await session.execute(
-                        select(VerificationResult)
-                        .where(VerificationResult.package_version_id == version_id)
-                        .order_by(VerificationResult.created_at.desc())
-                        .limit(1)
-                    )).scalar_one_or_none()
+                    vr = (
+                        await session.execute(
+                            select(VerificationResult)
+                            .where(VerificationResult.package_version_id == version_id)
+                            .order_by(VerificationResult.created_at.desc())
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
 
                     if vr and vr.status == "running":
                         vr.status = "error"
@@ -1135,16 +1320,22 @@ async def run_verification(
                     from app.packages.models import PackageVersion
                     from app.verification.models import VerificationResult
 
-                    pv = (await session.execute(
-                        select(PackageVersion).where(PackageVersion.id == version_id)
-                    )).scalar_one_or_none()
+                    pv = (
+                        await session.execute(
+                            select(PackageVersion).where(
+                                PackageVersion.id == version_id
+                            )
+                        )
+                    ).scalar_one_or_none()
 
-                    vr = (await session.execute(
-                        select(VerificationResult)
-                        .where(VerificationResult.package_version_id == version_id)
-                        .order_by(VerificationResult.created_at.desc())
-                        .limit(1)
-                    )).scalar_one_or_none()
+                    vr = (
+                        await session.execute(
+                            select(VerificationResult)
+                            .where(VerificationResult.package_version_id == version_id)
+                            .order_by(VerificationResult.created_at.desc())
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
 
                     if vr and vr.status == "running":
                         vr.status = "error"

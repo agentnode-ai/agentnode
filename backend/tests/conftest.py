@@ -15,9 +15,17 @@ from app.shared.models import Base
 from app.auth.models import ApiKey, User  # noqa: F401
 from app.publishers.models import Publisher  # noqa: F401
 from app.packages.models import (  # noqa: F401
-    Package, PackageVersion, Capability, PackageTag, PackageCategory,
-    CompatibilityRule, Dependency, Permission, UpgradeMetadata,
-    SecurityFinding, CapabilityTaxonomy,
+    Package,
+    PackageVersion,
+    Capability,
+    PackageTag,
+    PackageCategory,
+    CompatibilityRule,
+    Dependency,
+    Permission,
+    UpgradeMetadata,
+    SecurityFinding,
+    CapabilityTaxonomy,
 )
 from app.webhooks.models import Webhook, WebhookDelivery  # noqa: F401
 from app.admin.models import AdminAuditLog  # noqa: F401
@@ -28,7 +36,12 @@ from app.blog.models import BlogPost, BlogImage, BlogCategory, BlogPostType  # n
 TEST_DATABASE_URL = settings.DATABASE_URL
 
 SEED_CAPABILITY_IDS = [
-    ("pdf_extraction", "PDF Extraction", "Extract text and data from PDF documents", "document-processing"),
+    (
+        "pdf_extraction",
+        "PDF Extraction",
+        "Extract text and data from PDF documents",
+        "document-processing",
+    ),
     ("web_search", "Web Search", "Search the web", "search"),
     ("code_execution", "Code Execution", "Execute code", "developer-tools"),
 ]
@@ -39,42 +52,53 @@ async def engine():
     eng = create_async_engine(TEST_DATABASE_URL)
     async with eng.begin() as conn:
         from sqlalchemy import text
+
         # Drop all tables with CASCADE to avoid use_alter FK ordering issues
-        await conn.execute(text(
-            "DO $$ DECLARE r RECORD; BEGIN "
-            "FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP "
-            "EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE'; "
-            "END LOOP; END $$"
-        ))
+        await conn.execute(
+            text(
+                "DO $$ DECLARE r RECORD; BEGIN "
+                "FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP "
+                "EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE'; "
+                "END LOOP; END $$"
+            )
+        )
         # Enable pg_trgm extension (required for typosquatting similarity queries)
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         # Sequence is created by alembic migration 026; create_all() on a
         # bare schema does not know about it, so create it manually here so
         # support_tickets can be created.
-        await conn.execute(text("CREATE SEQUENCE IF NOT EXISTS support_ticket_number_seq START 1"))
+        await conn.execute(
+            text("CREATE SEQUENCE IF NOT EXISTS support_ticket_number_seq START 1")
+        )
         await conn.run_sync(Base.metadata.create_all)
         # Seed capability taxonomy for validation tests
         for cap_id, display_name, description, category in SEED_CAPABILITY_IDS:
             await conn.execute(
                 CapabilityTaxonomy.__table__.insert().values(
-                    id=cap_id, display_name=display_name,
-                    description=description, category=category,
+                    id=cap_id,
+                    display_name=display_name,
+                    description=description,
+                    category=category,
                 )
             )
     yield eng
     async with eng.begin() as conn:
-        await conn.execute(text(
-            "DO $$ DECLARE r RECORD; BEGIN "
-            "FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP "
-            "EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE'; "
-            "END LOOP; END $$"
-        ))
+        await conn.execute(
+            text(
+                "DO $$ DECLARE r RECORD; BEGIN "
+                "FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP "
+                "EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE'; "
+                "END LOOP; END $$"
+            )
+        )
     await eng.dispose()
 
 
 @pytest_asyncio.fixture
 async def session(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = async_sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False
+    )
     async with session_factory() as session:
         yield session
         await session.rollback()
@@ -216,20 +240,22 @@ TEST_MANIFEST = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "test_pack.tool",
     "capabilities": {
-        "tools": [{
-            "name": "test_tool",
-            "capability_id": "pdf_extraction",
-            "description": "Test tool",
-            "input_schema": {
-                "type": "object",
-                "properties": {"input": {"type": "string"}},
-                "required": ["input"],
-            },
-            "output_schema": {
-                "type": "object",
-                "properties": {"output": {"type": "string"}},
-            },
-        }],
+        "tools": [
+            {
+                "name": "test_tool",
+                "capability_id": "pdf_extraction",
+                "description": "Test tool",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"input": {"type": "string"}},
+                    "required": ["input"],
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": {"output": {"type": "string"}},
+                },
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -266,15 +292,21 @@ async def register_and_login(
         token = await register_and_login(client)
         token = await register_and_login(client, "alt@test.dev", "altuser", "Pass123!")
     """
-    await client.post("/v1/auth/register", json={
-        "email": email,
-        "username": username,
-        "password": password,
-    })
-    login_resp = await client.post("/v1/auth/login", json={
-        "email": email,
-        "password": password,
-    })
+    await client.post(
+        "/v1/auth/register",
+        json={
+            "email": email,
+            "username": username,
+            "password": password,
+        },
+    )
+    login_resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": email,
+            "password": password,
+        },
+    )
     return login_resp.json()["access_token"]
 
 
@@ -339,7 +371,12 @@ async def setup_admin_user(
         admin_token, pub = await setup_admin_user(client, session)
     """
     token, pub_data = await setup_publisher_user(
-        client, email, username, password, pub_slug, pub_name,
+        client,
+        email,
+        username,
+        password,
+        pub_slug,
+        pub_name,
     )
     await session.execute(
         update(User).where(User.username == username).values(is_admin=True)

@@ -1,4 +1,5 @@
 """Credential storage models — per-user, per-connector encrypted credentials."""
+
 from sqlalchemy import Column, Enum, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import relationship
@@ -29,7 +30,9 @@ class CredentialStore(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     connector_provider = Column(Text, nullable=False, index=True)
     connector_package_slug = Column(Text, nullable=False)
     auth_type = Column(
-        Enum("api_key", "oauth2", "token", name="connector_auth_type", create_type=False),
+        Enum(
+            "api_key", "oauth2", "token", name="connector_auth_type", create_type=False
+        ),
         nullable=False,
     )
 
@@ -41,7 +44,9 @@ class CredentialStore(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     allowed_domains = Column(JSONB, nullable=False, default=list)
 
     status = Column(
-        Enum("active", "expired", "revoked", name="credential_status", create_type=False),
+        Enum(
+            "active", "expired", "revoked", name="credential_status", create_type=False
+        ),
         nullable=False,
         default="active",
     )

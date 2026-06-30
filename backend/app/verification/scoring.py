@@ -25,25 +25,32 @@ def cap_tier(current: str, max_allowed: str) -> str:
 
 # ── Smoke reason categories ──
 
-_SANDBOX_LIMITATION_REASONS = frozenset({
-    "needs_credentials",
-    "missing_system_dependency",
-    "needs_binary_input",
-    "external_network_blocked",
-    "heavy_import_timeout",
-})
+_SANDBOX_LIMITATION_REASONS = frozenset(
+    {
+        "needs_credentials",
+        "missing_system_dependency",
+        "needs_binary_input",
+        "external_network_blocked",
+        "heavy_import_timeout",
+    }
+)
 
-_CREDENTIAL_BOUNDARY_REASONS = frozenset({
-    "credential_boundary_reached",
-    "needs_credentials",
-})
+_CREDENTIAL_BOUNDARY_REASONS = frozenset(
+    {
+        "credential_boundary_reached",
+        "needs_credentials",
+    }
+)
 
-_NO_CREDIT_REASONS = frozenset({
-    "not_implemented",
-})
+_NO_CREDIT_REASONS = frozenset(
+    {
+        "not_implemented",
+    }
+)
 
 
 # ── Score result dataclasses ──
+
 
 @dataclass
 class StepScore:
@@ -54,11 +61,11 @@ class StepScore:
 
 @dataclass
 class ScoreResult:
-    score: int                         # 0-100
-    tier: str                          # gold/verified/partial/unverified
-    confidence: str                    # high/medium/low
+    score: int  # 0-100
+    tier: str  # gold/verified/partial/unverified
+    confidence: str  # high/medium/low
     breakdown: dict[str, StepScore] = field(default_factory=dict)
-    explanation: str = ""              # Human-readable one-liner
+    explanation: str = ""  # Human-readable one-liner
 
     def to_dict(self) -> dict:
         """Convert to API-friendly dict."""
@@ -101,7 +108,11 @@ def compute_score_result(vr) -> ScoreResult:
     # Install (15 pts)
     if vr.install_status == "passed":
         install_ms = getattr(vr, "install_duration_ms", None)
-        reason = f"Installed in {install_ms / 1000:.1f}s" if install_ms else "Installed successfully"
+        reason = (
+            f"Installed in {install_ms / 1000:.1f}s"
+            if install_ms
+            else "Installed successfully"
+        )
         breakdown["install"] = StepScore(15, 15, reason)
         score += 15
     else:
@@ -130,7 +141,9 @@ def compute_score_result(vr) -> ScoreResult:
         breakdown["tests"] = StepScore(3, 15, "No tests provided")
         score += 3
     elif vr.tests_status == "not_executed":
-        breakdown["tests"] = StepScore(5, 15, "Tests present but not executed (no container sandbox)")
+        breakdown["tests"] = StepScore(
+            5, 15, "Tests present but not executed (no container sandbox)"
+        )
         score += 5
     else:
         breakdown["tests"] = StepScore(0, 15, "Tests failed")
@@ -159,7 +172,9 @@ def compute_score_result(vr) -> ScoreResult:
             runs = len(stability_log)
         ok_runs = int(vr.reliability * runs)
         breakdown["reliability"] = StepScore(
-            rel_points, 10, f"{ok_runs}/{runs} runs passed",
+            rel_points,
+            10,
+            f"{ok_runs}/{runs} runs passed",
         )
         score += rel_points
     else:
@@ -178,7 +193,9 @@ def compute_score_result(vr) -> ScoreResult:
     deduction = min((vr.warnings_count or 0) * 2, 10)
     if deduction > 0:
         count = vr.warnings_count or 0
-        breakdown["warnings"] = StepScore(-deduction, 0, f"{count} deprecation/runtime warning(s)")
+        breakdown["warnings"] = StepScore(
+            -deduction, 0, f"{count} deprecation/runtime warning(s)"
+        )
     else:
         breakdown["warnings"] = StepScore(0, 0, "No warnings")
     score -= deduction
@@ -227,16 +244,24 @@ def _tests_as_evidence_boost(vr, breakdown: dict[str, StepScore], score: int) ->
     if vr.smoke_status == "passed":
         return score
 
-    sandbox_reasons = _SANDBOX_LIMITATION_REASONS | _CREDENTIAL_BOUNDARY_REASONS | {"invalid_test_input"}
+    sandbox_reasons = (
+        _SANDBOX_LIMITATION_REASONS
+        | _CREDENTIAL_BOUNDARY_REASONS
+        | {"invalid_test_input"}
+    )
     if vr.smoke_reason not in sandbox_reasons:
         return score
 
     if breakdown.get("contract") and breakdown["contract"].points == 0:
-        breakdown["contract"] = StepScore(5, 10, "Inferred from passing publisher tests")
+        breakdown["contract"] = StepScore(
+            5, 10, "Inferred from passing publisher tests"
+        )
         score += 5
 
     if breakdown.get("reliability") and breakdown["reliability"].points == 0:
-        breakdown["reliability"] = StepScore(5, 10, "Inferred from passing publisher tests")
+        breakdown["reliability"] = StepScore(
+            5, 10, "Inferred from passing publisher tests"
+        )
         score += 5
 
     return score
@@ -251,7 +276,7 @@ def _compute_smoke_points(vr) -> tuple[int, str]:
     if vr.smoke_status == "passed":
         return 25, "Returned valid result"
 
-    tests_passed = (vr.tests_status == "passed" and not vr.tests_auto_generated)
+    tests_passed = vr.tests_status == "passed" and not vr.tests_auto_generated
 
     if vr.smoke_status == "inconclusive":
         reason = vr.smoke_reason
@@ -290,12 +315,20 @@ def apply_tier_caps(score: int, tier: str, vr) -> str:
     Caps: credential-boundary → max partial, mock → max partial, etc.
     """
     # ── Tier floors: install+import passed + legitimate limitation → at least partial ──
-    if (vr.install_status == "passed" and vr.import_status == "passed"
-            and tier == "unverified"):
+    if (
+        vr.install_status == "passed"
+        and vr.import_status == "passed"
+        and tier == "unverified"
+    ):
         # Legitimate sandbox limitations → floor to partial
-        if vr.smoke_reason in ("credential_boundary_reached", "needs_credentials",
-                                "missing_system_dependency", "needs_binary_input",
-                                "external_network_blocked", "heavy_import_timeout"):
+        if vr.smoke_reason in (
+            "credential_boundary_reached",
+            "needs_credentials",
+            "missing_system_dependency",
+            "needs_binary_input",
+            "external_network_blocked",
+            "heavy_import_timeout",
+        ):
             tier = "partial"
         # mock mode also gets partial floor
         verification_mode = getattr(vr, "verification_mode", None)
@@ -421,7 +454,9 @@ def _determinism_reason(vr, det_points: int) -> str:
         max_pts = 10
     stability_log = getattr(vr, "stability_log", None)
     if stability_log and isinstance(stability_log, list):
-        return_types = [r.get("type") for r in stability_log if r.get("ok") and r.get("type")]
+        return_types = [
+            r.get("type") for r in stability_log if r.get("ok") and r.get("type")
+        ]
         if any(t in _BINARY_RETURN_TYPES for t in return_types):
             if det_points == max_pts:
                 return "Binary output — identical across runs"
@@ -486,7 +521,11 @@ def _compute_agent_score(vr) -> ScoreResult:
     # Install (15 pts)
     if vr.install_status == "passed":
         install_ms = getattr(vr, "install_duration_ms", None)
-        reason = f"Installed in {install_ms / 1000:.1f}s" if install_ms else "Installed successfully"
+        reason = (
+            f"Installed in {install_ms / 1000:.1f}s"
+            if install_ms
+            else "Installed successfully"
+        )
         breakdown["install"] = StepScore(15, 15, reason)
         score += 15
     else:
@@ -494,7 +533,9 @@ def _compute_agent_score(vr) -> ScoreResult:
 
     # Import (15 pts)
     if vr.import_status == "passed":
-        breakdown["import"] = StepScore(15, 15, "Agent entrypoint imported successfully")
+        breakdown["import"] = StepScore(
+            15, 15, "Agent entrypoint imported successfully"
+        )
         score += 15
     else:
         breakdown["import"] = StepScore(0, 15, "Import verification failed")
@@ -526,7 +567,9 @@ def _compute_agent_score(vr) -> ScoreResult:
         if stability_log and isinstance(stability_log, list):
             runs = len(stability_log)
         ok_runs = int(vr.reliability * runs)
-        breakdown["reliability"] = StepScore(rel_points, 15, f"{ok_runs}/{runs} runs passed")
+        breakdown["reliability"] = StepScore(
+            rel_points, 15, f"{ok_runs}/{runs} runs passed"
+        )
         score += rel_points
     else:
         breakdown["reliability"] = StepScore(0, 15, "No stability data")
@@ -544,7 +587,9 @@ def _compute_agent_score(vr) -> ScoreResult:
     manifest_data = getattr(vr, "manifest_completeness", None)
     if manifest_data and isinstance(manifest_data, dict):
         manifest_pts = manifest_data.get("score", 0)
-        breakdown["manifest"] = StepScore(manifest_pts, 10, "Agent manifest completeness")
+        breakdown["manifest"] = StepScore(
+            manifest_pts, 10, "Agent manifest completeness"
+        )
         score += manifest_pts
     else:
         breakdown["manifest"] = StepScore(0, 10, "No manifest data")
@@ -553,7 +598,9 @@ def _compute_agent_score(vr) -> ScoreResult:
     deduction = min((vr.warnings_count or 0) * 2, 10)
     if deduction > 0:
         count = vr.warnings_count or 0
-        breakdown["warnings"] = StepScore(-deduction, 0, f"{count} deprecation/runtime warning(s)")
+        breakdown["warnings"] = StepScore(
+            -deduction, 0, f"{count} deprecation/runtime warning(s)"
+        )
     else:
         breakdown["warnings"] = StepScore(0, 0, "No warnings")
     score -= deduction
@@ -612,11 +659,18 @@ def _compute_agent_smoke_points(vr) -> tuple[int, str]:
 def _apply_agent_tier_caps(score: int, tier: str, vr) -> str:
     """Agent-specific tier caps."""
     # Tier floors
-    if (vr.install_status == "passed" and vr.import_status == "passed"
-            and tier == "unverified"):
-        if vr.smoke_reason in ("credential_boundary_reached", "needs_credentials",
-                                "missing_system_dependency", "needs_binary_input",
-                                "external_network_blocked"):
+    if (
+        vr.install_status == "passed"
+        and vr.import_status == "passed"
+        and tier == "unverified"
+    ):
+        if vr.smoke_reason in (
+            "credential_boundary_reached",
+            "needs_credentials",
+            "missing_system_dependency",
+            "needs_binary_input",
+            "external_network_blocked",
+        ):
             tier = "partial"
 
     # Smoke not passed → max verified
@@ -704,7 +758,11 @@ def _compute_agent_confidence(vr) -> str:
 
     # Manifest completeness boosts confidence
     manifest_data = getattr(vr, "manifest_completeness", None)
-    if manifest_data and isinstance(manifest_data, dict) and manifest_data.get("score", 0) >= 8:
+    if (
+        manifest_data
+        and isinstance(manifest_data, dict)
+        and manifest_data.get("score", 0) >= 8
+    ):
         signals += 1
 
     if vr.smoke_status == "inconclusive":

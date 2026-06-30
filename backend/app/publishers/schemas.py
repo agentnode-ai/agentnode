@@ -16,7 +16,9 @@ class CreatePublisherRequest(BaseModel):
     @classmethod
     def validate_slug(cls, v: str) -> str:
         if not re.match(r"^[a-z0-9-]{3,40}$", v):
-            raise ValueError("Slug must be 3-40 chars, only lowercase letters, digits, hyphens")
+            raise ValueError(
+                "Slug must be 3-40 chars, only lowercase letters, digits, hyphens"
+            )
         return v
 
 
@@ -46,6 +48,7 @@ class RegisterSigningKeyRequest(BaseModel):
     @classmethod
     def validate_public_key(cls, v: str) -> str:
         import base64
+
         try:
             key_bytes = base64.b64decode(v, validate=True)
         except Exception:

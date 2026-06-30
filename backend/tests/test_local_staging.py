@@ -10,6 +10,7 @@ This test simulates production-like conditions:
 
 Run: python -m pytest tests/test_local_staging.py -v --timeout=60
 """
+
 import base64
 import hashlib
 import sys
@@ -46,6 +47,7 @@ PUBLISHER_KEY_ID = "ed25519:" + hashlib.sha256(b"\x01" * 32).hexdigest()[:16]
 
 def _find_signing_middleware(app_or_mw):
     from app.shared.signing_middleware import RegistrySigningMiddleware
+
     mw = app_or_mw
     visited = set()
     while mw is not None:
@@ -76,11 +78,19 @@ async def _arm_signing(client):
 
 
 async def _create_test_publisher(client) -> str:
-    user = {"email": "staging@test.dev", "username": "staginguser", "password": "TestPass123!"}
+    user = {
+        "email": "staging@test.dev",
+        "username": "staginguser",
+        "password": "TestPass123!",
+    }
     await client.post("/v1/auth/register", json=user)
-    login = await client.post("/v1/auth/login", json={
-        "email": user["email"], "password": user["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": user["email"],
+            "password": user["password"],
+        },
+    )
     token = login.json()["access_token"]
     await client.post(
         "/v1/publishers",
@@ -159,14 +169,16 @@ async def test_step7_sdk_verify_keys_endpoint(client, _arm_signing, monkeypatch)
     )
     import agentnode_sdk.registry_trust as rt
 
-    keys = MappingProxyType({
-        _KEY_ID: RegistryKey(
-            key_id=_KEY_ID,
-            algorithm="ed25519",
-            public_key=_PUB_B64,
-            not_after="2099-12-31",
-        ),
-    })
+    keys = MappingProxyType(
+        {
+            _KEY_ID: RegistryKey(
+                key_id=_KEY_ID,
+                algorithm="ed25519",
+                public_key=_PUB_B64,
+                not_after="2099-12-31",
+            ),
+        }
+    )
     monkeypatch.setattr(rt, "REGISTRY_KEYS", keys)
 
     result = verify_registry_response(resp.content, sig_header)
@@ -176,7 +188,9 @@ async def test_step7_sdk_verify_keys_endpoint(client, _arm_signing, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_step7_sdk_verify_tampered_body_rejected(client, _arm_signing, monkeypatch):
+async def test_step7_sdk_verify_tampered_body_rejected(
+    client, _arm_signing, monkeypatch
+):
     """Tampered body → SDK returns INVALID."""
     await _create_test_publisher(client)
     resp = await client.get(f"/v1/publishers/staging-pub/keys/{PUBLISHER_KEY_ID}")
@@ -189,14 +203,16 @@ async def test_step7_sdk_verify_tampered_body_rejected(client, _arm_signing, mon
     )
     import agentnode_sdk.registry_trust as rt
 
-    keys = MappingProxyType({
-        _KEY_ID: RegistryKey(
-            key_id=_KEY_ID,
-            algorithm="ed25519",
-            public_key=_PUB_B64,
-            not_after="2099-12-31",
-        ),
-    })
+    keys = MappingProxyType(
+        {
+            _KEY_ID: RegistryKey(
+                key_id=_KEY_ID,
+                algorithm="ed25519",
+                public_key=_PUB_B64,
+                not_after="2099-12-31",
+            ),
+        }
+    )
     monkeypatch.setattr(rt, "REGISTRY_KEYS", keys)
 
     result = verify_registry_response(resp.content + b"tampered", sig_header)
@@ -213,14 +229,16 @@ async def test_step7_sdk_missing_header_enforcement(client, _arm_signing, monkey
     )
     import agentnode_sdk.registry_trust as rt
 
-    keys = MappingProxyType({
-        _KEY_ID: RegistryKey(
-            key_id=_KEY_ID,
-            algorithm="ed25519",
-            public_key=_PUB_B64,
-            not_after="2099-12-31",
-        ),
-    })
+    keys = MappingProxyType(
+        {
+            _KEY_ID: RegistryKey(
+                key_id=_KEY_ID,
+                algorithm="ed25519",
+                public_key=_PUB_B64,
+                not_after="2099-12-31",
+            ),
+        }
+    )
     monkeypatch.setattr(rt, "REGISTRY_KEYS", keys)
 
     result = verify_registry_response(b'{"test": true}', None)
@@ -237,7 +255,9 @@ async def test_step8_no_trailing_newline(client, _arm_signing):
     resp = await client.get(f"/v1/publishers/staging-pub/keys/{PUBLISHER_KEY_ID}")
     assert resp.status_code == 200
     body = resp.content
-    assert not body.endswith(b"\n"), f"Body has trailing newline: last bytes = {body[-5:]!r}"
+    assert not body.endswith(b"\n"), (
+        f"Body has trailing newline: last bytes = {body[-5:]!r}"
+    )
     assert not body.endswith(b"\r\n"), "Body has trailing CRLF"
 
 
@@ -245,6 +265,7 @@ async def test_step8_no_trailing_newline(client, _arm_signing):
 async def test_step8_body_is_valid_json(client, _arm_signing):
     """Response body must be valid JSON (not corrupted by proxy)."""
     import json
+
     await _create_test_publisher(client)
     resp = await client.get(f"/v1/publishers/staging-pub/keys/{PUBLISHER_KEY_ID}")
     data = json.loads(resp.content)

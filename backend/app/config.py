@@ -25,12 +25,14 @@ def _detect_container_runtime() -> str | None:
     Returns the binary name if a working runtime is found, None otherwise.
     """
     import subprocess
+
     for runtime in ("podman", "docker"):
         if shutil.which(runtime):
             try:
                 result = subprocess.run(
                     [runtime, "info"],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
                 if result.returncode == 0:
                     return runtime
@@ -45,7 +47,9 @@ CONTAINER_RUNTIME: str | None = _detect_container_runtime()
 
 class Settings(BaseSettings):
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://agentnode:agentnode@localhost:5432/agentnode"
+    DATABASE_URL: str = (
+        "postgresql+asyncpg://agentnode:agentnode@localhost:5432/agentnode"
+    )
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
@@ -106,8 +110,8 @@ class Settings(BaseSettings):
 
     # Phase 5A: uv installer support (8-85x faster than pip)
     VERIFICATION_USE_UV: bool = True
-    VERIFICATION_INSTALL_TIMEOUT: int = 60    # Separate from smoke timeout
-    VERIFICATION_SMOKE_TIMEOUT: int = 30      # Shorter smoke timeout
+    VERIFICATION_INSTALL_TIMEOUT: int = 60  # Separate from smoke timeout
+    VERIFICATION_SMOKE_TIMEOUT: int = 30  # Shorter smoke timeout
 
     # Continuous verification (Phase 4C)
     VERIFICATION_REVERIFY_DAYS: int = 30
@@ -115,7 +119,7 @@ class Settings(BaseSettings):
     VERIFICATION_REVERIFY_ENABLED: bool = True
 
     # Sandbox mode (for environment_info tracking)
-    VERIFICATION_SANDBOX_MODE: str = "subprocess"   # "subprocess" or "container"
+    VERIFICATION_SANDBOX_MODE: str = "subprocess"  # "subprocess" or "container"
     VERIFICATION_CONTAINER_IMAGE: str = "agentnode-verifier:latest"
     VERIFICATION_CONTAINER_IMAGE_BROWSER: str = "agentnode-verifier-browser:latest"
     VERIFICATION_MODEL_CACHE_DIR: str = "/opt/agentnode/model-cache"
@@ -135,8 +139,8 @@ class Settings(BaseSettings):
     MAX_ARTIFACT_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB
 
     # Registry signing (TG-4)
-    REGISTRY_SIGNING_KEY: str = ""        # base64-encoded PEM Ed25519 private key
-    REGISTRY_SIGNING_KEY_ID: str = ""     # e.g. "registry-2026"
+    REGISTRY_SIGNING_KEY: str = ""  # base64-encoded PEM Ed25519 private key
+    REGISTRY_SIGNING_KEY_ID: str = ""  # e.g. "registry-2026"
 
     # Environment
     ENVIRONMENT: str = "development"
@@ -196,10 +200,17 @@ def check_verification_sandbox() -> None:
         sys.exit(1)
     # Check if the image exists
     import subprocess as _sp
+
     try:
         result = _sp.run(
-            [CONTAINER_RUNTIME, "image", "inspect", settings.VERIFICATION_CONTAINER_IMAGE],
-            capture_output=True, timeout=10,
+            [
+                CONTAINER_RUNTIME,
+                "image",
+                "inspect",
+                settings.VERIFICATION_CONTAINER_IMAGE,
+            ],
+            capture_output=True,
+            timeout=10,
         )
         if result.returncode != 0:
             print(

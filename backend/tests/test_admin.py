@@ -1,4 +1,5 @@
 """Integration tests for admin/moderation endpoints."""
+
 import json
 from unittest.mock import patch
 
@@ -37,12 +38,14 @@ TEST_MANIFEST = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "mod_test.tool",
     "capabilities": {
-        "tools": [{
-            "name": "test_tool",
-            "capability_id": "pdf_extraction",
-            "description": "Test tool",
-            "input_schema": {"type": "object"},
-        }],
+        "tools": [
+            {
+                "name": "test_tool",
+                "capability_id": "pdf_extraction",
+                "description": "Test tool",
+                "input_schema": {"type": "object"},
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -58,17 +61,23 @@ TEST_MANIFEST = {
     "tags": ["test"],
     "categories": ["document-processing"],
     "dependencies": [],
-    "security": {"signature": "", "provenance": {"source_repo": "", "commit": "", "build_system": ""}},
+    "security": {
+        "signature": "",
+        "provenance": {"source_repo": "", "commit": "", "build_system": ""},
+    },
 }
 
 
 async def setup_admin(client, session):
     """Create admin user, publisher, and publish a test package."""
     await client.post("/v1/auth/register", json=TEST_ADMIN)
-    login = await client.post("/v1/auth/login", json={
-        "email": TEST_ADMIN["email"],
-        "password": TEST_ADMIN["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_ADMIN["email"],
+            "password": TEST_ADMIN["password"],
+        },
+    )
     token = login.json()["access_token"]
 
     # Make user admin directly in DB
@@ -88,10 +97,13 @@ async def setup_admin(client, session):
 async def setup_regular(client):
     """Create a regular (non-admin) user."""
     await client.post("/v1/auth/register", json=TEST_REGULAR)
-    login = await client.post("/v1/auth/login", json={
-        "email": TEST_REGULAR["email"],
-        "password": TEST_REGULAR["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_REGULAR["email"],
+            "password": TEST_REGULAR["password"],
+        },
+    )
     return login.json()["access_token"]
 
 
@@ -190,8 +202,11 @@ async def test_clear_non_quarantined_fails(mock_meili, mock_s3, client, session)
     # Ensure the version is NOT quarantined (new publishers may auto-quarantine)
     from app.packages.models import PackageVersion
     from sqlalchemy import update
+
     await session.execute(
-        update(PackageVersion).where(PackageVersion.version_number == "1.0.0").values(quarantine_status="none")
+        update(PackageVersion)
+        .where(PackageVersion.version_number == "1.0.0")
+        .values(quarantine_status="none")
     )
     await session.commit()
 

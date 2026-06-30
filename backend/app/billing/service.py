@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 # --- Pricing ---
 
 TIER_PRICES = {
-    "security": 4900,       # $49
+    "security": 4900,  # $49
     "compatibility": 9900,  # $99
-    "full": 19900,          # $199
+    "full": 19900,  # $199
 }
 
 EXPRESS_SURCHARGE = 10000  # $100
@@ -51,6 +51,7 @@ TIER_BADGE_LABELS = {
 
 # --- Review lifecycle ---
 
+
 async def create_review_request(
     session: AsyncSession,
     *,
@@ -75,7 +76,11 @@ async def create_review_request(
 
     # Verify publisher owns this package
     if pkg.publisher_id != publisher_id:
-        raise AppError("NOT_PACKAGE_OWNER", "You can only request reviews for your own packages", 403)
+        raise AppError(
+            "NOT_PACKAGE_OWNER",
+            "You can only request reviews for your own packages",
+            403,
+        )
 
     pv_result = await session.execute(
         select(PackageVersion).where(
@@ -89,9 +94,13 @@ async def create_review_request(
 
     # Yanked and rejected versions cannot be reviewed
     if pv.is_yanked:
-        raise AppError("VERSION_YANKED", "Cannot request review for a yanked version", 400)
+        raise AppError(
+            "VERSION_YANKED", "Cannot request review for a yanked version", 400
+        )
     if pv.quarantine_status == "rejected":
-        raise AppError("VERSION_REJECTED", "Cannot request review for a rejected version", 400)
+        raise AppError(
+            "VERSION_REJECTED", "Cannot request review for a rejected version", 400
+        )
 
     # Check for existing pending/active review for this version+tier
     existing_result = await session.execute(
@@ -142,18 +151,25 @@ async def create_review_request(
             price_cents=price_cents,
         )
     except Exception:
-        logger.exception("Stripe checkout creation failed for order_id=%s; deleting local review row", order_id)
+        logger.exception(
+            "Stripe checkout creation failed for order_id=%s; deleting local review row",
+            order_id,
+        )
         try:
             await session.delete(review)
             await session.commit()
         except Exception:
-            logger.exception("Failed to roll back local review row for order_id=%s", order_id)
+            logger.exception(
+                "Failed to roll back local review row for order_id=%s", order_id
+            )
         raise
 
     return review, checkout_session.url
 
 
-async def _create_checkout(*, order_id: str, tier: str, express: bool, price_cents: int):
+async def _create_checkout(
+    *, order_id: str, tier: str, express: bool, price_cents: int
+):
     """Wrapper to call Stripe checkout creation."""
     from app.billing.stripe_client import create_review_checkout_session
 
@@ -167,6 +183,7 @@ async def _create_checkout(*, order_id: str, tier: str, express: bool, price_cen
 
 
 # --- Webhook processing ---
+
 
 async def process_stripe_event(session: AsyncSession, event: dict) -> dict:
     """Process a Stripe webhook event idempotently.
@@ -247,6 +264,7 @@ async def _handle_checkout_expired(session: AsyncSession, checkout_obj: dict):
 
 # --- Admin actions ---
 
+
 async def assign_reviewer(
     session: AsyncSession,
     review_id: uuid.UUID,
@@ -256,7 +274,11 @@ async def assign_reviewer(
     review = await _get_review_for_update(session, review_id)
 
     if review.status not in ("paid", "in_review"):
-        raise AppError("INVALID_STATUS", f"Cannot assign reviewer to review in status '{review.status}'", 400)
+        raise AppError(
+            "INVALID_STATUS",
+            f"Cannot assign reviewer to review in status '{review.status}'",
+            400,
+        )
 
     review.assigned_reviewer_id = reviewer_id
     review.status = "in_review"
@@ -274,7 +296,11 @@ async def complete_review(
     review = await _get_review_for_update(session, review_id)
 
     if review.status != "in_review":
-        raise AppError("INVALID_STATUS", f"Cannot complete review in status '{review.status}' (must be in_review)", 400)
+        raise AppError(
+            "INVALID_STATUS",
+            f"Cannot complete review in status '{review.status}' (must be in_review)",
+            400,
+        )
 
     _validate_complete_fields(outcome, notes, review_result)
 
@@ -289,7 +315,9 @@ async def complete_review(
         badge_col = TIER_BADGE_COLUMN.get(review.tier)
         if badge_col:
             pv_result = await session.execute(
-                select(PackageVersion).where(PackageVersion.id == review.package_version_id)
+                select(PackageVersion).where(
+                    PackageVersion.id == review.package_version_id
+                )
             )
             pv = pv_result.scalar_one_or_none()
             if pv:
@@ -308,10 +336,16 @@ async def process_refund(
     review = await _get_review_for_update(session, review_id)
 
     if review.status == "refunded":
-        raise AppError("ALREADY_REFUNDED", "This review has already been fully refunded", 400)
+        raise AppError(
+            "ALREADY_REFUNDED", "This review has already been fully refunded", 400
+        )
 
     if review.refund_amount_cents is not None:
-        raise AppError("ALREADY_PARTIALLY_REFUNDED", "This review has already been partially refunded", 400)
+        raise AppError(
+            "ALREADY_PARTIALLY_REFUNDED",
+            "This review has already been partially refunded",
+            400,
+        )
 
     if not review.stripe_payment_intent_id:
         raise AppError("NO_PAYMENT", "No payment found for this review", 400)
@@ -337,7 +371,9 @@ async def process_refund(
         badge_col = TIER_BADGE_COLUMN.get(review.tier)
         if badge_col:
             pv_result = await session.execute(
-                select(PackageVersion).where(PackageVersion.id == review.package_version_id)
+                select(PackageVersion).where(
+                    PackageVersion.id == review.package_version_id
+                )
             )
             pv = pv_result.scalar_one_or_none()
             if pv:
@@ -349,26 +385,50 @@ async def process_refund(
     return review
 
 
-def _validate_complete_fields(outcome: str, notes: str | None, review_result: dict) -> None:
+def _validate_complete_fields(
+    outcome: str, notes: str | None, review_result: dict
+) -> None:
     """Validate that required fields are present for each outcome type."""
     if outcome == "approved":
         if not review_result:
-            raise AppError("MISSING_REVIEW_RESULT", "review_result is required for approved outcome", 400)
+            raise AppError(
+                "MISSING_REVIEW_RESULT",
+                "review_result is required for approved outcome",
+                400,
+            )
         if not review_result.get("reviewer_summary"):
-            raise AppError("MISSING_REVIEWER_SUMMARY", "reviewer_summary is required for approved outcome", 400)
+            raise AppError(
+                "MISSING_REVIEWER_SUMMARY",
+                "reviewer_summary is required for approved outcome",
+                400,
+            )
     elif outcome == "changes_requested":
         if not review_result:
-            raise AppError("MISSING_REVIEW_RESULT", "review_result is required for changes_requested outcome", 400)
+            raise AppError(
+                "MISSING_REVIEW_RESULT",
+                "review_result is required for changes_requested outcome",
+                400,
+            )
         changes = review_result.get("required_changes", [])
         if not changes or len(changes) == 0:
-            raise AppError("MISSING_REQUIRED_CHANGES", "At least one required_change is needed for changes_requested outcome", 400)
+            raise AppError(
+                "MISSING_REQUIRED_CHANGES",
+                "At least one required_change is needed for changes_requested outcome",
+                400,
+            )
     elif outcome == "rejected":
         has_summary = review_result and review_result.get("reviewer_summary")
         if not has_summary and not notes:
-            raise AppError("MISSING_REJECTION_REASON", "Either reviewer_summary or notes is required for rejected outcome", 400)
+            raise AppError(
+                "MISSING_REJECTION_REASON",
+                "Either reviewer_summary or notes is required for rejected outcome",
+                400,
+            )
 
 
-async def _get_review_email_context(session: AsyncSession, review_id: uuid.UUID) -> tuple[str, str, str]:
+async def _get_review_email_context(
+    session: AsyncSession, review_id: uuid.UUID
+) -> tuple[str, str, str]:
     """Return (package_slug, version_number, publisher_email) for a review — fresh from DB."""
     result = await session.execute(
         select(ReviewRequest).where(ReviewRequest.id == review_id)
@@ -383,7 +443,9 @@ async def _get_review_email_context(session: AsyncSession, review_id: uuid.UUID)
     pkg_row = pkg_result.one_or_none()
 
     pv_result = await session.execute(
-        select(PackageVersion.version_number).where(PackageVersion.id == review.package_version_id)
+        select(PackageVersion.version_number).where(
+            PackageVersion.id == review.package_version_id
+        )
     )
     pv_row = pv_result.one_or_none()
 
@@ -394,6 +456,7 @@ async def _get_review_email_context(session: AsyncSession, review_id: uuid.UUID)
 
     # Get publisher's user email
     from app.auth.models import User
+
     email = None
     if pub:
         user_result = await session.execute(
@@ -421,12 +484,12 @@ async def _get_review(session: AsyncSession, review_id: uuid.UUID) -> ReviewRequ
     return review
 
 
-async def _get_review_for_update(session: AsyncSession, review_id: uuid.UUID) -> ReviewRequest:
+async def _get_review_for_update(
+    session: AsyncSession, review_id: uuid.UUID
+) -> ReviewRequest:
     """Get a review request with row-level lock for mutation (prevents race conditions)."""
     result = await session.execute(
-        select(ReviewRequest)
-        .where(ReviewRequest.id == review_id)
-        .with_for_update()
+        select(ReviewRequest).where(ReviewRequest.id == review_id).with_for_update()
     )
     review = result.scalar_one_or_none()
     if not review:

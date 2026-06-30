@@ -34,7 +34,11 @@ def _make_auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _make_token(payload: dict, secret: str = settings.JWT_SECRET, algorithm: str = settings.JWT_ALGORITHM) -> str:
+def _make_token(
+    payload: dict,
+    secret: str = settings.JWT_SECRET,
+    algorithm: str = settings.JWT_ALGORITHM,
+) -> str:
     """Create a JWT with the given payload, secret, and algorithm."""
     return jwt.encode(payload, secret, algorithm=algorithm)
 
@@ -42,6 +46,7 @@ def _make_token(payload: dict, secret: str = settings.JWT_SECRET, algorithm: str
 # ---------------------------------------------------------------------------
 # 1. Expired token
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_expired_token_rejected(client):
@@ -59,6 +64,7 @@ async def test_expired_token_rejected(client):
 # ---------------------------------------------------------------------------
 # 2. Wrong signing key
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_wrong_signing_key_rejected(client):
@@ -79,6 +85,7 @@ async def test_wrong_signing_key_rejected(client):
 # 3. Missing token_type claim
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_missing_token_type_rejected(client):
     """A token without a token_type claim must be rejected with 401."""
@@ -96,18 +103,24 @@ async def test_missing_token_type_rejected(client):
 # 4. Wrong token_type (refresh used as access)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_refresh_token_rejected_as_access(client):
     """A refresh token must not be accepted where an access token is required."""
     # Register + login to get a real refresh token
     await client.post("/v1/auth/register", json=JWT_TEST_USER)
-    login_resp = await client.post("/v1/auth/login", json={
-        "email": JWT_TEST_USER["email"],
-        "password": JWT_TEST_USER["password"],
-    })
+    login_resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": JWT_TEST_USER["email"],
+            "password": JWT_TEST_USER["password"],
+        },
+    )
     refresh_token = login_resp.json()["refresh_token"]
 
-    resp = await client.get(PROTECTED_ENDPOINT, headers=_make_auth_header(refresh_token))
+    resp = await client.get(
+        PROTECTED_ENDPOINT, headers=_make_auth_header(refresh_token)
+    )
     assert resp.status_code == 401
 
 
@@ -142,6 +155,7 @@ async def test_purpose_token_rejected_as_access(client):
 # 5. Tampered payload
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_tampered_payload_rejected(client):
     """Modifying the payload after signing must invalidate the token."""
@@ -168,7 +182,9 @@ async def test_tampered_payload_rejected(client):
     # Re-assemble with original header + signature but tampered payload
     tampered_token = f"{parts[0]}.{tampered_b64}.{parts[2]}"
 
-    resp = await client.get(PROTECTED_ENDPOINT, headers=_make_auth_header(tampered_token))
+    resp = await client.get(
+        PROTECTED_ENDPOINT, headers=_make_auth_header(tampered_token)
+    )
     assert resp.status_code == 401
 
 
@@ -176,19 +192,23 @@ async def test_tampered_payload_rejected(client):
 # 6. Empty / malformed / garbage tokens
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad_token", [
-    "",                                  # empty string
-    "not-a-jwt",                         # no dots at all
-    "a.b",                               # only two parts
-    "a.b.c.d",                           # four parts
-    "eyJhbGciOiJIUzI1NiJ9..sig",        # empty payload
-    "!!!.@@@.###",                        # special characters
-    " ",                                  # whitespace
-    "Bearer nested",                      # someone accidentally double-wrapping
-    "null",                               # literal null
-    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.",  # missing signature
-])
+@pytest.mark.parametrize(
+    "bad_token",
+    [
+        "",  # empty string
+        "not-a-jwt",  # no dots at all
+        "a.b",  # only two parts
+        "a.b.c.d",  # four parts
+        "eyJhbGciOiJIUzI1NiJ9..sig",  # empty payload
+        "!!!.@@@.###",  # special characters
+        " ",  # whitespace
+        "Bearer nested",  # someone accidentally double-wrapping
+        "null",  # literal null
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.",  # missing signature
+    ],
+)
 async def test_malformed_token_rejected(client, bad_token):
     """Garbage / malformed bearer values must be rejected with 401."""
     resp = await client.get(PROTECTED_ENDPOINT, headers=_make_auth_header(bad_token))
@@ -218,13 +238,16 @@ async def test_wrong_auth_scheme_rejected(client):
         "exp": datetime.now(timezone.utc) + timedelta(hours=1),
     }
     token = _make_token(payload)
-    resp = await client.get(PROTECTED_ENDPOINT, headers={"Authorization": f"Basic {token}"})
+    resp = await client.get(
+        PROTECTED_ENDPOINT, headers={"Authorization": f"Basic {token}"}
+    )
     assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------
 # 7. Algorithm confusion — "none" algorithm
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_none_algorithm_rejected(client):
@@ -236,12 +259,16 @@ async def test_none_algorithm_rejected(client):
         "token_type": "access",
         "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
     }
-    header_b64 = base64.urlsafe_b64encode(
-        json.dumps(header, separators=(",", ":")).encode()
-    ).rstrip(b"=").decode()
-    payload_b64 = base64.urlsafe_b64encode(
-        json.dumps(payload, separators=(",", ":")).encode()
-    ).rstrip(b"=").decode()
+    header_b64 = (
+        base64.urlsafe_b64encode(json.dumps(header, separators=(",", ":")).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    payload_b64 = (
+        base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode())
+        .rstrip(b"=")
+        .decode()
+    )
 
     # alg=none tokens have an empty signature segment
     none_token = f"{header_b64}.{payload_b64}."

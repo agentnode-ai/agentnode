@@ -8,10 +8,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class BuilderGenerateRequest(BaseModel):
     description: str = Field(..., min_length=10, max_length=1000)
-    package_type: str = Field(default="toolpack", pattern=r'^(toolpack|agent)$')
+    package_type: str = Field(default="toolpack", pattern=r"^(toolpack|agent)$")
 
 
-_SAFE_PATH_RE = re.compile(r'^[a-zA-Z0-9/_.\-]+$')
+_SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9/_.\-]+$")
 
 
 class CodeFile(BaseModel):
@@ -53,7 +53,7 @@ class BuilderArtifactRequest(BaseModel):
     package_id: str = Field(
         ...,
         max_length=60,
-        pattern=r'^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$',
+        pattern=r"^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$",
     )
     manifest_json: dict
     code_files: list[CodeFile] = Field(..., max_length=50)

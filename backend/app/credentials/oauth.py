@@ -3,6 +3,7 @@
 Supports: GitHub, Slack. No generic plugin system.
 Config from env vars: OAUTH_{PROVIDER}_CLIENT_ID, OAUTH_{PROVIDER}_CLIENT_SECRET.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -39,6 +40,7 @@ async def _get_redis():
     """
     try:
         from app.main import app
+
         redis = app.state.redis
         await redis.ping()
         return redis
@@ -87,7 +89,9 @@ async def _pop_state(state_token: str) -> dict | None:
             503,
         )
 
-    logger.warning("Redis unavailable — reading from in-memory OAuth state store (dev-only)")
+    logger.warning(
+        "Redis unavailable — reading from in-memory OAuth state store (dev-only)"
+    )
     payload = _fallback_states.pop(state_token, None)
     if payload is None:
         return None
@@ -100,6 +104,7 @@ async def _pop_state(state_token: str) -> dict | None:
 # ---------------------------------------------------------------------------
 # Provider configs — explicit, no registry
 # ---------------------------------------------------------------------------
+
 
 def _get_provider_config(provider: str) -> dict:
     """Get OAuth config for a known provider.
@@ -154,6 +159,7 @@ def _get_provider_config(provider: str) -> dict:
 # PKCE helpers
 # ---------------------------------------------------------------------------
 
+
 def _generate_pkce() -> tuple[str, str]:
     """Generate PKCE code_verifier and code_challenge (S256)."""
     code_verifier = secrets.token_urlsafe(64)[:128]
@@ -165,6 +171,7 @@ def _generate_pkce() -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 async def generate_auth_url(
     session: AsyncSession,
@@ -189,12 +196,18 @@ async def generate_auth_url(
     )
     row = result.scalar_one_or_none()
     if not row or not isinstance(row, dict):
-        raise AppError("OAUTH_NO_MANIFEST", f"No manifest found for '{connector_package_slug}'", 404)
+        raise AppError(
+            "OAUTH_NO_MANIFEST",
+            f"No manifest found for '{connector_package_slug}'",
+            404,
+        )
 
     connector = row.get("connector", {})
     provider = connector.get("provider", "")
     if not provider:
-        raise AppError("OAUTH_NO_PROVIDER", "Connector manifest has no provider field", 400)
+        raise AppError(
+            "OAUTH_NO_PROVIDER", "Connector manifest has no provider field", 400
+        )
 
     config = _get_provider_config(provider)
 
@@ -270,7 +283,9 @@ async def exchange_code(
         headers = {"Accept": "application/json"}
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(config["token_url"], data=token_data, headers=headers, timeout=15.0)
+        resp = await client.post(
+            config["token_url"], data=token_data, headers=headers, timeout=15.0
+        )
 
     if resp.status_code != 200:
         raise AppError(
@@ -299,10 +314,14 @@ async def exchange_code(
 
     # Resolve allowed domains from manifest
     from app.credentials.router import _resolve_connector_domains
-    allowed_domains = await _resolve_connector_domains(session, pending["connector_package_slug"])
+
+    allowed_domains = await _resolve_connector_domains(
+        session, pending["connector_package_slug"]
+    )
 
     # Store encrypted credential
     from uuid import UUID as _UUID
+
     await store_credential(
         session,
         user_id=_UUID(pending["user_id"]),

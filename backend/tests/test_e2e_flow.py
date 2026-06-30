@@ -1,4 +1,5 @@
 """End-to-end test: Register -> Publisher -> Publish -> Search -> Resolve -> Install -> Download."""
+
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -25,7 +26,10 @@ VALID_MANIFEST = {
                 "capability_id": "pdf_extraction",
                 "name": "extract_pdf",
                 "description": "Extract text from PDF files",
-                "input_schema": {"type": "object", "properties": {"file": {"type": "string"}}},
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"file": {"type": "string"}},
+                },
             }
         ],
         "resources": [],
@@ -58,45 +62,65 @@ async def test_full_e2e_flow(client):
     """Complete lifecycle: register, create publisher, publish, search, resolve, install, download."""
 
     # -- Step 1: Register user --
-    resp = await client.post("/v1/auth/register", json={
-        "email": "e2e@agentnode.net",
-        "username": "e2euser",
-        "password": "Str0ng!Pass#42",
-    })
+    resp = await client.post(
+        "/v1/auth/register",
+        json={
+            "email": "e2e@agentnode.net",
+            "username": "e2euser",
+            "password": "Str0ng!Pass#42",
+        },
+    )
     assert resp.status_code == 201, f"Register failed: {resp.text}"
 
     # -- Step 2: Login --
-    resp = await client.post("/v1/auth/login", json={
-        "email": "e2e@agentnode.net",
-        "password": "Str0ng!Pass#42",
-    })
+    resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": "e2e@agentnode.net",
+            "password": "Str0ng!Pass#42",
+        },
+    )
     assert resp.status_code == 200, f"Login failed: {resp.text}"
     token = resp.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
     # -- Step 3: Create publisher profile --
-    resp = await client.post("/v1/publishers", json={
-        "display_name": "E2E Publisher",
-        "slug": "e2e-publisher",
-        "bio": "End-to-end test publisher",
-    }, headers=headers)
+    resp = await client.post(
+        "/v1/publishers",
+        json={
+            "display_name": "E2E Publisher",
+            "slug": "e2e-publisher",
+            "bio": "End-to-end test publisher",
+        },
+        headers=headers,
+    )
     assert resp.status_code == 201, f"Publisher create failed: {resp.text}"
     publisher_data = resp.json()
     assert publisher_data["slug"] == "e2e-publisher"
 
     # -- Step 4: Validate manifest --
-    resp = await client.post("/v1/packages/validate", json={
-        "manifest": VALID_MANIFEST,
-    }, headers=headers)
+    resp = await client.post(
+        "/v1/packages/validate",
+        json={
+            "manifest": VALID_MANIFEST,
+        },
+        headers=headers,
+    )
     assert resp.status_code == 200
     assert resp.json()["valid"] is True
 
     # -- Step 5: Publish package --
     with patch("app.packages.service.upload_artifact"):
-        with patch("app.packages.service.sync_package_to_meilisearch", new_callable=AsyncMock):
-            resp = await client.post("/v1/packages/publish", data={
-                "manifest": json.dumps(VALID_MANIFEST),
-            }, headers=headers)
+        with patch(
+            "app.packages.service.sync_package_to_meilisearch", new_callable=AsyncMock
+        ):
+            resp = await client.post(
+                "/v1/packages/publish",
+                data={
+                    "manifest": json.dumps(VALID_MANIFEST),
+                },
+                headers=headers,
+            )
     assert resp.status_code == 200, f"Publish failed: {resp.text}"
     publish_data = resp.json()
     assert publish_data["slug"] == "e2e-pdf-reader"
@@ -124,9 +148,12 @@ async def test_full_e2e_flow(client):
     assert versions[0]["version_number"] == "1.0.0"
 
     # -- Step 8: Resolve capability --
-    resp = await client.post("/v1/resolve", json={
-        "capabilities": ["pdf_extraction"],
-    })
+    resp = await client.post(
+        "/v1/resolve",
+        json={
+            "capabilities": ["pdf_extraction"],
+        },
+    )
     assert resp.status_code == 200
     resolve_data = resp.json()
     assert resolve_data["total"] >= 1
@@ -172,26 +199,51 @@ async def test_publish_then_deprecate_flow(client):
     """Publish a package, then deprecate it, verify it is excluded from resolution."""
 
     # Setup: register, login, create publisher
-    await client.post("/v1/auth/register", json={
-        "email": "depr@agentnode.net", "username": "depruser", "password": "Str0ng!Pass#42",
-    })
-    resp = await client.post("/v1/auth/login", json={
-        "email": "depr@agentnode.net", "password": "Str0ng!Pass#42",
-    })
+    await client.post(
+        "/v1/auth/register",
+        json={
+            "email": "depr@agentnode.net",
+            "username": "depruser",
+            "password": "Str0ng!Pass#42",
+        },
+    )
+    resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": "depr@agentnode.net",
+            "password": "Str0ng!Pass#42",
+        },
+    )
     token = resp.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    await client.post("/v1/publishers", json={
-        "display_name": "Deprecation Tester", "slug": "depr-tester",
-    }, headers=headers)
+    await client.post(
+        "/v1/publishers",
+        json={
+            "display_name": "Deprecation Tester",
+            "slug": "depr-tester",
+        },
+        headers=headers,
+    )
 
     # Publish
-    manifest = {**VALID_MANIFEST, "package_id": "depr-pdf-tool", "name": "Depr PDF Tool", "publisher": "depr-tester"}
+    manifest = {
+        **VALID_MANIFEST,
+        "package_id": "depr-pdf-tool",
+        "name": "Depr PDF Tool",
+        "publisher": "depr-tester",
+    }
     with patch("app.packages.service.upload_artifact"):
-        with patch("app.packages.service.sync_package_to_meilisearch", new_callable=AsyncMock):
-            resp = await client.post("/v1/packages/publish", data={
-                "manifest": json.dumps(manifest),
-            }, headers=headers)
+        with patch(
+            "app.packages.service.sync_package_to_meilisearch", new_callable=AsyncMock
+        ):
+            resp = await client.post(
+                "/v1/packages/publish",
+                data={
+                    "manifest": json.dumps(manifest),
+                },
+                headers=headers,
+            )
     assert resp.status_code == 200
 
     # Verify it resolves
@@ -215,35 +267,67 @@ async def test_publish_then_yank_version_flow(client):
     """Publish two versions, yank the latest, verify install falls back to previous."""
 
     # Setup
-    await client.post("/v1/auth/register", json={
-        "email": "yank@agentnode.net", "username": "yankuser", "password": "Str0ng!Pass#42",
-    })
-    resp = await client.post("/v1/auth/login", json={
-        "email": "yank@agentnode.net", "password": "Str0ng!Pass#42",
-    })
+    await client.post(
+        "/v1/auth/register",
+        json={
+            "email": "yank@agentnode.net",
+            "username": "yankuser",
+            "password": "Str0ng!Pass#42",
+        },
+    )
+    resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": "yank@agentnode.net",
+            "password": "Str0ng!Pass#42",
+        },
+    )
     token = resp.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    await client.post("/v1/publishers", json={
-        "display_name": "Yank Tester", "slug": "yank-tester",
-    }, headers=headers)
+    await client.post(
+        "/v1/publishers",
+        json={
+            "display_name": "Yank Tester",
+            "slug": "yank-tester",
+        },
+        headers=headers,
+    )
 
     # Publish v1.0.0
-    manifest_v1 = {**VALID_MANIFEST, "package_id": "yank-pdf-tool", "name": "Yank PDF Tool", "version": "1.0.0", "publisher": "yank-tester"}
+    manifest_v1 = {
+        **VALID_MANIFEST,
+        "package_id": "yank-pdf-tool",
+        "name": "Yank PDF Tool",
+        "version": "1.0.0",
+        "publisher": "yank-tester",
+    }
     with patch("app.packages.service.upload_artifact"):
-        with patch("app.packages.service.sync_package_to_meilisearch", new_callable=AsyncMock):
-            resp = await client.post("/v1/packages/publish", data={
-                "manifest": json.dumps(manifest_v1),
-            }, headers=headers)
+        with patch(
+            "app.packages.service.sync_package_to_meilisearch", new_callable=AsyncMock
+        ):
+            resp = await client.post(
+                "/v1/packages/publish",
+                data={
+                    "manifest": json.dumps(manifest_v1),
+                },
+                headers=headers,
+            )
     assert resp.status_code == 200
 
     # Publish v2.0.0
     manifest_v2 = {**manifest_v1, "version": "2.0.0"}
     with patch("app.packages.service.upload_artifact"):
-        with patch("app.packages.service.sync_package_to_meilisearch", new_callable=AsyncMock):
-            resp = await client.post("/v1/packages/publish", data={
-                "manifest": json.dumps(manifest_v2),
-            }, headers=headers)
+        with patch(
+            "app.packages.service.sync_package_to_meilisearch", new_callable=AsyncMock
+        ):
+            resp = await client.post(
+                "/v1/packages/publish",
+                data={
+                    "manifest": json.dumps(manifest_v2),
+                },
+                headers=headers,
+            )
     assert resp.status_code == 200
 
     # Install metadata should show 2.0.0
@@ -251,7 +335,9 @@ async def test_publish_then_yank_version_flow(client):
     assert resp.json()["version"] == "2.0.0"
 
     # Yank v2.0.0
-    resp = await client.post("/v1/packages/yank-pdf-tool/versions/2.0.0/yank", headers=headers)
+    resp = await client.post(
+        "/v1/packages/yank-pdf-tool/versions/2.0.0/yank", headers=headers
+    )
     assert resp.status_code == 200
 
     # Install metadata should now fall back to 1.0.0

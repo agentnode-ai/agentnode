@@ -6,13 +6,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 TRUST_SCORES = {
-    "curated": 1.0, "trusted": 0.8, "verified": 0.6, "unverified": 0.3,
+    "curated": 1.0,
+    "trusted": 0.8,
+    "verified": 0.6,
+    "unverified": 0.3,
 }
 
 
 @dataclass
 class PolicyInput:
     """Package attributes needed for policy evaluation."""
+
     trust_level: str
     network_level: str
     filesystem_level: str
@@ -27,6 +31,7 @@ class PolicyInput:
 @dataclass
 class PolicyConstraints:
     """Caller-specified policy constraints."""
+
     min_trust: str | None = None
     allow_shell: bool = True
     allow_network: bool = True
@@ -121,8 +126,12 @@ def evaluate_policy_inline(
         trust_level=trust_level,
         network_level=permissions.network_level if permissions else "none",
         filesystem_level=permissions.filesystem_level if permissions else "none",
-        code_execution_level=permissions.code_execution_level if permissions else "none",
-        data_access_level=permissions.data_access_level if permissions else "input_only",
+        code_execution_level=permissions.code_execution_level
+        if permissions
+        else "none",
+        data_access_level=permissions.data_access_level
+        if permissions
+        else "input_only",
         user_approval_level=permissions.user_approval_level if permissions else "never",
         is_yanked=is_yanked,
         is_quarantined=quarantine_status not in ("none", "cleared"),

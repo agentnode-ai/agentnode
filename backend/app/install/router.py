@@ -25,7 +25,13 @@ from app.install.schemas import (
     PermissionsInfo,
     ToolInfo,
 )
-from app.install.service import build_artifact_info, get_install_version, track_download, track_install, create_installation
+from app.install.service import (
+    build_artifact_info,
+    get_install_version,
+    track_download,
+    track_install,
+    create_installation,
+)
 from app.packages.version_queries import get_latest_installable_versions_batch
 
 router = APIRouter(prefix="/v1/packages", tags=["install"])
@@ -33,6 +39,7 @@ installations_router = APIRouter(prefix="/v1/installations", tags=["install"])
 
 
 # --- GET /v1/installations (User's own installations) ---
+
 
 @installations_router.get("", dependencies=[Depends(rate_limit_authenticated(60, 60))])
 async def list_my_installations(
@@ -63,9 +70,15 @@ async def list_my_installations(
                 "status": inst.status,
                 "source": inst.source,
                 "event_type": inst.event_type,
-                "installed_at": inst.installed_at.isoformat() if inst.installed_at else None,
-                "activated_at": inst.activated_at.isoformat() if inst.activated_at else None,
-                "uninstalled_at": inst.uninstalled_at.isoformat() if inst.uninstalled_at else None,
+                "installed_at": inst.installed_at.isoformat()
+                if inst.installed_at
+                else None,
+                "activated_at": inst.activated_at.isoformat()
+                if inst.activated_at
+                else None,
+                "uninstalled_at": inst.uninstalled_at.isoformat()
+                if inst.uninstalled_at
+                else None,
             }
             for inst, pkg_slug, ver_num in rows
         ],
@@ -73,7 +86,11 @@ async def list_my_installations(
     }
 
 
-@router.get("/{slug}/install-info", response_model=InstallMetadataResponse, dependencies=[Depends(rate_limit(60, 60))])
+@router.get(
+    "/{slug}/install-info",
+    response_model=InstallMetadataResponse,
+    dependencies=[Depends(rate_limit(60, 60))],
+)
 async def get_install_metadata(
     slug: str,
     version: str | None = None,
@@ -171,7 +188,11 @@ async def get_install_metadata(
     )
 
 
-@router.post("/{slug}/install", response_model=InstallResponse, dependencies=[Depends(rate_limit_authenticated(60, 60))])
+@router.post(
+    "/{slug}/install",
+    response_model=InstallResponse,
+    dependencies=[Depends(rate_limit_authenticated(60, 60))],
+)
 async def install_package(
     slug: str,
     body: InstallRequest,
@@ -203,12 +224,16 @@ async def install_package(
     if body.event_type in ("install", "update"):
         redis = request.app.state.redis
         dedup_key = f"user:{user.id}"
-        await track_install(session, pkg.id, version_id=pv.id, redis=redis, dedup_key=dedup_key)
+        await track_install(
+            session, pkg.id, version_id=pv.id, redis=redis, dedup_key=dedup_key
+        )
 
     await session.commit()
 
     entrypoint = pv.entrypoint
-    post_install_code = f"from {entrypoint.rsplit('.', 1)[0]} import tool" if entrypoint else None
+    post_install_code = (
+        f"from {entrypoint.rsplit('.', 1)[0]} import tool" if entrypoint else None
+    )
 
     # Build tools list from capabilities with per-tool entrypoints (v0.2)
     tools = [
@@ -240,7 +265,11 @@ async def install_package(
     )
 
 
-@router.post("/{slug}/download", response_model=DownloadResponse, dependencies=[Depends(rate_limit(30, 60))])
+@router.post(
+    "/{slug}/download",
+    response_model=DownloadResponse,
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def download_package(
     slug: str,
     request: Request,
@@ -258,7 +287,9 @@ async def download_package(
 
     redis = request.app.state.redis
     dedup_key = f"user:{user.id}" if user else f"ip:{_get_client_ip(request)}"
-    new_count = await track_download(session, pkg.id, pv.id, redis=redis, dedup_key=dedup_key)
+    new_count = await track_download(
+        session, pkg.id, pv.id, redis=redis, dedup_key=dedup_key
+    )
     await session.commit()
 
     return DownloadResponse(
@@ -274,6 +305,7 @@ async def download_package(
 
 
 # --- POST /v1/packages/check-updates (Spec §8.6.2) ---
+
 
 class PackageVersionCheck(BaseModel):
     slug: str
@@ -311,15 +343,17 @@ async def check_updates(
     for pkg_check in body.packages:
         pkg = pkg_map.get(pkg_check.slug)
         if not pkg:
-            updates.append({
-                "slug": pkg_check.slug,
-                "current_version": pkg_check.version,
-                "latest_version": None,
-                "latest_published_version": None,
-                "has_update": False,
-                "verification_tier": None,
-                "install_resolution": None,
-            })
+            updates.append(
+                {
+                    "slug": pkg_check.slug,
+                    "current_version": pkg_check.version,
+                    "latest_version": None,
+                    "latest_published_version": None,
+                    "has_update": False,
+                    "verification_tier": None,
+                    "install_resolution": None,
+                }
+            )
             continue
 
         installable_entry = installable_map.get(pkg.id)
@@ -332,24 +366,34 @@ async def check_updates(
             installable_tier = None
             reason = None
 
-        latest_published = pkg.latest_version.version_number if pkg.latest_version else None
+        latest_published = (
+            pkg.latest_version.version_number if pkg.latest_version else None
+        )
 
-        updates.append({
-            "slug": pkg_check.slug,
-            "current_version": pkg_check.version,
-            "latest_version": installable_ver,
-            "latest_published_version": latest_published,
-            "has_update": bool(installable_ver and installable_ver != pkg_check.version),
-            "verification_tier": installable_tier,
-            "install_resolution": reason,
-        })
+        updates.append(
+            {
+                "slug": pkg_check.slug,
+                "current_version": pkg_check.version,
+                "latest_version": installable_ver,
+                "latest_published_version": latest_published,
+                "has_update": bool(
+                    installable_ver and installable_ver != pkg_check.version
+                ),
+                "verification_tier": installable_tier,
+                "install_resolution": reason,
+            }
+        )
 
     return {"updates": updates}
 
 
 # --- POST /v1/installations/{id}/activate (Spec §8.6.3) ---
 
-@installations_router.post("/{installation_id}/activate", dependencies=[Depends(rate_limit_authenticated(30, 60))])
+
+@installations_router.post(
+    "/{installation_id}/activate",
+    dependencies=[Depends(rate_limit_authenticated(30, 60))],
+)
 async def activate_installation(
     installation_id: UUID,
     user: User = Depends(get_current_user),
@@ -363,10 +407,16 @@ async def activate_installation(
     if not inst:
         raise AppError("INSTALLATION_NOT_FOUND", "Installation not found", 404)
     if inst.user_id != user.id:
-        raise AppError("INSTALLATION_NOT_OWNED", "You do not own this installation", 403)
+        raise AppError(
+            "INSTALLATION_NOT_OWNED", "You do not own this installation", 403
+        )
 
     if inst.status not in ("installed", "inactive"):
-        raise AppError("INVALID_STATE", f"Cannot activate installation in '{inst.status}' state", 409)
+        raise AppError(
+            "INVALID_STATE",
+            f"Cannot activate installation in '{inst.status}' state",
+            409,
+        )
 
     inst.status = "active"
     inst.activated_at = datetime.now(timezone.utc)
@@ -377,7 +427,11 @@ async def activate_installation(
 
 # --- POST /v1/installations/{id}/uninstall (Spec §8.6.3) ---
 
-@installations_router.post("/{installation_id}/uninstall", dependencies=[Depends(rate_limit_authenticated(30, 60))])
+
+@installations_router.post(
+    "/{installation_id}/uninstall",
+    dependencies=[Depends(rate_limit_authenticated(30, 60))],
+)
 async def uninstall_installation(
     installation_id: UUID,
     user: User = Depends(get_current_user),
@@ -391,7 +445,9 @@ async def uninstall_installation(
     if not inst:
         raise AppError("INSTALLATION_NOT_FOUND", "Installation not found", 404)
     if inst.user_id != user.id:
-        raise AppError("INSTALLATION_NOT_OWNED", "You do not own this installation", 403)
+        raise AppError(
+            "INSTALLATION_NOT_OWNED", "You do not own this installation", 403
+        )
 
     # Only decrement if we are actually transitioning from an "active" row.
     # A double-uninstall must not go below zero.
@@ -407,6 +463,7 @@ async def uninstall_installation(
         # against ever going negative if the row was already decremented.
         from sqlalchemy import update, func
         from app.packages.models import Package
+
         await session.execute(
             update(Package)
             .where(Package.id == inst.package_id)

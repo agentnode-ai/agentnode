@@ -42,7 +42,12 @@ from app.verification.models import VerificationResult
 TEST_DATABASE_URL = settings.DATABASE_URL
 
 SEED_CAPABILITY_IDS = [
-    ("pdf_extraction", "PDF Extraction", "Extract text and data from PDF documents", "document-processing"),
+    (
+        "pdf_extraction",
+        "PDF Extraction",
+        "Extract text and data from PDF documents",
+        "document-processing",
+    ),
 ]
 
 
@@ -56,8 +61,10 @@ async def engine():
         for cap_id, display_name, description, category in SEED_CAPABILITY_IDS:
             await conn.execute(
                 CapabilityTaxonomy.__table__.insert().values(
-                    id=cap_id, display_name=display_name,
-                    description=description, category=category,
+                    id=cap_id,
+                    display_name=display_name,
+                    description=description,
+                    category=category,
                 )
             )
     yield eng
@@ -82,6 +89,7 @@ async def session(session_factory):
 async def reset_semaphore():
     """Reset the module-level semaphore cache between tests."""
     import app.verification.pipeline as _mod
+
     _mod._verification_semaphore = None
     yield
     _mod._verification_semaphore = None
@@ -95,50 +103,71 @@ ARTIFACT_BYTES = b"fake-tarball-content-for-testing"
 ARTIFACT_HASH = hashlib.sha256(ARTIFACT_BYTES).hexdigest()
 
 
-async def _seed_package(session: AsyncSession, *, quarantine_status="none",
-                        quarantine_reason=None, artifact_key="artifacts/test.tar.gz"):
+async def _seed_package(
+    session: AsyncSession,
+    *,
+    quarantine_status="none",
+    quarantine_reason=None,
+    artifact_key="artifacts/test.tar.gz",
+):
     """Create User -> Publisher -> Package -> PackageVersion -> Capability.
 
     Returns (package_version_id, package_id).
     """
     user = User(
-        id=uuid4(), email=f"test-{uuid4().hex[:8]}@example.com",
-        username=f"testuser-{uuid4().hex[:8]}", password_hash="x",
+        id=uuid4(),
+        email=f"test-{uuid4().hex[:8]}@example.com",
+        username=f"testuser-{uuid4().hex[:8]}",
+        password_hash="x",
     )
     session.add(user)
     await session.flush()
 
     publisher = Publisher(
-        id=uuid4(), user_id=user.id, display_name="Test Publisher",
+        id=uuid4(),
+        user_id=user.id,
+        display_name="Test Publisher",
         slug=f"test-pub-{uuid4().hex[:8]}",
     )
     session.add(publisher)
     await session.flush()
 
     pkg = Package(
-        id=uuid4(), publisher_id=publisher.id, slug=f"test-pkg-{uuid4().hex[:8]}",
-        name="Test Package", package_type="agent", summary="A test package",
+        id=uuid4(),
+        publisher_id=publisher.id,
+        slug=f"test-pkg-{uuid4().hex[:8]}",
+        name="Test Package",
+        package_type="agent",
+        summary="A test package",
     )
     session.add(pkg)
     await session.flush()
 
     pv = PackageVersion(
-        id=uuid4(), package_id=pkg.id, version_number="1.0.0",
+        id=uuid4(),
+        package_id=pkg.id,
+        version_number="1.0.0",
         manifest_raw={"name": "test-pkg", "version": "1.0.0", "permissions": {}},
-        runtime="python", artifact_object_key=artifact_key,
+        runtime="python",
+        artifact_object_key=artifact_key,
         artifact_hash_sha256=ARTIFACT_HASH,
         artifact_size_bytes=len(ARTIFACT_BYTES),
         quarantine_status=quarantine_status,
         quarantine_reason=quarantine_reason,
-        quarantined_at=datetime.now(timezone.utc) if quarantine_status != "none" else None,
+        quarantined_at=datetime.now(timezone.utc)
+        if quarantine_status != "none"
+        else None,
         verification_status="pending",
     )
     session.add(pv)
     await session.flush()
 
     cap = Capability(
-        id=uuid4(), package_version_id=pv.id, capability_type="tool",
-        capability_id="pdf_extraction", name="extract_pdf",
+        id=uuid4(),
+        package_version_id=pv.id,
+        capability_type="tool",
+        capability_id="pdf_extraction",
+        name="extract_pdf",
         entrypoint="my_package.tool:run",
         input_schema={"type": "object", "properties": {"url": {"type": "string"}}},
     )
@@ -149,8 +178,14 @@ async def _seed_package(session: AsyncSession, *, quarantine_status="none",
     return pv.id, pkg.id
 
 
-def _make_step_results(*, passed=True, smoke_status="passed", smoke_reason=None,
-                       tests_status="not_present", extra=None):
+def _make_step_results(
+    *,
+    passed=True,
+    smoke_status="passed",
+    smoke_reason=None,
+    tests_status="not_present",
+    extra=None,
+):
     """Build a step_results dict like _run_verification_sync returns."""
     results = {
         "install_status": "passed" if passed else "failed",
@@ -192,8 +227,12 @@ def _make_step_results(*, passed=True, smoke_status="passed", smoke_reason=None,
     return results
 
 
-def _pipeline_patches(session_factory, step_results=None, artifact_bytes=ARTIFACT_BYTES,
-                      download_side_effect=None):
+def _pipeline_patches(
+    session_factory,
+    step_results=None,
+    artifact_bytes=ARTIFACT_BYTES,
+    download_side_effect=None,
+):
     """Return a list of patch context managers for a standard pipeline run.
 
     Patches:
@@ -207,17 +246,20 @@ def _pipeline_patches(session_factory, step_results=None, artifact_bytes=ARTIFAC
     patches = {}
 
     patches["session_factory"] = patch(
-        "app.verification.pipeline.async_session_factory", session_factory,
+        "app.verification.pipeline.async_session_factory",
+        session_factory,
     )
     if download_side_effect:
         patches["download"] = patch(
             "app.shared.storage.download_artifact",
-            new_callable=AsyncMock, side_effect=download_side_effect,
+            new_callable=AsyncMock,
+            side_effect=download_side_effect,
         )
     else:
         patches["download"] = patch(
             "app.shared.storage.download_artifact",
-            new_callable=AsyncMock, return_value=artifact_bytes,
+            new_callable=AsyncMock,
+            return_value=artifact_bytes,
         )
 
     if step_results is not None:
@@ -230,11 +272,13 @@ def _pipeline_patches(session_factory, step_results=None, artifact_bytes=ARTIFAC
 
     patches["get_pub_email"] = patch(
         "app.shared.email.get_publisher_email",
-        new_callable=AsyncMock, return_value="test@example.com",
+        new_callable=AsyncMock,
+        return_value="test@example.com",
     )
     patches["send_email"] = patch(
         "app.shared.email.send_auto_quarantine_email",
-        new_callable=AsyncMock, return_value=True,
+        new_callable=AsyncMock,
+        return_value=True,
     )
 
     # Prevent Meilisearch/version_queries calls during auto-clear path
@@ -284,6 +328,7 @@ class _PatchStack:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_package_passes_verification(session_factory, session):
     """Pipeline sets verification_status='passed' and quarantine_status stays
@@ -294,12 +339,15 @@ async def test_package_passes_verification(session_factory, session):
     patches = _pipeline_patches(session_factory, step_results=step_results)
     with _PatchStack(patches):
         from app.verification.pipeline import run_verification
+
         await run_verification(version_id, triggered_by="publish")
 
     async with session_factory() as s:
-        pv = (await s.execute(
-            select(PackageVersion).where(PackageVersion.id == version_id)
-        )).scalar_one()
+        pv = (
+            await s.execute(
+                select(PackageVersion).where(PackageVersion.id == version_id)
+            )
+        ).scalar_one()
 
         assert pv.verification_status == "passed"
         assert pv.quarantine_status == "none"
@@ -309,12 +357,14 @@ async def test_package_passes_verification(session_factory, session):
         assert pv.verification_tier is not None
 
         # VerificationResult row created and linked
-        vr = (await s.execute(
-            select(VerificationResult)
-            .where(VerificationResult.package_version_id == version_id)
-            .order_by(VerificationResult.created_at.desc())
-            .limit(1)
-        )).scalar_one()
+        vr = (
+            await s.execute(
+                select(VerificationResult)
+                .where(VerificationResult.package_version_id == version_id)
+                .order_by(VerificationResult.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one()
 
         assert vr.status == "passed"
         assert vr.install_status == "passed"
@@ -335,12 +385,15 @@ async def test_package_fails_verification_and_quarantined(session_factory, sessi
     patches = _pipeline_patches(session_factory, step_results=step_results)
     with _PatchStack(patches):
         from app.verification.pipeline import run_verification
+
         await run_verification(version_id, triggered_by="publish")
 
     async with session_factory() as s:
-        pv = (await s.execute(
-            select(PackageVersion).where(PackageVersion.id == version_id)
-        )).scalar_one()
+        pv = (
+            await s.execute(
+                select(PackageVersion).where(PackageVersion.id == version_id)
+            )
+        ).scalar_one()
 
         assert pv.verification_status == "failed"
         assert pv.quarantine_status == "quarantined"
@@ -348,19 +401,23 @@ async def test_package_fails_verification_and_quarantined(session_factory, sessi
         assert "Auto-quarantined" in pv.quarantine_reason
         assert "verification failed" in pv.quarantine_reason
 
-        vr = (await s.execute(
-            select(VerificationResult)
-            .where(VerificationResult.package_version_id == version_id)
-            .order_by(VerificationResult.created_at.desc())
-            .limit(1)
-        )).scalar_one()
+        vr = (
+            await s.execute(
+                select(VerificationResult)
+                .where(VerificationResult.package_version_id == version_id)
+                .order_by(VerificationResult.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one()
 
         assert vr.status == "failed"
         assert vr.error_summary is not None
 
 
 @pytest.mark.asyncio
-async def test_admin_quarantine_preserved_on_verification_pass(session_factory, session):
+async def test_admin_quarantine_preserved_on_verification_pass(
+    session_factory, session
+):
     """BizLogic 4.2: admin-imposed quarantine must NOT be auto-cleared even
     when verification passes. Only auto-quarantine and new_publisher_review
     reasons are clearable."""
@@ -374,12 +431,15 @@ async def test_admin_quarantine_preserved_on_verification_pass(session_factory, 
     patches = _pipeline_patches(session_factory, step_results=step_results)
     with _PatchStack(patches):
         from app.verification.pipeline import run_verification
+
         await run_verification(version_id, triggered_by="publish")
 
     async with session_factory() as s:
-        pv = (await s.execute(
-            select(PackageVersion).where(PackageVersion.id == version_id)
-        )).scalar_one()
+        pv = (
+            await s.execute(
+                select(PackageVersion).where(PackageVersion.id == version_id)
+            )
+        ).scalar_one()
 
         # Verification itself passed
         assert pv.verification_status == "passed"
@@ -403,12 +463,15 @@ async def test_security_scan_quarantine_preserved(session_factory, session):
     patches = _pipeline_patches(session_factory, step_results=step_results)
     with _PatchStack(patches):
         from app.verification.pipeline import run_verification
+
         await run_verification(version_id, triggered_by="publish")
 
     async with session_factory() as s:
-        pv = (await s.execute(
-            select(PackageVersion).where(PackageVersion.id == version_id)
-        )).scalar_one()
+        pv = (
+            await s.execute(
+                select(PackageVersion).where(PackageVersion.id == version_id)
+            )
+        ).scalar_one()
 
         assert pv.verification_status == "passed"
         assert pv.quarantine_status == "quarantined"
@@ -438,12 +501,15 @@ async def test_verification_updates_trust_score(session_factory, session):
     patches = _pipeline_patches(session_factory, step_results=step_results)
     with _PatchStack(patches):
         from app.verification.pipeline import run_verification
+
         await run_verification(version_id, triggered_by="publish")
 
     async with session_factory() as s:
-        pv = (await s.execute(
-            select(PackageVersion).where(PackageVersion.id == version_id)
-        )).scalar_one()
+        pv = (
+            await s.execute(
+                select(PackageVersion).where(PackageVersion.id == version_id)
+            )
+        ).scalar_one()
 
         # Denormalized score fields on PackageVersion
         assert pv.verification_score is not None
@@ -452,10 +518,13 @@ async def test_verification_updates_trust_score(session_factory, session):
         assert pv.latest_verification_result_id is not None
 
         # Full ScoreResult on VerificationResult
-        vr = (await s.execute(
-            select(VerificationResult)
-            .where(VerificationResult.id == pv.latest_verification_result_id)
-        )).scalar_one()
+        vr = (
+            await s.execute(
+                select(VerificationResult).where(
+                    VerificationResult.id == pv.latest_verification_result_id
+                )
+            )
+        ).scalar_one()
 
         assert vr.verification_score == pv.verification_score
         assert vr.verification_tier == "gold"
@@ -482,13 +551,16 @@ async def test_pipeline_handles_s3_download_error_gracefully(session_factory, se
     )
     with _PatchStack(patches):
         from app.verification.pipeline import run_verification
+
         # Must NOT raise
         await run_verification(version_id, triggered_by="publish")
 
     async with session_factory() as s:
-        pv = (await s.execute(
-            select(PackageVersion).where(PackageVersion.id == version_id)
-        )).scalar_one()
+        pv = (
+            await s.execute(
+                select(PackageVersion).where(PackageVersion.id == version_id)
+            )
+        ).scalar_one()
 
         assert pv.verification_status == "error"
 
@@ -518,12 +590,15 @@ async def test_auto_quarantine_cleared_on_reverify_pass(session_factory, session
     patches = _pipeline_patches(session_factory, step_results=step_results)
     with _PatchStack(patches):
         from app.verification.pipeline import run_verification
+
         await run_verification(version_id, triggered_by="publish")
 
     async with session_factory() as s:
-        pv = (await s.execute(
-            select(PackageVersion).where(PackageVersion.id == version_id)
-        )).scalar_one()
+        pv = (
+            await s.execute(
+                select(PackageVersion).where(PackageVersion.id == version_id)
+            )
+        ).scalar_one()
 
         assert pv.verification_status == "passed"
         assert pv.quarantine_status == "cleared"
@@ -538,25 +613,31 @@ async def test_hash_mismatch_marks_error(session_factory, session):
 
     wrong_bytes = b"tampered-content-definitely-wrong"
     patches = _pipeline_patches(
-        session_factory, artifact_bytes=wrong_bytes,
+        session_factory,
+        artifact_bytes=wrong_bytes,
     )
     with _PatchStack(patches):
         from app.verification.pipeline import run_verification
+
         await run_verification(version_id, triggered_by="publish")
 
     async with session_factory() as s:
-        pv = (await s.execute(
-            select(PackageVersion).where(PackageVersion.id == version_id)
-        )).scalar_one()
+        pv = (
+            await s.execute(
+                select(PackageVersion).where(PackageVersion.id == version_id)
+            )
+        ).scalar_one()
 
         assert pv.verification_status == "error"
 
-        vr = (await s.execute(
-            select(VerificationResult)
-            .where(VerificationResult.package_version_id == version_id)
-            .order_by(VerificationResult.created_at.desc())
-            .limit(1)
-        )).scalar_one()
+        vr = (
+            await s.execute(
+                select(VerificationResult)
+                .where(VerificationResult.package_version_id == version_id)
+                .order_by(VerificationResult.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one()
 
         assert vr.status == "error"
         assert "hash mismatch" in (vr.error_summary or "").lower()
@@ -570,19 +651,24 @@ async def test_verification_disabled_is_noop(session_factory, session):
 
     with (
         patch("app.verification.pipeline.settings") as mock_settings,
-        patch("app.shared.storage.download_artifact", new_callable=AsyncMock) as mock_dl,
+        patch(
+            "app.shared.storage.download_artifact", new_callable=AsyncMock
+        ) as mock_dl,
     ):
         mock_settings.VERIFICATION_ENABLED = False
 
         from app.verification.pipeline import run_verification
+
         await run_verification(version_id, triggered_by="publish")
 
         mock_dl.assert_not_called()
 
     async with session_factory() as s:
-        pv = (await s.execute(
-            select(PackageVersion).where(PackageVersion.id == version_id)
-        )).scalar_one()
+        pv = (
+            await s.execute(
+                select(PackageVersion).where(PackageVersion.id == version_id)
+            )
+        ).scalar_one()
         assert pv.verification_status == "pending"
 
 
@@ -596,12 +682,15 @@ async def test_no_auto_quarantine_on_admin_reverify(session_factory, session):
     patches = _pipeline_patches(session_factory, step_results=step_results)
     with _PatchStack(patches):
         from app.verification.pipeline import run_verification
+
         await run_verification(version_id, triggered_by="admin_reverify")
 
     async with session_factory() as s:
-        pv = (await s.execute(
-            select(PackageVersion).where(PackageVersion.id == version_id)
-        )).scalar_one()
+        pv = (
+            await s.execute(
+                select(PackageVersion).where(PackageVersion.id == version_id)
+            )
+        ).scalar_one()
 
         assert pv.verification_status == "failed"
         # quarantine_status should remain "none" — no auto-quarantine on admin re-verify

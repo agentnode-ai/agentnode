@@ -68,6 +68,7 @@ class PostTypeInfo(BaseModel):
 
 # --- Categories ---
 
+
 class CategoryCreate(BaseModel):
     name: str = Field(max_length=100)
     slug: str = Field(max_length=100, pattern=SLUG_PATTERN)
@@ -92,6 +93,7 @@ class CategoryResponse(BaseModel):
 
 
 # --- Posts ---
+
 
 class PostCreate(BaseModel):
     title: str = Field(max_length=255)
@@ -175,6 +177,7 @@ class PostListResponse(BaseModel):
 
 # --- Images ---
 
+
 class ImageSortBy(str, PyEnum):
     created_at = "created_at"
     file_size = "file_size"
@@ -222,6 +225,7 @@ class ImageListResponse(BaseModel):
 
 
 # --- Redirect Resolution ---
+
 
 class RedirectResponse(BaseModel):
     redirect_to: str

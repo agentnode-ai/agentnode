@@ -1,4 +1,5 @@
 """Tests for prompt-asset extraction in the assembler."""
+
 from unittest.mock import MagicMock
 from datetime import datetime, timezone
 
@@ -73,7 +74,11 @@ class TestAssemblerPrompts:
                         "template": "Summarize the following: {{text}}",
                         "description": "Summarize text",
                         "arguments": [
-                            {"name": "text", "description": "Text to summarize", "required": True},
+                            {
+                                "name": "text",
+                                "description": "Text to summarize",
+                                "required": True,
+                            },
                             {"name": "style", "description": "Summary style"},
                         ],
                     },
@@ -121,11 +126,13 @@ class TestAssemblerPrompts:
     def test_prompt_without_arguments(self):
         manifest = {
             "capabilities": {
-                "prompts": [{
-                    "name": "greet",
-                    "capability_id": "greeting",
-                    "template": "Hello!",
-                }],
+                "prompts": [
+                    {
+                        "name": "greet",
+                        "capability_id": "greeting",
+                        "template": "Hello!",
+                    }
+                ],
             },
         }
         pkg = _mock_package()

@@ -19,14 +19,31 @@ _CAPABILITY_MAP: list[tuple[list[str], str]] = [
     (["document", "docx", "doc parsing"], "document_parsing"),
     (["summarize", "summary", "summarise", "tldr", "digest"], "document_summary"),
     (["citation", "reference", "bibliography"], "citation_extraction"),
-    (["web search", "google", "bing", "search the web", "internet search"], "web_search"),
-    (["webpage", "website", "html", "scrape", "crawl", "fetch url", "extract from url"], "webpage_extraction"),
+    (
+        ["web search", "google", "bing", "search the web", "internet search"],
+        "web_search",
+    ),
+    (
+        [
+            "webpage",
+            "website",
+            "html",
+            "scrape",
+            "crawl",
+            "fetch url",
+            "extract from url",
+        ],
+        "webpage_extraction",
+    ),
     (["browser", "navigate", "click", "playwright", "selenium"], "browser_navigation"),
     (["link", "href", "discover url"], "link_discovery"),
     (["csv", "comma separated"], "csv_analysis"),
     (["spreadsheet", "excel", "xlsx", "xls"], "spreadsheet_parsing"),
     (["clean data", "normalize data", "data cleaning"], "data_cleaning"),
-    (["statistic", "average", "median", "standard deviation", "analytics"], "statistics_analysis"),
+    (
+        ["statistic", "average", "median", "standard deviation", "analytics"],
+        "statistics_analysis",
+    ),
     (["chart", "graph", "plot", "visuali"], "chart_generation"),
     (["json", "json processing", "parse json", "transform json"], "json_processing"),
     (["sql", "query", "database query"], "sql_generation"),
@@ -36,7 +53,10 @@ _CAPABILITY_MAP: list[tuple[list[str], str]] = [
     (["semantic search", "meaning search", "similarity search"], "semantic_search"),
     (["embedding", "embed", "vectorize"], "embedding_generation"),
     (["index document", "document index", "indexing"], "document_indexing"),
-    (["conversation memory", "chat history", "recall conversation"], "conversation_memory"),
+    (
+        ["conversation memory", "chat history", "recall conversation"],
+        "conversation_memory",
+    ),
     (["email draft", "write email", "compose email", "email"], "email_drafting"),
     (["email summary", "summarize email"], "email_summary"),
     (["meeting", "meeting notes", "meeting summary"], "meeting_summary"),
@@ -44,22 +64,46 @@ _CAPABILITY_MAP: list[tuple[list[str], str]] = [
     (["task", "todo", "to-do", "task manage"], "task_management"),
     (["translat", "language", "i18n", "locali"], "translation"),
     (["tone", "rewrite", "rephrase", "style"], "tone_adjustment"),
-    (["code", "source code", "lint", "refactor", "analyse code", "analyze code"], "code_analysis"),
+    (
+        ["code", "source code", "lint", "refactor", "analyse code", "analyze code"],
+        "code_analysis",
+    ),
 ]
 
 _NETWORK_KEYWORDS = [
-    "webpage", "website", "url", "http", "fetch", "scrape", "crawl",
-    "api", "request", "download", "search", "web",
+    "webpage",
+    "website",
+    "url",
+    "http",
+    "fetch",
+    "scrape",
+    "crawl",
+    "api",
+    "request",
+    "download",
+    "search",
+    "web",
 ]
 _FILESYSTEM_KEYWORDS = [
-    "pdf", "file", "csv", "document", "excel", "spreadsheet",
-    "read file", "write file", "directory", "folder", "image", "log file",
+    "pdf",
+    "file",
+    "csv",
+    "document",
+    "excel",
+    "spreadsheet",
+    "read file",
+    "write file",
+    "directory",
+    "folder",
+    "image",
+    "log file",
 ]
 
 
 # ---------------------------------------------------------------------------
 # Text helpers
 # ---------------------------------------------------------------------------
+
 
 def _slugify(text: str) -> str:
     text = text.lower().strip()
@@ -74,6 +118,7 @@ def _slugify(text: str) -> str:
 
 def _to_snake(text: str) -> str:
     import keyword
+
     text = text.lower().strip()
     text = re.sub(r"[^a-z0-9\s]", "", text)
     text = re.sub(r"\s+", "_", text)
@@ -107,7 +152,20 @@ def _extract_core_action(description: str) -> str:
         return result
 
     words = re.findall(r"[a-z]+", desc_lower)
-    skip = {"a", "an", "the", "that", "which", "tool", "to", "for", "and", "or", "is", "it"}
+    skip = {
+        "a",
+        "an",
+        "the",
+        "that",
+        "which",
+        "tool",
+        "to",
+        "for",
+        "and",
+        "or",
+        "is",
+        "it",
+    }
     meaningful = [w for w in words if w not in skip][:3]
     return " ".join(meaningful)
 
@@ -115,6 +173,7 @@ def _extract_core_action(description: str) -> str:
 # ---------------------------------------------------------------------------
 # Inference helpers
 # ---------------------------------------------------------------------------
+
 
 def _detect_capability_ids(description: str) -> list[str]:
     desc_lower = description.lower()
@@ -156,7 +215,10 @@ def _generate_input_schema(description: str) -> tuple[str, str, str]:
     desc_lower = description.lower()
     if any(kw in desc_lower for kw in ["url", "webpage", "website", "link", "http"]):
         return "url", "string", "The URL to process"
-    if any(kw in desc_lower for kw in ["pdf", "csv", "file", "document", "spreadsheet", "excel", "image"]):
+    if any(
+        kw in desc_lower
+        for kw in ["pdf", "csv", "file", "document", "spreadsheet", "excel", "image"]
+    ):
         return "file_path", "string", "Path to the input file"
     if any(kw in desc_lower for kw in ["search", "query", "find", "look up", "lookup"]):
         return "query", "string", "The search query"
@@ -165,21 +227,37 @@ def _generate_input_schema(description: str) -> tuple[str, str, str]:
 
 def _generate_output_key(description: str) -> str:
     desc_lower = description.lower()
-    if any(kw in desc_lower for kw in ["extract", "find", "list", "discover", "collect"]):
+    if any(
+        kw in desc_lower for kw in ["extract", "find", "list", "discover", "collect"]
+    ):
         return "results"
-    if any(kw in desc_lower for kw in ["summarize", "summary", "translate", "convert", "generate", "draft", "rewrite"]):
+    if any(
+        kw in desc_lower
+        for kw in [
+            "summarize",
+            "summary",
+            "translate",
+            "convert",
+            "generate",
+            "draft",
+            "rewrite",
+        ]
+    ):
         return "output"
     return "result"
 
 
 def _output_is_array(description: str) -> bool:
     desc_lower = description.lower()
-    return any(kw in desc_lower for kw in ["extract", "find", "list", "discover", "collect"])
+    return any(
+        kw in desc_lower for kw in ["extract", "find", "list", "discover", "collect"]
+    )
 
 
 # ---------------------------------------------------------------------------
 # YAML builder (produces clean, correctly-indented YAML)
 # ---------------------------------------------------------------------------
+
 
 def _build_manifest_yaml(
     package_slug: str,
@@ -273,6 +351,7 @@ def _build_manifest_yaml(
 # Code scaffold builder
 # ---------------------------------------------------------------------------
 
+
 def _build_code_scaffold(
     tool_name: str,
     module_name: str,
@@ -309,6 +388,7 @@ def _build_code_scaffold(
 # ---------------------------------------------------------------------------
 # Agent scaffold builders
 # ---------------------------------------------------------------------------
+
 
 def _build_agent_manifest_yaml(
     package_slug: str,
@@ -403,7 +483,10 @@ def _build_agent_code_scaffold(module_name: str, description: str) -> str:
 # Main generation function
 # ---------------------------------------------------------------------------
 
-def generate_capability(description: str, package_type: str = "toolpack") -> BuilderGenerateResponse:
+
+def generate_capability(
+    description: str, package_type: str = "toolpack"
+) -> BuilderGenerateResponse:
     """Generate an ANP v0.2 manifest + code scaffold from a description."""
 
     core_action = _extract_core_action(description)
@@ -411,7 +494,9 @@ def generate_capability(description: str, package_type: str = "toolpack") -> Bui
     package_slug = _slugify(core_action) + "-pack" if core_action else "my-tool-pack"
     if not re.match(r"^[a-z][a-z0-9-]*-pack$", package_slug):
         package_slug = "custom-tool-pack"
-    package_name = " ".join(w.capitalize() for w in package_slug.replace("-", " ").split())
+    package_name = " ".join(
+        w.capitalize() for w in package_slug.replace("-", " ").split()
+    )
     module_name = package_slug.replace("-", "_")
 
     cap_ids = _detect_capability_ids(description)
@@ -492,7 +577,9 @@ def generate_capability(description: str, package_type: str = "toolpack") -> Bui
         if output_array:
             output_schema = {
                 "type": "object",
-                "properties": {output_key: {"type": "array", "items": {"type": "string"}}},
+                "properties": {
+                    output_key: {"type": "array", "items": {"type": "string"}}
+                },
             }
         else:
             output_schema = {
@@ -521,7 +608,12 @@ def generate_capability(description: str, package_type: str = "toolpack") -> Bui
                         "entrypoint": f"{module_name}.tool:{tool_name}",
                         "input_schema": {
                             "type": "object",
-                            "properties": {param_name: {"type": "string", "description": param_desc}},
+                            "properties": {
+                                param_name: {
+                                    "type": "string",
+                                    "description": param_desc,
+                                }
+                            },
                             "required": [param_name],
                         },
                         "output_schema": output_schema,
@@ -543,14 +635,21 @@ def generate_capability(description: str, package_type: str = "toolpack") -> Bui
                 "user_approval": {"required": permissions["user_approval"]},
             },
             "tags": cap_ids[:1],  # Only the primary capability as tag
-            "categories": [cap_ids[0].rsplit("_", 1)[0] if "_" in cap_ids[0] else "general"],
+            "categories": [
+                cap_ids[0].rsplit("_", 1)[0] if "_" in cap_ids[0] else "general"
+            ],
         }
 
     if package_type == "agent":
-        code = _build_agent_code_scaffold(module_name=module_name, description=description)
+        code = _build_agent_code_scaffold(
+            module_name=module_name, description=description
+        )
         code_files = [
             CodeFile(path=f"src/{module_name}/agent.py", content=code),
-            CodeFile(path=f"src/{module_name}/__init__.py", content=f'"""AgentNode agent package: {package_name}"""\n'),
+            CodeFile(
+                path=f"src/{module_name}/__init__.py",
+                content=f'"""AgentNode agent package: {package_name}"""\n',
+            ),
             CodeFile(
                 path="pyproject.toml",
                 content=(
@@ -581,7 +680,10 @@ def generate_capability(description: str, package_type: str = "toolpack") -> Bui
         )
         code_files = [
             CodeFile(path=f"src/{module_name}/tool.py", content=code),
-            CodeFile(path=f"src/{module_name}/__init__.py", content=f'"""AgentNode package: {package_name}"""\n'),
+            CodeFile(
+                path=f"src/{module_name}/__init__.py",
+                content=f'"""AgentNode package: {package_name}"""\n',
+            ),
             CodeFile(
                 path="pyproject.toml",
                 content=(
@@ -615,7 +717,8 @@ def generate_capability(description: str, package_type: str = "toolpack") -> Bui
         detected_capability_ids=cap_ids if package_type != "agent" else [],
         detected_framework="generic",
         publish_ready=False,
-        warnings=warnings + [
+        warnings=warnings
+        + [
             "This is a scaffold — implement the agent logic before publishing."
             if package_type == "agent"
             else "This is a scaffold — implement the tool logic before publishing."
