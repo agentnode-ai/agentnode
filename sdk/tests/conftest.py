@@ -79,6 +79,25 @@ def _default_sandbox_available():
     set_default_backend(None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_guard_state_between_tests():
+    """H7a: reset guard config cache + rate limits before AND after every test.
+
+    Defensive test-state isolation ONLY — it resets cached state, sets NO env var, NO
+    policy, and mocks NO guard decision. The guard config cache keys on a file
+    (mtime_ns, size) signature that can be defeated under fast/CI test execution, letting
+    a stale default policy (execute=prompt) bleed into later tests that don't explicitly
+    reset it. A per-test reset makes guard behavior deterministic regardless of order.
+    """
+    from agentnode_sdk.guard import reset_guard_config_cache, reset_rate_limits
+
+    reset_guard_config_cache()
+    reset_rate_limits()
+    yield
+    reset_guard_config_cache()
+    reset_rate_limits()
+
+
 # ---------------------------------------------------------------------------
 # Policy bypass fixture — explicit opt-in via @pytest.mark.bypass_policy.
 #
