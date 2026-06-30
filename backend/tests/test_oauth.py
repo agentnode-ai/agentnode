@@ -1,6 +1,4 @@
 """Tests for OAuth2 PKCE flow — Redis state store + PKCE + provider config."""
-import json
-import os
 import time
 from unittest.mock import AsyncMock, patch
 

@@ -6,7 +6,6 @@ These are pure unit tests — no DB, no HTTP client.
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
-import pytest
 
 from app.packages.version_queries import (
     TIER_PRIORITY,

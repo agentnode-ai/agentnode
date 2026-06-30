@@ -1,7 +1,6 @@
 """Integration tests for search endpoint (Meilisearch is mocked)."""
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
 

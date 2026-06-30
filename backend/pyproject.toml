@@ -44,6 +44,16 @@ dev = [
     "ruff==0.15.10",
 ]
 
+[tool.ruff]
+# Import-pipeline test fixtures are synthetic test inputs representing arbitrary
+# third-party tool code under analysis (intentional unresolved symbols, unused
+# imports, etc.), not first-party source. Exclude them from linting and
+# formatting entirely; their exact contents are part of the tests.
+extend-exclude = [
+    "tests/import_real_world/fixtures",
+    "tests/import_smoke/fixtures",
+]
+
 [tool.ruff.lint]
 # Ruff's default rule selection, made explicit so lint results do not drift
 # between ruff versions: E4 (imports), E7 (statements), E9 (syntax),
@@ -55,7 +65,3 @@ select = ["E4", "E7", "E9", "F"]
 # are imported, so those imports intentionally follow the setup (see main.py
 # comment P1-CD11). Reordering would break early logging configuration.
 "app/main.py" = ["E402"]
-# Import-pipeline test fixtures deliberately reference unresolved symbols to
-# exercise the converter's handling of missing definitions.
-"tests/import_real_world/fixtures/**" = ["F821"]
-"tests/import_smoke/fixtures/**" = ["F821"]

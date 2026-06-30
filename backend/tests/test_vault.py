@@ -1,5 +1,4 @@
 """Tests for credential vault encryption/decryption."""
-import os
 import pytest
 
 from cryptography.fernet import Fernet

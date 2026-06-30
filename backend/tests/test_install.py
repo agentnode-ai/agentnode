@@ -3,7 +3,7 @@ import json
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import update
 from app.publishers.models import Publisher
 
 TEST_USER = {

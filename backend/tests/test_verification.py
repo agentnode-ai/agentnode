@@ -1,12 +1,10 @@
 """Tests for the verification pipeline."""
 
-import pytest
 
 from app.verification.schema_generator import (
     generate_test_input,
     generate_candidates,
     is_incomplete_schema,
-    _generate_value,
     _find_operation_field,
     _find_operation_field_in_input,
     extract_enum_values,
@@ -19,7 +17,6 @@ from app.verification.steps import (
     _collect_stub_paths,
     _dominant_reason,
     _build_vcr_replay_preamble,
-    step_smoke_fixtures,
 )
 from app.verification.smoke_context import (
     FATAL_REASONS,
@@ -1178,7 +1175,7 @@ class TestScoringPhase6:
         assert result.confidence == "low"  # Inconclusive + credential = low
 
     def test_tier_cap_smoke_not_passed(self):
-        from app.verification.scoring import apply_tier_caps, cap_tier
+        from app.verification.scoring import apply_tier_caps
         from unittest.mock import MagicMock
         vr = MagicMock()
         vr.smoke_status = "inconclusive"
@@ -1604,7 +1601,7 @@ class TestSmokeContainerization:
         agent_section = {"goal": "test", "tier": "free"}
         with patch("app.verification.steps.settings") as mock_settings:
             mock_settings.VERIFICATION_SANDBOX_MODE = "container"
-            result = run_agent_verification_cases(
+            run_agent_verification_cases(
                 sandbox, "mod", "func", cases, timeout=15,
                 agent_section=agent_section,
             )
@@ -1633,7 +1630,10 @@ class TestSmokeContainerization:
     def test_extract_artifact_sets_world_readable_permissions(self):
         """Extracted workspace must be readable by container user 1000."""
         from app.verification.sandbox import VerificationSandbox
-        import os, tarfile, io, stat
+        import os
+        import tarfile
+        import io
+        import stat
         sandbox = VerificationSandbox()
         try:
             buf = io.BytesIO()

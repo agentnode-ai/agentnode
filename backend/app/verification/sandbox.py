@@ -18,7 +18,6 @@ import io
 import logging
 import os
 import platform
-import re
 import shutil
 import subprocess
 import tarfile
@@ -563,8 +562,8 @@ class VerificationSandbox:
             lines.append(f'def test_{safe_name}_has_signature():')
             lines.append(f'    mod = importlib.import_module("{module_path}")')
             lines.append(f'    fn = getattr(mod, "{func_name}")')
-            lines.append(f'    sig = inspect.signature(fn)')
-            lines.append(f'    assert sig is not None')
+            lines.append('    sig = inspect.signature(fn)')
+            lines.append('    assert sig is not None')
             lines.append("")
 
         test_file = os.path.join(test_dir, "test_auto_verify.py")

@@ -4,7 +4,7 @@ Spec section 19."""
 import logging
 import time
 
-from fastapi import Depends, Request, Response
+from fastapi import Request, Response
 
 from app.shared.exceptions import AppError
 

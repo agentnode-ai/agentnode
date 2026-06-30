@@ -218,10 +218,10 @@ def _run_verification_sync(
 
     Returns a dict with all step results using status strings, not booleans.
     """
-    from app.verification.sandbox import IsolationLevel, VerificationSandbox
+    from app.verification.sandbox import VerificationSandbox
     from app.verification.steps import step_import, step_install, step_smoke, step_tests, run_stability_check, run_agent_verification_cases
     from app.verification.smoke_context import (
-        build_smoke_context, classify_credential_boundary, REASON_VERDICTS,
+        build_smoke_context, classify_credential_boundary,
     )
 
     sandbox = VerificationSandbox()
@@ -361,7 +361,6 @@ def _run_verification_sync(
                     continue
 
         # Phase 6E: Determine verification_mode
-        from app.config import SYSTEM_CAPABILITIES
         if smoke_fixtures and smoke_status == "passed":
             result["verification_mode"] = "fixture"
         elif has_explicit_cases and smoke_status == "passed":

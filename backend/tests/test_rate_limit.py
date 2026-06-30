@@ -22,7 +22,7 @@ async def test_rate_limit_register_enforced(client):
     # First 5 should succeed (201) or fail for non-rate-limit reasons (e.g., 422)
     # but should NOT be 429
     for code in status_codes[:5]:
-        assert code != 429, f"Got 429 too early (within first 5 requests)"
+        assert code != 429, "Got 429 too early (within first 5 requests)"
 
     # At least one request after the 5th should be rate-limited
     assert 429 in status_codes[5:], (
@@ -129,7 +129,7 @@ async def test_rate_limit_download_endpoint(client):
 
     # First 30 should be 404 (package not found), not 429
     for code in statuses[:30]:
-        assert code != 429, f"Got 429 too early (within first 30 requests)"
+        assert code != 429, "Got 429 too early (within first 30 requests)"
 
     # After 30, at least one should be 429
     assert 429 in statuses[30:], (

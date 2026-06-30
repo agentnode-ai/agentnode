@@ -8,7 +8,6 @@ Also includes light semantic sanity checks (never fatal, max -2 points).
 
 from __future__ import annotations
 
-import json
 import logging
 
 logger = logging.getLogger(__name__)
@@ -208,7 +207,6 @@ def validate_format(
         return None
 
     return_type = smoke_data.get("return_type", "")
-    return_keys = smoke_data.get("return_keys")
     return_length = smoke_data.get("return_length")
 
     result = {"applicable": True, "checks": []}

@@ -64,7 +64,6 @@ async def create_review_request(
 
     Returns the review request and the Stripe Checkout URL.
     """
-    from app.billing.stripe_client import create_review_checkout_session
 
     # Resolve package + version
     pkg_result = await session.execute(
@@ -106,7 +105,7 @@ async def create_review_request(
     if existing:
         raise AppError(
             "REVIEW_ALREADY_EXISTS",
-            f"An active review request already exists for this version and tier",
+            "An active review request already exists for this version and tier",
             409,
         )
 

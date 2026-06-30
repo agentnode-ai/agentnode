@@ -197,7 +197,7 @@ async def sitemap_pages(
     # Static pages from DB (only indexable)
     result = await session.execute(
         select(SitemapPage)
-        .where(SitemapPage.indexable == True)
+        .where(SitemapPage.indexable.is_(True))
         .order_by(SitemapPage.sort_order)
     )
     db_pages = result.scalars().all()
@@ -209,7 +209,7 @@ async def sitemap_pages(
 
     # Add archive pages for post types with has_archive=true
     result = await session.execute(
-        select(BlogPostType).where(BlogPostType.has_archive == True).order_by(BlogPostType.sort_order)
+        select(BlogPostType).where(BlogPostType.has_archive.is_(True)).order_by(BlogPostType.sort_order)
     )
     post_types = result.scalars().all()
 

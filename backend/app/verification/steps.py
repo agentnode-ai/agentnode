@@ -27,7 +27,6 @@ from app.verification.smoke_context import (
     REASON_VERDICTS,
     SmokeContext,
     build_smoke_context,
-    classify_credential_boundary,
     classify_smoke_error,
     classify_timeout,
 )
@@ -996,7 +995,6 @@ def run_stability_check(
     Returns (reliability, determinism, contract_valid, run_results).
     """
     tool = tool or {}
-    is_agent = tool.get("name") == "__agent_entrypoint__"
 
     results = []
     for i in range(n):

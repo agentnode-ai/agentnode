@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Enum, ForeignKey, Text
+from sqlalchemy import Boolean, Column, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 
 from app.shared.models import Base, UUIDPrimaryKeyMixin

@@ -19,7 +19,6 @@ from types import MappingProxyType
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
-    Ed25519PublicKey,
 )
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
@@ -239,7 +238,7 @@ async def test_step8_no_trailing_newline(client, _arm_signing):
     assert resp.status_code == 200
     body = resp.content
     assert not body.endswith(b"\n"), f"Body has trailing newline: last bytes = {body[-5:]!r}"
-    assert not body.endswith(b"\r\n"), f"Body has trailing CRLF"
+    assert not body.endswith(b"\r\n"), "Body has trailing CRLF"
 
 
 @pytest.mark.asyncio

@@ -7,19 +7,14 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from typing import Any, Callable
 
-from app.builder.schemas import CodeFile
 from app.import_.converters.base import (
     ExtractedTool,
     ImportClassification,
-    detect_capability_id_for_tool,
-    detect_capability_ids,
     generate_manifest_dict,
     generate_package_files,
-    infer_permissions,
     slugify,
     to_snake,
     yaml_dump,
@@ -172,10 +167,10 @@ def _generate_stub_body(func_name: str, params: list[ToolParam]) -> str:
     """Generate a stub function body with NotImplementedError."""
     lines = [
         f'    # TODO: Implement the logic for {func_name}',
-        f'    raise NotImplementedError(',
+        '    raise NotImplementedError(',
         f'        "Function {func_name} is a stub generated from an OpenAI function schema. "',
-        f'        "Replace this with your actual implementation."',
-        f'    )',
+        '        "Replace this with your actual implementation."',
+        '    )',
     ]
     return "\n".join(lines) + "\n"
 

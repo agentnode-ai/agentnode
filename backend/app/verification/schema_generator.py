@@ -99,7 +99,6 @@ def _find_operation_field_in_input(test_input: dict, schema: dict | None) -> str
     """
     if not test_input or not schema:
         return None
-    props = schema.get("properties", {}) if isinstance(schema, dict) else {}
     for field_name in test_input:
         if field_name.lower() in _OPERATION_FIELDS:
             return field_name

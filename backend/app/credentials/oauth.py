@@ -18,7 +18,6 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.credentials import vault
 from app.credentials.service import store_credential
 from app.shared.exceptions import AppError
 

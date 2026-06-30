@@ -1,4 +1,5 @@
 import base64
+import hashlib
 
 import pytest
 
@@ -228,8 +229,6 @@ async def test_get_signing_key_publisher_not_found(client):
 
 
 # --- Key-by-ID tests (GET /v1/publishers/{slug}/keys/{key_id}) ---
-
-import hashlib
 
 VALID_KEY_ID = "ed25519:" + hashlib.sha256(b"\x01" * 32).hexdigest()[:16]
 

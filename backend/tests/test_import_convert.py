@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import ast
-import pytest
+import json
 
+from app.import_.converters.base import ReturnKind, classify_return_annotation
 from app.import_.schemas import ConvertRequest
 from app.import_.service import convert
 
@@ -515,8 +516,6 @@ class TestSharedHelpers:
 
 # ── Return Type Classification Tests ──────────────────────────────────
 
-from app.import_.converters.base import ReturnKind, classify_return_annotation
-
 
 class TestClassifyReturnAnnotation:
     """Unit tests for centralized return type classification."""
@@ -905,8 +904,6 @@ def run(q: str) -> dict:
 
 
 # ── MCP Converter Tests ─────────────────────────────────────────────
-
-import json
 
 MCP_SIMPLE = '''
 from mcp.server.fastmcp import FastMCP

@@ -3,9 +3,8 @@ and server-side registry re-verification (the trust gate)."""
 import copy
 
 import pytest
-import pytest_asyncio
 
-from tests.conftest import register_and_login, create_publisher, setup_publisher_user
+from tests.conftest import register_and_login, setup_publisher_user
 from app.mcp.models import McpSubmission  # noqa: F401
 from app.mcp.registry_verify import RegistryUnavailable
 

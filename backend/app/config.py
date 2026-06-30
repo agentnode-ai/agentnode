@@ -188,9 +188,9 @@ def check_verification_sandbox() -> None:
         return
     if not CONTAINER_RUNTIME:
         print(
-            f"FATAL: VERIFICATION_SANDBOX_MODE=container but no container runtime "
-            f"(docker/podman) found. Either install a container runtime, or set "
-            f"VERIFICATION_SANDBOX_MODE=subprocess.",
+            "FATAL: VERIFICATION_SANDBOX_MODE=container but no container runtime "
+            "(docker/podman) found. Either install a container runtime, or set "
+            "VERIFICATION_SANDBOX_MODE=subprocess.",
             file=sys.stderr,
         )
         sys.exit(1)

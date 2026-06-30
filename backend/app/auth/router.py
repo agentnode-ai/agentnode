@@ -53,7 +53,6 @@ from app.auth.security import (
     revoke_refresh_jti,
     set_auth_cookies,
     store_refresh_token,
-    validate_refresh_jti,
 )
 from app.auth.service import (
     change_password,
@@ -72,6 +71,7 @@ from app.auth.service import (
     verify_email,
 )
 from app.database import get_session
+from app.shared.email import EMAIL_PREF_DEFAULTS
 from app.shared.exceptions import AppError
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
@@ -335,8 +335,6 @@ async def verify_email_route(
 
 
 # --- Email Preferences ---
-
-from app.shared.email import EMAIL_PREF_DEFAULTS
 
 
 @router.get("/email-preferences", dependencies=[Depends(rate_limit(30, 60))])

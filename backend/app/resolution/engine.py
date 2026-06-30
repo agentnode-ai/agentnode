@@ -234,8 +234,6 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
     # Score each package
     results: list[ScoredPackage] = []
     requested_caps = set(req.capabilities)
-    # For scoring, we match against the original requested caps
-    scoring_caps = requested_caps
 
     for pkg_id, version in best_version_per_package.items():
         pkg = version.package

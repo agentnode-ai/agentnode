@@ -14,7 +14,6 @@ from enum import Enum
 
 from app.import_.schemas import (
     ConversionConfidence,
-    DetectedTool,
     ToolParam,
 )
 

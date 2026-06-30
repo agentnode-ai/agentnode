@@ -1,6 +1,6 @@
 """Integration tests for the media library API (images endpoints)."""
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest

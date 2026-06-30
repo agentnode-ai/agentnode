@@ -1,7 +1,6 @@
 import logging
 
 import stripe
-from fastapi import Request
 
 from app.config import settings
 

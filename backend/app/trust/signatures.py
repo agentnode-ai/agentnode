@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import base64
 from binascii import Error as binascii_Error
-import hashlib
 import logging
 
 logger = logging.getLogger(__name__)

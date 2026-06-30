@@ -2,7 +2,7 @@ import logging
 from uuid import UUID
 
 import stripe
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -519,7 +519,6 @@ async def admin_refund_review(
 
 async def _sync_review_badge_to_search(session: AsyncSession, package_id) -> None:
     """Sync review badge changes to Meilisearch. Fire-and-forget, never raises."""
-    from sqlalchemy.orm import selectinload
 
     pkg_result = await session.execute(
         select(Package)

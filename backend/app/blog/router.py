@@ -5,13 +5,12 @@ from datetime import datetime, timezone
 
 from io import BytesIO
 
-from fastapi import APIRouter, Depends, Query, Request, UploadFile, File
+from fastapi import APIRouter, Depends, Query, UploadFile, File
 from PIL import Image as PILImage
 from sqlalchemy import extract, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.admin.models import AdminAuditLog
 from app.auth.dependencies import require_admin
 from app.auth.models import User
 from app.blog.models import BlogCategory, BlogImage, BlogPost, BlogPostType

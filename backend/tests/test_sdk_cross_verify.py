@@ -112,7 +112,6 @@ async def test_sdk_verifies_backend_signature(client, _arm_signing, monkeypatch)
 
     from agentnode_sdk.registry_trust import (
         RegistryKey,
-        RegistrySignatureResult,
         RegistrySignatureStatus,
         verify_registry_response,
     )

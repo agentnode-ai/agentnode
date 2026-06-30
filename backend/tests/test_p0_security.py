@@ -5,7 +5,7 @@ entrypoint code injection) are properly patched and stay patched.
 """
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -195,7 +195,6 @@ class TestToolNameCodeInjection:
     def _generate_import_code(self, tool_name: str) -> str:
         """Generate the code that step_import would produce for a single tool."""
         from app.verification.steps import step_import
-        from unittest.mock import MagicMock
 
         # Create a mock sandbox to capture the generated code
         mock_sandbox = MagicMock()

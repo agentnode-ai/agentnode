@@ -1,6 +1,5 @@
 """Install service — assembles install metadata and tracks downloads."""
 import logging
-from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select, update

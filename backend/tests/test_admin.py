@@ -189,7 +189,7 @@ async def test_clear_non_quarantined_fails(mock_meili, mock_s3, client, session)
 
     # Ensure the version is NOT quarantined (new publishers may auto-quarantine)
     from app.packages.models import PackageVersion
-    from sqlalchemy import select, update
+    from sqlalchemy import update
     await session.execute(
         update(PackageVersion).where(PackageVersion.version_number == "1.0.0").values(quarantine_status="none")
     )

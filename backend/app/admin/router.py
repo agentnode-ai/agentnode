@@ -1063,7 +1063,7 @@ async def edit_user(
 
     await _audit(session, request, user, "edit_user", "user", user_id, changes)
     await session.commit()
-    return {"message": f"User updated.", "changes": changes}
+    return {"message": "User updated.", "changes": changes}
 
 
 @router.delete("/users/{user_id}", dependencies=[Depends(rate_limit(3, 60))])
@@ -2050,7 +2050,6 @@ async def verification_regressions(
     session: AsyncSession = Depends(get_session),
 ):
     """Packages where verification status changed between last two runs."""
-    from app.verification.models import VerificationResult
     from sqlalchemy import text
 
     # Window function: last 2 results per package_version, compare statuses

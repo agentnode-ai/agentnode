@@ -1,5 +1,5 @@
 from sqlalchemy import Boolean, Column, Integer, Numeric, VARCHAR
-from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
+from sqlalchemy.dialects.postgresql import TIMESTAMP
 
 from app.shared.models import Base, UUIDPrimaryKeyMixin
 

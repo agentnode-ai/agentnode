@@ -3,7 +3,6 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
-import pytest_asyncio
 
 VALID_MANIFEST = {
     "manifest_version": "0.1",

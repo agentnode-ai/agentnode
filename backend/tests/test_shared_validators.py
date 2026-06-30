@@ -1,6 +1,5 @@
 """Tests for shared validation helpers."""
 
-import pytest
 
 from app.shared.validators import (
     is_allowed_sort,

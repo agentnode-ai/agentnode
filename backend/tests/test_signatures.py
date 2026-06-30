@@ -14,7 +14,6 @@ Covers:
 import base64
 import hashlib
 
-import pytest
 from nacl.signing import SigningKey
 
 from app.trust.signatures import generate_keypair, sign_artifact_hash, verify_signature

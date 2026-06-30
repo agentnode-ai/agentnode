@@ -181,7 +181,6 @@ async def get_publisher_email(publisher_id) -> str | None:
     """Return the email of the user who owns a publisher."""
     try:
         from app.database import async_session_factory
-        from app.auth.models import User
         from app.publishers.models import Publisher
         from sqlalchemy.orm import selectinload
         async with async_session_factory() as session:

@@ -1,6 +1,5 @@
 """Tests for verification.cases_adapter — format normalization."""
 
-import pytest
 
 from app.verification.cases_adapter import (
     NormalizedVerification,

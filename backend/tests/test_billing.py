@@ -2,17 +2,15 @@
 import json
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select, update
 
 from app.auth.models import User
-from app.billing.models import ProcessedStripeEvent, ReviewRequest
+from app.billing.models import ReviewRequest
 from app.billing.service import (
     TIER_BADGE_COLUMN,
-    TIER_PRICES,
-    EXPRESS_SURCHARGE,
     calculate_price,
 )
 from app.packages.models import Package, PackageVersion

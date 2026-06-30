@@ -9,7 +9,6 @@ from app.import_.converters.base import (
     ExtractResult,
     apply_return_policy,
     collect_helpers,
-    extract_full_node_source,
     extract_function_body,
     extract_params,
     get_return_annotation,

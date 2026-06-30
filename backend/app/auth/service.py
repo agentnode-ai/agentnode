@@ -22,9 +22,7 @@ from app.auth.security import (
     get_user_session_gen,
     hash_password,
     record_failed_login,
-    revoke_refresh_jti,
     store_refresh_token,
-    validate_refresh_jti,
     verify_password,
     verify_totp,
 )

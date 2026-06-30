@@ -8,7 +8,6 @@ from uuid import UUID
 
 import httpx
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.validators import resolve_public_ip
 from app.webhooks.models import Webhook, WebhookDelivery

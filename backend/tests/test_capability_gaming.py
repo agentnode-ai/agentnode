@@ -5,7 +5,6 @@ scoring benefits, preventing gaming of the resolution engine.
 """
 import math
 
-import pytest
 
 from app.resolution.engine import (
     BROAD_PACKAGE_THRESHOLD,

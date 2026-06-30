@@ -12,7 +12,7 @@ from app.auth.models import User
 from app.database import get_session
 from app.packages.models import Capability, CapabilityTaxonomy, Package, PackageVersion
 from sqlalchemy import func
-from app.resolution.engine import ResolveRequest, ScoredPackage, resolve
+from app.resolution.engine import ResolveRequest, resolve
 from app.resolution.policy import PolicyConstraints, PolicyInput, evaluate_policy
 from app.shared.exceptions import AppError
 from app.shared.rate_limit import rate_limit, rate_limit_authenticated
@@ -226,12 +226,6 @@ async def resolve_upgrade(
             elif perm.network_level == "unrestricted":
                 risk_level = "medium"
 
-        upgrade_role = None
-        if pv.upgrade_metadata:
-            roles = pv.upgrade_metadata.upgrade_roles
-            if roles:
-                upgrade_role = roles[0] if isinstance(roles, list) else str(roles)
-
         recommended.append({
             "package_slug": s.slug,
             "package_name": s.name,
@@ -397,7 +391,7 @@ async def recommend(
                     "version": s.version,
                     "compatibility_score": s.score,
                     "trust_level": s.trust_level,
-                    "reason": f"Related capability in same category",
+                    "reason": "Related capability in same category",
                     "also_provides": [],
                     "install_command": f"agentnode install {s.slug}",
                 }

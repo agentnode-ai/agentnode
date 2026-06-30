@@ -29,7 +29,7 @@ from app.packages.schemas import (
 )
 from app.packages.service import publish_package
 from app.packages.validator import validate_manifest, compute_gold_eligibility
-from app.packages.version_queries import get_latest_installable_version, get_latest_owner_visible_version, get_owner_visible_versions, get_public_versions
+from app.packages.version_queries import get_latest_installable_version, get_latest_owner_visible_version, get_owner_visible_versions
 from app.config import settings
 from app.shared.exceptions import AppError
 from app.shared.storage import download_preview_file, PREVIEW_EXTENSIONS
@@ -168,7 +168,6 @@ async def publish(
 
 def _version_eager_loads():
     """Common selectinload options for PackageVersion relationships."""
-    from app.verification.models import VerificationResult
     return [
         selectinload(PackageVersion.capabilities),
         selectinload(PackageVersion.compatibility_rules),
