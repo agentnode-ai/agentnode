@@ -4,8 +4,6 @@ import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-logger = logging.getLogger(__name__)
-
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import and_, func, select, update
@@ -43,6 +41,8 @@ from app.invites.service import (
 )
 from app.shared.exceptions import AppError
 from app.shared.rate_limit import rate_limit
+
+logger = logging.getLogger(__name__)
 
 # ── Public router ──
 
