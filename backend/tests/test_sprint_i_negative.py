@@ -13,6 +13,8 @@ import json
 
 import pytest
 
+from tests.conftest import register_and_login
+
 
 # ---------------------------------------------------------------------------
 # P1-T: webhook HMAC signing correctness
@@ -60,9 +62,11 @@ def test_webhook_hmac_rejects_tampered_body():
 @pytest.mark.asyncio
 async def test_validate_rejects_missing_package_id(client):
     """POST /v1/packages/validate with a manifest missing package_id fails."""
+    token = await register_and_login(client)
     resp = await client.post(
         "/v1/packages/validate",
         json={"manifest": {"version": "1.0.0", "package_type": "toolpack"}},
+        headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code in (200, 422)
     data = resp.json()
@@ -76,9 +80,11 @@ async def test_validate_rejects_missing_package_id(client):
 @pytest.mark.asyncio
 async def test_validate_rejects_non_dict_manifest(client):
     """A scalar/array manifest must be rejected cleanly (no 500)."""
+    token = await register_and_login(client)
     resp = await client.post(
         "/v1/packages/validate",
         json={"manifest": "this is not a manifest"},
+        headers={"Authorization": f"Bearer {token}"},
     )
     # Must not 500. 200 with valid=false, 400, or 422 are all acceptable.
     assert resp.status_code in (200, 400, 422)

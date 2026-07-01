@@ -202,7 +202,11 @@ async def test_2fa_setup_and_verify(client):
     headers = {"Authorization": f"Bearer {token}"}
 
     # Setup
-    setup_resp = await client.post("/v1/auth/2fa/setup", headers=headers)
+    setup_resp = await client.post(
+        "/v1/auth/2fa/setup",
+        json={"current_password": TEST_USER["password"]},
+        headers=headers,
+    )
     assert setup_resp.status_code == 200
     data = setup_resp.json()
     assert "secret" in data
