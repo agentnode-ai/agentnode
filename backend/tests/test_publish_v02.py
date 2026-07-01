@@ -272,12 +272,12 @@ async def test_package_detail_v01_null_entrypoints(mock_meili, mock_s3, client):
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_install_info_v02_has_entrypoints(mock_meili, mock_s3, client):
+async def test_install_info_v02_has_entrypoints(mock_meili, mock_s3, client, session):
     """GET /v1/packages/{slug}/install-info should include tool entrypoints."""
-    token = await get_auth_token(client)
+    token = await get_auth_token(client, session)
     await publish(client, token, V02_MULTI_TOOL_MANIFEST)
 
-    resp = await client.get("/v1/packages/v02-multi-pack/install")
+    resp = await client.get("/v1/packages/v02-multi-pack/install-info")
     assert resp.status_code == 200
     data = resp.json()
 
@@ -295,12 +295,12 @@ async def test_install_info_v02_has_entrypoints(mock_meili, mock_s3, client):
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_install_info_v01_null_entrypoints(mock_meili, mock_s3, client):
+async def test_install_info_v01_null_entrypoints(mock_meili, mock_s3, client, session):
     """GET /v1/packages/{slug}/install-info — v0.1 capabilities have null entrypoint."""
-    token = await get_auth_token(client)
+    token = await get_auth_token(client, session)
     await publish(client, token, V01_MANIFEST)
 
-    resp = await client.get("/v1/packages/v01-compat-pack/install")
+    resp = await client.get("/v1/packages/v01-compat-pack/install-info")
     assert resp.status_code == 200
     data = resp.json()
 
