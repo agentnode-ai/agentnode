@@ -178,6 +178,7 @@ async def test_get_install_metadata_specific_version(
 
 
 @pytest.mark.asyncio
+@patch("app.packages.service.validate_artifact_quality", return_value=([], []))
 @patch(
     "app.install.service.generate_presigned_url",
     return_value="https://s3.example.com/presigned",
@@ -185,10 +186,11 @@ async def test_get_install_metadata_specific_version(
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
 async def test_get_install_with_artifact(
-    mock_meili, mock_s3, mock_presign, client, session
+    mock_meili, mock_s3, mock_presign, mock_qg, client, session
 ):
     token = await get_auth_token(client, session)
-    await publish_test_package(client, token, artifact=b"fake-artifact-data")
+    pub = await publish_test_package(client, token, artifact=b"fake-artifact-data")
+    assert pub.status_code == 201, pub.json()
 
     resp = await client.get("/v1/packages/install-test-pkg/install-info")
     assert resp.status_code == 200
@@ -224,15 +226,19 @@ async def test_download_increments_count(mock_meili, mock_s3, client, session):
 
 
 @pytest.mark.asyncio
+@patch("app.packages.service.validate_artifact_quality", return_value=([], []))
 @patch(
     "app.install.service.generate_presigned_url",
     return_value="https://s3.example.com/presigned",
 )
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_download_returns_url(mock_meili, mock_s3, mock_presign, client, session):
+async def test_download_returns_url(
+    mock_meili, mock_s3, mock_presign, mock_qg, client, session
+):
     token = await get_auth_token(client, session)
-    await publish_test_package(client, token, artifact=b"artifact-bytes")
+    pub = await publish_test_package(client, token, artifact=b"artifact-bytes")
+    assert pub.status_code == 201, pub.json()
 
     resp = await client.post("/v1/packages/install-test-pkg/download")
     assert resp.status_code == 200
