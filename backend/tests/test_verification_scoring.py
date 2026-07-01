@@ -80,6 +80,8 @@ class TestComputeToolScore:
             reliability=1.0,
             determinism_score=1.0,
             contract_valid=True,
+            verification_mode="cases_real",
+            has_explicit_cases=True,
         )
         score, tier, breakdown = compute_tool_score(vr)
         # Max: install(15) + import(15) + smoke(25) + tests(15) + reliability(10) + determinism(5) + contract(10) = 95
@@ -174,6 +176,8 @@ class TestComputeToolScore:
             contract_valid=True,
             tests_status="passed",
             tests_auto_generated=False,
+            verification_mode="cases_real",
+            has_explicit_cases=True,
         )
         score, tier, _ = compute_tool_score(vr)
         assert tier == "gold"
@@ -324,6 +328,8 @@ class TestToolPackRegression:
             reliability=1.0,
             determinism_score=1.0,
             contract_valid=True,
+            verification_mode="cases_real",
+            has_explicit_cases=True,
         )
         result = compute_score_result(vr)
         assert result.score == 95
