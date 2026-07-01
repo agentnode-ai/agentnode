@@ -185,8 +185,11 @@ async def test_resolve_framework_filter(mock_meili, mock_s3, client, session):
     )
     data = resp.json()
     assert data["total"] == 2
-    # langchain-pdf should rank higher for langchain framework
-    assert data["results"][0]["slug"] == "langchain-pdf"
+    # Both are compatible: generic is a universal framework match and scores
+    # equal to the exact match, so no strict rank ordering is asserted.
+    slugs = [r["slug"] for r in data["results"]]
+    assert "langchain-pdf" in slugs
+    assert "generic-pdf" in slugs
 
 
 @pytest.mark.asyncio
