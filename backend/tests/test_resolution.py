@@ -32,7 +32,7 @@ def make_manifest(slug, capabilities, framework="generic", runtime="python"):
         "runtime": runtime,
         "install_mode": "package",
         "hosting_type": "agentnode_hosted",
-        "entrypoint": f"{slug}.tool",
+        "entrypoint": f"{slug.replace('-', '_')}.tool",
         "capabilities": {
             "tools": [
                 {
