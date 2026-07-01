@@ -251,7 +251,7 @@ async def test_cannot_publish_to_other_publishers_package(mock_meili, mock_s3, c
         data={"manifest": json.dumps(MANIFEST_B)},
         headers={"Authorization": f"Bearer {token_b}"},
     )
-    assert resp_b.status_code == 200, resp_b.json()
+    assert resp_b.status_code == 201, resp_b.json()
 
     # User A tries to publish a new version to B's package
     hijack_manifest = {**MANIFEST_B, "version": "2.0.0", "publisher": "publisher-a"}

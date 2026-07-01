@@ -190,7 +190,7 @@ async def test_publish_v02_multi_tool(mock_meili, mock_s3, client):
     """Publishing a v0.2 multi-tool pack should succeed."""
     token = await get_auth_token(client)
     resp = await publish(client, token, V02_MULTI_TOOL_MANIFEST)
-    assert resp.status_code == 200, f"Publish failed: {resp.json()}"
+    assert resp.status_code == 201, f"Publish failed: {resp.json()}"
     data = resp.json()
     assert data["slug"] == "v02-multi-pack"
     assert data["version"] == "1.0.0"
@@ -203,7 +203,7 @@ async def test_publish_v02_single_tool(mock_meili, mock_s3, client):
     """Publishing a v0.2 single-tool pack should succeed."""
     token = await get_auth_token(client)
     resp = await publish(client, token, V02_SINGLE_TOOL_MANIFEST)
-    assert resp.status_code == 200, f"Publish failed: {resp.json()}"
+    assert resp.status_code == 201, f"Publish failed: {resp.json()}"
 
 
 @pytest.mark.asyncio
@@ -213,7 +213,7 @@ async def test_v01_still_publishes(mock_meili, mock_s3, client):
     """v0.1 manifests must still publish successfully."""
     token = await get_auth_token(client)
     resp = await publish(client, token, V01_MANIFEST)
-    assert resp.status_code == 200, f"v0.1 publish failed: {resp.json()}"
+    assert resp.status_code == 201, f"v0.1 publish failed: {resp.json()}"
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +403,7 @@ async def test_publish_compact_v02_with_defaults(mock_meili, mock_s3, client):
     }
 
     resp = await publish(client, token, compact)
-    assert resp.status_code == 200, f"Compact publish failed: {resp.json()}"
+    assert resp.status_code == 201, f"Compact publish failed: {resp.json()}"
 
     # Verify it's accessible
     detail = await client.get("/v1/packages/compact-v02")
