@@ -16,7 +16,7 @@ VALID_V01 = {
     "name": "Test Pack",
     "publisher": "test-publisher",
     "version": "1.0.0",
-    "summary": "A test package.",
+    "summary": "A test package for validation.",
     "runtime": "python",
     "install_mode": "package",
     "hosting_type": "agentnode_hosted",
