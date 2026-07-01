@@ -210,7 +210,7 @@ async def test_full_e2e_flow(client, session):
 
 @pytest.mark.asyncio
 async def test_publish_then_deprecate_flow(client, session):
-    """Publish a package, then deprecate it, verify it is excluded from resolution."""
+    """Publish a package, then deprecate it, verify it is penalized in resolution."""
 
     # Setup: register, login, create publisher
     await client.post(
@@ -268,7 +268,7 @@ async def test_publish_then_deprecate_flow(client, session):
     # Deprecate
     resp = await client.post("/v1/packages/depr-pdf-tool/deprecate", headers=headers)
     assert resp.status_code == 200
-    assert resp.json()["deprecated"] is True
+    assert resp.json()["ok"] is True
 
     # Deprecated packages are penalized (spec 12.2), not excluded from resolution.
     resp = await client.post("/v1/resolve", json={"capabilities": ["pdf_extraction"]})
