@@ -125,9 +125,11 @@ async def test_missing_permissions():
 
 @pytest.mark.asyncio
 async def test_missing_frameworks():
+    # Empty frameworks is accepted: the validator defaults it to ["generic"].
     m = {**VALID_MANIFEST, "compatibility": {"frameworks": []}}
     valid, errors, _ = await validate_manifest(m)
-    assert valid is False
+    assert valid is True
+    assert errors == []
 
 
 # --- MCP Server Validation Tests ---
