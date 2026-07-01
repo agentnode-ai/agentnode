@@ -4,6 +4,9 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy import update
+
+from app.publishers.models import Publisher
 
 VALID_MANIFEST = {
     "manifest_version": "0.1",
@@ -17,7 +20,7 @@ VALID_MANIFEST = {
     "hosting_type": "agentnode_hosted",
     "summary": "End-to-end test package for PDF extraction",
     "description": "A comprehensive PDF reader for E2E testing.",
-    "entrypoint": "main:run",
+    "entrypoint": "main.run",
     "tags": ["pdf", "extraction"],
     "categories": ["document-processing"],
     "capabilities": {
@@ -57,8 +60,18 @@ VALID_MANIFEST = {
 }
 
 
+async def _trust_publisher(session, slug):
+    """Mark a publisher trusted so first-time-publisher quarantine does not block
+    resolve/install/download. Mirrors the seam in tests/test_install.py; the product
+    quarantine behaviour is unchanged."""
+    await session.execute(
+        update(Publisher).where(Publisher.slug == slug).values(trust_level="trusted")
+    )
+    await session.commit()
+
+
 @pytest.mark.asyncio
-async def test_full_e2e_flow(client):
+async def test_full_e2e_flow(client, session):
     """Complete lifecycle: register, create publisher, publish, search, resolve, install, download."""
 
     # -- Step 1: Register user --
@@ -97,6 +110,7 @@ async def test_full_e2e_flow(client):
     assert resp.status_code == 201, f"Publisher create failed: {resp.text}"
     publisher_data = resp.json()
     assert publisher_data["slug"] == "e2e-publisher"
+    await _trust_publisher(session, "e2e-publisher")
 
     # -- Step 4: Validate manifest --
     resp = await client.post(
@@ -121,7 +135,7 @@ async def test_full_e2e_flow(client):
                 },
                 headers=headers,
             )
-    assert resp.status_code == 200, f"Publish failed: {resp.text}"
+    assert resp.status_code == 201, f"Publish failed: {resp.text}"
     publish_data = resp.json()
     assert publish_data["slug"] == "e2e-pdf-reader"
     assert publish_data["version"] == "1.0.0"
@@ -169,13 +183,13 @@ async def test_full_e2e_flow(client):
             break
 
     # -- Step 9: Install metadata --
-    resp = await client.get("/v1/packages/e2e-pdf-reader/install")
+    resp = await client.get("/v1/packages/e2e-pdf-reader/install-info")
     assert resp.status_code == 200
     install_data = resp.json()
     assert install_data["slug"] == "e2e-pdf-reader"
     assert install_data["version"] == "1.0.0"
     assert install_data["runtime"] == "python"
-    assert install_data["entrypoint"] == "main:run"
+    assert install_data["entrypoint"] == "main.run"
     assert len(install_data["capabilities"]) == 1
     assert install_data["capabilities"][0]["capability_id"] == "pdf_extraction"
     assert install_data["permissions"]["filesystem_level"] == "temp"
@@ -195,7 +209,7 @@ async def test_full_e2e_flow(client):
 
 
 @pytest.mark.asyncio
-async def test_publish_then_deprecate_flow(client):
+async def test_publish_then_deprecate_flow(client, session):
     """Publish a package, then deprecate it, verify it is excluded from resolution."""
 
     # Setup: register, login, create publisher
@@ -225,6 +239,7 @@ async def test_publish_then_deprecate_flow(client):
         },
         headers=headers,
     )
+    await _trust_publisher(session, "depr-tester")
 
     # Publish
     manifest = {
@@ -244,26 +259,26 @@ async def test_publish_then_deprecate_flow(client):
                 },
                 headers=headers,
             )
-    assert resp.status_code == 200
+    assert resp.status_code == 201
 
-    # Verify it resolves
+    # Verify it resolves and capture its pre-deprecation score
     resp = await client.post("/v1/resolve", json={"capabilities": ["pdf_extraction"]})
-    slugs = [r["slug"] for r in resp.json()["results"]]
-    assert "depr-pdf-tool" in slugs
+    before = next(r for r in resp.json()["results"] if r["slug"] == "depr-pdf-tool")
 
     # Deprecate
     resp = await client.post("/v1/packages/depr-pdf-tool/deprecate", headers=headers)
     assert resp.status_code == 200
     assert resp.json()["deprecated"] is True
 
-    # Verify it no longer resolves
+    # Deprecated packages are penalized (spec 12.2), not excluded from resolution.
     resp = await client.post("/v1/resolve", json={"capabilities": ["pdf_extraction"]})
-    slugs = [r["slug"] for r in resp.json()["results"]]
-    assert "depr-pdf-tool" not in slugs
+    after = {r["slug"]: r for r in resp.json()["results"]}
+    assert "depr-pdf-tool" in after
+    assert after["depr-pdf-tool"]["score"] < before["score"]
 
 
 @pytest.mark.asyncio
-async def test_publish_then_yank_version_flow(client):
+async def test_publish_then_yank_version_flow(client, session):
     """Publish two versions, yank the latest, verify install falls back to previous."""
 
     # Setup
@@ -293,6 +308,7 @@ async def test_publish_then_yank_version_flow(client):
         },
         headers=headers,
     )
+    await _trust_publisher(session, "yank-tester")
 
     # Publish v1.0.0
     manifest_v1 = {
@@ -313,7 +329,7 @@ async def test_publish_then_yank_version_flow(client):
                 },
                 headers=headers,
             )
-    assert resp.status_code == 200
+    assert resp.status_code == 201
 
     # Publish v2.0.0
     manifest_v2 = {**manifest_v1, "version": "2.0.0"}
@@ -328,10 +344,10 @@ async def test_publish_then_yank_version_flow(client):
                 },
                 headers=headers,
             )
-    assert resp.status_code == 200
+    assert resp.status_code == 201
 
     # Install metadata should show 2.0.0
-    resp = await client.get("/v1/packages/yank-pdf-tool/install")
+    resp = await client.get("/v1/packages/yank-pdf-tool/install-info")
     assert resp.json()["version"] == "2.0.0"
 
     # Yank v2.0.0
@@ -341,5 +357,5 @@ async def test_publish_then_yank_version_flow(client):
     assert resp.status_code == 200
 
     # Install metadata should now fall back to 1.0.0
-    resp = await client.get("/v1/packages/yank-pdf-tool/install")
+    resp = await client.get("/v1/packages/yank-pdf-tool/install-info")
     assert resp.json()["version"] == "1.0.0"
