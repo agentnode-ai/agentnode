@@ -15,6 +15,116 @@ def _check(label: str, ok: bool, detail: str) -> None:
     print(f"  {color}{marker}\033[0m {label}: {detail}")
 
 
+def cmd_mcp_revoke(slug: str | None = None, revoke_all: bool = False,
+                   key: str | None = None, json_output: bool = False) -> int:
+    """Revoke stored consent grant(s) for a credentialed MCP (Stage 3B-1). Immediate.
+    Never reads or prints a secret value (none are stored)."""
+    from agentnode_sdk.runtimes import mcp_consent_store as store
+    try:
+        if revoke_all:
+            n = store.revoke_all()
+        elif slug:
+            n = store.revoke(slug, key=key)
+        else:
+            print("Specify an MCP <slug> or --all.", file=sys.stderr)
+            return 1
+    except store.GrantStoreError as e:
+        print(f"Grant store error: {e}", file=sys.stderr)
+        return 1
+    print(f"Revoked {n} consent grant(s).")
+    return 0
+
+
+def cmd_mcp_grants(json_output: bool = False) -> int:
+    """List stored consent grants — METADATA ONLY (slug/version/lifetime/domains/key-NAMES).
+    Never displays a secret value (none are stored)."""
+    from agentnode_sdk.runtimes import mcp_consent_store as store
+    try:
+        grants = store.list_grants()
+    except store.GrantStoreError as e:
+        print(f"Grant store error: {e}", file=sys.stderr)
+        return 1
+    view = [{
+        "slug": g.get("slug"),
+        "version": g.get("version"),
+        "lifetime": g.get("lifetime"),
+        "expires_at": g.get("expires_at"),
+        "revoked": bool(g.get("revoked")),
+        "env_key_names": g.get("env_key_names"),
+        "allowed_domains": g.get("allowed_domains"),
+        "consent_key": (g.get("consent_key") or "")[:12],
+    } for g in grants]
+    if json_output:
+        print(json.dumps(view, indent=2))
+        return 0
+    if not view:
+        print("No consent grants.")
+        return 0
+    for v in view:
+        if v["revoked"]:
+            status = "revoked"
+        elif v["expires_at"] is None:
+            status = "forever"
+        else:
+            status = "active"
+        print(f"  {v['slug']}@{v['version']} [{v['lifetime']}/{status}] "
+              f"keys={v['env_key_names']} domains={v['allowed_domains']} ck={v['consent_key']}…")
+    return 0
+
+
+def cli_consent_callback(identity):
+    """Interactive (TTY) consent prompt for a credentialed MCP. Returns ``(approved, lifetime)``
+    for the Stage 3B-1 resolver. Shows env-key NAMES + sealed domains + sealed artifact_hash +
+    lifetime presets — NEVER a secret value (there is no value channel here).
+
+    Stage 3B-2a: this UI exists and is unit-tested but is NOT wired into the live MCP start path
+    (credentialed execution stays refused; the live secret flow is 3B-2b). ``forever`` is an
+    explicit ADVANCED choice (never the default) and requires a typed confirmation; any
+    unrecognized answer denies (fail-closed)."""
+    from agentnode_sdk.runtimes import mcp_consent_store as store
+    from agentnode_sdk.runtimes.mcp_consent import redact_env_keys
+
+    dom = ", ".join(identity.allowed_domains) if identity.allowed_domains else "(none)"
+    print(f"\n  MCP '{identity.slug}' v{identity.version} requests credentials.", file=sys.stderr)
+    print(f"    env keys : {redact_env_keys(identity.env_key_names)}", file=sys.stderr)
+    print(f"    egress   : {dom}", file=sys.stderr)
+    print(f"    artifact : {identity.artifact_hash}", file=sys.stderr)
+    print("  Grant access for how long?", file=sys.stderr)
+    print("    [1] this run only (no saved grant)", file=sys.stderr)
+    print("    [2] 7 days", file=sys.stderr)
+    print("    [3] 30 days", file=sys.stderr)
+    print("    [4] 90 days (default)", file=sys.stderr)
+    print("    [5] forever, until revoked  (ADVANCED — authorizes FUTURE non-interactive runs)",
+          file=sys.stderr)
+    print("    [n] deny", file=sys.stderr)
+    try:
+        ans = input("  Choice [1-5/N, default 4]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("", file=sys.stderr)
+        return (False, store.DEFAULT_LIFETIME)
+    if ans in ("n", "no"):
+        return (False, store.DEFAULT_LIFETIME)
+    if ans == "5":
+        try:
+            confirm = input(
+                "  'forever' keeps this grant until you revoke it and authorizes future "
+                "non-interactive runs. Type 'forever' to confirm: "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("", file=sys.stderr)
+            return (False, store.DEFAULT_LIFETIME)
+        if confirm != "forever":
+            return (False, store.DEFAULT_LIFETIME)
+        return (True, store.LIFETIME_FOREVER)
+    choice = {
+        "": store.LIFETIME_90D, "4": store.LIFETIME_90D,
+        "1": store.LIFETIME_THIS_RUN, "2": store.LIFETIME_7D, "3": store.LIFETIME_30D,
+    }.get(ans)
+    if choice is None:
+        return (False, store.DEFAULT_LIFETIME)  # unrecognized ⇒ deny (fail-closed)
+    return (True, choice)
+
+
 def cmd_mcp_doctor(
     slug: str,
     json_output: bool = False,

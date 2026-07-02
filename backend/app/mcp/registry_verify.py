@@ -287,23 +287,50 @@ async def verify_registry(manifest: dict) -> dict:
 
     sv = _blank(npm_name, pypi_name, declared_repo)
 
-    name = npm_name or pypi_name
-    if not name:
-        sv["errors"].append("No npm_package or pypi_package declared in mcp_server")
+    # Stage 5 AUTHORITATIVE GATE (pure; runs BEFORE any registry lookup so no submit/verify
+    # path can bypass it). A credentialed MCP (declares env_keys) MUST declare a valid
+    # install descriptor AND a valid non-empty allowed_domains; a divergent second
+    # allowlist is refused. Failure => mismatch (blocks publish; not credentialed-ready).
+    from app.mcp.mcp_policy import check_credentialed_publish
+
+    cred_errors = check_credentialed_publish(mcp, manifest.get("permissions"))
+    if cred_errors:
+        sv["errors"].extend(cred_errors)
         sv["server_status"] = "mismatch"
         return sv
+
+    # Authoritative registry source. For a CREDENTIALED MCP the gate above has already
+    # proven the install descriptor is consistent with the declared *_package field and
+    # the command pin; here we VERIFY exactly install.package @ install.version on
+    # install.manager — never a divergent *_package field, never the command-resolved
+    # "latest". For a non-credentialed MCP the legacy *_package + command-pin path stands.
+    env_keys = mcp.get("env_keys") or []
+    install = mcp.get("install")
+    if env_keys and isinstance(install, dict):
+        from app.mcp.mcp_policy import validate_install_descriptor
+
+        registry_branch, name, pinned = validate_install_descriptor(install)
+        sv["registry"] = registry_branch
+        sv["package_name"] = name
+    else:
+        name = npm_name or pypi_name
+        registry_branch = "npm" if npm_name else "pypi"
+        pinned = _command_version(command)
+        if not name:
+            sv["errors"].append("No npm_package or pypi_package declared in mcp_server")
+            sv["server_status"] = "mismatch"
+            return sv
+
     if not _SAFE_NAME.match(name):
         sv["errors"].append(f"Invalid package name: {name!r}")
         sv["server_status"] = "mismatch"
         return sv
 
-    pinned = _command_version(command)
-
     try:
-        if npm_name:
-            await _verify_npm(npm_name, command, pinned, sv)
+        if registry_branch == "npm":
+            await _verify_npm(name, command, pinned, sv)
         else:
-            await _verify_pypi(pypi_name, pinned, sv)
+            await _verify_pypi(name, pinned, sv)
     except RegistryUnavailable as e:
         sv["server_status"] = "unavailable"
         sv["errors"].append(f"Registry unavailable: {e}")

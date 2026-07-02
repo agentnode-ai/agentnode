@@ -29,17 +29,28 @@ _request_id = itertools.count(1)
 class MCPServerProcess:
     """A managed MCP server subprocess communicating via stdio JSON-RPC."""
 
-    def __init__(self, slug: str, command: list[str], trust_level: str | None = None):
+    def __init__(self, slug: str, command: list[str], trust_level: str | None = None,
+                 entry: dict | None = None, mcp_consent_callback=None):
         self.slug = slug
         self.command = command
         # Safe default: trust_level missing/None/unknown -> sandbox-required, NEVER
         # host (resolved in start() via sandbox.policy). Default must not be a host tier.
         self.trust_level = trust_level
+        # Stage 4B: the lockfile entry (preinstall fields + permissions). When it signals
+        # preinstall intent, start() runs the fail-closed sealed-volume path.
+        self.entry = entry or {}
+        # Stage 3B-2b: DEDICATED consent callback (NOT the guard bool callback). Returns
+        # (approved, lifetime); injected by the CLI when interactive, None when non-TTY. The
+        # runtime never imports the CLI and never calls isatty() — it only uses what is injected.
+        self._consent_callback = mcp_consent_callback
         self._process: subprocess.Popen | None = None
         self._lock = threading.Lock()
         self._last_used = time.monotonic()
         self._container_name: str | None = None
         self._runtime: str | None = None
+        # Stage 3B-2b: live egress proxy handle for a credentialed run (bound in
+        # _credentialed_launch, torn down in stop()).
+        self._egress_handle = None
 
     def start(self, timeout: float = 10.0, env_keys: list[str] | None = None) -> None:
         """Start the MCP server subprocess.
@@ -61,63 +72,290 @@ class MCPServerProcess:
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
 
+        backend = None
+        spec = None
+        credentialed = False
         if requires_sandbox(self.trust_level):
             # Containerized path. P0.2 isolates host-FS, HOME and secrets — NOT the
             # network (npx/uvx fetch live). No host env, no mounts, clean container HOME.
-            if env_keys:
-                raise RuntimeError(
-                    f"MCP '{self.slug}' requests credentials (env_keys), but secret "
-                    "brokering into the sandbox is not available yet (P1) — refusing "
-                    "to expose secrets to untrusted code."
-                )
+            from agentnode_sdk.sandbox.mcp_preinstall import has_preinstall_intent
+
             safe_slug = re.sub(r"[^a-zA-Z0-9_.-]", "-", self.slug)[:40]
             name = f"agentnode-mcp-{safe_slug}-{uuid4().hex[:8]}"
             backend = get_default_backend()
-            spec = ProcessSpec(
-                command=list(self.command), network="default", clean_home=True,
-                interactive=True, env={}, mounts=[], name=name,
-            )
-            launch = backend.wrap_command(spec)
-            self._container_name = name
-            self._runtime = launch[0]
-            # The docker/podman CLIENT inherits the host env (to find the runtime);
-            # the CONTAINER env is fully controlled by wrap_command's -e flags.
-            popen_env = None
-            logger.info("MCP '%s' started sandboxed via %s", self.slug, self._runtime)
-        else:
-            # Host path: curated (allowed) / trusted (transition). Existing behaviour.
-            launch = self.command
-            popen_env = _mcp_env(env_keys)
 
-        self._process = subprocess.Popen(
-            launch,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=popen_env,
-            text=True,
-            **kwargs,
+            if env_keys:
+                # Stage 3B-2b: credentialed community MCP — gated LIVE secret flow, allowed ONLY
+                # for a preinstalled + sealed MCP with a valid consent grant/approval AND a sealed
+                # egress allowlist. Any gate fails ⇒ CredentialedMcpRefused (fail-closed). This runs
+                # the gates, starts the egress proxy, binds the teardown handle, and returns the
+                # ProcessSpec ONLY — wrap_command and the FIRST secret-value read are deferred to the
+                # cleanup scope below (strictly after a successful wrap_command), so the secret is
+                # never read if wrap_command fails and the proxy never leaks. Credentialed
+                # non-preinstalled stays refused (no npx/uvx fetch with a secret).
+                spec = self._credentialed_launch(backend, name, env_keys)
+                credentialed = True
+            elif has_preinstall_intent(self.entry):
+                # Stage 4B: preinstalled MCP — run from the read-only, integrity-verified,
+                # descriptor- AND content-bound sealed volume. FAIL-CLOSED: any problem
+                # raises; there is NO fallback to the registry-fetch (npx/uvx) mcp_command
+                # path, no key, no auto-created/rebuilt volume, no permissive network.
+                spec = self._preinstalled_spec(backend, name)
+            else:
+                # Existing path: non-preinstalled community MCP fetches at runtime
+                # (npx/uvx). Open network; clean HOME; no host env, no mounts, no secrets.
+                spec = ProcessSpec(
+                    command=list(self.command), network="default", clean_home=True,
+                    interactive=True, env={}, mounts=[], name=name,
+                )
+            self._container_name = name
+
+        # Single cleanup scope for EVERYTHING that can fail once the egress proxy is up:
+        # wrap_command, the credentialed FIRST secret-value read, Popen, and the handshake. Any
+        # failure ⇒ self.stop() ⇒ container rm + egress teardown, so no secret-holding container or
+        # proxy lingers. ORDER (3B-2b): the secret VALUE is read ONLY after wrap_command has
+        # successfully built the `--env NAME` argv.
+        try:
+            if spec is not None:
+                launch = backend.wrap_command(spec)
+                self._runtime = launch[0]
+                # FIRST + ONLY secret-value read — strictly AFTER a successful wrap_command, and
+                # inside this cleanup scope so a fail-closed read (missing/empty key) tears down the
+                # egress proxy. Bound to spec.env_passthrough (the CONSENTED identity names that
+                # wrap_command just emitted as `--env NAME`), NEVER the raw env_keys argument — so
+                # argv names and injected values are guaranteed identical. Non-credentialed: None.
+                popen_env = (_credentialed_client_env(spec.env_passthrough)
+                             if credentialed else None)
+                logger.info("MCP '%s' started sandboxed via %s", self.slug, self._runtime)
+            else:
+                # Host path: curated (allowed) / trusted (transition). Existing behaviour.
+                launch = self.command
+                popen_env = _mcp_env(env_keys)
+
+            self._process = subprocess.Popen(
+                launch,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=popen_env,
+                text=True,
+                **kwargs,
+            )
+
+            # Send initialize request
+            init_req = {
+                "jsonrpc": "2.0",
+                "id": next(_request_id),
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "agentnode-sdk", "version": "0.4.0"},
+                },
+            }
+            self._send(init_req)
+            resp = self._recv(timeout=timeout)
+            if not resp or "error" in resp:
+                # Value-free: a credentialed server holds its granted secret and a malicious one
+                # could echo it back inside the init response — never interpolate the raw server
+                # payload (it may carry the secret). The slug alone locates the failure.
+                raise RuntimeError(f"MCP '{self.slug}' failed to initialize")
+
+            # Send initialized notification
+            self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        except BaseException:
+            self.stop()  # stop()/teardown is idempotent and also tears down the egress proxy
+            raise
+
+    def _verify_preinstall(self, backend):
+        """Stage 4B gates a–e (SHARED by the non-credentialed and credentialed paths): lockfile
+        integrity verified, descriptor/volume-name shape, `volume inspect` (never auto-create),
+        and the content↔hash verifier container. Returns the validated PreinstallSpec. NO
+        ProcessSpec, NO network choice, NO secret. FAIL-CLOSED — any problem raises."""
+        import subprocess as _sp
+
+        from agentnode_sdk.lock_integrity import verify_entry
+        from agentnode_sdk.sandbox.mcp_preinstall import (
+            PreinstallError,
+            validate_preinstall_fields,
+            verify_volume_content,
+        )
+        from agentnode_sdk.sandbox.types import SandboxRequiredError
+
+        entry = self.entry or {}
+        mcp_version = entry.get("version")
+
+        # a. lockfile integrity must verify
+        ir = verify_entry(self.slug, entry)
+        if ir.status != "verified":
+            raise PreinstallError(
+                f"lockfile integrity for '{self.slug}' is {ir.status!r}, not verified — "
+                "refusing to run a preinstalled MCP from an unverified lockfile."
+            )
+        # b+c. pure shape/command validation + descriptor-bound volume-name gate (mcp_version vs
+        #      manager package_version kept distinct).
+        pspec = validate_preinstall_fields(self.slug, mcp_version, entry)
+        # d. runtime present + volume EXISTS (`volume inspect` BEFORE any -v mount).
+        availability = backend.check_available()
+        if not availability.available:
+            raise SandboxRequiredError(
+                "Preinstalled MCP execution requires a container runtime + the pinned "
+                f"image. {availability.reason or 'None detected'} — refusing host fallback."
+            )
+        runtime = availability.backend or "docker"
+        try:
+            insp = _sp.run(
+                [runtime, "volume", "inspect", pspec.volume],
+                capture_output=True, timeout=10,
+            )
+        except Exception as exc:
+            raise PreinstallError(f"could not verify sandbox volume: {exc}")
+        if insp.returncode != 0:
+            raise PreinstallError(
+                f"sandbox volume '{pspec.volume}' is missing — reinstall required "
+                f"(run: agentnode install {self.slug})."
+            )
+        # e. content<->hash verifier container (network=none, RO /install, env={}) BEFORE launch.
+        verify_volume_content(backend, pspec.volume, pspec.artifact_hash)
+        return pspec
+
+    @staticmethod
+    def _install_env(pspec):
+        """Minimal module-resolution env for the sealed /install volume (NODE_PATH/PYTHONPATH)."""
+        return ({"NODE_PATH": "/install/lib/node_modules"} if pspec.manager == "npm"
+                else {"PYTHONPATH": "/install"})
+
+    def _preinstalled_spec(self, backend, name: str):
+        """Stage 4B (non-credentialed): verify the sealed volume (a–e) then build the hardened
+        ProcessSpec — RO /install, policy network (missing/unknown ⇒ none, never default), clean
+        HOME, minimal module-resolution env only, NO secret."""
+        from agentnode_sdk.sandbox import network_for_level
+        from agentnode_sdk.sandbox.types import MountSpec, ProcessSpec
+
+        pspec = self._verify_preinstall(backend)
+        net = network_for_level((self.entry.get("permissions") or {}).get("network_level"))
+        return ProcessSpec(
+            command=list(pspec.command), network=net, clean_home=True, interactive=True,
+            env=self._install_env(pspec),
+            mounts=[MountSpec(src=pspec.volume, dst="/install", read_only=True)], name=name,
         )
 
-        # Send initialize request
-        init_req = {
-            "jsonrpc": "2.0",
-            "id": next(_request_id),
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "agentnode-sdk", "version": "0.4.0"},
-            },
-        }
-        self._send(init_req)
-        resp = self._recv(timeout=timeout)
-        if not resp or "error" in resp:
-            self.stop()
-            raise RuntimeError(f"MCP initialize failed: {resp}")
+    def _credentialed_launch(self, backend, name: str, env_keys):
+        """Stage 3B-2b: gated LIVE credentialed launch. Returns the ``ProcessSpec`` and binds
+        ``self._egress_handle`` (torn down via stop()). STRICT fail-closed order; NO secret VALUE
+        is read in this method — the FIRST + ONLY secret read happens in start() AFTER
+        wrap_command succeeds (see _credentialed_client_env):
+          1. preinstalled? else refuse (no npx/uvx fetch with a secret)
+          2. trust-binding: the passed env_keys must equal the CONSENTED identity names (set) —
+             else refuse; from here ONLY the identity names drive injection — NO value read
+          3. consent via the injected callback / a valid stored grant — NO value read
+          4. preinstall gates a–e (integrity/shape/volume/content-hash) — NO value read
+          5. sealed mcp_allowed_domains non-empty + canonical-valid — NO value read
+          6. host-key PRESENCE only (`k in os.environ`, consented names) — NO value read
+          7. start_egress_proxy(sealed) — failure ⇒ no container; bind handle
+          8. ProcessSpec(network=egress, env_passthrough=consented NAMES) — the secret VALUE is read
+             LAST in start(), only after wrap_command turns those names into `--env NAME` argv.
+        """
+        from agentnode_sdk.runtimes.mcp_consent import (
+            CredentialedMcpRefused,
+            build_identity_from_entry,
+            redact_env_keys,
+            resolve_consent,
+        )
+        from agentnode_sdk.runtimes.mcp_consent_store import GrantStoreError
+        from agentnode_sdk.sandbox.domain_policy import (
+            DomainPolicyError,
+            canonicalize_allowed_domains,
+        )
+        from agentnode_sdk.sandbox.egress import start_egress_proxy
+        from agentnode_sdk.sandbox.mcp_preinstall import has_preinstall_intent
+        from agentnode_sdk.sandbox.types import MountSpec, ProcessSpec
 
-        # Send initialized notification
-        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        entry = self.entry or {}
+        # 1. credentialed non-preinstalled stays refused
+        if not has_preinstall_intent(entry):
+            raise CredentialedMcpRefused(
+                "credentialed_requires_preinstall",
+                f"MCP '{self.slug}' requests credentials but is not preinstalled — refusing "
+                "(no runtime registry-fetch with a secret).",
+            )
+        # 2. TRUST-BINDING (NO value read). The secret flow binds to the CONSENTED identity names
+        #    (the sealed, normalized mcp_env_keys), NEVER to the separately-passed env_keys argument:
+        #    a valid grant for one key set must never be used to inject a DIFFERENT host key. Any
+        #    drift ⇒ fail-closed BEFORE consent/egress/secret (and before the callback runs).
+        #    Set-equality, not ordered: identity.env_key_names is sorted + de-duped by construction,
+        #    while env_keys is the raw entry form — so the faithful "same authorized names" test is
+        #    on the sets. From here ONLY `consented_names` drives presence/passthrough/read.
+        identity = build_identity_from_entry(self.slug, entry)
+        consented_names = list(identity.env_key_names)
+        if set(env_keys or []) != set(consented_names):
+            raise CredentialedMcpRefused(
+                "env_keys_identity_mismatch",
+                "requested credential names do not match the consented identity — "
+                "refusing (names not echoed).",
+            )
+        # 3. consent (NO secret read). resolve_consent may prompt via the injected callback (TTY)
+        #    or honor a valid stored grant (incl. non-TTY = Q3=A). Reasons are value-free.
+        try:
+            decision = resolve_consent(identity, callback=self._consent_callback)
+        except GrantStoreError as e:
+            raise CredentialedMcpRefused("grant_store_unusable",
+                                         f"consent grant store unusable: {e}")
+        if not decision.authorized:
+            raise CredentialedMcpRefused(
+                decision.reason,
+                f"MCP '{self.slug}' credentialed run not authorized ({decision.reason}).",
+            )
+        # 4. preinstall gates a–e (NO secret read)
+        pspec = self._verify_preinstall(backend)
+        # 5. sealed allowlist non-empty + canonical-valid (NO secret read)
+        try:
+            sealed = canonicalize_allowed_domains(entry.get("mcp_allowed_domains") or [])
+        except (DomainPolicyError, ValueError):
+            sealed = ()
+        if not sealed:
+            raise CredentialedMcpRefused(
+                "missing_or_invalid_allowed_domains",
+                f"MCP '{self.slug}' has no valid sealed allowed_domains — refusing credentialed run.",
+            )
+        # 6. host-key PRESENCE only — the CONSENTED names, never a value read here
+        missing = [k for k in consented_names if k not in os.environ]
+        if missing:
+            raise CredentialedMcpRefused(
+                "missing_host_env_key",
+                f"MCP '{self.slug}' is missing required environment variable(s): "
+                f"{redact_env_keys(missing)}.",
+            )
+        # 7. egress proxy from the SEALED domains ONLY; bind for teardown. Failure ⇒ no container.
+        handle = start_egress_proxy(list(sealed))
+        self._egress_handle = handle
+        try:
+            # 8. credentialed spec — env_passthrough is NAMES only (wrap_command emits `--env NAME`,
+            #    never KEY=value); RO /install volume; egress network. NO secret VALUE is read here:
+            #    the FIRST secret-value read is deferred to start() AFTER wrap_command succeeds, so a
+            #    spec-build or wrap_command failure never touches a secret and never leaks the proxy.
+            spec = ProcessSpec(
+                command=list(pspec.command), network="egress", egress=handle.spec,
+                env_passthrough=list(consented_names), clean_home=True, interactive=True,
+                env=self._install_env(pspec),
+                mounts=[MountSpec(src=pspec.volume, dst="/install", read_only=True)], name=name,
+            )
+        except BaseException:
+            self._teardown_egress()
+            raise
+        return spec
+
+    def _teardown_egress(self) -> None:
+        """Stop + remove THIS run's egress proxy + its two networks (idempotent, best-effort)."""
+        handle = self._egress_handle
+        if handle is None:
+            return
+        self._egress_handle = None
+        try:
+            from agentnode_sdk.sandbox.egress import stop_egress_proxy
+            stop_egress_proxy(handle)
+        except Exception:
+            pass
 
     def call_tool(self, name: str, args: dict, timeout: float = 30.0) -> Any:
         """Call a tool on the MCP server."""
@@ -135,7 +373,8 @@ class MCPServerProcess:
         if not resp:
             raise RuntimeError("No response from MCP server")
         if "error" in resp:
-            raise RuntimeError(f"MCP error: {resp['error']}")
+            # Value-free (see start()): the server's error payload may reflect its granted secret.
+            raise RuntimeError(f"MCP '{self.slug}' tool call failed")
         return resp.get("result")
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -163,6 +402,9 @@ class MCPServerProcess:
             except Exception:
                 pass
             self._container_name = None
+        # Stage 3B-2b: a credentialed run's egress proxy + networks must always be torn down
+        # too (success, error, timeout, or failed launch). Idempotent.
+        self._teardown_egress()
 
     def health_check(self) -> bool:
         """Check if the server process is still alive."""
@@ -217,10 +459,22 @@ class MCPProcessPool:
     def get_or_start(
         self, slug: str, command: list[str],
         timeout: float = 10.0, env_keys: list[str] | None = None,
-        trust_level: str | None = None,
+        trust_level: str | None = None, entry: dict | None = None,
+        mcp_consent_callback=None,
     ) -> MCPServerProcess:
-        """Get an existing server or start a new one."""
+        """Get an existing server or start a new one.
+
+        Stage 3B-2b (D2): credentialed MCPs (``env_keys`` present) are EPHEMERAL — they are NEVER
+        pooled/cached (they hold a live egress proxy + injected secret env). A fresh server is
+        started for this call only; the caller (``run_mcp``) ALWAYS stops it afterwards.
+        Non-credentialed MCPs keep the existing pool behaviour."""
         with self._lock:
+            if env_keys:
+                server = MCPServerProcess(slug, command, trust_level=trust_level, entry=entry,
+                                          mcp_consent_callback=mcp_consent_callback)
+                server.start(timeout=timeout, env_keys=env_keys)  # NOT stored in the pool
+                return server
+
             server = self._servers.get(slug)
             if server and server.health_check():
                 return server
@@ -229,7 +483,8 @@ class MCPProcessPool:
             if server:
                 server.stop()
 
-            server = MCPServerProcess(slug, command, trust_level=trust_level)
+            server = MCPServerProcess(slug, command, trust_level=trust_level, entry=entry,
+                                      mcp_consent_callback=mcp_consent_callback)
             server.start(timeout=timeout, env_keys=env_keys)
             self._servers[slug] = server
             return server
@@ -285,12 +540,50 @@ def _check_env_keys(slug: str, env_keys: list[str]) -> list[str]:
     return [k for k in env_keys if k not in os.environ]
 
 
+def _credentialed_client_env(env_keys: list[str] | None) -> dict[str, str]:
+    """Stage 3B-2b: build the MINIMAL docker-CLIENT environment for a credentialed run — only the
+    few vars docker itself needs (PATH/HOME/DOCKER_*) PLUS the consented secret VALUES by name.
+
+    This is the FIRST and ONLY secret-value read in the credentialed path; it runs LAST (after
+    consent + integrity + sealed allowlist + host-key presence + egress proxy + a successful
+    wrap_command). The values live in the docker-client process env and reach the container ONLY
+    via `--env NAME` — they NEVER appear on argv, in logs, or in errors.
+
+    FAIL-CLOSED at the final read: a declared key that is missing (a TOCTOU vanish since the
+    presence check) or empty ⇒ value-free CredentialedMcpRefused — NO silent skip, and NO value /
+    partial / prefix / name in the message. Raised inside start()'s cleanup scope ⇒ the egress
+    proxy is torn down."""
+    from agentnode_sdk.runtimes.mcp_consent import CredentialedMcpRefused
+
+    keep = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG",
+            "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    for k in (env_keys or []):
+        try:
+            v = os.environ[k]
+        except KeyError:
+            raise CredentialedMcpRefused(
+                "missing_host_env_key",
+                "a required host environment variable is missing at the final secret "
+                "read (name not echoed).",
+            )
+        if v == "":
+            raise CredentialedMcpRefused(
+                "empty_host_env_key",
+                "a required host environment variable is empty at the final secret "
+                "read (name not echoed).",
+            )
+        env[k] = v
+    return env
+
+
 def run_mcp(
     slug: str,
     tool_name: str | None,
     *,
     timeout: float = 30.0,
     entry: dict,
+    mcp_consent_callback=None,
     **kwargs: Any,
 ) -> RunToolResult:
     """Run a tool on an MCP server subprocess.
@@ -304,6 +597,8 @@ def run_mcp(
     """
     t0 = time.monotonic()
     name = tool_name
+    server = None
+    ephemeral = False  # 3B-2b/D2: credentialed servers are ephemeral; torn down in finally
     try:
         command = entry.get("mcp_command")
         if not command:
@@ -328,8 +623,10 @@ def run_mcp(
             )
 
         pool = _get_global_pool()
+        ephemeral = bool(env_keys)  # D2: credentialed MCPs are never pooled
         server = pool.get_or_start(
-            slug, command, env_keys=env_keys, trust_level=entry.get("trust_level")
+            slug, command, env_keys=env_keys, trust_level=entry.get("trust_level"),
+            entry=entry, mcp_consent_callback=mcp_consent_callback,
         )
 
         # Resolve tool name
@@ -398,6 +695,15 @@ def run_mcp(
             mode_used="mcp",
             duration_ms=round(elapsed, 1),
         )
+    finally:
+        # D2: a credentialed (ephemeral) server is ALWAYS torn down after the call — success,
+        # tool error, JSON-RPC error, or timeout — so no secret-holding container / egress proxy
+        # lingers. Non-credentialed pooled servers are left running for reuse.
+        if ephemeral and server is not None:
+            try:
+                server.stop()
+            except Exception:
+                pass
 
 
 def _audit_mcp_call(

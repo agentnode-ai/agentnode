@@ -6,6 +6,7 @@ P0.1 implements detection (`check_available`, cached, no image pull) and the pur
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -15,6 +16,9 @@ import threading
 from agentnode_sdk.sandbox.agent_session import AgentSandboxSession
 from agentnode_sdk.sandbox.backend import SandboxBackend
 from agentnode_sdk.sandbox.types import ProcessSpec, SandboxAvailability, SandboxRequiredError
+
+# Stage 3B-2a: a valid env-var NAME for name-only secret pass-through (`--env NAME`).
+_ENV_PASSTHROUGH_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def sandbox_volume_name(slug: str, version: str | None, artifact_hash: str | None) -> str:
@@ -30,6 +34,23 @@ def sandbox_volume_name(slug: str, version: str | None, artifact_hash: str | Non
     short = (artifact_hash or "").split(":")[-1][:8] or "nohash"
     base = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{slug}-{version or '0'}").strip("-._") or "pack"
     return f"agentnode-pack-{base}-{short}"
+
+
+def mcp_sandbox_volume_name(
+    slug: str, version: str | None, manager: str, package: str, pkg_version: str
+) -> str:
+    """Deterministic per-MCP-preinstall sandbox volume name (Stage 4A).
+
+    ``agentnode-mcp-<slug>-<version>-<ident12>`` where ``ident12`` is a sha256 over
+    slug+version+manager+package+pkg_version. The name is **descriptor-bound** (those
+    inputs) — a different descriptor never reuses another's volume. The built-tree
+    CONTENT is bound separately via the sealed ``mcp_preinstall.artifact_hash``; the
+    run-time content↔hash verification is Stage 4B. Mirrors ``sandbox_volume_name``.
+    """
+    ident = f"{slug}|{version or '0'}|{manager}|{package}|{pkg_version}"
+    short = hashlib.sha256(ident.encode("utf-8")).hexdigest()[:12]
+    base = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{slug}-{version or '0'}").strip("-._")[:40] or "mcp"
+    return f"agentnode-mcp-{base}-{short}"
 
 # Pinned base image, by DIGEST (never a tag, never :latest, never auto-pull).
 # ACTIVATED 2026-06-03: built on the Hetzner host, pushed to GHCR, and pinned here
@@ -135,11 +156,32 @@ class ContainerBackend(SandboxBackend):
         if spec.name:
             argv += ["--name", spec.name, "--label", "agentnode-sandbox"]
 
+        # Network modes are EXPLICIT and fail-closed: an unknown value must never
+        # silently fall through to open networking.
         if spec.network == "none":
             argv += ["--network", "none"]
         elif spec.network == "restricted":
             argv += ["--network", "bridge"]  # P0.2 refines to a real egress policy
-        # "default": no network flag
+        elif spec.network == "egress":
+            # Design A (proven in Stage 0A): join a pre-created --internal network
+            # (no host/internet route); the only egress is a dual-homed CONNECT proxy.
+            # Stage 1 is INERT — it only builds argv; the network + proxy are created
+            # by Stage 2. Fail-closed: no handle -> raise, never an open-network argv.
+            eg = spec.egress
+            if eg is None or not eg.network_name or not eg.proxy_url:
+                raise SandboxRequiredError(
+                    "network='egress' needs an EgressSpec with network_name + proxy_url "
+                    "(a pre-created internal network + dual-homed proxy) — refusing to "
+                    "emit an open-network argv for egress-restricted code."
+                )
+            argv += ["--network", eg.network_name]
+        elif spec.network == "default":
+            pass  # explicit: open network (no --network flag)
+        else:
+            raise SandboxRequiredError(
+                f"unknown sandbox network mode {spec.network!r} — refusing "
+                "(fail-closed; never default to open networking)."
+            )
 
         # Clean HOME — the host home (~/.agentnode, .ssh, browser, APPDATA) is
         # NEVER mounted. A fresh ephemeral home is provided instead.
@@ -150,8 +192,50 @@ class ContainerBackend(SandboxBackend):
 
         for m in spec.mounts:  # explicit mounts only
             argv += ["-v", f"{m.src}:{m.dst}:{'ro' if m.read_only else 'rw'}"]
+        # In egress mode the proxy env is CONTROLLED below — never let a
+        # caller-supplied proxy var override the egress routing (not the security
+        # boundary, but prevents wrong routing).
+        _proxy_keys = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+                       "http_proxy", "https_proxy", "no_proxy")
         for k, v in spec.env.items():
+            if spec.network == "egress" and k in _proxy_keys:
+                continue
             argv += ["-e", f"{k}={v}"]
+        if spec.network == "egress" and spec.egress is not None:
+            purl = spec.egress.proxy_url
+            for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                argv += ["-e", f"{var}={purl}"]
+            argv += ["-e", "NO_PROXY=", "-e", "no_proxy="]
+
+        # Stage 3B-2a: name-only secret pass-through. Emit `--env NAME` (NO value) — docker reads
+        # the value from the controlled docker-client env at run time; the VALUE never lands on
+        # argv. Fail-closed: ONLY with network=="egress"; each name must be a valid env-var name
+        # and DISJOINT from the literal `env` (a secret name must never be emitted as KEY=value).
+        if spec.env_passthrough:
+            if spec.network != "egress":
+                raise SandboxRequiredError(
+                    "env_passthrough requires network='egress' — refusing to pass secrets by "
+                    "name on an open/none/restricted network."
+                )
+            _seen: set[str] = set()
+            for name in spec.env_passthrough:
+                if not isinstance(name, str) or not _ENV_PASSTHROUGH_NAME.match(name):
+                    # VALUE-FREE: never echo the offending entry (no {name!r}, no length, no
+                    # prefix). A caller may have mistakenly passed a secret VALUE instead of an
+                    # env-var NAME; it must never reach the error message / logs.
+                    raise SandboxRequiredError(
+                        "invalid env_passthrough name — refusing name-only pass-through "
+                        "(offending entry not echoed)."
+                    )
+                if name in spec.env:
+                    raise SandboxRequiredError(
+                        "an env_passthrough name is also a literal env key — refusing "
+                        "(a secret name must never be emitted as KEY=value)."
+                    )
+                if name in _seen:
+                    continue
+                _seen.add(name)
+                argv += ["--env", name]
 
         argv.append(self._image)
         argv += list(spec.command)

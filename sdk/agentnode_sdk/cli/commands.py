@@ -878,11 +878,16 @@ def cmd_run(
     try:
         from agentnode_sdk.runner import run_tool
         from agentnode_sdk.guard import cli_confirmation_callback
+        from agentnode_sdk.cli.mcp_commands import cli_consent_callback
 
         is_interactive = os.environ.get("AGENTNODE_NON_INTERACTIVE", "").lower() not in ("true", "1")
         callback = cli_confirmation_callback if is_interactive else None
+        # Stage 3B-2b: dedicated consent callback for credentialed MCPs (separate from the guard
+        # bool callback). None when non-TTY ⇒ resolver requires a valid stored grant (fail-closed).
+        consent_cb = cli_consent_callback if is_interactive else None
 
-        result = run_tool(slug, tool_name=tool_name, confirmation_callback=callback, **data)
+        result = run_tool(slug, tool_name=tool_name, confirmation_callback=callback,
+                          mcp_consent_callback=consent_cb, **data)
 
         if result.mode_used == "policy_denied" and result.policy:
             _print_guard_block(slug, tool_name, result)
@@ -1148,11 +1153,15 @@ def _cmd_run_smart(
     try:
         from agentnode_sdk.runner import run_tool
         from agentnode_sdk.guard import cli_confirmation_callback
+        from agentnode_sdk.cli.mcp_commands import cli_consent_callback
 
         is_interactive_run = os.environ.get("AGENTNODE_NON_INTERACTIVE", "").lower() not in ("true", "1")
         callback = cli_confirmation_callback if is_interactive_run else None
+        # Stage 3B-2b: dedicated consent callback for credentialed MCPs (separate from guard bool).
+        consent_cb = cli_consent_callback if is_interactive_run else None
 
-        result = run_tool(target_slug, confirmation_callback=callback, **parsed.input_args)
+        result = run_tool(target_slug, confirmation_callback=callback,
+                          mcp_consent_callback=consent_cb, **parsed.input_args)
 
         if result.mode_used == "policy_denied" and result.policy:
             _print_guard_block(target_slug, None, result)

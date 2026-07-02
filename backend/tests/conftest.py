@@ -207,6 +207,10 @@ async def client(session):
     app.dependency_overrides[get_session] = override_get_session
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # Expose the shared DB session on the client so helpers (e.g.
+        # setup_publisher_user) can expire the identity map after writes. The test
+        # client shares ONE session across requests; production uses one per request.
+        ac.db_session = session
         yield ac
     app.dependency_overrides.clear()
 
@@ -351,6 +355,11 @@ async def setup_publisher_user(
     """
     token = await register_and_login(client, email, username, password)
     pub_data = await create_publisher(client, token, pub_slug, pub_name)
+    # Expire the shared-session identity map so a later request's require_publisher /
+    # get_current_user reloads the just-created publisher instead of a stale cached
+    # None. Without this the shared test session (expire_on_commit=False) can return
+    # user.publisher=None -> intermittent 403 PUBLISHER_REQUIRED on submit/publish.
+    client.db_session.expire_all()
     return token, pub_data
 
 
