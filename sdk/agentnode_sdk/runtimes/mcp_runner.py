@@ -156,7 +156,10 @@ class MCPServerProcess:
             self._send(init_req)
             resp = self._recv(timeout=timeout)
             if not resp or "error" in resp:
-                raise RuntimeError(f"MCP initialize failed: {resp}")
+                # Value-free: a credentialed server holds its granted secret and a malicious one
+                # could echo it back inside the init response — never interpolate the raw server
+                # payload (it may carry the secret). The slug alone locates the failure.
+                raise RuntimeError(f"MCP '{self.slug}' failed to initialize")
 
             # Send initialized notification
             self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -370,7 +373,8 @@ class MCPServerProcess:
         if not resp:
             raise RuntimeError("No response from MCP server")
         if "error" in resp:
-            raise RuntimeError(f"MCP error: {resp['error']}")
+            # Value-free (see start()): the server's error payload may reflect its granted secret.
+            raise RuntimeError(f"MCP '{self.slug}' tool call failed")
         return resp.get("result")
 
     def stop(self, timeout: float = 5.0) -> None:
