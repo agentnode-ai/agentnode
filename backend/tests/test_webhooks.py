@@ -168,8 +168,12 @@ async def test_delete_webhook(client):
 
 
 @pytest.mark.asyncio
-async def test_webhook_deliveries_empty(client):
+async def test_webhook_deliveries_empty(client, session):
     token = await get_auth_token(client)
+    # The test client shares one DB session across requests (production uses a
+    # fresh session per request). Expire the identity map so require_publisher
+    # re-loads the just-created publisher instead of a stale cached None.
+    session.expire_all()
     create_resp = await client.post(
         "/v1/webhooks",
         json={
@@ -178,6 +182,7 @@ async def test_webhook_deliveries_empty(client):
         },
         headers={"Authorization": f"Bearer {token}"},
     )
+    assert create_resp.status_code == 201, create_resp.text
     wh_id = create_resp.json()["id"]
 
     resp = await client.get(
