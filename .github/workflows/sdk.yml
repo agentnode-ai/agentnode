@@ -3,13 +3,45 @@ name: SDK & Adapter CI
 on:
   push:
     branches: [main]
-    paths: [sdk/**, adapter-langchain/**]
   pull_request:
     branches: [main]
-    paths: [sdk/**, adapter-langchain/**]
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      sdkweb: ${{ steps.detect.outputs.sdkweb }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          head="${{ github.sha }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          # Fail-safe: unknown/unreachable base (first push, force-push, shallow) -> run everything.
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "base unresolved -> treating sdk/web as changed"
+            echo "sdkweb=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$base" "$head")"
+          echo "changed files:"; printf '%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -qE '^(sdk/|adapter-langchain/|web/)'; then
+            echo "sdkweb=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "sdkweb=false" >> "$GITHUB_OUTPUT"
+          fi
+
   sdk:
+    needs: changes
+    if: ${{ needs.changes.outputs.sdkweb == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -26,8 +58,9 @@ jobs:
       - run: pytest -v
 
   adapter-langchain:
+    needs: [changes, sdk]
+    if: ${{ needs.changes.outputs.sdkweb == 'true' }}
     runs-on: ubuntu-latest
-    needs: sdk
     defaults:
       run:
         working-directory: adapter-langchain
@@ -40,6 +73,8 @@ jobs:
       - run: pytest -v
 
   web-lint-build:
+    needs: changes
+    if: ${{ needs.changes.outputs.sdkweb == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -52,3 +87,22 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+
+  # Always-run aggregator: the ONLY required check for the sdk/web/adapter track. Reports
+  # one status on every PR so path-filtering can never deadlock branch protection. Green
+  # when sdk/web was not touched (real jobs skipped); mirrors the real result otherwise.
+  sdk-web-required:
+    needs: [changes, sdk, adapter-langchain, web-lint-build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate on sdk/web jobs (success/skipped OK; only failure/cancelled fails)
+        run: |
+          echo "changes=${{ needs.changes.result }} sdk=${{ needs.sdk.result }} adapter=${{ needs['adapter-langchain'].result }} web=${{ needs['web-lint-build'].result }}"
+          for r in "${{ needs.changes.result }}" "${{ needs.sdk.result }}" "${{ needs['adapter-langchain'].result }}" "${{ needs['web-lint-build'].result }}"; do
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
+              echo "::error::sdk-web-required: an sdk/web job did not pass"
+              exit 1
+            fi
+          done
+          echo "sdk-web-required OK (sdk/web jobs passed or were skipped)"
