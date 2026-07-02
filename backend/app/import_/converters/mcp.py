@@ -1,4 +1,5 @@
 """MCP tool extractor — handles FastMCP @mcp.tool() and low-level Server patterns."""
+
 from __future__ import annotations
 
 import ast
@@ -9,7 +10,6 @@ from app.import_.converters.base import (
     ExtractResult,
     apply_return_policy,
     collect_helpers,
-    extract_full_node_source,
     extract_function_body,
     extract_params,
     get_return_annotation,
@@ -21,12 +21,14 @@ from app.import_.schemas import ToolParam
 FRAMEWORK_IMPORT_SET = MCP_MODULES
 
 # Type annotations that indicate an MCP Context parameter (should be stripped)
-_MCP_CONTEXT_TYPES = frozenset({
-    "Context",
-    "mcp.server.fastmcp.Context",
-    "fastmcp.Context",
-    "ServerContext",
-})
+_MCP_CONTEXT_TYPES = frozenset(
+    {
+        "Context",
+        "mcp.server.fastmcp.Context",
+        "fastmcp.Context",
+        "ServerContext",
+    }
+)
 
 
 def extract(source: str, tree: ast.Module) -> ExtractResult:
@@ -236,7 +238,10 @@ def _get_decorator_var(
             if dec.value.id in fastmcp_vars:
                 return dec.value.id
         if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute):
-            if isinstance(dec.func.value, ast.Name) and dec.func.value.id in fastmcp_vars:
+            if (
+                isinstance(dec.func.value, ast.Name)
+                and dec.func.value.id in fastmcp_vars
+            ):
                 return dec.func.value.id
     return "mcp"
 
@@ -252,9 +257,11 @@ def _get_decorator_metadata(
     meta: dict[str, str | None] = {"name": None, "description": None}
     for dec in node.decorator_list:
         if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute):
-            if (dec.func.attr == "tool"
-                    and isinstance(dec.func.value, ast.Name)
-                    and dec.func.value.id in fastmcp_vars):
+            if (
+                dec.func.attr == "tool"
+                and isinstance(dec.func.value, ast.Name)
+                and dec.func.value.id in fastmcp_vars
+            ):
                 for kw in dec.keywords:
                     if kw.arg == "name" and isinstance(kw.value, ast.Constant):
                         meta["name"] = str(kw.value.value)
@@ -324,7 +331,10 @@ def _extract_fastmcp_tool(
 
     # Apply return policy (wrapping, warnings)
     body, has_return_dict, return_kind = apply_return_policy(
-        func_name, return_annotation, body, result,
+        func_name,
+        return_annotation,
+        body,
+        result,
     )
 
     return ExtractedTool(

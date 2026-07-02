@@ -1,18 +1,17 @@
 """Tests for billing/review endpoints — Phase 1 red-flag checklist."""
+
 import json
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select, update
 
 from app.auth.models import User
-from app.billing.models import ProcessedStripeEvent, ReviewRequest
+from app.billing.models import ReviewRequest
 from app.billing.service import (
     TIER_BADGE_COLUMN,
-    TIER_PRICES,
-    EXPRESS_SURCHARGE,
     calculate_price,
 )
 from app.packages.models import Package, PackageVersion
@@ -58,12 +57,14 @@ TEST_MANIFEST = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "billing_test.tool",
     "capabilities": {
-        "tools": [{
-            "name": "test_tool",
-            "capability_id": "pdf_extraction",
-            "description": "Test tool",
-            "input_schema": {"type": "object"},
-        }],
+        "tools": [
+            {
+                "name": "test_tool",
+                "capability_id": "pdf_extraction",
+                "description": "Test tool",
+                "input_schema": {"type": "object"},
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -79,7 +80,10 @@ TEST_MANIFEST = {
     "tags": ["test"],
     "categories": ["document-processing"],
     "dependencies": [],
-    "security": {"signature": "", "provenance": {"source_repo": "", "commit": "", "build_system": ""}},
+    "security": {
+        "signature": "",
+        "provenance": {"source_repo": "", "commit": "", "build_system": ""},
+    },
 }
 
 REVIEW_RESULT = {
@@ -95,13 +99,18 @@ REVIEW_RESULT = {
 async def setup_admin(client, session):
     """Create admin user + publisher + published package."""
     await client.post("/v1/auth/register", json=TEST_ADMIN)
-    login = await client.post("/v1/auth/login", json={
-        "email": TEST_ADMIN["email"],
-        "password": TEST_ADMIN["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_ADMIN["email"],
+            "password": TEST_ADMIN["password"],
+        },
+    )
     token = login.json()["access_token"]
     await session.execute(
-        update(User).where(User.username == TEST_ADMIN["username"]).values(is_admin=True)
+        update(User)
+        .where(User.username == TEST_ADMIN["username"])
+        .values(is_admin=True)
     )
     await session.commit()
     return token
@@ -110,10 +119,13 @@ async def setup_admin(client, session):
 async def setup_publisher(client, session):
     """Create publisher user + publisher profile + published package. Returns token."""
     await client.post("/v1/auth/register", json=TEST_PUBLISHER)
-    login = await client.post("/v1/auth/login", json={
-        "email": TEST_PUBLISHER["email"],
-        "password": TEST_PUBLISHER["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_PUBLISHER["email"],
+            "password": TEST_PUBLISHER["password"],
+        },
+    )
     token = login.json()["access_token"]
     await client.post(
         "/v1/publishers",
@@ -126,10 +138,13 @@ async def setup_publisher(client, session):
 async def setup_other_user(client):
     """Create a separate user with no publisher."""
     await client.post("/v1/auth/register", json=TEST_OTHER)
-    login = await client.post("/v1/auth/login", json={
-        "email": TEST_OTHER["email"],
-        "password": TEST_OTHER["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_OTHER["email"],
+            "password": TEST_OTHER["password"],
+        },
+    )
     return login.json()["access_token"]
 
 
@@ -142,7 +157,9 @@ async def publish_package(client, token):
     )
 
 
-async def create_review_in_db(session, publisher_id, package_id, version_id, tier="security", status="paid"):
+async def create_review_in_db(
+    session, publisher_id, package_id, version_id, tier="security", status="paid"
+):
     """Create a review directly in DB for admin tests (skipping Stripe)."""
     review = ReviewRequest(
         order_id=f"rev_{uuid.uuid4().hex}",
@@ -155,7 +172,9 @@ async def create_review_in_db(session, publisher_id, package_id, version_id, tie
         currency="usd",
         status=status,
         paid_at=datetime.now(timezone.utc) if status != "pending_payment" else None,
-        stripe_payment_intent_id=f"pi_{uuid.uuid4().hex}" if status != "pending_payment" else None,
+        stripe_payment_intent_id=f"pi_{uuid.uuid4().hex}"
+        if status != "pending_payment"
+        else None,
     )
     session.add(review)
     await session.flush()
@@ -206,16 +225,23 @@ async def test_admin_routes_require_admin(client, session):
     resp = await client.get("/v1/admin/reviews/queue", headers=headers)
     assert resp.status_code == 403
 
-    resp = await client.post(f"/v1/admin/reviews/{fake_id}/assign",
-        json={"reviewer_id": fake_id}, headers=headers)
+    resp = await client.post(
+        f"/v1/admin/reviews/{fake_id}/assign",
+        json={"reviewer_id": fake_id},
+        headers=headers,
+    )
     assert resp.status_code == 403
 
-    resp = await client.post(f"/v1/admin/reviews/{fake_id}/complete",
-        json={"outcome": "approved", "review_result": REVIEW_RESULT}, headers=headers)
+    resp = await client.post(
+        f"/v1/admin/reviews/{fake_id}/complete",
+        json={"outcome": "approved", "review_result": REVIEW_RESULT},
+        headers=headers,
+    )
     assert resp.status_code == 403
 
-    resp = await client.post(f"/v1/admin/reviews/{fake_id}/refund",
-        json={"reason": "test"}, headers=headers)
+    resp = await client.post(
+        f"/v1/admin/reviews/{fake_id}/refund", json={"reason": "test"}, headers=headers
+    )
     assert resp.status_code == 403
 
 
@@ -246,27 +272,37 @@ async def test_full_refund_removes_badge(mock_meili, mock_s3, client, session):
     pkg_id, pv_id, pub_id = await get_package_ids(session)
 
     # Create a review in in_review status
-    review = await create_review_in_db(session, pub_id, pkg_id, pv_id, tier="security", status="in_review")
+    review = await create_review_in_db(
+        session, pub_id, pkg_id, pv_id, tier="security", status="in_review"
+    )
     await session.commit()
 
     # Admin completes → approved → badge materialized
     resp = await client.post(
         f"/v1/admin/reviews/{review.id}/complete",
-        json={"outcome": "approved", "notes": "All good", "review_result": REVIEW_RESULT},
+        json={
+            "outcome": "approved",
+            "notes": "All good",
+            "review_result": REVIEW_RESULT,
+        },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert resp.status_code == 200
     assert resp.json()["badge_materialized"] is True
 
     # Verify badge was set
-    pv_result = await session.execute(select(PackageVersion).where(PackageVersion.id == pv_id))
+    pv_result = await session.execute(
+        select(PackageVersion).where(PackageVersion.id == pv_id)
+    )
     pv = pv_result.scalar_one()
     await session.refresh(pv)
     assert pv.security_reviewed_at is not None
 
     # Full refund
-    with patch("stripe.Refund.create"), \
-         patch("app.billing.service.settings") as mock_settings:
+    with (
+        patch("stripe.Refund.create"),
+        patch("app.billing.service.settings") as mock_settings,
+    ):
         mock_settings.STRIPE_SECRET_KEY = "sk_test_fake"
         resp = await client.post(
             f"/v1/admin/reviews/{review.id}/refund",
@@ -291,7 +327,9 @@ async def test_partial_refund_keeps_badge(mock_meili, mock_s3, client, session):
     await publish_package(client, pub_token)
 
     pkg_id, pv_id, pub_id = await get_package_ids(session)
-    review = await create_review_in_db(session, pub_id, pkg_id, pv_id, tier="compatibility", status="in_review")
+    review = await create_review_in_db(
+        session, pub_id, pkg_id, pv_id, tier="compatibility", status="in_review"
+    )
     await session.commit()
 
     # Approve
@@ -301,14 +339,18 @@ async def test_partial_refund_keeps_badge(mock_meili, mock_s3, client, session):
         headers={"Authorization": f"Bearer {admin_token}"},
     )
 
-    pv_result = await session.execute(select(PackageVersion).where(PackageVersion.id == pv_id))
+    pv_result = await session.execute(
+        select(PackageVersion).where(PackageVersion.id == pv_id)
+    )
     pv = pv_result.scalar_one()
     await session.refresh(pv)
     assert pv.compatibility_reviewed_at is not None
 
     # Partial refund (less than price)
-    with patch("stripe.Refund.create"), \
-         patch("app.billing.service.settings") as mock_settings:
+    with (
+        patch("stripe.Refund.create"),
+        patch("app.billing.service.settings") as mock_settings,
+    ):
         mock_settings.STRIPE_SECRET_KEY = "sk_test_fake"
         resp = await client.post(
             f"/v1/admin/reviews/{review.id}/refund",
@@ -336,7 +378,9 @@ async def test_complete_only_from_in_review(mock_meili, mock_s3, client, session
     await publish_package(client, pub_token)
 
     pkg_id, pv_id, pub_id = await get_package_ids(session)
-    review = await create_review_in_db(session, pub_id, pkg_id, pv_id, tier="full", status="paid")
+    review = await create_review_in_db(
+        session, pub_id, pkg_id, pv_id, tier="full", status="paid"
+    )
     await session.commit()
 
     resp = await client.post(
@@ -358,7 +402,9 @@ async def test_double_refund_blocked(mock_meili, mock_s3, client, session):
     await publish_package(client, pub_token)
 
     pkg_id, pv_id, pub_id = await get_package_ids(session)
-    review = await create_review_in_db(session, pub_id, pkg_id, pv_id, tier="security", status="in_review")
+    review = await create_review_in_db(
+        session, pub_id, pkg_id, pv_id, tier="security", status="in_review"
+    )
     await session.commit()
 
     # Approve first
@@ -369,8 +415,10 @@ async def test_double_refund_blocked(mock_meili, mock_s3, client, session):
     )
 
     # First refund succeeds
-    with patch("stripe.Refund.create"), \
-         patch("app.billing.service.settings") as mock_settings:
+    with (
+        patch("stripe.Refund.create"),
+        patch("app.billing.service.settings") as mock_settings,
+    ):
         mock_settings.STRIPE_SECRET_KEY = "sk_test_fake"
         resp1 = await client.post(
             f"/v1/admin/reviews/{review.id}/refund",
@@ -380,8 +428,10 @@ async def test_double_refund_blocked(mock_meili, mock_s3, client, session):
     assert resp1.status_code == 200
 
     # Second refund blocked
-    with patch("stripe.Refund.create"), \
-         patch("app.billing.service.settings") as mock_settings:
+    with (
+        patch("stripe.Refund.create"),
+        patch("app.billing.service.settings") as mock_settings,
+    ):
         mock_settings.STRIPE_SECRET_KEY = "sk_test_fake"
         resp2 = await client.post(
             f"/v1/admin/reviews/{review.id}/refund",
@@ -405,7 +455,9 @@ async def test_webhook_idempotent_double_event(mock_meili, mock_s3, client, sess
     await publish_package(client, pub_token)
 
     pkg_id, pv_id, pub_id = await get_package_ids(session)
-    review = await create_review_in_db(session, pub_id, pkg_id, pv_id, tier="security", status="pending_payment")
+    review = await create_review_in_db(
+        session, pub_id, pkg_id, pv_id, tier="security", status="pending_payment"
+    )
     await session.commit()
 
     event = {
@@ -417,7 +469,7 @@ async def test_webhook_idempotent_double_event(mock_meili, mock_s3, client, sess
                 "client_reference_id": review.order_id,
                 "payment_intent": "pi_test_123",
             }
-        }
+        },
     }
 
     # First call
@@ -438,7 +490,7 @@ async def test_webhook_unknown_event_ignored(client, session):
     event = {
         "id": "evt_unknown_456",
         "type": "customer.subscription.created",
-        "data": {"object": {}}
+        "data": {"object": {}},
     }
 
     result = await process_stripe_event(session, event)
@@ -468,7 +520,7 @@ async def test_stripe_webhook_without_secret(client, session):
     """POST /v1/webhooks/stripe returns 503 when webhook secret not configured."""
     resp = await client.post(
         "/v1/webhooks/stripe",
-        content=b'{}',
+        content=b"{}",
         headers={"stripe-signature": "t=123,v1=abc"},
     )
     # Should be 503 (billing unavailable), not 500
@@ -482,17 +534,22 @@ async def test_stripe_webhook_without_secret(client, session):
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
 @patch("app.billing.stripe_client.create_review_checkout_session")
-async def test_non_owner_cannot_request_review(mock_stripe, mock_meili, mock_s3, client, session):
+async def test_non_owner_cannot_request_review(
+    mock_stripe, mock_meili, mock_s3, client, session
+):
     """Publisher cannot request review for another publisher's package."""
     pub_token = await setup_publisher(client, session)
     await publish_package(client, pub_token)
 
     # Create another publisher
     await client.post("/v1/auth/register", json=TEST_OTHER)
-    login = await client.post("/v1/auth/login", json={
-        "email": TEST_OTHER["email"],
-        "password": TEST_OTHER["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_OTHER["email"],
+            "password": TEST_OTHER["password"],
+        },
+    )
     other_token = login.json()["access_token"]
     await client.post(
         "/v1/publishers",
@@ -503,7 +560,11 @@ async def test_non_owner_cannot_request_review(mock_stripe, mock_meili, mock_s3,
     # Other publisher tries to review billing-pub's package
     resp = await client.post(
         "/v1/reviews/request",
-        json={"package_slug": "billing-test-pkg", "version": "1.0.0", "tier": "security"},
+        json={
+            "package_slug": "billing-test-pkg",
+            "version": "1.0.0",
+            "tier": "security",
+        },
         headers={"Authorization": f"Bearer {other_token}"},
     )
     assert resp.status_code == 403
@@ -524,7 +585,9 @@ async def test_new_version_starts_unreviewed(mock_meili, mock_s3, client, sessio
     pkg_id, pv_id, pub_id = await get_package_ids(session)
 
     # Set a badge directly on v1.0.0
-    pv_result = await session.execute(select(PackageVersion).where(PackageVersion.id == pv_id))
+    pv_result = await session.execute(
+        select(PackageVersion).where(PackageVersion.id == pv_id)
+    )
     pv = pv_result.scalar_one()
     pv.security_reviewed_at = datetime.now(timezone.utc)
     await session.commit()
@@ -575,7 +638,9 @@ async def test_audit_log_written_on_admin_action(mock_meili, mock_s3, client, se
     await publish_package(client, pub_token)
 
     pkg_id, pv_id, pub_id = await get_package_ids(session)
-    review = await create_review_in_db(session, pub_id, pkg_id, pv_id, tier="security", status="in_review")
+    review = await create_review_in_db(
+        session, pub_id, pkg_id, pv_id, tier="security", status="in_review"
+    )
     await session.commit()
 
     resp = await client.post(

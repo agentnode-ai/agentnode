@@ -1,4 +1,5 @@
 """MCP submission endpoints."""
+
 import copy
 import logging
 from datetime import datetime, timedelta, timezone
@@ -15,7 +16,11 @@ from app.database import get_session
 from app.shared.exceptions import AppError
 from app.shared.rate_limit import rate_limit
 from app.mcp.models import McpSubmission, PublisherPackageClaim
-from app.mcp.registry_verify import verify_registry, derive_status, normalize_package_name
+from app.mcp.registry_verify import (
+    verify_registry,
+    derive_status,
+    normalize_package_name,
+)
 
 OWNERSHIP_CLAIM_TTL_DAYS = 180
 
@@ -26,22 +31,38 @@ async def _latest_claim(session: AsyncSession, submission: McpSubmission):
     claim's effective status; the gate and UI both derive from it, so 'revoked'
     and 'expired' are distinguishable from 'missing'."""
     norm = normalize_package_name(submission.package_registry, submission.package_name)
-    return (await session.execute(
-        select(PublisherPackageClaim).where(
-            PublisherPackageClaim.publisher_id == submission.publisher_id,
-            PublisherPackageClaim.registry == submission.package_registry,
-            PublisherPackageClaim.package_name_normalized == norm,
-        ).order_by(PublisherPackageClaim.verified_at.desc())
-    )).scalars().first()
+    return (
+        (
+            await session.execute(
+                select(PublisherPackageClaim)
+                .where(
+                    PublisherPackageClaim.publisher_id == submission.publisher_id,
+                    PublisherPackageClaim.registry == submission.package_registry,
+                    PublisherPackageClaim.package_name_normalized == norm,
+                )
+                .order_by(PublisherPackageClaim.verified_at.desc())
+            )
+        )
+        .scalars()
+        .first()
+    )
 
 
 def _ownership_view(claim: PublisherPackageClaim | None) -> dict:
     """Ownership (package_control) status for the admin UI — independent of
     server_verification.repo_consistency."""
     if claim is None:
-        return {"status": "missing", "claim_id": None, "method": None, "verified_at": None, "expires_at": None}
+        return {
+            "status": "missing",
+            "claim_id": None,
+            "method": None,
+            "verified_at": None,
+            "expires_at": None,
+        }
     now = datetime.now(timezone.utc)
-    if claim.status == "verified" and (claim.expires_at is None or claim.expires_at > now):
+    if claim.status == "verified" and (
+        claim.expires_at is None or claim.expires_at > now
+    ):
         status = "verified"
     elif claim.status == "revoked":
         status = "revoked"
@@ -62,13 +83,23 @@ router = APIRouter(prefix="/v1/mcp", tags=["mcp"])
 admin_router = APIRouter(prefix="/v1/admin/mcp", tags=["admin-mcp"])
 logger = logging.getLogger(__name__)
 
-VALID_STATUSES = {"INVALID", "RESOLVED", "TESTED", "REVIEW_NEEDED", "MAINTAINER_ACTION_REQUIRED"}
+VALID_STATUSES = {
+    "INVALID",
+    "RESOLVED",
+    "TESTED",
+    "REVIEW_NEEDED",
+    "MAINTAINER_ACTION_REQUIRED",
+}
 MAX_SUBMIT_BODY_BYTES = 512_000  # 500 KB
 
 
 class McpSubmitRequest(BaseModel):
-    manifest: dict = Field(..., description="agentnode.yaml manifest (v0.3, runtime=mcp)")
-    verification_report: dict = Field(..., description="Output of agentnode mcp verify --json")
+    manifest: dict = Field(
+        ..., description="agentnode.yaml manifest (v0.3, runtime=mcp)"
+    )
+    verification_report: dict = Field(
+        ..., description="Output of agentnode mcp verify --json"
+    )
 
 
 class McpSubmitResponse(BaseModel):
@@ -97,7 +128,11 @@ async def submit_mcp(
     """
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > MAX_SUBMIT_BODY_BYTES:
-        raise AppError("MCP_PAYLOAD_TOO_LARGE", f"Request body must be under {MAX_SUBMIT_BODY_BYTES // 1024} KB", 400)
+        raise AppError(
+            "MCP_PAYLOAD_TOO_LARGE",
+            f"Request body must be under {MAX_SUBMIT_BODY_BYTES // 1024} KB",
+            400,
+        )
 
     manifest = body.manifest
     report = body.verification_report
@@ -111,12 +146,22 @@ async def submit_mcp(
 
     report_status = report.get("status", "")
     if report_status not in VALID_STATUSES:
-        raise AppError("MCP_INVALID_REPORT", f"Verification report status '{report_status}' is not valid", 400)
+        raise AppError(
+            "MCP_INVALID_REPORT",
+            f"Verification report status '{report_status}' is not valid",
+            400,
+        )
 
     if report_status == "INVALID":
-        raise AppError("MCP_REPORT_INVALID", "Cannot submit with INVALID verification status. Fix errors first.", 400)
+        raise AppError(
+            "MCP_REPORT_INVALID",
+            "Cannot submit with INVALID verification status. Fix errors first.",
+            400,
+        )
 
-    pkg_name = mcp_server.get("npm_package") or mcp_server.get("pypi_package") or "unknown"
+    pkg_name = (
+        mcp_server.get("npm_package") or mcp_server.get("pypi_package") or "unknown"
+    )
     pkg_registry = "npm" if mcp_server.get("npm_package") else "pypi"
     source_repo = mcp_server.get("source_repo")
 
@@ -125,18 +170,22 @@ async def submit_mcp(
     server_verification = await verify_registry(manifest)
     # Resolved version is authoritative; fall back to the client claim only if the
     # registry was unavailable and we could not resolve anything.
-    pkg_version = server_verification.get("resolved_version") or report.get("package", {}).get("version")
+    pkg_version = server_verification.get("resolved_version") or report.get(
+        "package", {}
+    ).get("version")
 
     # Duplicate check: block if an open submission exists for same package+version
     open_statuses = ("pending", "action_required", "needs_changes", "approved")
-    existing = (await session.execute(
-        select(McpSubmission).where(
-            McpSubmission.publisher_id == user.publisher.id,
-            McpSubmission.package_name == pkg_name,
-            McpSubmission.package_version == pkg_version,
-            McpSubmission.status.in_(open_statuses),
+    existing = (
+        await session.execute(
+            select(McpSubmission).where(
+                McpSubmission.publisher_id == user.publisher.id,
+                McpSubmission.package_name == pkg_name,
+                McpSubmission.package_version == pkg_version,
+                McpSubmission.status.in_(open_statuses),
+            )
         )
-    )).scalar_one_or_none()
+    ).scalar_one_or_none()
 
     if existing:
         if existing.status == "approved":
@@ -144,14 +193,20 @@ async def submit_mcp(
                 "MCP_ALREADY_APPROVED",
                 f"{pkg_name}@{pkg_version} was already approved (submission {str(existing.id)[:8]}).",
                 409,
-                details={"existing_submission_id": str(existing.id), "existing_status": existing.status},
+                details={
+                    "existing_submission_id": str(existing.id),
+                    "existing_status": existing.status,
+                },
             )
         raise AppError(
             "MCP_DUPLICATE_SUBMISSION",
             f"An open submission for {pkg_name}@{pkg_version} already exists (status: {existing.status}). "
             f"Check status: agentnode mcp status {existing.id}",
             409,
-            details={"existing_submission_id": str(existing.id), "existing_status": existing.status},
+            details={
+                "existing_submission_id": str(existing.id),
+                "existing_status": existing.status,
+            },
         )
 
     submission = McpSubmission(
@@ -172,7 +227,10 @@ async def submit_mcp(
 
     logger.info(
         "MCP submission %s by publisher %s: %s (%s, server=%s)",
-        submission.id, user.publisher.slug, pkg_name, submission.status,
+        submission.id,
+        user.publisher.slug,
+        pkg_name,
+        submission.status,
         server_verification.get("server_status"),
     )
 
@@ -181,7 +239,10 @@ async def submit_mcp(
     else:
         sstatus = server_verification.get("server_status")
         if sstatus == "mismatch":
-            reasons = "; ".join(server_verification.get("errors") or []) or "registry contradicts manifest"
+            reasons = (
+                "; ".join(server_verification.get("errors") or [])
+                or "registry contradicts manifest"
+            )
             msg = f"Submission received but server verification failed: {reasons}. Fix and resubmit."
         else:
             actions = report.get("actions", [])
@@ -199,6 +260,7 @@ async def submit_mcp(
 # ---------------------------------------------------------------------------
 # Maintainer status endpoint (publisher-scoped)
 # ---------------------------------------------------------------------------
+
 
 class MaintainerSubmissionStatus(BaseModel):
     id: str
@@ -228,15 +290,21 @@ async def get_own_submission(
     session: AsyncSession = Depends(get_session),
 ):
     """Get status of own submission. Publisher-scoped — only the submitting publisher can view."""
-    row = (await session.execute(
-        select(McpSubmission).where(
-            McpSubmission.id == submission_id,
-            McpSubmission.publisher_id == user.publisher.id,
+    row = (
+        await session.execute(
+            select(McpSubmission).where(
+                McpSubmission.id == submission_id,
+                McpSubmission.publisher_id == user.publisher.id,
+            )
         )
-    )).scalar_one_or_none()
+    ).scalar_one_or_none()
 
     if not row:
-        raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found or not owned by your publisher", 404)
+        raise AppError(
+            "MCP_SUBMISSION_NOT_FOUND",
+            "Submission not found or not owned by your publisher",
+            404,
+        )
 
     report = row.verification_report or {}
 
@@ -253,7 +321,9 @@ async def get_own_submission(
         server_verification=row.server_verification,
         maintainer_feedback=row.maintainer_feedback,
         reviewed_at=row.reviewed_at.isoformat() if row.reviewed_at else None,
-        published_package_id=str(row.published_package_id) if row.published_package_id else None,
+        published_package_id=str(row.published_package_id)
+        if row.published_package_id
+        else None,
         created_at=row.created_at.isoformat() if row.created_at else "",
     )
 
@@ -261,6 +331,7 @@ async def get_own_submission(
 # ---------------------------------------------------------------------------
 # Admin endpoints
 # ---------------------------------------------------------------------------
+
 
 class SubmissionSummary(BaseModel):
     id: str
@@ -302,9 +373,13 @@ class SubmissionDetail(BaseModel):
 
 
 class ReviewRequest(BaseModel):
-    status: str = Field(..., description="New status: approved, rejected, needs_changes")
+    status: str = Field(
+        ..., description="New status: approved, rejected, needs_changes"
+    )
     notes: str | None = Field(None, description="Internal reviewer notes (admin-only)")
-    maintainer_feedback: str | None = Field(None, description="Message visible to the submitting maintainer")
+    maintainer_feedback: str | None = Field(
+        None, description="Message visible to the submitting maintainer"
+    )
 
 
 class ReviewResponse(BaseModel):
@@ -313,7 +388,13 @@ class ReviewResponse(BaseModel):
     message: str
 
 
-ADMIN_VALID_STATUSES = {"approved", "rejected", "needs_changes", "pending", "action_required"}
+ADMIN_VALID_STATUSES = {
+    "approved",
+    "rejected",
+    "needs_changes",
+    "pending",
+    "action_required",
+}
 
 
 @admin_router.get(
@@ -344,21 +425,23 @@ async def list_submissions(
     for s in rows:
         report = s.verification_report or {}
         actions = report.get("actions", [])
-        submissions.append(SubmissionSummary(
-            id=str(s.id),
-            package_name=s.package_name,
-            package_registry=s.package_registry,
-            package_version=s.package_version,
-            source_repo=s.source_repo,
-            status=s.status,
-            report_status=report.get("status"),
-            server_status=(s.server_verification or {}).get("server_status"),
-            report_summary=report.get("summary"),
-            actions_high=sum(1 for a in actions if a.get("severity") == "high"),
-            actions_medium=sum(1 for a in actions if a.get("severity") == "medium"),
-            tools_count=len(report.get("tools_snapshot", [])),
-            created_at=s.created_at.isoformat() if s.created_at else "",
-        ))
+        submissions.append(
+            SubmissionSummary(
+                id=str(s.id),
+                package_name=s.package_name,
+                package_registry=s.package_registry,
+                package_version=s.package_version,
+                source_repo=s.source_repo,
+                status=s.status,
+                report_status=report.get("status"),
+                server_status=(s.server_verification or {}).get("server_status"),
+                report_summary=report.get("summary"),
+                actions_high=sum(1 for a in actions if a.get("severity") == "high"),
+                actions_medium=sum(1 for a in actions if a.get("severity") == "medium"),
+                tools_count=len(report.get("tools_snapshot", [])),
+                created_at=s.created_at.isoformat() if s.created_at else "",
+            )
+        )
 
     return SubmissionListResponse(submissions=submissions, total=total)
 
@@ -374,9 +457,11 @@ async def get_submission(
     session: AsyncSession = Depends(get_session),
 ):
     """Get full submission detail including manifest and report."""
-    row = (await session.execute(
-        select(McpSubmission).where(McpSubmission.id == submission_id)
-    )).scalar_one_or_none()
+    row = (
+        await session.execute(
+            select(McpSubmission).where(McpSubmission.id == submission_id)
+        )
+    ).scalar_one_or_none()
 
     if not row:
         raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
@@ -396,7 +481,9 @@ async def get_submission(
         ownership=ownership,
         reviewer_notes=row.reviewer_notes,
         maintainer_feedback=row.maintainer_feedback,
-        published_package_id=str(row.published_package_id) if row.published_package_id else None,
+        published_package_id=str(row.published_package_id)
+        if row.published_package_id
+        else None,
         created_at=row.created_at.isoformat() if row.created_at else "",
         updated_at=row.updated_at.isoformat() if row.updated_at else "",
     )
@@ -415,11 +502,17 @@ async def review_submission(
 ):
     """Set review status on a submission."""
     if body.status not in ADMIN_VALID_STATUSES:
-        raise AppError("MCP_INVALID_STATUS", f"Status must be one of: {', '.join(sorted(ADMIN_VALID_STATUSES))}", 400)
+        raise AppError(
+            "MCP_INVALID_STATUS",
+            f"Status must be one of: {', '.join(sorted(ADMIN_VALID_STATUSES))}",
+            400,
+        )
 
-    row = (await session.execute(
-        select(McpSubmission).where(McpSubmission.id == submission_id)
-    )).scalar_one_or_none()
+    row = (
+        await session.execute(
+            select(McpSubmission).where(McpSubmission.id == submission_id)
+        )
+    ).scalar_one_or_none()
 
     if not row:
         raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
@@ -434,7 +527,9 @@ async def review_submission(
     await session.flush()
     await session.commit()
 
-    logger.info("MCP submission %s reviewed by %s: %s", submission_id, user.email, body.status)
+    logger.info(
+        "MCP submission %s reviewed by %s: %s", submission_id, user.email, body.status
+    )
 
     return ReviewResponse(
         id=str(row.id),
@@ -447,6 +542,7 @@ async def review_submission(
 # Catalog publication
 # ---------------------------------------------------------------------------
 
+
 class PublishResponse(BaseModel):
     submission_id: str
     package_slug: str
@@ -454,7 +550,9 @@ class PublishResponse(BaseModel):
     message: str
 
 
-def _verify_publish_gate(submission: McpSubmission, ownership_claim: PublisherPackageClaim | None) -> list[str]:
+def _verify_publish_gate(
+    submission: McpSubmission, ownership_claim: PublisherPackageClaim | None
+) -> list[str]:
     """Validate all publish gate rules. Returns list of blocking reasons.
 
     Three independent axes, never substituted for one another:
@@ -485,33 +583,45 @@ def _verify_publish_gate(submission: McpSubmission, ownership_claim: PublisherPa
     else:
         sstatus = sv.get("server_status")
         if sstatus == "mismatch":
-            reasons = "; ".join(sv.get("errors") or []) or "registry contradicts manifest"
+            reasons = (
+                "; ".join(sv.get("errors") or []) or "registry contradicts manifest"
+            )
             blocks.append(f"Server verification status is 'mismatch': {reasons}")
         elif sstatus == "unavailable":
-            blocks.append("Server verification incomplete (registry was unavailable) — re-verify before publishing")
+            blocks.append(
+                "Server verification incomplete (registry was unavailable) — re-verify before publishing"
+            )
         if not sv.get("package_exists"):
             blocks.append("Server could not confirm the package exists on the registry")
         if not sv.get("resolved_version"):
             blocks.append("Server could not resolve a published version")
         # repo_consistency: 'mismatch' blocks; 'indeterminate' is allowed (admin warning, not a hard block)
         if sv.get("repo_consistency") == "mismatch":
-            blocks.append("source_repo does not match registry metadata (repo_consistency mismatch)")
+            blocks.append(
+                "source_repo does not match registry metadata (repo_consistency mismatch)"
+            )
 
     # --- Maintainer-attested protocol test (not server-verifiable without execution) ---
     report = submission.verification_report or {}
     if report.get("status") != "TESTED":
-        blocks.append(f"Maintainer-attested status is '{report.get('status')}', must be 'TESTED'")
+        blocks.append(
+            f"Maintainer-attested status is '{report.get('status')}', must be 'TESTED'"
+        )
 
     high_actions = [a for a in report.get("actions", []) if a.get("severity") == "high"]
     if high_actions:
         codes = [a.get("code", "?") for a in high_actions]
-        blocks.append(f"Has {len(high_actions)} high-severity action(s): {', '.join(codes)}")
+        blocks.append(
+            f"Has {len(high_actions)} high-severity action(s): {', '.join(codes)}"
+        )
 
     # --- Package control (ownership) — a SEPARATE axis. repo_consistency must
     # NEVER satisfy this; only a verified, non-expired publisher_package_claim does. ---
     now = datetime.now(timezone.utc)
     if ownership_claim is None:
-        blocks.append("No ownership claim — package control is not proven (repo_consistency does not count)")
+        blocks.append(
+            "No ownership claim — package control is not proven (repo_consistency does not count)"
+        )
     elif ownership_claim.status == "revoked":
         blocks.append("Ownership claim was revoked")
     elif ownership_claim.status != "verified":
@@ -536,9 +646,11 @@ async def publish_submission(
     from app.packages.models import Package, PackageVersion
     from app.packages.service import publish_package
 
-    row = (await session.execute(
-        select(McpSubmission).where(McpSubmission.id == submission_id)
-    )).scalar_one_or_none()
+    row = (
+        await session.execute(
+            select(McpSubmission).where(McpSubmission.id == submission_id)
+        )
+    ).scalar_one_or_none()
 
     if not row:
         raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
@@ -559,11 +671,13 @@ async def publish_submission(
     version = manifest.get("version", row.package_version or "0.1.0")
 
     # Check if package+version already exists in catalog
-    existing = (await session.execute(
-        select(PackageVersion.id)
-        .join(Package, Package.id == PackageVersion.package_id)
-        .where(Package.slug == slug, PackageVersion.version_number == version)
-    )).scalar_one_or_none()
+    existing = (
+        await session.execute(
+            select(PackageVersion.id)
+            .join(Package, Package.id == PackageVersion.package_id)
+            .where(Package.slug == slug, PackageVersion.version_number == version)
+        )
+    ).scalar_one_or_none()
 
     if existing:
         raise AppError(
@@ -588,7 +702,12 @@ async def publish_submission(
     row.updated_at = datetime.now(timezone.utc)
     await session.commit()
 
-    logger.info("MCP submission %s published as %s by admin %s", submission_id, pkg.slug, user.email)
+    logger.info(
+        "MCP submission %s published as %s by admin %s",
+        submission_id,
+        pkg.slug,
+        user.email,
+    )
 
     return PublishResponse(
         submission_id=str(row.id),
@@ -601,6 +720,7 @@ async def publish_submission(
 # ---------------------------------------------------------------------------
 # Re-verification (recover from 'unavailable', refresh before approving)
 # ---------------------------------------------------------------------------
+
 
 class ReverifyResponse(BaseModel):
     id: str
@@ -626,9 +746,11 @@ async def reverify_submission(
     touch already-published or admin-decided submissions beyond refreshing facts;
     re-derives status only while still in the open queue.
     """
-    row = (await session.execute(
-        select(McpSubmission).where(McpSubmission.id == submission_id)
-    )).scalar_one_or_none()
+    row = (
+        await session.execute(
+            select(McpSubmission).where(McpSubmission.id == submission_id)
+        )
+    ).scalar_one_or_none()
 
     if not row:
         raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
@@ -644,7 +766,10 @@ async def reverify_submission(
 
     logger.info(
         "MCP submission %s re-verified by %s: server=%s status=%s",
-        submission_id, user.email, sv.get("server_status"), row.status,
+        submission_id,
+        user.email,
+        sv.get("server_status"),
+        row.status,
     )
 
     return ReverifyResponse(
@@ -659,8 +784,11 @@ async def reverify_submission(
 # Ownership (package_control) — manual admin verification (Step 1)
 # ---------------------------------------------------------------------------
 
+
 class VerifyOwnershipRequest(BaseModel):
-    reason: str = Field(..., min_length=1, description="Audit reason for the manual ownership decision")
+    reason: str = Field(
+        ..., min_length=1, description="Audit reason for the manual ownership decision"
+    )
 
 
 class VerifyOwnershipResponse(BaseModel):
@@ -686,9 +814,11 @@ async def verify_ownership_manual(
     for this publisher+package. It is an explicit, audited decision — NOT derived
     from repo_consistency. Creates a time-bounded verified claim.
     """
-    row = (await session.execute(
-        select(McpSubmission).where(McpSubmission.id == submission_id)
-    )).scalar_one_or_none()
+    row = (
+        await session.execute(
+            select(McpSubmission).where(McpSubmission.id == submission_id)
+        )
+    ).scalar_one_or_none()
     if not row:
         raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
 
@@ -698,11 +828,17 @@ async def verify_ownership_manual(
         publisher_id=row.publisher_id,
         registry=row.package_registry,
         package_name=row.package_name,
-        package_name_normalized=normalize_package_name(row.package_registry, row.package_name),
+        package_name_normalized=normalize_package_name(
+            row.package_registry, row.package_name
+        ),
         method="manual_admin",
         strength="manual",
         status="verified",
-        evidence={"basis": "manual_admin", "submission_id": str(submission_id), "reason": body.reason},
+        evidence={
+            "basis": "manual_admin",
+            "submission_id": str(submission_id),
+            "reason": body.reason,
+        },
         verified_at=now,
         verified_by_id=user.id,
         expires_at=now + timedelta(days=OWNERSHIP_CLAIM_TTL_DAYS),
@@ -713,7 +849,10 @@ async def verify_ownership_manual(
 
     logger.info(
         "MCP ownership manually verified: %s/%s by admin %s (claim %s)",
-        row.package_registry, row.package_name, user.email, claim.id,
+        row.package_registry,
+        row.package_name,
+        user.email,
+        claim.id,
     )
 
     return VerifyOwnershipResponse(
@@ -724,7 +863,9 @@ async def verify_ownership_manual(
 
 
 class RevokeOwnershipRequest(BaseModel):
-    reason: str = Field(..., min_length=1, description="Audit reason for revoking the claim")
+    reason: str = Field(
+        ..., min_length=1, description="Audit reason for revoking the claim"
+    )
 
 
 class RevokeOwnershipResponse(BaseModel):
@@ -749,13 +890,19 @@ async def revoke_ownership(
     grant. A revoked claim no longer satisfies the publish gate. Scoped to the
     claim (which is per publisher+package), not a single submission.
     """
-    claim = (await session.execute(
-        select(PublisherPackageClaim).where(PublisherPackageClaim.id == claim_id)
-    )).scalar_one_or_none()
+    claim = (
+        await session.execute(
+            select(PublisherPackageClaim).where(PublisherPackageClaim.id == claim_id)
+        )
+    ).scalar_one_or_none()
     if not claim:
         raise AppError("MCP_CLAIM_NOT_FOUND", "Ownership claim not found", 404)
     if claim.status != "verified":
-        raise AppError("MCP_CLAIM_NOT_REVOCABLE", f"Only verified claims can be revoked (status: {claim.status})", 400)
+        raise AppError(
+            "MCP_CLAIM_NOT_REVOCABLE",
+            f"Only verified claims can be revoked (status: {claim.status})",
+            400,
+        )
 
     now = datetime.now(timezone.utc)
     evidence = dict(claim.evidence or {})
@@ -770,7 +917,10 @@ async def revoke_ownership(
 
     logger.info(
         "MCP ownership claim %s revoked by admin %s (%s/%s)",
-        claim.id, user.email, claim.registry, claim.package_name,
+        claim.id,
+        user.email,
+        claim.registry,
+        claim.package_name,
     )
 
     return RevokeOwnershipResponse(

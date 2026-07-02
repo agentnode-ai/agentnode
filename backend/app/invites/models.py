@@ -21,11 +21,15 @@ class ImportCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     contact_email = Column(Text)
     contact_name = Column(Text)
     contact_channel = Column(VARCHAR(20))
-    assigned_admin_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    assigned_admin_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
 
     outreach_status = Column(VARCHAR(20), nullable=False, default="discovered")
     contacted_at = Column(TIMESTAMP(timezone=True))
-    published_package_id = Column(UUID(as_uuid=True), ForeignKey("packages.id", ondelete="SET NULL"))
+    published_package_id = Column(
+        UUID(as_uuid=True), ForeignKey("packages.id", ondelete="SET NULL")
+    )
 
     last_event_at = Column(TIMESTAMP(timezone=True))
     last_event_type = Column(VARCHAR(50))
@@ -38,9 +42,13 @@ class InviteCode(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "invite_codes"
 
     code = Column(VARCHAR(40), unique=True, nullable=False)
-    candidate_id = Column(UUID(as_uuid=True), ForeignKey("import_candidates.id", ondelete="SET NULL"))
+    candidate_id = Column(
+        UUID(as_uuid=True), ForeignKey("import_candidates.id", ondelete="SET NULL")
+    )
     prefill_data = Column(JSONB)
-    claimed_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    claimed_by_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
     status = Column(VARCHAR(20), nullable=False, default="active")
     expires_at = Column(TIMESTAMP(timezone=True))
     created_at = Column(TIMESTAMP(timezone=True), nullable=False)
@@ -49,8 +57,14 @@ class InviteCode(Base, UUIDPrimaryKeyMixin):
 class CandidateEvent(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "candidate_events"
 
-    candidate_id = Column(UUID(as_uuid=True), ForeignKey("import_candidates.id", ondelete="CASCADE"), nullable=False)
+    candidate_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("import_candidates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     event_type = Column(VARCHAR(50), nullable=False)
     metadata_ = Column("metadata", JSONB)
-    actor_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    actor_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
     created_at = Column(TIMESTAMP(timezone=True), nullable=False)

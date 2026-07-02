@@ -81,7 +81,11 @@ def _build_response(
     return resp
 
 
-@router.get("/{slug}/verification", response_model=VerificationResponse, dependencies=[Depends(rate_limit(60, 60))])
+@router.get(
+    "/{slug}/verification",
+    response_model=VerificationResponse,
+    dependencies=[Depends(rate_limit(60, 60))],
+)
 async def get_verification_status(
     slug: str,
     session: AsyncSession = Depends(get_session),
@@ -117,11 +121,20 @@ async def get_verification_status(
     if not vr:
         return VerificationResponse(status="pending")
 
-    is_owner = user and hasattr(user, "publisher") and user.publisher and user.publisher.id == pkg.publisher_id
+    is_owner = (
+        user
+        and hasattr(user, "publisher")
+        and user.publisher
+        and user.publisher.id == pkg.publisher_id
+    )
     return _build_response(vr, pv, include_logs=bool(is_owner))
 
 
-@router.get("/{slug}/versions/{version}/verification", response_model=VerificationResponse, dependencies=[Depends(rate_limit(60, 60))])
+@router.get(
+    "/{slug}/versions/{version}/verification",
+    response_model=VerificationResponse,
+    dependencies=[Depends(rate_limit(60, 60))],
+)
 async def get_version_verification_status(
     slug: str,
     version: str,
@@ -159,5 +172,10 @@ async def get_version_verification_status(
     if not vr:
         return VerificationResponse(status="pending")
 
-    is_owner = user and hasattr(user, "publisher") and user.publisher and user.publisher.id == pkg.publisher_id
+    is_owner = (
+        user
+        and hasattr(user, "publisher")
+        and user.publisher
+        and user.publisher.id == pkg.publisher_id
+    )
     return _build_response(vr, pv, include_logs=bool(is_owner))

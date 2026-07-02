@@ -54,9 +54,18 @@ logger = logging.getLogger("agentnode.main")
 
 from app.admin.router import router as admin_router
 from app.billing.router import router as billing_router
-from app.blog.router import admin_router as blog_admin_router, public_router as blog_public_router
-from app.invites.router import router as invites_router, admin_router as invites_admin_router
-from app.sitemap.router import router as sitemap_router, admin_router as sitemap_admin_router
+from app.blog.router import (
+    admin_router as blog_admin_router,
+    public_router as blog_public_router,
+)
+from app.invites.router import (
+    router as invites_router,
+    admin_router as invites_admin_router,
+)
+from app.sitemap.router import (
+    router as sitemap_router,
+    admin_router as sitemap_admin_router,
+)
 from app.builder.router import router as builder_router
 from app.import_.router import router as import_router
 from app.auth.router import router as auth_router
@@ -86,11 +95,13 @@ async def lifespan(app: FastAPI):
     # Startup: create shared httpx clients
     from app.shared.meili import init_meili_client, close_meili_client
     from app.webhooks.service import init_webhook_client, close_webhook_client
+
     init_meili_client()
     init_webhook_client()
 
     # Start background cron tasks
     from app.tasks.cron import start_cron_tasks, stop_cron_tasks
+
     start_cron_tasks()
 
     # Load API keys from database into settings.
@@ -100,6 +111,7 @@ async def lifespan(app: FastAPI):
     try:
         from sqlalchemy import select as sa_select
         from app.admin.models import SystemSetting
+
         async with AsyncSession(engine) as session:
             result = await session.execute(
                 sa_select(SystemSetting).where(SystemSetting.key == "api_keys")
@@ -118,6 +130,7 @@ async def lifespan(app: FastAPI):
     # P1-CD4: same narrowing — only tolerate DB errors, log everything else.
     try:
         from app.shared.email import load_smtp_config
+
         async with AsyncSession(engine) as session:
             await load_smtp_config(session)
     except SQLAlchemyError:
@@ -134,6 +147,7 @@ async def lifespan(app: FastAPI):
     await stop_cron_tasks()
     # Close search httpx client
     from app.search.router import _search_client
+
     if _search_client is not None:
         await _search_client.aclose()
     # Close shared httpx clients
@@ -167,6 +181,7 @@ app.add_exception_handler(AppError, app_error_handler)
 # Middleware (response order: inner → outer, so signing sees final body)
 app.add_middleware(RequestLoggingMiddleware)
 from app.shared.signing_middleware import RegistrySigningMiddleware
+
 app.add_middleware(
     RegistrySigningMiddleware,
     signing_key_b64=settings.REGISTRY_SIGNING_KEY,
@@ -210,6 +225,7 @@ async def healthz():
 @app.get("/v1/health/signing")
 async def signing_health():
     from app.shared.signing_middleware import is_signing_ready
+
     ready = is_signing_ready()
     return {
         "signing_active": ready,
@@ -248,6 +264,7 @@ async def readyz():
     # so local dev without Meili still boots cleanly.
     try:
         from app.shared.meili import get_meili_client
+
         client = get_meili_client()
         resp = await client.get("/health")
         if resp.status_code == 200:

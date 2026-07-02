@@ -12,14 +12,23 @@ from app.shared.exceptions import AppError
 
 
 async def create_publisher(
-    session: AsyncSession, user_id: UUID, display_name: str, slug: str,
-    bio: str | None = None, website_url: str | None = None, github_url: str | None = None,
+    session: AsyncSession,
+    user_id: UUID,
+    display_name: str,
+    slug: str,
+    bio: str | None = None,
+    website_url: str | None = None,
+    github_url: str | None = None,
     background_tasks: BackgroundTasks | None = None,
 ) -> Publisher:
     # Check if user already has a publisher
-    result = await session.execute(select(Publisher).where(Publisher.user_id == user_id))
+    result = await session.execute(
+        select(Publisher).where(Publisher.user_id == user_id)
+    )
     if result.scalar_one_or_none():
-        raise AppError("PUBLISHER_ALREADY_EXISTS", "User already has a publisher profile", 409)
+        raise AppError(
+            "PUBLISHER_ALREADY_EXISTS", "User already has a publisher profile", 409
+        )
 
     # Check slug uniqueness
     result = await session.execute(select(Publisher).where(Publisher.slug == slug))
@@ -44,12 +53,16 @@ async def create_publisher(
 
     # Send confirmation email
     from app.auth.models import User
+
     user_result = await session.execute(select(User).where(User.id == user_id))
     user_obj = user_result.scalar_one_or_none()
     if user_obj:
         from app.shared.email import send_publisher_created_email
+
         if background_tasks:
-            background_tasks.add_task(send_publisher_created_email, user_obj.email, slug)
+            background_tasks.add_task(
+                send_publisher_created_email, user_obj.email, slug
+            )
         else:
             await send_publisher_created_email(user_obj.email, slug)
 

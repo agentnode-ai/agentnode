@@ -5,7 +5,9 @@ from pydantic import BaseModel, Field
 
 
 class CreateTicketBody(BaseModel):
-    category: str = Field(..., pattern=r"^(account|publishing|reviews|billing|bug|other)$")
+    category: str = Field(
+        ..., pattern=r"^(account|publishing|reviews|billing|bug|other)$"
+    )
     subject: str = Field(..., min_length=5, max_length=200)
     message: str = Field(..., min_length=10, max_length=5000)
 

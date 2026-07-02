@@ -1,4 +1,5 @@
 """Tests for resource-asset extraction in the assembler."""
+
 from unittest.mock import MagicMock
 from datetime import datetime, timezone
 
@@ -101,7 +102,11 @@ class TestAssemblerResources:
             "capabilities": {
                 "resources": [
                     {"name": "bad", "capability_id": "x"},
-                    {"name": "good", "capability_id": "y", "uri": "https://example.com/data.json"},
+                    {
+                        "name": "good",
+                        "capability_id": "y",
+                        "uri": "https://example.com/data.json",
+                    },
                 ],
             },
         }
@@ -114,11 +119,13 @@ class TestAssemblerResources:
     def test_resource_without_optional_fields(self):
         manifest = {
             "capabilities": {
-                "resources": [{
-                    "name": "minimal",
-                    "capability_id": "x",
-                    "uri": "resource://test/data",
-                }],
+                "resources": [
+                    {
+                        "name": "minimal",
+                        "capability_id": "x",
+                        "uri": "resource://test/data",
+                    }
+                ],
             },
         }
         pkg = _mock_package()
@@ -138,7 +145,11 @@ class TestAssemblerResources:
             "capabilities": {
                 "resources": [
                     {"name": "a", "capability_id": "x", "uri": "resource://a/data"},
-                    {"name": "b", "capability_id": "y", "uri": "https://b.example.com/api.json"},
+                    {
+                        "name": "b",
+                        "capability_id": "y",
+                        "uri": "https://b.example.com/api.json",
+                    },
                 ],
             },
         }

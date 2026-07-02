@@ -1,6 +1,4 @@
 """Integration tests for webhook management."""
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -28,12 +26,14 @@ TEST_MANIFEST = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "hook_test.tool",
     "capabilities": {
-        "tools": [{
-            "name": "test_tool",
-            "capability_id": "pdf_extraction",
-            "description": "Test tool",
-            "input_schema": {"type": "object"},
-        }],
+        "tools": [
+            {
+                "name": "test_tool",
+                "capability_id": "pdf_extraction",
+                "description": "Test tool",
+                "input_schema": {"type": "object"},
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -49,16 +49,22 @@ TEST_MANIFEST = {
     "tags": ["test"],
     "categories": ["document-processing"],
     "dependencies": [],
-    "security": {"signature": "", "provenance": {"source_repo": "", "commit": "", "build_system": ""}},
+    "security": {
+        "signature": "",
+        "provenance": {"source_repo": "", "commit": "", "build_system": ""},
+    },
 }
 
 
 async def get_auth_token(client):
     await client.post("/v1/auth/register", json=TEST_USER)
-    login = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     token = login.json()["access_token"]
     await client.post(
         "/v1/publishers",
@@ -162,8 +168,12 @@ async def test_delete_webhook(client):
 
 
 @pytest.mark.asyncio
-async def test_webhook_deliveries_empty(client):
+async def test_webhook_deliveries_empty(client, session):
     token = await get_auth_token(client)
+    # The test client shares one DB session across requests (production uses a
+    # fresh session per request). Expire the identity map so require_publisher
+    # re-loads the just-created publisher instead of a stale cached None.
+    session.expire_all()
     create_resp = await client.post(
         "/v1/webhooks",
         json={
@@ -172,6 +182,7 @@ async def test_webhook_deliveries_empty(client):
         },
         headers={"Authorization": f"Bearer {token}"},
     )
+    assert create_resp.status_code == 201, create_resp.text
     wh_id = create_resp.json()["id"]
 
     resp = await client.get(
@@ -185,11 +196,19 @@ async def test_webhook_deliveries_empty(client):
 @pytest.mark.asyncio
 async def test_webhook_requires_publisher(client):
     # Register user without publisher
-    user = {"email": "nopub@agentnode.dev", "username": "nopubuser", "password": "TestPass123!"}
+    user = {
+        "email": "nopub@agentnode.dev",
+        "username": "nopubuser",
+        "password": "TestPass123!",
+    }
     await client.post("/v1/auth/register", json=user)
-    login = await client.post("/v1/auth/login", json={
-        "email": user["email"], "password": user["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": user["email"],
+            "password": user["password"],
+        },
+    )
     token = login.json()["access_token"]
 
     resp = await client.post(

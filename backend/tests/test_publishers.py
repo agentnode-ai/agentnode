@@ -1,4 +1,5 @@
 import base64
+import hashlib
 
 import pytest
 
@@ -19,10 +20,13 @@ VALID_SIGNING_KEY = base64.b64encode(b"\x01" * 32).decode()
 
 async def get_auth_token(client) -> str:
     await client.post("/v1/auth/register", json=TEST_USER)
-    login_resp = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    login_resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     return login_resp.json()["access_token"]
 
 
@@ -163,11 +167,19 @@ async def test_register_signing_key_not_owner(client):
     await _create_publisher_with_token(client)
 
     # Register a second user
-    other_user = {"email": "other@agentnode.dev", "username": "otheruser", "password": "TestPass123!"}
+    other_user = {
+        "email": "other@agentnode.dev",
+        "username": "otheruser",
+        "password": "TestPass123!",
+    }
     await client.post("/v1/auth/register", json=other_user)
-    login_resp = await client.post("/v1/auth/login", json={
-        "email": other_user["email"], "password": other_user["password"],
-    })
+    login_resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": other_user["email"],
+            "password": other_user["password"],
+        },
+    )
     other_token = login_resp.json()["access_token"]
 
     resp = await client.put(
@@ -228,8 +240,6 @@ async def test_get_signing_key_publisher_not_found(client):
 
 
 # --- Key-by-ID tests (GET /v1/publishers/{slug}/keys/{key_id}) ---
-
-import hashlib
 
 VALID_KEY_ID = "ed25519:" + hashlib.sha256(b"\x01" * 32).hexdigest()[:16]
 

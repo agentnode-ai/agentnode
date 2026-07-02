@@ -72,7 +72,6 @@ def _make_agent_vr(**kwargs):
 
 
 class TestComputeToolScore:
-
     def test_perfect_score(self):
         vr = _make_vr(
             smoke_status="passed",
@@ -81,6 +80,8 @@ class TestComputeToolScore:
             reliability=1.0,
             determinism_score=1.0,
             contract_valid=True,
+            verification_mode="cases_real",
+            has_explicit_cases=True,
         )
         score, tier, breakdown = compute_tool_score(vr)
         # Max: install(15) + import(15) + smoke(25) + tests(15) + reliability(10) + determinism(5) + contract(10) = 95
@@ -170,8 +171,13 @@ class TestComputeToolScore:
 
     def test_tier_gold(self):
         vr = _make_vr(
-            reliability=1.0, determinism_score=1.0, contract_valid=True,
-            tests_status="passed", tests_auto_generated=False,
+            reliability=1.0,
+            determinism_score=1.0,
+            contract_valid=True,
+            tests_status="passed",
+            tests_auto_generated=False,
+            verification_mode="cases_real",
+            has_explicit_cases=True,
         )
         score, tier, _ = compute_tool_score(vr)
         assert tier == "gold"
@@ -179,8 +185,10 @@ class TestComputeToolScore:
 
     def test_tier_verified(self):
         vr = _make_vr(
-            reliability=1.0, contract_valid=True,
-            tests_status="passed", tests_auto_generated=True,
+            reliability=1.0,
+            contract_valid=True,
+            tests_status="passed",
+            tests_auto_generated=True,
         )
         score, tier, _ = compute_tool_score(vr)
         # install(15) + import(15) + smoke(25) + tests(8 auto) + reliability(10) + contract(10) = 83
@@ -257,8 +265,11 @@ class TestComputeToolScore:
     def test_limited_mode_capped_to_verified(self):
         """Phase 6E: limited verification mode → max verified, never gold."""
         vr = _make_vr(
-            reliability=1.0, determinism_score=1.0, contract_valid=True,
-            tests_status="passed", tests_auto_generated=False,
+            reliability=1.0,
+            determinism_score=1.0,
+            contract_valid=True,
+            tests_status="passed",
+            tests_auto_generated=False,
             verification_mode="limited",
         )
         _, tier, _ = compute_tool_score(vr)
@@ -311,8 +322,14 @@ class TestToolPackRegression:
 
     def test_toolpack_perfect_exact_scores(self):
         vr = _make_vr(
-            smoke_status="passed", tests_status="passed", tests_auto_generated=False,
-            reliability=1.0, determinism_score=1.0, contract_valid=True,
+            smoke_status="passed",
+            tests_status="passed",
+            tests_auto_generated=False,
+            reliability=1.0,
+            determinism_score=1.0,
+            contract_valid=True,
+            verification_mode="cases_real",
+            has_explicit_cases=True,
         )
         result = compute_score_result(vr)
         assert result.score == 95
@@ -338,7 +355,8 @@ class TestToolPackRegression:
 
     def test_toolpack_credential_boundary_exact(self):
         vr = _make_vr(
-            smoke_status="inconclusive", smoke_reason="credential_boundary_reached",
+            smoke_status="inconclusive",
+            smoke_reason="credential_boundary_reached",
             smoke_confidence="high",
         )
         result = compute_score_result(vr)
@@ -413,9 +431,12 @@ class TestAgentScoring:
 
     def test_agent_perfect_score(self):
         vr = _make_agent_vr(
-            reliability=1.0, determinism_score=1.0, contract_valid=True,
+            reliability=1.0,
+            determinism_score=1.0,
+            contract_valid=True,
             manifest_completeness={"score": 10},
-            agent_cases_total=2, agent_cases_passed=2,
+            agent_cases_total=2,
+            agent_cases_passed=2,
             agent_gold_blockers=[],
         )
         result = compute_score_result(vr)
@@ -425,9 +446,12 @@ class TestAgentScoring:
 
     def test_agent_scoring_table(self):
         vr = _make_agent_vr(
-            reliability=1.0, determinism_score=1.0, contract_valid=True,
+            reliability=1.0,
+            determinism_score=1.0,
+            contract_valid=True,
             manifest_completeness={"score": 10},
-            agent_cases_total=2, agent_cases_passed=2,
+            agent_cases_total=2,
+            agent_cases_passed=2,
             agent_gold_blockers=[],
         )
         result = compute_score_result(vr)
@@ -449,9 +473,12 @@ class TestAgentScoring:
 
     def test_agent_without_cases_max_verified(self):
         vr = _make_agent_vr(
-            reliability=1.0, determinism_score=1.0, contract_valid=True,
+            reliability=1.0,
+            determinism_score=1.0,
+            contract_valid=True,
             manifest_completeness={"score": 10},
-            agent_cases_total=0, agent_cases_passed=0,
+            agent_cases_total=0,
+            agent_cases_passed=0,
         )
         result = compute_score_result(vr)
         assert result.score >= 90
@@ -459,9 +486,12 @@ class TestAgentScoring:
 
     def test_agent_gold_requires_cases(self):
         vr = _make_agent_vr(
-            reliability=1.0, determinism_score=1.0, contract_valid=True,
+            reliability=1.0,
+            determinism_score=1.0,
+            contract_valid=True,
             manifest_completeness={"score": 10},
-            agent_cases_total=1, agent_cases_passed=1,
+            agent_cases_total=1,
+            agent_cases_passed=1,
             agent_gold_blockers=[],
         )
         result = compute_score_result(vr)
@@ -469,9 +499,12 @@ class TestAgentScoring:
 
     def test_agent_gold_with_blockers(self):
         vr = _make_agent_vr(
-            reliability=1.0, determinism_score=1.0, contract_valid=True,
+            reliability=1.0,
+            determinism_score=1.0,
+            contract_valid=True,
             manifest_completeness={"score": 10},
-            agent_cases_total=2, agent_cases_passed=2,
+            agent_cases_total=2,
+            agent_cases_passed=2,
             agent_gold_blockers=["goal not passed to LLM prompt"],
         )
         result = compute_score_result(vr)
@@ -489,9 +522,12 @@ class TestAgentScoring:
 
     def test_agent_failed_cases_no_gold(self):
         vr = _make_agent_vr(
-            reliability=1.0, determinism_score=1.0, contract_valid=True,
+            reliability=1.0,
+            determinism_score=1.0,
+            contract_valid=True,
             manifest_completeness={"score": 10},
-            agent_cases_total=2, agent_cases_passed=1,
+            agent_cases_total=2,
+            agent_cases_passed=1,
             agent_gold_blockers=["1/2 cases failed"],
         )
         result = compute_score_result(vr)
@@ -499,9 +535,12 @@ class TestAgentScoring:
 
     def test_agent_low_reliability_no_gold(self):
         vr = _make_agent_vr(
-            reliability=0.5, determinism_score=1.0, contract_valid=True,
+            reliability=0.5,
+            determinism_score=1.0,
+            contract_valid=True,
             manifest_completeness={"score": 10},
-            agent_cases_total=2, agent_cases_passed=2,
+            agent_cases_total=2,
+            agent_cases_passed=2,
             agent_gold_blockers=[],
         )
         result = compute_score_result(vr)

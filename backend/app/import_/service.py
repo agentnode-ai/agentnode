@@ -1,4 +1,5 @@
 """Import conversion service — dispatches to platform converters and scaffolds ANP packages."""
+
 from __future__ import annotations
 
 import ast
@@ -90,7 +91,9 @@ def convert(request: ConvertRequest) -> ConvertResponse:
 
     # OpenAI is JSON, not Python — entirely different pipeline (no AST)
     if request.platform == "openai":
-        return openai_converter.convert(request, t0, _classify_warning, _emit_outcome, _error_response)
+        return openai_converter.convert(
+            request, t0, _classify_warning, _emit_outcome, _error_response
+        )
 
     # 1. Parse
     try:
@@ -251,9 +254,8 @@ def convert(request: ConvertRequest) -> ConvertResponse:
         else:
             # Check if the module name or any name imported from it is used in tool bodies
             imported_names = unknown_imported_names.get(unk, [])
-            used_in_body = (
-                unk in tool_body_names
-                or any(n in tool_body_names for n in imported_names)
+            used_in_body = unk in tool_body_names or any(
+                n in tool_body_names for n in imported_names
             )
             if used_in_body:
                 result.warnings.append(
@@ -289,8 +291,12 @@ def convert(request: ConvertRequest) -> ConvertResponse:
 
     # 11. Generate package files
     code_files = generate_package_files(
-        slug, module_name, result.tools,
-        imports.third_party, tool_py, manifest_yaml,
+        slug,
+        module_name,
+        result.tools,
+        imports.third_party,
+        tool_py,
+        manifest_yaml,
     )
 
     # 12. Confidence + draft_ready + requires_manual_review
@@ -346,8 +352,7 @@ def convert(request: ConvertRequest) -> ConvertResponse:
 
     # 15. Classify warnings into groups
     grouped_warnings = [
-        WarningItem(message=w, category=_classify_warning(w))
-        for w in result.warnings
+        WarningItem(message=w, category=_classify_warning(w)) for w in result.warnings
     ]
 
     # 16. Unified outcome telemetry
@@ -368,7 +373,11 @@ def convert(request: ConvertRequest) -> ConvertResponse:
         tools_detected=len(result.tools),
         warning_count=len(result.warnings),
         blocking_count=blocking_count,
-        warning_categories={"blocking": blocking_count, "review": review_count, "info": info_count},
+        warning_categories={
+            "blocking": blocking_count,
+            "review": review_count,
+            "info": info_count,
+        },
         unknown_imports_count=len(imports.unknown),
         unresolved_symbols_count=unresolved_count,
         manifest_version=manifest_version,

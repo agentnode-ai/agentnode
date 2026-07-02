@@ -1,4 +1,5 @@
 """Publish service — creates packages and versions from validated manifests."""
+
 from __future__ import annotations
 
 import hashlib
@@ -27,7 +28,11 @@ from app.packages.models import (
     UpgradeMetadata,
 )
 from app.packages.typosquatting import find_similar_slugs_db
-from app.packages.validator import normalize_manifest, validate_manifest, validate_artifact_quality
+from app.packages.validator import (
+    normalize_manifest,
+    validate_manifest,
+    validate_artifact_quality,
+)
 from app.packages.version_queries import recalculate_latest_version_id
 from app.shared.exceptions import AppError
 from app.shared.validators import is_safe_url
@@ -83,7 +88,9 @@ def build_meili_document(pkg: Package, version: PackageVersion, manifest: dict) 
         "verification_status": version.verification_status,
         "verification_score": version.verification_score or 0,
         "verification_tier": version.verification_tier or "unverified",
-        "published_at": version.published_at.isoformat() if version.published_at else None,
+        "published_at": version.published_at.isoformat()
+        if version.published_at
+        else None,
         "has_security_review": version.security_reviewed_at is not None,
         "has_compatibility_review": version.compatibility_reviewed_at is not None,
         "has_manual_review": version.manually_reviewed_at is not None,
@@ -94,7 +101,9 @@ def build_meili_document(pkg: Package, version: PackageVersion, manifest: dict) 
     }
 
 
-async def extract_artifact_metadata(artifact_bytes: bytes, version_id: str | None = None) -> dict:
+async def extract_artifact_metadata(
+    artifact_bytes: bytes, version_id: str | None = None
+) -> dict:
     """Extract file_list and readme_md from a tar.gz artifact.
 
     Also uploads preview files to S3 if version_id is provided.
@@ -113,10 +122,12 @@ async def extract_artifact_metadata(artifact_bytes: bytes, version_id: str | Non
                 parts = path.split("/", 1)
                 normalized = parts[1] if len(parts) > 1 else parts[0]
 
-                result["file_list"].append({
-                    "path": normalized,
-                    "size": member.size,
-                })
+                result["file_list"].append(
+                    {
+                        "path": normalized,
+                        "size": member.size,
+                    }
+                )
 
                 # Extract README.md (case-insensitive)
                 basename = os.path.basename(normalized).lower()
@@ -146,7 +157,9 @@ async def extract_artifact_metadata(artifact_bytes: bytes, version_id: str | Non
                                     lines = content.splitlines(True)
                                     if len(lines) > PREVIEW_MAX_LINES:
                                         content = "".join(lines[:PREVIEW_MAX_LINES])
-                                    key = await upload_preview_file(version_id, normalized, content)
+                                    key = await upload_preview_file(
+                                        version_id, normalized, content
+                                    )
                                     result["preview_keys"].append(key)
                                 except UnicodeDecodeError:
                                     pass
@@ -171,13 +184,16 @@ async def publish_package(
     # 1. Validate manifest
     valid, errors, warnings = await validate_manifest(manifest, session)
     if not valid:
-        raise AppError("MANIFEST_INVALID", "Manifest validation failed", 422, details=errors)
+        raise AppError(
+            "MANIFEST_INVALID", "Manifest validation failed", 422, details=errors
+        )
 
     # 1b. Quality Gate — validate artifact contains tests
     publish_warnings = list(warnings)
     if artifact_bytes:
         qg_errors, qg_warnings = validate_artifact_quality(
-            artifact_bytes, manifest.get("package_id", ""),
+            artifact_bytes,
+            manifest.get("package_id", ""),
             package_type=manifest.get("package_type", "package"),
         )
         publish_warnings.extend(qg_warnings)
@@ -206,6 +222,7 @@ async def publish_package(
     # 2b. Check if this is a new publisher's first package — auto-quarantine
     # Skip quarantine for trusted/curated publishers
     from app.publishers.models import Publisher
+
     pub_result = await session.execute(
         select(Publisher).where(Publisher.id == publisher_id)
     )
@@ -219,8 +236,15 @@ async def publish_package(
         )
 
     quarantine_for_new_publisher = False
-    is_trusted_publisher = publisher_obj and publisher_obj.trust_level in ("trusted", "curated")
-    if publisher_obj and publisher_obj.packages_cleared_count == 0 and not is_trusted_publisher:
+    is_trusted_publisher = publisher_obj and publisher_obj.trust_level in (
+        "trusted",
+        "curated",
+    )
+    if (
+        publisher_obj
+        and publisher_obj.packages_cleared_count == 0
+        and not is_trusted_publisher
+    ):
         quarantine_for_new_publisher = True
 
     # Trusted/curated publishers also skip typosquatting quarantine
@@ -245,7 +269,9 @@ async def publish_package(
             )
         )
         if ver_result.scalar_one_or_none():
-            raise AppError("VERSION_EXISTS", f"Version {version_str} already exists", 409)
+            raise AppError(
+                "VERSION_EXISTS", f"Version {version_str} already exists", 409
+            )
     else:
         # New package
         pkg = Package(
@@ -279,6 +305,7 @@ async def publish_package(
     signature_verified = False
     if security.get("signature") and artifact_hash:
         from app.publishers.models import Publisher
+
         pub_result = await session.execute(
             select(Publisher).where(Publisher.id == publisher_id)
         )
@@ -286,20 +313,31 @@ async def publish_package(
         if publisher_obj and publisher_obj.signing_public_key:
             try:
                 from app.trust.signatures import verify_signature
+
                 signature_verified = verify_signature(
                     publisher_obj.signing_public_key,
                     security["signature"],
                     artifact_hash,
                 )
                 if not signature_verified:
-                    logger.warning(f"Signature verification FAILED for {slug}@{version_str}")
-                    raise AppError("PUBLISH_SIGNATURE_INVALID", "Artifact signature verification failed", 400)
+                    logger.warning(
+                        f"Signature verification FAILED for {slug}@{version_str}"
+                    )
+                    raise AppError(
+                        "PUBLISH_SIGNATURE_INVALID",
+                        "Artifact signature verification failed",
+                        400,
+                    )
             except Exception as e:
                 if isinstance(e, AppError):
                     raise
-                logger.warning(f"Signature verification error for {slug}@{version_str}: {e}")
+                logger.warning(
+                    f"Signature verification error for {slug}@{version_str}: {e}"
+                )
         elif security.get("signature"):
-            logger.info(f"Signature provided but no public key registered for publisher {publisher_id}")
+            logger.info(
+                f"Signature provided but no public key registered for publisher {publisher_id}"
+            )
 
     # 6. Create PackageVersion
     pv = PackageVersion(
@@ -318,16 +356,24 @@ async def publish_package(
         artifact_size_bytes=artifact_size,
         signature=security.get("signature"),
         signature_verified=signature_verified,
-        source_repo_url=provenance.get("source_repo") if _is_safe_provenance_url(provenance.get("source_repo")) else None,
+        source_repo_url=provenance.get("source_repo")
+        if _is_safe_provenance_url(provenance.get("source_repo"))
+        else None,
         source_commit=provenance.get("commit"),
         build_system=provenance.get("build_system"),
-        quarantine_status="quarantined" if (quarantine_for_typosquatting or quarantine_for_new_publisher) else "none",
+        quarantine_status="quarantined"
+        if (quarantine_for_typosquatting or quarantine_for_new_publisher)
+        else "none",
         quarantine_reason=(
-            "typosquatting_suspected" if quarantine_for_typosquatting
-            else "new_publisher_review" if quarantine_for_new_publisher
+            "typosquatting_suspected"
+            if quarantine_for_typosquatting
+            else "new_publisher_review"
+            if quarantine_for_new_publisher
             else None
         ),
-        quarantined_at=datetime.now(timezone.utc) if (quarantine_for_typosquatting or quarantine_for_new_publisher) else None,
+        quarantined_at=datetime.now(timezone.utc)
+        if (quarantine_for_typosquatting or quarantine_for_new_publisher)
+        else None,
     )
     # 6b. Enrichment fields from manifest
     pv.env_requirements = manifest.get("env_requirements") or None
@@ -369,45 +415,53 @@ async def publish_package(
         existing_ids = {row[0] for row in existing.all()}
         for new_id in all_cap_ids - existing_ids:
             display = new_id.replace("_", " ").title()
-            session.add(CapabilityTaxonomy(
-                id=new_id,
-                display_name=display,
-                description=None,
-                category="uncategorized",
-            ))
+            session.add(
+                CapabilityTaxonomy(
+                    id=new_id,
+                    display_name=display,
+                    description=None,
+                    category="uncategorized",
+                )
+            )
             logger.info("Auto-created taxonomy entry '%s' (uncategorized)", new_id)
         await session.flush()
 
     # 7b. Create capabilities
     for tool in capabilities.get("tools", []):
-        session.add(Capability(
-            package_version_id=pv.id,
-            capability_type="tool",
-            capability_id=tool["capability_id"],
-            name=tool["name"],
-            description=tool.get("description"),
-            input_schema=tool.get("input_schema"),
-            output_schema=tool.get("output_schema"),
-            entrypoint=tool.get("entrypoint"),
-        ))
+        session.add(
+            Capability(
+                package_version_id=pv.id,
+                capability_type="tool",
+                capability_id=tool["capability_id"],
+                name=tool["name"],
+                description=tool.get("description"),
+                input_schema=tool.get("input_schema"),
+                output_schema=tool.get("output_schema"),
+                entrypoint=tool.get("entrypoint"),
+            )
+        )
     for resource in capabilities.get("resources", []):
-        session.add(Capability(
-            package_version_id=pv.id,
-            capability_type="resource",
-            capability_id=resource["capability_id"],
-            name=resource["name"],
-            description=resource.get("description"),
-            input_schema=resource.get("input_schema"),
-            output_schema=resource.get("output_schema"),
-        ))
+        session.add(
+            Capability(
+                package_version_id=pv.id,
+                capability_type="resource",
+                capability_id=resource["capability_id"],
+                name=resource["name"],
+                description=resource.get("description"),
+                input_schema=resource.get("input_schema"),
+                output_schema=resource.get("output_schema"),
+            )
+        )
     for prompt in capabilities.get("prompts", []):
-        session.add(Capability(
-            package_version_id=pv.id,
-            capability_type="prompt",
-            capability_id=prompt["capability_id"],
-            name=prompt["name"],
-            description=prompt.get("description"),
-        ))
+        session.add(
+            Capability(
+                package_version_id=pv.id,
+                capability_type="prompt",
+                capability_id=prompt["capability_id"],
+                name=prompt["name"],
+                description=prompt.get("description"),
+            )
+        )
 
     # 8. Tags
     for tag in manifest.get("tags", []):
@@ -420,36 +474,54 @@ async def publish_package(
     # 10. Compatibility rules
     compat = manifest.get("compatibility", {})
     for fw in compat.get("frameworks", []):
-        session.add(CompatibilityRule(
-            package_version_id=pv.id,
-            framework=fw,
-            runtime_version=compat.get("python"),
-        ))
+        session.add(
+            CompatibilityRule(
+                package_version_id=pv.id,
+                framework=fw,
+                runtime_version=compat.get("python"),
+            )
+        )
 
     # 11. Dependencies
     for dep in manifest.get("dependencies", []):
-        session.add(Dependency(
-            package_version_id=pv.id,
-            dependency_package_slug=dep.get("package_slug", dep) if isinstance(dep, dict) else dep,
-            role=dep.get("role") if isinstance(dep, dict) else None,
-            is_required=dep.get("required", True) if isinstance(dep, dict) else True,
-            min_version=dep.get("min_version") if isinstance(dep, dict) else None,
-            fallback_package_slug=dep.get("fallback") if isinstance(dep, dict) else None,
-        ))
+        session.add(
+            Dependency(
+                package_version_id=pv.id,
+                dependency_package_slug=dep.get("package_slug", dep)
+                if isinstance(dep, dict)
+                else dep,
+                role=dep.get("role") if isinstance(dep, dict) else None,
+                is_required=dep.get("required", True)
+                if isinstance(dep, dict)
+                else True,
+                min_version=dep.get("min_version") if isinstance(dep, dict) else None,
+                fallback_package_slug=dep.get("fallback")
+                if isinstance(dep, dict)
+                else None,
+            )
+        )
 
     # 12. Permissions
     perms = manifest.get("permissions", {})
     if perms:
-        session.add(Permission(
-            package_version_id=pv.id,
-            network_level=perms.get("network", {}).get("level", "none"),
-            allowed_domains=perms.get("network", {}).get("allowed_domains", []),
-            filesystem_level=perms.get("filesystem", {}).get("level", "none"),
-            code_execution_level=perms.get("code_execution", {}).get("level", "none"),
-            data_access_level=perms.get("data_access", {}).get("level", "input_only"),
-            user_approval_level=perms.get("user_approval", {}).get("required", "never"),
-            external_integrations=perms.get("external_integrations", []),
-        ))
+        session.add(
+            Permission(
+                package_version_id=pv.id,
+                network_level=perms.get("network", {}).get("level", "none"),
+                allowed_domains=perms.get("network", {}).get("allowed_domains", []),
+                filesystem_level=perms.get("filesystem", {}).get("level", "none"),
+                code_execution_level=perms.get("code_execution", {}).get(
+                    "level", "none"
+                ),
+                data_access_level=perms.get("data_access", {}).get(
+                    "level", "input_only"
+                ),
+                user_approval_level=perms.get("user_approval", {}).get(
+                    "required", "never"
+                ),
+                external_integrations=perms.get("external_integrations", []),
+            )
+        )
 
     # 13. Upgrade metadata (for package_type == "upgrade")
     if manifest["package_type"] == "upgrade":
@@ -458,6 +530,7 @@ async def publish_package(
         rec_for = upgrade.get("recommended_for", [])
         if rec_for:
             from sqlalchemy import func
+
             existing_count = await session.execute(
                 select(func.count()).where(Package.slug.in_(rec_for))
             )
@@ -486,6 +559,7 @@ async def publish_package(
         replaces = upgrade.get("replaces", [])
         if replaces:
             from sqlalchemy import func as sa_func
+
             replaces_count = await session.execute(
                 select(sa_func.count()).where(Package.slug.in_(replaces))
             )
@@ -509,16 +583,18 @@ async def publish_package(
                     f"You can only replace your own packages. Not owned: {', '.join(unowned_replaces_slugs)}",
                     403,
                 )
-        session.add(UpgradeMetadata(
-            package_version_id=pv.id,
-            upgrade_roles=upgrade.get("roles", []),
-            recommended_for=upgrade.get("recommended_for", []),
-            replaces_packages=replaces,
-            install_strategy=upgrade.get("install_strategy", "local"),
-            delegation_mode=upgrade.get("delegation_mode"),
-            fallback_behavior=upgrade.get("fallback_behavior", "skip"),
-            policy_requirements=upgrade.get("policy_requirements", {}),
-        ))
+        session.add(
+            UpgradeMetadata(
+                package_version_id=pv.id,
+                upgrade_roles=upgrade.get("roles", []),
+                recommended_for=upgrade.get("recommended_for", []),
+                replaces_packages=replaces,
+                install_strategy=upgrade.get("install_strategy", "local"),
+                delegation_mode=upgrade.get("delegation_mode"),
+                fallback_behavior=upgrade.get("fallback_behavior", "skip"),
+                policy_requirements=upgrade.get("policy_requirements", {}),
+            )
+        )
 
     # 14. Recalculate latest_version_id
     await recalculate_latest_version_id(session, pkg.id)
@@ -526,16 +602,23 @@ async def publish_package(
     # 14b. Increment publisher's packages_published_count (only for new packages, not new versions)
     if is_new_package:
         from app.publishers.models import Publisher
+
         pub_obj = await session.get(Publisher, publisher_id)
         if pub_obj:
-            pub_obj.packages_published_count = (pub_obj.packages_published_count or 0) + 1
+            pub_obj.packages_published_count = (
+                pub_obj.packages_published_count or 0
+            ) + 1
 
     # 15. Commit (catch concurrent publish of same version — DB unique constraint)
     try:
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        raise AppError("VERSION_EXISTS", f"Version {version_str} already exists (concurrent publish)", 409)
+        raise AppError(
+            "VERSION_EXISTS",
+            f"Version {version_str} already exists (concurrent publish)",
+            409,
+        )
     await session.refresh(pkg)
 
     # 16. Sync to Meilisearch (fire-and-forget, non-blocking)
@@ -555,17 +638,25 @@ async def publish_package(
 
     # Send publish confirmation email (background if available)
     from app.shared.email import send_package_published_email, get_publisher_email
+
     pub_email = await get_publisher_email(publisher_id)
     if pub_email:
         if background_tasks:
             background_tasks.add_task(
-                send_package_published_email, pub_email, slug, version_str,
+                send_package_published_email,
+                pub_email,
+                slug,
+                version_str,
                 quarantine_for_typosquatting or quarantine_for_new_publisher,
             )
         else:
             await send_package_published_email(
-                pub_email, slug, version_str,
-                quarantined=(quarantine_for_typosquatting or quarantine_for_new_publisher),
+                pub_email,
+                slug,
+                version_str,
+                quarantined=(
+                    quarantine_for_typosquatting or quarantine_for_new_publisher
+                ),
             )
 
     return pkg, pv, publish_warnings

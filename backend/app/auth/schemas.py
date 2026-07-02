@@ -15,7 +15,9 @@ class RegisterRequest(BaseModel):
     def validate_username(cls, v: str) -> str:
         v = v.lower()
         if not re.match(r"^[a-z0-9_-]{3,30}$", v):
-            raise ValueError("Username must be 3-30 chars, only lowercase letters, digits, hyphens, underscores")
+            raise ValueError(
+                "Username must be 3-30 chars, only lowercase letters, digits, hyphens, underscores"
+            )
         return v
 
     @field_validator("password")
@@ -197,7 +199,9 @@ class UpdateProfileRequest(BaseModel):
             return v
         v = v.lower()
         if not re.match(r"^[a-z0-9_-]{3,30}$", v):
-            raise ValueError("Username must be 3-30 chars, only lowercase letters, digits, hyphens, underscores")
+            raise ValueError(
+                "Username must be 3-30 chars, only lowercase letters, digits, hyphens, underscores"
+            )
         return v
 
 

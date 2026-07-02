@@ -1,5 +1,4 @@
 from datetime import datetime
-from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -147,6 +146,7 @@ class TrustBlock(BaseModel):
 
 # --- Enrichment schemas ---
 
+
 class FileListItem(BaseModel):
     path: str
     size: int
@@ -165,8 +165,8 @@ class Example(BaseModel):
 
 
 class VerificationStepInfo(BaseModel):
-    name: str          # "install", "import", "smoke", "tests"
-    status: str        # "passed", "failed", "skipped", "not_present"
+    name: str  # "install", "import", "smoke", "tests"
+    status: str  # "passed", "failed", "skipped", "not_present"
     duration_ms: int | None = None
 
 
@@ -179,7 +179,7 @@ class ScoreBreakdownItem(BaseModel):
 class ScoreExplanation(BaseModel):
     score: int
     tier: str
-    confidence: str                    # high/medium/low
+    confidence: str  # high/medium/low
     breakdown: dict[str, ScoreBreakdownItem] = {}
     explanation: str = ""
 
@@ -192,18 +192,20 @@ class EnvironmentInfo(BaseModel):
 
 
 class VerificationInfo(BaseModel):
-    status: str        # "verified", "failed", "running", "pending", "error", "skipped"
+    status: str  # "verified", "failed", "running", "pending", "error", "skipped"
     last_verified_at: datetime | None = None
     runner_version: str | None = None
     steps: list[VerificationStepInfo] = []
-    score: int | None = None           # 0-100 verification score
-    tier: str | None = None            # "gold", "verified", "partial", "unverified"
-    confidence: str | None = None      # "high", "medium", "low"
+    score: int | None = None  # 0-100 verification score
+    tier: str | None = None  # "gold", "verified", "partial", "unverified"
+    confidence: str | None = None  # "high", "medium", "low"
     score_breakdown: dict | None = None  # Full ScoreResult dict
     smoke_reason: str | None = None
     verification_mode: str | None = None  # "real", "mock", "limited"
     environment: EnvironmentInfo | None = None
-    error_summary: str | None = None   # Human-readable failure reason (only for package errors)
+    error_summary: str | None = (
+        None  # Human-readable failure reason (only for package errors)
+    )
 
 
 class PackageBlocks(BaseModel):
@@ -277,9 +279,9 @@ class ActionResponse(BaseModel):
 
 
 class UpdatePackageRequest(BaseModel):
-    name: str | None = None          # Package-level
-    summary: str | None = None       # Package-level
-    description: str | None = None   # Package-level
-    tags: list[str] | None = None    # Version-level (latest owner-visible)
+    name: str | None = None  # Package-level
+    summary: str | None = None  # Package-level
+    description: str | None = None  # Package-level
+    tags: list[str] | None = None  # Version-level (latest owner-visible)
     # URLs are set at publish time and immutable for owners.
     # Admin can override via PUT /admin/packages/{slug}.

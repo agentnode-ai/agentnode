@@ -1,7 +1,5 @@
 """Tests for shared validation helpers."""
 
-import pytest
-
 from app.shared.validators import (
     is_allowed_sort,
     is_safe_filter_value,
@@ -14,7 +12,6 @@ from app.shared.validators import (
 
 
 class TestSlugValidation:
-
     def test_valid_slug(self):
         assert is_valid_slug("pdf-reader-pack") is True
         assert is_valid_slug("my_tool_v2") is True
@@ -36,7 +33,6 @@ class TestSlugValidation:
 
 
 class TestUrlValidation:
-
     def test_https_accepted(self):
         assert is_safe_url("https://example.com") is True
 
@@ -58,7 +54,6 @@ class TestUrlValidation:
 
 
 class TestFilterValidation:
-
     def test_normal_values(self):
         assert is_safe_filter_value("toolpack") is True
         assert is_safe_filter_value("python") is True
@@ -75,7 +70,6 @@ class TestFilterValidation:
 
 
 class TestSortValidation:
-
     def test_allowed_sort(self):
         allowed = {"name:asc", "name:desc", "count:asc"}
         assert is_allowed_sort("name:asc", allowed) is True
@@ -88,7 +82,6 @@ class TestSortValidation:
 
 
 class TestTagNormalization:
-
     def test_normal_tag(self):
         assert normalize_tag("pdf") == "pdf"
         assert normalize_tag("machine-learning") == "machine-learning"
@@ -111,7 +104,6 @@ class TestTagNormalization:
 
 
 class TestIdentifierValidation:
-
     def test_valid_identifier(self):
         assert is_safe_identifier("my_func") is True
         assert is_safe_identifier("_private") is True

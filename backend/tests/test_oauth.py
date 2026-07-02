@@ -1,6 +1,5 @@
 """Tests for OAuth2 PKCE flow — Redis state store + PKCE + provider config."""
-import json
-import os
+
 import time
 from unittest.mock import AsyncMock, patch
 
@@ -43,9 +42,11 @@ class TestPKCE:
         from base64 import urlsafe_b64encode
 
         verifier, challenge = _generate_pkce()
-        expected = urlsafe_b64encode(
-            hashlib.sha256(verifier.encode("ascii")).digest()
-        ).rstrip(b"=").decode("ascii")
+        expected = (
+            urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+            .rstrip(b"=")
+            .decode("ascii")
+        )
         assert challenge == expected
 
 

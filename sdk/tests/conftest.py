@@ -6,6 +6,7 @@ for structured provider comparison and regression tracking.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -77,6 +78,25 @@ def _default_sandbox_available():
     set_default_backend(_Available())
     yield
     set_default_backend(None)
+
+
+@pytest.fixture(autouse=True)
+def _non_sensitive_test_env(monkeypatch):
+    """H7a-v2: make the default test environment non-sensitive.
+
+    policy._detect_environment() treats any env var matching _SECRET_PREFIXES as
+    has_secrets=True and escalates low-trust/network or undeclared-permission runs to
+    policy_prompt. GitHub Actions may provide such variables ambiently, so tests must
+    not depend on the runner's secret-shaped environment.
+
+    Tests that intentionally exercise has_secrets set their own secret env vars inside
+    the test body after this fixture has run.
+    """
+    from agentnode_sdk.policy import _SECRET_PREFIXES
+
+    for key in list(os.environ):
+        if any(key.startswith(prefix) for prefix in _SECRET_PREFIXES):
+            monkeypatch.delenv(key, raising=False)
 
 
 # ---------------------------------------------------------------------------

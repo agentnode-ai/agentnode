@@ -1,7 +1,7 @@
 """Integration tests for search endpoint (Meilisearch is mocked)."""
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
 
@@ -66,20 +66,22 @@ async def test_search_basic(mock_get_client, client):
 async def test_search_permission_fields_null_when_missing(mock_get_client, client):
     """Permission fields default to null when not in Meili document."""
     meili_response = {
-        "hits": [{
-            "slug": "old-pack",
-            "name": "Old Pack",
-            "package_type": "toolpack",
-            "summary": "Pre-permission-fields package",
-            "publisher_name": "Test",
-            "publisher_slug": "test",
-            "trust_level": "verified",
-            "capability_ids": [],
-            "tags": [],
-            "frameworks": [],
-            "download_count": 0,
-            "is_deprecated": False,
-        }],
+        "hits": [
+            {
+                "slug": "old-pack",
+                "name": "Old Pack",
+                "package_type": "toolpack",
+                "summary": "Pre-permission-fields package",
+                "publisher_name": "Test",
+                "publisher_slug": "test",
+                "trust_level": "verified",
+                "capability_ids": [],
+                "tags": [],
+                "frameworks": [],
+                "download_count": 0,
+                "is_deprecated": False,
+            }
+        ],
         "estimatedTotalHits": 1,
     }
     mock_client = MagicMock()
@@ -102,12 +104,15 @@ async def test_search_with_filters(mock_get_client, client):
     mock_client.post = _mock_meili_post({"hits": [], "estimatedTotalHits": 0})
     mock_get_client.return_value = mock_client
 
-    resp = await client.post("/v1/search", json={
-        "q": "pdf",
-        "package_type": "toolpack",
-        "capability_id": "pdf_extraction",
-        "framework": "langchain",
-    })
+    resp = await client.post(
+        "/v1/search",
+        json={
+            "q": "pdf",
+            "package_type": "toolpack",
+            "capability_id": "pdf_extraction",
+            "framework": "langchain",
+        },
+    )
     assert resp.status_code == 200
 
     call_args = mock_client.post.call_args
@@ -152,7 +157,9 @@ async def test_search_with_sort(mock_get_client, client):
     mock_client.post = _mock_meili_post({"hits": [], "estimatedTotalHits": 0})
     mock_get_client.return_value = mock_client
 
-    resp = await client.post("/v1/search", json={"q": "test", "sort_by": "download_count:desc"})
+    resp = await client.post(
+        "/v1/search", json={"q": "test", "sort_by": "download_count:desc"}
+    )
     assert resp.status_code == 200
 
     call_args = mock_client.post.call_args
@@ -161,6 +168,7 @@ async def test_search_with_sort(mock_get_client, client):
 
 
 # --- build_meili_document unit tests ---
+
 
 def test_build_meili_document_extracts_permissions():
     """build_meili_document extracts permission levels from manifest."""

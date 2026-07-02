@@ -83,6 +83,10 @@ requires_anthropic = pytest.mark.skipif(
     _anthropic_token is None,
     reason="No Anthropic API key (env or Claude Code OAuth)",
 )
+requires_local_execution = pytest.mark.skipif(
+    not os.environ.get("AGENTNODE_E2E_LOCAL"),
+    reason="real local tool execution not available (set AGENTNODE_E2E_LOCAL=1 to run)",
+)
 
 
 @pytest.fixture
@@ -161,6 +165,7 @@ class TestE2ESearch:
 class TestE2ERun:
     """Run word-counter-pack with real tool execution."""
 
+    @requires_local_execution
     def test_count_words(self, runtime):
         result = runtime.handle("agentnode_run", {
             "slug": "word-counter-pack",
@@ -172,6 +177,7 @@ class TestE2ERun:
         assert output["characters"] == 11
         assert output["sentences"] == 1
 
+    @requires_local_execution
     def test_count_words_longer_text(self, runtime):
         text = "The quick brown fox jumps over the lazy dog. It was a sunny day."
         result = runtime.handle("agentnode_run", {
@@ -183,6 +189,7 @@ class TestE2ERun:
         assert output["words"] == 14
         assert output["sentences"] == 2
 
+    @requires_local_execution
     def test_has_duration(self, runtime):
         result = runtime.handle("agentnode_run", {
             "slug": "word-counter-pack",
@@ -203,6 +210,7 @@ class TestE2ERun:
 class TestE2EFullHandleFlow:
     """End-to-end: capabilities → search → run."""
 
+    @requires_local_execution
     def test_discover_and_use_installed(self, runtime):
         """Simulate what an LLM would do: check capabilities, then use one."""
         # Step 1: Check what's installed

@@ -27,7 +27,6 @@ from app.verification.smoke_context import (
     REASON_VERDICTS,
     SmokeContext,
     build_smoke_context,
-    classify_credential_boundary,
     classify_smoke_error,
     classify_timeout,
 )
@@ -150,25 +149,70 @@ _agent_ctx = _MockAgentContext()
 
 # ── Stub file support for smoke tests ──
 # Only input/source paths — NOT output paths (those just need a valid target dir)
-_FILE_PATH_PARAMS = frozenset({
-    "path", "file_path", "filepath", "filename",
-    "input_file", "source_file", "file", "input_path",
-    "pdf_file", "image_path", "image_file", "document",
-    "document_path", "input_document", "audio_file",
-    "audio_path", "video_file", "source_path",
-})
+_FILE_PATH_PARAMS = frozenset(
+    {
+        "path",
+        "file_path",
+        "filepath",
+        "filename",
+        "input_file",
+        "source_file",
+        "file",
+        "input_path",
+        "pdf_file",
+        "image_path",
+        "image_file",
+        "document",
+        "document_path",
+        "input_document",
+        "audio_file",
+        "audio_path",
+        "video_file",
+        "source_path",
+    }
+)
 
-_TEXT_EXTENSIONS = frozenset({
-    ".txt", ".md", ".csv", ".json", ".xml", ".html",
-    ".log", ".yaml", ".yml", ".ini", ".cfg", ".conf",
-    ".py", ".js", ".ts", ".rb", ".sh", ".sql",
-})
+_TEXT_EXTENSIONS = frozenset(
+    {
+        ".txt",
+        ".md",
+        ".csv",
+        ".json",
+        ".xml",
+        ".html",
+        ".log",
+        ".yaml",
+        ".yml",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".py",
+        ".js",
+        ".ts",
+        ".rb",
+        ".sh",
+        ".sql",
+    }
+)
 
-_BINARY_EXTENSIONS = frozenset({
-    ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff",
-    ".docx", ".xlsx", ".pptx",
-    ".wav", ".mp3", ".mp4", ".avi",
-})
+_BINARY_EXTENSIONS = frozenset(
+    {
+        ".pdf",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".bmp",
+        ".tiff",
+        ".docx",
+        ".xlsx",
+        ".pptx",
+        ".wav",
+        ".mp3",
+        ".mp4",
+        ".avi",
+    }
+)
 
 
 def _collect_stub_paths(test_input: dict) -> tuple[list[str], list[str]]:
@@ -309,6 +353,7 @@ else:
     code = "\n".join(lines)
     # Use enforced container isolation for import step when available
     from app.config import settings
+
     if settings.VERIFICATION_SANDBOX_MODE == "container":
         ok, log = sandbox.run_python_code_enforced(code, timeout=20)
     else:
@@ -322,7 +367,10 @@ else:
                     schemas = json.loads(line[8:])
                     for tool in tools:
                         name = tool.get("name", "")
-                        if name in schemas and (not tool.get("input_schema") or is_incomplete_schema(tool.get("input_schema"))):
+                        if name in schemas and (
+                            not tool.get("input_schema")
+                            or is_incomplete_schema(tool.get("input_schema"))
+                        ):
                             tool["input_schema"] = schemas[name]
                 except (json.JSONDecodeError, Exception):
                     pass
@@ -372,6 +420,7 @@ def step_smoke_fixtures(
         return "skipped", "No tools with valid entrypoints", None, None
 
     from app.verification.smoke_context import KNOWN_HEAVY_IMPORTS
+
     has_heavy_deps = heavy_ml or any(
         (build_smoke_context(t).python_dependencies & KNOWN_HEAVY_IMPORTS)
         for t in valid_tools
@@ -392,7 +441,9 @@ def step_smoke_fixtures(
 
         target_tool = None
         if tool_name_filter:
-            target_tool = next((t for t in valid_tools if t.get("name") == tool_name_filter), None)
+            target_tool = next(
+                (t for t in valid_tools if t.get("name") == tool_name_filter), None
+            )
         if not target_tool:
             target_tool = valid_tools[0]
 
@@ -400,23 +451,39 @@ def step_smoke_fixtures(
         ctx = build_smoke_context(target_tool)
 
         reason, error_type, error_msg, parsed = _run_single_smoke(
-            sandbox, module_path, func_name, test_input,
-            per_fixture_timeout, ctx, target_tool,
-            heavy_ml=heavy_ml, image_override=image_override,
+            sandbox,
+            module_path,
+            func_name,
+            test_input,
+            per_fixture_timeout,
+            ctx,
+            target_tool,
+            heavy_ml=heavy_ml,
+            image_override=image_override,
             fixture_cassette=cassette,
         )
 
         verdict = REASON_VERDICTS.get(reason, ("inconclusive", ""))[0]
 
         if expected and parsed and parsed.get("status") == "ok":
-            if expected.get("return_type") and parsed.get("return_type") != expected["return_type"]:
+            if (
+                expected.get("return_type")
+                and parsed.get("return_type") != expected["return_type"]
+            ):
                 verdict = "failed"
                 reason = "fixture_expected_mismatch"
-                logs.append(f"[FAIL] {fixture_name}: expected return_type={expected['return_type']}, got {parsed.get('return_type')}")
-            if expected.get("min_length") and (parsed.get("return_length") or 0) < expected["min_length"]:
+                logs.append(
+                    f"[FAIL] {fixture_name}: expected return_type={expected['return_type']}, got {parsed.get('return_type')}"
+                )
+            if (
+                expected.get("min_length")
+                and (parsed.get("return_length") or 0) < expected["min_length"]
+            ):
                 verdict = "failed"
                 reason = "fixture_expected_mismatch"
-                logs.append(f"[FAIL] {fixture_name}: expected min_length={expected['min_length']}, got {parsed.get('return_length')}")
+                logs.append(
+                    f"[FAIL] {fixture_name}: expected min_length={expected['min_length']}, got {parsed.get('return_length')}"
+                )
             required_keys = expected.get("required_keys")
             if required_keys and isinstance(required_keys, list):
                 actual_keys = set(parsed.get("return_keys") or [])
@@ -424,14 +491,22 @@ def step_smoke_fixtures(
                 if missing:
                     verdict = "failed"
                     reason = "fixture_expected_mismatch"
-                    logs.append(f"[FAIL] {fixture_name}: missing required_keys: {missing}")
+                    logs.append(
+                        f"[FAIL] {fixture_name}: missing required_keys: {missing}"
+                    )
             min_lengths = expected.get("min_lengths")
-            if min_lengths and isinstance(min_lengths, dict) and parsed.get("return_keys"):
+            if (
+                min_lengths
+                and isinstance(min_lengths, dict)
+                and parsed.get("return_keys")
+            ):
                 for key, min_len in min_lengths.items():
                     if key not in (parsed.get("return_keys") or []):
                         verdict = "failed"
                         reason = "fixture_expected_mismatch"
-                        logs.append(f"[FAIL] {fixture_name}: min_lengths key '{key}' not in return_keys")
+                        logs.append(
+                            f"[FAIL] {fixture_name}: min_lengths key '{key}' not in return_keys"
+                        )
 
         if verdict == "passed":
             logs.append(f"[PASSED] {fixture_name} (cassette: {cassette})")
@@ -446,7 +521,10 @@ def step_smoke_fixtures(
             has_failure = True
         else:
             detail = error_msg[:200] if error_msg else ""
-            logs.append(f"[INCONCLUSIVE] {fixture_name}: {reason}" + (f" — {detail}" if detail else ""))
+            logs.append(
+                f"[INCONCLUSIVE] {fixture_name}: {reason}"
+                + (f" — {detail}" if detail else "")
+            )
             has_inconclusive = True
 
     combined_log = "\n".join(logs)
@@ -461,8 +539,10 @@ def step_smoke_fixtures(
 
 
 def step_smoke(
-    sandbox: VerificationSandbox, tools: list[dict],
-    heavy_ml: bool = False, image_override: str | None = None,
+    sandbox: VerificationSandbox,
+    tools: list[dict],
+    heavy_ml: bool = False,
+    image_override: str | None = None,
     playwright_fixture: bool = False,
     fixtures: list[dict] | None = None,
 ) -> tuple[str, str, str | None, dict | None]:
@@ -484,8 +564,11 @@ def step_smoke(
     """
     if fixtures:
         return step_smoke_fixtures(
-            sandbox, tools, fixtures,
-            heavy_ml=heavy_ml, image_override=image_override,
+            sandbox,
+            tools,
+            fixtures,
+            heavy_ml=heavy_ml,
+            image_override=image_override,
         )
 
     if not tools:
@@ -499,6 +582,7 @@ def step_smoke(
     tools_to_test = valid_tools[:max_tools]
 
     from app.verification.smoke_context import KNOWN_HEAVY_IMPORTS
+
     has_heavy_deps = heavy_ml or any(
         (build_smoke_context(t).python_dependencies & KNOWN_HEAVY_IMPORTS)
         for t in tools_to_test
@@ -518,12 +602,16 @@ def step_smoke(
     start_time = time.monotonic()
 
     if len(valid_tools) > max_tools:
-        logs.append(f"[INFO] Testing first {max_tools} of {len(valid_tools)} tools (cap)")
+        logs.append(
+            f"[INFO] Testing first {max_tools} of {len(valid_tools)} tools (cap)"
+        )
 
     for tool in tools_to_test:
         elapsed = time.monotonic() - start_time
         if elapsed >= budget:
-            logs.append(f"[INFO] Smoke budget exhausted ({budget}s), remaining tools skipped")
+            logs.append(
+                f"[INFO] Smoke budget exhausted ({budget}s), remaining tools skipped"
+            )
             break
 
         tool_name = tool.get("name", "unknown")
@@ -539,14 +627,21 @@ def step_smoke(
         if manual_input:
             candidates = [manual_input] + candidates[:1]
 
-        if not candidates or (candidates == [{}] and input_schema and input_schema.get("required")):
+        if not candidates or (
+            candidates == [{}] and input_schema and input_schema.get("required")
+        ):
             reason = "invalid_test_input"
             status = REASON_VERDICTS[reason][0]
-            log_entry = json.dumps({
-                "tool": tool_name, "candidate_index": -1,
-                "reason": reason, "verdict": status,
-                "error_type": None, "message": "no viable candidates generated",
-            })
+            log_entry = json.dumps(
+                {
+                    "tool": tool_name,
+                    "candidate_index": -1,
+                    "reason": reason,
+                    "verdict": status,
+                    "error_type": None,
+                    "message": "no viable candidates generated",
+                }
+            )
             logs.append(log_entry)
             logs.append(f"[{status.upper()}] {tool_name} {reason}")
             has_inconclusive = True
@@ -564,7 +659,13 @@ def step_smoke(
             actual_timeout = min(per_tool_timeout, max(3, int(remaining_budget)))
 
             reason, error_type, error_msg, _parsed = _run_single_smoke(
-                sandbox, module_path, func_name, candidate, actual_timeout, ctx, tool,
+                sandbox,
+                module_path,
+                func_name,
+                candidate,
+                actual_timeout,
+                ctx,
+                tool,
                 playwright_fixture=playwright_fixture,
                 heavy_ml=heavy_ml,
                 image_override=image_override,
@@ -580,12 +681,16 @@ def step_smoke(
             candidate_results.append(result_entry)
 
             # Structured JSON log per candidate
-            log_entry = json.dumps({
-                "tool": tool_name, "candidate_index": idx,
-                "reason": reason, "verdict": verdict,
-                "error_type": error_type,
-                "message": error_msg[:200] if error_msg else None,
-            })
+            log_entry = json.dumps(
+                {
+                    "tool": tool_name,
+                    "candidate_index": idx,
+                    "reason": reason,
+                    "verdict": verdict,
+                    "error_type": error_type,
+                    "message": error_msg[:200] if error_msg else None,
+                }
+            )
             logs.append(log_entry)
 
             # Early exit: passed → stop trying (nothing beats it)
@@ -595,31 +700,47 @@ def step_smoke(
 
         # ── d. Probe: Active enum extraction (Phase 2B) ──
         # Trigger: ALL candidates returned unsupported_operation_space
-        all_unsupported = (
-            len(candidate_results) >= 1
-            and all(r["reason"] == "unsupported_operation_space" for r in candidate_results)
+        all_unsupported = len(candidate_results) >= 1 and all(
+            r["reason"] == "unsupported_operation_space" for r in candidate_results
         )
         if all_unsupported:
             remaining_budget = budget - (time.monotonic() - start_time)
             if remaining_budget > 3:
                 # Find the operation field and try to extract enum values from error
                 op_field = _find_operation_field_in_input(
-                    candidates[0] if candidates else {}, input_schema,
+                    candidates[0] if candidates else {},
+                    input_schema,
                 )
                 last_msg = candidate_results[-1].get("message", "")
                 if op_field and last_msg:
                     probe_candidate = build_probe_candidate(
-                        candidates[0] if candidates else {}, op_field, last_msg,
+                        candidates[0] if candidates else {},
+                        op_field,
+                        last_msg,
                     )
                     if probe_candidate is not None:
-                        actual_timeout = min(per_tool_timeout, max(3, int(remaining_budget)))
-                        probe_reason, probe_error_type, probe_error_msg, _probe_parsed = _run_single_smoke(
-                            sandbox, module_path, func_name, probe_candidate, actual_timeout, ctx,
+                        actual_timeout = min(
+                            per_tool_timeout, max(3, int(remaining_budget))
+                        )
+                        (
+                            probe_reason,
+                            probe_error_type,
+                            probe_error_msg,
+                            _probe_parsed,
+                        ) = _run_single_smoke(
+                            sandbox,
+                            module_path,
+                            func_name,
+                            probe_candidate,
+                            actual_timeout,
+                            ctx,
                             playwright_fixture=playwright_fixture,
                             heavy_ml=heavy_ml,
                             image_override=image_override,
                         )
-                        probe_verdict = REASON_VERDICTS.get(probe_reason, ("inconclusive", ""))[0]
+                        probe_verdict = REASON_VERDICTS.get(
+                            probe_reason, ("inconclusive", "")
+                        )[0]
 
                         # Extract probe metadata for logging
                         values, confidence = extract_enum_values(last_msg)
@@ -636,16 +757,24 @@ def step_smoke(
                         }
                         candidate_results.append(probe_entry)
 
-                        log_entry = json.dumps({
-                            "tool": tool_name, "candidate_index": "probe",
-                            "probe_value": probe_candidate.get(op_field),
-                            "probe_source": "bracket_list" if confidence == "high" else "comma_list",
-                            "probe_confidence": confidence,
-                            "probe_extracted_values": sorted_values[:10],
-                            "reason": probe_reason, "verdict": probe_verdict,
-                            "error_type": probe_error_type,
-                            "message": probe_error_msg[:200] if probe_error_msg else None,
-                        })
+                        log_entry = json.dumps(
+                            {
+                                "tool": tool_name,
+                                "candidate_index": "probe",
+                                "probe_value": probe_candidate.get(op_field),
+                                "probe_source": "bracket_list"
+                                if confidence == "high"
+                                else "comma_list",
+                                "probe_confidence": confidence,
+                                "probe_extracted_values": sorted_values[:10],
+                                "reason": probe_reason,
+                                "verdict": probe_verdict,
+                                "error_type": probe_error_type,
+                                "message": probe_error_msg[:200]
+                                if probe_error_msg
+                                else None,
+                            }
+                        )
                         logs.append(log_entry)
 
         # ── e. Tool verdict from candidates ──
@@ -915,12 +1044,16 @@ try:
         "return_keys": return_keys,
         "return_length": return_length,
     }}
-    {"" if not is_agent else """
+    {
+        ""
+        if not is_agent
+        else '''
     _smoke_data["llm_calls_made"] = _agent_ctx._llm_call_count
     _smoke_data["tool_calls_made"] = _agent_ctx._tool_call_count
     _smoke_data["tool_context_used"] = _agent_ctx._tool_context_used
     _smoke_data["prompt_history"] = _agent_ctx._prompt_history[:5]
-"""}
+'''
+    }
     print('SMOKE_JSON:' + json.dumps(_smoke_data))
 except Exception as e:
     print('SMOKE_JSON:' + json.dumps({{"status": "error", "error_type": type(e).__name__, "message": str(e)[:500]}}))
@@ -930,7 +1063,10 @@ finally:
 
     if settings.VERIFICATION_SANDBOX_MODE == "container":
         ok, log = sandbox.run_python_code_enforced(
-            code, timeout=timeout, heavy_ml=heavy_ml, image_override=image_override,
+            code,
+            timeout=timeout,
+            heavy_ml=heavy_ml,
+            image_override=image_override,
         )
     else:
         ok, log = sandbox.run_python_code(code, timeout=timeout, restrict_network=True)
@@ -940,13 +1076,23 @@ finally:
         # Subprocess crashed or timed out
         if "timed out" in log.lower():
             reason = classify_timeout(ctx)
-            return reason, "SubprocessTimeout", f"subprocess timed out after {timeout}s", None
+            return (
+                reason,
+                "SubprocessTimeout",
+                f"subprocess timed out after {timeout}s",
+                None,
+            )
         # Try to find SMOKE_JSON in mixed output
         parsed = _parse_smoke_json(log)
         if parsed and parsed.get("status") == "error":
             error_type = parsed.get("error_type", "")
             error_msg = parsed.get("message", "")
-            return classify_smoke_error(error_type, error_msg, ctx), error_type, error_msg, parsed
+            return (
+                classify_smoke_error(error_type, error_msg, ctx),
+                error_type,
+                error_msg,
+                parsed,
+            )
         return "fatal_runtime_error", None, log[:200] if log else None, None
 
     # Subprocess exited 0 — parse structured output
@@ -961,7 +1107,12 @@ finally:
     if parsed.get("status") == "error":
         error_type = parsed.get("error_type", "")
         error_msg = parsed.get("message", "")
-        return classify_smoke_error(error_type, error_msg, ctx), error_type, error_msg, parsed
+        return (
+            classify_smoke_error(error_type, error_msg, ctx),
+            error_type,
+            error_msg,
+            parsed,
+        )
 
     return "unknown_smoke_condition", None, None, parsed
 
@@ -996,12 +1147,17 @@ def run_stability_check(
     Returns (reliability, determinism, contract_valid, run_results).
     """
     tool = tool or {}
-    is_agent = tool.get("name") == "__agent_entrypoint__"
 
     results = []
     for i in range(n):
         reason, error_type, error_msg, parsed = _run_single_smoke(
-            sandbox, module_path, func_name, test_input, timeout, ctx, tool,
+            sandbox,
+            module_path,
+            func_name,
+            test_input,
+            timeout,
+            ctx,
+            tool,
             playwright_fixture=playwright_fixture,
             heavy_ml=heavy_ml,
             image_override=image_override,
@@ -1039,7 +1195,8 @@ def run_stability_check(
     contract_valid = any(
         (r.get("is_serializable") or r.get("type") in BINARY_RETURN_TYPES)
         and not r.get("is_none")
-        for r in results if r["ok"]
+        for r in results
+        if r["ok"]
     )
 
     return reliability, determinism, contract_valid, results
@@ -1057,17 +1214,92 @@ def step_tests(sandbox: VerificationSandbox) -> tuple[bool, str]:
 
 
 # ── Stop words for goal-in-prompt heuristic ──
-_STOP_WORDS = frozenset({
-    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
-    "being", "have", "has", "had", "do", "does", "did", "will", "would",
-    "could", "should", "may", "might", "shall", "can", "need", "must",
-    "it", "its", "this", "that", "these", "those", "what", "which", "who",
-    "whom", "how", "when", "where", "why", "all", "each", "every", "both",
-    "few", "more", "most", "other", "some", "such", "no", "not", "only",
-    "into", "about", "up", "out", "if", "then", "than", "so", "as", "any",
-    "using", "use", "create", "make", "write", "generate", "based",
-})
+_STOP_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "shall",
+        "can",
+        "need",
+        "must",
+        "it",
+        "its",
+        "this",
+        "that",
+        "these",
+        "those",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "how",
+        "when",
+        "where",
+        "why",
+        "all",
+        "each",
+        "every",
+        "both",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "no",
+        "not",
+        "only",
+        "into",
+        "about",
+        "up",
+        "out",
+        "if",
+        "then",
+        "than",
+        "so",
+        "as",
+        "any",
+        "using",
+        "use",
+        "create",
+        "make",
+        "write",
+        "generate",
+        "based",
+    }
+)
 
 _ERROR_MARKERS = ("not implemented", "todo", "traceback", "exception")
 
@@ -1143,16 +1375,27 @@ except Exception as e:
 
         if settings.VERIFICATION_SANDBOX_MODE == "container":
             ok, log = sandbox.run_python_code_enforced(
-                code, timeout=timeout, heavy_ml=heavy_ml, image_override=image_override,
+                code,
+                timeout=timeout,
+                heavy_ml=heavy_ml,
+                image_override=image_override,
             )
         else:
-            ok, log = sandbox.run_python_code(code, timeout=timeout, restrict_network=True)
+            ok, log = sandbox.run_python_code(
+                code, timeout=timeout, restrict_network=True
+            )
 
         parsed = _parse_case_json(log)
         if not parsed or parsed.get("status") == "error":
-            err_msg = "Subprocess failed" if not parsed else parsed.get("message", "Unknown error")
+            err_msg = (
+                "Subprocess failed"
+                if not parsed
+                else parsed.get("message", "Unknown error")
+            )
             case_result["error"] = err_msg
-            case_result["checks"].append({"check": "execution", "passed": False, "detail": err_msg})
+            case_result["checks"].append(
+                {"check": "execution", "passed": False, "detail": err_msg}
+            )
             results.append(case_result)
             continue
 
@@ -1169,11 +1412,13 @@ except Exception as e:
         if required_keys:
             missing = [k for k in required_keys if k not in agent_output]
             check_passed = len(missing) == 0
-            case_result["checks"].append({
-                "check": "required_keys",
-                "passed": check_passed,
-                "detail": f"missing: {missing}" if missing else "all present",
-            })
+            case_result["checks"].append(
+                {
+                    "check": "required_keys",
+                    "passed": check_passed,
+                    "detail": f"missing: {missing}" if missing else "all present",
+                }
+            )
             if not check_passed:
                 all_checks_passed = False
 
@@ -1181,11 +1426,13 @@ except Exception as e:
         if expected.get("done") is True:
             done_val = agent_output.get("done")
             check_passed = done_val is True
-            case_result["checks"].append({
-                "check": "done",
-                "passed": check_passed,
-                "detail": f"done={done_val}",
-            })
+            case_result["checks"].append(
+                {
+                    "check": "done",
+                    "passed": check_passed,
+                    "detail": f"done={done_val}",
+                }
+            )
             if not check_passed:
                 all_checks_passed = False
                 if "agent did not return done: true" not in gold_blockers:
@@ -1197,11 +1444,13 @@ except Exception as e:
             val = agent_output.get(key, "")
             actual_len = len(str(val)) if val else 0
             check_passed = actual_len >= min_len
-            case_result["checks"].append({
-                "check": f"min_length:{key}",
-                "passed": check_passed,
-                "detail": f"len={actual_len}, min={min_len}",
-            })
+            case_result["checks"].append(
+                {
+                    "check": f"min_length:{key}",
+                    "passed": check_passed,
+                    "detail": f"len={actual_len}, min={min_len}",
+                }
+            )
             if not check_passed:
                 all_checks_passed = False
 
@@ -1212,21 +1461,25 @@ except Exception as e:
             val_lower = val.lower()
             for marker in _ERROR_MARKERS:
                 if marker in val_lower:
-                    case_result["checks"].append({
-                        "check": f"error_marker:{marker}",
-                        "passed": False,
-                        "detail": f"found '{marker}' in output key '{key}'",
-                    })
+                    case_result["checks"].append(
+                        {
+                            "check": f"error_marker:{marker}",
+                            "passed": False,
+                            "detail": f"found '{marker}' in output key '{key}'",
+                        }
+                    )
                     all_checks_passed = False
                     break
 
         # Check: "error" only as dict key / status, not blanket content search
         if isinstance(agent_output.get("error"), str) and agent_output["error"]:
-            case_result["checks"].append({
-                "check": "error_key",
-                "passed": False,
-                "detail": f"error key present: {agent_output['error'][:100]}",
-            })
+            case_result["checks"].append(
+                {
+                    "check": "error_key",
+                    "passed": False,
+                    "detail": f"error key present: {agent_output['error'][:100]}",
+                }
+            )
             all_checks_passed = False
 
         # Check: goal-in-prompt
@@ -1235,7 +1488,8 @@ except Exception as e:
             check_words = [w.lower() for w in llm_prompt_contains]
         else:
             check_words = [
-                w.lower() for w in goal.split()
+                w.lower()
+                for w in goal.split()
                 if len(w) > 3 and w.lower() not in _STOP_WORDS
             ]
         if check_words and prompt_history:
@@ -1243,23 +1497,29 @@ except Exception as e:
             matched = [w for w in check_words if w in all_prompts]
             threshold = min(2, len(check_words)) if len(check_words) >= 2 else 1
             alt_threshold = int(len(check_words) * 0.5)
-            required_matches = min(threshold, alt_threshold) if alt_threshold > 0 else threshold
+            required_matches = (
+                min(threshold, alt_threshold) if alt_threshold > 0 else threshold
+            )
             check_passed = len(matched) >= required_matches
-            case_result["checks"].append({
-                "check": "goal_in_prompt",
-                "passed": check_passed,
-                "detail": f"matched {len(matched)}/{len(check_words)} words (need {required_matches})",
-            })
+            case_result["checks"].append(
+                {
+                    "check": "goal_in_prompt",
+                    "passed": check_passed,
+                    "detail": f"matched {len(matched)}/{len(check_words)} words (need {required_matches})",
+                }
+            )
             if not check_passed:
                 all_checks_passed = False
                 if "goal not passed to LLM prompt" not in gold_blockers:
                     gold_blockers.append("goal not passed to LLM prompt")
         elif not prompt_history and llm_calls == 0 and tier == "llm_only":
-            case_result["checks"].append({
-                "check": "goal_in_prompt",
-                "passed": False,
-                "detail": "llm_only agent made 0 LLM calls",
-            })
+            case_result["checks"].append(
+                {
+                    "check": "goal_in_prompt",
+                    "passed": False,
+                    "detail": "llm_only agent made 0 LLM calls",
+                }
+            )
             all_checks_passed = False
             if "llm_only agent made no LLM calls" not in gold_blockers:
                 gold_blockers.append("llm_only agent made no LLM calls")
@@ -1267,27 +1527,33 @@ except Exception as e:
         # Check: llm_only tier constraints
         if tier == "llm_only":
             if llm_calls < 1:
-                case_result["checks"].append({
-                    "check": "llm_only:llm_calls",
-                    "passed": False,
-                    "detail": f"llm_calls_made={llm_calls}, expected >= 1",
-                })
+                case_result["checks"].append(
+                    {
+                        "check": "llm_only:llm_calls",
+                        "passed": False,
+                        "detail": f"llm_calls_made={llm_calls}, expected >= 1",
+                    }
+                )
                 all_checks_passed = False
                 if "llm_only: no LLM calls made" not in gold_blockers:
                     gold_blockers.append("llm_only: no LLM calls made")
             if tool_context:
-                case_result["checks"].append({
-                    "check": "llm_only:tool_context",
-                    "passed": False,
-                    "detail": "tool_context_used should be False for llm_only",
-                })
+                case_result["checks"].append(
+                    {
+                        "check": "llm_only:tool_context",
+                        "passed": False,
+                        "detail": "tool_context_used should be False for llm_only",
+                    }
+                )
                 all_checks_passed = False
             if tool_calls > 0:
-                case_result["checks"].append({
-                    "check": "llm_only:tool_calls",
-                    "passed": False,
-                    "detail": f"tool_calls_made={tool_calls}, expected 0 for llm_only",
-                })
+                case_result["checks"].append(
+                    {
+                        "check": "llm_only:tool_calls",
+                        "passed": False,
+                        "detail": f"tool_calls_made={tool_calls}, expected 0 for llm_only",
+                    }
+                )
                 all_checks_passed = False
 
         case_result["passed"] = all_checks_passed
@@ -1303,7 +1569,8 @@ except Exception as e:
         gold_blockers.append(f"{len(cases) - passed_count}/{len(cases)} cases failed")
 
     has_content_key = any(
-        k not in ("done",) for case in cases
+        k not in ("done",)
+        for case in cases
         for k in case.get("expected", {}).get("required_keys", [])
     )
     if not has_content_key:

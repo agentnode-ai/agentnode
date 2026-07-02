@@ -1,7 +1,5 @@
 """Tests for verification.cases_adapter — format normalization."""
 
-import pytest
-
 from app.verification.cases_adapter import (
     NormalizedVerification,
     normalize_verification_config,
@@ -60,9 +58,7 @@ class TestNormalizeCases:
         assert result.system_requirements == ["browser"]
 
     def test_cases_without_optional_fields(self):
-        config = {
-            "cases": [{"name": "minimal", "input": {"x": 1}}]
-        }
+        config = {"cases": [{"name": "minimal", "input": {"x": 1}}]}
         result = normalize_verification_config(config)
         assert result.has_explicit_cases is True
         assert result.cases[0]["tool"] is None
@@ -97,7 +93,10 @@ class TestNormalizeFixtures:
                 {
                     "name": "transcribe_audio_api",
                     "tool": "document_parsing",
-                    "test_input": {"audio_path": "/workspace/fixtures/test.wav", "api_key": "sk-test"},
+                    "test_input": {
+                        "audio_path": "/workspace/fixtures/test.wav",
+                        "api_key": "sk-test",
+                    },
                     "cassette": "fixtures/cassettes/transcribe_api.yaml",
                     "expected": {"return_type": "dict", "required_keys": ["text"]},
                 }
@@ -108,7 +107,10 @@ class TestNormalizeFixtures:
         assert result.source_format == "fixtures"
         assert len(result.cases) == 1
         assert result.cases[0]["name"] == "transcribe_audio_api"
-        assert result.cases[0]["input"] == {"audio_path": "/workspace/fixtures/test.wav", "api_key": "sk-test"}
+        assert result.cases[0]["input"] == {
+            "audio_path": "/workspace/fixtures/test.wav",
+            "api_key": "sk-test",
+        }
         assert result.cases[0]["cassette"] == "fixtures/cassettes/transcribe_api.yaml"
         assert result.cases[0]["tool"] == "document_parsing"
 
@@ -135,7 +137,10 @@ class TestNormalizeTestInput:
         assert result.source_format == "test_input"
         assert len(result.cases) == 1
         assert result.cases[0]["name"] == "legacy_test_input"
-        assert result.cases[0]["input"] == {"image_path": "/tmp/test.png", "api_key": "sk-test"}
+        assert result.cases[0]["input"] == {
+            "image_path": "/tmp/test.png",
+            "api_key": "sk-test",
+        }
         assert result.cases[0]["cassette"] is None
         assert result.cases[0]["mode"] == "real"
 

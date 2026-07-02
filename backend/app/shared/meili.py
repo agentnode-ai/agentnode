@@ -48,7 +48,9 @@ async def sync_package_to_meilisearch(document: dict) -> None:
             json=[document],
         )
         if resp.status_code not in (200, 202):
-            logger.error(f"Meilisearch sync failed for {document.get('slug')}: {resp.status_code} {resp.text}")
+            logger.error(
+                f"Meilisearch sync failed for {document.get('slug')}: {resp.status_code} {resp.text}"
+            )
     except Exception as e:
         logger.error(f"Meilisearch sync error for {document.get('slug')}: {e}")
 

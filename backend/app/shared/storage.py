@@ -39,7 +39,9 @@ def _get_public_s3_client():
     return _public_client
 
 
-async def upload_artifact(object_key: str, data: bytes, content_type: str = "application/gzip") -> None:
+async def upload_artifact(
+    object_key: str, data: bytes, content_type: str = "application/gzip"
+) -> None:
     client = get_s3_client()
     await asyncio.to_thread(
         client.put_object,
@@ -84,15 +86,34 @@ async def generate_presigned_url(object_key: str, expires_in: int = 900) -> str:
 
 # --- Preview file storage for file browser ---
 
-PREVIEW_EXTENSIONS = {".md", ".py", ".ts", ".js", ".json", ".yaml", ".yml", ".toml", ".txt", ".cfg", ".ini"}
+PREVIEW_EXTENSIONS = {
+    ".md",
+    ".py",
+    ".ts",
+    ".js",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".txt",
+    ".cfg",
+    ".ini",
+}
 PREVIEW_MAX_BYTES = 500 * 1024  # 500KB
 PREVIEW_MAX_LINES = 2000
 
 _CONTENT_TYPE_MAP = {
-    ".md": "text/markdown", ".py": "text/x-python", ".ts": "text/typescript",
-    ".js": "text/javascript", ".json": "application/json", ".yaml": "text/yaml",
-    ".yml": "text/yaml", ".toml": "text/toml", ".txt": "text/plain",
-    ".cfg": "text/plain", ".ini": "text/plain",
+    ".md": "text/markdown",
+    ".py": "text/x-python",
+    ".ts": "text/typescript",
+    ".js": "text/javascript",
+    ".json": "application/json",
+    ".yaml": "text/yaml",
+    ".yml": "text/yaml",
+    ".toml": "text/toml",
+    ".txt": "text/plain",
+    ".cfg": "text/plain",
+    ".ini": "text/plain",
 }
 
 
@@ -103,6 +124,7 @@ def _preview_key(version_id: str, file_path: str) -> str:
 async def upload_preview_file(version_id: str, file_path: str, content: str) -> str:
     """Upload a preview file to S3. Returns the object key."""
     import os
+
     ext = os.path.splitext(file_path)[1].lower()
     content_type = _CONTENT_TYPE_MAP.get(ext, "text/plain")
     key = _preview_key(version_id, file_path)
@@ -132,5 +154,11 @@ async def download_preview_file(version_id: str, file_path: str) -> str | None:
         return None
     except Exception:
         import logging
-        logging.getLogger(__name__).warning("download_preview_file failed for %s/%s", version_id, file_path, exc_info=True)
+
+        logging.getLogger(__name__).warning(
+            "download_preview_file failed for %s/%s",
+            version_id,
+            file_path,
+            exc_info=True,
+        )
         return None

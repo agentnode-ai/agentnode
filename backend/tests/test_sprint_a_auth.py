@@ -8,9 +8,9 @@ Covers:
   P0-17 — password reset / change_password end-to-end integration
           coverage (both endpoints previously had zero tests).
 """
+
 from __future__ import annotations
 
-import asyncio
 
 import pytest
 
@@ -114,12 +114,15 @@ async def test_password_reset_confirm_revokes_existing_refresh_tokens(client, se
     # Look up the user_id and mint a valid purpose token for the reset flow.
     from sqlalchemy import select
     from app.auth.models import User
-    user = (await session.execute(
-        select(User).where(User.email == USER["email"])
-    )).scalar_one()
+
+    user = (
+        await session.execute(select(User).where(User.email == USER["email"]))
+    ).scalar_one()
 
     reset_token = create_purpose_token(
-        str(user.id), "password_reset", expire_hours=1,
+        str(user.id),
+        "password_reset",
+        expire_hours=1,
     )
 
     resp = await client.post(

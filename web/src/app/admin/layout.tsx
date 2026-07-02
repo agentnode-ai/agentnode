@@ -39,11 +39,14 @@ const navItems = [
 
 function MobileAdminNav({ pathname }: { pathname: string }) {
   const [open, setOpen] = useState(false);
+  const [prevPathname, setPrevPathname] = useState(pathname);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  // Close the menu when navigating to a new route.
+  if (pathname !== prevPathname) {
+    setPrevPathname(pathname);
     setOpen(false);
-  }, [pathname]);
+  }
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {

@@ -23,7 +23,12 @@ from app.shared.rate_limit import rate_limit
 router = APIRouter(prefix="/v1/publishers", tags=["publishers"])
 
 
-@router.post("", response_model=PublisherResponse, status_code=201, dependencies=[Depends(rate_limit(5, 60))])
+@router.post(
+    "",
+    response_model=PublisherResponse,
+    status_code=201,
+    dependencies=[Depends(rate_limit(5, 60))],
+)
 async def create_publisher_route(
     body: CreatePublisherRequest,
     background_tasks: BackgroundTasks,
@@ -31,8 +36,13 @@ async def create_publisher_route(
     session: AsyncSession = Depends(get_session),
 ):
     publisher = await create_publisher(
-        session, user.id, body.display_name, body.slug,
-        bio=body.bio, website_url=body.website_url, github_url=body.github_url,
+        session,
+        user.id,
+        body.display_name,
+        body.slug,
+        bio=body.bio,
+        website_url=body.website_url,
+        github_url=body.github_url,
         background_tasks=background_tasks,
     )
     return PublisherResponse(
@@ -48,7 +58,11 @@ async def create_publisher_route(
     )
 
 
-@router.get("/{slug}", response_model=PublisherResponse, dependencies=[Depends(rate_limit(60, 60))])
+@router.get(
+    "/{slug}",
+    response_model=PublisherResponse,
+    dependencies=[Depends(rate_limit(60, 60))],
+)
 async def get_publisher(slug: str, session: AsyncSession = Depends(get_session)):
     publisher = await get_publisher_by_slug(session, slug)
     return PublisherResponse(
@@ -64,24 +78,38 @@ async def get_publisher(slug: str, session: AsyncSession = Depends(get_session))
     )
 
 
-@router.get("/{slug}/signing-key", response_model=SigningKeyResponse, dependencies=[Depends(rate_limit(60, 60))])
+@router.get(
+    "/{slug}/signing-key",
+    response_model=SigningKeyResponse,
+    dependencies=[Depends(rate_limit(60, 60))],
+)
 async def get_signing_key(slug: str, session: AsyncSession = Depends(get_session)):
     """Get the publisher's signing public key. Public endpoint."""
     publisher = await get_publisher_by_slug(session, slug)
     if not publisher.signing_public_key or not publisher.signing_key_registered_at:
-        raise AppError("SIGNING_KEY_NOT_FOUND", "Publisher has no registered signing key", 404)
+        raise AppError(
+            "SIGNING_KEY_NOT_FOUND", "Publisher has no registered signing key", 404
+        )
     return SigningKeyResponse(
         public_key=publisher.signing_public_key,
         registered_at=publisher.signing_key_registered_at,
     )
 
 
-@router.get("/{slug}/keys/{key_id}", response_model=KeyDetailResponse, dependencies=[Depends(rate_limit(60, 60))])
-async def get_key_by_id(slug: str, key_id: str, session: AsyncSession = Depends(get_session)):
+@router.get(
+    "/{slug}/keys/{key_id}",
+    response_model=KeyDetailResponse,
+    dependencies=[Depends(rate_limit(60, 60))],
+)
+async def get_key_by_id(
+    slug: str, key_id: str, session: AsyncSession = Depends(get_session)
+):
     """Get a publisher's signing key by key_id. Public endpoint."""
     publisher = await get_publisher_by_slug(session, slug)
     if not publisher.signing_public_key or not publisher.signing_key_registered_at:
-        raise AppError("SIGNING_KEY_NOT_FOUND", "Publisher has no registered signing key", 404)
+        raise AppError(
+            "SIGNING_KEY_NOT_FOUND", "Publisher has no registered signing key", 404
+        )
 
     raw_bytes = base64.b64decode(publisher.signing_public_key)
     fingerprint = hashlib.sha256(raw_bytes).hexdigest()[:16]
@@ -99,7 +127,11 @@ async def get_key_by_id(slug: str, key_id: str, session: AsyncSession = Depends(
     )
 
 
-@router.put("/{slug}/signing-key", response_model=SigningKeyResponse, dependencies=[Depends(rate_limit(5, 60))])
+@router.put(
+    "/{slug}/signing-key",
+    response_model=SigningKeyResponse,
+    dependencies=[Depends(rate_limit(5, 60))],
+)
 async def register_signing_key(
     slug: str,
     body: RegisterSigningKeyRequest,
@@ -123,7 +155,11 @@ async def register_signing_key(
     )
 
 
-@router.put("/{slug}", response_model=PublisherResponse, dependencies=[Depends(rate_limit(10, 60))])
+@router.put(
+    "/{slug}",
+    response_model=PublisherResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def update_publisher(
     slug: str,
     body: UpdatePublisherRequest,

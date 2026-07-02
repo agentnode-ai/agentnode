@@ -5,6 +5,7 @@ Security invariants (S3, S8, S12):
 - Secrets never appear in exceptions, logs, or API responses
 - Domain restrictions are copied from the connector manifest at store time
 """
+
 from __future__ import annotations
 
 import logging
@@ -56,7 +57,8 @@ async def store_credential(
         await session.refresh(existing)
         logger.info(
             "Updated credential for user=%s provider=%s",
-            user_id, connector_provider,
+            user_id,
+            connector_provider,
         )
         return existing
 
@@ -75,7 +77,8 @@ async def store_credential(
     await session.refresh(cred)
     logger.info(
         "Stored credential for user=%s provider=%s",
-        user_id, connector_provider,
+        user_id,
+        connector_provider,
     )
     return cred
 
@@ -114,7 +117,9 @@ async def revoke_credential(
     await session.refresh(cred)
     logger.info(
         "Revoked credential id=%s provider=%s user=%s",
-        credential_id, cred.connector_provider, user_id,
+        credential_id,
+        cred.connector_provider,
+        user_id,
     )
     return cred
 

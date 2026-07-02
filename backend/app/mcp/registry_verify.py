@@ -13,6 +13,7 @@ It does NOT prove the submitter controls that package or repo — true ownership
 is a separate, later problem. ``shasum``/``integrity`` are recorded provenance
 (what npm reported); the tarball is not downloaded or hashed here.
 """
+
 from __future__ import annotations
 
 import re
@@ -98,7 +99,8 @@ def _rewrite_npm_command(
         return None, "not_supported"
     prefix = npm_package + "@"
     matches = [
-        i for i, e in enumerate(command)
+        i
+        for i, e in enumerate(command)
         if isinstance(e, str) and (e == npm_package or e.startswith(prefix))
     ]
     if len(matches) != 1:
@@ -146,7 +148,9 @@ async def _fetch_pypi(name: str) -> dict | None:
     return await _http_get_json(f"{PYPI_REGISTRY}/{name}/json")
 
 
-def _blank(npm_name: str | None, pypi_name: str | None, declared_repo: str | None) -> dict:
+def _blank(
+    npm_name: str | None, pypi_name: str | None, declared_repo: str | None
+) -> dict:
     return {
         "server_status": "indeterminate",
         "checked_at": datetime.now(timezone.utc).isoformat(),
@@ -162,14 +166,16 @@ def _blank(npm_name: str | None, pypi_name: str | None, declared_repo: str | Non
         "repo_consistency": "indeterminate",
         "maintainer_list": [],
         "command_pinning": "indeterminate",
-        "pinned_command": None,        # rewritten command pinning resolved_version (npm only)
+        "pinned_command": None,  # rewritten command pinning resolved_version (npm only)
         "command_rewrite": "not_supported",  # pinned | not_supported
         "warnings": [],
         "errors": [],
     }
 
 
-async def _verify_npm(name: str, command: list | None, pinned: str | None, sv: dict) -> None:
+async def _verify_npm(
+    name: str, command: list | None, pinned: str | None, sv: dict
+) -> None:
     data = await _fetch_npm(name)
     if data is None:
         sv["errors"].append(f"{name} not found on npm")
@@ -207,7 +213,9 @@ async def _verify_npm(name: str, command: list | None, pinned: str | None, sv: d
     elif isinstance(repo, dict):
         sv["registry_repo_url"] = repo.get("url")
     sv["maintainer_list"] = [
-        m.get("name", "") for m in (data.get("maintainers") or []) if isinstance(m, dict)
+        m.get("name", "")
+        for m in (data.get("maintainers") or [])
+        if isinstance(m, dict)
     ]
 
     # Re-pin the launch command to the resolved version so the catalog entry is
@@ -249,9 +257,13 @@ async def _verify_pypi(name: str, pinned: str | None, sv: dict) -> None:
 
     project_urls = info.get("project_urls") or {}
     sv["registry_repo_url"] = (
-        project_urls.get("Repository") or project_urls.get("Source")
-        or project_urls.get("Source Code") or project_urls.get("GitHub")
-        or project_urls.get("Homepage") or info.get("home_page") or None
+        project_urls.get("Repository")
+        or project_urls.get("Source")
+        or project_urls.get("Source Code")
+        or project_urls.get("GitHub")
+        or project_urls.get("Homepage")
+        or info.get("home_page")
+        or None
     )
 
 

@@ -1,6 +1,6 @@
 """Install service — assembles install metadata and tracks downloads."""
+
 import logging
-from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select, update
@@ -8,7 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.packages.models import Installation, Package, PackageVersion
-from app.packages.version_queries import InstallResolution, get_latest_installable_version
+from app.packages.version_queries import (
+    InstallResolution,
+    get_latest_installable_version,
+)
 from app.shared.exceptions import AppError
 from app.shared.storage import generate_presigned_url
 
@@ -18,15 +21,15 @@ logger = logging.getLogger(__name__)
 
 
 async def get_install_version(
-    session: AsyncSession, slug: str, version: str | None = None,
+    session: AsyncSession,
+    slug: str,
+    version: str | None = None,
 ) -> tuple[Package, PackageVersion, str]:
     """Load a package and its target version for install.
 
     Returns (package, version, install_resolution).
     """
-    result = await session.execute(
-        select(Package).where(Package.slug == slug)
-    )
+    result = await session.execute(select(Package).where(Package.slug == slug))
     pkg = result.scalar_one_or_none()
     if not pkg:
         raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
@@ -52,7 +55,8 @@ async def get_install_version(
         reason = InstallResolution.PINNED
     else:
         pv, reason = await get_latest_installable_version(
-            session, pkg.id,
+            session,
+            pkg.id,
             options=[
                 selectinload(PackageVersion.capabilities),
                 selectinload(PackageVersion.dependencies),
@@ -60,10 +64,14 @@ async def get_install_version(
             ],
         )
         if not pv:
-            raise AppError("NO_VERSION_AVAILABLE", "No installable version available", 404)
+            raise AppError(
+                "NO_VERSION_AVAILABLE", "No installable version available", 404
+            )
 
     if pv.is_yanked:
-        raise AppError("VERSION_YANKED", f"Version '{pv.version_number}' has been yanked", 410)
+        raise AppError(
+            "VERSION_YANKED", f"Version '{pv.version_number}' has been yanked", 410
+        )
     if pv.quarantine_status not in ("none", "cleared"):
         raise AppError("VERSION_QUARANTINED", "This version is under quarantine", 403)
 
@@ -108,7 +116,14 @@ async def create_installation(
     return inst.id
 
 
-async def track_download(session: AsyncSession, package_id, version_id, *, redis=None, dedup_key: str | None = None) -> int:
+async def track_download(
+    session: AsyncSession,
+    package_id,
+    version_id,
+    *,
+    redis=None,
+    dedup_key: str | None = None,
+) -> int:
     """Increment download counter and return new count.
 
     When *redis* and *dedup_key* are provided the counter is only bumped
@@ -141,7 +156,14 @@ async def track_download(session: AsyncSession, package_id, version_id, *, redis
 INSTALL_DEDUP_TTL = 3600  # 1 hour
 
 
-async def track_install(session: AsyncSession, package_id, *, version_id, redis=None, dedup_key: str | None = None) -> int:
+async def track_install(
+    session: AsyncSession,
+    package_id,
+    *,
+    version_id,
+    redis=None,
+    dedup_key: str | None = None,
+) -> int:
     """Increment install counter and return new count.
 
     When *redis* and *dedup_key* are provided the counter is only bumped

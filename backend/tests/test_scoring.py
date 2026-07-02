@@ -1,4 +1,5 @@
 """Unit tests for resolution scoring weights."""
+
 from app.resolution.engine import (
     PERMISSION_DEDUCTIONS,
     TRUST_SCORES,
@@ -72,5 +73,11 @@ def test_max_possible_score():
     rt = 1.0
     trust = TRUST_SCORES["curated"]
     perm = 1.0
-    total = W_CAPABILITY * cap + W_FRAMEWORK * fw + W_RUNTIME * rt + W_TRUST * trust + W_PERMISSIONS * perm
+    total = (
+        W_CAPABILITY * cap
+        + W_FRAMEWORK * fw
+        + W_RUNTIME * rt
+        + W_TRUST * trust
+        + W_PERMISSIONS * perm
+    )
     assert abs(total - 1.0) < 1e-9

@@ -18,7 +18,6 @@ import io
 import logging
 import os
 import platform
-import re
 import shutil
 import subprocess
 import tarfile
@@ -45,6 +44,7 @@ class IsolationLevel:
     BEST_EFFORT = env-var hint, not kernel-enforced
     ENFORCED = hard isolation (container --network=none, nsjail, etc.)
     """
+
     NONE = "none"
     BEST_EFFORT = "best_effort"
     ENFORCED = "enforced"
@@ -77,8 +77,12 @@ class VerificationSandbox:
             with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
                 # Reject archives containing path-traversal entries
                 for member in tar.getmembers():
-                    if os.path.normpath(member.name).startswith("..") or os.path.isabs(member.name):
-                        logger.warning(f"Rejecting artifact: dangerous path '{member.name}'")
+                    if os.path.normpath(member.name).startswith("..") or os.path.isabs(
+                        member.name
+                    ):
+                        logger.warning(
+                            f"Rejecting artifact: dangerous path '{member.name}'"
+                        )
                         return False
                 tar.extractall(self.work_dir, filter="data")
 
@@ -96,7 +100,11 @@ class VerificationSandbox:
 
             # Find the package root (directory with setup.py/pyproject.toml)
             for root, dirs, files in os.walk(self.work_dir):
-                if "pyproject.toml" in files or "setup.py" in files or "setup.cfg" in files:
+                if (
+                    "pyproject.toml" in files
+                    or "setup.py" in files
+                    or "setup.cfg" in files
+                ):
                     self.pkg_dir = root
                     return True
 
@@ -149,8 +157,11 @@ class VerificationSandbox:
             if self.installer == "uv" and shutil.which("uv"):
                 result = subprocess.run(
                     [
-                        "uv", "pip", "install",
-                        "--python", self.python,
+                        "uv",
+                        "pip",
+                        "install",
+                        "--python",
+                        self.python,
                         "--no-cache",
                         ".",
                     ],
@@ -193,7 +204,10 @@ class VerificationSandbox:
             return False, str(e)
 
     def run_python_code(
-        self, code: str, timeout: int = 15, restrict_network: bool = False,
+        self,
+        code: str,
+        timeout: int = 15,
+        restrict_network: bool = False,
     ) -> tuple[bool, str]:
         """Run a Python script inside the venv. Returns (success, log).
 
@@ -221,8 +235,11 @@ class VerificationSandbox:
             return False, str(e)
 
     def run_python_code_enforced(
-        self, code: str, timeout: int = 30,
-        heavy_ml: bool = False, image_override: str | None = None,
+        self,
+        code: str,
+        timeout: int = 30,
+        heavy_ml: bool = False,
+        image_override: str | None = None,
     ) -> tuple[bool, str]:
         """Run Python code in an isolated container with --network=none.
 
@@ -247,7 +264,9 @@ class VerificationSandbox:
                     "to fall back to subprocess. Install docker or podman, or set "
                     "VERIFICATION_SANDBOX_MODE=subprocess for best-effort mode."
                 )
-            logger.warning("No container runtime available — falling back to best-effort subprocess")
+            logger.warning(
+                "No container runtime available — falling back to best-effort subprocess"
+            )
             return self.run_python_code(code, timeout=timeout, restrict_network=True)
 
         # Write code to a temp file that gets mounted into the container
@@ -275,7 +294,9 @@ class VerificationSandbox:
         tmpfs_size = "256m" if heavy_ml else "64m"
 
         cmd = [
-            CONTAINER_RUNTIME, "run", "--rm",
+            CONTAINER_RUNTIME,
+            "run",
+            "--rm",
             "--network=none",
             "--read-only",
             "--pids-limit=128",
@@ -283,10 +304,14 @@ class VerificationSandbox:
             "--cpus=1.0",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges:true",
-            "--tmpfs", f"/tmp:rw,noexec,nosuid,size={tmpfs_size}",
-            "-v", f"{self.pkg_dir}:/workspace:ro",
-            "-v", f"{out_dir}:/out:rw",
-            "-v", f"{code_file}:/run_code.py:ro",
+            "--tmpfs",
+            f"/tmp:rw,noexec,nosuid,size={tmpfs_size}",
+            "-v",
+            f"{self.pkg_dir}:/workspace:ro",
+            "-v",
+            f"{out_dir}:/out:rw",
+            "-v",
+            f"{code_file}:/run_code.py:ro",
         ]
 
         if heavy_ml:
@@ -301,12 +326,18 @@ class VerificationSandbox:
             if os.path.isdir(torch_cache):
                 cmd += ["-v", f"{torch_cache}:/home/verifier/.cache/torch:ro"]
             cmd += [
-                "-e", "HF_HUB_OFFLINE=1",
-                "-e", "TRANSFORMERS_OFFLINE=1",
-                "-e", "HF_HOME=/home/verifier/.cache/huggingface",
-                "-e", "TORCH_HOME=/home/verifier/.cache/torch",
-                "-e", "XDG_CACHE_HOME=/home/verifier/.cache",
-                "-e", "TMPDIR=/tmp",
+                "-e",
+                "HF_HUB_OFFLINE=1",
+                "-e",
+                "TRANSFORMERS_OFFLINE=1",
+                "-e",
+                "HF_HOME=/home/verifier/.cache/huggingface",
+                "-e",
+                "TORCH_HOME=/home/verifier/.cache/torch",
+                "-e",
+                "XDG_CACHE_HOME=/home/verifier/.cache",
+                "-e",
+                "TMPDIR=/tmp",
             ]
 
         # Mount site-packages and add to PYTHONPATH so imports work
@@ -318,10 +349,13 @@ class VerificationSandbox:
 
         container_image = image_override or settings.VERIFICATION_CONTAINER_IMAGE
         cmd += [
-            "-w", "/workspace",
-            "--user", "1000:1000",
+            "-w",
+            "/workspace",
+            "--user",
+            "1000:1000",
             container_image,
-            "python", "/run_code.py",
+            "python",
+            "/run_code.py",
         ]
 
         try:
@@ -338,7 +372,8 @@ class VerificationSandbox:
             try:
                 subprocess.run(
                     [CONTAINER_RUNTIME, "kill", "--signal=KILL", "agentnode-verify"],
-                    capture_output=True, timeout=5,
+                    capture_output=True,
+                    timeout=5,
                 )
             except Exception:
                 pass
@@ -354,6 +389,7 @@ class VerificationSandbox:
         returns BEST_EFFORT (not ENFORCED) to avoid trust miscommunication.
         """
         from app.config import CONTAINER_RUNTIME, settings
+
         if step == "install":
             return IsolationLevel.NONE  # pip needs network
         if settings.VERIFICATION_SANDBOX_MODE == "container" and CONTAINER_RUNTIME:
@@ -399,8 +435,16 @@ class VerificationSandbox:
             env["AGENTNODE_VERIFICATION"] = "1"
 
             result = subprocess.run(
-                [self.python, "-m", "pytest", test_dir, "-v", "--tb=short",
-                 "-m", "not integration"],
+                [
+                    self.python,
+                    "-m",
+                    "pytest",
+                    test_dir,
+                    "-v",
+                    "--tb=short",
+                    "-m",
+                    "not integration",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -431,12 +475,16 @@ class VerificationSandbox:
             if self.installer == "uv" and shutil.which("uv"):
                 subprocess.run(
                     ["uv", "pip", "install", "--python", self.python, "pytest"],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
             else:
                 subprocess.run(
                     [self.python, "-m", "pip", "install", "--no-cache-dir", "pytest"],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
         except Exception:
             return False, "Failed to install pytest"
@@ -461,7 +509,9 @@ class VerificationSandbox:
                     break
 
         cmd = [
-            CONTAINER_RUNTIME, "run", "--rm",
+            CONTAINER_RUNTIME,
+            "run",
+            "--rm",
             "--network=none",
             "--read-only",
             "--pids-limit=128",
@@ -469,11 +519,16 @@ class VerificationSandbox:
             "--cpus=1.0",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges:true",
-            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
-            "-v", f"{self.pkg_dir}:/workspace:ro",
-            "-e", "AGENTNODE_VERIFICATION=1",
-            "-e", "PYTHONDONTWRITEBYTECODE=1",
-            "-e", "PYTEST_ADDOPTS=--cache-clear -p no:cacheprovider",
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,size=64m",
+            "-v",
+            f"{self.pkg_dir}:/workspace:ro",
+            "-e",
+            "AGENTNODE_VERIFICATION=1",
+            "-e",
+            "PYTHONDONTWRITEBYTECODE=1",
+            "-e",
+            "PYTEST_ADDOPTS=--cache-clear -p no:cacheprovider",
         ]
 
         if site_pkgs:
@@ -483,11 +538,19 @@ class VerificationSandbox:
             cmd += ["-e", "PYTHONPATH=/workspace"]
 
         cmd += [
-            "-w", "/workspace",
-            "--user", "1000:1000",
+            "-w",
+            "/workspace",
+            "--user",
+            "1000:1000",
             settings.VERIFICATION_CONTAINER_IMAGE,
-            "python", "-m", "pytest", f"/workspace/{test_dir}",
-            "-v", "--tb=short", "-m", "not integration",
+            "python",
+            "-m",
+            "pytest",
+            f"/workspace/{test_dir}",
+            "-v",
+            "--tb=short",
+            "-m",
+            "not integration",
         ]
 
         try:
@@ -541,6 +604,7 @@ class VerificationSandbox:
             module_path, func_name = tool["entrypoint"].rsplit(":", 1)
             # Sanitize tool name to valid Python identifier chars only
             from app.shared.validators import sanitize_to_identifier, is_safe_identifier
+
             safe_name = sanitize_to_identifier(tool.get("name", "unknown"))
 
             # Validate module_path and func_name to prevent code injection
@@ -551,20 +615,22 @@ class VerificationSandbox:
                 logger.warning("Skipping tool with unsafe func_name: %s", func_name)
                 continue
 
-            lines.append(f'def test_{safe_name}_importable():')
+            lines.append(f"def test_{safe_name}_importable():")
             lines.append(f'    mod = importlib.import_module("{module_path}")')
-            lines.append(f'    assert hasattr(mod, "{func_name}"), "Function \'{func_name}\' not found"')
+            lines.append(
+                f'    assert hasattr(mod, "{func_name}"), "Function \'{func_name}\' not found"'
+            )
             lines.append("")
-            lines.append(f'def test_{safe_name}_callable():')
+            lines.append(f"def test_{safe_name}_callable():")
             lines.append(f'    mod = importlib.import_module("{module_path}")')
             lines.append(f'    fn = getattr(mod, "{func_name}")')
-            lines.append(f'    assert callable(fn), "\'{func_name}\' is not callable"')
+            lines.append(f"    assert callable(fn), \"'{func_name}' is not callable\"")
             lines.append("")
-            lines.append(f'def test_{safe_name}_has_signature():')
+            lines.append(f"def test_{safe_name}_has_signature():")
             lines.append(f'    mod = importlib.import_module("{module_path}")')
             lines.append(f'    fn = getattr(mod, "{func_name}")')
-            lines.append(f'    sig = inspect.signature(fn)')
-            lines.append(f'    assert sig is not None')
+            lines.append("    sig = inspect.signature(fn)")
+            lines.append("    assert sig is not None")
             lines.append("")
 
         test_file = os.path.join(test_dir, "test_auto_verify.py")

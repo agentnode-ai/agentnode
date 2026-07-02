@@ -1,6 +1,7 @@
 """Integration tests for the media library API (images endpoints)."""
+
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -22,13 +23,18 @@ TEST_ADMIN = {
 async def _setup_admin(client, session) -> str:
     """Register, login, promote to admin. Returns JWT token."""
     await client.post("/v1/auth/register", json=TEST_ADMIN)
-    login = await client.post("/v1/auth/login", json={
-        "email": TEST_ADMIN["email"],
-        "password": TEST_ADMIN["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_ADMIN["email"],
+            "password": TEST_ADMIN["password"],
+        },
+    )
     token = login.json()["access_token"]
     await session.execute(
-        update(User).where(User.username == TEST_ADMIN["username"]).values(is_admin=True)
+        update(User)
+        .where(User.username == TEST_ADMIN["username"])
+        .values(is_admin=True)
     )
     await session.commit()
     return token
@@ -100,6 +106,7 @@ async def _create_post(session, author_id, post_type_id, slug_suffix="") -> Blog
 
 # ── Month Filter Tests ──
 
+
 @pytest.mark.asyncio
 class TestMonthFilter:
     async def test_valid_month_returns_200(self, client, session):
@@ -115,15 +122,18 @@ class TestMonthFilter:
         assert "images" in data
         assert "total" in data
 
-    @pytest.mark.parametrize("bad_month", [
-        "2026-13",       # month > 12
-        "2026-00",       # month 0
-        "1999-12",       # year < 2000
-        "2101-01",       # year > 2100
-        "abcd-ef",       # non-numeric
-        "2026/03",       # wrong separator
-        "03-2026",       # reversed
-    ])
+    @pytest.mark.parametrize(
+        "bad_month",
+        [
+            "2026-13",  # month > 12
+            "2026-00",  # month 0
+            "1999-12",  # year < 2000
+            "2101-01",  # year > 2100
+            "abcd-ef",  # non-numeric
+            "2026/03",  # wrong separator
+            "03-2026",  # reversed
+        ],
+    )
     async def test_invalid_month_returns_422(self, client, session, bad_month):
         token = await _setup_admin(client, session)
 
@@ -157,6 +167,7 @@ class TestMonthFilter:
 
 # ── Months Endpoint Tests ──
 
+
 @pytest.mark.asyncio
 class TestMonthsEndpoint:
     async def test_months_returns_list(self, client, session):
@@ -186,6 +197,7 @@ class TestMonthsEndpoint:
 
 
 # ── Bulk Delete Tests ──
+
 
 @pytest.mark.asyncio
 class TestBulkDelete:
@@ -244,7 +256,9 @@ class TestBulkDelete:
         post = await _create_post(session, admin_user.id, pt.id, slug_suffix="mixed")
 
         free_img = await _create_image(session, alt_text="free")
-        attached_img = await _create_image(session, post_id=post.id, alt_text="attached")
+        attached_img = await _create_image(
+            session, post_id=post.id, alt_text="attached"
+        )
         missing_id = str(uuid.uuid4())
 
         resp = await client.post(
@@ -282,11 +296,14 @@ class TestBulkDelete:
 
 # ── Search Tests ──
 
+
 @pytest.mark.asyncio
 class TestSearch:
     async def test_search_finds_by_title(self, client, session):
         token = await _setup_admin(client, session)
-        img = await _create_image(session, title="Sunset Banner", original_filename="a.jpg")
+        img = await _create_image(
+            session, title="Sunset Banner", original_filename="a.jpg"
+        )
 
         resp = await client.get(
             "/v1/admin/blog/images?search=Sunset",
@@ -298,7 +315,9 @@ class TestSearch:
 
     async def test_search_finds_by_alt_text(self, client, session):
         token = await _setup_admin(client, session)
-        img = await _create_image(session, alt_text="Forest trail", original_filename="b.jpg")
+        img = await _create_image(
+            session, alt_text="Forest trail", original_filename="b.jpg"
+        )
 
         resp = await client.get(
             "/v1/admin/blog/images?search=Forest",
@@ -347,6 +366,7 @@ class TestSearch:
 
 # ── Sort Tests ──
 
+
 @pytest.mark.asyncio
 class TestSorting:
     @patch("app.blog.router.delete_artifact")
@@ -362,7 +382,11 @@ class TestSorting:
         )
         assert resp.status_code == 200
         ids = [i["id"] for i in resp.json()["images"]]
-        assert ids.index(str(large.id)) < ids.index(str(medium.id)) < ids.index(str(small.id))
+        assert (
+            ids.index(str(large.id))
+            < ids.index(str(medium.id))
+            < ids.index(str(small.id))
+        )
 
     async def test_sort_by_created_at_asc(self, client, session):
         token = await _setup_admin(client, session)
@@ -385,6 +409,7 @@ class TestSorting:
 
 # ── Attachment Filter Tests ──
 
+
 @pytest.mark.asyncio
 class TestAttachmentFilter:
     async def test_filter_unattached(self, client, session):
@@ -395,7 +420,9 @@ class TestAttachmentFilter:
             User.__table__.select().where(User.username == TEST_ADMIN["username"])
         )
         admin_user = user_result.first()
-        post = await _create_post(session, admin_user.id, pt.id, slug_suffix="att-filter")
+        post = await _create_post(
+            session, admin_user.id, pt.id, slug_suffix="att-filter"
+        )
 
         free = await _create_image(session, alt_text="free")
         attached = await _create_image(session, post_id=post.id, alt_text="attached")
@@ -417,7 +444,9 @@ class TestAttachmentFilter:
             User.__table__.select().where(User.username == TEST_ADMIN["username"])
         )
         admin_user = user_result.first()
-        post = await _create_post(session, admin_user.id, pt.id, slug_suffix="att-filter2")
+        post = await _create_post(
+            session, admin_user.id, pt.id, slug_suffix="att-filter2"
+        )
 
         free = await _create_image(session, alt_text="free")
         attached = await _create_image(session, post_id=post.id, alt_text="attached")
@@ -433,6 +462,7 @@ class TestAttachmentFilter:
 
 
 # ── Update Metadata Tests ──
+
 
 @pytest.mark.asyncio
 class TestUpdateMetadata:

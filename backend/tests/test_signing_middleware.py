@@ -1,4 +1,5 @@
 """Tests for RegistrySigningMiddleware."""
+
 import base64
 import hashlib
 
@@ -29,11 +30,19 @@ VALID_KEY_ID = "ed25519:" + hashlib.sha256(b"\x01" * 32).hexdigest()[:16]
 
 
 async def _setup_publisher_with_key(client) -> str:
-    user = {"email": "sign@test.dev", "username": "signuser", "password": "TestPass123!"}
+    user = {
+        "email": "sign@test.dev",
+        "username": "signuser",
+        "password": "TestPass123!",
+    }
     await client.post("/v1/auth/register", json=user)
-    login = await client.post("/v1/auth/login", json={
-        "email": user["email"], "password": user["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": user["email"],
+            "password": user["password"],
+        },
+    )
     token = login.json()["access_token"]
 
     await client.post(
@@ -73,6 +82,7 @@ def _verify_signature(resp, public_key: Ed25519PublicKey):
 def _find_signing_middleware(app_or_mw):
     """Walk the ASGI middleware stack to find the signing middleware instance."""
     from app.shared.signing_middleware import RegistrySigningMiddleware
+
     mw = app_or_mw
     visited = set()
     while mw is not None:
@@ -139,6 +149,7 @@ async def test_different_body_fails_verification(client, _arm_signing):
     sig_bytes = base64.b64decode(sig_b64)
 
     from cryptography.exceptions import InvalidSignature
+
     with pytest.raises(InvalidSignature):
         TEST_PUBLIC_KEY.verify(sig_bytes, b"tampered body")
 
@@ -239,6 +250,7 @@ async def test_middleware_degraded_init_garbage_key():
 def test_is_signing_ready_false_by_default():
     """Module starts with _signing_ready=False."""
     from app.shared.signing_middleware import is_signing_ready
+
     assert is_signing_ready() is not None
 
 

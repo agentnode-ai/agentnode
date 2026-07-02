@@ -6,6 +6,7 @@ Test 3: Redis dedup works independently for both counters
 Test 4: Dedup is version-specific (same user, different versions → both count)
 Test 5: Backfill correctness — status whitelist (installed + active, not failed)
 """
+
 import json
 from unittest.mock import patch
 
@@ -39,12 +40,17 @@ TEST_MANIFEST = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "count_sep.tool",
     "capabilities": {
-        "tools": [{
-            "name": "test_tool",
-            "capability_id": "pdf_extraction",
-            "description": "Test tool",
-            "input_schema": {"type": "object", "properties": {"input": {"type": "string"}}},
-        }],
+        "tools": [
+            {
+                "name": "test_tool",
+                "capability_id": "pdf_extraction",
+                "description": "Test tool",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"input": {"type": "string"}},
+                },
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -60,17 +66,23 @@ TEST_MANIFEST = {
     "tags": ["test"],
     "categories": ["document-processing"],
     "dependencies": [],
-    "security": {"signature": "", "provenance": {"source_repo": "", "commit": "", "build_system": ""}},
+    "security": {
+        "signature": "",
+        "provenance": {"source_repo": "", "commit": "", "build_system": ""},
+    },
 }
 
 
 async def setup(client, session):
     """Register user, login, create trusted publisher (bypasses quarantine). Returns token."""
     await client.post("/v1/auth/register", json=TEST_USER)
-    login = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     token = login.json()["access_token"]
     await client.post(
         "/v1/publishers",
@@ -207,6 +219,7 @@ async def test_backfill_correctness(mock_meili, mock_s3, client, session):
 
     # Retrieve package and version IDs
     from app.packages.models import PackageVersion
+
     result = await session.execute(
         select(Package).where(Package.slug == "count-sep-pkg")
     )
@@ -218,6 +231,7 @@ async def test_backfill_correctness(mock_meili, mock_s3, client, session):
 
     # Get user ID
     from app.auth.models import User
+
     user_result = await session.execute(
         select(User).where(User.email == TEST_USER["email"])
     )
@@ -244,6 +258,7 @@ async def test_backfill_correctness(mock_meili, mock_s3, client, session):
 
     # Simulate backfill query (same as migration 025)
     from sqlalchemy import func, update
+
     subq = (
         select(
             Installation.package_id,

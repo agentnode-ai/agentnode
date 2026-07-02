@@ -21,49 +21,102 @@ from dataclasses import dataclass, field
 
 REASON_VERDICTS: dict[str, tuple[str, str]] = {
     # reason                              → (status, human label)
-
     # ── passed ──
-    "ok":                                   ("passed",       "Function returned a result"),
-    "acceptable_external_dependency":       ("passed",       "Function reached external dependency boundary"),
-
+    "ok": ("passed", "Function returned a result"),
+    "acceptable_external_dependency": (
+        "passed",
+        "Function reached external dependency boundary",
+    ),
     # ── inconclusive ──
-    "credential_boundary_reached":          ("inconclusive", "Tool correctly reports missing credentials — functional boundary reached"),
-    "invalid_test_input":                   ("inconclusive", "Generated test input was rejected by function"),
-    "unsupported_operation_space":          ("inconclusive", "Function requires operation/action values not determinable from schema"),
-    "needs_credentials":                    ("inconclusive", "Requires API keys/tokens not available in verification"),
-    "external_network_blocked":             ("inconclusive", "Requires network access (blocked during verification)"),
-    "schema_signature_mismatch":            ("inconclusive", "Schema and function signature disagree on types"),
-    "missing_system_dependency":            ("inconclusive", "Requires system-level dependency not available in sandbox"),
-    "not_implemented":                      ("inconclusive", "Package raises NotImplementedError (stub/placeholder)"),
-    "needs_binary_input":                   ("inconclusive", "Requires binary file formats that cannot be text-stubbed"),
-    "heavy_import_timeout":                 ("inconclusive", "Heavy ML library import exceeded time budget"),
-    "unknown_smoke_condition":              ("inconclusive", "Ambiguous error — could be broken code or missing data"),
-
+    "credential_boundary_reached": (
+        "inconclusive",
+        "Tool correctly reports missing credentials — functional boundary reached",
+    ),
+    "invalid_test_input": (
+        "inconclusive",
+        "Generated test input was rejected by function",
+    ),
+    "unsupported_operation_space": (
+        "inconclusive",
+        "Function requires operation/action values not determinable from schema",
+    ),
+    "needs_credentials": (
+        "inconclusive",
+        "Requires API keys/tokens not available in verification",
+    ),
+    "external_network_blocked": (
+        "inconclusive",
+        "Requires network access (blocked during verification)",
+    ),
+    "schema_signature_mismatch": (
+        "inconclusive",
+        "Schema and function signature disagree on types",
+    ),
+    "missing_system_dependency": (
+        "inconclusive",
+        "Requires system-level dependency not available in sandbox",
+    ),
+    "not_implemented": (
+        "inconclusive",
+        "Package raises NotImplementedError (stub/placeholder)",
+    ),
+    "needs_binary_input": (
+        "inconclusive",
+        "Requires binary file formats that cannot be text-stubbed",
+    ),
+    "heavy_import_timeout": (
+        "inconclusive",
+        "Heavy ML library import exceeded time budget",
+    ),
+    "unknown_smoke_condition": (
+        "inconclusive",
+        "Ambiguous error — could be broken code or missing data",
+    ),
     # ── failed ──
-    "fatal_runtime_error":                  ("failed",       "Fundamental runtime error (SyntaxError, NameError)"),
-    "fatal_import_during_smoke":            ("failed",       "Module failed to import during smoke test"),
-    "fatal_type_error":                     ("failed",       "Function contract is broken (TypeError with schema present)"),
-    "fatal_timeout":                        ("failed",       "Execution timed out without known network dependency"),
-    "fixture_replay_mismatch":              ("failed",       "HTTP request not found in fixture cassette"),
-    "fixture_expected_mismatch":            ("failed",       "Output did not match fixture expected contract"),
+    "fatal_runtime_error": (
+        "failed",
+        "Fundamental runtime error (SyntaxError, NameError)",
+    ),
+    "fatal_import_during_smoke": (
+        "failed",
+        "Module failed to import during smoke test",
+    ),
+    "fatal_type_error": (
+        "failed",
+        "Function contract is broken (TypeError with schema present)",
+    ),
+    "fatal_timeout": ("failed", "Execution timed out without known network dependency"),
+    "fixture_replay_mismatch": ("failed", "HTTP request not found in fixture cassette"),
+    "fixture_expected_mismatch": (
+        "failed",
+        "Output did not match fixture expected contract",
+    ),
 }
 
-FATAL_REASONS = frozenset({
-    "fatal_runtime_error",
-    "fatal_import_during_smoke",
-    "fatal_type_error",
-    "fatal_timeout",
-})
+FATAL_REASONS = frozenset(
+    {
+        "fatal_runtime_error",
+        "fatal_import_during_smoke",
+        "fatal_type_error",
+        "fatal_timeout",
+    }
+)
 
 
 # ──────────────────────────────────────────────────────────────
 # Heavy ML imports that can exceed smoke timeout during import
 # ──────────────────────────────────────────────────────────────
 
-KNOWN_HEAVY_IMPORTS = frozenset({
-    "torch", "tensorflow", "transformers", "sentence_transformers", "spacy",
-    "openai_whisper",
-})
+KNOWN_HEAVY_IMPORTS = frozenset(
+    {
+        "torch",
+        "tensorflow",
+        "transformers",
+        "sentence_transformers",
+        "spacy",
+        "openai_whisper",
+    }
+)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -165,14 +218,18 @@ DATABASE_CONNECTION_PATTERNS = (
 # SmokeContext — strictly small, preflight only
 # ──────────────────────────────────────────────────────────────
 
+
 @dataclass
 class SmokeContext:
     """Preflight analysis for a single tool. No code introspection, no README."""
+
     tool_name: str
     has_required_env_requirements: bool = False
     missing_required_env_vars: list[str] = field(default_factory=list)
     declares_network_access: bool = False
-    input_has_enum_hints: bool = False       # Phase-2 prep, not yet active for classification
+    input_has_enum_hints: bool = (
+        False  # Phase-2 prep, not yet active for classification
+    )
     has_examples: bool = False
     input_schema_present: bool = False
     python_dependencies: frozenset[str] = field(default_factory=frozenset)
@@ -225,8 +282,17 @@ def build_smoke_context(tool: dict) -> SmokeContext:
     py_deps = tool.get("python_dependencies")
     if py_deps and isinstance(py_deps, (list, set, frozenset)):
         normalized = frozenset(
-            d.replace("-", "_").lower().split("[")[0].split(">")[0].split("<")[0].split("=")[0].split("!")[0].split("~")[0].strip()
-            for d in py_deps if isinstance(d, str)
+            d.replace("-", "_")
+            .lower()
+            .split("[")[0]
+            .split(">")[0]
+            .split("<")[0]
+            .split("=")[0]
+            .split("!")[0]
+            .split("~")[0]
+            .strip()
+            for d in py_deps
+            if isinstance(d, str)
         )
         ctx.python_dependencies = normalized
 
@@ -236,6 +302,7 @@ def build_smoke_context(tool: dict) -> SmokeContext:
 # ──────────────────────────────────────────────────────────────
 # Classification — always context-sensitive
 # ──────────────────────────────────────────────────────────────
+
 
 def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
     """Check if any pattern matches in the text."""
@@ -277,7 +344,9 @@ def classify_smoke_error(
     # ── 1. Credential-related (highest priority) ──
     # Phase 7A: Use credential boundary detection with confidence
     cred_reason, cred_confidence = classify_credential_boundary(
-        exception_type, msg_lower, ctx,
+        exception_type,
+        msg_lower,
+        ctx,
     )
     if cred_reason:
         return cred_reason
@@ -295,8 +364,14 @@ def classify_smoke_error(
         return "fixture_replay_mismatch"
 
     # ── 4. Network exceptions ──
-    if exception_type in ("ConnectionError", "TimeoutError", "ConnectError",
-                          "ConnectTimeout", "ReadTimeout", "HTTPStatusError"):
+    if exception_type in (
+        "ConnectionError",
+        "TimeoutError",
+        "ConnectError",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "HTTPStatusError",
+    ):
         if ctx.declares_network_access:
             return "acceptable_external_dependency"
         # Check if it's credential-related (e.g. 401/403)
@@ -344,7 +419,9 @@ def classify_smoke_error(
         return "invalid_test_input"
 
     # ── 11b. Database connection errors ──
-    if exception_type == "ArgumentError" or _matches_any(DATABASE_CONNECTION_PATTERNS, msg_lower):
+    if exception_type == "ArgumentError" or _matches_any(
+        DATABASE_CONNECTION_PATTERNS, msg_lower
+    ):
         return "credential_boundary_reached"
 
     # ── 12. ValueError, KeyError, IndexError ──
@@ -363,8 +440,13 @@ def classify_smoke_error(
         return "unknown_smoke_condition"
 
     # ── 12b. Binary-format specific exceptions ──
-    if exception_type in ("PdfminerException", "PdfReadError", "PdfStreamError",
-                          "UnidentifiedImageError", "DecompressionBombError"):
+    if exception_type in (
+        "PdfminerException",
+        "PdfReadError",
+        "PdfStreamError",
+        "UnidentifiedImageError",
+        "DecompressionBombError",
+    ):
         return "needs_binary_input"
 
     # ── 13. Default ──
@@ -372,7 +454,9 @@ def classify_smoke_error(
 
 
 def classify_credential_boundary(
-    exception_type: str, msg_lower: str, ctx: SmokeContext,
+    exception_type: str,
+    msg_lower: str,
+    ctx: SmokeContext,
 ) -> tuple[str | None, str | None]:
     """Detect if an error represents a credential boundary.
 
@@ -382,15 +466,23 @@ def classify_credential_boundary(
     """
     # HIGH confidence: Typed auth exceptions
     auth_exception_types = (
-        "AuthenticationError", "AuthError", "APIKeyError",
-        "AuthorizationError", "CredentialError", "AuthFailure",
-        "InvalidAPIKey", "MissingAPIKey",
+        "AuthenticationError",
+        "AuthError",
+        "APIKeyError",
+        "AuthorizationError",
+        "CredentialError",
+        "AuthFailure",
+        "InvalidAPIKey",
+        "MissingAPIKey",
     )
     if exception_type in auth_exception_types:
         return "credential_boundary_reached", "high"
 
     # HIGH confidence: Known credential pattern + declared env requirements
-    if _matches_any(CREDENTIAL_PATTERNS, msg_lower) and ctx.has_required_env_requirements:
+    if (
+        _matches_any(CREDENTIAL_PATTERNS, msg_lower)
+        and ctx.has_required_env_requirements
+    ):
         return "credential_boundary_reached", "high"
 
     # MEDIUM confidence: Credential pattern without env declaration

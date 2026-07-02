@@ -3,9 +3,9 @@
 Verifies that packages declaring excessive capabilities receive diminished
 scoring benefits, preventing gaming of the resolution engine.
 """
+
 import math
 
-import pytest
 
 from app.resolution.engine import (
     BROAD_PACKAGE_THRESHOLD,
@@ -84,9 +84,13 @@ class TestEffectiveCapabilityCount:
     def test_growth_rate_decreasing_beyond_threshold(self):
         """Beyond threshold, each additional capability adds less benefit."""
         base = CAPABILITY_FULL_SCORE_THRESHOLD + 1
-        prev_delta = effective_capability_count(base) - effective_capability_count(base - 1)
+        prev_delta = effective_capability_count(base) - effective_capability_count(
+            base - 1
+        )
         for count in range(base + 1, base + 50):
-            delta = effective_capability_count(count) - effective_capability_count(count - 1)
+            delta = effective_capability_count(count) - effective_capability_count(
+                count - 1
+            )
             assert delta < prev_delta, (
                 f"Growth at {count} ({delta:.4f}) should be less than "
                 f"at {count - 1} ({prev_delta:.4f})"
@@ -187,9 +191,7 @@ class TestScoringScenarios:
     without requiring a database or full integration setup.
     """
 
-    def _simulate_cap_score(
-        self, requested: int, matched: int, declared: int
-    ) -> float:
+    def _simulate_cap_score(self, requested: int, matched: int, declared: int) -> float:
         """Simulate the capability score calculation from the engine."""
         # Base cap_score: fraction of requested caps that matched
         cap_score = matched / requested if requested > 0 else 0.0
@@ -204,12 +206,8 @@ class TestScoringScenarios:
     def test_focused_package_beats_broad_package(self):
         """A focused package matching 3/3 caps should outscore a broad one
         matching 3/3 caps but declaring 50 total."""
-        focused_score = self._simulate_cap_score(
-            requested=3, matched=3, declared=3
-        )
-        broad_score = self._simulate_cap_score(
-            requested=3, matched=3, declared=50
-        )
+        focused_score = self._simulate_cap_score(requested=3, matched=3, declared=3)
+        broad_score = self._simulate_cap_score(requested=3, matched=3, declared=50)
         assert focused_score > broad_score
         # Focused gets 1.0 (3/3, no penalty)
         assert focused_score == 1.0
@@ -228,9 +226,7 @@ class TestScoringScenarios:
         """Scores should decrease as declared count grows, all else equal."""
         scores = []
         for declared in [5, 10, 15, 20, 30, 50]:
-            score = self._simulate_cap_score(
-                requested=3, matched=3, declared=declared
-            )
+            score = self._simulate_cap_score(requested=3, matched=3, declared=declared)
             scores.append(score)
 
         # First two (5 and 10) should be equal (both at/under threshold)

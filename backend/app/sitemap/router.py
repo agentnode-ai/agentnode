@@ -51,6 +51,7 @@ async def _cached(request: Request, key: str, builder):
 
 # --- Schemas ---
 
+
 class SitemapPageCreate(BaseModel):
     path: str = Field(max_length=300, pattern=r"^/.*$")
     priority: Decimal = Decimal("0.5")
@@ -94,13 +95,20 @@ async def sitemap_posts(
         )
         pt = pt_result.scalar_one_or_none()
         if not pt:
-            return {"items": [], "page": page, "page_size": SITEMAP_PAGE_SIZE, "total": 0}
+            return {
+                "items": [],
+                "page": page,
+                "page_size": SITEMAP_PAGE_SIZE,
+                "total": 0,
+            }
 
-        total = (await session.execute(
-            select(func.count(BlogPost.id)).where(
-                BlogPost.post_type_id == pt.id, BlogPost.status == "published"
+        total = (
+            await session.execute(
+                select(func.count(BlogPost.id)).where(
+                    BlogPost.post_type_id == pt.id, BlogPost.status == "published"
+                )
             )
-        )).scalar() or 0
+        ).scalar() or 0
 
         result = await session.execute(
             select(BlogPost.slug, BlogPost.updated_at)
@@ -113,7 +121,11 @@ async def sitemap_posts(
 
         return {
             "items": [
-                {"slug": r.slug, "updated_at": r.updated_at.isoformat() if r.updated_at else None, "url_prefix": pt.url_prefix}
+                {
+                    "slug": r.slug,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                    "url_prefix": pt.url_prefix,
+                }
                 for r in rows
             ],
             "page": page,
@@ -131,9 +143,11 @@ async def sitemap_packages(
     session: AsyncSession = Depends(get_session),
 ):
     async def build():
-        total = (await session.execute(
-            select(func.count(Package.id)).where(Package.is_deprecated == False)  # noqa: E712
-        )).scalar() or 0
+        total = (
+            await session.execute(
+                select(func.count(Package.id)).where(Package.is_deprecated == False)  # noqa: E712
+            )
+        ).scalar() or 0
 
         result = await session.execute(
             select(Package.slug, Package.updated_at)
@@ -146,7 +160,10 @@ async def sitemap_packages(
 
         return {
             "items": [
-                {"slug": r.slug, "updated_at": r.updated_at.isoformat() if r.updated_at else None}
+                {
+                    "slug": r.slug,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                }
                 for r in rows
             ],
             "page": page,
@@ -164,9 +181,11 @@ async def sitemap_publishers(
     session: AsyncSession = Depends(get_session),
 ):
     async def build():
-        total = (await session.execute(
-            select(func.count(Publisher.id)).where(Publisher.is_suspended == False)  # noqa: E712
-        )).scalar() or 0
+        total = (
+            await session.execute(
+                select(func.count(Publisher.id)).where(Publisher.is_suspended == False)  # noqa: E712
+            )
+        ).scalar() or 0
 
         result = await session.execute(
             select(Publisher.slug, Publisher.updated_at)
@@ -179,7 +198,10 @@ async def sitemap_publishers(
 
         return {
             "items": [
-                {"slug": r.slug, "updated_at": r.updated_at.isoformat() if r.updated_at else None}
+                {
+                    "slug": r.slug,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                }
                 for r in rows
             ],
             "page": page,
@@ -197,7 +219,7 @@ async def sitemap_pages(
     # Static pages from DB (only indexable)
     result = await session.execute(
         select(SitemapPage)
-        .where(SitemapPage.indexable == True)
+        .where(SitemapPage.indexable.is_(True))
         .order_by(SitemapPage.sort_order)
     )
     db_pages = result.scalars().all()
@@ -209,16 +231,20 @@ async def sitemap_pages(
 
     # Add archive pages for post types with has_archive=true
     result = await session.execute(
-        select(BlogPostType).where(BlogPostType.has_archive == True).order_by(BlogPostType.sort_order)
+        select(BlogPostType)
+        .where(BlogPostType.has_archive.is_(True))
+        .order_by(BlogPostType.sort_order)
     )
     post_types = result.scalars().all()
 
     for pt in post_types:
-        pages.append({
-            "path": f"/{pt.url_prefix}",
-            "priority": float(pt.sitemap_priority),
-            "changefreq": pt.sitemap_changefreq,
-        })
+        pages.append(
+            {
+                "path": f"/{pt.url_prefix}",
+                "priority": float(pt.sitemap_priority),
+                "changefreq": pt.sitemap_changefreq,
+            }
+        )
 
     return {"items": pages}
 
@@ -228,7 +254,11 @@ async def sitemap_pages(
 admin_router = APIRouter(prefix="/v1/admin/sitemap", tags=["admin-sitemap"])
 
 
-@admin_router.get("/pages", response_model=list[SitemapPageResponse], dependencies=[Depends(rate_limit(30, 60))])
+@admin_router.get(
+    "/pages",
+    response_model=list[SitemapPageResponse],
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def list_sitemap_pages(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
@@ -239,14 +269,22 @@ async def list_sitemap_pages(
     pages = result.scalars().all()
     return [
         SitemapPageResponse(
-            id=p.id, path=p.path, priority=p.priority,
-            changefreq=p.changefreq, indexable=p.indexable, sort_order=p.sort_order,
+            id=p.id,
+            path=p.path,
+            priority=p.priority,
+            changefreq=p.changefreq,
+            indexable=p.indexable,
+            sort_order=p.sort_order,
         )
         for p in pages
     ]
 
 
-@admin_router.post("/pages", response_model=SitemapPageResponse, dependencies=[Depends(rate_limit(10, 60))])
+@admin_router.post(
+    "/pages",
+    response_model=SitemapPageResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def create_sitemap_page(
     body: SitemapPageCreate,
     user: User = Depends(require_admin),
@@ -259,19 +297,30 @@ async def create_sitemap_page(
         raise AppError("SITEMAP_PAGE_EXISTS", "Page with this path already exists", 409)
 
     page = SitemapPage(
-        path=body.path, priority=body.priority, changefreq=body.changefreq,
-        indexable=body.indexable, sort_order=body.sort_order,
+        path=body.path,
+        priority=body.priority,
+        changefreq=body.changefreq,
+        indexable=body.indexable,
+        sort_order=body.sort_order,
     )
     session.add(page)
     await session.commit()
     await session.refresh(page)
     return SitemapPageResponse(
-        id=page.id, path=page.path, priority=page.priority,
-        changefreq=page.changefreq, indexable=page.indexable, sort_order=page.sort_order,
+        id=page.id,
+        path=page.path,
+        priority=page.priority,
+        changefreq=page.changefreq,
+        indexable=page.indexable,
+        sort_order=page.sort_order,
     )
 
 
-@admin_router.put("/pages/{page_id}", response_model=SitemapPageResponse, dependencies=[Depends(rate_limit(20, 60))])
+@admin_router.put(
+    "/pages/{page_id}",
+    response_model=SitemapPageResponse,
+    dependencies=[Depends(rate_limit(20, 60))],
+)
 async def update_sitemap_page(
     page_id: uuid.UUID,
     body: SitemapPageUpdate,
@@ -291,8 +340,12 @@ async def update_sitemap_page(
     await session.commit()
     await session.refresh(page)
     return SitemapPageResponse(
-        id=page.id, path=page.path, priority=page.priority,
-        changefreq=page.changefreq, indexable=page.indexable, sort_order=page.sort_order,
+        id=page.id,
+        path=page.path,
+        priority=page.priority,
+        changefreq=page.changefreq,
+        indexable=page.indexable,
+        sort_order=page.sort_order,
     )
 
 

@@ -7,6 +7,7 @@ Scoring weights:
   trust       0.15  — publisher trust level + provenance signals
   permissions 0.10  — lower permissions = safer = higher score
 """
+
 from __future__ import annotations
 
 import math
@@ -60,10 +61,10 @@ def effective_capability_count(declared: int) -> float:
 
 # Spec §4.3 — direct subtraction penalties for permissions scoring
 PERMISSION_DEDUCTIONS = {
-    "unrestricted": 0.3,   # network_level == "unrestricted"
-    "shell": 0.4,          # code_execution_level == "shell"
+    "unrestricted": 0.3,  # network_level == "unrestricted"
+    "shell": 0.4,  # code_execution_level == "shell"
     "workspace_write": 0.2,  # filesystem_level == "workspace_write"
-    "any": 0.2,            # data_access_level == "any"
+    "any": 0.2,  # data_access_level == "any"
 }
 
 
@@ -139,8 +140,9 @@ async def _expand_capabilities(
 
     # Find categories for the requested capabilities
     result = await session.execute(
-        select(CapabilityTaxonomy.id, CapabilityTaxonomy.category)
-        .where(CapabilityTaxonomy.id.in_(capabilities))
+        select(CapabilityTaxonomy.id, CapabilityTaxonomy.category).where(
+            CapabilityTaxonomy.id.in_(capabilities)
+        )
     )
     known_caps = result.all()
 
@@ -229,13 +231,12 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
     policy_evaluator = None
     if req.policy:
         from app.resolution.policy import evaluate_policy_inline
+
         policy_evaluator = evaluate_policy_inline
 
     # Score each package
     results: list[ScoredPackage] = []
     requested_caps = set(req.capabilities)
-    # For scoring, we match against the original requested caps
-    scoring_caps = requested_caps
 
     for pkg_id, version in best_version_per_package.items():
         pkg = version.package
@@ -256,7 +257,9 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
             continue
 
         # Capability score: fraction of requested capabilities matched
-        cap_score = len(original_matched) / len(requested_caps) if requested_caps else 0.0
+        cap_score = (
+            len(original_matched) / len(requested_caps) if requested_caps else 0.0
+        )
         # Bonus for expanded matches (up to 0.5 of remaining gap)
         if expanded_only and cap_score < 1.0:
             bonus = min(0.5 * (1.0 - cap_score), len(expanded_only) * 0.1)
@@ -276,7 +279,9 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
         # Framework score
         fw_score = 0.0
         if req.framework:
-            frameworks = {r.framework for r in version.compatibility_rules if r.framework}
+            frameworks = {
+                r.framework for r in version.compatibility_rules if r.framework
+            }
             if req.framework in frameworks or "generic" in frameworks:
                 fw_score = 1.0
             elif frameworks:
@@ -335,30 +340,32 @@ async def resolve(req: ResolveRequest, session: AsyncSession) -> list[ScoredPack
             if policy_result == "blocked":
                 continue
 
-        results.append(ScoredPackage(
-            slug=pkg.slug,
-            name=pkg.name,
-            package_type=pkg.package_type,
-            summary=pkg.summary,
-            version=version.version_number,
-            publisher_slug=pkg.publisher.slug,
-            trust_level=pkg.publisher.trust_level,
-            score=round(total, 4),
-            policy_result=policy_result,
-            breakdown={
-                "capability": round(cap_score, 4),
-                "framework": round(fw_score, 4),
-                "runtime": round(rt_score, 4),
-                "trust": round(trust_score, 4),
-                "permissions": round(perm_score, 4),
-            },
-            matched_capabilities=sorted(matched),
-            install_count=pkg.install_count,
-            download_count=pkg.download_count,
-            broad_package=is_broad,
-        ))
+        results.append(
+            ScoredPackage(
+                slug=pkg.slug,
+                name=pkg.name,
+                package_type=pkg.package_type,
+                summary=pkg.summary,
+                version=version.version_number,
+                publisher_slug=pkg.publisher.slug,
+                trust_level=pkg.publisher.trust_level,
+                score=round(total, 4),
+                policy_result=policy_result,
+                breakdown={
+                    "capability": round(cap_score, 4),
+                    "framework": round(fw_score, 4),
+                    "runtime": round(rt_score, 4),
+                    "trust": round(trust_score, 4),
+                    "permissions": round(perm_score, 4),
+                },
+                matched_capabilities=sorted(matched),
+                install_count=pkg.install_count,
+                download_count=pkg.download_count,
+                broad_package=is_broad,
+            )
+        )
 
     # Sort by score descending, then by installs, then downloads, then alphabetical
     results.sort(key=lambda r: (-r.score, -r.install_count, -r.download_count, r.slug))
 
-    return results[:req.limit]
+    return results[: req.limit]

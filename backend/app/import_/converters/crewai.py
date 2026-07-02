@@ -1,4 +1,5 @@
 """CrewAI tool extractor — handles @tool("Name") decorator and BaseTool subclasses."""
+
 from __future__ import annotations
 
 import ast
@@ -38,11 +39,15 @@ def extract(source: str, tree: ast.Module) -> ExtractResult:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             decorator_name = _get_tool_decorator_name(node)
             if decorator_name is not None:
-                tool = _extract_decorated_tool(node, decorator_name, source_lines, result)
+                tool = _extract_decorated_tool(
+                    node, decorator_name, source_lines, result
+                )
                 if tool:
                     tool_func_names.add(node.name)
                     result.tools.append(tool)
-                    result.changes.append(f'Decorator `@tool` removed from `{node.name}`')
+                    result.changes.append(
+                        f"Decorator `@tool` removed from `{node.name}`"
+                    )
 
     # BaseTool subclasses
     for node in tree.body:
@@ -54,7 +59,7 @@ def extract(source: str, tree: ast.Module) -> ExtractResult:
                     tool_func_names.add(tool.name)
                     result.tools.append(tool)
                     result.changes.append(
-                        f'BaseTool class `{node.name}` extracted into standalone function `{tool.name}()`'
+                        f"BaseTool class `{node.name}` extracted into standalone function `{tool.name}()`"
                     )
 
     # Collect helpers
@@ -67,7 +72,9 @@ def extract(source: str, tree: ast.Module) -> ExtractResult:
     return result
 
 
-def _get_tool_decorator_name(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+def _get_tool_decorator_name(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> str | None:
     """Get the tool name from @tool decorator, or None if not a tool.
 
     Returns:
@@ -82,11 +89,19 @@ def _get_tool_decorator_name(node: ast.FunctionDef | ast.AsyncFunctionDef) -> st
             func = dec.func
             if isinstance(func, ast.Name) and func.id == "tool":
                 # @tool("Name") or @tool()
-                if dec.args and isinstance(dec.args[0], ast.Constant) and isinstance(dec.args[0].value, str):
+                if (
+                    dec.args
+                    and isinstance(dec.args[0], ast.Constant)
+                    and isinstance(dec.args[0].value, str)
+                ):
                     return dec.args[0].value
                 return ""
             if isinstance(func, ast.Attribute) and func.attr == "tool":
-                if dec.args and isinstance(dec.args[0], ast.Constant) and isinstance(dec.args[0].value, str):
+                if (
+                    dec.args
+                    and isinstance(dec.args[0], ast.Constant)
+                    and isinstance(dec.args[0].value, str)
+                ):
                     return dec.args[0].value
                 return ""
     return None
@@ -119,7 +134,10 @@ def _extract_decorated_tool(
     return_annotation = get_return_annotation(node)
 
     body, has_return_dict, return_kind = apply_return_policy(
-        func_name, return_annotation, body, result,
+        func_name,
+        return_annotation,
+        body,
+        result,
     )
 
     return ExtractedTool(
@@ -158,16 +176,26 @@ def _extract_basetool(
     # CrewAI BaseTool uses Pydantic field syntax: name: str = "my_tool"
     for item in node.body:
         if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
-            if item.target.id == "name" and item.value and isinstance(item.value, ast.Constant):
+            if (
+                item.target.id == "name"
+                and item.value
+                and isinstance(item.value, ast.Constant)
+            ):
                 tool_name = str(item.value.value)
-            elif item.target.id == "description" and item.value and isinstance(item.value, ast.Constant):
+            elif (
+                item.target.id == "description"
+                and item.value
+                and isinstance(item.value, ast.Constant)
+            ):
                 tool_description = str(item.value.value)
         elif isinstance(item, ast.Assign):
             for target in item.targets:
                 if isinstance(target, ast.Name):
                     if target.id == "name" and isinstance(item.value, ast.Constant):
                         tool_name = str(item.value.value)
-                    elif target.id == "description" and isinstance(item.value, ast.Constant):
+                    elif target.id == "description" and isinstance(
+                        item.value, ast.Constant
+                    ):
                         tool_description = str(item.value.value)
 
     if not tool_name:
@@ -177,7 +205,10 @@ def _extract_basetool(
     # Find _run method
     run_method = None
     for item in node.body:
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "_run":
+        if (
+            isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and item.name == "_run"
+        ):
             run_method = item
             break
 
@@ -209,10 +240,18 @@ def _extract_basetool(
     return_annotation = get_return_annotation(run_method)
 
     body, has_return_dict, return_kind = apply_return_policy(
-        func_name, return_annotation, body, result,
+        func_name,
+        return_annotation,
+        body,
+        result,
     )
 
-    description = tool_description or ast.get_docstring(run_method) or ast.get_docstring(node) or ""
+    description = (
+        tool_description
+        or ast.get_docstring(run_method)
+        or ast.get_docstring(node)
+        or ""
+    )
 
     return ExtractedTool(
         name=func_name,
