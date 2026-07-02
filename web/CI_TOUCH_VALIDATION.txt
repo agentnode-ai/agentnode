@@ -1,0 +1,3 @@
+Temporary no-op to validate that a web/** change triggers the sdk-web real jobs
+(esp. web-lint-build, whose path detection was newly added) and that sdk-web-required
+reflects the real result. Throwaway validation PR; will be removed. Not product code.
