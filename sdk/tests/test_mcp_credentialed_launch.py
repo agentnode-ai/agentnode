@@ -118,10 +118,10 @@ def _isolate(monkeypatch, tmp_path):
     set_default_backend(None)
 
 
-def _backend(monkeypatch, available=True):
-    be = ContainerBackend(runtime="docker")
+def _backend(monkeypatch, available=True, runtime="docker"):
+    be = ContainerBackend(runtime=runtime)
     monkeypatch.setattr(be, "check_available", lambda: SandboxAvailability(
-        available=available, backend="docker" if available else "none",
+        available=available, backend=runtime if available else "none",
         reason="" if available else "no runtime",
         daemon_ok=available, image_available=available))
     be.run_process = _RunRecorder(be)  # type: ignore[method-assign]
@@ -533,3 +533,55 @@ def test_credentialed_start_cancel_tears_down_before_secret_read(monkeypatch):
     assert eg.started == 1 and eg.stopped == 1   # partial resources (egress) torn down on cancel
     assert not _FakePopen.instances              # no container ever started
     assert reads == []                           # secret VALUE never read
+
+
+# ===========================================================================
+# sandbox-runtime matrix (3B-2b): the credentialed launch honors the detected
+# runtime (docker OR podman) and refuses fail-closed when NONE is available.
+# ===========================================================================
+
+def test_credentialed_podman_uses_podman_argv_secret_by_name(monkeypatch):
+    """With podman as the (only) runtime, the credentialed launch emits podman argv — the secret
+    still rides ONLY as ``--env NAME`` (never a value on argv), and egress is torn down cleanly."""
+    monkeypatch.setenv("GITHUB_TOKEN", SECRET_VALUE)
+    _backend(monkeypatch, runtime="podman")
+    _patch_inspect(monkeypatch)
+    eg = _patch_egress(monkeypatch)
+
+    proc = _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN))
+    proc.start(env_keys=["GITHUB_TOKEN"])
+
+    fp = _FakePopen.instances[-1]
+    argv = fp.args
+    joined = " ".join(argv)
+    assert argv[0] == "podman"                          # detected runtime drives the argv
+    assert "--env" in argv and argv[argv.index("--env") + 1] == "GITHUB_TOKEN"
+    assert SECRET_VALUE not in joined                   # value never on argv
+    assert "GITHUB_TOKEN=" + SECRET_VALUE not in joined
+    assert fp.env.get("GITHUB_TOKEN") == SECRET_VALUE   # value only in the client env, by name
+    assert argv[-len(VOLUME_CMD):] == VOLUME_CMD        # sealed volume command (no npx/uvx fetch)
+    assert eg.started == 1
+
+    proc.stop()
+    assert eg.stopped == 1                              # egress torn down (podman path)
+
+
+def test_credentialed_no_runtime_fail_closed(monkeypatch):
+    """No container runtime (neither docker nor podman) => a credentialed run is refused fail-closed
+    at the top sandbox gate — BEFORE consent, egress, any secret read, or a container — never a
+    host fallback."""
+    monkeypatch.setenv("GITHUB_TOKEN", SECRET_VALUE)
+    _backend(monkeypatch, available=False)  # neither docker nor podman detected
+    _patch_inspect(monkeypatch)
+    eg = _patch_egress(monkeypatch)
+    reads: list = []
+    real_read = mcp_runner._credentialed_client_env
+    monkeypatch.setattr(mcp_runner, "_credentialed_client_env",
+                        lambda ek: reads.append(ek) or real_read(ek))
+
+    with pytest.raises(SandboxRequiredError):
+        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(env_keys=["GITHUB_TOKEN"])
+
+    assert eg.started == 0            # fail-closed BEFORE egress
+    assert not _FakePopen.instances  # no container ever started
+    assert reads == []               # secret VALUE never read
