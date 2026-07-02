@@ -8,6 +8,14 @@ import { useAdminUser } from "../../layout";
 import CompleteForm from "../CompleteForm";
 import RefundForm from "../RefundForm";
 
+interface ReviewResult {
+  security_passed?: boolean;
+  compatibility_passed?: boolean;
+  docs_passed?: boolean;
+  required_changes?: string[];
+  reviewer_summary?: string;
+}
+
 interface ReviewDetail {
   id: string;
   order_id: string;
@@ -20,7 +28,7 @@ interface ReviewDetail {
   currency: string;
   status: string;
   review_notes: string | null;
-  review_result: Record<string, any> | null;
+  review_result: ReviewResult | null;
   refund_amount_cents: number | null;
   paid_at: string | null;
   reviewed_at: string | null;

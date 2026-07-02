@@ -74,6 +74,106 @@ function Chevron({ open }: { open: boolean }) {
   );
 }
 
+function DesktopDropdown({
+  group,
+  pathname,
+  openDropdown,
+  setOpenDropdown,
+  groupIsActive,
+}: {
+  group: NavGroup;
+  pathname: string;
+  openDropdown: string | null;
+  setOpenDropdown: (value: string | null) => void;
+  groupIsActive: (group: NavGroup) => boolean;
+}) {
+  const isOpen = openDropdown === group.label;
+  const active = groupIsActive(group);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        aria-haspopup="true"
+        aria-expanded={isOpen}
+        onClick={() => setOpenDropdown(isOpen ? null : group.label)}
+        className={`flex items-center rounded-md px-3 py-2 text-sm transition-colors ${
+          isOpen || active ? "text-foreground bg-card" : "text-muted hover:text-foreground"
+        }`}
+      >
+        {group.label}
+        <Chevron open={isOpen} />
+      </button>
+      {isOpen && (
+        <div
+          role="menu"
+          aria-label={group.label}
+          className="absolute left-0 mt-1 min-w-[13rem] rounded-lg border border-border bg-background/95 p-1 shadow-lg backdrop-blur-md"
+        >
+          {group.items.map((it) => (
+            <Link
+              key={it.href}
+              href={it.href}
+              role="menuitem"
+              onClick={() => setOpenDropdown(null)}
+              className={`block rounded-md px-3 py-2 text-sm transition-colors ${
+                pathname === it.href
+                  ? "text-foreground bg-card"
+                  : "text-muted hover:text-foreground hover:bg-card/60"
+              }`}
+            >
+              {it.label}
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MobileAccordion({
+  group,
+  pathname,
+  mobileExpanded,
+  setMobileExpanded,
+}: {
+  group: NavGroup;
+  pathname: string;
+  mobileExpanded: string | null;
+  setMobileExpanded: (value: string | null) => void;
+}) {
+  const isOpen = mobileExpanded === group.label;
+  return (
+    <div className="border-b border-border/50 last:border-0">
+      <button
+        type="button"
+        aria-expanded={isOpen}
+        onClick={() => setMobileExpanded(isOpen ? null : group.label)}
+        className="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm text-foreground"
+      >
+        {group.label}
+        <Chevron open={isOpen} />
+      </button>
+      {isOpen && (
+        <div className="pb-2 pl-3">
+          {group.items.map((it) => (
+            <Link
+              key={it.href}
+              href={it.href}
+              className={`block rounded-md px-3 py-2 text-sm transition-colors ${
+                pathname === it.href
+                  ? "text-foreground bg-card"
+                  : "text-muted hover:text-foreground"
+              }`}
+            >
+              {it.label}
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Navbar() {
   const pathname = usePathname();
   const router = useRouter();
@@ -145,84 +245,6 @@ export default function Navbar() {
     group.items.some((it) => pathname === it.href);
   const docsIsActive = pathname === "/docs" || pathname.startsWith("/docs/");
 
-  function DesktopDropdown({ group }: { group: NavGroup }) {
-    const isOpen = openDropdown === group.label;
-    const active = groupIsActive(group);
-    return (
-      <div className="relative">
-        <button
-          type="button"
-          aria-haspopup="true"
-          aria-expanded={isOpen}
-          onClick={() => setOpenDropdown(isOpen ? null : group.label)}
-          className={`flex items-center rounded-md px-3 py-2 text-sm transition-colors ${
-            isOpen || active ? "text-foreground bg-card" : "text-muted hover:text-foreground"
-          }`}
-        >
-          {group.label}
-          <Chevron open={isOpen} />
-        </button>
-        {isOpen && (
-          <div
-            role="menu"
-            aria-label={group.label}
-            className="absolute left-0 mt-1 min-w-[13rem] rounded-lg border border-border bg-background/95 p-1 shadow-lg backdrop-blur-md"
-          >
-            {group.items.map((it) => (
-              <Link
-                key={it.href}
-                href={it.href}
-                role="menuitem"
-                onClick={() => setOpenDropdown(null)}
-                className={`block rounded-md px-3 py-2 text-sm transition-colors ${
-                  pathname === it.href
-                    ? "text-foreground bg-card"
-                    : "text-muted hover:text-foreground hover:bg-card/60"
-                }`}
-              >
-                {it.label}
-              </Link>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  function MobileAccordion({ group }: { group: NavGroup }) {
-    const isOpen = mobileExpanded === group.label;
-    return (
-      <div className="border-b border-border/50 last:border-0">
-        <button
-          type="button"
-          aria-expanded={isOpen}
-          onClick={() => setMobileExpanded(isOpen ? null : group.label)}
-          className="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm text-foreground"
-        >
-          {group.label}
-          <Chevron open={isOpen} />
-        </button>
-        {isOpen && (
-          <div className="pb-2 pl-3">
-            {group.items.map((it) => (
-              <Link
-                key={it.href}
-                href={it.href}
-                className={`block rounded-md px-3 py-2 text-sm transition-colors ${
-                  pathname === it.href
-                    ? "text-foreground bg-card"
-                    : "text-muted hover:text-foreground"
-                }`}
-              >
-                {it.label}
-              </Link>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
   return (
     <nav className="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-md">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
@@ -238,9 +260,9 @@ export default function Navbar() {
             (1024); with 5 top-level entries instead of 13 flat links there is
             ample room. */}
         <div ref={desktopNavRef} className="hidden lg:flex items-center gap-1">
-          <DesktopDropdown group={NAV_GROUPS[0]} />
-          <DesktopDropdown group={NAV_GROUPS[1]} />
-          <DesktopDropdown group={NAV_GROUPS[2]} />
+          <DesktopDropdown group={NAV_GROUPS[0]} pathname={pathname} openDropdown={openDropdown} setOpenDropdown={setOpenDropdown} groupIsActive={groupIsActive} />
+          <DesktopDropdown group={NAV_GROUPS[1]} pathname={pathname} openDropdown={openDropdown} setOpenDropdown={setOpenDropdown} groupIsActive={groupIsActive} />
+          <DesktopDropdown group={NAV_GROUPS[2]} pathname={pathname} openDropdown={openDropdown} setOpenDropdown={setOpenDropdown} groupIsActive={groupIsActive} />
           <Link
             href="/docs"
             className={`rounded-md px-3 py-2 text-sm transition-colors ${
@@ -249,7 +271,7 @@ export default function Navbar() {
           >
             Docs
           </Link>
-          <DesktopDropdown group={NAV_GROUPS[3]} />
+          <DesktopDropdown group={NAV_GROUPS[3]} pathname={pathname} openDropdown={openDropdown} setOpenDropdown={setOpenDropdown} groupIsActive={groupIsActive} />
 
           <Link
             href="/getting-started"
@@ -321,9 +343,9 @@ export default function Navbar() {
           className="lg:hidden border-t border-border bg-background/95 backdrop-blur-md px-6 pb-4 pt-2"
         >
           <div className="flex flex-col">
-            <MobileAccordion group={NAV_GROUPS[0]} />
-            <MobileAccordion group={NAV_GROUPS[1]} />
-            <MobileAccordion group={NAV_GROUPS[2]} />
+            <MobileAccordion group={NAV_GROUPS[0]} pathname={pathname} mobileExpanded={mobileExpanded} setMobileExpanded={setMobileExpanded} />
+            <MobileAccordion group={NAV_GROUPS[1]} pathname={pathname} mobileExpanded={mobileExpanded} setMobileExpanded={setMobileExpanded} />
+            <MobileAccordion group={NAV_GROUPS[2]} pathname={pathname} mobileExpanded={mobileExpanded} setMobileExpanded={setMobileExpanded} />
             <Link
               href="/docs"
               className={`border-b border-border/50 rounded-md px-3 py-2 text-sm transition-colors ${
@@ -332,7 +354,7 @@ export default function Navbar() {
             >
               Docs
             </Link>
-            <MobileAccordion group={NAV_GROUPS[3]} />
+            <MobileAccordion group={NAV_GROUPS[3]} pathname={pathname} mobileExpanded={mobileExpanded} setMobileExpanded={setMobileExpanded} />
 
             <Link
               href="/getting-started"

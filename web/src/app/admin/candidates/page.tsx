@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { fetchWithAuth } from "@/lib/api";
 
 /* ------------------------------------------------------------------ */
@@ -483,7 +483,6 @@ export default function CandidatesPage() {
 
   // Detail view
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
   const [selectedEvents, setSelectedEvents] = useState<CandidateEvent[]>([]);
 
   // Create candidate modal
@@ -504,14 +503,14 @@ export default function CandidatesPage() {
 
   const perPage = 50;
 
-  const loadFunnel = useCallback(async () => {
+  const loadFunnel = async () => {
     try {
       const res = await fetchWithAuth("/admin/candidates/funnel");
       if (res.ok) setFunnel(await res.json());
     } catch { /* ignore */ }
-  }, []);
+  };
 
-  const loadCandidates = useCallback(async () => {
+  const loadCandidates = async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams({ page: String(page), per_page: String(perPage) });
@@ -528,22 +527,47 @@ export default function CandidatesPage() {
       }
     } catch { /* ignore */ }
     setLoading(false);
+  };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetchWithAuth("/admin/candidates/funnel");
+        if (res.ok) setFunnel(await res.json());
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const params = new URLSearchParams({ page: String(page), per_page: String(perPage) });
+      if (statusFilter) params.set("outreach_status", statusFilter);
+      if (sourceFilter) params.set("source", sourceFilter);
+      if (formatFilter) params.set("detected_format", formatFilter);
+      if (funnelFilter) params.set("funnel_filter", funnelFilter);
+
+      const res = await fetchWithAuth(`/admin/candidates?${params}`);
+      if (res.ok && !cancelled) {
+        const data = await res.json();
+        setCandidates(data.items);
+        setTotal(data.total);
+      }
+      if (!cancelled) setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [page, statusFilter, sourceFilter, formatFilter, funnelFilter]);
 
-  useEffect(() => { loadFunnel(); }, [loadFunnel]);
-  useEffect(() => { loadCandidates(); }, [loadCandidates]);
-
-  // Load detail
+  // Load detail events
   useEffect(() => {
     if (!selectedId) return;
-    const c = candidates.find((c) => c.id === selectedId);
-    setSelectedCandidate(c || null);
-
     fetchWithAuth(`/admin/candidates/${selectedId}/events`)
       .then((res) => res.ok ? res.json() : { items: [] })
       .then((data) => setSelectedEvents(data.items || []))
       .catch(() => setSelectedEvents([]));
-  }, [selectedId, candidates]);
+  }, [selectedId]);
 
   const handleGenerateInvite = async (sendEmail = false) => {
     if (!selectedId) return;
@@ -603,6 +627,9 @@ export default function CandidatesPage() {
       body: JSON.stringify({ admin_notes: notes }),
     });
     loadCandidates();
+    // Reload events
+    const evRes = await fetchWithAuth(`/admin/candidates/${selectedId}/events`);
+    if (evRes.ok) { const d = await evRes.json(); setSelectedEvents(d.items || []); }
   };
 
   const handleBulkSend = async () => {
@@ -662,6 +689,10 @@ export default function CandidatesPage() {
     }
     setCreating(false);
   };
+
+  const selectedCandidate = selectedId
+    ? candidates.find((c) => c.id === selectedId) ?? null
+    : null;
 
   const totalPages = Math.ceil(total / perPage);
 
@@ -761,7 +792,7 @@ export default function CandidatesPage() {
       <div className="mb-4 flex flex-wrap gap-3">
         <select
           value={statusFilter}
-          onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+          onChange={(e) => { setStatusFilter(e.target.value); setPage(1); setLoading(true); }}
           className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
         >
           <option value="">All statuses</option>
@@ -776,7 +807,7 @@ export default function CandidatesPage() {
 
         <select
           value={sourceFilter}
-          onChange={(e) => { setSourceFilter(e.target.value); setPage(1); }}
+          onChange={(e) => { setSourceFilter(e.target.value); setPage(1); setLoading(true); }}
           className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
         >
           <option value="">All sources</option>
@@ -787,7 +818,7 @@ export default function CandidatesPage() {
 
         <select
           value={formatFilter}
-          onChange={(e) => { setFormatFilter(e.target.value); setPage(1); }}
+          onChange={(e) => { setFormatFilter(e.target.value); setPage(1); setLoading(true); }}
           className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
         >
           <option value="">All formats</option>
@@ -799,7 +830,7 @@ export default function CandidatesPage() {
 
         <select
           value={funnelFilter}
-          onChange={(e) => { setFunnelFilter(e.target.value); setPage(1); }}
+          onChange={(e) => { setFunnelFilter(e.target.value); setPage(1); setLoading(true); }}
           className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
         >
           <option value="">All funnel stages</option>
@@ -866,7 +897,7 @@ export default function CandidatesPage() {
           <span className="text-muted">{total} candidates</span>
           <div className="flex gap-2">
             <button
-              onClick={() => setPage(Math.max(1, page - 1))}
+              onClick={() => { setPage(Math.max(1, page - 1)); setLoading(true); }}
               disabled={page === 1}
               className="rounded-md border border-border px-3 py-1.5 text-xs disabled:opacity-30"
             >
@@ -876,7 +907,7 @@ export default function CandidatesPage() {
               {page} / {totalPages}
             </span>
             <button
-              onClick={() => setPage(Math.min(totalPages, page + 1))}
+              onClick={() => { setPage(Math.min(totalPages, page + 1)); setLoading(true); }}
               disabled={page === totalPages}
               className="rounded-md border border-border px-3 py-1.5 text-xs disabled:opacity-30"
             >
@@ -939,7 +970,7 @@ export default function CandidatesPage() {
         <DetailPanel
           candidate={selectedCandidate}
           events={selectedEvents}
-          onClose={() => { setSelectedId(null); setSelectedCandidate(null); }}
+          onClose={() => setSelectedId(null)}
           onGenerateInvite={() => handleGenerateInvite(false)}
           onGenerateAndSend={() => handleGenerateInvite(true)}
           onFollowup={handleFollowup}
