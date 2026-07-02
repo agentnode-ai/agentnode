@@ -3,7 +3,16 @@ import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, select
@@ -16,7 +25,13 @@ from app.auth.models import User
 from app.database import async_session_factory, get_session
 from app.shared.rate_limit import rate_limit
 from app.packages.assembler import assemble_package_detail
-from app.packages.models import Installation, Package, PackageReport, PackageVersion, Review
+from app.packages.models import (
+    Installation,
+    Package,
+    PackageReport,
+    PackageVersion,
+    Review,
+)
 from app.packages.schemas import (
     ActionResponse,
     PackageDetailResponse,
@@ -29,7 +44,11 @@ from app.packages.schemas import (
 )
 from app.packages.service import publish_package
 from app.packages.validator import validate_manifest, compute_gold_eligibility
-from app.packages.version_queries import get_latest_installable_version, get_latest_owner_visible_version, get_owner_visible_versions, get_public_versions
+from app.packages.version_queries import (
+    get_latest_installable_version,
+    get_latest_owner_visible_version,
+    get_owner_visible_versions,
+)
 from app.config import settings
 from app.shared.exceptions import AppError
 from app.shared.storage import download_preview_file, PREVIEW_EXTENSIONS
@@ -85,7 +104,11 @@ async def invalidate_package_cache(redis, slug: str) -> None:
         logger.warning("Failed to invalidate package cache for %s", slug, exc_info=True)
 
 
-@router.post("/validate", response_model=ValidateResponse, dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))])
+@router.post(
+    "/validate",
+    response_model=ValidateResponse,
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
 async def validate_package(
     body: ValidateRequest,
     user: User = Depends(get_current_user),
@@ -101,7 +124,12 @@ async def validate_package(
     )
 
 
-@router.post("/publish", response_model=PublishResponse, status_code=201, dependencies=[Depends(rate_limit(10, 60))])
+@router.post(
+    "/publish",
+    response_model=PublishResponse,
+    status_code=201,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def publish(
     request: Request,
     manifest: str = Form(...),
@@ -112,7 +140,9 @@ async def publish(
 ):
     """Publish a new package or new version of an existing package."""
     if user.publisher.is_system_publisher:
-        raise AppError("SYSTEM_PUBLISHER_READONLY", "System publishers cannot publish via API", 403)
+        raise AppError(
+            "SYSTEM_PUBLISHER_READONLY", "System publishers cannot publish via API", 403
+        )
     if not manifest or not manifest.strip():
         raise AppError("MANIFEST_INVALID", "Manifest must not be empty", 400)
     try:
@@ -122,13 +152,27 @@ async def publish(
 
     artifact_bytes = None
     if artifact:
-        if artifact.content_type and not artifact.content_type.startswith(("application/gzip", "application/x-gzip", "application/octet-stream", "application/x-tar", "application/x-compressed")):
-            raise AppError("ARTIFACT_INVALID_TYPE", f"Artifact content type '{artifact.content_type}' not allowed. Expected a gzip/tar archive.", 400)
+        if artifact.content_type and not artifact.content_type.startswith(
+            (
+                "application/gzip",
+                "application/x-gzip",
+                "application/octet-stream",
+                "application/x-tar",
+                "application/x-compressed",
+            )
+        ):
+            raise AppError(
+                "ARTIFACT_INVALID_TYPE",
+                f"Artifact content type '{artifact.content_type}' not allowed. Expected a gzip/tar archive.",
+                400,
+            )
         limit = settings.MAX_ARTIFACT_SIZE_BYTES
         artifact_bytes = await artifact.read(limit + 1)
         if len(artifact_bytes) > limit:
             limit_mb = limit / (1024 * 1024)
-            raise AppError("ARTIFACT_TOO_LARGE", f"Artifact must be under {limit_mb:.0f} MB", 413)
+            raise AppError(
+                "ARTIFACT_TOO_LARGE", f"Artifact must be under {limit_mb:.0f} MB", 413
+            )
 
     pkg, pv, warnings = await publish_package(
         manifest=manifest_dict,
@@ -147,12 +191,20 @@ async def publish(
     # Schedule async security scan + verification (do NOT block publish response)
     background_tasks.add_task(run_security_scan, pv.id)
     from app.verification.pipeline import run_verification
+
     background_tasks.add_task(run_verification, pv.id)
 
     # Fire webhook event in background (after commit in publish_package)
-    background_tasks.add_task(fire_event, user.publisher.id, "version.published", {
-        "slug": pkg.slug, "version": pv.version_number, "package_type": pkg.package_type,
-    })
+    background_tasks.add_task(
+        fire_event,
+        user.publisher.id,
+        "version.published",
+        {
+            "slug": pkg.slug,
+            "version": pv.version_number,
+            "package_type": pkg.package_type,
+        },
+    )
 
     message = f"Published {pkg.slug}@{pv.version_number}"
     if warnings:
@@ -168,7 +220,6 @@ async def publish(
 
 def _version_eager_loads():
     """Common selectinload options for PackageVersion relationships."""
-    from app.verification.models import VerificationResult
     return [
         selectinload(PackageVersion.capabilities),
         selectinload(PackageVersion.compatibility_rules),
@@ -181,7 +232,11 @@ def _version_eager_loads():
     ]
 
 
-@router.get("/{slug}", response_model=PackageDetailResponse, dependencies=[Depends(rate_limit(60, 60))])
+@router.get(
+    "/{slug}",
+    response_model=PackageDetailResponse,
+    dependencies=[Depends(rate_limit(60, 60))],
+)
 async def get_package(
     slug: str,
     request: Request,
@@ -249,11 +304,14 @@ async def get_package(
             quarantine_status = "quarantined"
 
     # Resolve installable version for install context
-    installable_pv, install_reason = await get_latest_installable_version(session, pkg.id)
+    installable_pv, install_reason = await get_latest_installable_version(
+        session, pkg.id
+    )
     installable_version = installable_pv.version_number if installable_pv else None
 
     response = assemble_package_detail(
-        pkg, version,
+        pkg,
+        version,
         quarantine_status=quarantine_status,
         installable_version=installable_version,
         install_resolution=install_reason,
@@ -262,7 +320,11 @@ async def get_package(
     # Cache the response with 2-minute TTL (only for default version)
     if not v:
         try:
-            serialized = response.model_dump(mode="json") if hasattr(response, "model_dump") else response
+            serialized = (
+                response.model_dump(mode="json")
+                if hasattr(response, "model_dump")
+                else response
+            )
             await redis.set(cache_key, json.dumps(serialized), ex=120)
         except Exception:
             logger.warning("Redis cache write failed for %s", cache_key, exc_info=True)
@@ -270,7 +332,11 @@ async def get_package(
     return response
 
 
-@router.get("/{slug}/versions", response_model=VersionsResponse, dependencies=[Depends(rate_limit(60, 60))])
+@router.get(
+    "/{slug}/versions",
+    response_model=VersionsResponse,
+    dependencies=[Depends(rate_limit(60, 60))],
+)
 async def get_versions(
     slug: str,
     page: int = Query(1, ge=1),
@@ -278,7 +344,9 @@ async def get_versions(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(Package).options(selectinload(Package.publisher)).where(Package.slug == slug)
+        select(Package)
+        .options(selectinload(Package.publisher))
+        .where(Package.slug == slug)
     )
     pkg = result.scalar_one_or_none()
     if not pkg:
@@ -321,7 +389,11 @@ async def get_versions(
     )
 
 
-@router.get("/{slug}/versions/all", response_model=VersionsResponse, dependencies=[Depends(rate_limit(30, 60))])
+@router.get(
+    "/{slug}/versions/all",
+    response_model=VersionsResponse,
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def get_all_versions(
     slug: str,
     user: User = Depends(get_current_user),
@@ -329,7 +401,9 @@ async def get_all_versions(
 ):
     """Owner-only: returns ALL versions including yanked/quarantined."""
     result = await session.execute(
-        select(Package).options(selectinload(Package.publisher)).where(Package.slug == slug)
+        select(Package)
+        .options(selectinload(Package.publisher))
+        .where(Package.slug == slug)
     )
     pkg = result.scalar_one_or_none()
     if not pkg:
@@ -355,7 +429,10 @@ async def get_all_versions(
     )
 
 
-@router.get("/{slug}/versions/{version}/files/{file_path:path}", dependencies=[Depends(rate_limit(60, 60))])
+@router.get(
+    "/{slug}/versions/{version}/files/{file_path:path}",
+    dependencies=[Depends(rate_limit(60, 60))],
+)
 async def get_file_preview(
     slug: str,
     version: str,
@@ -367,14 +444,14 @@ async def get_file_preview(
     import posixpath
 
     # --- Path traversal protection ---
-    if '\x00' in file_path:
+    if "\x00" in file_path:
         raise AppError("INVALID_FILE_PATH", "Invalid file path", 400)
-    if '..' in file_path:
+    if ".." in file_path:
         raise AppError("INVALID_FILE_PATH", "Invalid file path", 400)
-    if file_path.startswith('/'):
+    if file_path.startswith("/"):
         raise AppError("INVALID_FILE_PATH", "Invalid file path", 400)
     normalized = posixpath.normpath(file_path)
-    if normalized.startswith('..') or normalized.startswith('/'):
+    if normalized.startswith("..") or normalized.startswith("/"):
         raise AppError("INVALID_FILE_PATH", "Invalid file path", 400)
 
     ext = os.path.splitext(file_path)[1].lower()
@@ -382,9 +459,7 @@ async def get_file_preview(
         raise AppError("UNSUPPORTED_TYPE", f"File type '{ext}' not previewable", 415)
 
     # Look up version to get its ID
-    result = await session.execute(
-        select(Package).where(Package.slug == slug)
-    )
+    result = await session.execute(select(Package).where(Package.slug == slug))
     pkg = result.scalar_one_or_none()
     if not pkg:
         raise AppError("PACKAGE_NOT_FOUND", f"Package '{slug}' not found", 404)
@@ -397,16 +472,25 @@ async def get_file_preview(
     )
     pv = ver_result.scalar_one_or_none()
     if not pv:
-        raise AppError("PACKAGE_VERSION_NOT_FOUND", f"Version '{version}' not found", 404)
+        raise AppError(
+            "PACKAGE_VERSION_NOT_FOUND", f"Version '{version}' not found", 404
+        )
     if pv.quarantine_status == "quarantined":
-        raise AppError("VERSION_QUARANTINED", "This version is under review and not yet accessible", 403)
+        raise AppError(
+            "VERSION_QUARANTINED",
+            "This version is under review and not yet accessible",
+            403,
+        )
     version_id = pv.id
 
     content = await download_preview_file(str(version_id), file_path)
     if content is None:
-        raise AppError("FILE_NOT_FOUND", f"File '{file_path}' not found in preview store", 404)
+        raise AppError(
+            "FILE_NOT_FOUND", f"File '{file_path}' not found in preview store", 404
+        )
 
     from app.shared.storage import _CONTENT_TYPE_MAP
+
     ct = _CONTENT_TYPE_MAP.get(ext, "text/plain")
 
     return PlainTextResponse(
@@ -419,7 +503,9 @@ async def get_file_preview(
     )
 
 
-@router.patch("/{slug}", response_model=ActionResponse, dependencies=[Depends(rate_limit(20, 60))])
+@router.patch(
+    "/{slug}", response_model=ActionResponse, dependencies=[Depends(rate_limit(20, 60))]
+)
 async def update_package(
     slug: str,
     body: UpdatePackageRequest,
@@ -430,7 +516,9 @@ async def update_package(
 ):
     """Edit package metadata. Owner-only."""
     result = await session.execute(
-        select(Package).options(selectinload(Package.publisher)).where(Package.slug == slug)
+        select(Package)
+        .options(selectinload(Package.publisher))
+        .where(Package.slug == slug)
     )
     pkg = result.scalar_one_or_none()
     if not pkg:
@@ -448,9 +536,13 @@ async def update_package(
         if not body.summary.strip():
             raise AppError("INVALID_SUMMARY", "Summary must not be empty", 400)
         if len(body.summary) > 200:
-            raise AppError("INVALID_SUMMARY", "Summary must be 200 characters or less", 400)
+            raise AppError(
+                "INVALID_SUMMARY", "Summary must be 200 characters or less", 400
+            )
     if body.description is not None and len(body.description) > 5000:
-        raise AppError("INVALID_DESCRIPTION", "Description must be 5000 characters or less", 400)
+        raise AppError(
+            "INVALID_DESCRIPTION", "Description must be 5000 characters or less", 400
+        )
     if body.tags is not None and len(body.tags) > 20:
         raise AppError("INVALID_TAGS", "Maximum 20 tags allowed", 400)
 
@@ -471,15 +563,20 @@ async def update_package(
     if body.tags is not None:
         pv = await get_latest_owner_visible_version(session, pkg.id)
         if not pv:
-            raise AppError("NO_EDITABLE_VERSION", "No editable version found. All versions are yanked.", 409)
+            raise AppError(
+                "NO_EDITABLE_VERSION",
+                "No editable version found. All versions are yanked.",
+                409,
+            )
 
         search_fields_changed = True
         # Normalize: strip, lowercase, deduplicate, drop empties
-        normalized_tags = list(dict.fromkeys(
-            t.strip().lower() for t in body.tags if t.strip()
-        ))
+        normalized_tags = list(
+            dict.fromkeys(t.strip().lower() for t in body.tags if t.strip())
+        )
         from app.packages.models import PackageTag
         from sqlalchemy import delete
+
         await session.execute(
             delete(PackageTag).where(PackageTag.package_version_id == pv.id)
         )
@@ -499,7 +596,10 @@ async def update_package(
             await session.refresh(pkg, ["publisher"])
             from app.packages.service import build_meili_document
             from app.shared.meili import sync_package_to_meilisearch
-            await sync_package_to_meilisearch(build_meili_document(pkg, pv, pv.manifest_raw or {}))
+
+            await sync_package_to_meilisearch(
+                build_meili_document(pkg, pv, pv.manifest_raw or {})
+            )
 
     return ActionResponse()
 
@@ -513,7 +613,9 @@ async def request_reverify(
 ):
     """Owner-initiated re-verification of the latest owner-visible version."""
     result = await session.execute(
-        select(Package).options(selectinload(Package.publisher)).where(Package.slug == slug)
+        select(Package)
+        .options(selectinload(Package.publisher))
+        .where(Package.slug == slug)
     )
     pkg = result.scalar_one_or_none()
     if not pkg:
@@ -523,16 +625,29 @@ async def request_reverify(
 
     pv = await get_latest_owner_visible_version(session, pkg.id)
     if not pv:
-        raise AppError("NO_VERSION", "No version available to verify. All versions are yanked.", 409)
+        raise AppError(
+            "NO_VERSION",
+            "No version available to verify. All versions are yanked.",
+            409,
+        )
 
     # Guard: already pending/running
     if pv.verification_status in ("pending", "running"):
-        raise AppError("VERIFICATION_IN_PROGRESS", "Verification is already in progress for this version.", 409)
+        raise AppError(
+            "VERIFICATION_IN_PROGRESS",
+            "Verification is already in progress for this version.",
+            409,
+        )
 
     # Guard: cooldown — 1h since last verification
     if pv.last_verified_at:
         cooldown = timedelta(hours=1)
-        elapsed = datetime.now(timezone.utc) - pv.last_verified_at.replace(tzinfo=timezone.utc) if pv.last_verified_at.tzinfo is None else datetime.now(timezone.utc) - pv.last_verified_at
+        elapsed = (
+            datetime.now(timezone.utc)
+            - pv.last_verified_at.replace(tzinfo=timezone.utc)
+            if pv.last_verified_at.tzinfo is None
+            else datetime.now(timezone.utc) - pv.last_verified_at
+        )
         if elapsed < cooldown:
             remaining_mins = int((cooldown - elapsed).total_seconds() / 60)
             raise AppError(
@@ -546,12 +661,17 @@ async def request_reverify(
     await session.commit()
 
     from app.verification.pipeline import run_verification
+
     background_tasks.add_task(run_verification, pv.id, "owner_request")
 
     return {"message": "Verification requested", "version": pv.version_number}
 
 
-@router.post("/{slug}/deprecate", response_model=ActionResponse, dependencies=[Depends(rate_limit(max_requests=5, window_seconds=60))])
+@router.post(
+    "/{slug}/deprecate",
+    response_model=ActionResponse,
+    dependencies=[Depends(rate_limit(max_requests=5, window_seconds=60))],
+)
 async def deprecate_package(
     slug: str,
     background_tasks: BackgroundTasks,
@@ -559,7 +679,9 @@ async def deprecate_package(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(Package).options(selectinload(Package.publisher)).where(Package.slug == slug)
+        select(Package)
+        .options(selectinload(Package.publisher))
+        .where(Package.slug == slug)
     )
     pkg = result.scalar_one_or_none()
     if not pkg:
@@ -570,36 +692,56 @@ async def deprecate_package(
     pkg.is_deprecated = True
 
     from app.packages.version_queries import recalculate_latest_version_id
+
     await recalculate_latest_version_id(session, pkg.id)
     await session.commit()
 
     # P1-D1: sync Meili so the is_deprecated flag propagates to search results.
     from app.shared.meili import sync_package_to_meili
+
     await sync_package_to_meili(session, pkg.id)
 
-    background_tasks.add_task(fire_event, pkg.publisher_id, "package.deprecated", {"slug": pkg.slug})
+    background_tasks.add_task(
+        fire_event, pkg.publisher_id, "package.deprecated", {"slug": pkg.slug}
+    )
 
     # Batch-load emails + preferences for users with active installations (single query)
-    from app.shared.email import send_package_deprecated_emails_batch, EMAIL_PREF_DEFAULTS
+    from app.shared.email import (
+        send_package_deprecated_emails_batch,
+        EMAIL_PREF_DEFAULTS,
+    )
+
     install_results = await session.execute(
-        select(User.__table__.c.email, User.__table__.c.email_preferences).distinct()
-        .select_from(Installation.__table__.join(User.__table__, Installation.user_id == User.__table__.c.id))
+        select(User.__table__.c.email, User.__table__.c.email_preferences)
+        .distinct()
+        .select_from(
+            Installation.__table__.join(
+                User.__table__, Installation.user_id == User.__table__.c.id
+            )
+        )
         .where(Installation.package_id == pkg.id, Installation.status == "active")
     )
     # Filter out users who opted out of deprecation emails — no per-row DB call
     deprecated_default = EMAIL_PREF_DEFAULTS.get("deprecated", True)
     recipients = [
-        row[0] for row in install_results.all()
+        row[0]
+        for row in install_results.all()
         if (row[1] or {}).get("deprecated", deprecated_default)
     ]
 
     if recipients:
-        background_tasks.add_task(send_package_deprecated_emails_batch, recipients, slug)
+        background_tasks.add_task(
+            send_package_deprecated_emails_batch, recipients, slug
+        )
 
     return ActionResponse(message="Package deprecated")
 
 
-@router.post("/{slug}/versions/{version}/yank", response_model=ActionResponse, dependencies=[Depends(rate_limit(max_requests=5, window_seconds=60))])
+@router.post(
+    "/{slug}/versions/{version}/yank",
+    response_model=ActionResponse,
+    dependencies=[Depends(rate_limit(max_requests=5, window_seconds=60))],
+)
 async def yank_version(
     slug: str,
     version: str,
@@ -609,7 +751,9 @@ async def yank_version(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(Package).options(selectinload(Package.publisher)).where(Package.slug == slug)
+        select(Package)
+        .options(selectinload(Package.publisher))
+        .where(Package.slug == slug)
     )
     pkg = result.scalar_one_or_none()
     if not pkg:
@@ -625,11 +769,14 @@ async def yank_version(
     )
     pv = ver_result.scalar_one_or_none()
     if not pv:
-        raise AppError("PACKAGE_VERSION_NOT_FOUND", f"Version '{version}' not found", 404)
+        raise AppError(
+            "PACKAGE_VERSION_NOT_FOUND", f"Version '{version}' not found", 404
+        )
 
     pv.is_yanked = True
 
     from app.packages.version_queries import recalculate_latest_version_id
+
     await recalculate_latest_version_id(session, pkg.id)
     await session.commit()
 
@@ -639,21 +786,30 @@ async def yank_version(
     # P1-D1: sync Meili so the yanked version disappears from search (or the
     # whole package is removed if this was the last visible version).
     from app.shared.meili import sync_package_to_meili
+
     await sync_package_to_meili(session, pkg.id)
 
-    background_tasks.add_task(fire_event, pkg.publisher_id, "version.yanked", {"slug": pkg.slug, "version": version})
+    background_tasks.add_task(
+        fire_event,
+        pkg.publisher_id,
+        "version.yanked",
+        {"slug": pkg.slug, "version": version},
+    )
 
     return ActionResponse(message="Version yanked")
 
 
 # --- Reviews (Spec §8.8) ---
 
+
 class CreateReviewRequest(BaseModel):
     rating: int = Field(..., ge=1, le=5)
     comment: str | None = Field(None, max_length=1000)
 
 
-@router.post("/{slug}/reviews", status_code=201, dependencies=[Depends(rate_limit(10, 60))])
+@router.post(
+    "/{slug}/reviews", status_code=201, dependencies=[Depends(rate_limit(10, 60))]
+)
 async def create_review(
     slug: str,
     body: CreateReviewRequest,
@@ -668,13 +824,17 @@ async def create_review(
 
     # Check user has installed this package
     inst_result = await session.execute(
-        select(Installation.id).where(
+        select(Installation.id)
+        .where(
             Installation.user_id == user.id,
             Installation.package_id == pkg.id,
-        ).limit(1)
+        )
+        .limit(1)
     )
     if not inst_result.scalar_one_or_none():
-        raise AppError("REVIEW_NOT_ALLOWED", "You must install this package before reviewing", 403)
+        raise AppError(
+            "REVIEW_NOT_ALLOWED", "You must install this package before reviewing", 403
+        )
 
     # Check for existing review (unique constraint)
     existing = await session.execute(
@@ -740,17 +900,32 @@ async def list_reviews(
             "username": row.username,
             "rating": row.Review.rating,
             "comment": row.Review.comment,
-            "created_at": row.Review.created_at.isoformat() if row.Review.created_at else None,
+            "created_at": row.Review.created_at.isoformat()
+            if row.Review.created_at
+            else None,
         }
         for row in rows
     ]
 
-    return {"reviews": reviews, "avg_rating": round(float(avg_rating), 2), "total": total, "page": page, "per_page": per_page}
+    return {
+        "reviews": reviews,
+        "avg_rating": round(float(avg_rating), 2),
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+    }
 
 
 # --- Reports (Spec §8.9) ---
 
-VALID_REPORT_REASONS = {"malware", "typosquatting", "spam", "misleading", "policy_violation", "other"}
+VALID_REPORT_REASONS = {
+    "malware",
+    "typosquatting",
+    "spam",
+    "misleading",
+    "policy_violation",
+    "other",
+}
 
 
 class CreateReportRequest(BaseModel):
@@ -758,7 +933,9 @@ class CreateReportRequest(BaseModel):
     description: str
 
 
-@router.post("/{slug}/report", status_code=201, dependencies=[Depends(rate_limit(10, 3600))])
+@router.post(
+    "/{slug}/report", status_code=201, dependencies=[Depends(rate_limit(10, 3600))]
+)
 async def create_report(
     slug: str,
     body: CreateReportRequest,
@@ -768,7 +945,11 @@ async def create_report(
 ):
     """Report a package. Spec §8.9."""
     if body.reason not in VALID_REPORT_REASONS:
-        raise AppError("INVALID_REASON", f"Reason must be one of: {', '.join(sorted(VALID_REPORT_REASONS))}", 400)
+        raise AppError(
+            "INVALID_REASON",
+            f"Reason must be one of: {', '.join(sorted(VALID_REPORT_REASONS))}",
+            400,
+        )
 
     result = await session.execute(select(Package).where(Package.slug == slug))
     pkg = result.scalar_one_or_none()
@@ -777,7 +958,9 @@ async def create_report(
 
     # Check max 3 active reports per user per package
     active_count_result = await session.execute(
-        select(func.count()).select_from(PackageReport).where(
+        select(func.count())
+        .select_from(PackageReport)
+        .where(
             PackageReport.reporter_user_id == user.id,
             PackageReport.package_id == pkg.id,
             PackageReport.status.in_(["submitted", "reviewing"]),
@@ -790,7 +973,9 @@ async def create_report(
     # Check max 10 reports per user per hour
     one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
     hourly_result = await session.execute(
-        select(func.count()).select_from(PackageReport).where(
+        select(func.count())
+        .select_from(PackageReport)
+        .where(
             PackageReport.reporter_user_id == user.id,
             PackageReport.created_at >= one_hour_ago,
         )
@@ -810,6 +995,9 @@ async def create_report(
 
     # Notify admins in background
     from app.shared.email import send_report_admin_notification
-    background_tasks.add_task(send_report_admin_notification, slug, body.reason, user.username)
+
+    background_tasks.add_task(
+        send_report_admin_notification, slug, body.reason, user.username
+    )
 
     return {"report_id": str(report.id), "status": "submitted"}

@@ -1,4 +1,5 @@
 """Request logging middleware with trace IDs (pure ASGI)."""
+
 import logging
 import time
 import uuid

@@ -29,7 +29,9 @@ router = APIRouter(tags=["support"])
 # ---- Helpers ----
 
 
-async def _build_messages(session: AsyncSession, ticket_id: UUID) -> list[MessageResponse]:
+async def _build_messages(
+    session: AsyncSession, ticket_id: UUID
+) -> list[MessageResponse]:
     result = await session.execute(
         select(SupportMessage)
         .where(SupportMessage.ticket_id == ticket_id)
@@ -59,7 +61,9 @@ async def _build_messages(session: AsyncSession, ticket_id: UUID) -> list[Messag
     ]
 
 
-async def _get_user_ticket(session: AsyncSession, ticket_id: UUID, user_id: UUID) -> SupportTicket:
+async def _get_user_ticket(
+    session: AsyncSession, ticket_id: UUID, user_id: UUID
+) -> SupportTicket:
     result = await session.execute(
         select(SupportTicket).where(
             SupportTicket.id == ticket_id,
@@ -83,7 +87,10 @@ async def _get_any_ticket(session: AsyncSession, ticket_id: UUID) -> SupportTick
 
 
 def _ticket_list_item(
-    ticket: SupportTicket, message_count: int, last_reply_is_admin: bool, username: str | None = None,
+    ticket: SupportTicket,
+    message_count: int,
+    last_reply_is_admin: bool,
+    username: str | None = None,
 ) -> TicketListItem:
     return TicketListItem(
         id=ticket.id,
@@ -137,8 +144,12 @@ async def create_ticket(
 
     # Send admin notification in background
     background_tasks.add_task(
-        _notify_admins_new_ticket, ticket.ticket_number, body.subject,
-        str(ticket.id), body.category, user.username,
+        _notify_admins_new_ticket,
+        ticket.ticket_number,
+        body.subject,
+        str(ticket.id),
+        body.category,
+        user.username,
     )
 
     messages = await _build_messages(session, ticket.id)
@@ -244,7 +255,9 @@ async def reply_to_ticket(
     ticket = await _get_user_ticket(session, ticket_id, user.id)
 
     if ticket.status not in ("open", "in_progress"):
-        raise AppError("TICKET_CLOSED", "Cannot reply to a closed or resolved ticket", 400)
+        raise AppError(
+            "TICKET_CLOSED", "Cannot reply to a closed or resolved ticket", 400
+        )
 
     message = SupportMessage(
         ticket_id=ticket.id,
@@ -280,7 +293,9 @@ async def close_ticket(
     ticket = await _get_user_ticket(session, ticket_id, user.id)
 
     if ticket.status not in ("open", "in_progress"):
-        raise AppError("TICKET_CANNOT_CLOSE", "Only open or in-progress tickets can be closed", 400)
+        raise AppError(
+            "TICKET_CANNOT_CLOSE", "Only open or in-progress tickets can be closed", 400
+        )
 
     ticket.status = "closed"
     ticket.updated_at = datetime.now(timezone.utc)
@@ -333,7 +348,9 @@ async def admin_list_tickets(
         query = query.where(SupportTicket.category == category)
 
     offset = (page - 1) * per_page
-    query = query.order_by(SupportTicket.updated_at.desc()).offset(offset).limit(per_page)
+    query = (
+        query.order_by(SupportTicket.updated_at.desc()).offset(offset).limit(per_page)
+    )
 
     result = await session.execute(query)
     tickets = result.scalars().all()
@@ -369,7 +386,9 @@ async def admin_list_tickets(
 
     return [
         _ticket_list_item(
-            t, count_map.get(t.id, 0), last_admin_map.get(t.id, False),
+            t,
+            count_map.get(t.id, 0),
+            last_admin_map.get(t.id, False),
             username=username_map.get(t.user_id),
         )
         for t in tickets
@@ -434,7 +453,10 @@ async def admin_reply_to_ticket(
 
     # Notify ticket owner about admin reply
     background_tasks.add_task(
-        _notify_user_admin_reply, ticket.user_id, ticket.ticket_number, str(ticket.id),
+        _notify_user_admin_reply,
+        ticket.user_id,
+        ticket.ticket_number,
+        str(ticket.id),
     )
 
     return MessageResponse(
@@ -470,8 +492,11 @@ async def admin_set_status(
     # Notify user of status change
     if old_status != body.status:
         background_tasks.add_task(
-            _notify_user_status_change, ticket.user_id, ticket.ticket_number,
-            body.status, str(ticket.id),
+            _notify_user_status_change,
+            ticket.user_id,
+            ticket.ticket_number,
+            body.status,
+            str(ticket.id),
         )
 
     return {"status": ticket.status, "ticket_id": str(ticket.id)}
@@ -481,22 +506,35 @@ async def admin_set_status(
 
 
 async def _notify_admins_new_ticket(
-    ticket_number: int, subject: str,
-    ticket_id: str | None = None, category: str | None = None, username: str | None = None,
+    ticket_number: int,
+    subject: str,
+    ticket_id: str | None = None,
+    category: str | None = None,
+    username: str | None = None,
 ) -> None:
     try:
-        from app.shared.email import get_admin_emails, send_new_support_ticket_admin_email
+        from app.shared.email import (
+            get_admin_emails,
+            send_new_support_ticket_admin_email,
+        )
+
         admin_emails = await get_admin_emails()
         for email in admin_emails:
             await send_new_support_ticket_admin_email(
-                email, ticket_number, subject,
-                ticket_id=ticket_id, category=category, username=username,
+                email,
+                ticket_number,
+                subject,
+                ticket_id=ticket_id,
+                category=category,
+                username=username,
             )
     except Exception:
         logger.warning("Failed to send new ticket admin notification", exc_info=True)
 
 
-async def _notify_user_admin_reply(user_id: UUID, ticket_number: int, ticket_id: str | None = None) -> None:
+async def _notify_user_admin_reply(
+    user_id: UUID, ticket_number: int, ticket_id: str | None = None
+) -> None:
     try:
         from app.database import async_session_factory
         from app.auth.models import User as UserModel
@@ -514,7 +552,10 @@ async def _notify_user_admin_reply(user_id: UUID, ticket_number: int, ticket_id:
 
 
 async def _notify_user_status_change(
-    user_id: UUID, ticket_number: int, new_status: str, ticket_id: str | None = None,
+    user_id: UUID,
+    ticket_number: int,
+    new_status: str,
+    ticket_id: str | None = None,
 ) -> None:
     try:
         from app.database import async_session_factory
@@ -527,6 +568,8 @@ async def _notify_user_status_change(
             )
             row = result.scalar_one_or_none()
             if row:
-                await send_support_status_change_email(row, ticket_number, new_status, ticket_id=ticket_id)
+                await send_support_status_change_email(
+                    row, ticket_number, new_status, ticket_id=ticket_id
+                )
     except Exception:
         logger.warning("Failed to send status change notification", exc_info=True)

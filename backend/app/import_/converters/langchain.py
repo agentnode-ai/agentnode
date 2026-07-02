@@ -1,4 +1,5 @@
 """LangChain tool extractor — handles @tool decorator and BaseTool subclasses."""
+
 from __future__ import annotations
 
 import ast
@@ -8,14 +9,11 @@ from app.import_.converters.base import (
     ExtractedTool,
     ExtractResult,
     apply_return_policy,
-    collect_business_imports,
     collect_helpers,
     detect_self_references,
-    extract_full_node_source,
     extract_function_body,
     extract_params,
     get_return_annotation,
-    parse_source,
     to_snake,
 )
 
@@ -43,7 +41,9 @@ def extract(source: str, tree: ast.Module) -> ExtractResult:
                 if tool:
                     tool_func_names.add(node.name)
                     result.tools.append(tool)
-                    result.changes.append(f'Decorator `@tool` removed from `{node.name}`')
+                    result.changes.append(
+                        f"Decorator `@tool` removed from `{node.name}`"
+                    )
 
     # Pattern B: BaseTool subclasses
     for node in tree.body:
@@ -55,7 +55,7 @@ def extract(source: str, tree: ast.Module) -> ExtractResult:
                     tool_func_names.add(tool.name)
                     result.tools.append(tool)
                     result.changes.append(
-                        f'BaseTool class `{node.name}` extracted into standalone function `{tool.name}()`'
+                        f"BaseTool class `{node.name}` extracted into standalone function `{tool.name}()`"
                     )
 
     # Collect helpers (non-tool, non-framework nodes)
@@ -107,7 +107,10 @@ def _extract_decorated_tool(
     return_annotation = get_return_annotation(node)
 
     body, has_return_dict, return_kind = apply_return_policy(
-        name, return_annotation, body, result,
+        name,
+        return_annotation,
+        body,
+        result,
     )
 
     return ExtractedTool(
@@ -150,13 +153,23 @@ def _extract_basetool(
                 if isinstance(target, ast.Name):
                     if target.id == "name" and isinstance(item.value, ast.Constant):
                         tool_name = str(item.value.value)
-                    elif target.id == "description" and isinstance(item.value, ast.Constant):
+                    elif target.id == "description" and isinstance(
+                        item.value, ast.Constant
+                    ):
                         tool_description = str(item.value.value)
         elif isinstance(item, ast.AnnAssign):
             if isinstance(item.target, ast.Name):
-                if item.target.id == "name" and item.value and isinstance(item.value, ast.Constant):
+                if (
+                    item.target.id == "name"
+                    and item.value
+                    and isinstance(item.value, ast.Constant)
+                ):
                     tool_name = str(item.value.value)
-                elif item.target.id == "description" and item.value and isinstance(item.value, ast.Constant):
+                elif (
+                    item.target.id == "description"
+                    and item.value
+                    and isinstance(item.value, ast.Constant)
+                ):
                     tool_description = str(item.value.value)
 
     if not tool_name:
@@ -167,7 +180,10 @@ def _extract_basetool(
     # Find _run method
     run_method = None
     for item in node.body:
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "_run":
+        if (
+            isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and item.name == "_run"
+        ):
             run_method = item
             break
 
@@ -207,7 +223,10 @@ def _extract_basetool(
     return_annotation = get_return_annotation(run_method)
 
     body, has_return_dict, return_kind = apply_return_policy(
-        func_name, return_annotation, body, result,
+        func_name,
+        return_annotation,
+        body,
+        result,
     )
 
     # Check for args_schema
@@ -231,7 +250,12 @@ def _extract_basetool(
                 )
 
     # Docstring — prefer class docstring, then _run docstring
-    description = tool_description or ast.get_docstring(run_method) or ast.get_docstring(node) or ""
+    description = (
+        tool_description
+        or ast.get_docstring(run_method)
+        or ast.get_docstring(node)
+        or ""
+    )
 
     return ExtractedTool(
         name=func_name,

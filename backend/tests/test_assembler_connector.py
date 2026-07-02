@@ -1,4 +1,5 @@
 """Tests for connector-block extraction in the assembler."""
+
 from unittest.mock import MagicMock
 from datetime import datetime, timezone
 

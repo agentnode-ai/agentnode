@@ -13,6 +13,7 @@ from app.config import settings
 
 # --- Passwords (bcrypt) ---
 
+
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
@@ -22,6 +23,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 # --- API Keys (SHA-256) ---
+
 
 def generate_api_key() -> tuple[str, str, str]:
     """Returns (full_key, prefix, sha256_hash)."""
@@ -38,8 +40,11 @@ def hash_api_key(key: str) -> str:
 
 # --- JWT ---
 
+
 def create_access_token(user_id: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES
+    )
     payload = {
         "sub": str(user_id),
         "token_type": "access",
@@ -56,7 +61,9 @@ def create_refresh_token(user_id: str, gen: int = 0) -> tuple[str, str]:
     provides group-revocation semantics (password change, reset, admin ban).
     """
     jti = uuid4().hex
-    expire = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now(timezone.utc) + timedelta(
+        days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS
+    )
     payload = {
         "sub": str(user_id),
         "token_type": "refresh",
@@ -75,6 +82,7 @@ def decode_token(token: str) -> dict:
 
 # --- TOTP (2FA) ---
 
+
 def generate_totp_secret() -> str:
     return pyotp.random_base32()
 
@@ -91,6 +99,7 @@ def verify_totp(secret: str, code: str) -> bool:
 
 # --- Purpose tokens (email verification, password reset) ---
 
+
 def create_purpose_token(user_id: str, purpose: str, expire_hours: int = 24) -> str:
     """Create a short-lived JWT for a specific purpose (email_verify, password_reset)."""
     expire = datetime.now(timezone.utc) + timedelta(hours=expire_hours)
@@ -104,7 +113,9 @@ def create_purpose_token(user_id: str, purpose: str, expire_hours: int = 24) -> 
 
 def decode_purpose_token(token: str, expected_purpose: str) -> str:
     """Decode a purpose token. Returns user_id. Raises on invalid/expired/wrong purpose."""
-    payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+    payload = jwt.decode(
+        token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM]
+    )
     if payload.get("token_type") != expected_purpose:
         raise ValueError(f"Expected {expected_purpose} token")
     user_id = payload.get("sub")
@@ -115,7 +126,10 @@ def decode_purpose_token(token: str, expected_purpose: str) -> str:
 
 # --- httpOnly Cookies ---
 
-def set_auth_cookies(response: Response, access_token: str, refresh_token: str, *, is_admin: bool = False) -> None:
+
+def set_auth_cookies(
+    response: Response, access_token: str, refresh_token: str, *, is_admin: bool = False
+) -> None:
     """Set httpOnly cookies for web clients."""
     response.set_cookie(
         key="access_token",
@@ -179,6 +193,7 @@ def clear_auth_cookies(response: Response) -> None:
 
 
 # --- Refresh Token Rotation (Redis) ---
+
 
 async def store_refresh_token(redis, user_id: str, jti: str) -> None:
     """Store refresh token JTI in Redis with TTL."""
@@ -265,6 +280,7 @@ async def bump_user_session_gen(redis, user_id: str) -> int:
 
 # --- Account Lockout (Redis) ---
 
+
 async def check_login_lockout(redis, email: str, client_ip: str = "") -> None:
     """Raise if account is locked out due to too many failed attempts.
 
@@ -276,6 +292,7 @@ async def check_login_lockout(redis, email: str, client_ip: str = "") -> None:
     if locked:
         ttl = await redis.ttl(key)
         from app.shared.exceptions import AppError
+
         raise AppError(
             "AUTH_ACCOUNT_LOCKED",
             f"Account temporarily locked. Try again in {max(1, ttl // 60)} minutes.",

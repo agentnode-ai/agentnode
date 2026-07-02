@@ -80,7 +80,9 @@ def invalidate_smtp_cache() -> None:
     _smtp_config = None
 
 
-def _build_message(smtp: dict, to: str, subject: str, html_body: str, text_body: str | None = None) -> EmailMessage:
+def _build_message(
+    smtp: dict, to: str, subject: str, html_body: str, text_body: str | None = None
+) -> EmailMessage:
     from_name = smtp.get("from_name") or settings.EMAIL_FROM_NAME
     from_email = smtp.get("from_email") or settings.EMAIL_FROM
     msg = EmailMessage()
@@ -92,12 +94,16 @@ def _build_message(smtp: dict, to: str, subject: str, html_body: str, text_body:
     return msg
 
 
-async def send_email(to: str, subject: str, html_body: str, text_body: str | None = None) -> bool:
+async def send_email(
+    to: str, subject: str, html_body: str, text_body: str | None = None
+) -> bool:
     """Send an email. Returns True on success, False on failure. Never raises."""
     smtp = await _get_smtp_settings()
 
     if not (smtp.get("host") and smtp.get("user") and smtp.get("password")):
-        logger.warning(f"SMTP not configured — email to {to} not sent. Subject: {subject}")
+        logger.warning(
+            f"SMTP not configured — email to {to} not sent. Subject: {subject}"
+        )
         return False
 
     msg = _build_message(smtp, to, subject, html_body, text_body)
@@ -130,14 +136,14 @@ async def send_email(to: str, subject: str, html_body: str, text_body: str | Non
 # Security, quarantine, and one-time transactional emails always send.
 EMAIL_PREF_DEFAULTS = {
     # User-toggleable
-    "security_login": True,      # every login
-    "package_published": True,   # every publish
-    "milestone": True,           # download milestones
-    "deprecated": True,          # deprecation notices
-    "weekly_digest": True,       # weekly publisher digest
+    "security_login": True,  # every login
+    "package_published": True,  # every publish
+    "milestone": True,  # download milestones
+    "deprecated": True,  # deprecation notices
+    "weekly_digest": True,  # weekly publisher digest
     # Admin-toggleable
     "admin_report_notify": True,  # every new report
-    "admin_daily_digest": True,   # daily stats
+    "admin_daily_digest": True,  # daily stats
 }
 
 
@@ -150,6 +156,7 @@ async def check_email_pref(email: str, pref_key: str) -> bool:
     try:
         from app.database import async_session_factory
         from app.auth.models import User
+
         async with async_session_factory() as session:
             result = await session.execute(
                 select(User.email_preferences).where(User.email == email)
@@ -168,6 +175,7 @@ async def get_admin_emails() -> list[str]:
     try:
         from app.database import async_session_factory
         from app.auth.models import User
+
         async with async_session_factory() as session:
             result = await session.execute(
                 select(User.email).where(User.is_admin == True)  # noqa: E712
@@ -181,12 +189,14 @@ async def get_publisher_email(publisher_id) -> str | None:
     """Return the email of the user who owns a publisher."""
     try:
         from app.database import async_session_factory
-        from app.auth.models import User
         from app.publishers.models import Publisher
         from sqlalchemy.orm import selectinload
+
         async with async_session_factory() as session:
             result = await session.execute(
-                select(Publisher).options(selectinload(Publisher.user)).where(Publisher.id == publisher_id)
+                select(Publisher)
+                .options(selectinload(Publisher.user))
+                .where(Publisher.id == publisher_id)
             )
             pub = result.scalar_one_or_none()
             return pub.user.email if pub and pub.user else None
@@ -213,7 +223,9 @@ _BASE_STYLE = """
 """
 
 _LOGO = '<div class="logo">Agent<span>Node</span></div>'
-_FOOTER_AUTOMATED = '<div class="footer"><p>This is an automated notification from AgentNode.</p></div>'
+_FOOTER_AUTOMATED = (
+    '<div class="footer"><p>This is an automated notification from AgentNode.</p></div>'
+)
 
 
 def _esc(value: str) -> str:
@@ -244,8 +256,12 @@ async def send_welcome_email(to: str, username: str, verify_token: str) -> bool:
       <div class="code">{verify_url}</div>
       <div class="footer"><p>This link expires in 24 hours.</p></div>
     """)
-    return await send_email(to, "Welcome to AgentNode!", html,
-        f"Welcome to AgentNode, {username}! Verify your email: {verify_url}")
+    return await send_email(
+        to,
+        "Welcome to AgentNode!",
+        html,
+        f"Welcome to AgentNode, {username}! Verify your email: {verify_url}",
+    )
 
 
 # 2. Email verification (standalone, for re-requests)
@@ -261,8 +277,12 @@ async def send_verification_email(to: str, token: str) -> bool:
       <div class="code">{verify_url}</div>
       <div class="footer"><p>This link expires in 24 hours. If you didn't request this, you can safely ignore it.</p></div>
     """)
-    return await send_email(to, "Verify your email - AgentNode", html,
-        f"Verify your AgentNode email: {verify_url}")
+    return await send_email(
+        to,
+        "Verify your email - AgentNode",
+        html,
+        f"Verify your AgentNode email: {verify_url}",
+    )
 
 
 # 3. Password changed notification
@@ -276,8 +296,12 @@ async def send_password_changed_email(to: str) -> bool:
         <a href="{reset_url}" class="btn">Reset Password</a>
       </p>
     """)
-    return await send_email(to, "Password changed - AgentNode", html,
-        f"Your AgentNode password was changed. If this wasn't you, reset it: {reset_url}")
+    return await send_email(
+        to,
+        "Password changed - AgentNode",
+        html,
+        f"Your AgentNode password was changed. If this wasn't you, reset it: {reset_url}",
+    )
 
 
 # 4. Password reset confirmation
@@ -293,8 +317,12 @@ async def send_password_reset_email(to: str, token: str) -> bool:
       <div class="code">{reset_url}</div>
       <div class="footer"><p>This link expires in 1 hour. If you didn't request this, ignore this email.</p></div>
     """)
-    return await send_email(to, "Reset your password - AgentNode", html,
-        f"Reset your AgentNode password: {reset_url}")
+    return await send_email(
+        to,
+        "Reset your password - AgentNode",
+        html,
+        f"Reset your AgentNode password: {reset_url}",
+    )
 
 
 # 5. Password reset completed
@@ -305,8 +333,12 @@ async def send_password_reset_confirmation_email(to: str) -> bool:
       <p>You can now sign in with your new password.</p>
       <p class="warn">If you did not reset your password, contact support immediately.</p>
     """)
-    return await send_email(to, "Password reset complete - AgentNode", html,
-        "Your AgentNode password has been reset. If this wasn't you, contact support.")
+    return await send_email(
+        to,
+        "Password reset complete - AgentNode",
+        html,
+        "Your AgentNode password has been reset. If this wasn't you, contact support.",
+    )
 
 
 # 6. Email changed — send verification to NEW address
@@ -322,8 +354,12 @@ async def send_email_changed_verify(new_email: str, token: str) -> bool:
       <div class="code">{verify_url}</div>
       <div class="footer"><p>This link expires in 24 hours.</p></div>
     """)
-    return await send_email(new_email, "Verify your new email - AgentNode", html,
-        f"Verify your new email: {verify_url}")
+    return await send_email(
+        new_email,
+        "Verify your new email - AgentNode",
+        html,
+        f"Verify your new email: {verify_url}",
+    )
 
 
 # 7. Email changed — alert to OLD address
@@ -333,8 +369,12 @@ async def send_email_changed_alert(old_email: str, new_email: str) -> bool:
       <p>The email address on your AgentNode account was changed to <strong>{_esc(new_email)}</strong>.</p>
       <p class="warn">If you did not make this change, your account may be compromised. Contact support immediately.</p>
     """)
-    return await send_email(old_email, "Email address changed - AgentNode", html,
-        f"Your AgentNode email was changed to {new_email}. If this wasn't you, contact support.")
+    return await send_email(
+        old_email,
+        "Email address changed - AgentNode",
+        html,
+        f"Your AgentNode email was changed to {new_email}. If this wasn't you, contact support.",
+    )
 
 
 # 8. 2FA enabled
@@ -345,19 +385,27 @@ async def send_2fa_enabled_email(to: str) -> bool:
       <p>You will need your authenticator app for future logins. Keep your backup codes safe.</p>
       <p class="warn">If you did not enable 2FA, secure your account immediately.</p>
     """)
-    return await send_email(to, "2FA enabled - AgentNode", html,
-        "Two-factor authentication has been enabled on your AgentNode account.")
+    return await send_email(
+        to,
+        "2FA enabled - AgentNode",
+        html,
+        "Two-factor authentication has been enabled on your AgentNode account.",
+    )
 
 
 # 9. Publisher suspended (existing, refactored)
-async def send_publisher_suspended_email(to: str, publisher_slug: str, reason: str) -> bool:
+async def send_publisher_suspended_email(
+    to: str, publisher_slug: str, reason: str
+) -> bool:
     html = _wrap(f"""
       <h1>Publisher account suspended</h1>
       <p>Your publisher account <strong>@{_esc(publisher_slug)}</strong> has been suspended by an administrator.</p>
       <p><strong>Reason:</strong> {_esc(reason)}</p>
       <p>If you believe this was done in error, please contact support.</p>
     """)
-    return await send_email(to, f"Publisher @{publisher_slug} suspended - AgentNode", html)
+    return await send_email(
+        to, f"Publisher @{publisher_slug} suspended - AgentNode", html
+    )
 
 
 # 10. Publisher unsuspended
@@ -367,22 +415,30 @@ async def send_publisher_unsuspended_email(to: str, publisher_slug: str) -> bool
       <p class="success">Your publisher account <strong>@{publisher_slug}</strong> has been reinstated.</p>
       <p>You can resume publishing packages on AgentNode.</p>
     """)
-    return await send_email(to, f"Publisher @{publisher_slug} reinstated - AgentNode", html)
+    return await send_email(
+        to, f"Publisher @{publisher_slug} reinstated - AgentNode", html
+    )
 
 
 # 11. Package quarantined (existing, refactored)
-async def send_quarantine_email(to: str, package_slug: str, version: str, reason: str) -> bool:
+async def send_quarantine_email(
+    to: str, package_slug: str, version: str, reason: str
+) -> bool:
     html = _wrap(f"""
       <h1>Package version quarantined</h1>
       <p>Version <strong>{_esc(version)}</strong> of <strong>{_esc(package_slug)}</strong> has been quarantined.</p>
       <p><strong>Reason:</strong> {_esc(reason)}</p>
       <p>The version is temporarily hidden from search and installation. You may be contacted for further details.</p>
     """)
-    return await send_email(to, f"{package_slug}@{version} quarantined - AgentNode", html)
+    return await send_email(
+        to, f"{package_slug}@{version} quarantined - AgentNode", html
+    )
 
 
 # 12. Quarantine cleared
-async def send_quarantine_cleared_email(to: str, package_slug: str, version: str) -> bool:
+async def send_quarantine_cleared_email(
+    to: str, package_slug: str, version: str
+) -> bool:
     html = _wrap(f"""
       <h1>Quarantine cleared</h1>
       <p class="success">Version <strong>{version}</strong> of <strong>{package_slug}</strong> has been cleared.</p>
@@ -402,9 +458,15 @@ async def send_version_rejected_email(to: str, package_slug: str, version: str) 
 
 
 # 14. Report submitted — admin notification
-async def send_report_admin_notification(package_slug: str, reason: str, reporter_username: str) -> None:
+async def send_report_admin_notification(
+    package_slug: str, reason: str, reporter_username: str
+) -> None:
     """Send notification to all admins about a new report."""
-    admin_emails = [e for e in await get_admin_emails() if await check_email_pref(e, "admin_report_notify")]
+    admin_emails = [
+        e
+        for e in await get_admin_emails()
+        if await check_email_pref(e, "admin_report_notify")
+    ]
     admin_url = f"{settings.FRONTEND_URL}/admin/reports"
     html = _wrap(f"""
       <h1>New package report</h1>
@@ -424,7 +486,9 @@ async def send_report_admin_notification(package_slug: str, reason: str, reporte
 
 
 # 15. Package published confirmation
-async def send_package_published_email(to: str, package_slug: str, version: str, quarantined: bool = False) -> bool:
+async def send_package_published_email(
+    to: str, package_slug: str, version: str, quarantined: bool = False
+) -> bool:
     if not await check_email_pref(to, "package_published"):
         return True
     quarantine_note = ""
@@ -440,12 +504,18 @@ async def send_package_published_email(to: str, package_slug: str, version: str,
         <a href="{settings.FRONTEND_URL}/packages/{package_slug}" class="btn">View Package</a>
       </p>
     """)
-    return await send_email(to, f"Published {package_slug}@{version} - AgentNode", html,
-        f"You published {package_slug}@{version} on AgentNode.")
+    return await send_email(
+        to,
+        f"Published {package_slug}@{version} - AgentNode",
+        html,
+        f"You published {package_slug}@{version} on AgentNode.",
+    )
 
 
 # 16. Auto-quarantine notification (security scanner)
-async def send_auto_quarantine_email(to: str, package_slug: str, version: str, finding_count: int) -> bool:
+async def send_auto_quarantine_email(
+    to: str, package_slug: str, version: str, finding_count: int
+) -> bool:
     html = _wrap(f"""
       <h1>Version auto-quarantined</h1>
       <p>Version <strong>{version}</strong> of <strong>{package_slug}</strong> was automatically quarantined by our security scanner.</p>
@@ -453,10 +523,14 @@ async def send_auto_quarantine_email(to: str, package_slug: str, version: str, f
       <p>An administrator will review your package. You may be contacted for further details.</p>
       <p class="warn">Common reasons: embedded secrets, undeclared code execution, undeclared network access.</p>
     """)
-    return await send_email(to, f"{package_slug}@{version} auto-quarantined - AgentNode", html)
+    return await send_email(
+        to, f"{package_slug}@{version} auto-quarantined - AgentNode", html
+    )
 
 
-async def send_verification_failed_email(to: str, package_slug: str, version: str, error_summary: str) -> bool:
+async def send_verification_failed_email(
+    to: str, package_slug: str, version: str, error_summary: str
+) -> bool:
     """Notify publisher that their package verification failed (package-side error)."""
     html = _wrap(f"""
       <h1>Verification failed</h1>
@@ -473,17 +547,28 @@ async def send_verification_failed_email(to: str, package_slug: str, version: st
         <a href="{settings.FRONTEND_URL}/packages/{package_slug}" class="btn">View Package</a>
       </p>
     """)
-    return await send_email(to, f"{package_slug}@{version} verification failed - AgentNode", html)
+    return await send_email(
+        to, f"{package_slug}@{version} verification failed - AgentNode", html
+    )
 
 
-async def send_platform_error_admin_alert(package_slug: str, version: str, error_summary: str, error_log: str) -> bool:
+async def send_platform_error_admin_alert(
+    package_slug: str, version: str, error_summary: str, error_log: str
+) -> bool:
     """Alert admins about a platform-side verification error. Package status is NOT changed."""
     admin_emails = await get_admin_emails()
     if not admin_emails:
-        logger.error("PLATFORM ERROR but no admin emails configured: %s@%s: %s", package_slug, version, error_summary)
+        logger.error(
+            "PLATFORM ERROR but no admin emails configured: %s@%s: %s",
+            package_slug,
+            version,
+            error_summary,
+        )
         return False
 
-    log_preview = (_esc(error_log[:500]) + "...") if len(error_log) > 500 else _esc(error_log)
+    log_preview = (
+        (_esc(error_log[:500]) + "...") if len(error_log) > 500 else _esc(error_log)
+    )
     html = _wrap(f"""
       <h1 style="color:#ef4444;">Platform Verification Error</h1>
       <p>Verification for <strong>{package_slug}@{version}</strong> failed due to a <strong>platform-side issue</strong>.</p>
@@ -513,24 +598,38 @@ async def send_publisher_created_email(to: str, publisher_slug: str) -> bool:
         <a href="{settings.FRONTEND_URL}/publish" class="btn">Publish a Package</a>
       </p>
     """)
-    return await send_email(to, f"Publisher @{publisher_slug} created - AgentNode", html,
-        f"Your publisher @{publisher_slug} is ready. Start publishing on AgentNode!")
+    return await send_email(
+        to,
+        f"Publisher @{publisher_slug} created - AgentNode",
+        html,
+        f"Your publisher @{publisher_slug} is ready. Start publishing on AgentNode!",
+    )
 
 
 # 18. Trust level changed
-async def send_trust_level_changed_email(to: str, publisher_slug: str, old_level: str, new_level: str) -> bool:
+async def send_trust_level_changed_email(
+    to: str, publisher_slug: str, old_level: str, new_level: str
+) -> bool:
     html = _wrap(f"""
       <h1>Trust level updated</h1>
       <p>The trust level for <strong>@{publisher_slug}</strong> has been changed from
       <strong>{old_level}</strong> to <strong>{new_level}</strong>.</p>
       <p>Trust levels affect how your packages appear in search results and whether new versions require review.</p>
     """)
-    return await send_email(to, f"Trust level changed: @{publisher_slug} - AgentNode", html)
+    return await send_email(
+        to, f"Trust level changed: @{publisher_slug} - AgentNode", html
+    )
 
 
 # 19. Report resolved — notify reporter
-async def send_report_resolved_reporter_email(to: str, package_slug: str, status: str, resolution_note: str | None) -> bool:
-    note_html = f"<p><strong>Note:</strong> {_esc(resolution_note)}</p>" if resolution_note else ""
+async def send_report_resolved_reporter_email(
+    to: str, package_slug: str, status: str, resolution_note: str | None
+) -> bool:
+    note_html = (
+        f"<p><strong>Note:</strong> {_esc(resolution_note)}</p>"
+        if resolution_note
+        else ""
+    )
     html = _wrap(f"""
       <h1>Report update</h1>
       <p>Your report against <strong>{package_slug}</strong> has been <strong>{status}</strong> by an administrator.</p>
@@ -554,23 +653,33 @@ async def send_new_login_alert_email(to: str, ip_address: str, user_agent: str) 
         <a href="{reset_url}" class="btn">Reset Password</a>
       </p>
     """)
-    return await send_email(to, "New sign-in to your account - AgentNode", html,
-        f"New sign-in to your AgentNode account from {ip_address}. Reset password if unauthorized: {reset_url}")
+    return await send_email(
+        to,
+        "New sign-in to your account - AgentNode",
+        html,
+        f"New sign-in to your AgentNode account from {ip_address}. Reset password if unauthorized: {reset_url}",
+    )
 
 
 # 21. API key created
-async def send_api_key_created_email(to: str, label: str | None, key_prefix: str) -> bool:
+async def send_api_key_created_email(
+    to: str, label: str | None, key_prefix: str
+) -> bool:
     html = _wrap(f"""
       <h1>API key created</h1>
       <p>A new API key was created for your AgentNode account.</p>
-      <p><strong>Label:</strong> {_esc(label) if label else '(none)'}<br><strong>Prefix:</strong> {_esc(key_prefix)}...</p>
+      <p><strong>Label:</strong> {_esc(label) if label else "(none)"}<br><strong>Prefix:</strong> {_esc(key_prefix)}...</p>
       <p class="warn">If you did not create this key, revoke it immediately in your dashboard.</p>
       <p style="text-align:center; margin: 24px 0;">
         <a href="{settings.FRONTEND_URL}/dashboard" class="btn">Go to Dashboard</a>
       </p>
     """)
-    return await send_email(to, "New API key created - AgentNode", html,
-        f"A new API key ({key_prefix}...) was created for your account.")
+    return await send_email(
+        to,
+        "New API key created - AgentNode",
+        html,
+        f"A new API key ({key_prefix}...) was created for your account.",
+    )
 
 
 # =========================================================================
@@ -579,7 +688,9 @@ async def send_api_key_created_email(to: str, label: str | None, key_prefix: str
 
 
 # 22. Download milestone
-async def send_download_milestone_email(to: str, package_slug: str, milestone: int) -> bool:
+async def send_download_milestone_email(
+    to: str, package_slug: str, milestone: int
+) -> bool:
     if not await check_email_pref(to, "milestone"):
         return True
     html = _wrap(f"""
@@ -590,7 +701,9 @@ async def send_download_milestone_email(to: str, package_slug: str, milestone: i
         <a href="{settings.FRONTEND_URL}/packages/{package_slug}" class="btn">View Package</a>
       </p>
     """)
-    return await send_email(to, f"{package_slug} reached {milestone:,} downloads! - AgentNode", html)
+    return await send_email(
+        to, f"{package_slug} reached {milestone:,} downloads! - AgentNode", html
+    )
 
 
 # 23. Package deprecated notification (to users with active installs)
@@ -608,7 +721,9 @@ async def send_package_deprecated_email(to: str, package_slug: str) -> bool:
     return await send_email(to, f"{package_slug} deprecated - AgentNode", html)
 
 
-async def send_package_deprecated_emails_batch(recipients: list[str], package_slug: str) -> int:
+async def send_package_deprecated_emails_batch(
+    recipients: list[str], package_slug: str
+) -> int:
     """Send deprecation emails to a pre-filtered list of recipients.
 
     Unlike send_package_deprecated_email, this does NOT call check_email_pref
@@ -632,8 +747,14 @@ async def send_package_deprecated_emails_batch(recipients: list[str], package_sl
 
 
 # 24. Security scan report
-async def send_security_scan_report_email(to: str, package_slug: str, version: str, finding_count: int, high_count: int) -> bool:
-    severity_note = f'<p class="warn">{high_count} high-severity finding(s) detected.</p>' if high_count else ""
+async def send_security_scan_report_email(
+    to: str, package_slug: str, version: str, finding_count: int, high_count: int
+) -> bool:
+    severity_note = (
+        f'<p class="warn">{high_count} high-severity finding(s) detected.</p>'
+        if high_count
+        else ""
+    )
     html = _wrap(f"""
       <h1>Security scan results</h1>
       <p>The security scan for <strong>{package_slug}@{version}</strong> has completed.</p>
@@ -641,20 +762,24 @@ async def send_security_scan_report_email(to: str, package_slug: str, version: s
       {severity_note}
       <p>Review details in your dashboard or contact support for guidance.</p>
     """)
-    return await send_email(to, f"Scan results: {package_slug}@{version} - AgentNode", html)
+    return await send_email(
+        to, f"Scan results: {package_slug}@{version} - AgentNode", html
+    )
 
 
 # 25. Weekly publisher digest
-async def send_weekly_publisher_digest(to: str, publisher_slug: str, stats: dict) -> bool:
+async def send_weekly_publisher_digest(
+    to: str, publisher_slug: str, stats: dict
+) -> bool:
     if not await check_email_pref(to, "weekly_digest"):
         return True
     html = _wrap(f"""
       <h1>Weekly digest for @{publisher_slug}</h1>
       <p>Here's your weekly summary:</p>
       <table style="width:100%; font-size:14px; color:#a3a3a3;">
-        <tr><td>Downloads this week</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get('downloads', 0):,}</td></tr>
-        <tr><td>New installations</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get('installs', 0):,}</td></tr>
-        <tr><td>Total packages</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get('packages', 0)}</td></tr>
+        <tr><td>Downloads this week</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get("downloads", 0):,}</td></tr>
+        <tr><td>New installations</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get("installs", 0):,}</td></tr>
+        <tr><td>Total packages</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get("packages", 0)}</td></tr>
       </table>
       <p style="text-align:center; margin: 24px 0;">
         <a href="{settings.FRONTEND_URL}/dashboard" class="btn">View Dashboard</a>
@@ -670,11 +795,11 @@ async def send_admin_daily_digest(to: str, stats: dict) -> bool:
     html = _wrap(f"""
       <h1>Daily admin digest</h1>
       <table style="width:100%; font-size:14px; color:#a3a3a3;">
-        <tr><td>New users (24h)</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get('new_users', 0)}</td></tr>
-        <tr><td>New packages (24h)</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get('new_packages', 0)}</td></tr>
-        <tr><td>Open reports</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get('open_reports', 0)}</td></tr>
-        <tr><td>Quarantined versions</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get('quarantined', 0)}</td></tr>
-        <tr><td>Total downloads (24h)</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get('downloads_24h', 0):,}</td></tr>
+        <tr><td>New users (24h)</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get("new_users", 0)}</td></tr>
+        <tr><td>New packages (24h)</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get("new_packages", 0)}</td></tr>
+        <tr><td>Open reports</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get("open_reports", 0)}</td></tr>
+        <tr><td>Quarantined versions</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get("quarantined", 0)}</td></tr>
+        <tr><td>Total downloads (24h)</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get("downloads_24h", 0):,}</td></tr>
       </table>
       <p style="text-align:center; margin: 24px 0;">
         <a href="{settings.FRONTEND_URL}/admin" class="btn">Open Admin Panel</a>
@@ -805,8 +930,12 @@ async def send_invite_followup_email(
 
 # 32. New support ticket — admin notification
 async def send_new_support_ticket_admin_email(
-    to: str, ticket_number: int, subject: str,
-    ticket_id: str | None = None, category: str | None = None, username: str | None = None,
+    to: str,
+    ticket_number: int,
+    subject: str,
+    ticket_id: str | None = None,
+    category: str | None = None,
+    username: str | None = None,
 ) -> bool:
     admin_url = f"{settings.FRONTEND_URL}/admin/support"
     if ticket_id:
@@ -829,7 +958,9 @@ async def send_new_support_ticket_admin_email(
 
 
 # 33. Admin reply — user notification
-async def send_support_reply_email(to: str, ticket_number: int, ticket_id: str | None = None) -> bool:
+async def send_support_reply_email(
+    to: str, ticket_number: int, ticket_id: str | None = None
+) -> bool:
     ticket_url = f"{settings.FRONTEND_URL}/dashboard/support"
     if ticket_id:
         ticket_url = f"{settings.FRONTEND_URL}/dashboard/support/{ticket_id}"
@@ -840,13 +971,20 @@ async def send_support_reply_email(to: str, ticket_number: int, ticket_id: str |
         <a href="{ticket_url}" class="btn">View Ticket</a>
       </p>
     """)
-    return await send_email(to, f"Reply to your ticket #{ticket_number} - AgentNode", html,
-        f"The AgentNode support team replied to your ticket #{ticket_number}.")
+    return await send_email(
+        to,
+        f"Reply to your ticket #{ticket_number} - AgentNode",
+        html,
+        f"The AgentNode support team replied to your ticket #{ticket_number}.",
+    )
 
 
 # 34. Status change — user notification
 async def send_support_status_change_email(
-    to: str, ticket_number: int, new_status: str, ticket_id: str | None = None,
+    to: str,
+    ticket_number: int,
+    new_status: str,
+    ticket_id: str | None = None,
 ) -> bool:
     ticket_url = f"{settings.FRONTEND_URL}/dashboard/support"
     if ticket_id:
@@ -860,8 +998,12 @@ async def send_support_status_change_email(
         <a href="{ticket_url}" class="btn">View Ticket</a>
       </p>
     """)
-    return await send_email(to, f"Ticket #{ticket_number} status: {status_label} - AgentNode", html,
-        f"Your ticket #{ticket_number} status has been updated to {status_label}.")
+    return await send_email(
+        to,
+        f"Ticket #{ticket_number} status: {status_label} - AgentNode",
+        html,
+        f"Your ticket #{ticket_number} status has been updated to {status_label}.",
+    )
 
 
 # =========================================================================
@@ -871,9 +1013,17 @@ async def send_support_status_change_email(
 
 # 29a. Reviewer assigned
 async def send_review_assigned_email(
-    to: str, package_slug: str, version: str, tier: str, express: bool,
+    to: str,
+    package_slug: str,
+    version: str,
+    tier: str,
+    express: bool,
 ) -> bool:
-    tier_labels = {"security": "Security Review", "compatibility": "Compatibility Review", "full": "Full Review"}
+    tier_labels = {
+        "security": "Security Review",
+        "compatibility": "Compatibility Review",
+        "full": "Full Review",
+    }
     tier_label = tier_labels.get(tier, tier.title())
     turnaround = (
         "<p>As an express review, we&rsquo;re targeting completion within <strong>48 hours</strong>.</p>"
@@ -890,15 +1040,28 @@ async def send_review_assigned_email(
         <a href="{settings.FRONTEND_URL}/dashboard#reviews" class="btn">View Dashboard</a>
       </p>
     """)
-    return await send_email(to, f"Your review is in progress: {package_slug} - AgentNode", html,
-        f"Your {tier_label} for {package_slug}@{version} has been assigned to a reviewer.")
+    return await send_email(
+        to,
+        f"Your review is in progress: {package_slug} - AgentNode",
+        html,
+        f"Your {tier_label} for {package_slug}@{version} has been assigned to a reviewer.",
+    )
 
 
 # 29. Review payment received
 async def send_review_payment_received_email(
-    to: str, package_slug: str, version: str, tier: str, express: bool, price_cents: int,
+    to: str,
+    package_slug: str,
+    version: str,
+    tier: str,
+    express: bool,
+    price_cents: int,
 ) -> bool:
-    tier_labels = {"security": "Security Review", "compatibility": "Compatibility Review", "full": "Full Review"}
+    tier_labels = {
+        "security": "Security Review",
+        "compatibility": "Compatibility Review",
+        "full": "Full Review",
+    }
     tier_label = tier_labels.get(tier, tier.title())
     turnaround = "48 hours (Express)" if express else "7 business days"
     price_str = f"${price_cents / 100:.0f}"
@@ -917,19 +1080,34 @@ async def send_review_payment_received_email(
         <a href="{settings.FRONTEND_URL}/dashboard" class="btn">View Dashboard</a>
       </p>
     """)
-    return await send_email(to, f"Payment received: {package_slug} review - AgentNode", html,
-        f"Payment confirmed for {tier_label} of {package_slug}@{version}. {price_str} USD. Turnaround: {turnaround}.")
+    return await send_email(
+        to,
+        f"Payment received: {package_slug} review - AgentNode",
+        html,
+        f"Payment confirmed for {tier_label} of {package_slug}@{version}. {price_str} USD. Turnaround: {turnaround}.",
+    )
 
 
 # 30. Review completed
 async def send_review_completed_email(
-    to: str, package_slug: str, version: str, tier: str,
-    outcome: str, review_result: dict | None, notes: str | None,
+    to: str,
+    package_slug: str,
+    version: str,
+    tier: str,
+    outcome: str,
+    review_result: dict | None,
+    notes: str | None,
 ) -> bool:
     outcome_labels = {
         "approved": ('<span class="success">Approved</span>', "#22c55e"),
-        "changes_requested": ('<span style="color:#f59e0b; font-weight:600;">Changes Requested</span>', "#f59e0b"),
-        "rejected": ('<span style="color:#ef4444; font-weight:600;">Rejected</span>', "#ef4444"),
+        "changes_requested": (
+            '<span style="color:#f59e0b; font-weight:600;">Changes Requested</span>',
+            "#f59e0b",
+        ),
+        "rejected": (
+            '<span style="color:#ef4444; font-weight:600;">Rejected</span>',
+            "#ef4444",
+        ),
     }
     badge_html, _ = outcome_labels.get(outcome, (outcome, "#a3a3a3"))
 
@@ -937,21 +1115,41 @@ async def send_review_completed_email(
     if review_result:
         checks = []
         if "security_passed" in review_result:
-            icon = '<span style="color:#22c55e;">&#10003;</span>' if review_result["security_passed"] else '<span style="color:#ef4444;">&#10007;</span>'
+            icon = (
+                '<span style="color:#22c55e;">&#10003;</span>'
+                if review_result["security_passed"]
+                else '<span style="color:#ef4444;">&#10007;</span>'
+            )
             checks.append(f"{icon} Security")
         if "compatibility_passed" in review_result:
-            icon = '<span style="color:#22c55e;">&#10003;</span>' if review_result["compatibility_passed"] else '<span style="color:#ef4444;">&#10007;</span>'
+            icon = (
+                '<span style="color:#22c55e;">&#10003;</span>'
+                if review_result["compatibility_passed"]
+                else '<span style="color:#ef4444;">&#10007;</span>'
+            )
             checks.append(f"{icon} Compatibility")
         if "docs_passed" in review_result:
-            icon = '<span style="color:#22c55e;">&#10003;</span>' if review_result["docs_passed"] else '<span style="color:#ef4444;">&#10007;</span>'
+            icon = (
+                '<span style="color:#22c55e;">&#10003;</span>'
+                if review_result["docs_passed"]
+                else '<span style="color:#ef4444;">&#10007;</span>'
+            )
             checks.append(f"{icon} Documentation")
         if checks:
-            checks_html = '<p style="font-size:14px;">' + " &nbsp;&middot;&nbsp; ".join(checks) + '</p>'
+            checks_html = (
+                '<p style="font-size:14px;">'
+                + " &nbsp;&middot;&nbsp; ".join(checks)
+                + "</p>"
+            )
 
     changes_html = ""
-    required_changes = review_result.get("required_changes", []) if review_result else []
+    required_changes = (
+        review_result.get("required_changes", []) if review_result else []
+    )
     if required_changes:
-        items = "".join(f"<li style='margin:4px 0;'>{_esc(c)}</li>" for c in required_changes)
+        items = "".join(
+            f"<li style='margin:4px 0;'>{_esc(c)}</li>" for c in required_changes
+        )
         changes_html = f'<div style="margin:12px 0;"><p style="color:#f59e0b; font-weight:600; font-size:14px;">Required changes:</p><ul style="color:#a3a3a3; font-size:13px; padding-left:20px;">{items}</ul></div>'
 
     summary_html = ""
@@ -969,12 +1167,13 @@ async def send_review_completed_email(
     badge_info_html = ""
     if outcome == "approved":
         from app.billing.service import TIER_BADGE_LABELS
+
         badge_label = TIER_BADGE_LABELS.get(tier, "Reviewed")
         badge_info_html = (
             f'<div style="margin:16px 0; padding:12px 16px; background:#052e16; border:1px solid rgba(34,197,94,0.3); border-radius:8px; font-size:13px; color:#86efac;">'
-            f'Your package now displays the <strong>{badge_label}</strong> badge. '
+            f"Your package now displays the <strong>{badge_label}</strong> badge. "
             f'<a href="{settings.FRONTEND_URL}/packages/{package_slug}" style="color:#60a5fa;">View your package</a>'
-            f'</div>'
+            f"</div>"
         )
 
     html = _wrap(f"""
@@ -990,17 +1189,29 @@ async def send_review_completed_email(
         <a href="{settings.FRONTEND_URL}/dashboard" class="btn">View Details</a>
       </p>
     """)
-    return await send_email(to, f"Review {outcome}: {package_slug}@{version} - AgentNode", html,
-        f"Your {tier} review for {package_slug}@{version} is complete. Outcome: {outcome}.")
+    return await send_email(
+        to,
+        f"Review {outcome}: {package_slug}@{version} - AgentNode",
+        html,
+        f"Your {tier} review for {package_slug}@{version} is complete. Outcome: {outcome}.",
+    )
 
 
 # 31. Review refund
 async def send_review_refund_email(
-    to: str, package_slug: str, version: str, refund_amount_cents: int, is_full: bool,
+    to: str,
+    package_slug: str,
+    version: str,
+    refund_amount_cents: int,
+    is_full: bool,
 ) -> bool:
     refund_str = f"${refund_amount_cents / 100:.0f}"
     refund_type = "Full refund" if is_full else "Partial refund"
-    badge_note = "<p class='warn'>The review badge has been removed from this version.</p>" if is_full else ""
+    badge_note = (
+        "<p class='warn'>The review badge has been removed from this version.</p>"
+        if is_full
+        else ""
+    )
 
     html = _wrap(f"""
       <h1>{refund_type} processed</h1>
@@ -1015,5 +1226,9 @@ async def send_review_refund_email(
         <a href="{settings.FRONTEND_URL}/dashboard" class="btn">View Dashboard</a>
       </p>
     """)
-    return await send_email(to, f"Refund: {package_slug} review - AgentNode", html,
-        f"{refund_type} of {refund_str} USD for {package_slug}@{version} review.")
+    return await send_email(
+        to,
+        f"Refund: {package_slug} review - AgentNode",
+        html,
+        f"{refund_type} of {refund_str} USD for {package_slug}@{version} review.",
+    )

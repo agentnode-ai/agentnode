@@ -41,5 +41,27 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "httpx>=0.27",
-    "ruff>=0.4",
+    "ruff==0.15.10",
 ]
+
+[tool.ruff]
+# Import-pipeline test fixtures are synthetic test inputs representing arbitrary
+# third-party tool code under analysis (intentional unresolved symbols, unused
+# imports, etc.), not first-party source. Exclude them from linting and
+# formatting entirely; their exact contents are part of the tests.
+extend-exclude = [
+    "tests/import_real_world/fixtures",
+    "tests/import_smoke/fixtures",
+]
+
+[tool.ruff.lint]
+# Ruff's default rule selection, made explicit so lint results do not drift
+# between ruff versions: E4 (imports), E7 (statements), E9 (syntax),
+# F (Pyflakes). No additional rules are enabled here.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Logging is configured via logging.config.dictConfig() before the app modules
+# are imported, so those imports intentionally follow the setup (see main.py
+# comment P1-CD11). Reordering would break early logging configuration.
+"app/main.py" = ["E402"]

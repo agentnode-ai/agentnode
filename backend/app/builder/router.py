@@ -10,8 +10,16 @@ from fastapi.responses import StreamingResponse
 
 from app.auth.dependencies import get_current_user
 from app.auth.models import User
-from app.builder.guardrails import has_critical_findings, scan_generated_code, validate_input
-from app.builder.schemas import BuilderArtifactRequest, BuilderGenerateRequest, BuilderGenerateResponse
+from app.builder.guardrails import (
+    has_critical_findings,
+    scan_generated_code,
+    validate_input,
+)
+from app.builder.schemas import (
+    BuilderArtifactRequest,
+    BuilderGenerateRequest,
+    BuilderGenerateResponse,
+)
 from app.builder.service import generate_capability
 from app.config import settings
 from app.shared.exceptions import AppError
@@ -34,7 +42,11 @@ async def builder_generate(
     """Generate an ANP v0.2 manifest and code scaffold from a description."""
     description = body.description.strip()
     if len(description) < 10:
-        raise AppError("BUILDER_INPUT_TOO_SHORT", "Please describe your capability in more detail.", 400)
+        raise AppError(
+            "BUILDER_INPUT_TOO_SHORT",
+            "Please describe your capability in more detail.",
+            400,
+        )
 
     # --- Input guardrails ---
     input_error = validate_input(description)
@@ -48,19 +60,26 @@ async def builder_generate(
     if settings.ANTHROPIC_API_KEY:
         try:
             from app.builder.ai import generate_with_ai
-            result = await generate_with_ai(description=description, package_type=body.package_type)
+
+            result = await generate_with_ai(
+                description=description, package_type=body.package_type
+            )
         except Exception as exc:
             logger.warning("AI generation failed, falling back to heuristic: %s", exc)
 
     if result is None:
-        result = generate_capability(description=description, package_type=body.package_type)
+        result = generate_capability(
+            description=description, package_type=body.package_type
+        )
 
     # --- Output guardrails: scan generated code ---
     findings = scan_generated_code(result.code_files)
     if findings:
         logger.warning(
             "Security findings in generated code for '%s' (user=%s): %s",
-            description[:60], user.username, findings,
+            description[:60],
+            user.username,
+            findings,
         )
         if has_critical_findings(findings):
             raise AppError(
@@ -103,6 +122,7 @@ async def builder_artifact(
         for f in body.code_files:
             if f.path.endswith("/tool.py"):
                 import re as _re
+
                 m = _re.search(r"^def (\w+)\(", f.content, _re.MULTILINE)
                 if m:
                     tool_func = m.group(1)
@@ -156,12 +176,16 @@ async def builder_artifact(
 
         # Add test file only if none already included in code_files
         has_test = any(
-            f.path.startswith("tests/") and f.path.endswith(".py") and f.path != "tests/__init__.py"
+            f.path.startswith("tests/")
+            and f.path.endswith(".py")
+            and f.path != "tests/__init__.py"
             for f in body.code_files
         )
         if not has_test:
             test_bytes = test_content.encode()
-            test_filename = "tests/test_agent.py" if is_agent else f"tests/test_{tool_func}.py"
+            test_filename = (
+                "tests/test_agent.py" if is_agent else f"tests/test_{tool_func}.py"
+            )
             info = tarfile.TarInfo(name=test_filename)
             info.size = len(test_bytes)
             tar.addfile(info, io.BytesIO(test_bytes))
@@ -175,7 +199,7 @@ async def builder_artifact(
             tar.addfile(info, io.BytesIO(init_bytes))
 
     buf.seek(0)
-    safe_name = re.sub(r'[^a-z0-9-]', '', body.package_id)[:60] or 'package'
+    safe_name = re.sub(r"[^a-z0-9-]", "", body.package_id)[:60] or "package"
     return StreamingResponse(
         buf,
         media_type="application/gzip",

@@ -1,5 +1,6 @@
 """Unit tests for ANP v0.3 taxonomy validation: type combinations, prompts,
 resources, connector, and agent sections."""
+
 import pytest
 
 from app.packages.validator import validate_manifest
@@ -8,6 +9,7 @@ from app.packages.validator import validate_manifest
 # ---------------------------------------------------------------------------
 # Base manifests
 # ---------------------------------------------------------------------------
+
 
 def _base_toolpack(**overrides) -> dict:
     """Valid toolpack+python+package manifest."""
@@ -24,12 +26,14 @@ def _base_toolpack(**overrides) -> dict:
         "hosting_type": "agentnode_hosted",
         "entrypoint": "test_pack.tool",
         "capabilities": {
-            "tools": [{
-                "name": "test_tool",
-                "capability_id": "pdf_extraction",
-                "description": "Test tool",
-                "entrypoint": "test_pack.tool:run",
-            }],
+            "tools": [
+                {
+                    "name": "test_tool",
+                    "capability_id": "pdf_extraction",
+                    "description": "Test tool",
+                    "entrypoint": "test_pack.tool:run",
+                }
+            ],
             "resources": [],
             "prompts": [],
         },
@@ -140,6 +144,7 @@ def _base_upgrade(**overrides) -> dict:
 # Type Combination Validation (S5)
 # ---------------------------------------------------------------------------
 
+
 class TestTypeCombinations:
     @pytest.mark.asyncio
     async def test_valid_toolpack_python_package(self):
@@ -208,7 +213,10 @@ class TestTypeCombinations:
         m["connector"] = {"provider": "slack", "auth_type": "api_key"}
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
-        assert any("connector: section only valid for package_type=toolpack" in e for e in errors)
+        assert any(
+            "connector: section only valid for package_type=toolpack" in e
+            for e in errors
+        )
 
     @pytest.mark.asyncio
     async def test_invalid_upgrade_mcp_package(self):
@@ -223,6 +231,7 @@ class TestTypeCombinations:
 # S9: Upgrade restrictions
 # ---------------------------------------------------------------------------
 
+
 class TestUpgradeRestrictions:
     @pytest.mark.asyncio
     async def test_upgrade_with_agent_section_invalid(self):
@@ -230,7 +239,9 @@ class TestUpgradeRestrictions:
         m["agent"] = {"entrypoint": "x.y:z", "goal": "bad"}
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
-        assert any("upgrade packages must not have an 'agent:' section" in e for e in errors)
+        assert any(
+            "upgrade packages must not have an 'agent:' section" in e for e in errors
+        )
 
     @pytest.mark.asyncio
     async def test_upgrade_with_connector_section_invalid(self):
@@ -238,7 +249,9 @@ class TestUpgradeRestrictions:
         m["connector"] = {"provider": "slack"}
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
-        assert any("upgrade packages must not have a 'connector:' section" in e for e in errors)
+        assert any(
+            "upgrade packages must not have a 'connector:' section" in e for e in errors
+        )
 
     @pytest.mark.asyncio
     async def test_upgrade_with_tools_invalid(self):
@@ -246,36 +259,47 @@ class TestUpgradeRestrictions:
         m["capabilities"]["tools"] = [{"name": "t", "capability_id": "x"}]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
-        assert any("upgrade packages must not declare executable tools" in e for e in errors)
+        assert any(
+            "upgrade packages must not declare executable tools" in e for e in errors
+        )
 
 
 # ---------------------------------------------------------------------------
 # Prompt Validation (S2, S6, S11)
 # ---------------------------------------------------------------------------
 
+
 class TestPromptValidation:
     @pytest.mark.asyncio
     async def test_valid_prompt(self):
         m = _base_toolpack()
-        m["capabilities"]["prompts"] = [{
-            "name": "summarize",
-            "capability_id": "text_summarization",
-            "template": "Summarize the following: {{text}}",
-            "description": "Summarize text",
-            "arguments": [
-                {"name": "text", "description": "The text to summarize", "required": True},
-            ],
-        }]
+        m["capabilities"]["prompts"] = [
+            {
+                "name": "summarize",
+                "capability_id": "text_summarization",
+                "template": "Summarize the following: {{text}}",
+                "description": "Summarize text",
+                "arguments": [
+                    {
+                        "name": "text",
+                        "description": "The text to summarize",
+                        "required": True,
+                    },
+                ],
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is True, f"errors: {errors}"
 
     @pytest.mark.asyncio
     async def test_prompt_missing_name(self):
         m = _base_toolpack()
-        m["capabilities"]["prompts"] = [{
-            "capability_id": "text_summarization",
-            "template": "Summarize: {{text}}",
-        }]
+        m["capabilities"]["prompts"] = [
+            {
+                "capability_id": "text_summarization",
+                "template": "Summarize: {{text}}",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("prompts[0].name is required" in e for e in errors)
@@ -283,10 +307,12 @@ class TestPromptValidation:
     @pytest.mark.asyncio
     async def test_prompt_missing_capability_id(self):
         m = _base_toolpack()
-        m["capabilities"]["prompts"] = [{
-            "name": "summarize",
-            "template": "Summarize: {{text}}",
-        }]
+        m["capabilities"]["prompts"] = [
+            {
+                "name": "summarize",
+                "template": "Summarize: {{text}}",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("prompts[0].capability_id is required" in e for e in errors)
@@ -294,10 +320,12 @@ class TestPromptValidation:
     @pytest.mark.asyncio
     async def test_prompt_missing_template(self):
         m = _base_toolpack()
-        m["capabilities"]["prompts"] = [{
-            "name": "summarize",
-            "capability_id": "text_summarization",
-        }]
+        m["capabilities"]["prompts"] = [
+            {
+                "name": "summarize",
+                "capability_id": "text_summarization",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("prompts[0].template is required" in e for e in errors)
@@ -306,12 +334,14 @@ class TestPromptValidation:
     async def test_prompt_rejects_entrypoint(self):
         """Prompts are non-executable — entrypoint not allowed."""
         m = _base_toolpack()
-        m["capabilities"]["prompts"] = [{
-            "name": "summarize",
-            "capability_id": "text_summarization",
-            "template": "Summarize: {{text}}",
-            "entrypoint": "bad.module:fn",
-        }]
+        m["capabilities"]["prompts"] = [
+            {
+                "name": "summarize",
+                "capability_id": "text_summarization",
+                "template": "Summarize: {{text}}",
+                "entrypoint": "bad.module:fn",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("entrypoint is not allowed" in e for e in errors)
@@ -320,12 +350,14 @@ class TestPromptValidation:
     async def test_prompt_rejects_input_schema(self):
         """Prompts are non-executable — input_schema not allowed."""
         m = _base_toolpack()
-        m["capabilities"]["prompts"] = [{
-            "name": "summarize",
-            "capability_id": "text_summarization",
-            "template": "Summarize: {{text}}",
-            "input_schema": {"type": "object"},
-        }]
+        m["capabilities"]["prompts"] = [
+            {
+                "name": "summarize",
+                "capability_id": "text_summarization",
+                "template": "Summarize: {{text}}",
+                "input_schema": {"type": "object"},
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("input_schema is not allowed" in e for e in errors)
@@ -333,12 +365,14 @@ class TestPromptValidation:
     @pytest.mark.asyncio
     async def test_prompt_argument_missing_name(self):
         m = _base_toolpack()
-        m["capabilities"]["prompts"] = [{
-            "name": "summarize",
-            "capability_id": "text_summarization",
-            "template": "Summarize: {{text}}",
-            "arguments": [{"description": "no name"}],
-        }]
+        m["capabilities"]["prompts"] = [
+            {
+                "name": "summarize",
+                "capability_id": "text_summarization",
+                "template": "Summarize: {{text}}",
+                "arguments": [{"description": "no name"}],
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("arguments[0].name is required" in e for e in errors)
@@ -346,12 +380,14 @@ class TestPromptValidation:
     @pytest.mark.asyncio
     async def test_prompt_arguments_not_list(self):
         m = _base_toolpack()
-        m["capabilities"]["prompts"] = [{
-            "name": "summarize",
-            "capability_id": "text_summarization",
-            "template": "Summarize: {{text}}",
-            "arguments": "not-a-list",
-        }]
+        m["capabilities"]["prompts"] = [
+            {
+                "name": "summarize",
+                "capability_id": "text_summarization",
+                "template": "Summarize: {{text}}",
+                "arguments": "not-a-list",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("arguments must be an array" in e for e in errors)
@@ -361,38 +397,45 @@ class TestPromptValidation:
 # Resource Validation (S2, S6, S10)
 # ---------------------------------------------------------------------------
 
+
 class TestResourceValidation:
     @pytest.mark.asyncio
     async def test_valid_resource_with_resource_uri(self):
         m = _base_toolpack()
-        m["capabilities"]["resources"] = [{
-            "name": "api_spec",
-            "capability_id": "api_reference",
-            "uri": "resource://slack/openapi-spec",
-            "description": "Slack API specification",
-            "mime_type": "application/json",
-        }]
+        m["capabilities"]["resources"] = [
+            {
+                "name": "api_spec",
+                "capability_id": "api_reference",
+                "uri": "resource://slack/openapi-spec",
+                "description": "Slack API specification",
+                "mime_type": "application/json",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is True, f"errors: {errors}"
 
     @pytest.mark.asyncio
     async def test_valid_resource_with_https_uri(self):
         m = _base_toolpack()
-        m["capabilities"]["resources"] = [{
-            "name": "docs",
-            "capability_id": "documentation",
-            "uri": "https://docs.example.com/api.json",
-        }]
+        m["capabilities"]["resources"] = [
+            {
+                "name": "docs",
+                "capability_id": "documentation",
+                "uri": "https://docs.example.com/api.json",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is True, f"errors: {errors}"
 
     @pytest.mark.asyncio
     async def test_resource_missing_name(self):
         m = _base_toolpack()
-        m["capabilities"]["resources"] = [{
-            "capability_id": "api_reference",
-            "uri": "resource://test/resource",
-        }]
+        m["capabilities"]["resources"] = [
+            {
+                "capability_id": "api_reference",
+                "uri": "resource://test/resource",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("resources[0].name is required" in e for e in errors)
@@ -400,10 +443,12 @@ class TestResourceValidation:
     @pytest.mark.asyncio
     async def test_resource_missing_capability_id(self):
         m = _base_toolpack()
-        m["capabilities"]["resources"] = [{
-            "name": "test",
-            "uri": "resource://test/resource",
-        }]
+        m["capabilities"]["resources"] = [
+            {
+                "name": "test",
+                "uri": "resource://test/resource",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("resources[0].capability_id is required" in e for e in errors)
@@ -411,10 +456,12 @@ class TestResourceValidation:
     @pytest.mark.asyncio
     async def test_resource_missing_uri(self):
         m = _base_toolpack()
-        m["capabilities"]["resources"] = [{
-            "name": "test",
-            "capability_id": "api_reference",
-        }]
+        m["capabilities"]["resources"] = [
+            {
+                "name": "test",
+                "capability_id": "api_reference",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("resources[0].uri is required" in e for e in errors)
@@ -423,11 +470,13 @@ class TestResourceValidation:
     async def test_resource_file_uri_rejected(self):
         """S10: file:// URIs are not allowed."""
         m = _base_toolpack()
-        m["capabilities"]["resources"] = [{
-            "name": "local",
-            "capability_id": "api_reference",
-            "uri": "file:///etc/passwd",
-        }]
+        m["capabilities"]["resources"] = [
+            {
+                "name": "local",
+                "capability_id": "api_reference",
+                "uri": "file:///etc/passwd",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("resource://" in e and "https://" in e for e in errors)
@@ -436,11 +485,13 @@ class TestResourceValidation:
     async def test_resource_http_uri_rejected(self):
         """Only resource:// and https:// — no plain http://."""
         m = _base_toolpack()
-        m["capabilities"]["resources"] = [{
-            "name": "insecure",
-            "capability_id": "api_reference",
-            "uri": "http://insecure.example.com/data",
-        }]
+        m["capabilities"]["resources"] = [
+            {
+                "name": "insecure",
+                "capability_id": "api_reference",
+                "uri": "http://insecure.example.com/data",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("resource://" in e and "https://" in e for e in errors)
@@ -448,12 +499,14 @@ class TestResourceValidation:
     @pytest.mark.asyncio
     async def test_resource_rejects_entrypoint(self):
         m = _base_toolpack()
-        m["capabilities"]["resources"] = [{
-            "name": "test",
-            "capability_id": "api_reference",
-            "uri": "resource://test/data",
-            "entrypoint": "bad.module:fn",
-        }]
+        m["capabilities"]["resources"] = [
+            {
+                "name": "test",
+                "capability_id": "api_reference",
+                "uri": "resource://test/data",
+                "entrypoint": "bad.module:fn",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("entrypoint is not allowed" in e for e in errors)
@@ -461,12 +514,14 @@ class TestResourceValidation:
     @pytest.mark.asyncio
     async def test_resource_rejects_input_schema(self):
         m = _base_toolpack()
-        m["capabilities"]["resources"] = [{
-            "name": "test",
-            "capability_id": "api_reference",
-            "uri": "resource://test/data",
-            "input_schema": {"type": "object"},
-        }]
+        m["capabilities"]["resources"] = [
+            {
+                "name": "test",
+                "capability_id": "api_reference",
+                "uri": "resource://test/data",
+                "input_schema": {"type": "object"},
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert valid is False
         assert any("input_schema is not allowed" in e for e in errors)
@@ -475,6 +530,7 @@ class TestResourceValidation:
 # ---------------------------------------------------------------------------
 # Connector Block Validation (S3, S8)
 # ---------------------------------------------------------------------------
+
 
 class TestConnectorValidation:
     @pytest.mark.asyncio
@@ -559,6 +615,7 @@ class TestConnectorValidation:
 # ---------------------------------------------------------------------------
 # Agent Block Validation (S4)
 # ---------------------------------------------------------------------------
+
 
 class TestAgentValidation:
     @pytest.mark.asyncio
@@ -689,6 +746,7 @@ class TestAgentValidation:
 # Toolpack requires tools, agent does not
 # ---------------------------------------------------------------------------
 
+
 class TestToolsRequirement:
     @pytest.mark.asyncio
     async def test_toolpack_requires_tools(self):
@@ -717,6 +775,7 @@ class TestToolsRequirement:
 # ---------------------------------------------------------------------------
 # Defaulting behavior — _validate_type_combination uses defaults
 # ---------------------------------------------------------------------------
+
 
 class TestCombinationDefaulting:
     """Verify that missing runtime/install_mode/package_type default to
@@ -766,6 +825,7 @@ class TestCombinationDefaulting:
 # Error message quality
 # ---------------------------------------------------------------------------
 
+
 class TestErrorMessageQuality:
     """Verify error messages are specific and actionable."""
 
@@ -786,7 +846,10 @@ class TestErrorMessageQuality:
         _, errors, _ = await validate_manifest(m)
         combo_errors = [e for e in errors if "Invalid combination" in e]
         assert len(combo_errors) == 1
-        assert "python+package" in combo_errors[0] or "Toolpacks support" in combo_errors[0]
+        assert (
+            "python+package" in combo_errors[0]
+            or "Toolpacks support" in combo_errors[0]
+        )
 
     @pytest.mark.asyncio
     async def test_upgrade_combo_error_mentions_python(self):
@@ -800,6 +863,7 @@ class TestErrorMessageQuality:
 # ---------------------------------------------------------------------------
 # PR 7: Orchestration validation
 # ---------------------------------------------------------------------------
+
 
 def _sequential_agent(**overrides) -> dict:
     """Valid agent with sequential orchestration (no entrypoint needed)."""
@@ -947,6 +1011,7 @@ class TestOrchestrationValidation:
 # PR 4: agent.isolation validation
 # ---------------------------------------------------------------------------
 
+
 class TestAgentIsolationValidation:
     @pytest.mark.asyncio
     async def test_isolation_process_valid(self):
@@ -984,6 +1049,7 @@ class TestAgentIsolationValidation:
 # ---------------------------------------------------------------------------
 # PR 7: when condition validation
 # ---------------------------------------------------------------------------
+
 
 class TestWhenConditionValidation:
     @pytest.mark.asyncio
@@ -1060,16 +1126,19 @@ class TestWhenConditionValidation:
 # PR 6: resource.content_path validation
 # ---------------------------------------------------------------------------
 
+
 class TestResourceContentPathValidation:
     @pytest.mark.asyncio
     async def test_valid_content_path(self):
         m = _base_toolpack()
-        m["capabilities"]["resources"] = [{
-            "name": "api_spec",
-            "capability_id": "api_reference",
-            "uri": "resource://test/spec",
-            "content_path": "resources/api_spec.json",
-        }]
+        m["capabilities"]["resources"] = [
+            {
+                "name": "api_spec",
+                "capability_id": "api_reference",
+                "uri": "resource://test/spec",
+                "content_path": "resources/api_spec.json",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         cp_errors = [e for e in errors if "content_path" in e]
         assert cp_errors == [], f"Unexpected errors: {cp_errors}"
@@ -1077,23 +1146,27 @@ class TestResourceContentPathValidation:
     @pytest.mark.asyncio
     async def test_content_path_no_traversal(self):
         m = _base_toolpack()
-        m["capabilities"]["resources"] = [{
-            "name": "evil",
-            "capability_id": "api_reference",
-            "uri": "resource://test/evil",
-            "content_path": "../../../etc/passwd",
-        }]
+        m["capabilities"]["resources"] = [
+            {
+                "name": "evil",
+                "capability_id": "api_reference",
+                "uri": "resource://test/evil",
+                "content_path": "../../../etc/passwd",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert any("content_path" in e and ".." in e for e in errors)
 
     @pytest.mark.asyncio
     async def test_content_path_no_absolute(self):
         m = _base_toolpack()
-        m["capabilities"]["resources"] = [{
-            "name": "abs",
-            "capability_id": "api_reference",
-            "uri": "resource://test/abs",
-            "content_path": "/etc/passwd",
-        }]
+        m["capabilities"]["resources"] = [
+            {
+                "name": "abs",
+                "capability_id": "api_reference",
+                "uri": "resource://test/abs",
+                "content_path": "/etc/passwd",
+            }
+        ]
         valid, errors, _ = await validate_manifest(m)
         assert any("content_path" in e for e in errors)

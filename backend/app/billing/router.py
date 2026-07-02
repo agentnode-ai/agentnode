@@ -2,7 +2,7 @@ import logging
 from uuid import UUID
 
 import stripe
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -12,7 +12,10 @@ from app.auth.dependencies import get_current_user, require_admin, require_publi
 from app.auth.models import User
 from app.billing.models import ReviewRequest
 from app.packages.service import build_meili_document
-from app.shared.meili import sync_package_to_meilisearch, delete_package_from_meilisearch
+from app.shared.meili import (
+    sync_package_to_meilisearch,
+    delete_package_from_meilisearch,
+)
 from app.billing.schemas import (
     AdminQueueItem,
     AssignReviewerBody,
@@ -82,7 +85,11 @@ async def request_review(
     )
 
 
-@router.get("/v1/reviews/my", response_model=list[ReviewRequestResponse], dependencies=[Depends(rate_limit(30, 60))])
+@router.get(
+    "/v1/reviews/my",
+    response_model=list[ReviewRequestResponse],
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def my_reviews(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -103,7 +110,9 @@ async def my_reviews(
     ctx = await _batch_review_context(session, reviews)
     items = []
     for r in reviews:
-        pkg_name, pkg_slug, ver, _, _, _ = ctx.get(r.id, (None, None, None, None, None, None))
+        pkg_name, pkg_slug, ver, _, _, _ = ctx.get(
+            r.id, (None, None, None, None, None, None)
+        )
         items.append(
             ReviewRequestResponse(
                 id=r.id,
@@ -127,7 +136,11 @@ async def my_reviews(
     return items
 
 
-@router.get("/v1/reviews/{review_id}", response_model=ReviewRequestResponse, dependencies=[Depends(rate_limit(30, 60))])
+@router.get(
+    "/v1/reviews/{review_id}",
+    response_model=ReviewRequestResponse,
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def get_review(
     review_id: UUID,
     user: User = Depends(get_current_user),
@@ -142,7 +155,9 @@ async def get_review(
         raise AppError("REVIEW_NOT_FOUND", "Review request not found", 404)
 
     # Check ownership (publisher or admin)
-    if not user.is_admin and (not user.publisher or r.publisher_id != user.publisher.id):
+    if not user.is_admin and (
+        not user.publisher or r.publisher_id != user.publisher.id
+    ):
         raise AppError("REVIEW_NOT_FOUND", "Review request not found", 404)
 
     pkg_name, pkg_slug, ver = await _get_review_context(session, r)
@@ -194,7 +209,10 @@ async def stripe_webhook(
     await session.commit()
 
     # Send payment received email after commit (background — don't block webhook response)
-    if result.get("status") == "processed" and event["type"] == "checkout.session.completed":
+    if (
+        result.get("status") == "processed"
+        and event["type"] == "checkout.session.completed"
+    ):
         try:
             order_id = event["data"]["object"].get("client_reference_id", "")
             if order_id.startswith("rev_"):
@@ -203,11 +221,18 @@ async def stripe_webhook(
                 )
                 review = rr.scalar_one_or_none()
                 if review and review.status == "paid":
-                    slug, ver, email = await _get_review_email_context(session, review.id)
+                    slug, ver, email = await _get_review_email_context(
+                        session, review.id
+                    )
                     if email:
                         background_tasks.add_task(
                             send_review_payment_received_email,
-                            email, slug, ver, review.tier, review.express, review.price_cents,
+                            email,
+                            slug,
+                            ver,
+                            review.tier,
+                            review.express,
+                            review.price_cents,
                         )
         except Exception:
             logger.warning("Failed to prepare review payment email", exc_info=True)
@@ -218,7 +243,11 @@ async def stripe_webhook(
 # ---- Admin endpoints ----
 
 
-@router.get("/v1/admin/reviews/queue", response_model=list[AdminQueueItem], dependencies=[Depends(rate_limit(30, 60))])
+@router.get(
+    "/v1/admin/reviews/queue",
+    response_model=list[AdminQueueItem],
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def admin_review_queue(
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
@@ -229,7 +258,7 @@ async def admin_review_queue(
         .where(ReviewRequest.status.in_(["paid", "in_review"]))
         .order_by(
             ReviewRequest.express.desc(),  # Express first
-            ReviewRequest.paid_at.asc(),   # Then FIFO
+            ReviewRequest.paid_at.asc(),  # Then FIFO
         )
         .limit(100)
     )
@@ -242,7 +271,9 @@ async def admin_review_queue(
 
     items = []
     for r in reviews:
-        pkg_name, pkg_slug, ver, v_status, v_tier, v_score = ctx.get(r.id, (None, None, None, None, None, None))
+        pkg_name, pkg_slug, ver, v_status, v_tier, v_score = ctx.get(
+            r.id, (None, None, None, None, None, None)
+        )
         pub_slug, pub_name = pub_ctx.get(r.publisher_id, (None, None))
         items.append(
             AdminQueueItem(
@@ -273,7 +304,11 @@ async def admin_review_queue(
     return items
 
 
-@router.get("/v1/admin/reviews/history", response_model=list[AdminQueueItem], dependencies=[Depends(rate_limit(30, 60))])
+@router.get(
+    "/v1/admin/reviews/history",
+    response_model=list[AdminQueueItem],
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def admin_review_history(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
@@ -284,8 +319,15 @@ async def admin_review_history(
     offset = (page - 1) * per_page
     result = await session.execute(
         select(ReviewRequest)
-        .where(ReviewRequest.status.in_(["approved", "changes_requested", "rejected", "refunded"]))
-        .order_by(ReviewRequest.reviewed_at.desc().nulls_last(), ReviewRequest.created_at.desc())
+        .where(
+            ReviewRequest.status.in_(
+                ["approved", "changes_requested", "rejected", "refunded"]
+            )
+        )
+        .order_by(
+            ReviewRequest.reviewed_at.desc().nulls_last(),
+            ReviewRequest.created_at.desc(),
+        )
         .offset(offset)
         .limit(per_page)
     )
@@ -297,7 +339,9 @@ async def admin_review_history(
 
     items = []
     for r in reviews:
-        pkg_name, pkg_slug, ver, v_status, v_tier, v_score = ctx.get(r.id, (None, None, None, None, None, None))
+        pkg_name, pkg_slug, ver, v_status, v_tier, v_score = ctx.get(
+            r.id, (None, None, None, None, None, None)
+        )
         pub_slug, pub_name = pub_ctx.get(r.publisher_id, (None, None))
         items.append(
             AdminQueueItem(
@@ -328,7 +372,11 @@ async def admin_review_history(
     return items
 
 
-@router.get("/v1/admin/reviews/{review_id}", response_model=AdminQueueItem, dependencies=[Depends(rate_limit(30, 60))])
+@router.get(
+    "/v1/admin/reviews/{review_id}",
+    response_model=AdminQueueItem,
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def admin_review_detail(
     review_id: UUID,
     user: User = Depends(require_admin),
@@ -356,7 +404,11 @@ async def admin_review_detail(
         )
         pv_row = pv_result.one_or_none()
         if pv_row:
-            v_status, v_tier, v_score = pv_row.verification_status, pv_row.verification_tier, pv_row.verification_score
+            v_status, v_tier, v_score = (
+                pv_row.verification_status,
+                pv_row.verification_tier,
+                pv_row.verification_score,
+            )
 
     pub_slug, pub_name = await _get_publisher_context(session, r.publisher_id)
 
@@ -386,7 +438,9 @@ async def admin_review_detail(
     )
 
 
-@router.post("/v1/admin/reviews/{review_id}/assign", dependencies=[Depends(rate_limit(10, 60))])
+@router.post(
+    "/v1/admin/reviews/{review_id}/assign", dependencies=[Depends(rate_limit(10, 60))]
+)
 async def admin_assign_reviewer(
     review_id: UUID,
     body: AssignReviewerBody,
@@ -397,9 +451,17 @@ async def admin_assign_reviewer(
 ):
     """Assign a reviewer to a review request."""
     review = await assign_reviewer(session, review_id, body.reviewer_id)
-    await _audit(session, request, user, "assign_reviewer", "review", str(review_id), {
-        "reviewer_id": str(body.reviewer_id),
-    })
+    await _audit(
+        session,
+        request,
+        user,
+        "assign_reviewer",
+        "review",
+        str(review_id),
+        {
+            "reviewer_id": str(body.reviewer_id),
+        },
+    )
     await session.commit()
 
     # Send "reviewer assigned" email in background
@@ -408,7 +470,11 @@ async def admin_assign_reviewer(
         if email:
             background_tasks.add_task(
                 send_review_assigned_email,
-                email, slug, ver, review.tier, review.express,
+                email,
+                slug,
+                ver,
+                review.tier,
+                review.express,
             )
     except Exception:
         logger.warning("Failed to prepare review assigned email", exc_info=True)
@@ -416,7 +482,9 @@ async def admin_assign_reviewer(
     return {"status": "assigned", "review_id": str(review.id)}
 
 
-@router.post("/v1/admin/reviews/{review_id}/complete", dependencies=[Depends(rate_limit(10, 60))])
+@router.post(
+    "/v1/admin/reviews/{review_id}/complete", dependencies=[Depends(rate_limit(10, 60))]
+)
 async def admin_complete_review(
     review_id: UUID,
     body: CompleteReviewBody,
@@ -433,10 +501,18 @@ async def admin_complete_review(
         notes=body.notes,
         review_result=body.review_result,
     )
-    await _audit(session, request, user, "complete_review", "review", str(review_id), {
-        "outcome": body.outcome,
-        "tier": review.tier,
-    })
+    await _audit(
+        session,
+        request,
+        user,
+        "complete_review",
+        "review",
+        str(review_id),
+        {
+            "outcome": body.outcome,
+            "tier": review.tier,
+        },
+    )
     await session.commit()
 
     # Send completion email in background (don't block response)
@@ -445,8 +521,13 @@ async def admin_complete_review(
         if email:
             background_tasks.add_task(
                 send_review_completed_email,
-                email, slug, ver, review.tier,
-                body.outcome, body.review_result, body.notes,
+                email,
+                slug,
+                ver,
+                review.tier,
+                body.outcome,
+                body.review_result,
+                body.notes,
             )
     except Exception:
         logger.warning("Failed to prepare review completion email", exc_info=True)
@@ -465,7 +546,9 @@ async def admin_complete_review(
     }
 
 
-@router.post("/v1/admin/reviews/{review_id}/refund", dependencies=[Depends(rate_limit(5, 60))])
+@router.post(
+    "/v1/admin/reviews/{review_id}/refund", dependencies=[Depends(rate_limit(5, 60))]
+)
 async def admin_refund_review(
     review_id: UUID,
     body: RefundReviewBody,
@@ -482,11 +565,19 @@ async def admin_refund_review(
         reason=body.reason,
     )
     is_full = body.amount_cents is None or body.amount_cents >= review.price_cents
-    await _audit(session, request, user, "refund_review", "review", str(review_id), {
-        "amount_cents": review.refund_amount_cents,
-        "full_refund": is_full,
-        "reason": body.reason,
-    })
+    await _audit(
+        session,
+        request,
+        user,
+        "refund_review",
+        "review",
+        str(review_id),
+        {
+            "amount_cents": review.refund_amount_cents,
+            "full_refund": is_full,
+            "reason": body.reason,
+        },
+    )
     await session.commit()
 
     # Send refund email in background (don't block response)
@@ -495,7 +586,11 @@ async def admin_refund_review(
         if email:
             background_tasks.add_task(
                 send_review_refund_email,
-                email, slug, ver, review.refund_amount_cents, is_full,
+                email,
+                slug,
+                ver,
+                review.refund_amount_cents,
+                is_full,
             )
     except Exception:
         logger.warning("Failed to prepare review refund email", exc_info=True)
@@ -519,7 +614,6 @@ async def admin_refund_review(
 
 async def _sync_review_badge_to_search(session: AsyncSession, package_id) -> None:
     """Sync review badge changes to Meilisearch. Fire-and-forget, never raises."""
-    from sqlalchemy.orm import selectinload
 
     pkg_result = await session.execute(
         select(Package)
@@ -558,14 +652,18 @@ async def _sync_review_badge_to_search(session: AsyncSession, package_id) -> Non
 # ---- Helpers ----
 
 
-async def _get_review_context(session: AsyncSession, review: ReviewRequest) -> tuple[str | None, str | None, str | None]:
+async def _get_review_context(
+    session: AsyncSession, review: ReviewRequest
+) -> tuple[str | None, str | None, str | None]:
     """Return (package_name, package_slug, version_number) for a review."""
     pkg_result = await session.execute(
         select(Package.name, Package.slug).where(Package.id == review.package_id)
     )
     pkg_row = pkg_result.one_or_none()
     pv_result = await session.execute(
-        select(PackageVersion.version_number).where(PackageVersion.id == review.package_version_id)
+        select(PackageVersion.version_number).where(
+            PackageVersion.id == review.package_version_id
+        )
     )
     pv_row = pv_result.one_or_none()
     return (
@@ -576,8 +674,11 @@ async def _get_review_context(session: AsyncSession, review: ReviewRequest) -> t
 
 
 async def _batch_review_context(
-    session: AsyncSession, reviews: list[ReviewRequest],
-) -> dict[UUID, tuple[str | None, str | None, str | None, str | None, str | None, int | None]]:
+    session: AsyncSession,
+    reviews: list[ReviewRequest],
+) -> dict[
+    UUID, tuple[str | None, str | None, str | None, str | None, str | None, int | None]
+]:
     """Batch-load (package_name, package_slug, version_number, verification_status, verification_tier, verification_score) for many reviews.
 
     Returns a dict keyed by review.id.  Two queries total instead of 2*N.
@@ -586,13 +687,17 @@ async def _batch_review_context(
         return {}
 
     package_ids = {r.package_id for r in reviews if r.package_id is not None}
-    version_ids = {r.package_version_id for r in reviews if r.package_version_id is not None}
+    version_ids = {
+        r.package_version_id for r in reviews if r.package_version_id is not None
+    }
 
     # Single query for all packages
     pkg_map: dict[UUID, tuple[str | None, str | None]] = {}
     if package_ids:
         pkg_result = await session.execute(
-            select(Package.id, Package.name, Package.slug).where(Package.id.in_(package_ids))
+            select(Package.id, Package.name, Package.slug).where(
+                Package.id.in_(package_ids)
+            )
         )
         for row in pkg_result.all():
             pkg_map[row.id] = (row.name, row.slug)
@@ -610,10 +715,18 @@ async def _batch_review_context(
             ).where(PackageVersion.id.in_(version_ids))
         )
         for row in pv_result.all():
-            ver_map[row.id] = (row.version_number, row.verification_status, row.verification_tier, row.verification_score)
+            ver_map[row.id] = (
+                row.version_number,
+                row.verification_status,
+                row.verification_tier,
+                row.verification_score,
+            )
 
     # Assemble per-review context
-    result: dict[UUID, tuple[str | None, str | None, str | None, str | None, str | None, int | None]] = {}
+    result: dict[
+        UUID,
+        tuple[str | None, str | None, str | None, str | None, str | None, int | None],
+    ] = {}
     for r in reviews:
         pkg_name, pkg_slug = pkg_map.get(r.package_id, (None, None))
         ver_info = ver_map.get(r.package_version_id)
@@ -626,7 +739,8 @@ async def _batch_review_context(
 
 
 async def _batch_publisher_context(
-    session: AsyncSession, publisher_ids: set[UUID],
+    session: AsyncSession,
+    publisher_ids: set[UUID],
 ) -> dict[UUID, tuple[str | None, str | None]]:
     """Batch-load (publisher_slug, publisher_name) for many publisher IDs.
 
@@ -636,7 +750,9 @@ async def _batch_publisher_context(
         return {}
 
     result = await session.execute(
-        select(Publisher.id, Publisher.slug, Publisher.display_name).where(Publisher.id.in_(publisher_ids))
+        select(Publisher.id, Publisher.slug, Publisher.display_name).where(
+            Publisher.id.in_(publisher_ids)
+        )
     )
     pub_map: dict[UUID, tuple[str | None, str | None]] = {}
     for row in result.all():
@@ -644,22 +760,35 @@ async def _batch_publisher_context(
     return pub_map
 
 
-async def _get_publisher_context(session: AsyncSession, publisher_id) -> tuple[str | None, str | None]:
+async def _get_publisher_context(
+    session: AsyncSession, publisher_id
+) -> tuple[str | None, str | None]:
     """Return (publisher_slug, publisher_name)."""
     result = await session.execute(
-        select(Publisher.slug, Publisher.display_name).where(Publisher.id == publisher_id)
+        select(Publisher.slug, Publisher.display_name).where(
+            Publisher.id == publisher_id
+        )
     )
     row = result.one_or_none()
     return (row.slug if row else None, row.display_name if row else None)
 
 
 async def _audit(
-    session: AsyncSession, request: Request, admin: User,
-    action: str, target_type: str, target_id: str, metadata: dict | None = None,
+    session: AsyncSession,
+    request: Request,
+    admin: User,
+    action: str,
+    target_type: str,
+    target_id: str,
+    metadata: dict | None = None,
 ) -> None:
     """Log an admin action (same pattern as admin/router.py)."""
     forwarded = request.headers.get("x-forwarded-for")
-    ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else None)
+    ip = (
+        forwarded.split(",")[0].strip()
+        if forwarded
+        else (request.client.host if request.client else None)
+    )
     log = AdminAuditLog(
         admin_user_id=admin.id,
         action=action,

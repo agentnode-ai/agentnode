@@ -1,9 +1,10 @@
 """Integration tests for install flow and download tracking."""
+
 import json
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import update
 from app.publishers.models import Publisher
 
 TEST_USER = {
@@ -30,12 +31,17 @@ TEST_MANIFEST = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "install_test.tool",
     "capabilities": {
-        "tools": [{
-            "name": "test_tool",
-            "capability_id": "pdf_extraction",
-            "description": "Test tool",
-            "input_schema": {"type": "object", "properties": {"input": {"type": "string"}}},
-        }],
+        "tools": [
+            {
+                "name": "test_tool",
+                "capability_id": "pdf_extraction",
+                "description": "Test tool",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"input": {"type": "string"}},
+                },
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -51,7 +57,10 @@ TEST_MANIFEST = {
     "tags": ["test"],
     "categories": ["document-processing"],
     "dependencies": [],
-    "security": {"signature": "", "provenance": {"source_repo": "", "commit": "", "build_system": ""}},
+    "security": {
+        "signature": "",
+        "provenance": {"source_repo": "", "commit": "", "build_system": ""},
+    },
 }
 
 
@@ -70,10 +79,13 @@ async def publish_test_package(client, token, manifest=None, artifact=None):
 
 async def get_auth_token(client, session):
     await client.post("/v1/auth/register", json=TEST_USER)
-    login = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     token = login.json()["access_token"]
     await client.post(
         "/v1/publishers",
@@ -146,7 +158,9 @@ async def test_install_metadata_agent_field(mock_meili, mock_s3, client, session
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_get_install_metadata_specific_version(mock_meili, mock_s3, client, session):
+async def test_get_install_metadata_specific_version(
+    mock_meili, mock_s3, client, session
+):
     token = await get_auth_token(client, session)
     await publish_test_package(client, token)
     v2 = {**TEST_MANIFEST, "version": "2.0.0"}
@@ -164,12 +178,19 @@ async def test_get_install_metadata_specific_version(mock_meili, mock_s3, client
 
 
 @pytest.mark.asyncio
-@patch("app.install.service.generate_presigned_url", return_value="https://s3.example.com/presigned")
+@patch("app.packages.service.validate_artifact_quality", return_value=([], []))
+@patch(
+    "app.install.service.generate_presigned_url",
+    return_value="https://s3.example.com/presigned",
+)
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_get_install_with_artifact(mock_meili, mock_s3, mock_presign, client, session):
+async def test_get_install_with_artifact(
+    mock_meili, mock_s3, mock_presign, mock_qg, client, session
+):
     token = await get_auth_token(client, session)
-    await publish_test_package(client, token, artifact=b"fake-artifact-data")
+    pub = await publish_test_package(client, token, artifact=b"fake-artifact-data")
+    assert pub.status_code == 201, pub.json()
 
     resp = await client.get("/v1/packages/install-test-pkg/install-info")
     assert resp.status_code == 200
@@ -205,12 +226,19 @@ async def test_download_increments_count(mock_meili, mock_s3, client, session):
 
 
 @pytest.mark.asyncio
-@patch("app.install.service.generate_presigned_url", return_value="https://s3.example.com/presigned")
+@patch("app.packages.service.validate_artifact_quality", return_value=([], []))
+@patch(
+    "app.install.service.generate_presigned_url",
+    return_value="https://s3.example.com/presigned",
+)
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_download_returns_url(mock_meili, mock_s3, mock_presign, client, session):
+async def test_download_returns_url(
+    mock_meili, mock_s3, mock_presign, mock_qg, client, session
+):
     token = await get_auth_token(client, session)
-    await publish_test_package(client, token, artifact=b"artifact-bytes")
+    pub = await publish_test_package(client, token, artifact=b"artifact-bytes")
+    assert pub.status_code == 201, pub.json()
 
     resp = await client.post("/v1/packages/install-test-pkg/download")
     assert resp.status_code == 200
@@ -258,12 +286,17 @@ MCP_MANIFEST = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "mcp_test.server",
     "capabilities": {
-        "tools": [{
-            "name": "mcp_tool",
-            "capability_id": "general",
-            "description": "MCP test tool",
-            "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
-        }],
+        "tools": [
+            {
+                "name": "mcp_tool",
+                "capability_id": "general",
+                "description": "MCP test tool",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                },
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -302,10 +335,17 @@ async def test_install_metadata_mcp_server(mock_meili, mock_s3, client, session)
     data = resp.json()
     assert data["runtime"] == "mcp"
     assert data["mcp_server"] is not None
-    assert data["mcp_server"]["command"] == ["npx", "-y", "@modelcontextprotocol/server-test@1.0.0"]
+    assert data["mcp_server"]["command"] == [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-test@1.0.0",
+    ]
     assert data["mcp_server"]["transport"] == "stdio"
     assert data["mcp_server"]["npm_package"] == "@modelcontextprotocol/server-test"
-    assert data["mcp_server"]["source_repo"] == "https://github.com/modelcontextprotocol/servers"
+    assert (
+        data["mcp_server"]["source_repo"]
+        == "https://github.com/modelcontextprotocol/servers"
+    )
     assert data["mcp_server"]["env_keys"] == ["TEST_API_KEY"]
     assert data["mcp_server"]["schema_version"] == 1
 
@@ -313,7 +353,9 @@ async def test_install_metadata_mcp_server(mock_meili, mock_s3, client, session)
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_install_metadata_non_mcp_no_mcp_server(mock_meili, mock_s3, client, session):
+async def test_install_metadata_non_mcp_no_mcp_server(
+    mock_meili, mock_s3, client, session
+):
     """Non-MCP packages should NOT have mcp_server in install-info."""
     token = await get_auth_token(client, session)
     await publish_test_package(client, token)

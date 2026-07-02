@@ -7,6 +7,7 @@ these methods. If the auth model changes to SameSite=none or cookie-based
 GET mutations, this decision must be revisited.
 """
 
+import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,7 +53,6 @@ from app.auth.security import (
     revoke_refresh_jti,
     set_auth_cookies,
     store_refresh_token,
-    validate_refresh_jti,
 )
 from app.auth.service import (
     change_password,
@@ -71,14 +71,30 @@ from app.auth.service import (
     verify_email,
 )
 from app.database import get_session
+from app.shared.email import EMAIL_PREF_DEFAULTS
 from app.shared.exceptions import AppError
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
 
-@router.post("/register", response_model=RegisterResponse, status_code=201, dependencies=[Depends(rate_limit(5, 60))])
-async def register(body: RegisterRequest, background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)):
-    user = await register_user(session, body.email, body.username, body.password, background_tasks=background_tasks)
+@router.post(
+    "/register",
+    response_model=RegisterResponse,
+    status_code=201,
+    dependencies=[Depends(rate_limit(5, 60))],
+)
+async def register(
+    body: RegisterRequest,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
+    user = await register_user(
+        session,
+        body.email,
+        body.username,
+        body.password,
+        background_tasks=background_tasks,
+    )
 
     # Track invite funnel: account_registered event
     if body.invite_code:
@@ -86,42 +102,78 @@ async def register(body: RegisterRequest, background_tasks: BackgroundTasks, ses
             from app.invites.models import InviteCode
             from app.invites.service import log_event
             from sqlalchemy import select
+
             result = await session.execute(
                 select(InviteCode).where(InviteCode.code == body.invite_code)
             )
             invite = result.scalar_one_or_none()
             if invite and invite.candidate_id:
-                await log_event(session, invite.candidate_id, "account_registered", {
-                    "invite_code": body.invite_code,
-                    "user_id": str(user.id),
-                }, actor_user_id=user.id)
+                await log_event(
+                    session,
+                    invite.candidate_id,
+                    "account_registered",
+                    {
+                        "invite_code": body.invite_code,
+                        "user_id": str(user.id),
+                    },
+                    actor_user_id=user.id,
+                )
                 await session.commit()
         except Exception:
-            logging.getLogger("agentnode.auth").warning("Failed to track invite registration event", exc_info=True)
+            logging.getLogger("agentnode.auth").warning(
+                "Failed to track invite registration event", exc_info=True
+            )
 
     return RegisterResponse(id=user.id, email=user.email, username=user.username)
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, request: Request, response: Response, background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)):
+async def login(
+    body: LoginRequest,
+    request: Request,
+    response: Response,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
     await check_login_rate_limits(request, response, body.email)
     redis = request.app.state.redis
     forwarded = request.headers.get("x-forwarded-for")
-    ip = forwarded.split(",")[-1].strip() if forwarded else (request.client.host if request.client else "unknown")
-    result = await login_user(session, body.email, body.password, body.totp_code, redis=redis, client_ip=ip)
+    ip = (
+        forwarded.split(",")[-1].strip()
+        if forwarded
+        else (request.client.host if request.client else "unknown")
+    )
+    result = await login_user(
+        session, body.email, body.password, body.totp_code, redis=redis, client_ip=ip
+    )
     # Set httpOnly cookies for web clients
-    set_auth_cookies(response, result["access_token"], result["refresh_token"], is_admin=result.get("is_admin", False))
+    set_auth_cookies(
+        response,
+        result["access_token"],
+        result["refresh_token"],
+        is_admin=result.get("is_admin", False),
+    )
 
     # New login alert (background — don't block login response)
     ua = request.headers.get("user-agent", "unknown")
     from app.shared.email import send_new_login_alert_email
+
     background_tasks.add_task(send_new_login_alert_email, body.email, ip, ua)
 
     return TokenResponse(**result)
 
 
-@router.post("/refresh", response_model=RefreshResponse, dependencies=[Depends(rate_limit(20, 60))])
-async def refresh(body: RefreshRequest, request: Request, response: Response, session: AsyncSession = Depends(get_session)):
+@router.post(
+    "/refresh",
+    response_model=RefreshResponse,
+    dependencies=[Depends(rate_limit(20, 60))],
+)
+async def refresh(
+    body: RefreshRequest,
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+):
     # Accept refresh token from body (CLI) or cookie (web)
     token = body.refresh_token or request.cookies.get("refresh_token")
     if not token:
@@ -169,6 +221,7 @@ async def refresh(body: RefreshRequest, request: Request, response: Response, se
 
     # Check ban + admin status before issuing new tokens
     from app.auth.models import User
+
     user_result = await session.execute(
         select(User.is_admin, User.is_banned).where(User.id == user_id)
     )
@@ -184,7 +237,9 @@ async def refresh(body: RefreshRequest, request: Request, response: Response, se
     return RefreshResponse(access_token=new_access, refresh_token=new_refresh)
 
 
-@router.post("/logout", response_model=LogoutResponse, dependencies=[Depends(rate_limit(10, 60))])
+@router.post(
+    "/logout", response_model=LogoutResponse, dependencies=[Depends(rate_limit(10, 60))]
+)
 async def logout(request: Request, response: Response):
     """Clear auth cookies and revoke refresh token."""
     redis = request.app.state.redis
@@ -201,7 +256,11 @@ async def logout(request: Request, response: Response):
     return LogoutResponse(message="Logged out successfully.")
 
 
-@router.get("/api-keys", response_model=ApiKeyListResponse, dependencies=[Depends(rate_limit(30, 60))])
+@router.get(
+    "/api-keys",
+    response_model=ApiKeyListResponse,
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def list_api_keys(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -210,30 +269,44 @@ async def list_api_keys(
     return ApiKeyListResponse(keys=keys)
 
 
-@router.post("/api-keys", response_model=ApiKeyResponse, status_code=201, dependencies=[Depends(rate_limit(10, 60))])
+@router.post(
+    "/api-keys",
+    response_model=ApiKeyResponse,
+    status_code=201,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def create_api_key(
     body: CreateApiKeyRequest,
     background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await create_api_key_for_user(session, user.id, body.label, background_tasks=background_tasks)
+    result = await create_api_key_for_user(
+        session, user.id, body.label, background_tasks=background_tasks
+    )
     return ApiKeyResponse(**result)
 
 
-@router.delete("/api-keys/{key_id}", status_code=204, dependencies=[Depends(rate_limit(10, 60))])
+@router.delete(
+    "/api-keys/{key_id}", status_code=204, dependencies=[Depends(rate_limit(10, 60))]
+)
 async def revoke_api_key(
     key_id: str,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     from uuid import UUID as _UUID
+
     await revoke_api_key_for_user(session, user.id, _UUID(key_id))
     return Response(status_code=204)
 
 
-@router.get("/me", response_model=MeResponse, dependencies=[Depends(rate_limit(30, 60))])
-async def me(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+@router.get(
+    "/me", response_model=MeResponse, dependencies=[Depends(rate_limit(30, 60))]
+)
+async def me(
+    user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)
+):
     user = await get_user_with_publisher(session, user.id)
     publisher_data = None
     if user.publisher:
@@ -253,7 +326,11 @@ async def me(user: User = Depends(get_current_user), session: AsyncSession = Dep
     )
 
 
-@router.post("/2fa/setup", response_model=Setup2FAResponse, dependencies=[Depends(rate_limit(5, 60))])
+@router.post(
+    "/2fa/setup",
+    response_model=Setup2FAResponse,
+    dependencies=[Depends(rate_limit(5, 60))],
+)
 async def setup_2fa_route(
     body: Setup2FARequest,
     user: User = Depends(get_current_user),
@@ -263,21 +340,31 @@ async def setup_2fa_route(
     return Setup2FAResponse(**result)
 
 
-@router.post("/2fa/verify", response_model=Verify2FAResponse, dependencies=[Depends(rate_limit(10, 60))])
+@router.post(
+    "/2fa/verify",
+    response_model=Verify2FAResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def verify_2fa_route(
     body: Verify2FARequest,
     background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await verify_2fa(session, user.id, body.code, background_tasks=background_tasks)
+    result = await verify_2fa(
+        session, user.id, body.code, background_tasks=background_tasks
+    )
     return Verify2FAResponse(**result)
 
 
 # --- Sprint 2: Account management ---
 
 
-@router.post("/change-password", response_model=ChangePasswordResponse, dependencies=[Depends(rate_limit(5, 60))])
+@router.post(
+    "/change-password",
+    response_model=ChangePasswordResponse,
+    dependencies=[Depends(rate_limit(5, 60))],
+)
 async def change_password_route(
     body: ChangePasswordRequest,
     request: Request,
@@ -286,45 +373,74 @@ async def change_password_route(
     session: AsyncSession = Depends(get_session),
 ):
     result = await change_password(
-        session, user.id, body.current_password, body.new_password,
+        session,
+        user.id,
+        body.current_password,
+        body.new_password,
         background_tasks=background_tasks,
         redis=request.app.state.redis,
     )
     return ChangePasswordResponse(**result)
 
 
-@router.post("/request-password-reset", response_model=RequestPasswordResetResponse, dependencies=[Depends(rate_limit(3, 60))])
+@router.post(
+    "/request-password-reset",
+    response_model=RequestPasswordResetResponse,
+    dependencies=[Depends(rate_limit(3, 60))],
+)
 async def request_password_reset_route(
     body: RequestPasswordResetRequest,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
-    result = await request_password_reset(session, body.email, background_tasks=background_tasks)
+    result = await request_password_reset(
+        session, body.email, background_tasks=background_tasks
+    )
     return RequestPasswordResetResponse(**result)
 
 
-@router.post("/reset-password", response_model=ResetPasswordResponse, dependencies=[Depends(rate_limit(5, 60))])
+@router.post(
+    "/reset-password",
+    response_model=ResetPasswordResponse,
+    dependencies=[Depends(rate_limit(5, 60))],
+)
 async def reset_password_route(
     body: ResetPasswordRequest,
     request: Request,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
-    result = await reset_password(session, body.token, body.new_password, background_tasks=background_tasks, redis=request.app.state.redis)
+    result = await reset_password(
+        session,
+        body.token,
+        body.new_password,
+        background_tasks=background_tasks,
+        redis=request.app.state.redis,
+    )
     return ResetPasswordResponse(**result)
 
 
-@router.post("/email/request-verification", response_model=RequestEmailVerificationResponse, dependencies=[Depends(rate_limit(3, 60))])
+@router.post(
+    "/email/request-verification",
+    response_model=RequestEmailVerificationResponse,
+    dependencies=[Depends(rate_limit(3, 60))],
+)
 async def request_email_verification_route(
     background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await request_email_verification(session, user.id, background_tasks=background_tasks)
+    result = await request_email_verification(
+        session, user.id, background_tasks=background_tasks
+    )
     return RequestEmailVerificationResponse(**result)
 
 
-@router.post("/email/verify", response_model=VerifyEmailResponse, dependencies=[Depends(rate_limit(5, 60))])
+@router.post(
+    "/email/verify",
+    response_model=VerifyEmailResponse,
+    dependencies=[Depends(rate_limit(5, 60))],
+)
 async def verify_email_route(
     body: VerifyEmailRequest,
     session: AsyncSession = Depends(get_session),
@@ -334,8 +450,6 @@ async def verify_email_route(
 
 
 # --- Email Preferences ---
-
-from app.shared.email import EMAIL_PREF_DEFAULTS
 
 
 @router.get("/email-preferences", dependencies=[Depends(rate_limit(30, 60))])
@@ -368,7 +482,11 @@ async def update_email_preferences(
     return {"preferences": prefs}
 
 
-@router.put("/profile", response_model=UpdateProfileResponse, dependencies=[Depends(rate_limit(5, 60))])
+@router.put(
+    "/profile",
+    response_model=UpdateProfileResponse,
+    dependencies=[Depends(rate_limit(5, 60))],
+)
 async def update_profile_route(
     body: UpdateProfileRequest,
     background_tasks: BackgroundTasks,
@@ -376,7 +494,10 @@ async def update_profile_route(
     session: AsyncSession = Depends(get_session),
 ):
     result = await update_profile(
-        session, user.id, body.username, body.email,
+        session,
+        user.id,
+        body.username,
+        body.email,
         current_password=body.current_password,
         background_tasks=background_tasks,
     )

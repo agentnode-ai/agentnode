@@ -3,6 +3,7 @@
 Policy: trust >= verified required for credential operations.
 Secrets never appear in responses.
 """
+
 from __future__ import annotations
 
 import logging
@@ -71,6 +72,7 @@ async def _resolve_connector_domains(
     if endpoint:
         try:
             from urllib.parse import urlparse
+
             parsed = urlparse(endpoint)
             if parsed.hostname:
                 domains.append(parsed.hostname)
@@ -81,7 +83,8 @@ async def _resolve_connector_domains(
 
 
 async def _resolve_health_endpoint(
-    session: AsyncSession, package_slug: str,
+    session: AsyncSession,
+    package_slug: str,
 ) -> str | None:
     """Extract the health_check.endpoint from a connector manifest."""
     from app.packages.models import Package, PackageVersion
@@ -114,7 +117,9 @@ async def _check_publisher_trust(session: AsyncSession, package_slug: str) -> No
     )
     trust = result.scalar_one_or_none()
     if not trust:
-        raise AppError("CRED_PACKAGE_NOT_FOUND", f"Package '{package_slug}' not found", 404)
+        raise AppError(
+            "CRED_PACKAGE_NOT_FOUND", f"Package '{package_slug}' not found", 404
+        )
 
     trust_order = ["unverified", "verified", "trusted", "curated"]
     try:
@@ -126,13 +131,17 @@ async def _check_publisher_trust(session: AsyncSession, package_slug: str) -> No
     if level < min_level:
         raise AppError(
             "CRED_TRUST_TOO_LOW",
-            f"Credential storage requires publisher trust >= verified "
-            f"(got '{trust}')",
+            f"Credential storage requires publisher trust >= verified (got '{trust}')",
             403,
         )
 
 
-@router.post("/", response_model=CredentialStoreResponse, status_code=201, dependencies=[Depends(rate_limit(10, 60))])
+@router.post(
+    "/",
+    response_model=CredentialStoreResponse,
+    status_code=201,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def store(
     body: StoreCredentialRequest,
     user: User = Depends(get_current_user),
@@ -143,7 +152,9 @@ async def store(
     await _check_publisher_trust(session, body.connector_package_slug)
 
     # Resolve allowed domains from the connector manifest
-    allowed_domains = await _resolve_connector_domains(session, body.connector_package_slug)
+    allowed_domains = await _resolve_connector_domains(
+        session, body.connector_package_slug
+    )
 
     cred = await store_credential(
         session,
@@ -164,7 +175,11 @@ async def store(
     )
 
 
-@router.get("/", response_model=CredentialListResponse, dependencies=[Depends(rate_limit(30, 60))])
+@router.get(
+    "/",
+    response_model=CredentialListResponse,
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def list_creds(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -190,7 +205,9 @@ async def list_creds(
     )
 
 
-@router.delete("/{credential_id}", status_code=204, dependencies=[Depends(rate_limit(10, 60))])
+@router.delete(
+    "/{credential_id}", status_code=204, dependencies=[Depends(rate_limit(10, 60))]
+)
 async def revoke(
     credential_id: str,
     user: User = Depends(get_current_user),
@@ -204,7 +221,11 @@ async def revoke(
         raise AppError("CRED_NOT_FOUND", "Credential not found", 404)
 
 
-@router.post("/{credential_id}/test", response_model=CredentialTestResponse, dependencies=[Depends(rate_limit(5, 60))])
+@router.post(
+    "/{credential_id}/test",
+    response_model=CredentialTestResponse,
+    dependencies=[Depends(rate_limit(5, 60))],
+)
 async def test_connectivity(
     credential_id: str,
     user: User = Depends(get_current_user),
@@ -232,7 +253,9 @@ async def test_connectivity(
         )
 
     # Resolve health_check endpoint from connector manifest
-    health_endpoint = await _resolve_health_endpoint(session, cred.connector_package_slug)
+    health_endpoint = await _resolve_health_endpoint(
+        session, cred.connector_package_slug
+    )
     if not health_endpoint:
         return CredentialTestResponse(
             reachable=True,
@@ -241,7 +264,9 @@ async def test_connectivity(
 
     # Decrypt and build handle
     try:
-        allowed_domains = await _resolve_connector_domains(session, cred.connector_package_slug)
+        allowed_domains = await _resolve_connector_domains(
+            session, cred.connector_package_slug
+        )
         handle = decrypt_to_handle(cred, allowed_domains=allowed_domains)
     except Exception as exc:
         logger.warning("Failed to decrypt credential for health check: %s", exc)
@@ -252,6 +277,7 @@ async def test_connectivity(
 
     # Call the health endpoint
     import time as _time
+
     t0 = _time.monotonic()
     try:
         resp = handle.authorized_request("GET", health_endpoint, timeout=10.0)
@@ -277,7 +303,11 @@ async def test_connectivity(
         )
 
 
-@router.post("/oauth/initiate", response_model=OAuthInitiateResponse, dependencies=[Depends(rate_limit(5, 60))])
+@router.post(
+    "/oauth/initiate",
+    response_model=OAuthInitiateResponse,
+    dependencies=[Depends(rate_limit(5, 60))],
+)
 async def oauth_initiate(
     body: OAuthInitiateRequest,
     user: User = Depends(get_current_user),
@@ -287,6 +317,7 @@ async def oauth_initiate(
     await _check_publisher_trust(session, body.connector_package_slug)
 
     from app.credentials.oauth import generate_auth_url
+
     result = await generate_auth_url(
         session,
         connector_package_slug=body.connector_package_slug,
@@ -326,7 +357,12 @@ async def oauth_callback(
 # PR 5: Vault-SDK Bridge — resolve and proxy endpoints
 # ---------------------------------------------------------------------------
 
-@router.get("/resolve/{provider}", response_model=ResolveCredentialResponse, dependencies=[Depends(rate_limit(10, 60))])
+
+@router.get(
+    "/resolve/{provider}",
+    response_model=ResolveCredentialResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def resolve_credential(
     provider: str,
     user: User = Depends(get_current_user),
@@ -342,12 +378,16 @@ async def resolve_credential(
 
     cred = await _get_active_credential(session, user.id, provider)
     if not cred:
-        raise AppError("CRED_NOT_FOUND", f"No active credential for provider '{provider}'", 404)
+        raise AppError(
+            "CRED_NOT_FOUND", f"No active credential for provider '{provider}'", 404
+        )
 
     # Generate short-lived JWT (60s TTL)
     secret_key = os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "")
     if not secret_key:
-        raise AppError("CRED_CONFIG_ERROR", "CREDENTIAL_ENCRYPTION_KEY not configured", 500)
+        raise AppError(
+            "CRED_CONFIG_ERROR", "CREDENTIAL_ENCRYPTION_KEY not configured", 500
+        )
     resolve_token = jwt.encode(
         {
             "cred_id": str(cred.id),
@@ -366,7 +406,9 @@ async def resolve_credential(
     )
 
 
-@router.post("/proxy", response_model=ProxyResponse, dependencies=[Depends(rate_limit(10, 60))])
+@router.post(
+    "/proxy", response_model=ProxyResponse, dependencies=[Depends(rate_limit(10, 60))]
+)
 async def proxy_request(
     body: ProxyRequest,
     session: AsyncSession = Depends(get_session),
@@ -388,7 +430,9 @@ async def proxy_request(
     # Validate token
     secret_key = os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "")
     if not secret_key:
-        raise AppError("CRED_CONFIG_ERROR", "CREDENTIAL_ENCRYPTION_KEY not configured", 500)
+        raise AppError(
+            "CRED_CONFIG_ERROR", "CREDENTIAL_ENCRYPTION_KEY not configured", 500
+        )
     try:
         payload = jwt.decode(resolve_token, secret_key, algorithms=["HS256"])
     except jwt.ExpiredSignatureError:
@@ -416,6 +460,7 @@ async def proxy_request(
     allowed_domains = cred.allowed_domains or []
     if allowed_domains:
         from urllib.parse import urlparse
+
         host = urlparse(url).hostname or ""
         if host.lower() not in [d.lower() for d in allowed_domains]:
             raise AppError(
@@ -432,7 +477,9 @@ async def proxy_request(
     except PermissionError as exc:
         raise AppError("PROXY_DOMAIN_DENIED", str(exc), 403)
     except Exception as exc:
-        raise AppError("PROXY_REQUEST_FAILED", f"Proxy request failed: {type(exc).__name__}", 502)
+        raise AppError(
+            "PROXY_REQUEST_FAILED", f"Proxy request failed: {type(exc).__name__}", 502
+        )
 
 
 async def _get_active_credential(session: AsyncSession, user_id, provider: str):

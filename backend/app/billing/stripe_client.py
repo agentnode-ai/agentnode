@@ -1,7 +1,6 @@
 import logging
 
 import stripe
-from fastapi import Request
 
 from app.config import settings
 
@@ -12,6 +11,7 @@ def _ensure_stripe():
     """Raise 503 if Stripe keys are not configured."""
     if not settings.STRIPE_SECRET_KEY:
         from app.shared.exceptions import AppError
+
         raise AppError("BILLING_UNAVAILABLE", "Billing is not configured", 503)
     stripe.api_key = settings.STRIPE_SECRET_KEY
 
@@ -68,6 +68,7 @@ def verify_webhook_signature(request_body: bytes, sig_header: str) -> dict:
 
     if not settings.STRIPE_WEBHOOK_SECRET:
         from app.shared.exceptions import AppError
+
         raise AppError("BILLING_UNAVAILABLE", "Webhook secret not configured", 503)
 
     event = stripe.Webhook.construct_event(

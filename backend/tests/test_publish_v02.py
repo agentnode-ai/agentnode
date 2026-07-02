@@ -1,8 +1,12 @@
 """Integration tests for v0.2 publish flow — entrypoint stored per tool, API responses correct."""
+
 import json
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import update
+
+from app.publishers.models import Publisher
 
 
 TEST_USER = {
@@ -70,7 +74,10 @@ V02_MULTI_TOOL_MANIFEST = {
     "tags": ["test"],
     "categories": ["data"],
     "dependencies": [],
-    "security": {"signature": "", "provenance": {"source_repo": "", "commit": "", "build_system": ""}},
+    "security": {
+        "signature": "",
+        "provenance": {"source_repo": "", "commit": "", "build_system": ""},
+    },
 }
 
 V02_SINGLE_TOOL_MANIFEST = {
@@ -81,12 +88,14 @@ V02_SINGLE_TOOL_MANIFEST = {
     "summary": "A v0.2 single-tool pack.",
     "entrypoint": "v02_single_pack.tool",
     "capabilities": {
-        "tools": [{
-            "name": "do_thing",
-            "capability_id": "pdf_extraction",
-            "description": "Does the thing",
-            "entrypoint": "v02_single_pack.tool:do_thing",
-        }],
+        "tools": [
+            {
+                "name": "do_thing",
+                "capability_id": "pdf_extraction",
+                "description": "Does the thing",
+                "entrypoint": "v02_single_pack.tool:do_thing",
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -105,11 +114,13 @@ V01_MANIFEST = {
     "hosting_type": "agentnode_hosted",
     "entrypoint": "v01_compat_pack.tool",
     "capabilities": {
-        "tools": [{
-            "name": "test_tool",
-            "capability_id": "pdf_extraction",
-            "description": "Test tool",
-        }],
+        "tools": [
+            {
+                "name": "test_tool",
+                "capability_id": "pdf_extraction",
+                "description": "Test tool",
+            }
+        ],
         "resources": [],
         "prompts": [],
     },
@@ -124,22 +135,38 @@ V01_MANIFEST = {
     "tags": ["test"],
     "categories": ["data"],
     "dependencies": [],
-    "security": {"signature": "", "provenance": {"source_repo": "", "commit": "", "build_system": ""}},
+    "security": {
+        "signature": "",
+        "provenance": {"source_repo": "", "commit": "", "build_system": ""},
+    },
 }
 
 
-async def get_auth_token(client) -> str:
+async def get_auth_token(client, session=None) -> str:
     await client.post("/v1/auth/register", json=TEST_USER)
-    login = await client.post("/v1/auth/login", json={
-        "email": TEST_USER["email"],
-        "password": TEST_USER["password"],
-    })
+    login = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": TEST_USER["email"],
+            "password": TEST_USER["password"],
+        },
+    )
     token = login.json()["access_token"]
     await client.post(
         "/v1/publishers",
         json=TEST_PUBLISHER,
         headers={"Authorization": f"Bearer {token}"},
     )
+    # When a test needs the published version to be installable, mark the
+    # publisher trusted to bypass new-publisher quarantine. Mirrors
+    # tests/test_install.py; the product quarantine behaviour is unchanged.
+    if session is not None:
+        await session.execute(
+            update(Publisher)
+            .where(Publisher.slug == TEST_PUBLISHER["slug"])
+            .values(trust_level="trusted")
+        )
+        await session.commit()
     return token
 
 
@@ -155,6 +182,7 @@ async def publish(client, token, manifest):
 # Publish tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
@@ -162,7 +190,7 @@ async def test_publish_v02_multi_tool(mock_meili, mock_s3, client):
     """Publishing a v0.2 multi-tool pack should succeed."""
     token = await get_auth_token(client)
     resp = await publish(client, token, V02_MULTI_TOOL_MANIFEST)
-    assert resp.status_code == 200, f"Publish failed: {resp.json()}"
+    assert resp.status_code == 201, f"Publish failed: {resp.json()}"
     data = resp.json()
     assert data["slug"] == "v02-multi-pack"
     assert data["version"] == "1.0.0"
@@ -175,7 +203,7 @@ async def test_publish_v02_single_tool(mock_meili, mock_s3, client):
     """Publishing a v0.2 single-tool pack should succeed."""
     token = await get_auth_token(client)
     resp = await publish(client, token, V02_SINGLE_TOOL_MANIFEST)
-    assert resp.status_code == 200, f"Publish failed: {resp.json()}"
+    assert resp.status_code == 201, f"Publish failed: {resp.json()}"
 
 
 @pytest.mark.asyncio
@@ -185,12 +213,13 @@ async def test_v01_still_publishes(mock_meili, mock_s3, client):
     """v0.1 manifests must still publish successfully."""
     token = await get_auth_token(client)
     resp = await publish(client, token, V01_MANIFEST)
-    assert resp.status_code == 200, f"v0.1 publish failed: {resp.json()}"
+    assert resp.status_code == 201, f"v0.1 publish failed: {resp.json()}"
 
 
 # ---------------------------------------------------------------------------
 # Package detail — capabilities include entrypoint
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
@@ -239,15 +268,16 @@ async def test_package_detail_v01_null_entrypoints(mock_meili, mock_s3, client):
 # Install-info — capabilities include entrypoint
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_install_info_v02_has_entrypoints(mock_meili, mock_s3, client):
+async def test_install_info_v02_has_entrypoints(mock_meili, mock_s3, client, session):
     """GET /v1/packages/{slug}/install-info should include tool entrypoints."""
-    token = await get_auth_token(client)
+    token = await get_auth_token(client, session)
     await publish(client, token, V02_MULTI_TOOL_MANIFEST)
 
-    resp = await client.get("/v1/packages/v02-multi-pack/install")
+    resp = await client.get("/v1/packages/v02-multi-pack/install-info")
     assert resp.status_code == 200
     data = resp.json()
 
@@ -265,12 +295,12 @@ async def test_install_info_v02_has_entrypoints(mock_meili, mock_s3, client):
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_install_info_v01_null_entrypoints(mock_meili, mock_s3, client):
+async def test_install_info_v01_null_entrypoints(mock_meili, mock_s3, client, session):
     """GET /v1/packages/{slug}/install-info — v0.1 capabilities have null entrypoint."""
-    token = await get_auth_token(client)
+    token = await get_auth_token(client, session)
     await publish(client, token, V01_MANIFEST)
 
-    resp = await client.get("/v1/packages/v01-compat-pack/install")
+    resp = await client.get("/v1/packages/v01-compat-pack/install-info")
     assert resp.status_code == 200
     data = resp.json()
 
@@ -283,12 +313,13 @@ async def test_install_info_v01_null_entrypoints(mock_meili, mock_s3, client):
 # Install response — tools list
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_install_v02_returns_tools(mock_meili, mock_s3, client):
+async def test_install_v02_returns_tools(mock_meili, mock_s3, client, session):
     """POST /v1/packages/{slug}/install should return tools list for v0.2."""
-    token = await get_auth_token(client)
+    token = await get_auth_token(client, session)
     await publish(client, token, V02_MULTI_TOOL_MANIFEST)
 
     resp = await client.post(
@@ -313,9 +344,9 @@ async def test_install_v02_returns_tools(mock_meili, mock_s3, client):
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_install_v01_returns_empty_tools(mock_meili, mock_s3, client):
+async def test_install_v01_returns_empty_tools(mock_meili, mock_s3, client, session):
     """POST /v1/packages/{slug}/install should return empty tools for v0.1."""
-    token = await get_auth_token(client)
+    token = await get_auth_token(client, session)
     await publish(client, token, V01_MANIFEST)
 
     resp = await client.post(
@@ -333,6 +364,7 @@ async def test_install_v01_returns_empty_tools(mock_meili, mock_s3, client):
 # ---------------------------------------------------------------------------
 # Normalization in publish flow
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
@@ -352,12 +384,14 @@ async def test_publish_compact_v02_with_defaults(mock_meili, mock_s3, client):
         "summary": "Compact v0.2 manifest.",
         "entrypoint": "compact_v02.tool",
         "capabilities": {
-            "tools": [{
-                "name": "do_it",
-                "capability_id": "pdf_extraction",
-                "description": "Does it",
-                "entrypoint": "compact_v02.tool:do_it",
-            }],
+            "tools": [
+                {
+                    "name": "do_it",
+                    "capability_id": "pdf_extraction",
+                    "description": "Does it",
+                    "entrypoint": "compact_v02.tool:do_it",
+                }
+            ],
             "resources": [],
             "prompts": [],
         },
@@ -369,7 +403,7 @@ async def test_publish_compact_v02_with_defaults(mock_meili, mock_s3, client):
     }
 
     resp = await publish(client, token, compact)
-    assert resp.status_code == 200, f"Compact publish failed: {resp.json()}"
+    assert resp.status_code == 201, f"Compact publish failed: {resp.json()}"
 
     # Verify it's accessible
     detail = await client.get("/v1/packages/compact-v02")
@@ -381,10 +415,13 @@ async def test_publish_compact_v02_with_defaults(mock_meili, mock_s3, client):
 # Validation rejection tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 @patch("app.packages.service.upload_artifact")
 @patch("app.packages.service.sync_package_to_meilisearch")
-async def test_publish_v02_multi_tool_missing_entrypoint_rejected(mock_meili, mock_s3, client):
+async def test_publish_v02_multi_tool_missing_entrypoint_rejected(
+    mock_meili, mock_s3, client
+):
     """v0.2 multi-tool pack with missing tool entrypoint must be rejected."""
     token = await get_auth_token(client)
 
@@ -393,8 +430,12 @@ async def test_publish_v02_multi_tool_missing_entrypoint_rejected(mock_meili, mo
         "package_id": "bad-v02-pack",
         "capabilities": {
             "tools": [
-                {"name": "a", "capability_id": "pdf_extraction", "description": "A",
-                 "entrypoint": "bad.tool:a"},
+                {
+                    "name": "a",
+                    "capability_id": "pdf_extraction",
+                    "description": "A",
+                    "entrypoint": "bad.tool:a",
+                },
                 {"name": "b", "capability_id": "web_search", "description": "B"},
                 # tool "b" missing entrypoint
             ],
@@ -406,4 +447,6 @@ async def test_publish_v02_multi_tool_missing_entrypoint_rejected(mock_meili, mo
     resp = await publish(client, token, bad)
     assert resp.status_code == 422
     data = resp.json()
-    assert any("entrypoint" in str(d).lower() for d in data.get("error", {}).get("details", []))
+    assert any(
+        "entrypoint" in str(d).lower() for d in data.get("error", {}).get("details", [])
+    )

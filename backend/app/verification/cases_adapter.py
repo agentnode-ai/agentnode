@@ -21,7 +21,9 @@ class NormalizedVerification:
     has_explicit_cases: bool = False
 
 
-def normalize_verification_config(verification_config: dict | None) -> NormalizedVerification:
+def normalize_verification_config(
+    verification_config: dict | None,
+) -> NormalizedVerification:
     """Normalize any verification config format into NormalizedVerification.
 
     Priority order (first match wins):
@@ -52,7 +54,9 @@ def normalize_verification_config(verification_config: dict | None) -> Normalize
     # 2. Legacy fixtures format (Phase B)
     fixtures = verification_config.get("fixtures")
     if fixtures and isinstance(fixtures, list):
-        normalized_cases = [_fixture_to_case(f) for f in fixtures if isinstance(f, dict)]
+        normalized_cases = [
+            _fixture_to_case(f) for f in fixtures if isinstance(f, dict)
+        ]
         if normalized_cases:
             return NormalizedVerification(
                 cases=normalized_cases,
@@ -65,14 +69,16 @@ def normalize_verification_config(verification_config: dict | None) -> Normalize
     test_input = verification_config.get("test_input")
     if test_input and isinstance(test_input, dict):
         return NormalizedVerification(
-            cases=[{
-                "name": "legacy_test_input",
-                "input": test_input,
-                "tool": None,
-                "cassette": None,
-                "expected": None,
-                "mode": "real",
-            }],
+            cases=[
+                {
+                    "name": "legacy_test_input",
+                    "input": test_input,
+                    "tool": None,
+                    "cassette": None,
+                    "expected": None,
+                    "mode": "real",
+                }
+            ],
             system_requirements=system_requirements,
             source_format="test_input",
             has_explicit_cases=True,

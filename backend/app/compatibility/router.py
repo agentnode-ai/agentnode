@@ -12,7 +12,9 @@ from app.shared.rate_limit import rate_limit
 
 router = APIRouter(prefix="/v1/compatibility", tags=["compatibility"])
 
-_DATA_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "compatibility_matrix.json"
+_DATA_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "compatibility_matrix.json"
+)
 
 # In-memory cache with mtime-based invalidation
 _cache: dict[str, Any] = {}

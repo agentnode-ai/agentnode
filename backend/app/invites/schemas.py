@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 # ── Public ──
 
+
 class InvitePublicResponse(BaseModel):
     code: str
     valid: bool
@@ -21,6 +22,7 @@ class InviteClaimResponse(BaseModel):
 
 
 # ── Admin: Candidates ──
+
 
 class CandidateCreateRequest(BaseModel):
     source: str = Field(max_length=50)
@@ -86,12 +88,14 @@ class CandidateListResponse(BaseModel):
 
 # ── Admin: Invite generation ──
 
+
 class InviteGenerateRequest(BaseModel):
     send_email: bool = False
 
 
 class BulkSendRequest(BaseModel):
     """Bulk invite + email generation."""
+
     min_stars: int = 0
     source: str | None = None
     detected_format: str | None = None
@@ -108,6 +112,7 @@ class BulkSendResponse(BaseModel):
 
 
 # ── Admin: Invites ──
+
 
 class InviteGenerateResponse(BaseModel):
     email_sent: bool = False
@@ -135,6 +140,7 @@ class InviteListResponse(BaseModel):
 
 # ── Admin: Events ──
 
+
 class EventResponse(BaseModel):
     id: UUID
     candidate_id: UUID
@@ -150,12 +156,14 @@ class EventListResponse(BaseModel):
 
 # ── Admin: Email sent ──
 
+
 class EmailSentRequest(BaseModel):
     subject: str | None = None
     channel: str | None = None
 
 
 # ── Admin: Funnel ──
+
 
 class FunnelResponse(BaseModel):
     discovered: int = 0

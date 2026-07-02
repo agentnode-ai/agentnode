@@ -1,5 +1,12 @@
 from sqlalchemy import (
-    Boolean, Column, Enum, Float, ForeignKey, Integer, String, Text,
+    Boolean,
+    Column,
+    Enum,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 
@@ -7,7 +14,13 @@ from app.shared.models import Base, UUIDPrimaryKeyMixin
 
 # Step-level status enum (shared across all 4 steps)
 _step_status_enum = Enum(
-    "passed", "failed", "skipped", "error", "not_present", "inconclusive", "not_executed",
+    "passed",
+    "failed",
+    "skipped",
+    "error",
+    "not_present",
+    "inconclusive",
+    "not_executed",
     name="step_status",
     create_type=False,
 )
@@ -25,7 +38,12 @@ class VerificationResult(Base, UUIDPrimaryKeyMixin):
     )
     status = Column(
         Enum(
-            "pending", "running", "passed", "failed", "error", "skipped",
+            "pending",
+            "running",
+            "passed",
+            "failed",
+            "error",
+            "skipped",
             name="verification_status",
             create_type=False,
         ),
@@ -105,8 +123,18 @@ class VerificationResult(Base, UUIDPrimaryKeyMixin):
 
     # Trigger tracking for re-verify history (typed enum, not free string)
     triggered_by = Column(
-        Enum("publish", "admin_reverify", "runner_upgrade", "scheduled", "owner_request", name="verification_trigger", create_type=False),
+        Enum(
+            "publish",
+            "admin_reverify",
+            "runner_upgrade",
+            "scheduled",
+            "owner_request",
+            name="verification_trigger",
+            create_type=False,
+        ),
         nullable=True,
     )
 
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default="now()")
+    created_at = Column(
+        TIMESTAMP(timezone=True), nullable=False, server_default="now()"
+    )

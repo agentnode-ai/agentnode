@@ -12,7 +12,9 @@ class Base(DeclarativeBase):
 
 class TimestampMixin:
     created_at = Column(
-        TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
     )
     updated_at = Column(
         TIMESTAMP(timezone=True),

@@ -2,6 +2,7 @@
 
 All code analysis is done via ast.parse — no eval/exec ever.
 """
+
 from __future__ import annotations
 
 import ast
@@ -14,7 +15,6 @@ from enum import Enum
 
 from app.import_.schemas import (
     ConversionConfidence,
-    DetectedTool,
     ToolParam,
 )
 
@@ -26,39 +26,101 @@ ALL_FRAMEWORK_MODULES = LANGCHAIN_MODULES | CREWAI_MODULES | MCP_MODULES
 
 # ── Known third-party packages (conservative whitelist) ──────────────
 KNOWN_THIRD_PARTY = {
-    "requests", "httpx", "aiohttp", "urllib3",
-    "pandas", "numpy", "scipy", "sklearn", "scikit_learn",
-    "boto3", "botocore", "google", "azure",
-    "openai", "anthropic", "tiktoken", "transformers",
-    "langchain_openai", "langchain_community", "langchain_core",
-    "langchain_text_splitters", "langchain_anthropic",
-    "pydantic", "fastapi", "flask", "django",
-    "beautifulsoup4", "bs4", "lxml", "html5lib",
-    "selenium", "playwright",
-    "pillow", "PIL",
-    "PyPDF2", "pypdf", "pdfplumber", "fitz", "pymupdf",
-    "sqlalchemy", "psycopg2", "pymongo", "redis",
-    "celery", "dramatiq",
-    "yaml", "pyyaml", "toml", "tomli",
-    "jinja2", "mako",
-    "paramiko", "fabric",
-    "docker", "kubernetes",
-    "stripe", "twilio", "sendgrid",
-    "slack_sdk", "discord",
-    "dotenv", "python_dotenv",
-    "loguru", "structlog",
-    "rich", "click", "typer",
-    "pytest", "unittest",
-    "dateutil", "arrow", "pendulum",
-    "tqdm", "tenacity", "retry",
-    "jsonschema", "marshmallow",
-    "cryptography", "jwt", "pyjwt",
-    "cv2", "opencv",
-    "spacy", "nltk", "gensim",
-    "matplotlib", "seaborn", "plotly",
-    "openpyxl", "xlrd", "xlsxwriter",
-    "chardet", "charset_normalizer",
-    "feedparser", "newspaper",
+    "requests",
+    "httpx",
+    "aiohttp",
+    "urllib3",
+    "pandas",
+    "numpy",
+    "scipy",
+    "sklearn",
+    "scikit_learn",
+    "boto3",
+    "botocore",
+    "google",
+    "azure",
+    "openai",
+    "anthropic",
+    "tiktoken",
+    "transformers",
+    "langchain_openai",
+    "langchain_community",
+    "langchain_core",
+    "langchain_text_splitters",
+    "langchain_anthropic",
+    "pydantic",
+    "fastapi",
+    "flask",
+    "django",
+    "beautifulsoup4",
+    "bs4",
+    "lxml",
+    "html5lib",
+    "selenium",
+    "playwright",
+    "pillow",
+    "PIL",
+    "PyPDF2",
+    "pypdf",
+    "pdfplumber",
+    "fitz",
+    "pymupdf",
+    "sqlalchemy",
+    "psycopg2",
+    "pymongo",
+    "redis",
+    "celery",
+    "dramatiq",
+    "yaml",
+    "pyyaml",
+    "toml",
+    "tomli",
+    "jinja2",
+    "mako",
+    "paramiko",
+    "fabric",
+    "docker",
+    "kubernetes",
+    "stripe",
+    "twilio",
+    "sendgrid",
+    "slack_sdk",
+    "discord",
+    "dotenv",
+    "python_dotenv",
+    "loguru",
+    "structlog",
+    "rich",
+    "click",
+    "typer",
+    "pytest",
+    "unittest",
+    "dateutil",
+    "arrow",
+    "pendulum",
+    "tqdm",
+    "tenacity",
+    "retry",
+    "jsonschema",
+    "marshmallow",
+    "cryptography",
+    "jwt",
+    "pyjwt",
+    "cv2",
+    "opencv",
+    "spacy",
+    "nltk",
+    "gensim",
+    "matplotlib",
+    "seaborn",
+    "plotly",
+    "openpyxl",
+    "xlrd",
+    "xlsxwriter",
+    "chardet",
+    "charset_normalizer",
+    "feedparser",
+    "newspaper",
 }
 
 # ── Capability map (reused from builder/service.py) ──────────────────
@@ -67,16 +129,48 @@ _CAPABILITY_MAP: list[tuple[list[str], str]] = [
     (["document", "docx", "doc parsing"], "document_parsing"),
     (["summarize", "summary", "summarise", "tldr", "digest"], "document_summary"),
     (["citation", "reference", "bibliography"], "citation_extraction"),
-    (["web search", "google", "bing", "search the web", "internet search",
-      "weather", "forecast", "stock", "ticker", "quote", "finance", "market",
-      "geocod", "ip info", "ip address", "geolocation"], "web_search"),
-    (["webpage", "website", "html", "scrape", "crawl", "fetch url", "extract from url"], "webpage_extraction"),
+    (
+        [
+            "web search",
+            "google",
+            "bing",
+            "search the web",
+            "internet search",
+            "weather",
+            "forecast",
+            "stock",
+            "ticker",
+            "quote",
+            "finance",
+            "market",
+            "geocod",
+            "ip info",
+            "ip address",
+            "geolocation",
+        ],
+        "web_search",
+    ),
+    (
+        [
+            "webpage",
+            "website",
+            "html",
+            "scrape",
+            "crawl",
+            "fetch url",
+            "extract from url",
+        ],
+        "webpage_extraction",
+    ),
     (["browser", "navigate", "click", "playwright", "selenium"], "browser_navigation"),
     (["link", "href", "discover url"], "link_discovery"),
     (["csv", "comma separated"], "csv_analysis"),
     (["spreadsheet", "excel", "xlsx", "xls"], "spreadsheet_parsing"),
     (["clean data", "normalize data", "data cleaning"], "data_cleaning"),
-    (["statistic", "average", "median", "standard deviation", "analytics"], "statistics_analysis"),
+    (
+        ["statistic", "average", "median", "standard deviation", "analytics"],
+        "statistics_analysis",
+    ),
     (["chart", "graph", "plot", "visuali"], "chart_generation"),
     (["json", "json processing", "parse json", "transform json"], "json_processing"),
     (["sql", "sql query", "db query", "run query", "execute query"], "sql_generation"),
@@ -86,7 +180,10 @@ _CAPABILITY_MAP: list[tuple[list[str], str]] = [
     (["semantic search", "meaning search", "similarity search"], "semantic_search"),
     (["embedding", "embed", "vectorize"], "embedding_generation"),
     (["index document", "document index", "indexing"], "document_indexing"),
-    (["conversation memory", "chat history", "recall conversation"], "conversation_memory"),
+    (
+        ["conversation memory", "chat history", "recall conversation"],
+        "conversation_memory",
+    ),
     (["email draft", "write email", "compose email", "email"], "email_drafting"),
     (["email summary", "summarize email"], "email_summary"),
     (["meeting", "meeting notes", "meeting summary"], "meeting_summary"),
@@ -94,17 +191,50 @@ _CAPABILITY_MAP: list[tuple[list[str], str]] = [
     (["task", "todo", "to-do", "task manage"], "task_management"),
     (["translat", "language", "i18n", "locali"], "translation"),
     (["tone", "rewrite", "rephrase", "style"], "tone_adjustment"),
-    (["code", "source code", "lint", "refactor", "analyse code", "analyze code",
-      "calculate", "expression", "arithmetic", "math"], "code_analysis"),
+    (
+        [
+            "code",
+            "source code",
+            "lint",
+            "refactor",
+            "analyse code",
+            "analyze code",
+            "calculate",
+            "expression",
+            "arithmetic",
+            "math",
+        ],
+        "code_analysis",
+    ),
 ]
 
 _NETWORK_KEYWORDS = [
-    "webpage", "website", "url", "http", "fetch", "scrape", "crawl",
-    "api", "request", "download", "search", "web",
+    "webpage",
+    "website",
+    "url",
+    "http",
+    "fetch",
+    "scrape",
+    "crawl",
+    "api",
+    "request",
+    "download",
+    "search",
+    "web",
 ]
 _FILESYSTEM_KEYWORDS = [
-    "pdf", "file", "csv", "document", "excel", "spreadsheet",
-    "read file", "write file", "directory", "folder", "image", "log file",
+    "pdf",
+    "file",
+    "csv",
+    "document",
+    "excel",
+    "spreadsheet",
+    "read file",
+    "write file",
+    "directory",
+    "folder",
+    "image",
+    "log file",
 ]
 
 # ── Python builtins set ──────────────────────────────────────────────
@@ -112,6 +242,7 @@ _BUILTINS = set(dir(builtins))
 
 
 # ── Data classes ─────────────────────────────────────────────────────
+
 
 @dataclass
 class ImportClassification:
@@ -154,6 +285,7 @@ class ExtractResult:
 
 # ── Return Type Classification ────────────────────────────────────────
 
+
 class ReturnKind(str, Enum):
     DICT = "dict_like"
     STR = "str_like"
@@ -183,7 +315,11 @@ def classify_return_annotation(annotation: str | None) -> ReturnKind:
         return ReturnKind.STR
 
     # list-like (list, List, list[str], List[str], Sequence[...])
-    if value in ("list", "sequence") or value.startswith("list[") or value.startswith("sequence["):
+    if (
+        value in ("list", "sequence")
+        or value.startswith("list[")
+        or value.startswith("sequence[")
+    ):
         return ReturnKind.LIST
 
     # tuple-like
@@ -197,7 +333,9 @@ def classify_return_annotation(annotation: str | None) -> ReturnKind:
     # union / optional — check before UNKNOWN fallback
     if value.startswith("union[") or "|" in value or value.startswith("optional["):
         # Optional[dict] / Union[dict, None] → dict-like
-        if "dict" in value and not any(t in value for t in ("str", "list", "tuple", "int", "float")):
+        if "dict" in value and not any(
+            t in value for t in ("str", "list", "tuple", "int", "float")
+        ):
             return ReturnKind.DICT
         return ReturnKind.UNION
 
@@ -209,39 +347,53 @@ class ReturnPolicy:
     kind: ReturnKind
     should_wrap: bool
     warning_template: str | None  # Appended after "`func_name` "
-    max_confidence: str | None     # "medium", "low", or None (no cap)
+    max_confidence: str | None  # "medium", "low", or None (no cap)
     draft_ready_allowed: bool
 
 
 _RETURN_POLICIES: dict[ReturnKind, ReturnPolicy] = {
     ReturnKind.DICT: ReturnPolicy(ReturnKind.DICT, False, None, None, True),
     ReturnKind.STR: ReturnPolicy(
-        ReturnKind.STR, True,
+        ReturnKind.STR,
+        True,
         "returns `str`. Wrapped in `{'result': ...}`. Please review.",
-        "medium", True,
+        "medium",
+        True,
     ),
     ReturnKind.LIST: ReturnPolicy(
-        ReturnKind.LIST, True,
+        ReturnKind.LIST,
+        True,
         "returns `list`. Wrapped in `{'result': ...}`. Please review.",
-        "medium", True,
+        "medium",
+        True,
     ),
     ReturnKind.TUPLE: ReturnPolicy(
-        ReturnKind.TUPLE, False,
+        ReturnKind.TUPLE,
+        False,
         "returns `tuple`. ANP expects `dict`. Please wrap manually.",
-        "low", False,
+        "low",
+        False,
     ),
     ReturnKind.NONE: ReturnPolicy(
-        ReturnKind.NONE, False,
+        ReturnKind.NONE,
+        False,
         "returns `None`. No meaningful return for ANP. Please review.",
-        "medium", True,
+        "medium",
+        True,
     ),
     ReturnKind.UNION: ReturnPolicy(
-        ReturnKind.UNION, False,
+        ReturnKind.UNION,
+        False,
         "has mixed/ambiguous return types. ANP expects `dict`. Please review.",
-        "low", False,
+        "low",
+        False,
     ),
     ReturnKind.UNKNOWN: ReturnPolicy(
-        ReturnKind.UNKNOWN, False, None, "medium", True,
+        ReturnKind.UNKNOWN,
+        False,
+        None,
+        "medium",
+        True,
     ),
 }
 
@@ -267,7 +419,9 @@ def apply_return_policy(
     # Wrapping
     if policy.should_wrap:
         body = wrap_return_value(body)
-        result.changes.append(f"Return type of `{func_name}` wrapped from `{annotation}` to `dict`")
+        result.changes.append(
+            f"Return type of `{func_name}` wrapped from `{annotation}` to `dict`"
+        )
 
     # Warning from policy template
     if policy.warning_template:
@@ -300,17 +454,17 @@ def apply_return_policy(
 
 # ── AST Parsing ──────────────────────────────────────────────────────
 
+
 def parse_source(code: str) -> ast.Module:
     """Parse Python source with informative error on failure."""
     try:
         return ast.parse(code)
     except SyntaxError as e:
-        raise ValueError(
-            f"Syntax error at line {e.lineno}: {e.msg}"
-        ) from e
+        raise ValueError(f"Syntax error at line {e.lineno}: {e.msg}") from e
 
 
 # ── Import Classification ────────────────────────────────────────────
+
 
 def classify_imports(tree: ast.Module) -> ImportClassification:
     """Classify all imports in the AST into framework/stdlib/third_party/unknown."""
@@ -339,18 +493,23 @@ def classify_imports(tree: ast.Module) -> ImportClassification:
     return result
 
 
-def _classify_module(top: str, result: ImportClassification, stdlib_names: set[str]) -> None:
+def _classify_module(
+    top: str, result: ImportClassification, stdlib_names: set[str]
+) -> None:
     if top in ALL_FRAMEWORK_MODULES:
         result.framework.append(top)
     elif top in stdlib_names:
         result.stdlib.append(top)
-    elif top.lower().replace("-", "_") in {k.lower().replace("-", "_") for k in KNOWN_THIRD_PARTY}:
+    elif top.lower().replace("-", "_") in {
+        k.lower().replace("-", "_") for k in KNOWN_THIRD_PARTY
+    }:
         result.third_party.append(top)
     else:
         result.unknown.append(top)
 
 
 # ── Parameter Extraction ─────────────────────────────────────────────
+
 
 def extract_params(func: ast.FunctionDef) -> tuple[list[ToolParam], list[str]]:
     """Extract parameters from a function definition.
@@ -376,7 +535,9 @@ def extract_params(func: ast.FunctionDef) -> tuple[list[ToolParam], list[str]]:
         else:
             type_hint = "Any"
             annotation_missing = True
-            warnings.append(f"Parameter `{arg.arg}` has no type hint. `Any` was assumed.")
+            warnings.append(
+                f"Parameter `{arg.arg}` has no type hint. `Any` was assumed."
+            )
 
         # Default value
         default_idx = i - (num_args - num_defaults)
@@ -385,14 +546,16 @@ def extract_params(func: ast.FunctionDef) -> tuple[list[ToolParam], list[str]]:
         if has_default:
             default_repr = _node_to_repr(args.defaults[default_idx])
 
-        params.append(ToolParam(
-            name=arg.arg,
-            type_hint=type_hint,
-            required=not has_default,
-            default_repr=default_repr,
-            annotation_missing=annotation_missing,
-            description="",
-        ))
+        params.append(
+            ToolParam(
+                name=arg.arg,
+                type_hint=type_hint,
+                required=not has_default,
+                default_repr=default_repr,
+                annotation_missing=annotation_missing,
+                description="",
+            )
+        )
 
     return params, warnings
 
@@ -419,6 +582,7 @@ def _node_to_repr(node: ast.expr) -> str:
 
 # ── Function Source Extraction ───────────────────────────────────────
 
+
 def extract_function_body(func: ast.FunctionDef, source_lines: list[str]) -> str:
     """Extract the body source of a function (excluding the def line + docstring)."""
     body = func.body
@@ -427,8 +591,11 @@ def extract_function_body(func: ast.FunctionDef, source_lines: list[str]) -> str
 
     # Skip docstring if present
     start_idx = 0
-    if (isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant)
-            and isinstance(body[0].value.value, str)):
+    if (
+        isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
         start_idx = 1
 
     if start_idx >= len(body):
@@ -455,6 +622,7 @@ def extract_full_node_source(node: ast.AST, source_lines: list[str]) -> str:
 
 
 # ── Unresolved Symbol Detection ─────────────────────────────────────
+
 
 def detect_unresolved_symbols(body_source: str, available_names: set[str]) -> list[str]:
     """Find names used in body_source that aren't in available_names."""
@@ -507,6 +675,7 @@ def _collect_targets(node: ast.AST, names: set[str]) -> None:
 
 # ── Helper Collection ────────────────────────────────────────────────
 
+
 def collect_helpers(
     tree: ast.Module,
     source_lines: list[str],
@@ -527,7 +696,9 @@ def collect_helpers(
                 for target in child.targets:
                     if isinstance(target, ast.Name):
                         names.add(target.id)
-            elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+            elif isinstance(child, ast.AnnAssign) and isinstance(
+                child.target, ast.Name
+            ):
                 names.add(child.target.id)
             elif isinstance(child, ast.Try):
                 _collect_names_from_body(child.body)
@@ -571,6 +742,7 @@ def collect_helpers(
 
 # ── Import Statement Collection ──────────────────────────────────────
 
+
 def collect_business_imports(tree: ast.Module, source_lines: list[str]) -> list[str]:
     """Collect non-framework import statements as source strings."""
     imports: list[str] = []
@@ -592,6 +764,7 @@ def collect_business_imports(tree: ast.Module, source_lines: list[str]) -> list[
 
 
 # ── Available Names ──────────────────────────────────────────────────
+
 
 def build_available_names(
     tree: ast.Module,
@@ -649,6 +822,7 @@ def build_available_names(
 
 
 # ── Code Generation ──────────────────────────────────────────────────
+
 
 def generate_tool_py(
     tools: list[ExtractedTool],
@@ -712,6 +886,7 @@ def _build_param_sig(params: list[ToolParam]) -> str:
 
 # ── Capability Detection ─────────────────────────────────────────────
 
+
 def detect_capability_ids(tools: list[ExtractedTool]) -> list[str]:
     """Detect capability IDs from all tool names and descriptions (package-level)."""
     text = " ".join(f"{t.name} {t.description}" for t in tools).lower()
@@ -737,11 +912,10 @@ def detect_capability_id_for_tool(tool: ExtractedTool) -> str:
 
 # ── Permission Inference ─────────────────────────────────────────────
 
+
 def infer_permissions(tools: list[ExtractedTool]) -> dict:
     """Infer permissions from tool names, descriptions and body code."""
-    text = " ".join(
-        f"{t.name} {t.description} {t.body_source}" for t in tools
-    ).lower()
+    text = " ".join(f"{t.name} {t.description} {t.body_source}" for t in tools).lower()
 
     network = "none"
     filesystem = "none"
@@ -765,12 +939,14 @@ def infer_permissions(tools: list[ExtractedTool]) -> dict:
 
 # ── Manifest Version ─────────────────────────────────────────────────
 
+
 def choose_manifest_version(tools: list[ExtractedTool]) -> str:
     """Choose manifest version based on tool count."""
     return "0.1" if len(tools) == 1 else "0.2"
 
 
 # ── Manifest Generation ─────────────────────────────────────────────
+
 
 def generate_manifest_dict(
     package_id: str,
@@ -830,8 +1006,12 @@ def generate_manifest_dict(
         "package_id": package_id,
         "package_type": "toolpack",
         "name": package_name,
-        "summary": tools[0].description[:120] if tools and tools[0].description else f"Converted {package_name}",
-        "description": tools[0].description[:500] if tools and tools[0].description else "",
+        "summary": tools[0].description[:120]
+        if tools and tools[0].description
+        else f"Converted {package_name}",
+        "description": tools[0].description[:500]
+        if tools and tools[0].description
+        else "",
         "version": "0.1.0",
         "runtime": "python",
         "install_mode": "package",
@@ -856,7 +1036,9 @@ def generate_manifest_dict(
         },
         "tags": cap_ids[:3],
         "categories": [
-            cap_ids[0].rsplit("_", 1)[0] if cap_ids and "_" in cap_ids[0] else (cap_ids[0] if cap_ids else "general")
+            cap_ids[0].rsplit("_", 1)[0]
+            if cap_ids and "_" in cap_ids[0]
+            else (cap_ids[0] if cap_ids else "general")
         ],
     }
 
@@ -878,11 +1060,15 @@ def _type_hint_to_json_type(hint: str) -> str:
 
 # ── YAML Rendering ───────────────────────────────────────────────────
 
+
 def yaml_dump(manifest: dict) -> str:
     """Render manifest dict as YAML string."""
     try:
         import yaml
-        return yaml.dump(manifest, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+        return yaml.dump(
+            manifest, default_flow_style=False, sort_keys=False, allow_unicode=True
+        )
     except ImportError:
         # Minimal fallback without PyYAML
         return _minimal_yaml_dump(manifest)
@@ -935,6 +1121,7 @@ def _yaml_scalar(value: object) -> str:
 
 # ── Package File Generation ──────────────────────────────────────────
 
+
 def _escape_toml(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
 
@@ -953,7 +1140,11 @@ def generate_package_files(
     package_name = " ".join(
         w.capitalize() for w in package_id.replace("-", " ").split()
     )
-    description = tools[0].description[:120] if tools and tools[0].description else f"Converted {package_name}"
+    description = (
+        tools[0].description[:120]
+        if tools and tools[0].description
+        else f"Converted {package_name}"
+    )
 
     # 1. tool.py
     tool_file = CodeFile(
@@ -993,8 +1184,7 @@ def generate_package_files(
     test_cases = []
     for t in tools:
         test_cases.append(
-            f"def test_{t.name}_exists():\n"
-            f"    assert callable({t.name})\n"
+            f"def test_{t.name}_exists():\n    assert callable({t.name})\n"
         )
     test_file = CodeFile(
         path="tests/test_tool.py",
@@ -1014,6 +1204,7 @@ def generate_package_files(
 
 
 # ── Confidence Scoring ───────────────────────────────────────────────
+
 
 def compute_confidence(
     result: ExtractResult,
@@ -1049,7 +1240,9 @@ def compute_confidence(
             has_hard_block = True
 
     # Count unresolved symbols across all tools
-    unresolved_warnings = [w for w in result.warnings if "is called but not defined" in w]
+    unresolved_warnings = [
+        w for w in result.warnings if "is called but not defined" in w
+    ]
     unresolved_count = len(unresolved_warnings)
 
     # Check unknown imports used in body (pre-resolved by service)
@@ -1070,7 +1263,9 @@ def compute_confidence(
         has_hard_block = True
 
     # Syntax error in generated code (checked externally, but signal via warnings)
-    syntax_warnings = [w for w in result.warnings if "Syntax error" in w or "syntax" in w.lower()]
+    syntax_warnings = [
+        w for w in result.warnings if "Syntax error" in w or "syntax" in w.lower()
+    ]
     if syntax_warnings:
         reasons.append("Syntax error in generated code")
         has_hard_block = True
@@ -1089,12 +1284,18 @@ def compute_confidence(
         if tool.return_kind:
             kind = ReturnKind(tool.return_kind)
             policy = get_return_policy(kind)
-            if policy.max_confidence and _conf_order[level] > _conf_order[policy.max_confidence]:
+            if (
+                policy.max_confidence
+                and _conf_order[level] > _conf_order[policy.max_confidence]
+            ):
                 level = policy.max_confidence
 
     # Missing parameter type hints → cap at medium
     if level == "high":
-        has_missing_hints = any("type hint" in w.lower() or "no type hint" in w.lower() for w in result.warnings)
+        has_missing_hints = any(
+            "type hint" in w.lower() or "no type hint" in w.lower()
+            for w in result.warnings
+        )
         if has_missing_hints:
             level = "medium"
 
@@ -1110,10 +1311,15 @@ def compute_confidence(
     if not reasons and level == "high":
         reasons.append("All tools extracted successfully")
 
-    return ConversionConfidence(level=level, reasons=reasons), draft_ready, requires_manual_review
+    return (
+        ConversionConfidence(level=level, reasons=reasons),
+        draft_ready,
+        requires_manual_review,
+    )
 
 
 # ── Self-Reference Detection ─────────────────────────────────────────
+
 
 def detect_self_references(body_source: str) -> list[str]:
     """Find self.xxx references in source code."""
@@ -1142,8 +1348,16 @@ _CREDENTIAL_NAME_PATTERNS = re.compile(
 
 # String prefixes that look like real credentials
 _CREDENTIAL_VALUE_PREFIXES = (
-    "sk-", "pk-", "Bearer ", "token-", "ghp_", "gho_", "ghs_",
-    "xoxb-", "xoxp-", "AKIA",  # Slack, AWS
+    "sk-",
+    "pk-",
+    "Bearer ",
+    "token-",
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "xoxb-",
+    "xoxp-",
+    "AKIA",  # Slack, AWS
 )
 
 
@@ -1161,13 +1375,17 @@ def detect_hardcoded_credentials(tree: ast.Module) -> list[str]:
         # name = "value"
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Name) and isinstance(node.value, ast.Constant):
+                if isinstance(target, ast.Name) and isinstance(
+                    node.value, ast.Constant
+                ):
                     _check_credential(target.id, node.value.value, found)
         # name: str = "value"
         elif isinstance(node, ast.AnnAssign):
-            if (isinstance(node.target, ast.Name)
-                    and node.value is not None
-                    and isinstance(node.value, ast.Constant)):
+            if (
+                isinstance(node.target, ast.Name)
+                and node.value is not None
+                and isinstance(node.value, ast.Constant)
+            ):
                 _check_credential(node.target.id, node.value.value, found)
 
     return list(dict.fromkeys(found))
@@ -1190,6 +1408,7 @@ def _check_credential(var_name: str, value: object, found: list[str]) -> None:
 
 
 # ── Return Type Analysis ─────────────────────────────────────────────
+
 
 def get_return_annotation(func: ast.FunctionDef) -> str | None:
     """Get return type annotation as string, or None."""
@@ -1231,7 +1450,7 @@ def wrap_return_value(body_source: str) -> str:
 
     # Apply in reverse order to preserve line indices
     for start_idx, end_idx, new in reversed(replacements):
-        lines[start_idx:end_idx + 1] = [new]
+        lines[start_idx : end_idx + 1] = [new]
 
     return "\n".join(lines)
 
@@ -1250,6 +1469,7 @@ def _collect_top_returns(node: ast.AST, out: list[ast.Return]) -> None:
 
 # ── Body Name Collection ─────────────────────────────────────────────
 
+
 def collect_body_names(tools: list[ExtractedTool]) -> set[str]:
     """Collect all Name nodes used in tool bodies."""
     names: set[str] = set()
@@ -1266,6 +1486,7 @@ def collect_body_names(tools: list[ExtractedTool]) -> set[str]:
 
 # ── Environment Variable Detection ────────────────────────────────────
 
+
 def detect_env_var_usage(tree: ast.Module) -> list[str]:
     """Detect os.getenv() / os.environ usage → warns about runtime context dependency."""
     env_vars: list[str] = []
@@ -1273,22 +1494,33 @@ def detect_env_var_usage(tree: ast.Module) -> list[str]:
         # os.getenv("KEY") or os.environ["KEY"] or os.environ.get("KEY")
         if isinstance(node, ast.Call):
             func = node.func
-            if (isinstance(func, ast.Attribute) and func.attr == "getenv"
-                    and isinstance(func.value, ast.Name) and func.value.id == "os"):
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "getenv"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "os"
+            ):
                 if node.args and isinstance(node.args[0], ast.Constant):
                     env_vars.append(str(node.args[0].value))
                 else:
                     env_vars.append("<dynamic>")
-            elif (isinstance(func, ast.Attribute) and func.attr == "get"
-                    and isinstance(func.value, ast.Attribute)
-                    and func.value.attr == "environ"
-                    and isinstance(func.value.value, ast.Name)
-                    and func.value.value.id == "os"):
+            elif (
+                isinstance(func, ast.Attribute)
+                and func.attr == "get"
+                and isinstance(func.value, ast.Attribute)
+                and func.value.attr == "environ"
+                and isinstance(func.value.value, ast.Name)
+                and func.value.value.id == "os"
+            ):
                 if node.args and isinstance(node.args[0], ast.Constant):
                     env_vars.append(str(node.args[0].value))
         elif isinstance(node, ast.Subscript):
-            if (isinstance(node.value, ast.Attribute) and node.value.attr == "environ"
-                    and isinstance(node.value.value, ast.Name) and node.value.value.id == "os"):
+            if (
+                isinstance(node.value, ast.Attribute)
+                and node.value.attr == "environ"
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "os"
+            ):
                 if isinstance(node.slice, ast.Constant):
                     env_vars.append(str(node.slice.value))
                 else:
@@ -1297,6 +1529,7 @@ def detect_env_var_usage(tree: ast.Module) -> list[str]:
 
 
 # ── Try/Except Import Detection ──────────────────────────────────────
+
 
 def detect_try_except_imports(tree: ast.Module) -> list[str]:
     """Detect imports inside try/except blocks → optional dependencies that may be missing."""
@@ -1309,26 +1542,35 @@ def detect_try_except_imports(tree: ast.Module) -> list[str]:
                 if isinstance(child, ast.Import):
                     for alias in child.names:
                         optional_deps.append(alias.name.split(".")[0])
-                elif isinstance(child, ast.ImportFrom) and child.module and child.level == 0:
+                elif (
+                    isinstance(child, ast.ImportFrom)
+                    and child.module
+                    and child.level == 0
+                ):
                     optional_deps.append(child.module.split(".")[0])
     return list(dict.fromkeys(optional_deps))
 
 
 # ── StructuredTool.from_function Detection ────────────────────────────
 
+
 def detect_structured_tool_pattern(tree: ast.Module) -> bool:
     """Detect StructuredTool.from_function() usage — not supported in Sprint 1."""
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             func = node.func
-            if (isinstance(func, ast.Attribute) and func.attr == "from_function"
-                    and isinstance(func.value, ast.Name)
-                    and func.value.id == "StructuredTool"):
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "from_function"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "StructuredTool"
+            ):
                 return True
     return False
 
 
 # ── Slugify ──────────────────────────────────────────────────────────
+
 
 def slugify(text: str) -> str:
     """Convert text to a URL-safe slug."""

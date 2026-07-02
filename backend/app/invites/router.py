@@ -4,11 +4,9 @@ import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-logger = logging.getLogger(__name__)
-
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user, require_admin
@@ -44,12 +42,18 @@ from app.invites.service import (
 from app.shared.exceptions import AppError
 from app.shared.rate_limit import rate_limit
 
+logger = logging.getLogger(__name__)
+
 # ── Public router ──
 
 router = APIRouter(prefix="/v1", tags=["invites"])
 
 
-@router.get("/invites/{code}", response_model=InvitePublicResponse, dependencies=[Depends(rate_limit(10, 60))])
+@router.get(
+    "/invites/{code}",
+    response_model=InvitePublicResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def get_invite(code: str, session: AsyncSession = Depends(get_session)):
     """Public: get invite info (no sensitive data)."""
     invite = await get_invite_by_code(session, code)
@@ -79,14 +83,19 @@ async def get_invite(code: str, session: AsyncSession = Depends(get_session)):
     # Log invite_viewed event (deduplicated: max once per code per 60 min)
     if invite.candidate_id:
         recent = await session.execute(
-            select(CandidateEvent.id).where(
+            select(CandidateEvent.id)
+            .where(
                 CandidateEvent.candidate_id == invite.candidate_id,
                 CandidateEvent.event_type == "invite_viewed",
-                CandidateEvent.created_at >= datetime.now(timezone.utc) - timedelta(minutes=60),
-            ).limit(1)
+                CandidateEvent.created_at
+                >= datetime.now(timezone.utc) - timedelta(minutes=60),
+            )
+            .limit(1)
         )
         if not recent.scalar_one_or_none():
-            await log_event(session, invite.candidate_id, "invite_viewed", {"invite_code": code})
+            await log_event(
+                session, invite.candidate_id, "invite_viewed", {"invite_code": code}
+            )
             await session.commit()
 
     return InvitePublicResponse(
@@ -98,7 +107,11 @@ async def get_invite(code: str, session: AsyncSession = Depends(get_session)):
     )
 
 
-@router.post("/invites/{code}/claim", response_model=InviteClaimResponse, dependencies=[Depends(rate_limit(10, 60))])
+@router.post(
+    "/invites/{code}/claim",
+    response_model=InviteClaimResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def claim_invite_endpoint(
     code: str,
     user: User = Depends(get_current_user),
@@ -115,10 +128,16 @@ async def tracking_redirect(code: str, session: AsyncSession = Depends(get_sessi
     """Track link click and redirect to invite landing page."""
     invite = await get_invite_by_code(session, code)
     if invite and invite.candidate_id:
-        await log_event(session, invite.candidate_id, "invite_link_clicked", {"invite_code": code})
+        await log_event(
+            session, invite.candidate_id, "invite_link_clicked", {"invite_code": code}
+        )
         await session.commit()
 
-    base = settings.FRONTEND_URL if hasattr(settings, "FRONTEND_URL") else "https://agentnode.net"
+    base = (
+        settings.FRONTEND_URL
+        if hasattr(settings, "FRONTEND_URL")
+        else "https://agentnode.net"
+    )
     return RedirectResponse(url=f"{base}/invite/{code}", status_code=302)
 
 
@@ -148,6 +167,7 @@ async def mark_published_callback(
         return {"ok": True}
 
     from app.packages.models import Package
+
     result = await session.execute(
         select(Package.id)
         .where(
@@ -162,6 +182,7 @@ async def mark_published_callback(
     if pkg_row:
         try:
             from app.invites.service import mark_candidate_published
+
             await mark_candidate_published(session, invite.candidate_id, pkg_row[0])
             await session.commit()
         except Exception:
@@ -169,7 +190,11 @@ async def mark_published_callback(
             # other transient failure — callback is best-effort; the server-
             # side webhook is primary.
             await session.rollback()
-            logger.warning("mark_published_callback: update failed for invite %s", code, exc_info=True)
+            logger.warning(
+                "mark_published_callback: update failed for invite %s",
+                code,
+                exc_info=True,
+            )
 
     return {"ok": True}
 
@@ -220,21 +245,27 @@ async def list_candidates(
 
     # Funnel filters: subquery-based
     if funnel_filter == "clicked_not_signed_up":
-        clicked_ids = select(CandidateEvent.candidate_id).where(
-            CandidateEvent.event_type == "invite_link_clicked"
-        ).distinct()
-        claimed_ids = select(CandidateEvent.candidate_id).where(
-            CandidateEvent.event_type == "invite_claimed"
-        ).distinct()
+        clicked_ids = (
+            select(CandidateEvent.candidate_id)
+            .where(CandidateEvent.event_type == "invite_link_clicked")
+            .distinct()
+        )
+        claimed_ids = (
+            select(CandidateEvent.candidate_id)
+            .where(CandidateEvent.event_type == "invite_claimed")
+            .distinct()
+        )
         conditions.append(ImportCandidate.id.in_(clicked_ids))
         conditions.append(ImportCandidate.id.notin_(claimed_ids))
     elif funnel_filter == "signed_up_not_published":
         conditions.append(ImportCandidate.outreach_status == "signed_up")
     elif funnel_filter == "published_not_verified":
         conditions.append(ImportCandidate.outreach_status == "published")
-        verified_ids = select(CandidateEvent.candidate_id).where(
-            CandidateEvent.event_type == "verification_passed"
-        ).distinct()
+        verified_ids = (
+            select(CandidateEvent.candidate_id)
+            .where(CandidateEvent.event_type == "verification_passed")
+            .distinct()
+        )
         conditions.append(ImportCandidate.id.notin_(verified_ids))
 
     if conditions:
@@ -255,14 +286,18 @@ async def list_candidates(
     candidate_ids = [c.id for c in candidates]
 
     invite_map: dict = {}  # candidate_id -> (code, status)
-    click_map: dict = {}   # candidate_id -> int
+    click_map: dict = {}  # candidate_id -> int
 
     if candidate_ids:
         # Latest invite per candidate via window function
-        row_num = func.row_number().over(
-            partition_by=InviteCode.candidate_id,
-            order_by=InviteCode.created_at.desc(),
-        ).label("rn")
+        row_num = (
+            func.row_number()
+            .over(
+                partition_by=InviteCode.candidate_id,
+                order_by=InviteCode.created_at.desc(),
+            )
+            .label("rn")
+        )
         invite_sub = (
             select(
                 InviteCode.candidate_id,
@@ -274,8 +309,9 @@ async def list_candidates(
             .subquery()
         )
         invite_result = await session.execute(
-            select(invite_sub.c.candidate_id, invite_sub.c.code, invite_sub.c.status)
-            .where(invite_sub.c.rn == 1)
+            select(
+                invite_sub.c.candidate_id, invite_sub.c.code, invite_sub.c.status
+            ).where(invite_sub.c.rn == 1)
         )
         for row in invite_result.all():
             invite_map[row[0]] = (row[1], row[2])
@@ -283,10 +319,12 @@ async def list_candidates(
         # Click counts per candidate in one query
         click_result = await session.execute(
             select(CandidateEvent.candidate_id, func.count(CandidateEvent.id))
-            .where(and_(
-                CandidateEvent.candidate_id.in_(candidate_ids),
-                CandidateEvent.event_type == "invite_link_clicked",
-            ))
+            .where(
+                and_(
+                    CandidateEvent.candidate_id.in_(candidate_ids),
+                    CandidateEvent.event_type == "invite_link_clicked",
+                )
+            )
             .group_by(CandidateEvent.candidate_id)
         )
         for row in click_result.all():
@@ -295,40 +333,47 @@ async def list_candidates(
     items = []
     for c in candidates:
         invite_info = invite_map.get(c.id)
-        items.append(CandidateResponse(
-            id=c.id,
-            source=c.source,
-            source_url=c.source_url,
-            repo_owner=c.repo_owner,
-            repo_name=c.repo_name,
-            display_name=c.display_name,
-            description=c.description,
-            detected_tools=c.detected_tools,
-            detected_format=c.detected_format,
-            license_spdx=c.license_spdx,
-            stars=c.stars,
-            contact_email=c.contact_email,
-            contact_name=c.contact_name,
-            contact_channel=c.contact_channel,
-            assigned_admin_id=c.assigned_admin_id,
-            outreach_status=c.outreach_status,
-            contacted_at=c.contacted_at,
-            published_package_id=c.published_package_id,
-            last_event_at=c.last_event_at,
-            last_event_type=c.last_event_type,
-            admin_notes=c.admin_notes,
-            skip_reason=c.skip_reason,
-            created_at=c.created_at,
-            updated_at=c.updated_at,
-            invite_code=invite_info[0] if invite_info else None,
-            invite_status=invite_info[1] if invite_info else None,
-            click_count=click_map.get(c.id, 0),
-        ))
+        items.append(
+            CandidateResponse(
+                id=c.id,
+                source=c.source,
+                source_url=c.source_url,
+                repo_owner=c.repo_owner,
+                repo_name=c.repo_name,
+                display_name=c.display_name,
+                description=c.description,
+                detected_tools=c.detected_tools,
+                detected_format=c.detected_format,
+                license_spdx=c.license_spdx,
+                stars=c.stars,
+                contact_email=c.contact_email,
+                contact_name=c.contact_name,
+                contact_channel=c.contact_channel,
+                assigned_admin_id=c.assigned_admin_id,
+                outreach_status=c.outreach_status,
+                contacted_at=c.contacted_at,
+                published_package_id=c.published_package_id,
+                last_event_at=c.last_event_at,
+                last_event_type=c.last_event_type,
+                admin_notes=c.admin_notes,
+                skip_reason=c.skip_reason,
+                created_at=c.created_at,
+                updated_at=c.updated_at,
+                invite_code=invite_info[0] if invite_info else None,
+                invite_status=invite_info[1] if invite_info else None,
+                click_count=click_map.get(c.id, 0),
+            )
+        )
 
     return CandidateListResponse(items=items, total=total)
 
 
-@admin_router.post("/candidates", response_model=CandidateResponse, status_code=201, dependencies=[Depends(rate_limit(30, 60))])
+@admin_router.post(
+    "/candidates",
+    response_model=CandidateResponse,
+    status_code=201,
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def create_candidate(
     body: CandidateCreateRequest,
     request: Request,
@@ -346,7 +391,11 @@ async def create_candidate(
         )
     )
     if dup_check.scalar_one_or_none():
-        raise AppError("CANDIDATE_DUPLICATE", "A candidate with this source and URL already exists", 409)
+        raise AppError(
+            "CANDIDATE_DUPLICATE",
+            "A candidate with this source and URL already exists",
+            409,
+        )
 
     candidate = ImportCandidate(
         source=body.source,
@@ -367,10 +416,16 @@ async def create_candidate(
     session.add(candidate)
     await session.flush()
 
-    await log_event(session, candidate.id, "candidate_discovered", {
-        "source": body.source,
-        "source_url": body.source_url,
-    }, actor_user_id=user.id)
+    await log_event(
+        session,
+        candidate.id,
+        "candidate_discovered",
+        {
+            "source": body.source,
+            "source_url": body.source_url,
+        },
+        actor_user_id=user.id,
+    )
     await session.commit()
     await session.refresh(candidate)
 
@@ -402,7 +457,11 @@ async def create_candidate(
     )
 
 
-@admin_router.put("/candidates/{candidate_id}", response_model=CandidateResponse, dependencies=[Depends(rate_limit(30, 60))])
+@admin_router.put(
+    "/candidates/{candidate_id}",
+    response_model=CandidateResponse,
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def update_candidate(
     candidate_id: UUID,
     body: CandidateUpdateRequest,
@@ -428,9 +487,15 @@ async def update_candidate(
     candidate.updated_at = datetime.now(timezone.utc)
 
     if notes_changed:
-        await log_event(session, candidate_id, "note_added", {
-            "notes_preview": (body.admin_notes or "")[:100],
-        }, actor_user_id=user.id)
+        await log_event(
+            session,
+            candidate_id,
+            "note_added",
+            {
+                "notes_preview": (body.admin_notes or "")[:100],
+            },
+            actor_user_id=user.id,
+        )
 
     await session.commit()
     await session.refresh(candidate)
@@ -463,7 +528,11 @@ async def update_candidate(
     )
 
 
-@admin_router.post("/candidates/{candidate_id}/invite", response_model=InviteGenerateResponse, dependencies=[Depends(rate_limit(20, 60))])
+@admin_router.post(
+    "/candidates/{candidate_id}/invite",
+    response_model=InviteGenerateResponse,
+    dependencies=[Depends(rate_limit(20, 60))],
+)
 async def generate_invite(
     candidate_id: UUID,
     request: Request,
@@ -474,7 +543,9 @@ async def generate_invite(
     """Generate invite code for a candidate. Optionally send outreach email."""
     frontend_url = getattr(settings, "FRONTEND_URL", "https://agentnode.net")
 
-    invite = await create_invite_for_candidate(session, candidate_id, user.id, frontend_url)
+    invite = await create_invite_for_candidate(
+        session, candidate_id, user.id, frontend_url
+    )
 
     tracking_url = f"{frontend_url}/i/{invite.code}"
     email_sent = False
@@ -487,21 +558,30 @@ async def generate_invite(
         candidate = result.scalar_one_or_none()
         if candidate and candidate.contact_email:
             from app.shared.email import send_invite_outreach_email
+
             email_sent = await send_invite_outreach_email(
                 to=candidate.contact_email,
                 contact_name=candidate.contact_name,
-                display_name=candidate.display_name or candidate.repo_name or "your tool",
+                display_name=candidate.display_name
+                or candidate.repo_name
+                or "your tool",
                 description=candidate.description,
                 source_url=candidate.source_url,
                 tracking_url=tracking_url,
             )
             if email_sent:
-                await log_event(session, candidate_id, "email_sent", {
-                    "subject": f"Publish {candidate.display_name or candidate.repo_name} on AgentNode",
-                    "channel": "email",
-                    "to": candidate.contact_email,
-                    "auto": True,
-                }, actor_user_id=user.id)
+                await log_event(
+                    session,
+                    candidate_id,
+                    "email_sent",
+                    {
+                        "subject": f"Publish {candidate.display_name or candidate.repo_name} on AgentNode",
+                        "channel": "email",
+                        "to": candidate.contact_email,
+                        "auto": True,
+                    },
+                    actor_user_id=user.id,
+                )
 
     await session.commit()
 
@@ -515,7 +595,9 @@ async def generate_invite(
     )
 
 
-@admin_router.post("/candidates/{candidate_id}/email-sent", dependencies=[Depends(rate_limit(30, 60))])
+@admin_router.post(
+    "/candidates/{candidate_id}/email-sent", dependencies=[Depends(rate_limit(30, 60))]
+)
 async def mark_email_sent(
     candidate_id: UUID,
     body: EmailSentRequest,
@@ -530,10 +612,16 @@ async def mark_email_sent(
     if not result.scalar_one_or_none():
         raise AppError("CANDIDATE_NOT_FOUND", "Candidate not found", 404)
 
-    await log_event(session, candidate_id, "email_sent", {
-        "subject": body.subject,
-        "channel": body.channel,
-    }, actor_user_id=user.id)
+    await log_event(
+        session,
+        candidate_id,
+        "email_sent",
+        {
+            "subject": body.subject,
+            "channel": body.channel,
+        },
+        actor_user_id=user.id,
+    )
     await session.commit()
     return {"ok": True}
 
@@ -582,7 +670,8 @@ async def list_invites(
     invites = result.scalars().all()
 
     count_result = await session.execute(
-        select(func.count(InviteCode.id)).where(InviteCode.status == status) if status
+        select(func.count(InviteCode.id)).where(InviteCode.status == status)
+        if status
         else select(func.count(InviteCode.id))
     )
     total = count_result.scalar() or 0
@@ -611,9 +700,7 @@ async def revoke_invite(
     session: AsyncSession = Depends(get_session),
 ):
     """Revoke an invite."""
-    result = await session.execute(
-        select(InviteCode).where(InviteCode.id == invite_id)
-    )
+    result = await session.execute(select(InviteCode).where(InviteCode.id == invite_id))
     invite = result.scalar_one_or_none()
     if not invite:
         raise AppError("INVITE_NOT_FOUND", "Invite not found", 404)
@@ -624,15 +711,25 @@ async def revoke_invite(
     invite.status = "revoked"
 
     if invite.candidate_id:
-        await log_event(session, invite.candidate_id, "invite_revoked", {
-            "invite_code": invite.code,
-        }, actor_user_id=user.id)
+        await log_event(
+            session,
+            invite.candidate_id,
+            "invite_revoked",
+            {
+                "invite_code": invite.code,
+            },
+            actor_user_id=user.id,
+        )
 
     await session.commit()
     return {"ok": True}
 
 
-@admin_router.post("/candidates/bulk-send", response_model=BulkSendResponse, dependencies=[Depends(rate_limit(5, 60))])
+@admin_router.post(
+    "/candidates/bulk-send",
+    response_model=BulkSendResponse,
+    dependencies=[Depends(rate_limit(5, 60))],
+)
 async def bulk_send_invites(
     body: BulkSendRequest,
     request: Request,
@@ -660,7 +757,9 @@ async def bulk_send_invites(
         conditions.append(ImportCandidate.detected_format == body.detected_format)
 
     # Exclude candidates that already have an active invite
-    active_invite_ids = select(InviteCode.candidate_id).where(InviteCode.status == "active").distinct()
+    active_invite_ids = (
+        select(InviteCode.candidate_id).where(InviteCode.status == "active").distinct()
+    )
     conditions.append(ImportCandidate.id.notin_(active_invite_ids))
 
     query = (
@@ -683,7 +782,8 @@ async def bulk_send_invites(
                 "tracking_url": None,
                 "status": "preview",
             }
-            for c in candidates if c.contact_email
+            for c in candidates
+            if c.contact_email
         ]
         return BulkSendResponse(
             invites_created=0,
@@ -706,11 +806,14 @@ async def bulk_send_invites(
             continue
 
         # Generate invite
-        invite = await create_invite_for_candidate(session, candidate.id, user.id, frontend_url)
+        invite = await create_invite_for_candidate(
+            session, candidate.id, user.id, frontend_url
+        )
         invites_created += 1
         tracking_url = f"{frontend_url}/i/{invite.code}"
 
         from app.shared.email import send_invite_outreach_email
+
         sent = await send_invite_outreach_email(
             to=candidate.contact_email,
             contact_name=candidate.contact_name,
@@ -730,13 +833,19 @@ async def bulk_send_invites(
 
         if sent:
             emails_sent += 1
-            await log_event(session, candidate.id, "email_sent", {
-                "subject": f"Publish {candidate.display_name or candidate.repo_name} on AgentNode",
-                "channel": "email",
-                "to": candidate.contact_email,
-                "auto": True,
-                "bulk": True,
-            }, actor_user_id=user.id)
+            await log_event(
+                session,
+                candidate.id,
+                "email_sent",
+                {
+                    "subject": f"Publish {candidate.display_name or candidate.repo_name} on AgentNode",
+                    "channel": "email",
+                    "to": candidate.contact_email,
+                    "auto": True,
+                    "bulk": True,
+                },
+                actor_user_id=user.id,
+            )
         else:
             emails_failed += 1
 
@@ -753,7 +862,9 @@ async def bulk_send_invites(
     )
 
 
-@admin_router.post("/candidates/{candidate_id}/followup", dependencies=[Depends(rate_limit(20, 60))])
+@admin_router.post(
+    "/candidates/{candidate_id}/followup", dependencies=[Depends(rate_limit(20, 60))]
+)
 async def send_followup(
     candidate_id: UUID,
     user: User = Depends(require_admin),
@@ -783,11 +894,16 @@ async def send_followup(
     )
     invite = invite_result.scalar_one_or_none()
     if not invite:
-        raise AppError("NO_ACTIVE_INVITE", "No active invite for this candidate. Generate one first.", 400)
+        raise AppError(
+            "NO_ACTIVE_INVITE",
+            "No active invite for this candidate. Generate one first.",
+            400,
+        )
 
     tracking_url = f"{frontend_url}/i/{invite.code}"
 
     from app.shared.email import send_invite_followup_email
+
     sent = await send_invite_followup_email(
         to=candidate.contact_email,
         contact_name=candidate.contact_name,
@@ -796,16 +912,24 @@ async def send_followup(
     )
 
     if sent:
-        await log_event(session, candidate_id, "followup_sent", {
-            "to": candidate.contact_email,
-            "auto": True,
-        }, actor_user_id=user.id)
+        await log_event(
+            session,
+            candidate_id,
+            "followup_sent",
+            {
+                "to": candidate.contact_email,
+                "auto": True,
+            },
+            actor_user_id=user.id,
+        )
         await session.commit()
 
     return {"ok": True, "email_sent": sent}
 
 
-@admin_router.post("/candidates/auto-followup", dependencies=[Depends(rate_limit(5, 60))])
+@admin_router.post(
+    "/candidates/auto-followup", dependencies=[Depends(rate_limit(5, 60))]
+)
 async def auto_followup(
     days: int = Query(default=5, ge=1, le=30),
     limit: int = Query(default=50, ge=1, le=200),
@@ -841,15 +965,17 @@ async def auto_followup(
 
     query = (
         select(ImportCandidate)
-        .where(and_(
-            ImportCandidate.outreach_status == "contacted",
-            ImportCandidate.contacted_at.isnot(None),
-            ImportCandidate.contacted_at <= cutoff,
-            ImportCandidate.contact_email.isnot(None),
-            ImportCandidate.contact_email != "",
-            ImportCandidate.id.notin_(followup_already),
-            ImportCandidate.id.notin_(clicked_already),
-        ))
+        .where(
+            and_(
+                ImportCandidate.outreach_status == "contacted",
+                ImportCandidate.contacted_at.isnot(None),
+                ImportCandidate.contacted_at <= cutoff,
+                ImportCandidate.contact_email.isnot(None),
+                ImportCandidate.contact_email != "",
+                ImportCandidate.id.notin_(followup_already),
+                ImportCandidate.id.notin_(clicked_already),
+            )
+        )
         .order_by(ImportCandidate.stars.desc().nulls_last())
         .limit(limit)
     )
@@ -865,30 +991,37 @@ async def auto_followup(
     for candidate in candidates:
         # Get active invite
         invite_result = await session.execute(
-            select(InviteCode).where(and_(
-                InviteCode.candidate_id == candidate.id,
-                InviteCode.status == "active",
-            ))
+            select(InviteCode).where(
+                and_(
+                    InviteCode.candidate_id == candidate.id,
+                    InviteCode.status == "active",
+                )
+            )
         )
         invite = invite_result.scalar_one_or_none()
         if not invite:
             skipped_count += 1
-            report.append({"display_name": candidate.display_name, "status": "skipped_no_invite"})
+            report.append(
+                {"display_name": candidate.display_name, "status": "skipped_no_invite"}
+            )
             continue
 
         tracking_url = f"{frontend_url}/i/{invite.code}"
 
         if dry_run:
-            report.append({
-                "display_name": candidate.display_name or candidate.repo_name,
-                "contact_email": candidate.contact_email,
-                "stars": candidate.stars,
-                "contacted_at": str(candidate.contacted_at),
-                "status": "would_send",
-            })
+            report.append(
+                {
+                    "display_name": candidate.display_name or candidate.repo_name,
+                    "contact_email": candidate.contact_email,
+                    "stars": candidate.stars,
+                    "contacted_at": str(candidate.contacted_at),
+                    "status": "would_send",
+                }
+            )
             continue
 
         from app.shared.email import send_invite_followup_email
+
         ok = await send_invite_followup_email(
             to=candidate.contact_email,
             contact_name=candidate.contact_name,
@@ -898,11 +1031,17 @@ async def auto_followup(
 
         if ok:
             sent_count += 1
-            await log_event(session, candidate.id, "followup_sent", {
-                "to": candidate.contact_email,
-                "auto": True,
-                "days_since_contact": days,
-            }, actor_user_id=user.id)
+            await log_event(
+                session,
+                candidate.id,
+                "followup_sent",
+                {
+                    "to": candidate.contact_email,
+                    "auto": True,
+                    "days_since_contact": days,
+                },
+                actor_user_id=user.id,
+            )
             report.append({"display_name": candidate.display_name, "status": "sent"})
         else:
             failed_count += 1

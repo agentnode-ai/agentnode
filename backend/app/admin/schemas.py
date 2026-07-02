@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 # --- Quarantine ---
 
+
 class QuarantineVersionRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
 
@@ -18,6 +19,7 @@ class QuarantineActionResponse(BaseModel):
 
 # --- Trust ---
 
+
 class SetTrustLevelRequest(BaseModel):
     trust_level: str = Field(..., pattern="^(unverified|verified|trusted|curated)$")
 
@@ -29,6 +31,7 @@ class TrustLevelResponse(BaseModel):
 
 
 # --- Suspension ---
+
 
 class SuspendPublisherRequest(BaseModel):
     reason: str = Field("Admin action", max_length=500)
@@ -42,6 +45,7 @@ class SuspensionResponse(BaseModel):
 
 
 # --- Listing ---
+
 
 class QuarantinedVersionItem(BaseModel):
     package_slug: str

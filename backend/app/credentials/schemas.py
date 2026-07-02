@@ -1,4 +1,5 @@
 """Pydantic schemas for credential CRUD — secrets never in responses."""
+
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -72,6 +73,7 @@ class OAuthInitiateResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Proxy & Resolve (v0.5 — typed bodies)
 # ---------------------------------------------------------------------------
+
 
 class ProxyRequest(BaseModel):
     """Request to proxy an authenticated API call through the backend."""

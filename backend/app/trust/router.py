@@ -24,8 +24,9 @@ async def get_trust_info(
         select(Package)
         .options(
             selectinload(Package.publisher),
-            selectinload(Package.latest_version)
-            .selectinload(PackageVersion.security_findings),
+            selectinload(Package.latest_version).selectinload(
+                PackageVersion.security_findings
+            ),
         )
         .where(Package.slug == slug)
     )
@@ -43,22 +44,28 @@ async def get_trust_info(
         for f in pv.security_findings:
             if not f.is_resolved:
                 findings_count += 1
-                open_findings.append({
-                    "severity": f.severity,
-                    "finding_type": f.finding_type,
-                    "description": f.description,
-                })
+                open_findings.append(
+                    {
+                        "severity": f.severity,
+                        "finding_type": f.finding_type,
+                        "description": f.description,
+                    }
+                )
 
     # Verify provenance if present
     provenance_verified = None
     if pv and pv.source_repo_url:
         try:
             from app.trust.provenance import verify_provenance
+
             prov_result = await verify_provenance(pv.source_repo_url, pv.source_commit)
             provenance_verified = prov_result.get("repo_exists")
         except Exception:
             import logging as _logging
-            _logging.getLogger(__name__).warning("Provenance verification failed for %s", slug, exc_info=True)
+
+            _logging.getLogger(__name__).warning(
+                "Provenance verification failed for %s", slug, exc_info=True
+            )
             provenance_verified = None
 
     # Check if signature can be verified
@@ -66,6 +73,7 @@ async def get_trust_info(
     if pv and pv.signature and publisher and publisher.signing_public_key:
         try:
             from app.trust.signatures import verify_signature
+
             if pv.artifact_hash_sha256:
                 signature_verified = verify_signature(
                     publisher.signing_public_key,
@@ -74,7 +82,10 @@ async def get_trust_info(
                 )
         except Exception:
             import logging as _logging
-            _logging.getLogger(__name__).warning("Signature verification failed for %s", slug, exc_info=True)
+
+            _logging.getLogger(__name__).warning(
+                "Signature verification failed for %s", slug, exc_info=True
+            )
 
     return {
         "publisher_trust_level": publisher.trust_level if publisher else "unverified",

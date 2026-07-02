@@ -1,14 +1,19 @@
 """Unit tests for typosquatting detection."""
+
 from app.packages.typosquatting import check_typosquatting
 
 
 def test_no_similar_slugs():
-    result = check_typosquatting("pdf-reader-pack", ["web-search-pack", "document-summary-pack"])
+    result = check_typosquatting(
+        "pdf-reader-pack", ["web-search-pack", "document-summary-pack"]
+    )
     assert result == []
 
 
 def test_high_similarity():
-    result = check_typosquatting("pdf-reeader-pack", ["pdf-reader-pack", "web-search-pack"])
+    result = check_typosquatting(
+        "pdf-reeader-pack", ["pdf-reader-pack", "web-search-pack"]
+    )
     assert "pdf-reader-pack" in result
 
 
@@ -64,5 +69,7 @@ def test_hyphen_underscore_normalization():
 
 def test_no_false_positive_different_domains():
     """Packs in completely different domains shouldn't match."""
-    result = check_typosquatting("email-sender-tool", ["pdf-reader-pack", "web-search-pack"])
+    result = check_typosquatting(
+        "email-sender-tool", ["pdf-reader-pack", "web-search-pack"]
+    )
     assert result == []

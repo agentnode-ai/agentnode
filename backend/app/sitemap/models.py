@@ -1,5 +1,5 @@
 from sqlalchemy import Boolean, Column, Integer, Numeric, VARCHAR
-from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
+from sqlalchemy.dialects.postgresql import TIMESTAMP
 
 from app.shared.models import Base, UUIDPrimaryKeyMixin
 
@@ -12,5 +12,9 @@ class SitemapPage(Base, UUIDPrimaryKeyMixin):
     changefreq = Column(VARCHAR(20), nullable=False, default="monthly")
     indexable = Column(Boolean, nullable=False, default=True)
     sort_order = Column(Integer, nullable=False, default=0)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default="now()")
-    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default="now()")
+    created_at = Column(
+        TIMESTAMP(timezone=True), nullable=False, server_default="now()"
+    )
+    updated_at = Column(
+        TIMESTAMP(timezone=True), nullable=False, server_default="now()"
+    )

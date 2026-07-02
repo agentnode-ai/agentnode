@@ -21,7 +21,12 @@ from app.webhooks.schemas import (
 router = APIRouter(prefix="/v1/webhooks", tags=["webhooks"])
 
 
-@router.post("", response_model=WebhookResponse, status_code=201, dependencies=[Depends(rate_limit(10, 60))])
+@router.post(
+    "",
+    response_model=WebhookResponse,
+    status_code=201,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
 async def create_webhook(
     body: CreateWebhookRequest,
     user: User = Depends(require_publisher),
@@ -29,7 +34,9 @@ async def create_webhook(
 ):
     """Register a webhook for package events."""
     if not is_safe_url(body.url, block_private=True):
-        raise AppError("INVALID_URL", "Webhook URL must be a public https:// or http:// URL", 422)
+        raise AppError(
+            "INVALID_URL", "Webhook URL must be a public https:// or http:// URL", 422
+        )
     invalid = [e for e in body.events if e not in VALID_EVENTS]
     if invalid:
         raise AppError("INVALID_EVENTS", f"Invalid event types: {invalid}", 422)
@@ -114,7 +121,11 @@ async def delete_webhook(
     return {"deleted": True}
 
 
-@router.get("/{webhook_id}/deliveries", response_model=list[WebhookDeliveryItem], dependencies=[Depends(rate_limit(30, 60))])
+@router.get(
+    "/{webhook_id}/deliveries",
+    response_model=list[WebhookDeliveryItem],
+    dependencies=[Depends(rate_limit(30, 60))],
+)
 async def list_deliveries(
     webhook_id: UUID,
     user: User = Depends(require_publisher),

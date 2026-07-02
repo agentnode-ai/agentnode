@@ -24,6 +24,7 @@ def is_valid_slug(value: str) -> bool:
 
 # --- URL validation ---
 
+
 def _ip_is_dangerous(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if the IP points somewhere we should never let outbound
     traffic reach (private networks, loopback, link-local, multicast, reserved).
@@ -119,6 +120,7 @@ def is_safe_filter_value(value: str) -> bool:
 
 
 # --- Sort key validation ---
+
 
 def is_allowed_sort(value: str, allowed: set[str]) -> bool:
     """Check if sort value is in the allowed whitelist."""
