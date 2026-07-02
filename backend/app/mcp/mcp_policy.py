@@ -7,6 +7,7 @@ divergence is a test failure.
 Pure: no network, no DNS, no SDK import. This module is the HARD publish gate (used by
 ``registry_verify``); ``packages/validator`` + the client are only advisory pre-checks.
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -71,9 +72,13 @@ def canonicalize_allowed_domains(domains) -> tuple[str, ...]:
 # ---- install descriptor (mirror of installer.validate_mcp_install) --------------------
 
 _NPM_PACKAGE = re.compile(r"^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
-_NPM_SEMVER = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$")
+_NPM_SEMVER = re.compile(
+    r"^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$"
+)
 _PYPI_PACKAGE = re.compile(r"^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$")
-_PYPI_VERSION = re.compile(r"^[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$")
+_PYPI_VERSION = re.compile(
+    r"^[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$"
+)
 _UNPINNED = ("^", "~", "<", ">", "=", "|", "@", ":", "/", "\\", " ", "\t", "*")
 
 
@@ -95,26 +100,45 @@ def validate_install_descriptor(descriptor) -> tuple[str, str, str]:
     package = package.strip()
     version = version.strip()
     if manager not in ("npm", "pypi"):
-        raise InstallDescriptorError(f"install.manager must be npm or pypi, got {manager!r}")
+        raise InstallDescriptorError(
+            f"install.manager must be npm or pypi, got {manager!r}"
+        )
     if not package or not version:
         raise InstallDescriptorError("install.package/version must be non-empty")
-    if not version or version.lower() in ("latest", "*", "x") or any(c in version for c in _UNPINNED):
-        raise InstallDescriptorError(f"install.version must be exact-pinned, got {version!r}")
+    if (
+        not version
+        or version.lower() in ("latest", "*", "x")
+        or any(c in version for c in _UNPINNED)
+    ):
+        raise InstallDescriptorError(
+            f"install.version must be exact-pinned, got {version!r}"
+        )
     for tok in ("git+", "http://", "https://", "file:", "workspace:", "github:"):
         if tok in version.lower():
-            raise InstallDescriptorError(f"install.version spec not allowed: {version!r}")
+            raise InstallDescriptorError(
+                f"install.version spec not allowed: {version!r}"
+            )
     if manager == "npm":
         if not _NPM_PACKAGE.match(package) or not _NPM_SEMVER.match(version):
-            raise InstallDescriptorError(f"invalid npm install descriptor: {package}@{version}")
+            raise InstallDescriptorError(
+                f"invalid npm install descriptor: {package}@{version}"
+            )
     else:
         norm = re.sub(r"[-_.]+", "-", package.lower())
-        if "[" in package or not _PYPI_PACKAGE.match(norm) or not _PYPI_VERSION.match(version):
-            raise InstallDescriptorError(f"invalid pypi install descriptor: {package}=={version}")
+        if (
+            "[" in package
+            or not _PYPI_PACKAGE.match(norm)
+            or not _PYPI_VERSION.match(version)
+        ):
+            raise InstallDescriptorError(
+                f"invalid pypi install descriptor: {package}=={version}"
+            )
         package = norm
     return manager, package, version
 
 
 # ---- env_keys shape (the gate must not treat env_keys as merely truthy) ---------------
+
 
 def validate_env_keys(raw) -> tuple[list[str], list[str]]:
     """Return (env_keys, errors). ``None`` (absent) -> ([], []). Any malformed value is a
@@ -122,7 +146,9 @@ def validate_env_keys(raw) -> tuple[list[str], list[str]]:
     non-empty strings with no duplicates. Pure."""
     if raw is None:
         return [], []
-    if not isinstance(raw, list) or not all(isinstance(k, str) and k.strip() for k in raw):
+    if not isinstance(raw, list) or not all(
+        isinstance(k, str) and k.strip() for k in raw
+    ):
         return [], ["mcp_server.env_keys must be a list of non-empty strings"]
     if len(raw) != len(set(raw)):
         return [], ["mcp_server.env_keys must not contain duplicate keys"]
@@ -131,7 +157,10 @@ def validate_env_keys(raw) -> tuple[list[str], list[str]]:
 
 # ---- install <-> registry-source binding (credentialed MCPs) --------------------------
 
-def check_install_binding(mcp: dict, manager: str, package: str, version: str) -> list[str]:
+
+def check_install_binding(
+    mcp: dict, manager: str, package: str, version: str
+) -> list[str]:
     """Pure: for a credentialed MCP, the ``install`` descriptor is the AUTHORITATIVE package
     source. The manager-matching ``*_package`` field MUST equal canonical ``install.package``;
     the other manager's ``*_package`` field MUST be absent (no divergent second source); and a
@@ -164,11 +193,14 @@ def check_install_binding(mcp: dict, manager: str, package: str, version: str) -
     cmd = mcp.get("command")
     pinned = _command_version(cmd) if isinstance(cmd, list) else None
     if pinned is not None and pinned != version:
-        errors.append("command-pinned version does not match mcp_server.install.version")
+        errors.append(
+            "command-pinned version does not match mcp_server.install.version"
+        )
     return errors
 
 
 # ---- the authoritative credentialed-publish gate -------------------------------------
+
 
 def check_credentialed_publish(mcp: dict, permissions=None) -> list[str]:
     """Return a list of fail-closed errors (empty = ok). If the MCP declares ``env_keys``
@@ -214,7 +246,9 @@ def check_credentialed_publish(mcp: dict, permissions=None) -> list[str]:
         if declared is None:
             errors.append("credentialed MCP requires mcp_server.allowed_domains")
         elif canon is not None and len(canon) == 0:
-            errors.append("credentialed MCP requires a non-empty mcp_server.allowed_domains")
+            errors.append(
+                "credentialed MCP requires a non-empty mcp_server.allowed_domains"
+            )
 
     # Double-source rule: a second allowlist must not silently diverge.
     if net is not None:
