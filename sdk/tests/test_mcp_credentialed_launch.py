@@ -462,3 +462,74 @@ def test_credentialed_server_not_pooled(monkeypatch):
                                entry=_cred_entry(), mcp_consent_callback=_approve(store.LIFETIME_THIS_RUN))
     assert server is not None
     assert SLUG not in pool._servers  # credentialed is NEVER cached
+
+
+# ===========================================================================
+# timeout / cancel cleanup (3B-2b matrix): a slow tool OR a mid-launch cancel
+# must ALWAYS tear the ephemeral credentialed server down — egress proxy
+# stopped, container force-removed — and never leak the secret VALUE.
+# ===========================================================================
+
+def test_credentialed_tool_timeout_tears_down_container_and_egress(monkeypatch):
+    """A tool-call TimeoutError must still trigger run_mcp's finally: the ephemeral credentialed
+    server is stopped (egress proxy torn down + container `rm -f`), and no secret leaks into the
+    surfaced timeout error."""
+    monkeypatch.setenv("GITHUB_TOKEN", SECRET_VALUE)
+    _backend(monkeypatch)
+    monkeypatch.setattr(mcp_runner, "_pool", None)  # fresh global pool for run_mcp
+    eg = _patch_egress(monkeypatch)
+
+    # record subprocess.run so we can assert the container was force-removed (rm -f)
+    rm_calls: list = []
+
+    def _rec_run(args, **k):
+        rm_calls.append(list(args))
+        return mock.Mock(returncode=0, stdout=b"", stderr=b"")
+    monkeypatch.setattr(mcp_runner.subprocess, "run", _rec_run)
+
+    # the argument guard is not under test here — allow the call through to call_tool
+    import agentnode_sdk.guard as guard
+    monkeypatch.setattr(guard, "inspect_mcp_args",
+                        lambda *a, **k: SimpleNamespace(action="allow", reason=""))
+
+    # the server (egress + container) comes up first, THEN the tool call times out
+    def _timeout_call(self, name, args, timeout=30.0):
+        raise TimeoutError("tool did not respond")
+    monkeypatch.setattr(MCPServerProcess, "call_tool", _timeout_call)
+
+    entry = _cred_entry(mcp_command=list(NPX_CMD), trust_level="verified",
+                        tools=[{"name": "do_it", "input_schema": {"type": "object"}}])
+    result = mcp_runner.run_mcp(SLUG, "do_it", timeout=0.5, entry=entry,
+                                mcp_consent_callback=_approve(store.LIFETIME_THIS_RUN))
+
+    assert result.success is False and result.timed_out is True
+    assert eg.started == 1 and eg.stopped == 1                      # egress torn down by the finally
+    assert any(a[:3] == ["docker", "rm", "-f"] for a in rm_calls)   # container force-removed
+    assert SECRET_VALUE not in (result.error or "")                # no secret in the timeout error
+
+
+def test_credentialed_start_cancel_tears_down_before_secret_read(monkeypatch):
+    """A BaseException (e.g. KeyboardInterrupt / cancel) mid-launch — BEFORE the secret read —
+    must tear the egress proxy down, start no container, and never read the secret VALUE. Proves
+    start()'s ``except BaseException`` (not merely ``except Exception``) covers cancellation."""
+    monkeypatch.setenv("GITHUB_TOKEN", SECRET_VALUE)
+    be = _backend(monkeypatch)
+    _patch_inspect(monkeypatch)
+    eg = _patch_egress(monkeypatch)
+
+    # spy the final secret-value read — it must NOT be reached (cancel is strictly before it)
+    reads: list = []
+    real_read = mcp_runner._credentialed_client_env
+    monkeypatch.setattr(mcp_runner, "_credentialed_client_env",
+                        lambda ek: reads.append(ek) or real_read(ek))
+
+    def _cancel_wrap(spec):  # KeyboardInterrupt lands during wrap_command, before the secret read
+        raise KeyboardInterrupt("cancelled mid-launch")
+    monkeypatch.setattr(be, "wrap_command", _cancel_wrap)
+
+    with pytest.raises(KeyboardInterrupt):
+        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(env_keys=["GITHUB_TOKEN"])
+
+    assert eg.started == 1 and eg.stopped == 1   # partial resources (egress) torn down on cancel
+    assert not _FakePopen.instances              # no container ever started
+    assert reads == []                           # secret VALUE never read
