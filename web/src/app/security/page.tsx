@@ -304,9 +304,10 @@ export default function SecurityPage() {
           without them, community code is blocked, not downgraded to the host.
         </li>
         <li>
-          MCP server containers isolate filesystem, host, and secrets, but may
-          use the default network because npx- and uvx-based servers often fetch
-          packages at startup.
+          MCP servers must be pinned and preinstalled; they then run with no
+          network by default, or a sealed egress allowlist when they declare
+          allowed domains. Non-preinstalled (npx/uvx) servers are refused —
+          filesystem, host, and secret isolation apply as before.
         </li>
         <li>
           The agent sandbox for community agents is opt-in and off by default;

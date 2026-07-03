@@ -38,6 +38,24 @@ export function anchorId(r: ChangelogRelease): string {
 
 export const RELEASES: ChangelogRelease[] = [
   {
+    version: "0.17.0",
+    date: "2026-07-03",
+    dateSource: "pypi",
+    title: "MCP network isolation",
+    summary:
+      "Community MCP servers no longer have an open default-network path. A community MCP runs only when it is pinned and preinstalled into a sealed volume — with no network by default, or a sealed egress allowlist when it declares allowed domains — and non-preinstalled runtime-fetch servers are refused.",
+    highlights: [
+      "MCP servers no longer use an open default network path — networking is default-deny",
+      "Community MCPs must be pinned, preinstalled, and sealed, or they are refused (floating `npx`/`uvx`/`latest`/git/url runtime fetches are rejected)",
+      "Network access is granted only through a declared `mcp_allowed_domains` sealed egress allowlist; otherwise the container runs with no network",
+      "Credentialed MCP launches use default-deny networking plus sealed egress allowlists; cleanup and secret hygiene are enforced across launch, timeout, and failure paths",
+    ],
+    breaking:
+      "Community MCP servers that ship only an mcp_command (floating npx/uvx runtime fetch) are now refused. Pin an exact mcp_install so the server is preinstalled into a sealed volume, and declare mcp_allowed_domains for any runtime egress; without declared domains the server runs with no network. Credentialed and curated/trusted host flows are unchanged.",
+    onPyPI: true,
+    hasTag: true,
+  },
+  {
     version: "0.16.0",
     date: "2026-06-12",
     dateSource: "pypi",
