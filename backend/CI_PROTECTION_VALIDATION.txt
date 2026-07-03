@@ -1,0 +1,5 @@
+Temporary backend-only no-op to validate that, under active branch protection
+(required checks: backend-required + sdk-web-required, strict=true), a scoped PR is
+mergeable: backend-required runs the real backend jobs, sdk-web-required goes green via
+skip, and nothing hangs on "Expected". Throwaway PR — will be closed, branch deleted.
+Not product code.
