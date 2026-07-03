@@ -3,13 +3,45 @@ name: Backend CI
 on:
   push:
     branches: [main]
-    paths: [backend/**]
   pull_request:
     branches: [main]
-    paths: [backend/**]
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.detect.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          head="${{ github.sha }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          # Fail-safe: unknown/unreachable base (first push, force-push, shallow) -> run everything.
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "base unresolved -> treating backend as changed"
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$base" "$head")"
+          echo "changed files:"; printf '%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -qE '^backend/'; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend=false" >> "$GITHUB_OUTPUT"
+          fi
+
   lint:
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -24,8 +56,9 @@ jobs:
       - run: ruff format --check app/ tests/
 
   test:
+    needs: [changes, lint]
+    if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-latest
-    needs: lint
     defaults:
       run:
         working-directory: backend
@@ -73,3 +106,22 @@ jobs:
       - run: pip install -e ".[dev]" --no-deps
       - run: pip install pytest pytest-asyncio httpx
       - run: pytest -v --tb=short
+
+  # Always-run aggregator: the ONLY required check for the backend track. Reports one
+  # status on every PR so path-filtering can never deadlock branch protection. Green when
+  # backend was not touched (real jobs skipped); mirrors the real result when it was.
+  backend-required:
+    needs: [changes, lint, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate on backend jobs (success/skipped OK; only failure/cancelled fails)
+        run: |
+          echo "changes=${{ needs.changes.result }} lint=${{ needs.lint.result }} test=${{ needs.test.result }}"
+          for r in "${{ needs.changes.result }}" "${{ needs.lint.result }}" "${{ needs.test.result }}"; do
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
+              echo "::error::backend-required: a backend job did not pass"
+              exit 1
+            fi
+          done
+          echo "backend-required OK (backend jobs passed or were skipped)"
