@@ -15,8 +15,9 @@
 name: Deploy AgentNode
 
 on:
-  push:
-    branches: [main]
+  # Manual-only: deploy is an intentional action, never an automatic side effect
+  # of a push to main. (The workflow is also disabled at the repo level; this makes
+  # the manual-only intent structural, so a future re-enable never auto-deploys.)
   workflow_dispatch:
 
 concurrency:
