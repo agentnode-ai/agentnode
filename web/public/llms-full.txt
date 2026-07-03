@@ -98,10 +98,11 @@ image are available.
 - Agents: an agent's own code runs host-side. Trusted/curated agents run on the
   host. Community agents are refused by default; they run only if you opt into
   the agent sandbox, which is OFF by default.
-- MCP server containers isolate the host filesystem, home, and secrets, but may
-  use the default network because npx/uvx-based servers often fetch packages at
-  startup. So network isolation is stricter for tool packs and agent sandboxes
-  than for MCP servers.
+- MCP servers must be pinned and preinstalled into a sealed volume. They run
+  with no network by default, or a sealed egress allowlist when they declare
+  mcp_allowed_domains. Non-preinstalled (floating npx/uvx) MCP servers are
+  refused — there is no open default-network path. Filesystem, host, and secret
+  isolation apply throughout.
 - Credentials stay host-side: API keys live in the OS keychain (or a local
   0600 file fallback) and never enter sandboxed code. Sandboxed agents reach an
   LLM through a host-side broker, so the provider key never enters the

@@ -87,10 +87,10 @@ const MATRIX_ROWS = [
     "MCP servers",
     "Container or refused",
     "Hardened container (FS, host, secrets)",
-    "default network (npx/uvx) — exception",
+    "None; sealed egress allowlist if declared",
     "None; env_keys refused",
     "Yes",
-    "Network not isolated; FS / secret / host isolation applies",
+    "Must be pinned + preinstalled; non-preinstalled npx/uvx refused",
   ],
   [
     "agents",
@@ -177,13 +177,14 @@ export default function Page() {
           </p>
           <p className="mt-3 text-sm leading-relaxed text-muted">
             <strong className="text-foreground">
-              MCP server containers are the exception.
+              MCP servers are held to the same standard.
             </strong>{" "}
-            They may use the default network because npx- and uvx-based servers
-            often fetch packages at startup. Network isolation is therefore
-            stricter for toolpacks and agent sandboxes than for MCP server
-            processes — but filesystem, host, and secret isolation still apply
-            to MCP containers.
+            A community MCP runs only when it is pinned and preinstalled into a
+            sealed volume; it then runs with no network by default, or behind a
+            sealed egress allowlist when it declares <C>mcp_allowed_domains</C>.
+            Non-preinstalled servers that fetch at runtime (floating npx/uvx)
+            are refused — there is no open default-network path. Filesystem,
+            host, and secret isolation apply throughout.
           </p>
         </section>
 
@@ -252,8 +253,9 @@ $ agentnode sandbox pull            # explicitly fetch the digest-pinned image`}
               the OS.
             </li>
             <li>
-              MCP server containers can reach the network by default (the
-              documented exception above).
+              MCP server containers run with no network by default; egress is
+              only granted through a declared allowlist (mcp_allowed_domains),
+              and non-preinstalled servers are refused.
             </li>
             <li>
               The agent sandbox is opt-in and default OFF; with it off,

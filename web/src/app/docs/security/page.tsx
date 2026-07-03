@@ -129,12 +129,12 @@ export default function SecurityPage() {
         <Row
           label="Container sandbox"
           status="enforced"
-          description="Community-tier code (toolpack builds, toolpack runs, MCP servers, opt-in community agents) executes in a hardened container: read-only filesystem, non-root user, all capabilities dropped, no host mounts, no secrets. Network isolation is stricter for toolpacks and agent sandboxes (network off by default, unknown = deny) than for MCP server processes, whose containers may use the default network because npx/uvx servers often need package and registry access — filesystem, host, and secret isolation still apply to them. If the sandbox is unavailable, execution is denied — never downgraded to the host."
+          description="Community-tier code (toolpack builds, toolpack runs, MCP servers, opt-in community agents) executes in a hardened container: read-only filesystem, non-root user, all capabilities dropped, no host mounts, no secrets. Networking is off by default across the board (unknown = deny); a community MCP must be pinned and preinstalled and gets network access only through a sealed egress allowlist it declares, while non-preinstalled MCP servers are refused. If the sandbox is unavailable, execution is denied — never downgraded to the host."
         />
         <Row
           label="Network allowlist"
           status="enforced"
-          description="Community toolpack and agent-sandbox containers get a network only when the package declares a recognized network level; unknown, missing, or 'none' values mean the container runs with networking fully disabled (--network none, unknown = deny). MCP server containers are the exception noted above — filesystem, host, and secret isolation still apply to them."
+          description="Community toolpack and agent-sandbox containers get a network only when the package declares a recognized network level; unknown, missing, or 'none' values mean the container runs with networking fully disabled (--network none, unknown = deny). Community MCP servers follow the same default-deny rule: they run with no network unless they declare a sealed egress allowlist (mcp_allowed_domains), and non-preinstalled MCP servers are refused."
         />
         <Row
           label="Pinned sandbox image"
@@ -213,7 +213,7 @@ export default function SecurityPage() {
         <Row
           label="Network access"
           status="not-enforced"
-          description="For trusted/curated host execution, 'network: none' declarations are policy-checked but not OS-enforced — a trusted tool could still make HTTP requests. For community toolpacks and agent sandboxes this IS enforced: the container runs with networking disabled unless a network level is declared (MCP server containers are the documented exception)."
+          description="For trusted/curated host execution, 'network: none' declarations are policy-checked but not OS-enforced — a trusted tool could still make HTTP requests. For community toolpacks, MCP servers, and agent sandboxes this IS enforced: the container runs with networking disabled unless a sealed egress allowlist is declared."
         />
         <Row
           label="Filesystem access"
