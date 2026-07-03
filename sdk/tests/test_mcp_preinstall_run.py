@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -25,7 +26,11 @@ from agentnode_sdk.sandbox.mcp_preinstall import (
     validate_preinstall_command,
     validate_preinstall_fields,
 )
-from agentnode_sdk.sandbox.types import SandboxAvailability, SandboxRequiredError
+from agentnode_sdk.sandbox.types import (
+    EgressSpec,
+    SandboxAvailability,
+    SandboxRequiredError,
+)
 
 HEX = "a" * 64
 SLUG = "some-mcp"
@@ -296,15 +301,16 @@ def test_missing_network_level_is_none_not_default(monkeypatch):
     assert "--network" in margv and margv[margv.index("--network") + 1] == "none"
 
 
-def test_not_preinstalled_uses_old_npx_path(monkeypatch):
+def test_not_preinstalled_refused(monkeypatch):
+    """MCP net-isolation (Fallback C): a non-preinstalled MCP (mcp_command-only, no pinned
+    mcp_install) is REFUSED — no verifier, no container, never the old open-network npx path."""
     _, rec = _backend(monkeypatch)
     _patch_inspect(monkeypatch)
     entry = _sealed({"version": MCP_VERSION, "runtime": "mcp", "mcp_command": NPX_CMD})
-    _start(monkeypatch, entry)
-    assert rec.calls == []                                   # no verifier ran (not preinstalled)
-    margv = _FakePopen.instances[-1].args
-    assert margv[-3:] == NPX_CMD                             # old path: launches npx
-    assert "--network" not in margv                          # network=default (open), unchanged
+    with pytest.raises(SandboxRequiredError, match="not preinstalled"):
+        _start(monkeypatch, entry)
+    assert rec.calls == []                                   # no verifier ran
+    assert _FakePopen.instances == []                        # nothing launched
 
 
 def test_mcp_command_never_parsed_for_preinstalled(monkeypatch):
@@ -319,3 +325,93 @@ def test_mcp_command_never_parsed_for_preinstalled(monkeypatch):
     margv = _FakePopen.instances[-1].args
     assert "EVIL" not in " ".join(margv)
     assert margv[-2:] == ["node", "/install/bin/some-mcp"]
+
+
+# ===========================================================================
+# MCP net-isolation (Fallback C): preinstalled non-credentialed egress allowlist
+# ===========================================================================
+
+class _EgressRec:
+    """Records egress-proxy start/stop; returns a handle with a REAL EgressSpec so the genuine
+    ContainerBackend.wrap_command produces a real ``--network <int_net>`` argv. No secret here."""
+
+    def __init__(self):
+        self.started_domains = None
+        self.stopped = 0
+
+    def start(self, domains, **kw):
+        self.started_domains = list(domains)
+        return SimpleNamespace(
+            spec=EgressSpec(network_name="agentnode-egress-test-int",
+                            proxy_url="http://egress-proxy:8888",
+                            allowed_domains=tuple(domains)),
+            runtime="docker", int_net="agentnode-egress-test-int", ext_net="x", proxy_name="p")
+
+    def stop(self, handle):
+        self.stopped += 1
+
+
+def _patch_egress(monkeypatch):
+    import agentnode_sdk.sandbox.egress as egress
+    rec = _EgressRec()
+    monkeypatch.setattr(egress, "start_egress_proxy", rec.start)
+    monkeypatch.setattr(egress, "stop_egress_proxy", rec.stop)
+    return rec
+
+
+def test_preinstalled_with_allowed_domains_uses_egress(monkeypatch):
+    """Preinstalled non-credentialed MCP with a sealed mcp_allowed_domains runs behind the
+    REUSED egress allowlist proxy (network=egress on the proxy's internal net), NOT open — and
+    with NO secret flow."""
+    _backend(monkeypatch)
+    _patch_inspect(monkeypatch)
+    rec = _patch_egress(monkeypatch)
+    entry = _sealed(_good_entry(mcp_allowed_domains=["api.github.com", "API.GitHub.com."]))
+    _start(monkeypatch, entry)
+    # egress proxy started with the canonicalized (lowercased, de-duped) allowlist
+    assert rec.started_domains == ["api.github.com"]
+    margv = _FakePopen.instances[-1].args
+    # container runs on the egress internal net — not open "default", not plain "none"
+    assert margv[margv.index("--network") + 1] == "agentnode-egress-test-int"
+    assert margv[-2:] == ["node", "/install/bin/some-mcp"]   # sealed command, not npx
+
+
+def test_invalid_allowed_domains_is_none_not_open(monkeypatch):
+    """Invalid/empty mcp_allowed_domains must NOT fall back to an open network — it becomes
+    network=none and no egress proxy is started (fail-safe, never default)."""
+    _backend(monkeypatch)
+    _patch_inspect(monkeypatch)
+    rec = _patch_egress(monkeypatch)
+    entry = _sealed(_good_entry(mcp_allowed_domains=["not a domain", "http://x/", "*.evil"]))
+    _start(monkeypatch, entry)
+    assert rec.started_domains is None                       # egress proxy never started
+    margv = _FakePopen.instances[-1].args
+    assert margv[margv.index("--network") + 1] == "none"     # isolated, never open
+
+
+def test_preinstalled_container_env_is_clean(monkeypatch):
+    """The preinstalled MCP container gets a clean HOME and no host env/mounts (only the sealed
+    RO /install volume). Relocated from test_mcp_sandbox (the old non-preinstalled path is gone)."""
+    _backend(monkeypatch)
+    _patch_inspect(monkeypatch)
+    monkeypatch.setenv("HOME", "/home/realuser")
+    entry = _sealed(_good_entry(permissions={"network_level": "none"}))
+    _start(monkeypatch, entry)
+    margv = _FakePopen.instances[-1].args
+    joined = " ".join(margv)
+    assert "HOME=/sandbox-home" in margv                     # clean container HOME
+    assert "/home/realuser" not in joined                    # no host HOME
+    assert ".agentnode" not in joined                        # credential store never mounted
+    assert f"{_volume()}:/install:ro" in margv               # only the sealed RO volume
+
+
+def test_stop_removes_preinstalled_container(monkeypatch):
+    """stop() removes the preinstalled MCP container by its own name (lifecycle)."""
+    _backend(monkeypatch)
+    runs = _patch_inspect(monkeypatch)
+    entry = _sealed(_good_entry(permissions={"network_level": "none"}))
+    server = _start(monkeypatch, entry)
+    name = server._container_name
+    assert name and name.startswith("agentnode-mcp-")
+    server.stop()
+    assert ["docker", "rm", "-f", name] in runs

@@ -1,12 +1,15 @@
-"""P0.2 — MCP runs route into the container at MCPServerProcess.start().
+"""MCP run routing + network isolation at MCPServerProcess.start().
 
 Closes the audit-found gap: run_tool was not the complete MCP chokepoint
 (cli/mcp_commands.py starts MCPServerProcess directly). Enforcement+routing now
 live in start(), covering the agent path AND direct/CLI use.
 
-P0.2 isolates host-FS, HOME and secrets — NOT the network (npx/uvx fetch live).
-No real containers run here: the backend is forced-available and subprocess.Popen
-is mocked to capture the launch argv.
+MCP net-isolation (Fallback C): a community MCP runs ONLY when pinned + sealed +
+network-isolated/allowlisted. A non-preinstalled community MCP (floating npx/uvx
+runtime fetch) is REFUSED fail-closed — never an open ``network="default"``. The
+preinstalled container mechanics (clean env, egress allowlist, stop) live in
+test_mcp_preinstall_run.py. No real containers run here: the backend is
+forced-available and subprocess.Popen is mocked.
 """
 import io
 import json
@@ -79,33 +82,30 @@ def _use_unavailable(monkeypatch):
 
 # --- routing / bypass closure -------------------------------------------------
 
-def test_verified_mcp_routed_into_container(monkeypatch):
-    """THE headline: verified MCP -> Popen gets docker argv, original npx only at end."""
+def test_non_preinstalled_community_mcp_refused(monkeypatch):
+    """THE headline (Fallback C): a non-preinstalled community MCP would need an open-network
+    runtime fetch (npx/uvx) — now REFUSED fail-closed, never containerized with open network."""
     _use_available_container(monkeypatch)
-    MCPServerProcess("some-mcp", MCP_CMD, trust_level="verified").start()
-
-    argv = _FakePopen.instances[-1].args
-    assert argv[0] == "docker"
-    assert "--name" in argv and "agentnode-sandbox" in argv
-    assert "--cap-drop=ALL" in argv and "--read-only" in argv
-    assert argv[-3:] == MCP_CMD            # original command only at the very end
-    assert argv[:3] != MCP_CMD             # not a direct host launch
+    with pytest.raises(SandboxRequiredError, match="not preinstalled"):
+        MCPServerProcess("some-mcp", MCP_CMD, trust_level="verified").start()
+    assert _FakePopen.instances == []            # never launched
 
 
-def test_direct_construction_is_routed_closes_cli_doctor_bypass(monkeypatch):
-    """Exactly the CLI-doctor pattern: MCPServerProcess(..., trust_level).start()."""
+def test_direct_construction_non_preinstalled_refused_not_host(monkeypatch):
+    """The CLI-doctor pattern: a non-preinstalled community MCP is refused (never run on the
+    host, never open network)."""
     _use_available_container(monkeypatch)
-    MCPServerProcess("doctor-mcp", MCP_CMD, trust_level="verified").start()
-    argv = _FakePopen.instances[-1].args
-    assert argv[0] == "docker"                       # routed, not host
-    assert argv[-3:] == MCP_CMD
+    with pytest.raises(SandboxRequiredError):
+        MCPServerProcess("doctor-mcp", MCP_CMD, trust_level="verified").start()
+    assert _FakePopen.instances == []
 
 
-def test_missing_trust_level_is_sandbox_required_not_host(monkeypatch):
-    """No trust_level -> treated as sandbox-required (containerized), never host."""
+def test_missing_trust_level_non_preinstalled_refused(monkeypatch):
+    """No trust_level + non-preinstalled -> refused (sandbox-required, never host, never open)."""
     _use_available_container(monkeypatch)
-    MCPServerProcess("unknown-mcp", MCP_CMD).start()  # no trust_level
-    assert _FakePopen.instances[-1].args[0] == "docker"
+    with pytest.raises(SandboxRequiredError):
+        MCPServerProcess("unknown-mcp", MCP_CMD).start()  # no trust_level
+    assert _FakePopen.instances == []
 
 
 def test_missing_trust_level_blocked_when_unavailable(monkeypatch):
@@ -113,23 +113,6 @@ def test_missing_trust_level_blocked_when_unavailable(monkeypatch):
     with pytest.raises(SandboxRequiredError):
         MCPServerProcess("unknown-mcp", MCP_CMD).start()  # no trust_level
     assert _FakePopen.instances == []  # never launched
-
-
-# --- host-FS / HOME / secret isolation ---------------------------------------
-
-def test_container_env_is_clean_no_host_home(monkeypatch):
-    _use_available_container(monkeypatch)
-    monkeypatch.setenv("HOME", "/home/realuser")
-    monkeypatch.setenv("APPDATA", r"C:\Users\realuser\AppData")
-    MCPServerProcess("some-mcp", MCP_CMD, trust_level="verified").start()
-
-    argv = _FakePopen.instances[-1].args
-    joined = " ".join(argv)
-    assert "HOME=/sandbox-home" in argv          # clean container HOME
-    assert "/home/realuser" not in joined        # no host HOME
-    assert "realuser" not in joined              # no host APPDATA/USERPROFILE
-    assert ".agentnode" not in joined            # credential store never mounted
-    assert "-v" not in argv                      # no workspace/host mount
 
 
 def test_community_mcp_with_env_keys_is_blocked(monkeypatch):
@@ -172,21 +155,6 @@ def test_no_runtime_is_fail_closed(monkeypatch):
     with pytest.raises(SandboxRequiredError):
         MCPServerProcess("some-mcp", MCP_CMD, trust_level="verified").start()
     assert _FakePopen.instances == []
-
-
-# --- lifecycle ----------------------------------------------------------------
-
-def test_stop_removes_container(monkeypatch):
-    _use_available_container(monkeypatch)
-    runs = []
-    monkeypatch.setattr(mcp_runner.subprocess, "run",
-                        lambda args, **k: runs.append(args))
-    server = MCPServerProcess("some-mcp", MCP_CMD, trust_level="verified")
-    server.start()
-    name = server._container_name
-    assert name and name.startswith("agentnode-mcp-")
-    server.stop()
-    assert ["docker", "rm", "-f", name] in runs
 
 
 # --- host path for vetted tiers ----------------------------------------------
