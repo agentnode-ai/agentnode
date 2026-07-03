@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.17.0 — MCP network isolation
+
+### Changed
+
+- Community MCP servers now run only when pinned and preinstalled into a sealed
+  volume. Preinstalled community MCPs run with no network by default, or behind a
+  sealed egress allowlist when `mcp_allowed_domains` are declared.
+
+### Hardened
+
+- Removed the open-network runtime-fetch path for community MCPs. Non-preinstalled
+  or floating community MCPs — including `npx`, `uvx`, `latest`, git, or URL-based
+  runtime fetches — are now refused fail-closed. The old `network_level`
+  open-network grant path is no longer honored for community MCP runtime execution.
+
+### BREAKING / Upgrade Notes
+
+- Community MCPs that ship only an `mcp_command` are now refused instead of running
+  with an open network. To migrate, declare an exact pinned `mcp_install` so the MCP
+  is preinstalled into a sealed volume. If runtime network access is required,
+  declare `mcp_allowed_domains`; without declared allowed domains, the MCP runs with
+  no network.
+- The credentialed MCP secret flow is unchanged. Curated/trusted MCP behavior is
+  unchanged.
+
 ## 0.16.0 — Registry providers in auth CLI and setup wizard
 
 ### Added
