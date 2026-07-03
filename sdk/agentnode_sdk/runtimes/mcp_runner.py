@@ -62,7 +62,6 @@ class MCPServerProcess:
         """
         from agentnode_sdk.sandbox import enforce_sandbox_policy, get_default_backend
         from agentnode_sdk.sandbox.policy import requires_sandbox
-        from agentnode_sdk.sandbox.types import ProcessSpec
 
         # Fail-closed gate: community without a runtime is blocked here, not on host.
         enforce_sandbox_policy(self.trust_level, runtime_hint="mcp")
@@ -102,11 +101,15 @@ class MCPServerProcess:
                 # path, no key, no auto-created/rebuilt volume, no permissive network.
                 spec = self._preinstalled_spec(backend, name)
             else:
-                # Existing path: non-preinstalled community MCP fetches at runtime
-                # (npx/uvx). Open network; clean HOME; no host env, no mounts, no secrets.
-                spec = ProcessSpec(
-                    command=list(self.command), network="default", clean_home=True,
-                    interactive=True, env={}, mounts=[], name=name,
+                # MCP net-isolation (Fallback C): a non-preinstalled community MCP would have to
+                # fetch at runtime (npx/uvx) with an OPEN network — the exact path we refuse. A
+                # community MCP runs ONLY when pinned + sealed + network-isolated/allowlisted;
+                # unpinnable (floating npx/uvx/latest/git/url) is fail-closed, never open network.
+                from agentnode_sdk.sandbox.types import SandboxRequiredError
+                raise SandboxRequiredError(
+                    f"MCP '{self.slug}' is not preinstalled — refusing an open-network runtime "
+                    "fetch. Reinstall it pinned (exact mcp_install version) and declare egress "
+                    "domains via mcp_allowed_domains."
                 )
             self._container_name = name
 
@@ -227,17 +230,47 @@ class MCPServerProcess:
 
     def _preinstalled_spec(self, backend, name: str):
         """Stage 4B (non-credentialed): verify the sealed volume (a–e) then build the hardened
-        ProcessSpec — RO /install, policy network (missing/unknown ⇒ none, never default), clean
-        HOME, minimal module-resolution env only, NO secret."""
-        from agentnode_sdk.sandbox import network_for_level
+        ProcessSpec — RO /install, clean HOME, minimal module-resolution env only, NO secret.
+
+        Network (MCP net-isolation, Fallback C): a valid sealed ``mcp_allowed_domains`` ⇒ reuse
+        the (secret-free) egress-allowlist proxy (network=none + dual-homed CONNECT proxy, domains
+        only); otherwise ``network="none"``. NEVER an open ``network="default"`` — a community MCP
+        is isolated or allowlisted, never open."""
+        from agentnode_sdk.sandbox.domain_policy import (
+            DomainPolicyError,
+            canonicalize_allowed_domains,
+        )
         from agentnode_sdk.sandbox.types import MountSpec, ProcessSpec
 
         pspec = self._verify_preinstall(backend)
-        net = network_for_level((self.entry.get("permissions") or {}).get("network_level"))
+        mounts = [MountSpec(src=pspec.volume, dst="/install", read_only=True)]
+        env = self._install_env(pspec)
+
+        # Sealed egress allowlist? Reuse the (secret-free) egress proxy for the declared domains.
+        # Invalid/empty ⇒ () ⇒ fully network-isolated (never open); no proxy is started.
+        try:
+            sealed = canonicalize_allowed_domains(
+                (self.entry or {}).get("mcp_allowed_domains") or []
+            )
+        except (DomainPolicyError, ValueError):
+            sealed = ()
+        if sealed:
+            from agentnode_sdk.sandbox.egress import start_egress_proxy
+            handle = start_egress_proxy(list(sealed))
+            self._egress_handle = handle
+            try:
+                return ProcessSpec(
+                    command=list(pspec.command), network="egress", egress=handle.spec,
+                    clean_home=True, interactive=True, env=env, mounts=mounts, name=name,
+                )
+            except BaseException:
+                self._teardown_egress()
+                raise
+
+        # No declared domains ⇒ fully network-isolated (never open).
         return ProcessSpec(
-            command=list(pspec.command), network=net, clean_home=True, interactive=True,
-            env=self._install_env(pspec),
-            mounts=[MountSpec(src=pspec.volume, dst="/install", read_only=True)], name=name,
+            command=list(pspec.command), network="none", clean_home=True, interactive=True,
+            env=env, mounts=mounts, name=name,
         )
 
     def _credentialed_launch(self, backend, name: str, env_keys):
