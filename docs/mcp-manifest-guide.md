@@ -19,9 +19,14 @@ description: "Longer description."
 
 mcp_server:
   command: ["npx", "-y", "@your-org/your-mcp@1.0.0"]
+  install:                          # Pins the package so it is preinstalled into a sealed volume
+    manager: npm                    #   npm | pypi
+    package: "@your-org/your-mcp"
+    version: "1.0.0"                #   EXACT version — no ranges/latest/git/url
   transport: stdio
   npm_package: "@your-org/your-mcp"
   source_repo: "https://github.com/your-org/your-repo"
+  allowed_domains: []               # Sandbox egress allowlist (bare hostnames); [] = no network
   env_keys: []          # List required env vars, empty if none
 
 capabilities:
@@ -42,6 +47,14 @@ tags: [mcp, mcp-server, your-tags]
 categories: [your-category]
 compatibility: {frameworks: [mcp]}
 ```
+
+> **Community MCPs must be pinned and preinstalled (SDK 0.17+).** A community
+> MCP (verified/unverified) is built into a sealed volume from
+> `mcp_server.install` (exact npm/pypi version) and then runs network-isolated:
+> **no network by default**, or a sealed egress allowlist when
+> `mcp_server.allowed_domains` is declared. A server that only ships a floating
+> `command` (runtime `npx`/`uvx` fetch, no pinned `install`) is **refused** at
+> run time. Curated/trusted MCPs and the credentialed MCP flow are unaffected.
 
 ## Permission Levels
 
@@ -66,7 +79,9 @@ agentnode mcp verify . --json   # Machine-readable report
 | Field | Required | Description |
 |---|---|---|
 | `command` | Yes | Start command as array, must include pinned version |
+| `install` | Yes (community) | Pinned package descriptor (`manager` npm/pypi, `package`, exact `version`) — built into a sealed volume; required for a community MCP to run under 0.17+ |
 | `transport` | Yes | `stdio` or `sse` |
 | `npm_package` | Yes* | npm package name (*or `pypi_package` for Python) |
 | `source_repo` | Recommended | GitHub URL — verified against npm/PyPI registry |
+| `allowed_domains` | Optional | Sandbox egress allowlist (bare hostnames); omit/empty = no network |
 | `env_keys` | Yes | Required environment variables (empty array if none) |
