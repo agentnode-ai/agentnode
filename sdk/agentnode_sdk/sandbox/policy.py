@@ -67,6 +67,43 @@ def requires_sandbox(trust_level: str | None) -> bool:
     return tier not in _HOST_ALLOWED_TIERS and tier not in _HOST_TOLERATED_TIERS
 
 
+def host_allowed_tiers(policy: str | None) -> frozenset[str]:
+    """Trust tiers allowed to run DIRECTLY ON THE HOST under a host-trust policy.
+
+    Pure decision table (no config, no I/O). ``policy`` is the future user setting
+    ``sandbox.host_trust_policy`` — wired into the run/install paths in a later
+    step; here it is only the table, unit-tested in isolation.
+
+      - ``"default"`` — curated + trusted may run on the host (today's behavior).
+      - ``"curated_only"`` — only curated on the host; trusted is sandboxed.
+      - ``"none"`` — nothing on the host; curated + trusted are sandboxed too.
+
+    None / empty / unrecognized → ``"default"``: this table can therefore never
+    *silently over-restrict* — narrowing host access happens only for an
+    explicitly recognized stricter value. Validating the value (rejecting typos)
+    is the config layer's job, not this pure core's.
+    """
+    p = (policy or "").strip().lower()
+    if p == "curated_only":
+        return frozenset(_HOST_ALLOWED_TIERS)
+    if p == "none":
+        return frozenset()
+    return frozenset(_HOST_ALLOWED_TIERS | _HOST_TOLERATED_TIERS)
+
+
+def requires_sandbox_for_policy(trust_level: str | None, policy: str | None) -> bool:
+    """Pure: True if ``trust_level`` must be sandboxed under ``policy``.
+
+    Missing / None / unknown trust → True (never host), the same fail-closed rule
+    as :func:`requires_sandbox`. This is the policy-parameterized core; the
+    existing :func:`requires_sandbox` is exactly the ``"default"`` special case,
+    i.e. ``requires_sandbox(t) == requires_sandbox_for_policy(t, "default")`` for
+    every ``t`` (asserted in the tests — 1A changes no current behavior).
+    """
+    tier = (trust_level or "").strip().lower()
+    return tier not in host_allowed_tiers(policy)
+
+
 def require_sandbox_for_tier(
     trust_level: str | None, availability: SandboxAvailability
 ) -> None:
