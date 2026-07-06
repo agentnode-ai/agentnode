@@ -146,6 +146,93 @@ class TestRouting:
 
 
 # ---------------------------------------------------------------------------
+# A1: sandbox.host_trust_policy routes host-tier (trusted/curated) agents.
+# The community FLAG path stays separate + unchanged (the combined-gate trap).
+# ---------------------------------------------------------------------------
+
+class TestHostTrustPolicyRouting:
+    def _flag_off(self, monkeypatch):
+        monkeypatch.delenv("AGENTNODE_AGENT_SANDBOX", raising=False)
+        monkeypatch.setattr("agentnode_sdk.config.load_config", lambda: {})
+
+    def _policy(self, monkeypatch, policy):
+        monkeypatch.setattr("agentnode_sdk.config.host_trust_policy", lambda: policy)
+
+    def _spy(self, monkeypatch):
+        seen = {}
+
+        def spy(slug, entry, agent_config, *, goal=None, run_id=None, **kwargs):
+            seen["slug"] = slug
+            return RunToolResult(success=False, error="spy", mode_used="agent_sandbox", run_id=run_id)
+
+        monkeypatch.setattr("agentnode_sdk.runtimes.agent_sandbox.run_agent_sandboxed", spy)
+        return seen
+
+    # default policy == today (flag off): trusted host, community refused
+    def test_default_trusted_stays_host(self, monkeypatch):
+        self._flag_off(monkeypatch); self._policy(monkeypatch, "default")
+        seen = self._spy(monkeypatch)
+        r = run_agent("a", entry=_agent_entry(trust_level="trusted"))
+        assert seen == {}
+        assert r.mode_used != "agent_sandbox" and "trust level" not in (r.error or "")
+
+    def test_default_community_refused_flag_off(self, monkeypatch):
+        self._flag_off(monkeypatch); self._policy(monkeypatch, "default")
+        seen = self._spy(monkeypatch)
+        r = run_agent("a", entry=_agent_entry(trust_level="verified"))
+        assert seen == {} and r.success is False and "trust level" in (r.error or "")
+
+    # THE A1 TRAP: community is never routed by policy — requires_sandbox_for_policy
+    # (verified, curated_only) is True, but community stays flag-gated (refused).
+    def test_community_not_routed_by_policy(self, monkeypatch):
+        self._flag_off(monkeypatch); self._policy(monkeypatch, "curated_only")
+        seen = self._spy(monkeypatch)
+        r = run_agent("a", entry=_agent_entry(trust_level="verified"))
+        assert seen == {} and r.success is False and "trust level" in (r.error or "")
+
+    # curated_only: trusted sandboxed, curated stays host
+    def test_curated_only_trusted_sandboxed(self, monkeypatch):
+        self._flag_off(monkeypatch); self._policy(monkeypatch, "curated_only")
+        seen = self._spy(monkeypatch)
+        r = run_agent("a", entry=_agent_entry(trust_level="trusted"))
+        assert seen.get("slug") == "a" and r.mode_used == "agent_sandbox"
+
+    def test_curated_only_curated_stays_host(self, monkeypatch):
+        self._flag_off(monkeypatch); self._policy(monkeypatch, "curated_only")
+        seen = self._spy(monkeypatch)
+        r = run_agent("a", entry=_agent_entry(trust_level="curated"))
+        assert seen == {} and r.mode_used != "agent_sandbox"
+
+    # none: trusted + curated both sandboxed
+    def test_none_trusted_sandboxed(self, monkeypatch):
+        self._flag_off(monkeypatch); self._policy(monkeypatch, "none")
+        seen = self._spy(monkeypatch)
+        r = run_agent("a", entry=_agent_entry(trust_level="trusted"))
+        assert seen.get("slug") == "a" and r.mode_used == "agent_sandbox"
+
+    def test_none_curated_sandboxed(self, monkeypatch):
+        self._flag_off(monkeypatch); self._policy(monkeypatch, "none")
+        seen = self._spy(monkeypatch)
+        r = run_agent("a", entry=_agent_entry(trust_level="curated"))
+        assert seen.get("slug") == "a" and r.mode_used == "agent_sandbox"
+
+    # community + flag ON still sandboxed regardless of policy (flag path unchanged)
+    def test_flag_on_community_still_sandboxed_under_default(self, monkeypatch):
+        monkeypatch.setenv("AGENTNODE_AGENT_SANDBOX", "1")
+        self._policy(monkeypatch, "default")
+        seen = self._spy(monkeypatch)
+        r = run_agent("a", entry=_agent_entry(trust_level="verified"))
+        assert seen.get("slug") == "a" and r.mode_used == "agent_sandbox"
+
+    # fail-closed: host-built trusted agent (no volume) under curated_only → routed to
+    # the sandbox → real volume gate → sandbox_unavailable, NEVER host.
+    def test_curated_only_trusted_no_volume_fail_closed(self, monkeypatch):
+        self._flag_off(monkeypatch); self._policy(monkeypatch, "curated_only")
+        r = run_agent("a", entry=_agent_entry(trust_level="trusted", artifact_hash="sha256:abc"))
+        assert r.success is False and r.mode_used == "sandbox_unavailable"
+
+
+# ---------------------------------------------------------------------------
 # run_agent_sandboxed internals (fail-closed, volume gate, session, no broker)
 # ---------------------------------------------------------------------------
 

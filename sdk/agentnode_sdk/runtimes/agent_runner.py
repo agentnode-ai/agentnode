@@ -1345,12 +1345,24 @@ def run_agent(
     # or community code runs unsandboxed (reintroducing the RCE class the sandbox
     # bow closed). Locked by test_agent_runner's execution-vector regression test.
     trust_level = entry.get("trust_level", "unverified")
-    # B2a: with the agent-sandbox flag ON, community (verified/unverified) agents
-    # run sandboxed-or-fail-closed (never host) instead of being refused. Flag OFF
-    # (default) ⇒ this branch is skipped ⇒ behaviour is unchanged (the gate below
-    # refuses them). trusted/curated always fall through to the host path.
+    # Two SEPARATE sandbox-routing mechanisms:
+    #  - community (verified/unverified): the opt-in agent-sandbox FLAG governs. Flag
+    #    OFF (default) ⇒ skipped ⇒ unchanged (the gate below refuses them); flag ON ⇒
+    #    sandbox-or-fail-closed (never host).
+    #  - host tiers (trusted/curated): sandbox.host_trust_policy governs — curated_only
+    #    sandboxes trusted, none sandboxes trusted+curated. Under 'default' this is
+    #    False for both, so they fall through to the host path exactly as before.
+    # Kept SEPARATE on purpose: a single requires_sandbox_for_policy() would return
+    # True for community under 'default' and route them to the sandbox with the flag
+    # OFF — silently changing today's refuse-by-default behaviour.
+    from agentnode_sdk.config import host_trust_policy
     from agentnode_sdk.runtimes.agent_sandbox import _agent_sandbox_enabled, run_agent_sandboxed
-    if _agent_sandbox_enabled() and trust_level in ("verified", "unverified"):
+    from agentnode_sdk.sandbox.policy import requires_sandbox_for_policy
+    _community = trust_level in ("verified", "unverified")
+    _host_tier = trust_level in ("trusted", "curated")
+    if (_agent_sandbox_enabled() and _community) or (
+        _host_tier and requires_sandbox_for_policy(trust_level, host_trust_policy())
+    ):
         return run_agent_sandboxed(slug, entry, agent_config, goal=goal, run_id=run_id, **kwargs)
     if not _trust_meets_minimum(trust_level, "trusted"):
         _audit_agent_run(
