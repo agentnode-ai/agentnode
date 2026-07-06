@@ -739,7 +739,7 @@ def cmd_mcp_verify(path_str: str, test: bool = False, json_output: bool = False)
     if report.status == "RESOLVED":
         print("\n  Next: run \033[1magentnode mcp verify . --test\033[0m for full protocol verification")
     elif report.status == "TESTED":
-        print("\n  Next: this MCP is ready for catalog review submission")
+        print("\n  Next: submit it for catalog review with \033[1magentnode mcp submit .\033[0m")
     elif report.status == "MAINTAINER_ACTION_REQUIRED":
         print(f"\n  Next: fix the {sum(1 for a in report.actions if a.severity == 'high')} required action(s) above, then re-verify")
 
