@@ -28,10 +28,11 @@ export const metadata: Metadata = {
 };
 
 const SETUP_ROWS = [
-  ["agentnode setup", "Interactive wizard: pick a provider, optionally store a key, and check sandbox readiness. Skippable — defaults work."],
+  ["agentnode setup", "Interactive wizard covering all first-class settings as multiple-choice prompts with recommended defaults: install behavior, trust level, permissions, guard posture, credentials, sandbox and host_trust_policy, plus an advanced gate. Skippable — accepting the recommendations reproduces today's config."],
   ["agentnode config list", "Show all settings with their descriptions and allowed values."],
   ["agentnode config get <key>", "Read one config value."],
   ["agentnode config set <key> <value>", "Set a config value, e.g. config set llm.default_provider ollama."],
+  ["agentnode config set sandbox.host_trust_policy <default|curated_only|none>", "Choose which trust tiers may run directly on your host; stricter values sandbox trusted/curated (fail-closed, reinstall may be needed)."],
   ["agentnode doctor [--fix] [--json]", "Diagnose your setup and detect missing capabilities. --fix auto-installs suggestions."],
   ["agentnode reset", "Reset the local configuration to defaults."],
 ];
@@ -68,7 +69,7 @@ const TRUST_ROWS = [
   ["agentnode lock seal [--force]", "Compute integrity hashes for all lockfile entries."],
   ["agentnode lock verify [--strict] [--online] [--json]", "Verify lockfile integrity; --online checks publisher key status against the registry."],
   ["agentnode sandbox pull", "Explicitly pull the digest-pinned sandbox image (no auto-pull)."],
-  ["agentnode sandbox doctor [<slug>] [--json]", "Diagnose sandbox readiness, optionally for one package."],
+  ["agentnode sandbox doctor [<slug>] [--json]", "Diagnose sandbox readiness (now host-trust-policy aware), optionally for one package."],
   ["agentnode sandbox status", "One-line sandbox readiness check."],
 ];
 

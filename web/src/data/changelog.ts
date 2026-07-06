@@ -38,6 +38,42 @@ export function anchorId(r: ChangelogRelease): string {
 
 export const RELEASES: ChangelogRelease[] = [
   {
+    version: "0.19.0",
+    date: "2026-07-06",
+    dateSource: "pypi",
+    title: "Full setup wizard coverage",
+    summary:
+      "`agentnode setup` now covers the full first-class configuration surface with multiple-choice prompts and clearly marked recommended defaults. Accepting every recommendation reproduces the current default configuration, so upgrading changes nothing until you opt in.",
+    highlights: [
+      "The setup wizard covers installation behavior, trust level, permissions, guard posture, credentials, sandbox, and `sandbox.host_trust_policy` — each as a multiple-choice prompt with a marked (recommended) default",
+      "New Guard posture step: Balanced, Strict, Permissive, or Customize-each (drills into all nine guard action types)",
+      "Optional Advanced gate for niche first-class settings; deeply nested config (custom LLM endpoints, guard overrides) stays CLI-only by design",
+      "A stored LLM key provider can now be offered as the default provider, and invalid interactive input re-prompts instead of silently taking the recommended option",
+    ],
+    onPyPI: true,
+    hasTag: true,
+    notes:
+      "Wizard-only change; runtime behavior and the default configuration are unchanged.",
+  },
+  {
+    version: "0.18.0",
+    date: "2026-07-06",
+    dateSource: "pypi",
+    title: "User-controlled host-trust policy",
+    summary:
+      "A new `sandbox.host_trust_policy` setting lets you decide which trust tiers may run directly on your host. AgentNode trusting a package's code is not the same as you trusting it with your machine — this setting closes that gap across toolpacks, MCP servers, and agents.",
+    highlights: [
+      "New `sandbox.host_trust_policy` setting: `default` (curated + trusted may run on the host, today's behavior), `curated_only` (trusted is sandboxed), or `none` (nothing runs directly on the host)",
+      "Honored uniformly by toolpacks, MCP servers, and agents through one shared decision; a tier the policy sandboxes is fail-closed — never a silent host fallback",
+      "Under a stricter policy the installer builds a sealed sandbox volume for trusted/curated packages at install time, and the lockfile records how each package was built",
+      "`agentnode sandbox doctor` is now policy-aware — it explains when a package is sandboxed by the policy and distinguishes a reinstall from a publisher-must-pin",
+    ],
+    breaking:
+      "Not breaking by default — the default policy is exactly today's behavior. Opting into curated_only or none isolates more strongly and can break trusted/curated packages that expect the host filesystem, broad tools, host LLM keys, or network; after tightening the policy, reinstall affected packages and use `agentnode sandbox doctor` to see what each needs.",
+    onPyPI: true,
+    hasTag: true,
+  },
+  {
     version: "0.17.0",
     date: "2026-07-03",
     dateSource: "pypi",

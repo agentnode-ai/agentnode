@@ -26,7 +26,7 @@ export const metadata: Metadata = {
   title: "Changelog — SDK Releases",
   description: `AgentNode SDK release notes: v${LATEST.version} (${fmtDate(
     LATEST.date!
-  )}) — agent sandbox, OS-keychain credential vault, setup wizard, OpenAI-compatible LLM providers. Updated with every release.`,
+  )}) — user-controlled host-trust policy, a full-coverage setup wizard, MCP network isolation, agent sandbox, and OS-keychain credential vault. Updated with every release.`,
   alternates: {
     canonical: "/changelog",
   },

@@ -74,12 +74,16 @@ export default function Page() {
         <section>
           <SectionHeading id="run-setup">Run setup</SectionHeading>
           <p className="mb-3 text-sm leading-relaxed text-muted">
-            The setup wizard is interactive. It lists the LLM providers, can
-            optionally store one provider key (entered hidden, never echoed), and
-            includes a local-sandbox screen. You can skip it entirely — sensible
-            defaults apply. In a non-interactive shell (CI), the credential and
-            sandbox prompts skip themselves with guidance, so setup never blocks
-            automation.
+            The setup wizard is interactive and covers every first-class setting
+            as a multiple-choice prompt with a marked{" "}
+            <strong className="text-foreground">(recommended)</strong> default:
+            installation behavior, minimum trust level, permissions, guard
+            posture, LLM credentials, the sandbox, and the{" "}
+            <strong className="text-foreground">host-trust policy</strong> — plus
+            an optional advanced gate. Accepting every recommendation reproduces
+            today&apos;s default config; you can also skip entirely. In a
+            non-interactive shell (CI) every prompt takes its recommended default
+            and never blocks automation.
           </p>
           <CodeBlock title="terminal">{`$ agentnode setup`}</CodeBlock>
         </section>

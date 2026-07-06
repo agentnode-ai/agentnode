@@ -11,7 +11,7 @@ import {
 
 const TITLE = "AgentNode Sandbox";
 const DESCRIPTION =
-  "How AgentNode isolates code per trust tier: untrusted community code runs in a hardened container or not at all (fail-closed), while trusted/curated packages run host-side with policy checks. Covers container hardening, network rules, the agent sandbox, and the real setup commands.";
+  "How AgentNode isolates code per trust tier: untrusted community code runs in a hardened container or not at all (fail-closed), while trusted/curated packages run host-side by default — and a user-controlled host-trust policy can sandbox them too. Covers container hardening, network rules, the host-trust policy, the agent sandbox, and the real setup commands.";
 const PATH = "/docs/sandbox";
 
 export const metadata: Metadata = {
@@ -45,7 +45,7 @@ const MATRIX_ROWS = [
     "Policy-checked, not OS-enforced",
     "Env allowlist",
     "n/a (host)",
-    "AgentNode-owned, vetted",
+    "AgentNode-owned, vetted; sandboxed only under host_trust_policy=none",
   ],
   [
     "trusted",
@@ -54,7 +54,7 @@ const MATRIX_ROWS = [
     "Policy-checked, not OS-enforced",
     "Env allowlist",
     "n/a (host)",
-    "Vetted third-party; host run is a transition, target is sandboxed",
+    "Vetted third-party; on host by default — sandbox.host_trust_policy can sandbox it",
   ],
   [
     "verified",
@@ -99,7 +99,7 @@ const MATRIX_ROWS = [
     "Container: none; host: not OS-enforced",
     "Host-side LLM broker; keys never enter container",
     "Yes (community, flag ON)",
-    "Default OFF; community agents refused unless enabled",
+    "Community: default OFF, refused unless enabled. Trusted/curated: host by default, sandboxed under host_trust_policy",
   ],
 ];
 
@@ -114,9 +114,11 @@ export default function Page() {
             unverified publishers, plus any unknown tier) inside a hardened
             container —{" "}
             <strong className="text-foreground">or not at all</strong>. Trusted
-            and curated packages run on the host with subprocess isolation and
-            policy checks, not OS-level sandboxing. Docker or Podman plus a
-            digest-pinned image are required; there is no silent host fallback.
+            and curated packages run on the host by default — with subprocess
+            isolation and policy checks, not OS-level sandboxing — and a
+            user-controlled host-trust policy can sandbox them too. Docker or
+            Podman plus a digest-pinned image are required; there is no silent
+            host fallback.
           </p>
         </section>
 
@@ -129,10 +131,12 @@ export default function Page() {
           </p>
           <DocTable headers={MATRIX_HEADERS} rows={MATRIX_ROWS} />
           <p className="mt-4 text-sm leading-relaxed text-muted">
-            The trust-tier rows describe how a package&apos;s code executes by
-            default; the <C>MCP servers</C> and <C>agents</C> rows note where
-            those runtimes differ. Community-tier code is never downgraded to
-            host execution.
+            The trust-tier rows describe how a package&apos;s code executes
+            under the default host-trust policy; the <C>MCP servers</C> and{" "}
+            <C>agents</C> rows note where those runtimes differ. Community-tier
+            code is never downgraded to host execution — and{" "}
+            <C>sandbox.host_trust_policy</C> lets you sandbox the vetted tiers
+            too (see below).
           </p>
         </section>
 
@@ -221,12 +225,57 @@ $ agentnode sandbox pull            # explicitly fetch the digest-pinned image`}
         </section>
 
         <section>
+          <SectionHeading id="host-trust-policy">
+            Host-trust policy — you decide what runs on your host
+          </SectionHeading>
+          <p className="mb-4 text-sm leading-relaxed text-muted">
+            AgentNode trusting a package&apos;s code is not the same as{" "}
+            <em>you</em> trusting it with your machine. The{" "}
+            <C>sandbox.host_trust_policy</C> setting lets you decide which trust
+            tiers may run directly on your host — enforced uniformly across
+            toolpacks, MCP servers, and agents.
+          </p>
+          <DocTable
+            headers={["Policy", "What runs directly on the host"]}
+            rows={[
+              [
+                "default",
+                "curated + trusted may run on the host (today's behavior)",
+              ],
+              [
+                "curated_only",
+                "trusted is sandboxed; only curated runs on the host",
+              ],
+              [
+                "none",
+                "nothing runs directly on the host — everything is sandboxed",
+              ],
+            ]}
+          />
+          <CodeBlock title="opt in (default keeps today's behavior)">{`$ agentnode config set sandbox.host_trust_policy curated_only`}</CodeBlock>
+          <p className="mt-4 text-sm leading-relaxed text-muted">
+            A tier the policy sandboxes is{" "}
+            <strong className="text-foreground">fail-closed</strong> — never a
+            host fallback. Because the sandbox has no host filesystem, no host
+            environment, and a restricted network, a stricter policy{" "}
+            <strong className="text-foreground">can break</strong> trusted or
+            curated packages that expect host access. After tightening the
+            policy, <strong className="text-foreground">reinstall</strong>{" "}
+            affected packages so their sealed volume is built, and run{" "}
+            <C>agentnode sandbox doctor &lt;slug&gt;</C> — now policy-aware — to
+            see exactly what each package needs.
+          </p>
+        </section>
+
+        <section>
           <SectionHeading id="agent-sandbox">
             Agent sandbox &amp; LLM keys
           </SectionHeading>
           <p className="text-sm leading-relaxed text-muted">
             Running an agent means running the agent&apos;s own code, so it is
-            gated harder. Trusted and curated agents run on the host. Community
+            gated harder. Trusted and curated agents run on the host under the
+            default policy — or in the sandbox when{" "}
+            <C>sandbox.host_trust_policy</C> sandboxes their tier. Community
             agents are refused unless you opt in: the agent sandbox is{" "}
             <strong className="text-foreground">default OFF</strong>.
           </p>
@@ -248,9 +297,10 @@ $ agentnode sandbox pull            # explicitly fetch the digest-pinned image`}
           <SectionHeading id="honest-limits">Honest limits</SectionHeading>
           <ul className="list-disc space-y-2 pl-5 text-sm leading-relaxed text-muted">
             <li>
-              Trusted and curated packages are not OS-sandboxed — their network
-              and filesystem declarations are policy-checked, not enforced by
-              the OS.
+              By default, trusted and curated packages run on the host and are
+              not OS-sandboxed — their network and filesystem declarations are
+              policy-checked, not enforced by the OS. Tighten this with{" "}
+              <C>sandbox.host_trust_policy</C> to sandbox them too.
             </li>
             <li>
               MCP server containers run with no network by default; egress is
