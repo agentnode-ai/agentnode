@@ -17,7 +17,9 @@ from agentnode_sdk.config import host_trust_policy, load_config, save_config, se
 from agentnode_sdk.runtimes import mcp_runner
 from agentnode_sdk.runtimes.mcp_runner import MCPServerProcess
 from agentnode_sdk.sandbox import SandboxRequiredError, set_default_backend
+from agentnode_sdk.sandbox.backend import SandboxBackend
 from agentnode_sdk.sandbox.container_backend import ContainerBackend
+from agentnode_sdk.sandbox.policy import enforce_sandbox_policy
 from agentnode_sdk.sandbox.types import SandboxAvailability
 
 MCP_CMD = ["npx", "-y", "@scope/some-mcp@1.2.3"]
@@ -171,3 +173,34 @@ def test_none_curated_mcp_is_sandboxed(monkeypatch):
     with pytest.raises(SandboxRequiredError):
         MCPServerProcess("m", MCP_CMD, trust_level="curated").start()
     assert _FakePopen.instances == []
+
+
+# ===========================================================================
+# 1C: enforce early-fail polish + policy-specific MCP refusal message
+# ===========================================================================
+
+class _UnavailBackend(SandboxBackend):
+    def check_available(self):
+        return SandboxAvailability(available=False, backend="none", reason="no runtime")
+
+    def wrap_command(self, spec):  # pragma: no cover
+        raise AssertionError("must not run without a sandbox")
+
+
+def test_enforce_trusted_under_curated_only_fails_closed_without_runtime(monkeypatch):
+    _set_policy(monkeypatch, "curated_only")
+    with pytest.raises(SandboxRequiredError, match="host_trust_policy=curated_only"):
+        enforce_sandbox_policy("trusted", runtime_hint="mcp", backend=_UnavailBackend())
+
+
+def test_enforce_trusted_under_default_allows_host_without_runtime(monkeypatch):
+    _set_policy(monkeypatch, "default")
+    # under default, trusted stays host-tolerated → no runtime required, no raise
+    enforce_sandbox_policy("trusted", runtime_hint="mcp", backend=_UnavailBackend())
+
+
+def test_curated_only_mcp_refusal_names_the_policy(monkeypatch):
+    _container_available(monkeypatch)
+    _set_policy(monkeypatch, "curated_only")
+    with pytest.raises(SandboxRequiredError, match="host_trust_policy=curated_only"):
+        MCPServerProcess("m", MCP_CMD, trust_level="trusted").start()

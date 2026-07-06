@@ -145,6 +145,22 @@ def enforce_sandbox_policy(
     runtime probe). Raises SandboxRequiredError on fail-closed."""
     tier = (trust_level or "").lower()
     if tier in _HOST_ALLOWED_TIERS or tier in _HOST_TOLERATED_TIERS:
+        # A normally-host tier (curated/trusted) that the ACTIVE host-trust policy
+        # sandboxes needs a runtime here — fail-closed early with a policy-specific
+        # message instead of deferring to the container path. Under "default" this is
+        # False for curated/trusted, so the legacy path below is byte-for-byte unchanged.
+        from agentnode_sdk.config import host_trust_policy
+        policy = host_trust_policy()
+        if requires_sandbox_for_policy(trust_level, policy):
+            be = backend or get_default_backend()
+            avail = be.check_available()
+            if not avail.available:
+                raise SandboxRequiredError(
+                    f"'{tier}' package must run sandboxed under "
+                    f"sandbox.host_trust_policy={policy} but no container runtime is "
+                    f"available. {avail.reason or 'No runtime detected'}."
+                )
+            return
         require_sandbox_for_tier(trust_level, _UNAVAILABLE)  # delegates (handles warning)
         return
     be = backend or get_default_backend()

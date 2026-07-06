@@ -172,6 +172,51 @@ def test_install_trusted_still_builds_on_host(monkeypatch, tmp_path):
     assert "sandbox_volume" not in lock["packages"]["ok"]
 
 
+# --- 1C: policy-aware install gate + MUTABLE metadata ------------------------
+
+def _install_ok(monkeypatch, tmp_path, trust_level, policy):
+    pip_calls: list[int] = []
+    _mock_install_io(monkeypatch, tmp_path, pip_calls)
+    _available_backend(monkeypatch)
+    monkeypatch.setattr("agentnode_sdk.config.host_trust_policy", lambda: policy)
+    installer.install_package(
+        slug="ok", version="1.0", artifact_url="https://x/p.tar.gz",
+        artifact_hash="sha256:abc123def456", entrypoint="pk.tool", trust_level=trust_level,
+    )
+    e = json.loads((tmp_path / "agentnode.lock").read_text())["packages"]["ok"]
+    return e, pip_calls
+
+
+def test_install_default_trusted_records_host_build_mode(monkeypatch, tmp_path):
+    e, pip_calls = _install_ok(monkeypatch, tmp_path, "trusted", "default")
+    assert pip_calls == [1]                       # host build — today's behavior
+    assert e["build_mode"] == "host"
+    assert "sandbox_volume" not in e
+    assert e["effective_host_trust_policy_at_install"] == "default"
+    assert e["pinnable"] is True
+
+
+def test_install_curated_only_trusted_builds_into_volume(monkeypatch, tmp_path):
+    e, pip_calls = _install_ok(monkeypatch, tmp_path, "trusted", "curated_only")
+    assert pip_calls == []                        # NO host build under the stricter policy
+    assert e["build_mode"] == "sandbox_volume"
+    assert e["sandboxed"] is True
+    assert e["sandbox_volume"] == sandbox_volume_name("ok", "1.0", "sha256:abc123def456")
+    assert e["effective_host_trust_policy_at_install"] == "curated_only"
+
+
+def test_install_curated_only_curated_stays_on_host(monkeypatch, tmp_path):
+    e, pip_calls = _install_ok(monkeypatch, tmp_path, "curated", "curated_only")
+    assert pip_calls == [1]                       # curated still host under curated_only
+    assert e["build_mode"] == "host"
+
+
+def test_install_none_curated_builds_into_volume(monkeypatch, tmp_path):
+    e, pip_calls = _install_ok(monkeypatch, tmp_path, "curated", "none")
+    assert pip_calls == []                        # none sandboxes even curated
+    assert e["build_mode"] == "sandbox_volume"
+
+
 # ===========================================================================
 # RUN — ephemeral container, volume read-only, clean env
 # ===========================================================================
@@ -312,6 +357,17 @@ def test_run_failclosed_when_no_runtime(monkeypatch):
     res = run_python("community-pack", "do", entry=_run_entry())
     assert res.success is False
     assert res.mode_used == "sandbox_unavailable"
+
+
+def test_run_failclosed_trusted_hostbuilt_under_curated_only(monkeypatch):
+    # 1B routes trusted into the sandbox under curated_only; a package host-built
+    # under an older/default policy has no volume → fail-closed (never a host run).
+    _, rec = _available_backend(monkeypatch)
+    _patch_inspect_ok(monkeypatch)
+    monkeypatch.setattr("agentnode_sdk.config.host_trust_policy", lambda: "curated_only")
+    res = run_python("community-pack", "do", entry=_run_entry(trust_level="trusted", sandboxed=False))
+    assert res.success is False
+    assert rec.calls == []       # container never ran; no host fallback
 
 
 # --- host path for vetted tiers ----------------------------------------------
