@@ -1,19 +1,26 @@
 """AgentNode setup wizard — interactive configuration.
 
-UX-3A: the wizard offers (never requires) storing LLM provider keys via the
-credential vault. All credential handling reuses the existing
-auth/credential_store primitives: keys only via getpass or an env-var import
-(never argv), output only masked, honest storage labels (never "encrypted"),
-key tests non-blocking.
+Covers the full first-class config surface with multiple-choice prompts; the
+recommended option is marked "(recommended)" and is the default (Enter / non-TTY).
+Accepting every recommendation reproduces ``default_config()`` exactly, so the
+wizard is non-breaking by construction.
 
-UX-3B: a "Local sandbox" screen reuses the doctor's read-only diagnosis. The
-ONLY operative action is an image pull through the existing, fully guarded
-``cmd_sandbox_pull`` — offered solely on a TTY after an explicit Yes (default
-No), and a pull failure never fails the wizard. The agent-sandbox flag is
-offered ONLY when the sandbox is fully ready (default No) and is persisted via
-the wizard's normal Save confirm. The wizard itself contains no docker calls.
+Deeply nested config (``llm.providers``, the ``agent_sandbox.llm`` ceiling, and
+``guard.tool_overrides`` / ``agent_overrides`` / ``rate_limits``) stays CLI/manual
+only BY DESIGN and is surfaced only as follow-up hints — the wizard is a
+first-class-settings tool, not a nested YAML editor.
+
+UX invariants preserved:
+- Config is built by mutating ``default_config()`` + one ``save_config(cfg)`` — not
+  per-key config setters (booleans persist as real bools).
+- No docker calls here; the only sandbox action is the reused ``cmd_sandbox_pull``.
+- Credentials via getpass/env-import only, masked output, honest storage labels.
+- Non-TTY never hangs: every prompt falls back to its recommended/default. An
+  invalid *interactive* choice re-prompts — a typo must not set a security choice.
 """
 from __future__ import annotations
+
+import sys
 
 from agentnode_sdk.config import (
     default_config,
@@ -31,6 +38,23 @@ _LLM_CHOICES = {
 _OLLAMA_CHOICE = "8"
 _SKIP_CHOICE = "9"
 
+# Guard action types in a risk-ordered display order + friendly labels.
+_GUARD_ORDER = [
+    "delete", "write_external", "execute", "credential_use",
+    "network_egress", "write_local", "read", "compute", "unknown",
+]
+_GUARD_LABELS = {
+    "delete": "Delete resources",
+    "write_external": "Write / send externally",
+    "execute": "Execute code",
+    "credential_use": "Use credentials",
+    "network_egress": "Network egress",
+    "write_local": "Write locally",
+    "read": "Read data",
+    "compute": "Compute",
+    "unknown": "Unknown action type",
+}
+
 
 def run_wizard() -> int:
     """Run the setup wizard. Returns exit code."""
@@ -47,12 +71,41 @@ def _prompt(text: str, default: str = "") -> str:
     return result if result else default
 
 
-def _choice(prompt_text: str, options: list[str], default: str = "1") -> str:
-    result = _prompt(f"{prompt_text} [{default}]: ", default)
-    if result not in options:
-        print(f"  Invalid choice. Using default: {default}")
-        return default
-    return result
+def _pick(title: str, options: list[tuple[str, object]], recommended: int,
+          notes: list[str] | None = None) -> object:
+    """Multiple-choice menu. ``options`` = ``[(label, value), ...]`` (1-indexed);
+    ``recommended`` is the 1-based index of the recommended option (also the
+    Enter/non-TTY default). ``notes`` (optional, same length) renders each option
+    on its own line with a dim hint.
+
+    Empty input → recommended. Non-TTY → recommended (never hangs). An INVALID
+    interactive choice re-prompts (``Please choose 1–N.``) — it never silently
+    falls back to the recommended value, so a typo cannot set a security choice.
+    """
+    n = len(options)
+    print(f"  {title}")
+    if notes:
+        width = max(len(label) for label, _ in options) + 18
+        for i, (label, _v) in enumerate(options, 1):
+            tag = " (recommended)" if i == recommended else ""
+            left = f"  [{i}] {label}{tag}"
+            print(f"{left:<{width}}{dim(notes[i - 1])}")
+    else:
+        cells = []
+        for i, (label, _v) in enumerate(options, 1):
+            tag = " (recommended)" if i == recommended else ""
+            cells.append(f"[{i}] {label}{tag}")
+        print("  " + "   ".join(cells))
+
+    if not sys.stdin.isatty():
+        return options[recommended - 1][1]
+    while True:
+        raw = _prompt(f"  Choice [{recommended}]: ")
+        if not raw:
+            return options[recommended - 1][1]
+        if raw.isdigit() and 1 <= int(raw) <= n:
+            return options[int(raw) - 1][1]
+        print(f"  Please choose 1–{n}.")
 
 
 def _store_llm_key(provider: str) -> str | None:
@@ -110,12 +163,10 @@ def _store_llm_key(provider: str) -> str | None:
 
 
 def _credentials_screen(cfg: dict) -> list[tuple[str, str]]:
-    """Screen 5: LLM credentials (optional, default = skip). Key providers
-    come from the registry-backed menu; ollama is a keyless CONFIG selection
-    (written to the wizard cfg, persisted only via the normal Save confirm).
-    Returns the (provider, storage label) pairs selected in this run."""
-    import sys
-
+    """Screen: LLM credentials (optional, default = skip). Key providers come
+    from the registry-backed menu; ollama is a keyless CONFIG selection. After a
+    key provider is stored, offers to make it the default provider (mirrors the
+    ollama path). Returns the (provider, storage label) pairs selected."""
     print()
     print(bold("  LLM credentials (optional)"))
     print()
@@ -135,13 +186,15 @@ def _credentials_screen(cfg: dict) -> list[tuple[str, str]]:
         print("  Recommended:  [1] OpenAI    [2] Anthropic   [3] OpenRouter")
         print("  More:         [4] DeepSeek  [5] Mistral     [6] Qwen      [7] Gemini")
         print("  Local:        [8] Ollama — keyless, requires a running Ollama")
-        print("  [9] Skip for now")
-        c = _choice("  Choice", all_options, _SKIP_CHOICE)
+        print("  [9] Skip for now (recommended)")
+        c = _prompt("  Choice [9]: ", _SKIP_CHOICE)
+        if c not in all_options:
+            print("  Please choose 1–9.")
+            continue
         if c == _SKIP_CHOICE:
             break
         if c == _OLLAMA_CHOICE:
             # keyless local provider: a config selection, NOT a credential.
-            # No key prompt, no probing, no starting anything.
             if any(p == "ollama" for p, _ in stored):
                 print("  ollama already selected in this run.")
             else:
@@ -166,28 +219,92 @@ def _credentials_screen(cfg: dict) -> list[tuple[str, str]]:
         more = _prompt("  Add another provider? [y/N]: ", "n")
         if more.lower() != "y":
             break
+
+    # Offer to make a stored KEY provider the default (ollama already sets it above).
+    key_providers = [p for p, _ in stored if p != "ollama"]
+    if key_providers and cfg["llm"]["default_provider"] not in key_providers:
+        first = key_providers[0]
+        ans = _prompt(f"  Use {first} as your default LLM provider? [Y/n]: ", "y")
+        if ans.lower() != "n":
+            cfg["llm"]["default_provider"] = first
     return stored
 
 
+def _guard_screen(cfg: dict) -> str:
+    """Screen: Guard posture. Sets the 9 ``guard.<action>`` keys from a preset
+    bundle, or drills into all 9 individually on "Customize each". Reuses
+    guard.py's shipped Balanced (== defaults) and Strict bundles. Returns the
+    chosen posture label for the Summary."""
+    from agentnode_sdk.guard import _DEFAULT_GUARD_POLICY, _STRICT_GUARD_POLICY
+
+    print()
+    print(bold("  Guard posture"))
+    print()
+    print("  How tools are gated at run time (the pre-execution policy).")
+    posture = _pick("Choose a posture", [
+        ("Balanced", "balanced"),
+        ("Strict", "strict"),
+        ("Permissive", "permissive"),
+        ("Customize each", "custom"),
+    ], recommended=1, notes=[
+        "risky actions ask, safe ones allow",
+        "destructive actions denied, more prompts",
+        "allow everything, ask only on unknown",
+        "set all 9 action types yourself",
+    ])
+
+    if posture == "balanced":
+        pass  # cfg["guard"] is already the shipped default == Balanced
+    elif posture == "strict":
+        cfg["guard"].update(_STRICT_GUARD_POLICY)
+    elif posture == "permissive":
+        cfg["guard"].update({a: "allow" for a in _GUARD_ORDER})
+        cfg["guard"]["unknown"] = "prompt"
+    else:  # custom — recommended per action = the Balanced value
+        print()
+        print(dim("  Set each action type (allow / prompt / deny):"))
+        pol = ("allow", "allow"), ("prompt", "prompt"), ("deny", "deny")
+        idx = {"allow": 1, "prompt": 2, "deny": 3}
+        for action in _GUARD_ORDER:
+            rec = idx[_DEFAULT_GUARD_POLICY[action]]
+            cfg["guard"][action] = _pick(_GUARD_LABELS[action], list(pol), recommended=rec)
+    return posture
+
+
 def _sandbox_screen(cfg: dict) -> tuple[str, bool]:
-    """Screen 6: local sandbox (UX-3B).
+    """Screen: host-trust policy + local sandbox.
 
-    Diagnosis via the doctor's ``_build_env_checks`` (pure, read-only); the
-    ONLY action is an optional, TTY-confirmed image pull via the existing
-    ``cmd_sandbox_pull`` — the wizard itself never talks to docker. The enable
-    prompt (default No) is offered ONLY when the sandbox is fully ready, and
-    the flag rides the wizard's normal Save confirm (cancel persists nothing).
-
-    Returns (status line for Summary/Success, image_still_missing)."""
-    import sys
-
+    Sets ``sandbox.host_trust_policy`` (which trust tiers may run on the host),
+    then diagnoses the container runtime via the doctor's read-only
+    ``_build_env_checks``. The ONLY action is an optional, TTY-confirmed image
+    pull via the existing ``cmd_sandbox_pull`` — the wizard never talks to docker.
+    The agent-sandbox enable prompt (default No) is offered only when the sandbox
+    is fully ready. Returns (status line for Summary/Success, image_still_missing).
+    """
     from agentnode_sdk.cli.sandbox_commands import _build_env_checks, cmd_sandbox_pull
 
     print()
-    print(bold("  Local sandbox"))
+    print(bold("  Sandbox & host-trust policy"))
     print()
-    print("  Community packages run in an isolated container sandbox.")
-    print("  Trusted/curated packages run without it.")
+    print("  Community packages always run in an isolated container sandbox.")
+    print("  Trusted/curated packages run on the host under the default policy —")
+    print("  the host-trust policy can sandbox them too.")
+    print()
+
+    htp = _pick("Which trust tiers may run directly on your host?", [
+        ("Default", "default"),
+        ("Curated only", "curated_only"),
+        ("None", "none"),
+    ], recommended=1, notes=[
+        "curated + trusted on host (today's behavior)",
+        "trusted is sandboxed; only curated on host",
+        "everything sandboxed; nothing on the host",
+    ])
+    cfg["sandbox"]["host_trust_policy"] = htp
+    if htp != "default":
+        print(dim("  Note: stronger isolation can break trusted/curated packages that"))
+        print(dim("  expect host FS, broad tools, LLM keys or network — a reinstall may"))
+        print(dim("  be needed. Check with `agentnode sandbox doctor <slug>`."))
     print()
 
     checks, ready, image_missing = _build_env_checks()
@@ -214,7 +331,6 @@ def _sandbox_screen(cfg: dict) -> tuple[str, bool]:
                 if rc == 0:
                     checks, ready, image_missing = _build_env_checks()
                 else:
-                    # never a wizard failure — the user can pull later
                     print(dim("  Pull failed or was skipped — the wizard continues."))
                     print(dim("  Run `agentnode sandbox pull` later."))
             else:
@@ -248,6 +364,27 @@ def _sandbox_screen(cfg: dict) -> tuple[str, bool]:
     return f"not ready — {detail}", image_missing
 
 
+def _advanced_screen(cfg: dict) -> None:
+    """Screen: advanced settings (opt-in gate, default No, non-TTY skip). Covers
+    the two niche first-class keys; deeper nested config stays CLI-only."""
+    print()
+    print(bold("  Advanced settings (optional)"))
+    print()
+    if not sys.stdin.isatty():
+        return
+    if _prompt("  Configure advanced settings? [y/N]: ", "n").lower() != "y":
+        return
+
+    cfg["credentials"]["require_before_auto_install"] = _pick(
+        "During auto-install, skip packages needing credentials you don't have?",
+        [("Yes", True), ("No", False)], recommended=1,
+        notes=["skip them (recommended)", "try anyway"])
+    cfg["risk_policies"]["external_write_capable"] = _pick(
+        "Packages that can write or send data externally",
+        [("log", "log"), ("allow", "allow"), ("prompt", "prompt"), ("deny", "deny")],
+        recommended=1)
+
+
 def _wizard_flow() -> dict | None:
     cfg = default_config()
 
@@ -255,80 +392,89 @@ def _wizard_flow() -> dict | None:
     print()
     print(section("AgentNode Setup"))
     print("  Configure how AgentNode manages capabilities for your agents.")
-    print("  You can change these settings later with `agentnode setup`.")
+    print("  Each choice marks our (recommended) default — press Enter to accept it.")
+    print("  You can change everything later with `agentnode setup` or `config set`.")
     print()
     print(dim("  Press Enter to continue..."))
     _prompt("")
 
-    # Screen 2: Installation behavior
+    # Screen 2: Installation behavior (one choice -> two keys)
     print()
     print(bold("  Installation behavior"))
     print()
-    print("  [1] Automatic — install verified capabilities without asking")
-    print("  [2] Review before install — ask before each installation")
-    print("  [3] Manual only — never install automatically")
-    print()
-    choice = _choice("  Choice", ["1", "2", "3"], "1")
-    if choice == "1":
+    behavior = _pick("How should capabilities be installed?", [
+        ("Automatic", "auto"),
+        ("Review before install", "review"),
+        ("Manual only", "manual"),
+    ], recommended=1, notes=[
+        "install verified capabilities without asking",
+        "ask before each installation",
+        "never install automatically",
+    ])
+    if behavior == "auto":
         cfg["auto_upgrade_policy"] = "safe"
         cfg["install_confirmation"] = "auto"
-    elif choice == "2":
+    elif behavior == "review":
         cfg["auto_upgrade_policy"] = "safe"
         cfg["install_confirmation"] = "prompt"
     else:
         cfg["auto_upgrade_policy"] = "off"
         cfg["install_confirmation"] = "auto"
 
-    # Screen 3: Permission defaults
+    # Screen 3: Trust level (now a direct screen)
+    print()
+    print(bold("  Minimum trust level"))
+    print()
+    cfg["trust"]["minimum_trust_level"] = _pick("Minimum trust tier to install/run", [
+        ("verified", "verified"),
+        ("trusted", "trusted"),
+        ("curated", "curated"),
+    ], recommended=1, notes=[
+        "community-reviewed packages",
+        "manually approved by the AgentNode team",
+        "official AgentNode packages only",
+    ])
+
+    # Screen 4: Permission defaults
     print()
     print(bold("  Permission defaults"))
     print()
-    for perm_label, perm_key in [
-        ("Network", "network"),
-        ("Filesystem", "filesystem"),
-        ("Code execution", "code_execution"),
-    ]:
-        if perm_key == "code_execution":
-            print(f"  {perm_label}: [1] sandboxed  [2] prompt  [3] deny")
-            c = _choice("  Choice", ["1", "2", "3"], "1")
-            cfg["permissions"][perm_key] = {"1": "sandboxed", "2": "prompt", "3": "deny"}[c]
-        else:
-            print(f"  {perm_label}: [1] allow  [2] prompt  [3] deny")
-            c = _choice("  Choice", ["1", "2", "3"], "2")
-            cfg["permissions"][perm_key] = {"1": "allow", "2": "prompt", "3": "deny"}[c]
+    cfg["permissions"]["network"] = _pick(
+        "Network access", [("allow", "allow"), ("prompt", "prompt"), ("deny", "deny")],
+        recommended=2)
+    cfg["permissions"]["filesystem"] = _pick(
+        "Filesystem access", [("allow", "allow"), ("prompt", "prompt"), ("deny", "deny")],
+        recommended=2)
+    cfg["permissions"]["code_execution"] = _pick(
+        "Code execution",
+        [("sandboxed", "sandboxed"), ("prompt", "prompt"), ("deny", "deny")],
+        recommended=1)
 
-    # Screen 4: Advanced (optional)
-    print()
-    print(bold("  Advanced settings"))
-    print()
-    adv = _prompt("  Configure trust level? [y/N]: ", "n")
-    if adv.lower() == "y":
-        print()
-        print("  Minimum trust level:")
-        print("  [1] verified — community-reviewed packages")
-        print("  [2] trusted — manually approved by AgentNode team")
-        print("  [3] curated — official AgentNode packages only")
-        print()
-        c = _choice("  Choice", ["1", "2", "3"], "1")
-        cfg["trust"]["minimum_trust_level"] = {"1": "verified", "2": "trusted", "3": "curated"}[c]
+    # Screen 5: Guard posture (sets the 9 guard.* keys)
+    guard_posture = _guard_screen(cfg)
 
-    # Screen 5: LLM credentials (optional — UX-3A; provider list from the
-    # registry incl. keyless ollama — Endpoint-B)
+    # Screen 6: LLM credentials (optional)
     stored_providers = _credentials_screen(cfg)
 
-    # Screen 6: Local sandbox (UX-3B)
+    # Screen 7: Sandbox + host-trust policy
     sandbox_status, image_missing = _sandbox_screen(cfg)
 
-    # Screen 7: Summary
+    # Screen 8: Advanced (opt-in)
+    _advanced_screen(cfg)
+
+    # Screen 9: Summary
     print()
     print(section("Summary"))
     print(kv("Installation behavior", installation_behavior_label(cfg)))
     print(kv("Trust level", cfg["trust"]["minimum_trust_level"]))
+    print(kv("Guard posture", guard_posture))
     if stored_providers:
         creds_line = ", ".join(f"{p} ({label})" for p, label in stored_providers)
     else:
         creds_line = "none — add later with `agentnode auth set <provider>`"
     print(kv("LLM credentials", creds_line))
+    print(kv("LLM default provider", cfg["llm"]["default_provider"]))
+    print(kv("Host-trust policy", cfg["sandbox"]["host_trust_policy"]))
     print(kv("Sandbox", sandbox_status))
     print(kv("Agent sandbox",
              "enabled" if cfg["agent_sandbox"]["enabled"] else "disabled"))
@@ -346,13 +492,14 @@ def _wizard_flow() -> dict | None:
 
     save_config(cfg)
 
-    # Screen 8: Success
+    # Screen 10: Success
     print()
     print(bold("  Configuration saved."))
     print()
     print(kv("Sandbox", sandbox_status))
-    print(dim("  Community packages need a local sandbox. Trusted/curated"))
-    print(dim("  packages can run without it."))
+    print(kv("Host-trust policy", cfg["sandbox"]["host_trust_policy"]))
+    print(dim("  Community packages need a local sandbox. Trusted/curated packages"))
+    print(dim("  run on the host unless the host-trust policy sandboxes them."))
     print()
     print(dim("  Next steps:"))
     print(dim("    agentnode auth status                    check your credentials"))
@@ -365,6 +512,11 @@ def _wizard_flow() -> dict | None:
     print(dim("    agentnode install word-counter-pack     install a first capability"))
     print(dim("    agentnode run word-counter-pack --input '{\"text\":\"hello\"}'"))
     print(dim("    agentnode doctor                         check your whole setup"))
+    print()
+    print(dim("  Fine-tuning beyond these settings (CLI):"))
+    print(dim("    agentnode guard set <action> <policy>    per-action guard overrides"))
+    print(dim("    agentnode config set sandbox.host_trust_policy <default|curated_only|none>"))
+    print(dim("    agentnode config set llm.default_provider <provider>   (custom endpoints via config)"))
     print()
 
     return cfg
