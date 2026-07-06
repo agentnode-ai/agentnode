@@ -74,6 +74,31 @@ agentnode mcp verify . --test   # Also runs protocol test (starts the MCP)
 agentnode mcp verify . --json   # Machine-readable report
 ```
 
+## Submitting to the Catalog
+
+Once `agentnode mcp verify .` reports `TESTED`, submit the server for catalog
+review. Unlike toolpacks (which publish directly), MCP servers are reviewed
+before they are listed.
+
+```bash
+agentnode mcp submit .            # Re-verify, then submit for catalog review
+agentnode mcp submit . --dry-run  # Verify only, don't submit
+agentnode mcp status <id>         # Track the review status (id printed by submit)
+```
+
+Submitting requires a publisher account and an API key (`AGENTNODE_API_KEY` or
+`--token`). The registry re-verifies your manifest against the npm/PyPI
+registry on submit, so the local report is advisory — the server's own
+verification is authoritative. After submitting, `agentnode mcp status <id>`
+reports one of:
+
+- **`pending`** — queued for review.
+- **`action_required` / `needs_changes`** — fix the reported issues, then run
+  `agentnode mcp submit .` again.
+- **`approved`** — an AgentNode admin publishes the entry to the live catalog
+  once package ownership is confirmed.
+- **`rejected`** — see the reviewer feedback.
+
 ## Key Fields in mcp_server
 
 | Field | Required | Description |
