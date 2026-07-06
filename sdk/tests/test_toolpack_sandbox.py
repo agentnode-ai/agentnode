@@ -217,6 +217,25 @@ def test_install_none_curated_builds_into_volume(monkeypatch, tmp_path):
     assert e["build_mode"] == "sandbox_volume"
 
 
+def test_install_trusted_agent_curated_only_builds_volume(monkeypatch, tmp_path):
+    # Agents-A1 verification: agents use the SAME trust-gated install path (no separate
+    # branch), so 1C's policy-aware gate builds the sealed volume for a trusted AGENT
+    # under curated_only — which run_agent_sandboxed then finds (else fail-closed).
+    pip_calls: list[int] = []
+    _mock_install_io(monkeypatch, tmp_path, pip_calls)
+    _available_backend(monkeypatch)
+    monkeypatch.setattr("agentnode_sdk.config.host_trust_policy", lambda: "curated_only")
+    installer.install_package(
+        slug="ag", version="1.0", artifact_url="https://x/p.tar.gz",
+        artifact_hash="sha256:abc123def456", entrypoint="ag.mod:run", trust_level="trusted",
+        package_type="agent",
+    )
+    e = json.loads((tmp_path / "agentnode.lock").read_text())["packages"]["ag"]
+    assert pip_calls == []                         # NOT host-built
+    assert e["build_mode"] == "sandbox_volume" and e["sandboxed"] is True
+    assert e["sandbox_volume"] == sandbox_volume_name("ag", "1.0", "sha256:abc123def456")
+
+
 # ===========================================================================
 # RUN — ephemeral container, volume read-only, clean env
 # ===========================================================================
