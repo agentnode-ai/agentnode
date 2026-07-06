@@ -203,6 +203,29 @@ def test_missing_descriptor_is_metadata_only(monkeypatch, tmp_path):
     e = _entry(tmp_path)
     for f in ("mcp_preinstalled", "mcp_preinstall", "mcp_sandbox_volume", "mcp_preinstall_command"):
         assert f not in e                # no preinstall fields
+
+
+# --- 1C: MUTABLE pinnable / build_mode metadata for the doctor ---------------
+
+def test_install_pinnable_metadata_with_descriptor(monkeypatch, tmp_path):
+    _available_backend(monkeypatch)
+    monkeypatch.setattr("agentnode_sdk.config.host_trust_policy", lambda: "default")
+    _install_mcp(monkeypatch, tmp_path,
+                 mcp_install={"manager": "npm", "package": "pkg", "version": "1.0.0"})
+    e = _entry(tmp_path)
+    assert e["pinnable"] is True
+    assert e["build_mode"] == "sandbox_volume"
+    assert e["effective_host_trust_policy_at_install"] == "default"
+
+
+def test_install_not_pinnable_without_descriptor(monkeypatch, tmp_path):
+    _available_backend(monkeypatch)
+    monkeypatch.setattr("agentnode_sdk.config.host_trust_policy", lambda: "curated_only")
+    _install_mcp(monkeypatch, tmp_path)  # command-only, no mcp_install
+    e = _entry(tmp_path)
+    assert e["pinnable"] is False        # publisher must pin it; user cannot fix at reinstall
+    assert e["build_mode"] == "host"
+    assert e["effective_host_trust_policy_at_install"] == "curated_only"
     assert e["mcp_command"] == MCP_CMD
 
 

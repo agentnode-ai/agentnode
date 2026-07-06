@@ -110,9 +110,10 @@ class MCPServerProcess:
                 # unpinnable (floating npx/uvx/latest/git/url) is fail-closed, never open network.
                 from agentnode_sdk.sandbox.types import SandboxRequiredError
                 raise SandboxRequiredError(
-                    f"MCP '{self.slug}' is not preinstalled — refusing an open-network runtime "
-                    "fetch. Reinstall it pinned (exact mcp_install version) and declare egress "
-                    "domains via mcp_allowed_domains."
+                    f"MCP '{self.slug}' is not preinstalled — cannot run sandboxed "
+                    f"(sandbox.host_trust_policy={host_trust_policy()}). Reinstall it pinned "
+                    "(exact mcp_install version) and declare egress domains via "
+                    "mcp_allowed_domains; unpinnable (floating npx/uvx) MCPs are refused."
                 )
             self._container_name = name
 
@@ -310,10 +311,12 @@ class MCPServerProcess:
         entry = self.entry or {}
         # 1. credentialed non-preinstalled stays refused
         if not has_preinstall_intent(entry):
+            from agentnode_sdk.config import host_trust_policy
             raise CredentialedMcpRefused(
                 "credentialed_requires_preinstall",
                 f"MCP '{self.slug}' requests credentials but is not preinstalled — refusing "
-                "(no runtime registry-fetch with a secret).",
+                f"(sandbox.host_trust_policy={host_trust_policy()}; no runtime registry-fetch "
+                "with a secret). Pin an exact mcp_install.",
             )
         # 2. TRUST-BINDING (NO value read). The secret flow binds to the CONSENTED identity names
         #    (the sealed, normalized mcp_env_keys), NEVER to the separately-passed env_keys argument:

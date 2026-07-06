@@ -651,11 +651,11 @@ def _verify_publisher_signature(
 # Full install flow
 # ---------------------------------------------------------------------------
 
-# P0.0: tiers permitted to run build hooks (setup.py / PEP-517) natively on the
-# host. Non-trusted (community) packages must NOT build on the host — a sandboxed
-# build path is pending (P0.3). Artifacts are source trees (no wheel), so this is
-# a fail-closed gate, not a wheel fallback.
-_HOST_BUILD_TIERS = {"trusted", "curated"}
+# P0.0 + 0.18.0 host-trust policy: which tiers may run build hooks (setup.py /
+# PEP-517) natively on the host is decided by sandbox.policy.host_allowed_tiers()
+# under the active sandbox.host_trust_policy. Every non-host tier builds INSIDE the
+# container into a deterministic sealed volume (fail-closed if no runtime — never a
+# host build). Artifacts are source trees (no wheel), so this is a fail-closed gate.
 
 
 def install_package(
@@ -847,17 +847,27 @@ def install_package(
         _verify_publisher_signature(slug, lock_entry, key_status=key_status)
 
         # Step 7: build — only reached after every gate (hash + signature) passed.
-        # curated/trusted build natively on the host; every other tier is built
-        # INSIDE the container into a deterministic volume (fail-closed if no
-        # runtime — never a host build for community code).
-        if (trust_level or "").lower() in _HOST_BUILD_TIERS:
+        # Host-allowed tiers (per the active host-trust policy) build natively on the
+        # host; every other tier is built INSIDE the container into a deterministic
+        # volume (fail-closed if no runtime — never a host build for community code).
+        from agentnode_sdk.config import host_trust_policy
+        from agentnode_sdk.sandbox.policy import host_allowed_tiers
+        policy = host_trust_policy()
+        if (trust_level or "").lower() in host_allowed_tiers(policy):
             pip_install(python, package_dir, verbose=verbose)
+            lock_entry["build_mode"] = "host"
         else:
             sandbox_volume = _container_build_into_volume(
                 slug, version, package_dir, f"sha256:{local_hash}",
             )
             lock_entry["sandboxed"] = True
             lock_entry["sandbox_volume"] = sandbox_volume
+            lock_entry["build_mode"] = "sandbox_volume"
+        # MUTABLE metadata (NOT sealed): lets the doctor tell "host-built under an
+        # older/looser policy" apart from "sandboxed", without guessing. Toolpacks
+        # always build from the pinned artifact, so they are always pinnable.
+        lock_entry["effective_host_trust_policy_at_install"] = policy
+        lock_entry["pinnable"] = True
 
         # Step 8: seal + write lockfile (only after a successful install)
         from agentnode_sdk.lock_integrity import seal_entry
@@ -1008,6 +1018,16 @@ def _install_mcp(
             lock_entry["mcp_allowed_domains"] = list(
                 canonicalize_allowed_domains(mcp_allowed_domains)
             )
+
+    # MUTABLE metadata (NOT sealed) for the doctor: an MCP is "pinnable" only if it
+    # ships an mcp_install descriptor (→ a sealed volume was built). A floating
+    # command-only MCP is NOT pinnable and, under a stricter host-trust policy, is
+    # refused at run time — the user cannot fix that (the publisher must pin it),
+    # which the doctor distinguishes from a merely-missing volume.
+    from agentnode_sdk.config import host_trust_policy
+    lock_entry["pinnable"] = mcp_install is not None
+    lock_entry["build_mode"] = "sandbox_volume" if mcp_install is not None else "host"
+    lock_entry["effective_host_trust_policy_at_install"] = host_trust_policy()
 
     from agentnode_sdk.lock_integrity import seal_entry
     lock_entry = seal_entry(lock_entry)
