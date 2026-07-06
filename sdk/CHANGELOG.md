@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.18.0 — User-controlled host-trust policy
+
+### Added
+
+- **`sandbox.host_trust_policy`** — a new config key that lets you decide which
+  trust tiers may run directly on your host: `default` (curated + trusted on the
+  host, today's behavior), `curated_only` (trusted is sandboxed), or `none`
+  (everything is sandboxed). Set it with
+  `agentnode config set sandbox.host_trust_policy curated_only`. AgentNode trusting
+  a package's code is not the same as you trusting it with your machine — this
+  setting closes that gap.
+- **`agentnode sandbox doctor <slug>` is now host-trust-policy aware** — it explains
+  when a package is sandboxed by the policy and distinguishes "reinstall to rebuild
+  the sandbox volume" from "the publisher must pin this MCP" from a `none`/system-
+  package warning, and flags that a sandboxed agent runs the strict profile.
+- New `docs/security/host-trust-policy.md`.
+
+### Changed
+
+- Toolpacks, MCP servers, and agents all honor `sandbox.host_trust_policy` through
+  one shared decision. Under a stricter policy the installer builds the sealed
+  sandbox volume for trusted/curated packages at install time, and the lockfile
+  records `build_mode`, `pinnable`, and `effective_host_trust_policy_at_install`
+  (mutable metadata — the runtime still re-verifies the volume itself).
+
+### Hardened
+
+- A tier the active policy sandboxes is **fail-closed**: if it cannot actually be
+  isolated (no container runtime, no built volume, a non-pinnable MCP) it is
+  refused, never run on the host as a fallback.
+
+### BREAKING / Upgrade Notes
+
+- **Not breaking by default.** The default policy is `default`, which is exactly
+  today's behavior — nothing changes until you opt in.
+- **Opting into `curated_only`/`none` isolates more strongly and can break
+  trusted/curated packages** that expect the host filesystem, broad tools, host LLM
+  keys, or network — the sandbox has none of these. **Agents are the strictest
+  case:** a sandboxed agent runs the same strict community profile (declared tools
+  only, default-deny host-brokered LLM, `network=none`, read-only `/pack`), with no
+  special rights for trusted agents. After tightening the policy, **reinstall**
+  affected packages so their sealed volume is built (`agentnode install <slug>`);
+  run `agentnode sandbox doctor <slug>` to see what each package needs. Community
+  agents remain governed by the separate opt-in `agent_sandbox.enabled` flag.
+
 ## 0.17.0 — MCP network isolation
 
 ### Changed
