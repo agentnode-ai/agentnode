@@ -60,8 +60,9 @@ class MCPServerProcess:
         pool) AND direct CLI use (e.g. `agentnode mcp doctor`), closing the
         run_tool-only gate gap. curated -> host; trusted -> host (transition).
         """
+        from agentnode_sdk.config import host_trust_policy
         from agentnode_sdk.sandbox import enforce_sandbox_policy, get_default_backend
-        from agentnode_sdk.sandbox.policy import requires_sandbox
+        from agentnode_sdk.sandbox.policy import requires_sandbox_for_policy
 
         # Fail-closed gate: community without a runtime is blocked here, not on host.
         enforce_sandbox_policy(self.trust_level, runtime_hint="mcp")
@@ -74,7 +75,9 @@ class MCPServerProcess:
         backend = None
         spec = None
         credentialed = False
-        if requires_sandbox(self.trust_level):
+        # host-trust policy: "default" = trusted/curated on host (today); "curated_only"
+        # / "none" route trusted (and curated) into the container path instead.
+        if requires_sandbox_for_policy(self.trust_level, host_trust_policy()):
             # Containerized path. P0.2 isolates host-FS, HOME and secrets — NOT the
             # network (npx/uvx fetch live). No host env, no mounts, clean container HOME.
             from agentnode_sdk.sandbox.mcp_preinstall import has_preinstall_intent

@@ -207,12 +207,17 @@ def run_python(
     # isolation for community code. curated/trusted fall through to the host path.
     # Missing/None/unknown trust → sandbox-required (never host), mirroring the
     # runner.run_tool gate and policy.requires_sandbox.
-    from agentnode_sdk.sandbox import SandboxRequiredError, requires_sandbox
+    from agentnode_sdk.config import host_trust_policy
+    from agentnode_sdk.sandbox import SandboxRequiredError
+    from agentnode_sdk.sandbox.policy import requires_sandbox_for_policy
     dispatch_trust = (
         entry.get("trust_level") if entry is not None
         else _get_trust_level(slug, lockfile_path)
     )
-    if requires_sandbox(dispatch_trust):
+    # host-trust policy: "default" = curated/trusted on host (today); "curated_only"
+    # / "none" route trusted (and curated) into the sandbox instead. Evaluated here,
+    # BEFORE mode resolution, so an explicit mode='direct' can never bypass it.
+    if requires_sandbox_for_policy(dispatch_trust, host_trust_policy()):
         t0 = time.monotonic()
         try:
             result, error, timed_out = _run_container(
