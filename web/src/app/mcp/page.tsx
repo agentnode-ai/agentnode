@@ -281,6 +281,29 @@ export default async function McpPage() {
         </section>
       )}
 
+      {/* Publish your own MCP */}
+      <section className="mb-16 rounded-xl border border-border bg-card p-6 sm:p-8 max-w-2xl mx-auto">
+        <h2 className="text-xl font-bold text-foreground mb-2">
+          Publish your own MCP server
+        </h2>
+        <p className="text-sm text-muted mb-4">
+          Maintain an MCP server? List it in the AgentNode catalog. Verify the
+          manifest locally, then submit it for review — and track the
+          submission status from the CLI.
+        </p>
+        <McpCodeBlock
+          code={`agentnode mcp verify .       # check your agentnode.yaml\nagentnode mcp submit .       # submit for catalog review\nagentnode mcp status <id>    # track review status`}
+          language="bash"
+        />
+        <p className="mt-3 text-xs text-muted">
+          Submissions are reviewed before they go live. See the{" "}
+          <Link href="/docs/cli" className="text-primary hover:underline">
+            CLI reference
+          </Link>{" "}
+          for the full publishing flow.
+        </p>
+      </section>
+
       {/* Footer context */}
       <footer className="text-center text-sm text-muted/60 py-8 border-t border-border">
         <p>
