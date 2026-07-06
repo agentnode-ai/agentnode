@@ -7,6 +7,13 @@
 > `TestRunAgentExecutionVectorInvariant`). No runtime behaviour is changed by
 > this document — it makes the existing contract explicit and testable.
 
+> **Update (0.18.0):** the agent-sandbox path described below as "future" now
+> exists (opt-in `agent_sandbox.enabled` routes community agents into a container),
+> and `sandbox.host_trust_policy` additionally routes `trusted`/`curated` agents
+> into that sandbox — see [host-trust-policy.md](host-trust-policy.md). The trust
+> gate and host-execution details below describe the `default`-policy path (which
+> remains today's behavior).
+
 ## The three foreign-code execution paths
 
 | Path | Isolation today |
