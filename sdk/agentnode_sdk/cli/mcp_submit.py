@@ -126,10 +126,14 @@ def cmd_mcp_submit(
 
     if resp.status_code == 201:
         data = resp.json()
+        sub_id = data.get("id", "?")
         print(f"  Submitted: {data.get('package_name', pkg_name)}")
-        print(f"  ID:        {data.get('id', '?')}")
+        print(f"  ID:        {sub_id}")
         print(f"  Status:    {data.get('status', '?')}")
         print(f"  Message:   {data.get('message', '')}")
+        print()
+        print(f"  Check status: agentnode mcp status {sub_id}")
+        print("  Your MCP is queued for review and won't be listed until approved.")
         print()
         return 0
 
