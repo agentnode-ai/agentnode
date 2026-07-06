@@ -267,6 +267,29 @@ class TestCmdPublish:
         out = capsys.readouterr().out
         assert "Published test-pack@1.0.0" in out
         assert "agentnode.net/packages/test-pack" in out
+        assert "Live:" in out
+
+    def test_success_quarantine_201(self, tmp_path, capsys):
+        _write_manifest(tmp_path)
+        (tmp_path / "tools.py").write_text("def run(): pass")
+        mock_resp = {
+            "slug": "test-pack",
+            "version": "1.0.0",
+            "package_type": "toolpack",
+            "message": (
+                "Published test-pack@1.0.0 (with warnings: First-time publisher: "
+                "version has been quarantined for review. Once approved, future "
+                "packages will publish directly.)"
+            ),
+        }
+        with patch("agentnode_sdk.cli.publish._post_publish", return_value=mock_resp):
+            rc = cmd_publish(str(tmp_path), token="test-key-123", yes=True)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Under review" in out
+        assert "First-time publisher" in out  # registry's reason is surfaced
+        assert "Track status" in out
+        assert "Live:" not in out  # not presented as already public
 
     def test_version_conflict_409(self, tmp_path, capsys):
         _write_manifest(tmp_path)
