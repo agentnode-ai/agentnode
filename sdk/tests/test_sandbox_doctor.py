@@ -219,6 +219,116 @@ def test_package_community_toolpack_ready(monkeypatch, capsys):
     assert any(c["check"] == "build_volume" and c["ok"] is True for c in data["checks"])
 
 
+# === 1D: host-trust-policy per-package diagnostics ============================
+
+def _set_policy(monkeypatch, policy):
+    monkeypatch.setattr("agentnode_sdk.config.host_trust_policy", lambda: policy)
+
+
+def test_pkg_trusted_under_default_still_runs_on_host(monkeypatch, capsys):
+    # regression: under default, trusted is host — no policy/sandbox checks
+    _set_policy(monkeypatch, "default")
+    _lock(monkeypatch, {"tp": {"version": "1.0", "trust_level": "trusted", "runtime": "python"}})
+    rc = cmd_sandbox_doctor("tp", json_output=True)
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 0 and data["ready"] is True
+    iso = next(c for c in data["checks"] if c["check"] == "isolation")
+    assert iso["ok"] is True and "host" in iso["detail"]
+
+
+def test_pkg_trusted_hostbuilt_under_curated_only_needs_reinstall(monkeypatch, capsys):
+    # build-vs-policy mismatch: host-built under default, but curated_only now sandboxes it
+    _patch_backend(monkeypatch, _av_ready())
+    _set_policy(monkeypatch, "curated_only")
+    _lock(monkeypatch, {"tp": {"version": "1.0", "trust_level": "trusted", "runtime": "python",
+                               "artifact_hash": "sha256:abc", "build_mode": "host",
+                               "effective_host_trust_policy_at_install": "default"}})
+    rc = cmd_sandbox_doctor("tp", json_output=True)
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 1 and data["ready"] is False
+    assert any(c["check"] == "policy" and c["ok"] is None for c in data["checks"])
+    bv = next(c for c in data["checks"] if c["check"] == "build_volume")
+    assert bv["ok"] is False and "install tp" in bv["fix"] and "curated_only" in bv["fix"]
+
+
+def test_pkg_old_lockfile_trusted_inferred_hostbuilt(monkeypatch, capsys):
+    # pre-0.18 entry: no build_mode → inferred 'host' (no sandboxed) → reinstall under policy
+    _patch_backend(monkeypatch, _av_ready())
+    _set_policy(monkeypatch, "curated_only")
+    _lock(monkeypatch, {"tp": {"version": "1.0", "trust_level": "trusted", "runtime": "python",
+                               "artifact_hash": "sha256:abc"}})  # no build_mode / sandboxed
+    rc = cmd_sandbox_doctor("tp", json_output=True)
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 1 and data["ready"] is False
+    bv = next(c for c in data["checks"] if c["check"] == "build_volume")
+    assert bv["ok"] is False and "install tp" in bv["fix"]
+
+
+def test_pkg_trusted_volume_built_under_curated_only_ready(monkeypatch, capsys):
+    from agentnode_sdk.sandbox.container_backend import sandbox_volume_name
+    vol = sandbox_volume_name("tp", "1.0", "sha256:abc")
+    _patch_backend(monkeypatch, _av_ready())
+    _set_policy(monkeypatch, "curated_only")
+    monkeypatch.setattr(sc.subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 0})())
+    _lock(monkeypatch, {"tp": {"version": "1.0", "trust_level": "trusted", "runtime": "python",
+                               "artifact_hash": "sha256:abc", "build_mode": "sandbox_volume",
+                               "sandboxed": True, "sandbox_volume": vol}})
+    rc = cmd_sandbox_doctor("tp", json_output=True)
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 0 and data["ready"] is True
+    assert any(c["check"] == "build_volume" and c["ok"] is True for c in data["checks"])
+
+
+def test_pkg_none_policy_warns_about_system_packages(monkeypatch, capsys):
+    from agentnode_sdk.sandbox.container_backend import sandbox_volume_name
+    vol = sandbox_volume_name("cur", "1.0", "sha256:abc")
+    _patch_backend(monkeypatch, _av_ready())
+    _set_policy(monkeypatch, "none")
+    monkeypatch.setattr(sc.subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 0})())
+    _lock(monkeypatch, {"cur": {"version": "1.0", "trust_level": "curated", "runtime": "python",
+                                "artifact_hash": "sha256:abc", "build_mode": "sandbox_volume",
+                                "sandboxed": True, "sandbox_volume": vol}})
+    rc = cmd_sandbox_doctor("cur", json_output=True)
+    data = json.loads(capsys.readouterr().out)
+    warn = next(c for c in data["checks"] if c["check"] == "system-warning")
+    assert warn["ok"] is None and "may break" in warn["detail"]
+
+
+def test_mcp_not_pinnable_under_curated_only_publisher_must_pin(monkeypatch, capsys):
+    _patch_backend(monkeypatch, _av_ready())
+    _set_policy(monkeypatch, "curated_only")
+    _lock(monkeypatch, {"m": {"version": "1.0", "trust_level": "trusted", "runtime": "mcp",
+                              "pinnable": False}})
+    rc = cmd_sandbox_doctor("m", json_output=True)
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 1 and data["ready"] is False
+    pin = next(c for c in data["checks"] if c["check"] == "pinned")
+    assert pin["ok"] is False and "PUBLISHER" in pin["fix"] and "cannot fix" in pin["fix"]
+
+
+def test_mcp_pinnable_under_curated_only_ready(monkeypatch, capsys):
+    _patch_backend(monkeypatch, _av_ready())
+    _set_policy(monkeypatch, "curated_only")
+    _lock(monkeypatch, {"m": {"version": "1.0", "trust_level": "trusted", "runtime": "mcp",
+                              "pinnable": True}})
+    rc = cmd_sandbox_doctor("m", json_output=True)
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 0 and data["ready"] is True
+    assert any(c["check"] == "pinned" and c["ok"] is True for c in data["checks"])
+
+
+def test_mcp_old_lockfile_pinnable_inferred_from_preinstalled(monkeypatch, capsys):
+    # pre-0.18 MCP: no 'pinnable' field → inferred from mcp_preinstalled
+    _patch_backend(monkeypatch, _av_ready())
+    _set_policy(monkeypatch, "curated_only")
+    _lock(monkeypatch, {"m": {"version": "1.0", "trust_level": "trusted", "runtime": "mcp",
+                              "mcp_preinstalled": True}})  # no 'pinnable'
+    rc = cmd_sandbox_doctor("m", json_output=True)
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 0 and data["ready"] is True
+    assert any(c["check"] == "pinned" and c["ok"] is True for c in data["checks"])
+
+
 # === status one-liner =========================================================
 
 def test_status_ready(monkeypatch, capsys):

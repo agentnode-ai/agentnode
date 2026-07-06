@@ -220,14 +220,34 @@ def _doctor_env(json_output: bool) -> int:
     return 0 if ready else 1
 
 
+def _infer_build_mode(entry: dict) -> str:
+    """build_mode from the lockfile, or inferred for pre-0.18 entries (no field):
+    a recorded sandbox volume ⇒ sandbox_volume, otherwise host."""
+    bm = entry.get("build_mode")
+    if bm:
+        return bm
+    if entry.get("sandboxed") or entry.get("mcp_preinstalled"):
+        return "sandbox_volume"
+    return "host"
+
+
+def _infer_pinnable(entry: dict) -> bool:
+    """pinnable from the lockfile, or inferred for pre-0.18 entries: an MCP is
+    pinnable iff it was preinstalled (had an mcp_install); toolpacks always are."""
+    if "pinnable" in entry:
+        return bool(entry["pinnable"])
+    if entry.get("runtime") == "mcp":
+        return bool(entry.get("mcp_preinstalled"))
+    return True
+
+
 def _doctor_package(slug: str, json_output: bool) -> int:
     import json as _json
 
+    from agentnode_sdk.config import host_trust_policy
     from agentnode_sdk.installer import read_lockfile
-    from agentnode_sdk.sandbox import requires_sandbox
-    from agentnode_sdk.sandbox.container_backend import (
-        _BASE_IMAGE, ContainerBackend, sandbox_volume_name,
-    )
+    from agentnode_sdk.sandbox.container_backend import ContainerBackend, sandbox_volume_name
+    from agentnode_sdk.sandbox.policy import requires_sandbox_for_policy
 
     lock = read_lockfile()
     entry = lock.get("packages", {}).get(slug)
@@ -246,29 +266,75 @@ def _doctor_package(slug: str, json_output: bool) -> int:
         trust = entry.get("trust_level")
         pkg_type = entry.get("package_type", "")
         runtime_kind = entry.get("runtime", "")
+        policy = host_trust_policy()
+        host_tier = (trust or "").lower() in ("curated", "trusted")
 
-        if not requires_sandbox(trust):
-            # curated/trusted: host execution, no sandbox required.
-            rec("isolation", True, f"trust '{trust}' runs on the host — no sandbox required")
+        if not requires_sandbox_for_policy(trust, policy):
+            # host execution under the active policy — no sandbox required.
+            note = f"trust '{trust}' runs on the host"
+            if policy != "default":
+                note += f" (allowed by sandbox.host_trust_policy={policy})"
+            rec("isolation", True, note + " — no sandbox required")
             ready = True
-            summary = [f"\033[32mReady\033[0m — runs on the host (vetted tier '{trust}'); no sandbox needed."]
+            summary = [f"\033[32mReady\033[0m — runs on the host (tier '{trust}'); no sandbox needed."]
         else:
-            rec("isolation", None,
-                f"community (trust '{trust or 'unknown'}') — execution REQUIRES the sandbox")
+            # sandbox-required: community, OR a normally-host tier that the ACTIVE
+            # host-trust policy sandboxes.
+            if host_tier:
+                rec("policy", None,
+                    f"tier '{trust}' is sandboxed by sandbox.host_trust_policy={policy}")
+                if policy == "none":
+                    rec("system-warning", None,
+                        "under 'none', curated/system packages that need host access may break",
+                        "if a curated/system package stops working, set "
+                        "sandbox.host_trust_policy=curated_only")
+            else:
+                rec("isolation", None,
+                    f"community (trust '{trust or 'unknown'}') — execution REQUIRES the sandbox")
+
             checks2, env_ready, _ = _build_env_checks()
-            # fold env checks under the package report
-            checks.extend(checks2)
+            checks.extend(checks2)  # fold env checks under the package report
             if not env_ready:
                 fail = _first_failure(checks2)
                 ready = False
                 nxt = (fail or {}).get("fix") or "see `agentnode sandbox doctor`"
                 summary = [
-                    "This package runs community code and \033[31mneeds the sandbox\033[0m.",
+                    "This package \033[31mneeds the sandbox\033[0m under the current policy.",
                     f"Currently missing: {(fail or {}).get('detail', 'unknown')}.",
                     f"Next step: {nxt}",
                 ]
-            elif runtime_kind != "mcp" and pkg_type != "skill":
-                # toolpack: the build volume must exist and match.
+            elif runtime_kind == "mcp":
+                # pinnable (mcp_install present) ⇒ a sealed volume exists. Not pinnable ⇒
+                # the PUBLISHER must pin it — reinstalling cannot fix this (distinct guidance).
+                if _infer_pinnable(entry):
+                    rec("pinned", True, "pinned (mcp_install) — runs sandboxed")
+                    ready = True
+                    summary = ["\033[32mReady\033[0m — this MCP will run sandboxed."]
+                else:
+                    rec("pinned", False, "not pinned — ships no mcp_install descriptor",
+                        f"the PUBLISHER must add a pinned mcp_install to '{slug}' — "
+                        "reinstalling cannot fix this")
+                    ready = False
+                    summary = [
+                        f"'{slug}' cannot run sandboxed: it ships no pinned mcp_install.",
+                        "Not user-fixable — the publisher must pin it (or keep the publisher at a "
+                        f"host-allowed tier under sandbox.host_trust_policy={policy}).",
+                    ]
+            elif pkg_type != "skill" and host_tier and _infer_build_mode(entry) == "host":
+                # build-vs-policy mismatch: host-built (under an older/looser policy) but the
+                # active policy now sandboxes it → no volume exists → reinstall to build it.
+                installed_under = entry.get("effective_host_trust_policy_at_install", "unknown")
+                rec("build_volume", False,
+                    f"built for the host (policy at install: '{installed_under}') — no sandbox volume",
+                    f"agentnode install {slug}   (rebuild in the sandbox under {policy})")
+                ready = False
+                summary = [
+                    f"'{slug}' was built for the host, but sandbox.host_trust_policy={policy} "
+                    "now requires it sandboxed.",
+                    f"Next step: reinstall — agentnode install {slug}",
+                ]
+            elif pkg_type != "skill":
+                # toolpack already meant for the sandbox: the build volume must exist + match.
                 vol = sandbox_volume_name(slug, entry.get("version"), entry.get("artifact_hash"))
                 recorded_ok = bool(entry.get("sandboxed")) and entry.get("sandbox_volume") == vol
                 inspect_ok = False
@@ -293,7 +359,7 @@ def _doctor_package(slug: str, json_output: bool) -> int:
                         f"Next step: reinstall — agentnode install {slug}",
                     ]
             else:
-                # community MCP with sandbox ready
+                # skill (or other) with the sandbox ready
                 ready = True
                 summary = ["\033[32mReady\033[0m — this package will run sandboxed."]
 
