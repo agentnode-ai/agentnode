@@ -311,6 +311,19 @@ def _confirm_publish(
     return False
 
 
+def _extract_warnings(message: str) -> str:
+    """Pull the human-readable warning text out of a publish message shaped like
+    'Published slug@ver (with warnings: <text>)'. Returns '' when there is none."""
+    marker = "(with warnings: "
+    start = message.find(marker)
+    if start == -1:
+        return ""
+    text = message[start + len(marker):]
+    if text.endswith(")"):
+        text = text[:-1]
+    return text.strip()
+
+
 def cmd_publish(
     path_str: str,
     *,
@@ -484,11 +497,27 @@ def cmd_publish(
     slug = resp.get("slug", pkg_id)
     ver = resp.get("version", version)
     msg = resp.get("message", "")
+    quarantined = "quarantine" in msg.lower()
 
     print(f"  Published {slug}@{ver}")
-    if "warning" in msg.lower():
-        print(f"  {msg}")
     print()
-    print(f"  https://agentnode.net/packages/{slug}")
+
+    if quarantined:
+        # First-time / flagged publishes are held for review: not listed in
+        # search and not installable until cleared. Frame it honestly instead
+        # of printing the URL as if the package were already live.
+        print("  Status: Under review — not yet public.")
+        reason = _extract_warnings(msg)
+        if reason:
+            print(f"  {reason}")
+        print("  It won't appear in search or be installable until review clears it.")
+        print()
+        print(f"  Track status: https://agentnode.net/packages/{slug}")
+    else:
+        if "warning" in msg.lower():
+            print(f"  {msg}")
+            print()
+        print(f"  Live: https://agentnode.net/packages/{slug}")
+        print("  Verification runs automatically; its tier and score appear on the page shortly.")
     print()
     return 0
