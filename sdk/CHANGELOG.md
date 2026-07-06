@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.19.0 — Full setup wizard coverage
+
+### Added
+
+- Expanded `agentnode setup` to cover the full first-class configuration surface
+  with multiple-choice prompts and clearly marked recommended defaults.
+- Added a Guard posture step with Balanced, Strict, Permissive and Customize-each
+  options.
+- Added setup support for `sandbox.host_trust_policy`.
+- Added an optional Advanced gate for niche first-class settings.
+
+### Changed
+
+- Promoted minimum trust level to a direct setup screen.
+- Added consistent `(recommended)` labels across setup choices.
+- A stored LLM key provider can now be offered as the default LLM provider,
+  matching the existing Ollama behavior.
+
+### Hardened
+
+- Invalid interactive menu input now re-prompts instead of silently falling back
+  to the recommended option — a typo can no longer set a security choice unnoticed.
+- Non-interactive (non-TTY) setup continues to take the recommended defaults and
+  never hangs.
+- Accepting all recommended choices reproduces the current default configuration,
+  so upgrading changes nothing until you opt in.
+
+### Notes
+
+- Deeply nested configuration (`llm.providers`, the `agent_sandbox.llm` ceiling,
+  and `guard` overrides / rate limits) remains CLI/manual-only by design and is
+  surfaced as follow-up commands rather than turned into a wizard editor.
+- This release changes only the setup wizard; runtime behavior and the default
+  configuration are unchanged.
+
 ## 0.18.0 — User-controlled host-trust policy
 
 ### Added
