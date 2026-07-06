@@ -44,6 +44,9 @@ DEFAULTS: dict[str, Any] = {
     "agent_sandbox": {
         "enabled": False,
     },
+    "sandbox": {
+        "host_trust_policy": "default",
+    },
     "llm": {
         "default_provider": "openai",
         "providers": {},
@@ -69,6 +72,7 @@ VALID_VALUES: dict[str, tuple[str, ...]] = {
     "guard.compute": ("allow", "prompt", "deny"),
     "guard.unknown": ("allow", "prompt", "deny"),
     "agent_sandbox.enabled": ("true", "false"),
+    "sandbox.host_trust_policy": ("default", "curated_only", "none"),
     "llm.default_provider": (
         "openai", "anthropic", "openrouter", "deepseek", "mistral", "qwen",
         "gemini", "ollama",
@@ -95,6 +99,7 @@ CONFIG_DESCRIPTIONS: dict[str, str] = {
     "guard.compute": "Guard policy for tools that perform computation",
     "guard.unknown": "Guard policy for tools with unknown action type",
     "agent_sandbox.enabled": "Route community (verified/unverified) agents through the container sandbox",
+    "sandbox.host_trust_policy": "Which trust tiers may run directly on the host; the rest are sandboxed or fail-closed (default = curated+trusted on host; curated_only = trusted is sandboxed; none = everything is sandboxed)",
     "llm.default_provider": "Which stored LLM credential to try first (vault resolution order)",
 }
 
@@ -160,6 +165,9 @@ def _merge_defaults(data: dict) -> dict[str, Any]:
         # like the guard extra keys above.
         if isinstance(data["agent_sandbox"].get("llm"), dict):
             cfg["agent_sandbox"]["llm"] = data["agent_sandbox"]["llm"]
+    if isinstance(data.get("sandbox"), dict):
+        if "host_trust_policy" in data["sandbox"]:
+            cfg["sandbox"]["host_trust_policy"] = data["sandbox"]["host_trust_policy"]
     if isinstance(data.get("llm"), dict):
         for k in ("default_provider",):
             if k in data["llm"]:
@@ -183,6 +191,19 @@ def load_config() -> dict[str, Any]:
         return _merge_defaults(data)
     except (json.JSONDecodeError, OSError):
         return default_config()
+
+
+def host_trust_policy() -> str:
+    """The current ``sandbox.host_trust_policy`` (default | curated_only | none).
+
+    Live read used by the run/install paths; the pure decision table lives in
+    ``sandbox.policy``. A missing key or unreadable config falls back to
+    ``"default"`` (today's behavior).
+    """
+    try:
+        return get_value(load_config(), "sandbox.host_trust_policy")
+    except KeyError:
+        return "default"
 
 
 def save_config(cfg: dict[str, Any]) -> None:
