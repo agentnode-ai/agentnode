@@ -329,6 +329,41 @@ def test_mcp_old_lockfile_pinnable_inferred_from_preinstalled(monkeypatch, capsy
     assert any(c["check"] == "pinned" and c["ok"] is True for c in data["checks"])
 
 
+# --- A4: agent-specific strict-profile hint ---------------------------------
+
+def test_agent_trusted_curated_only_shows_strict_profile_hint(monkeypatch, capsys):
+    _patch_backend(monkeypatch, _av_ready())
+    _set_policy(monkeypatch, "curated_only")
+    _lock(monkeypatch, {"ag": {"version": "1.0", "trust_level": "trusted", "runtime": "python",
+                               "package_type": "agent", "artifact_hash": "sha256:abc"}})
+    rc = cmd_sandbox_doctor("ag", json_output=True)
+    data = json.loads(capsys.readouterr().out)
+    prof = next(c for c in data["checks"] if c["check"] == "agent_profile")
+    assert prof["ok"] is None
+    assert "strict profile" in prof["detail"] and "may break" in prof["detail"]
+    assert rc == 1                                # host-built agent → still needs reinstall
+
+
+def test_toolpack_trusted_curated_only_has_no_agent_profile_hint(monkeypatch, capsys):
+    _patch_backend(monkeypatch, _av_ready())
+    _set_policy(monkeypatch, "curated_only")
+    _lock(monkeypatch, {"tp": {"version": "1.0", "trust_level": "trusted", "runtime": "python",
+                               "artifact_hash": "sha256:abc"}})  # toolpack, not an agent
+    cmd_sandbox_doctor("tp", json_output=True)
+    data = json.loads(capsys.readouterr().out)
+    assert not any(c["check"] == "agent_profile" for c in data["checks"])
+
+
+def test_agent_under_default_policy_has_no_profile_hint(monkeypatch, capsys):
+    # trusted agent under default → host, not sandbox-required → no strict-profile hint
+    _set_policy(monkeypatch, "default")
+    _lock(monkeypatch, {"ag": {"version": "1.0", "trust_level": "trusted", "runtime": "python",
+                               "package_type": "agent"}})
+    rc = cmd_sandbox_doctor("ag", json_output=True)
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 0 and not any(c["check"] == "agent_profile" for c in data["checks"])
+
+
 # === status one-liner =========================================================
 
 def test_status_ready(monkeypatch, capsys):

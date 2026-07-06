@@ -292,6 +292,16 @@ def _doctor_package(slug: str, json_output: bool) -> int:
                 rec("isolation", None,
                     f"community (trust '{trust or 'unknown'}') — execution REQUIRES the sandbox")
 
+            # A4: a trusted/curated AGENT sandboxed by the policy runs the STRICT
+            # community profile — flag the breaking expectations (host FS / broad
+            # tools / LLM keys / network) that a host run would have granted it.
+            if pkg_type == "agent" and host_tier:
+                rec("agent_profile", None,
+                    "sandboxed agents run the strict profile: declared tools only, "
+                    "default-deny host-brokered LLM, network=none, read-only /pack — a "
+                    "trusted/curated agent expecting host FS, broad tools, LLM keys or "
+                    "network may break (see docs/security/host-trust-policy.md)")
+
             checks2, env_ready, _ = _build_env_checks()
             checks.extend(checks2)  # fold env checks under the package report
             if not env_ready:
