@@ -70,7 +70,7 @@ export default function SecurityPage() {
     <main className="mx-auto max-w-3xl px-4 py-12 sm:px-6 lg:px-8">
       <h1 className="text-3xl font-bold text-foreground">Security Model</h1>
       <p className="mt-2 text-xs text-muted/70">
-        Applies to SDK 0.16+ · Last updated: 2026-06-12
+        Applies to SDK 0.19+ · Last updated: 2026-07-06
       </p>
       <p className="mt-3 text-foreground/80 font-medium">
         AgentNode is local-first by design. All tools run on your machine.
@@ -93,9 +93,18 @@ export default function SecurityPage() {
           </p>
           <p className="mt-1 text-sm text-muted">
             Run on the host with subprocess isolation, environment filtering,
-            and timeouts. Their network/filesystem declarations are
-            policy-checked, not OS-enforced — that&apos;s the trade these
-            tiers earn through review and verification.
+            and timeouts{" "}
+            <span className="text-foreground font-medium">
+              under the default host-trust policy
+            </span>
+            . Their network/filesystem declarations are policy-checked, not
+            OS-enforced — that&apos;s the trade these tiers earn through review.
+            You stay in control: the{" "}
+            <span className="text-foreground font-medium">
+              sandbox.host_trust_policy
+            </span>{" "}
+            setting can sandbox trusted (curated_only) or everything (none), with
+            a reinstall to build the sealed volume.
           </p>
         </div>
         <div className="rounded-lg border border-green-500/20 bg-green-500/5 p-4">
@@ -207,7 +216,12 @@ export default function SecurityPage() {
       <p className="mb-3 text-sm text-muted">
         These limits apply to packages that run on the host because they
         earned trusted/curated status. Community-tier code does not have
-        these gaps — it runs in the container sandbox or not at all.
+        these gaps — it runs in the container sandbox or not at all. And you
+        can remove the gaps yourself: set{" "}
+        <span className="font-medium text-foreground">sandbox.host_trust_policy</span>{" "}
+        to <span className="font-medium text-foreground">curated_only</span> or{" "}
+        <span className="font-medium text-foreground">none</span> to sandbox the
+        trusted/curated tiers too (fail-closed; may require a reinstall).
       </p>
       <div className="space-y-2">
         <Row
@@ -277,9 +291,11 @@ export default function SecurityPage() {
           always uses subprocess isolation with env filtering.
         </li>
         <li>
-          For sensitive workloads that rely on <em>trusted/curated host execution</em>, run
-          tools inside a VM or container for additional isolation — community-tier code is
-          already container-isolated by AgentNode itself.
+          To sandbox trusted/curated code you don&apos;t want on your host, set{" "}
+          <code className="text-xs text-primary">agentnode config set sandbox.host_trust_policy curated_only</code>{" "}
+          (or <code className="text-xs text-primary">none</code>) — it runs those tiers in the
+          same hardened container, fail-closed, and{" "}
+          <code className="text-xs text-primary">agentnode sandbox doctor</code> shows what to reinstall.
         </li>
         <li>
           Review <code className="text-xs text-primary">agentnode audit</code> periodically

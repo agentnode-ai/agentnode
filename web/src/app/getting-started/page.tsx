@@ -140,6 +140,19 @@ $ agentnode search "pdf extraction"
 $ agentnode install pdf-reader-pack
 $ agentnode run pdf-reader-pack --input '{"file_path":"report.pdf"}'`}</code>
       </pre>
+      <p className="mt-4 text-sm leading-relaxed text-muted">
+        <code className="font-mono text-foreground">agentnode setup</code> is an
+        interactive wizard covering every first-class setting as a
+        multiple-choice prompt with a recommended default — installation
+        behavior, trust level, permissions, guard posture, credentials, the
+        sandbox, and{" "}
+        <code className="font-mono text-foreground">
+          sandbox.host_trust_policy
+        </code>{" "}
+        (which trust tiers may run directly on your host). Accepting the
+        recommendations reproduces the default config; it is fully skippable and
+        never blocks CI.
+      </p>
 
       {/* Ollama / local */}
       <h2 className="mb-4 mt-14 text-2xl font-bold text-foreground">

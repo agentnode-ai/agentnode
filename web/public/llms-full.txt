@@ -40,7 +40,7 @@ plain Python. The SDK is published on PyPI as `agentnode-sdk`.
 The CLI ships with the SDK.
 
     pip install agentnode-sdk
-    agentnode setup                 # interactive: provider, optional key, sandbox check
+    agentnode setup                 # interactive wizard: all first-class settings, multiple-choice with recommended defaults
     agentnode auth status           # which providers are configured + effective source
     agentnode search "pdf extraction"
     agentnode install pdf-reader-pack
@@ -93,11 +93,17 @@ image are available.
   hardened container — or not at all (fail-closed). There is no silent fallback
   to host execution. Setup: `agentnode sandbox doctor` then `agentnode sandbox
   pull`.
-- Trusted and curated packages run on the host with subprocess isolation and
-  policy checks — not OS-level filesystem/network sandboxing.
+- Trusted and curated packages run on the host by default (subprocess isolation
+  and policy checks — not OS-level sandboxing). The user-controlled
+  `sandbox.host_trust_policy` setting decides which trust tiers may run directly
+  on the host: `default` (curated + trusted on host), `curated_only` (trusted is
+  sandboxed), or `none` (nothing runs directly on the host). A sandboxed tier is
+  fail-closed; a stricter policy can break trusted/curated packages that expect
+  host access, so a reinstall may be needed.
 - Agents: an agent's own code runs host-side. Trusted/curated agents run on the
-  host. Community agents are refused by default; they run only if you opt into
-  the agent sandbox, which is OFF by default.
+  host by default, or in the sandbox when `sandbox.host_trust_policy` sandboxes
+  their tier. Community agents are refused by default; they run only if you opt
+  into the agent sandbox, which is OFF by default.
 - MCP servers must be pinned and preinstalled into a sealed volume. They run
   with no network by default, or a sealed egress allowlist when they declare
   mcp_allowed_domains. Non-preinstalled (floating npx/uvx) MCP servers are
@@ -112,7 +118,8 @@ Honest scoping (do not overstate):
 - Keys are not uploaded to AgentNode. When you configure and use a hosted
   provider, that provider receives the prompts and returns the responses for
   those calls.
-- Not every package or agent is sandboxed; trusted/curated code runs host-side.
+- Not every package or agent is sandboxed; trusted/curated code runs host-side
+  by default (you can sandbox it with `sandbox.host_trust_policy`).
 - AgentNode makes no compliance or certification claims (no SOC 2, HIPAA, ISO).
 
 Details: https://agentnode.net/docs/sandbox and https://agentnode.net/security
@@ -156,6 +163,7 @@ Most-used commands (full reference: https://agentnode.net/docs/cli):
 - agentnode auth status | auth set <provider> | auth test <provider>
 - agentnode sandbox doctor | sandbox pull | sandbox status
 - agentnode config set <key> <value>
+- agentnode config set sandbox.host_trust_policy <default|curated_only|none>
 
 Running `agentnode` with no command shows a status dashboard.
 

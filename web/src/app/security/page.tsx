@@ -214,7 +214,8 @@ export default function SecurityPage() {
       <p className="text-muted">
         Every package version carries a trust level, and enforcement differs by
         tier: community tiers are sandboxed or refused, while vetted tiers run
-        host-side under policy checks.
+        host-side under policy checks by default — and a user-controlled
+        host-trust policy lets you sandbox them too.
       </p>
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-lg border border-gray-500/30 bg-card p-4">
@@ -232,13 +233,15 @@ export default function SecurityPage() {
         <div className="rounded-lg border border-green-500/30 bg-card p-4">
           <p className="font-mono text-sm font-bold text-green-400">Trusted</p>
           <p className="mt-2 text-sm leading-relaxed text-muted">
-            Proven reliability over time. Runs host-side under policy checks.
+            Proven reliability over time. Runs host-side by default — sandboxed
+            under a stricter host-trust policy.
           </p>
         </div>
         <div className="rounded-lg border border-primary/30 bg-card p-4">
           <p className="font-mono text-sm font-bold text-primary">Curated</p>
           <p className="mt-2 text-sm leading-relaxed text-muted">
-            Manually reviewed by AgentNode. Highest assurance; runs host-side.
+            Manually reviewed by AgentNode. Highest assurance; runs host-side
+            (sandboxed only under host_trust_policy=none).
           </p>
         </div>
       </div>
@@ -296,8 +299,11 @@ export default function SecurityPage() {
       </p>
       <ul className="mt-4 list-disc space-y-2 pl-5 text-muted">
         <li>
-          Trusted and curated packages run host-side with policy checks and
-          subprocess isolation, not OS-level filesystem or network sandboxing.
+          By default, trusted and curated packages run host-side with policy
+          checks and subprocess isolation, not OS-level filesystem or network
+          sandboxing. Tighten this yourself with{" "}
+          <DocLink href="/docs/sandbox#host-trust-policy">sandbox.host_trust_policy</DocLink>{" "}
+          to sandbox those tiers too.
         </li>
         <li>
           Community sandboxing requires Docker or Podman plus the pinned image;
