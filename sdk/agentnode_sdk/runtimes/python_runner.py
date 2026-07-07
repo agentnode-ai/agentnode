@@ -185,6 +185,7 @@ def run_python(
     timeout: float = 30.0,
     entry: dict | None = None,
     lockfile_path: Path | None = None,
+    consent_callback=None,
     **kwargs: Any,
 ) -> RunToolResult:
     """Run a Python tool in direct or subprocess mode.
@@ -242,6 +243,7 @@ def run_python(
         try:
             result, error, timed_out = _run_container(
                 slug, tool_name, kwargs, timeout, entry, lockfile_path,
+                consent_callback=consent_callback,
             )
             elapsed = (time.monotonic() - t0) * 1000
             return RunToolResult(
@@ -507,6 +509,7 @@ def _run_container(
     timeout: float,
     entry: dict | None,
     lockfile_path: Path | None,
+    consent_callback=None,
 ) -> tuple[Any, str | None, bool]:
     """Run a community toolpack inside an ephemeral container that mounts ONLY
     the pre-built per-pack-version volume (read-only). Returns
@@ -567,19 +570,64 @@ def _run_container(
     module, functions = _resolve_container_target(entry, tool_name)
     network = network_for_level((entry.get("permissions") or {}).get("network_level"))
 
-    spec = backend.build_process_spec(
-        ["python", "-c", _CONTAINER_WRAPPER],
-        network=network,
-        mounts=[MountSpec(src=expected_vol, dst="/pack", read_only=True)],
-        env={"PYTHONPATH": "/pack"},
-        clean_home=True,
-        interactive=True,  # -i so the runtime forwards our stdin JSON payload
+    # --- Credentialed toolpack (declared env_requirements) ------------------
+    # Secrets never ride the plain path: consent + sealed egress allowlist are
+    # mandatory, the network becomes a proxied egress bound to the declared
+    # domains, and the key travels by NAME only (`--env NAME`, value read by
+    # the container runtime — never on argv, never in spec.env). Fail-closed:
+    # any refusal aborts the run; there is NO fallback to a run without the key.
+    from agentnode_sdk.runtimes.toolpack_credentials import (
+        CredentialedToolpackRefused,
+        declared_env_names,
+        prepare_credentialed_run,
     )
+
+    egress_handle = None
+    if declared_env_names(entry):
+        from agentnode_sdk.sandbox.egress import start_egress_proxy
+        from agentnode_sdk.sandbox.types import ProcessSpec
+
+        try:
+            sealed, passthrough = prepare_credentialed_run(
+                slug, entry, consent_callback=consent_callback
+            )
+        except CredentialedToolpackRefused as exc:
+            return None, str(exc), False
+        # Proxy from the SEALED domains only; failure ⇒ no container.
+        egress_handle = start_egress_proxy(list(sealed))
+        spec = ProcessSpec(
+            command=["python", "-c", _CONTAINER_WRAPPER],
+            network="egress",
+            egress=egress_handle.spec,
+            env_passthrough=list(passthrough),
+            mounts=[MountSpec(src=expected_vol, dst="/pack", read_only=True)],
+            env={"PYTHONPATH": "/pack"},
+            clean_home=True,
+            interactive=True,
+        )
+    else:
+        spec = backend.build_process_spec(
+            ["python", "-c", _CONTAINER_WRAPPER],
+            network=network,
+            mounts=[MountSpec(src=expected_vol, dst="/pack", read_only=True)],
+            env={"PYTHONPATH": "/pack"},
+            clean_home=True,
+            interactive=True,  # -i so the runtime forwards our stdin JSON payload
+        )
     input_json = json.dumps({"module": module, "functions": functions, "kwargs": kwargs})
 
-    returncode, stdout, stderr = backend.run_process(
-        spec, input_text=input_json, timeout=timeout,
-    )
+    try:
+        returncode, stdout, stderr = backend.run_process(
+            spec, input_text=input_json, timeout=timeout,
+        )
+    finally:
+        if egress_handle is not None:
+            try:
+                from agentnode_sdk.sandbox.egress import stop_egress_proxy
+
+                stop_egress_proxy(egress_handle)
+            except Exception:
+                pass
     if returncode == -1:
         return None, f"Tool timed out after {timeout}s", True
     if returncode != 0:
