@@ -110,7 +110,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
               Publishing as <span className="text-primary font-medium">@{user.publisher.slug}</span>
             </p>
           ) : (
-            <p className="text-sm text-muted">Review and edit your {guided.package_type === "agent" ? "agent" : "skill"} details</p>
+            <p className="text-sm text-muted">Review and edit your {guided.package_type === "agent" ? "agent" : guided.package_type === "skill" ? "skill" : "tool pack"} details</p>
           )}
         </div>
         <button
@@ -150,7 +150,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h2 className="text-lg font-bold text-foreground truncate">
-              {guided.name || `Untitled ${guided.package_type === "agent" ? "agent" : "skill"}`}
+              {guided.name || `Untitled ${guided.package_type === "agent" ? "agent" : guided.package_type === "skill" ? "skill" : "tool pack"}`}
             </h2>
             <div className="mt-0.5 font-mono text-xs text-muted">
               {guided.package_id || "no-package-id"} &middot; v{guided.version}
@@ -190,7 +190,31 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
       {/* ---- Collapsible edit panels ---- */}
       <div className="space-y-3 mb-6">
 
+        {/* === SKILL CONTENT (skills are prompt-only) === */}
+        {guided.package_type === "skill" && (
+          <div data-panel="skill">
+            <CollapsiblePanel
+              title="Skill Content (SKILL.md)"
+              subtitle={guided.skill_content ? "Prompt provided" : "The prompt / instructions for this skill"}
+              open={openPanels.has("skill")}
+              onToggle={() => togglePanel("skill")}
+              status={guided.skill_content && guided.skill_content.trim().length >= 20 ? "complete" : "incomplete"}
+            >
+              <label className="mb-1 block text-xs font-medium text-muted">SKILL.md (Markdown)</label>
+              <textarea
+                value={guided.skill_content}
+                onChange={(e) => updateGuided("skill_content", e.target.value)}
+                rows={12}
+                className="w-full rounded-lg border border-border bg-card px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted/60 focus:border-primary focus:outline-none resize-y"
+                placeholder={"# My Skill\n\nInstructions and prompt content that an agent loads. No code runs — this is a prompt-only skill."}
+              />
+              <p className="mt-1 text-xs text-muted">A skill packages a prompt (SKILL.md) and optional assets — no code, no tools.</p>
+            </CollapsiblePanel>
+          </div>
+        )}
+
         {/* === CODE / FILES (first -- most important action) === */}
+        {guided.package_type !== "skill" && (
         <div data-panel="artifact">
           <CollapsiblePanel
             title="Code / Files"
@@ -214,6 +238,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
             />
           </CollapsiblePanel>
         </div>
+        )}
 
         {/* === BASICS === */}
         <div data-panel="basics">
@@ -280,7 +305,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
             <div>
               <label className="mb-1 block text-sm font-medium text-foreground">Package Type</label>
               <div className="flex gap-3">
-                {(["toolpack", "agent"] as const).map((t) => (
+                {(["toolpack", "skill", "agent"] as const).map((t) => (
                   <button
                     key={t}
                     type="button"
@@ -291,7 +316,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
                         : "border-border text-muted hover:text-foreground"
                     }`}
                   >
-                    {t === "toolpack" ? "Skill" : "Agent"}
+                    {t === "toolpack" ? "Tool Pack" : t === "skill" ? "Skill" : "Agent"}
                   </button>
                 ))}
               </div>
@@ -588,6 +613,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
         </div>
 
         {/* === TOOLS === */}
+        {guided.package_type !== "skill" && (
         <div data-panel="tools">
           <CollapsiblePanel
             title="Tools"
@@ -724,6 +750,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
             </button>
           </CollapsiblePanel>
         </div>
+        )}
 
         {/* === AGENT CONFIGURATION === */}
         {guided.package_type === "agent" && (
@@ -914,6 +941,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
         )}
 
         {/* === PERMISSIONS === */}
+        {guided.package_type !== "skill" && (
         <div data-panel="permissions">
           <CollapsiblePanel
             title="Permissions"
@@ -1057,6 +1085,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
             )}
           </CollapsiblePanel>
         </div>
+        )}
       </div>
 
       {/* ---- Manifest preview ---- */}
