@@ -5,6 +5,7 @@ import { PLATFORMS } from "@/lib/import-utils";
 import { BUILDER_EXAMPLES } from "@/lib/builder-utils";
 
 import type { InputTab } from "../lib/types";
+import { typeLabel } from "../lib/manifest";
 import { StepIndicator } from "./StepIndicator";
 import type { PublishFormState } from "../hooks/usePublishForm";
 
@@ -14,6 +15,9 @@ export function InputHub({ form }: { form: PublishFormState }) {
     authChecked,
     activeTab,
     setActiveTab,
+    typeChosen,
+    setTypeChosen,
+    chooseType,
     guided,
     descriptionText,
     setDescriptionText,
@@ -35,14 +39,86 @@ export function InputHub({ form }: { form: PublishFormState }) {
     handleStartFresh,
   } = form;
 
-  const typeLabel =
-    guided.package_type === "agent"
-      ? "agent"
-      : guided.package_type === "skill"
-        ? "skill"
-        : "tool pack";
-
+  const label = typeLabel(guided.package_type);
   const loginReturnTo = `/publish?tab=${activeTab}`;
+
+  /* ---- Stage 1: what do you want to publish? ---- */
+  if (!typeChosen) {
+    return (
+      <div className="mx-auto max-w-4xl px-4 sm:px-6 py-12">
+        <StepIndicator current={1} />
+        <div className="text-center mb-10">
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">
+            What do you want to publish?
+          </h1>
+          <p className="mt-3 text-muted">
+            Pick a package type &mdash; the form only shows what that type needs.
+          </p>
+        </div>
+
+        {draftExpired && (
+          <div className="mb-6 rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-4 py-3 text-sm text-yellow-500">
+            Your temporary draft expired. Start again to continue.
+          </div>
+        )}
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          {([
+            {
+              type: "toolpack" as const,
+              title: "Tool Pack",
+              desc: "Executable tools (Python) that agents install and run — sandboxed by trust level.",
+            },
+            {
+              type: "skill" as const,
+              title: "Skill",
+              desc: "Prompt-only instructions (SKILL.md) an agent loads — no code, safe by construction.",
+            },
+            {
+              type: "agent" as const,
+              title: "Agent",
+              desc: "An orchestrator that uses tools from the registry to accomplish goals.",
+            },
+          ]).map((c) => (
+            <button
+              key={c.type}
+              onClick={() => { chooseType(c.type); setError(""); setDraftExpired(false); }}
+              className="rounded-xl border border-border bg-card p-6 text-left transition-all hover:border-primary/50 hover:bg-primary/5"
+            >
+              <h2 className="text-lg font-bold text-foreground">{c.title}</h2>
+              <p className="mt-1.5 text-sm text-muted">{c.desc}</p>
+            </button>
+          ))}
+          <Link
+            href="/mcp/submit"
+            className="rounded-xl border border-border bg-card p-6 text-left transition-all hover:border-primary/50 hover:bg-primary/5"
+          >
+            <h2 className="text-lg font-bold text-foreground">MCP Server</h2>
+            <p className="mt-1.5 text-sm text-muted">
+              List an existing MCP server in the catalog — reviewed submission flow.
+            </p>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  /* ---- Stage 2: entry methods for the chosen type ---- */
+  const availableTabs: { id: InputTab; label: string }[] =
+    guided.package_type === "skill"
+      ? [
+          { id: "describe", label: "Describe it" },
+          { id: "manifest", label: "Paste manifest" },
+        ]
+      : guided.package_type === "agent"
+        ? [{ id: "manifest", label: "Paste manifest" }]
+        : [
+            { id: "import", label: "Import code" },
+            { id: "manifest", label: "Paste manifest" },
+          ];
+  const effectiveTab: InputTab = availableTabs.some((t) => t.id === activeTab)
+    ? activeTab
+    : availableTabs[0].id;
 
   return (
     <div className="mx-auto max-w-4xl px-4 sm:px-6 py-12">
@@ -50,10 +126,21 @@ export function InputHub({ form }: { form: PublishFormState }) {
       {/* Header */}
       <div className="text-center mb-10">
         <h1 className="text-3xl font-bold tracking-tight text-foreground">
-          Publish your {typeLabel}
+          Publish your {label}
         </h1>
         <p className="mt-3 text-muted">
-          Describe, import, or paste &mdash; we&apos;ll handle the rest.
+          {guided.package_type === "skill"
+            ? "Describe it, paste a manifest, or start from a blank SKILL.md."
+            : guided.package_type === "agent"
+              ? "Paste a manifest or configure your agent from scratch."
+              : "Import existing code, paste a manifest, or start from scratch."}{" "}
+          <button
+            type="button"
+            onClick={() => { setTypeChosen(false); setError(""); }}
+            className="text-primary hover:underline"
+          >
+            Change type
+          </button>
         </p>
       </div>
 
@@ -64,28 +151,26 @@ export function InputHub({ form }: { form: PublishFormState }) {
         </div>
       )}
 
-      {/* Tab selector */}
-      <div className="mb-8 flex justify-center">
-        <div className="inline-flex rounded-full border border-border bg-card p-1">
-          {([
-            { id: "describe" as InputTab, label: "Describe it" },
-            { id: "import" as InputTab, label: "Import code" },
-            { id: "manifest" as InputTab, label: "Paste manifest" },
-          ]).map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => { setActiveTab(tab.id); setError(""); setDraftExpired(false); }}
-              className={`rounded-full px-5 py-2 text-sm font-medium transition-all ${
-                activeTab === tab.id
-                  ? "bg-primary text-white shadow-sm"
-                  : "text-muted hover:text-foreground"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+      {/* Tab selector (only when the type has more than one entry method) */}
+      {availableTabs.length > 1 && (
+        <div className="mb-8 flex justify-center">
+          <div className="inline-flex rounded-full border border-border bg-card p-1">
+            {availableTabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => { setActiveTab(tab.id); setError(""); setDraftExpired(false); }}
+                className={`rounded-full px-5 py-2 text-sm font-medium transition-all ${
+                  effectiveTab === tab.id
+                    ? "bg-primary text-white shadow-sm"
+                    : "text-muted hover:text-foreground"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Error */}
       {error && (
@@ -106,7 +191,7 @@ export function InputHub({ form }: { form: PublishFormState }) {
       )}
 
       {/* ---- TAB: Describe ---- */}
-      {activeTab === "describe" && (
+      {effectiveTab === "describe" && (
         <div className="space-y-6">
           {/* Say the auth requirement BEFORE the user writes a description,
               not as a surprise on Generate. */}
@@ -175,7 +260,7 @@ export function InputHub({ form }: { form: PublishFormState }) {
       )}
 
       {/* ---- TAB: Import ---- */}
-      {activeTab === "import" && (
+      {effectiveTab === "import" && (
         <div className="space-y-6">
           {/* Platform pills */}
           <div className="flex flex-wrap gap-2">
@@ -239,7 +324,7 @@ export function InputHub({ form }: { form: PublishFormState }) {
       )}
 
       {/* ---- TAB: Paste Manifest ---- */}
-      {activeTab === "manifest" && (
+      {effectiveTab === "manifest" && (
         <div className="space-y-6">
           <div>
             <label className="mb-2 block text-sm font-medium text-foreground">
@@ -263,16 +348,22 @@ export function InputHub({ form }: { form: PublishFormState }) {
             >
               Continue to review
             </button>
-            <span className="text-xs text-muted">or</span>
-            <button
-              onClick={handleStartFresh}
-              className="rounded-xl border border-border px-6 py-3 text-sm font-medium text-muted transition-all hover:text-foreground hover:border-primary/30"
-            >
-              Start from scratch
-            </button>
           </div>
         </div>
       )}
+
+      {/* Start from scratch — first-class for every type, not hidden in a tab */}
+      <div className="mt-8 border-t border-border pt-6 text-center">
+        <p className="text-sm text-muted">
+          Prefer a blank form?{" "}
+          <button
+            onClick={handleStartFresh}
+            className="font-medium text-primary hover:underline"
+          >
+            Start your {label} from scratch
+          </button>
+        </p>
+      </div>
 
       {/* SEO content */}
       <div className="mt-16 border-t border-border pt-10 space-y-10 text-sm text-muted">
