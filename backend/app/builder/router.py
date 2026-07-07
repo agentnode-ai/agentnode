@@ -95,6 +95,45 @@ async def builder_generate(
     return result
 
 
+def build_skill_artifact(
+    package_id: str,
+    manifest_json: dict,
+    code_files: list[tuple[str, str]],
+) -> bytes:
+    """Assemble a prompt-only *skill* artifact.
+
+    Skills are packaged as ``{slug}/agentnode.yaml`` + ``{slug}/SKILL.md`` +
+    declared assets, and nothing else. The toolpack/agent path writes
+    ``manifest.json`` and injects ``tests/*.py`` — both are rejected by the skill
+    artifact quality gate (``validate_artifact_quality(..., package_type="skill")``),
+    so skills need this dedicated assembly.
+    """
+    import yaml
+
+    safe_name = re.sub(r"[^a-z0-9-]", "", package_id)[:60] or "package"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        def _add(name: str, data: bytes) -> None:
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+        _add(
+            f"{safe_name}/agentnode.yaml",
+            yaml.safe_dump(manifest_json, sort_keys=False).encode(),
+        )
+        for path, content in code_files:
+            rel = str(path).replace("\\", "/").lstrip("/")
+            if not rel or ".." in rel.split("/"):
+                raise AppError(
+                    "BUILDER_INVALID_PATH",
+                    f"Invalid file path: {path}",
+                    400,
+                )
+            _add(f"{safe_name}/{rel}", content.encode())
+    return buf.getvalue()
+
+
 @router.post(
     "/artifact",
     dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60))],
@@ -104,6 +143,23 @@ async def builder_artifact(
     user: User = Depends(get_current_user),
 ) -> StreamingResponse:
     """Build a .tar.gz artifact from builder output (manifest + code files)."""
+    # Skills are prompt-only: a dedicated layout (agentnode.yaml + SKILL.md, no
+    # manifest.json, no injected tests) that the skill quality gate accepts.
+    if body.manifest_json.get("package_type") == "skill":
+        artifact = build_skill_artifact(
+            body.package_id,
+            body.manifest_json,
+            [(f.path, f.content) for f in body.code_files],
+        )
+        safe_name = re.sub(r"[^a-z0-9-]", "", body.package_id)[:60] or "package"
+        return StreamingResponse(
+            io.BytesIO(artifact),
+            media_type="application/gzip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_name}.tar.gz"'
+            },
+        )
+
     # Detect package type and tool function name from code files for test generation
     is_agent = body.manifest_json.get("package_type") == "agent"
     tool_func = "run"
