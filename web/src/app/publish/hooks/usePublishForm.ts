@@ -464,7 +464,9 @@ export function usePublishForm() {
       let apiDraftReady: boolean | null = null;
 
       try {
-        const res = await fetch("/api/v1/import/convert", {
+        // fetchWithAuth retries once after a token refresh — plain fetch
+        // silently degraded expired sessions to the client-side fallback.
+        const res = await fetchWithAuth("/import/convert", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ platform: importPlatform, content: importCode }),

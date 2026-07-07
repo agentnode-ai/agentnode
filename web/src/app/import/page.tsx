@@ -2,6 +2,8 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { fetchWithAuth } from "@/lib/api";
 import {
   PLATFORMS,
   type ConversionResult,
@@ -65,6 +67,7 @@ export default function ImportPage() {
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [notice, setNotice] = useState("");
+  const [fallbackReason, setFallbackReason] = useState<"auth" | "server" | null>(null);
   const [activeFileTab, setActiveFileTab] = useState(0);
   const [packageCount, setPackageCount] = useState<number | null>(null);
   const [capabilityCount, setCapabilityCount] = useState<number | null>(null);
@@ -102,13 +105,17 @@ export default function ImportPage() {
     setActiveFileTab(0);
 
     try {
-      const res = await fetch("/api/v1/import/convert", {
+      // fetchWithAuth sends the session cookie and retries once after a
+      // token refresh — plain fetch silently degraded expired sessions
+      // to the client-side fallback.
+      const res = await fetchWithAuth("/import/convert", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ platform, content: code }),
       });
       if (res.ok) {
         const data: ApiConvertResponse = await res.json();
+        setFallbackReason(null);
         setApiResponse(data);
         setResult({
           manifest: data.manifest_yaml,
@@ -128,22 +135,23 @@ export default function ImportPage() {
         }
       } else {
         // API error — fall back to client-side conversion
-        _fallbackConvert();
+        _fallbackConvert(res.status === 401 ? "auth" : "server");
       }
     } catch {
-      _fallbackConvert();
+      _fallbackConvert("server");
     } finally {
       setLoading(false);
     }
   };
 
-  const _fallbackConvert = () => {
+  const _fallbackConvert = (reason: "auth" | "server") => {
     const manifest = convertClientSide(platform, code);
     if (manifest.startsWith("# No tools")) {
       setError("No tools detected. Check your input format and try again.");
     } else {
       setResult(parseResult(manifest, platform));
       setApiResponse(null);
+      setFallbackReason(reason);
     }
   };
 
@@ -314,7 +322,9 @@ export default function ImportPage() {
                 "Convert to ANP"
               )}
             </button>
-            <span className="text-xs text-muted">Free — no account required</span>
+            <span className="text-xs text-muted">
+              Free &mdash; quick preview without an account, full conversion when signed in
+            </span>
           </div>
 
           {/* Error */}
@@ -347,6 +357,15 @@ export default function ImportPage() {
             {apiResponse ? (
               <div className="mb-6 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3 text-sm text-yellow-300">
                 This is a draft only. Review all generated files before publishing.
+              </div>
+            ) : fallbackReason === "auth" ? (
+              <div className="mb-6 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3 text-sm text-yellow-300">
+                Signed-out preview: converted in your browser without code files or
+                dependency analysis.{" "}
+                <Link href="/auth/login?returnTo=%2Fimport" className="underline font-medium hover:text-yellow-200">
+                  Sign in
+                </Link>{" "}
+                and convert again for the full result.
               </div>
             ) : (
               <div className="mb-6 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3 text-sm text-yellow-300">
@@ -621,6 +640,7 @@ export default function ImportPage() {
                     setCode("");
                     setError("");
                     setActiveFileTab(0);
+                    setFallbackReason(null);
                   }}
                   className="rounded-lg border border-border px-4 py-2 text-sm text-muted transition-colors hover:text-foreground"
                 >
@@ -764,7 +784,8 @@ export default function ImportPage() {
                 Import your tool now
               </button>
               <p className="mt-4 text-sm text-muted">
-                Free to convert — no account needed until you publish.
+                Free to convert — sign in for the full conversion; an account is
+                required to publish.
               </p>
             </div>
           </section>
