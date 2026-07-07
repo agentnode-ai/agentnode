@@ -62,6 +62,10 @@ CANONICAL_FIELDS = (
     # Stage 5: the publisher-attested, canonicalized egress allowlist, sealed at install
     # so a future Stage 3B trusts a tamper-evident value (NOT consumed at run time yet).
     "mcp_allowed_domains",
+    # Credentialed toolpacks: declared env-var NAMES ({name, required, description}),
+    # sealed so a tampered lockfile cannot widen or swap the credential set. Appended
+    # at the end — entries WITHOUT the field hash identically (backward-compatible).
+    "env_requirements",
 )
 
 CANONICAL_FIELDS_V2 = CANONICAL_FIELDS + ("_signatures",)
@@ -90,6 +94,7 @@ SENSITIVE_FIELDS: dict[str, str] = {
     "mcp_preinstalled": "MCP preinstall status changed",
     "mcp_preinstall_command": "MCP preinstall command changed",
     "mcp_allowed_domains": "MCP egress allowlist changed",
+    "env_requirements": "Declared credential requirements changed",
 }
 
 PERMISSION_ESCALATIONS: dict[str, tuple[str, set[str]]] = {

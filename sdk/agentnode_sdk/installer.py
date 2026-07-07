@@ -690,6 +690,9 @@ def install_package(
     mcp_allowed_domains: list | None = None,
     # TG-2: registry-reported key status (install-time revocation)
     key_status: str | None = None,
+    # Toolpack runtime credentials: [{name, required, description}] — names
+    # only, never values. Sealed into the lockfile for runtime UX + gating.
+    env_requirements: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Execute the full local install flow (mirrors CLI §13.4).
 
@@ -835,6 +838,8 @@ def install_package(
             lock_entry["mcp_command"] = mcp_command
         if mcp_env_keys:
             lock_entry["mcp_env_keys"] = mcp_env_keys
+        if env_requirements:
+            lock_entry["env_requirements"] = env_requirements
         if remote_endpoint:
             lock_entry["remote_endpoint"] = remote_endpoint
 

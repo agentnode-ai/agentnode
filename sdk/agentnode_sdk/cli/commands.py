@@ -813,6 +813,7 @@ def cmd_install(capability: str, version: str | None = None, yes: bool = False) 
                 _print_install_trust_summary(result.slug)
                 _print_install_guard_summary(result.slug)
                 _print_install_mcp_guidance(result.slug)
+                _print_install_env_guidance(result.slug)
                 print()
         else:
             print(f"\n  {result.message}\n")
@@ -1933,6 +1934,44 @@ def _print_install_mcp_guidance(slug: str) -> None:
         print()
         print(f"  Run:  agentnode run {slug} --input '{{\"key\": \"value\"}}'")
 
+    except Exception:
+        pass
+
+
+def _print_install_env_guidance(slug: str) -> None:
+    """Post-install guidance for toolpacks that declare env_requirements.
+
+    Names + set/missing status only — a credential VALUE is never read or
+    printed.
+    """
+    import os
+    from agentnode_sdk.installer import read_lockfile
+
+    try:
+        lock = read_lockfile()
+        pkg = lock.get("packages", {}).get(slug, {})
+        if not pkg or pkg.get("runtime") == "mcp":
+            return
+        reqs = pkg.get("env_requirements") or []
+        if not reqs:
+            return
+        print()
+        print("  This toolpack declares environment variables:")
+        for r in reqs:
+            if not isinstance(r, dict) or not r.get("name"):
+                continue
+            name = r["name"]
+            required = r.get("required", True)
+            status = "set" if name in os.environ else "not set"
+            tag = "required" if required else "optional"
+            print(f"    {name}  ({tag}, {status})")
+        missing_required = [
+            r["name"] for r in reqs
+            if isinstance(r, dict) and r.get("name")
+            and r.get("required", True) and r["name"] not in os.environ
+        ]
+        if missing_required:
+            print("  Set the required variable(s) before running this toolpack.")
     except Exception:
         pass
 
