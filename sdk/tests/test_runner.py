@@ -161,7 +161,9 @@ class TestRunToolDirect:
         assert result.success is True
         assert result.result == {"answer": 42}
         assert result.mode_used == "direct"
-        assert result.duration_ms > 0
+        # >= 0, not > 0: duration_ms is rounded to 0.1ms, so a trivial mocked
+        # direct call legitimately measures 0.0 on fast runners (flaked in CI).
+        assert result.duration_ms >= 0
         mock_fn.assert_called_once_with(x=1)
 
     @patch("agentnode_sdk.runtimes.python_runner.load_tool", side_effect=ImportError("not installed"))
