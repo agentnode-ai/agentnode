@@ -8,6 +8,7 @@ import {
   PLATFORMS,
   type ConversionResult,
   convertClientSide,
+  parseManifestInput,
   parseResult,
 } from "@/lib/import-utils";
 
@@ -59,6 +60,9 @@ interface ApiConvertResponse {
 
 export default function ImportPage() {
   const router = useRouter();
+  // "code" = framework conversion via the platform pills;
+  // "manifest" = paste an existing ANP manifest and continue to /publish
+  const [inputMode, setInputMode] = useState<"code" | "manifest">("code");
   const [platform, setPlatform] = useState("langchain");
   const [code, setCode] = useState("");
   const [result, setResult] = useState<ConversionResult | null>(null);
@@ -163,6 +167,21 @@ export default function ImportPage() {
     textareaRef.current?.focus();
   };
 
+  /* ---- Manifest paste: validate and hand off to /publish ---- */
+  const handleManifestContinue = () => {
+    const parsed = parseManifestInput(code);
+    if (!parsed.ok) {
+      setError(parsed.error);
+      return;
+    }
+    setError("");
+    sessionStorage.setItem(
+      "publish_prefill",
+      JSON.stringify({ source: "import", manifestText: code })
+    );
+    router.push("/publish?from=import");
+  };
+
   const handleCopy = async () => {
     if (result) {
       try {
@@ -255,7 +274,8 @@ export default function ImportPage() {
             Turn Any Tool Into an AgentNode Package
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-lg text-muted">
-            Import tools from LangChain, CrewAI, MCP servers, or OpenAI function schemas.
+            Import tools from LangChain, CrewAI, MCP servers, or OpenAI function
+            schemas &mdash; or paste an existing ANP manifest.
           </p>
         </div>
       </section>
@@ -265,19 +285,20 @@ export default function ImportPage() {
       {/* ============================================================ */}
       <section className="border-b border-border">
         <div className="mx-auto max-w-4xl px-4 sm:px-6 py-10">
-          {/* Platform tabs */}
-          <div className="mb-6 flex flex-wrap gap-2">
+          {/* Input mode tabs: framework platforms + manifest paste */}
+          <div className="mb-6 flex flex-wrap items-center gap-2">
             {PLATFORMS.map((p) => (
               <button
                 key={p.id}
                 onClick={() => {
+                  setInputMode("code");
                   setPlatform(p.id);
                   setResult(null);
                   setApiResponse(null);
                   setError("");
                 }}
                 className={`flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-all ${
-                  platform === p.id
+                  inputMode === "code" && platform === p.id
                     ? "border-primary bg-primary/10 text-primary"
                     : "border-border text-muted hover:border-primary/30 hover:text-foreground"
                 }`}
@@ -286,6 +307,23 @@ export default function ImportPage() {
                 {p.name}
               </button>
             ))}
+            <span className="mx-1 h-5 w-px bg-border" aria-hidden />
+            <button
+              onClick={() => {
+                setInputMode("manifest");
+                setResult(null);
+                setApiResponse(null);
+                setError("");
+              }}
+              className={`flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-all ${
+                inputMode === "manifest"
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border text-muted hover:border-primary/30 hover:text-foreground"
+              }`}
+            >
+              <span>&#128196;</span>
+              ANP Manifest
+            </button>
           </div>
 
           {/* Input area */}
@@ -294,22 +332,28 @@ export default function ImportPage() {
               ref={textareaRef}
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              placeholder={`Paste your ${selectedPlatform.name} tool code here...\n\nOr click "Try example" to see it in action`}
+              placeholder={
+                inputMode === "manifest"
+                  ? "Paste your agentnode.yaml or manifest JSON here..."
+                  : `Paste your ${selectedPlatform.name} tool code here...\n\nOr click "Try example" to see it in action`
+              }
               className="h-64 w-full rounded-xl border border-border bg-card p-5 font-mono text-sm text-foreground placeholder:text-muted/40 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all"
               spellCheck={false}
             />
-            <button
-              onClick={handleTryExample}
-              className="absolute right-3 top-3 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
-            >
-              Try example
-            </button>
+            {inputMode === "code" && (
+              <button
+                onClick={handleTryExample}
+                className="absolute right-3 top-3 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
+              >
+                Try example
+              </button>
+            )}
           </div>
 
-          {/* Convert button */}
+          {/* Convert / continue button */}
           <div className="mt-4 flex items-center gap-4">
             <button
-              onClick={handleConvert}
+              onClick={inputMode === "manifest" ? handleManifestContinue : handleConvert}
               disabled={loading || !code.trim()}
               className="rounded-xl bg-primary px-8 py-3 text-sm font-semibold text-white transition-all hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed"
             >
@@ -318,12 +362,16 @@ export default function ImportPage() {
                   <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
                   Converting...
                 </span>
+              ) : inputMode === "manifest" ? (
+                "Continue to publish"
               ) : (
                 "Convert to ANP"
               )}
             </button>
             <span className="text-xs text-muted">
-              Free &mdash; quick preview without an account, full conversion when signed in
+              {inputMode === "manifest"
+                ? "No conversion needed — your manifest is handed to the publish form"
+                : "Free — quick preview without an account, full conversion when signed in"}
             </span>
           </div>
 
