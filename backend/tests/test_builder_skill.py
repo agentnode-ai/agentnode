@@ -4,6 +4,7 @@ The builder's toolpack/agent path writes `manifest.json` and injects `tests/*.py
 both are rejected by the skill artifact quality gate. These tests prove the skill
 branch produces an artifact that the real gate accepts.
 """
+
 import io
 import tarfile
 
@@ -81,6 +82,4 @@ def test_build_skill_artifact_with_declared_asset_passes():
 
 def test_build_skill_artifact_rejects_path_traversal():
     with pytest.raises(AppError):
-        build_skill_artifact(
-            "my-skill", _skill_manifest(), [("../evil.md", "x")]
-        )
+        build_skill_artifact("my-skill", _skill_manifest(), [("../evil.md", "x")])

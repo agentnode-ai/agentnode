@@ -113,6 +113,7 @@ def build_skill_artifact(
     safe_name = re.sub(r"[^a-z0-9-]", "", package_id)[:60] or "package"
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+
         def _add(name: str, data: bytes) -> None:
             info = tarfile.TarInfo(name=name)
             info.size = len(data)
