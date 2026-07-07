@@ -296,7 +296,11 @@ export default async function McpPage() {
           language="bash"
         />
         <p className="mt-3 text-xs text-muted">
-          Submissions are reviewed before they go live. See the{" "}
+          Submissions are reviewed before they go live. Prefer the browser?{" "}
+          <Link href="/mcp/submit" className="text-primary hover:underline">
+            Submit via the web form
+          </Link>{" "}
+          — or see the{" "}
           <Link href="/docs/cli" className="text-primary hover:underline">
             CLI reference
           </Link>{" "}
