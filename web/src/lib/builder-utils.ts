@@ -28,29 +28,29 @@ export interface BuilderResult {
 }
 
 export const BUILDER_EXAMPLES = [
-  "A tool that extracts text from PDF files and returns structured content",
-  "A tool that summarizes webpages given a URL",
-  "A tool that converts CSV files to JSON format",
-  "A tool that finds email addresses in text",
-  "A tool that translates text between languages",
-  "A tool that generates SQL queries from natural language",
-  "A tool that analyzes log files for errors and warnings",
-  "A tool that searches the web for a given query",
+  "A skill that turns commit history into concise release notes",
+  "A skill that summarizes webpages into three key bullet points",
+  "A skill that rewrites emails to match a requested tone",
+  "A skill that turns meeting notes into action items with owners",
+  "A skill that explains code changes in reviewer-friendly language",
+  "A skill that drafts social media posts from a product update",
+  "A skill that structures brainstorming output into a project plan",
+  "A skill that reviews text for clarity and suggests improvements",
 ];
 
 /* ------------------------------------------------------------------ */
 /*  Generate a skill from a description via the backend API            */
+/*  The builder is skills-only: prompt-only packages (SKILL.md).       */
 /* ------------------------------------------------------------------ */
 
 export async function generateSkill(
   description: string,
-  packageType: string = "toolpack",
 ): Promise<{ ok: boolean; status: number; data?: BuilderResult; error?: string }> {
   try {
     const res = await fetchWithAuth("/builder/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ description: description.trim(), package_type: packageType }),
+      body: JSON.stringify({ description: description.trim(), package_type: "skill" }),
     });
 
     if (res.ok) {

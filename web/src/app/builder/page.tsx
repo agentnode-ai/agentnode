@@ -100,45 +100,19 @@ export default function BuilderPage() {
     }
   }
 
-  /* ---- Publish: build artifact and navigate ---- */
+  /* ---- Publish: hand the skill to the publish form ---- */
   const [publishing, setPublishing] = useState(false);
-  async function handlePublish() {
+  function handlePublish() {
     if (!result) return;
     setPublishing(true);
-    try {
-      const artifactBlob = await buildArtifact(
-        result.metadata.package_id,
-        result.manifest_json,
-        result.code_files,
-      );
-
-      // Store manifest + code_files + artifact in sessionStorage, then navigate
-      const dataUrl = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.readAsDataURL(artifactBlob);
-      });
-      sessionStorage.setItem("publish_prefill", JSON.stringify({
-        source: "builder",
-        manifestText: JSON.stringify(result.manifest_json, null, 2),
-        originalFiles: result.code_files,
-      }));
-      sessionStorage.setItem("publish_prefill_artifact", JSON.stringify({
-        artifactFiles: dataUrl,
-        artifactName: `${result.metadata.package_id}.tar.gz`,
-      }));
-      router.push("/publish?from=builder");
-    } catch {
-      // Fallback: navigate with manifest + code files (no artifact)
-      sessionStorage.setItem("publish_prefill", JSON.stringify({
-        source: "builder",
-        manifestText: JSON.stringify(result.manifest_json, null, 2),
-        originalFiles: result.code_files,
-      }));
-      router.push("/publish?from=builder");
-    } finally {
-      setPublishing(false);
-    }
+    // Manifest + SKILL.md are enough: the publish form rebuilds the skill
+    // artifact from skill_content at submit time, no pre-built tar needed.
+    sessionStorage.setItem("publish_prefill", JSON.stringify({
+      source: "builder",
+      manifestText: JSON.stringify(result.manifest_json, null, 2),
+      originalFiles: result.code_files,
+    }));
+    router.push("/publish?from=builder");
   }
 
   /* ---- Share on X ---- */
@@ -168,8 +142,9 @@ export default function BuilderPage() {
             Build Skills for Any Agent
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-lg text-muted">
-            Describe what your agent should do — get a fully working skill
-            with code, schema and entrypoints. Ready to edit, run and publish.
+            Describe what your agent should be able to do — get a complete,
+            prompt-only skill: clear SKILL.md instructions plus a valid ANP
+            manifest. No code, ready to edit and publish.
           </p>
         </div>
       </section>
@@ -185,7 +160,7 @@ export default function BuilderPage() {
           <textarea
             value={description}
             onChange={(e) => { setDescription(e.target.value); setError(""); }}
-            placeholder='e.g. "A tool that extracts email addresses from a webpage and returns them as a list"'
+            placeholder='e.g. "A skill that turns commit history into concise release notes"'
             rows={4}
             className="w-full rounded-xl border border-border bg-card px-4 py-3 text-sm text-foreground placeholder:text-muted/60 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none"
             onKeyDown={(e) => {
@@ -281,9 +256,8 @@ export default function BuilderPage() {
                     Your skill is ready
                   </h2>
                   <p className="mt-1 text-sm text-muted">
-                    {result.metadata.package_name} &mdash;{" "}
-                    {result.metadata.tool_count} tool
-                    {result.metadata.tool_count > 1 ? "s" : ""} generated
+                    {result.metadata.package_name} &mdash; prompt-only skill
+                    (SKILL.md + manifest)
                   </p>
                 </div>
                 {result.metadata.publish_ready && (
@@ -305,18 +279,18 @@ export default function BuilderPage() {
                 </div>
                 <div className="rounded-lg border border-border bg-card px-4 py-3">
                   <div className="text-xs font-medium uppercase tracking-wider text-muted">
-                    Tools
+                    Type
                   </div>
                   <div className="mt-1 text-sm font-semibold text-foreground">
-                    {result.metadata.tool_count}
+                    Skill (prompt-only)
                   </div>
                 </div>
                 <div className="rounded-lg border border-border bg-card px-4 py-3">
                   <div className="text-xs font-medium uppercase tracking-wider text-muted">
-                    Skills
+                    Execution
                   </div>
                   <div className="mt-1 text-sm font-semibold text-foreground">
-                    {result.metadata.detected_capability_ids.length}
+                    No code
                   </div>
                 </div>
                 <div className="rounded-lg border border-border bg-card px-4 py-3">
@@ -326,23 +300,6 @@ export default function BuilderPage() {
                   <div className="mt-1 text-sm font-semibold text-primary">
                     ANP v0.2
                   </div>
-                </div>
-              </div>
-
-              {/* Capability IDs */}
-              <div className="mb-6">
-                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted">
-                  Detected Skills
-                </h3>
-                <div className="flex flex-wrap gap-2">
-                  {result.metadata.detected_capability_ids.map((cap) => (
-                    <span
-                      key={cap}
-                      className="rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-xs font-medium text-primary"
-                    >
-                      {cap}
-                    </span>
-                  ))}
                 </div>
               </div>
 
@@ -362,7 +319,7 @@ export default function BuilderPage() {
                 {(
                   [
                     { key: "manifest", label: "Manifest" },
-                    { key: "code", label: "Code" },
+                    { key: "code", label: "SKILL.md" },
                     { key: "preview", label: "Preview" },
                   ] as const
                 ).map((tab) => (
@@ -453,17 +410,10 @@ export default function BuilderPage() {
                     </div>
                     <div>
                       <div className="text-xs font-medium uppercase tracking-wider text-muted">
-                        Skills
+                        Type
                       </div>
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        {result.metadata.detected_capability_ids.map((c) => (
-                          <span
-                            key={c}
-                            className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary"
-                          >
-                            {c}
-                          </span>
-                        ))}
+                      <div className="mt-1 text-foreground">
+                        Skill &mdash; prompt-only, no code execution
                       </div>
                     </div>
                     <div>
@@ -471,7 +421,7 @@ export default function BuilderPage() {
                         Standard
                       </div>
                       <div className="mt-1 text-foreground">
-                        ANP v0.2 &mdash; LangChain, CrewAI, MCP, Python
+                        ANP &mdash; works with any agent framework
                       </div>
                     </div>
                     <div className="sm:col-span-2">
@@ -584,19 +534,11 @@ export default function BuilderPage() {
                 {[
                   {
                     label: "AgentNode SDK",
-                    code: `from agentnode_sdk import AgentNodeClient\nfrom agentnode_sdk.installer import load_tool\n\nclient = AgentNodeClient()\nclient.install("${result.metadata.package_id}")\n\ntool = load_tool("${result.metadata.package_id}")\nresult = tool({"input": "...  "})`,
+                    code: `from agentnode_sdk import load_skill\n\nskill = load_skill("${result.metadata.package_id}")\nprompt = skill.render(input="...")`,
                   },
                   {
-                    label: "LLM Runtime",
-                    code: `from agentnode_sdk import AgentNodeRuntime\n\n# LLM discovers and uses your tool\nruntime = AgentNodeRuntime()\nresult = runtime.run(\n    provider="openai",\n    client=OpenAI(),\n    model="gpt-4o",\n    messages=[...],\n)`,
-                  },
-                  {
-                    label: "LangChain",
-                    code: `from agentnode_langchain import as_langchain_tool\n\ntool = as_langchain_tool("${result.metadata.package_id}")`,
-                  },
-                  {
-                    label: "MCP",
-                    code: `from agentnode_mcp import as_mcp_tool\n\ntool = as_mcp_tool("${result.metadata.package_id}")`,
+                    label: "System prompt",
+                    code: `# Load the instructions into any agent\nskill = load_skill("${result.metadata.package_id}")\n\nmessages = [\n    {"role": "system", "content": skill.prompt_text},\n    {"role": "user", "content": "..."},\n]`,
                   },
                   {
                     label: "CLI",
@@ -658,7 +600,7 @@ export default function BuilderPage() {
                   {
                     step: "2",
                     title: "Generate",
-                    desc: "Get a complete skill package with manifest, code, and schemas.",
+                    desc: "Get a complete prompt-only skill: SKILL.md instructions plus a valid ANP manifest.",
                     icon: (
                       <path
                         strokeLinecap="round"
@@ -670,7 +612,7 @@ export default function BuilderPage() {
                   {
                     step: "3",
                     title: "Edit & Publish",
-                    desc: "Review the generated code, customize it, and publish to AgentNode.",
+                    desc: "Review the instructions, refine them, and publish to AgentNode.",
                     icon: (
                       <path
                         strokeLinecap="round"
@@ -712,7 +654,7 @@ export default function BuilderPage() {
           <section className="border-b border-border">
             <div className="mx-auto max-w-4xl px-4 sm:px-6 py-16">
               <h2 className="mb-10 text-center text-2xl font-bold text-foreground">
-                Two ways to create skills
+                Two ways to create packages
               </h2>
               <div className="grid gap-6 sm:grid-cols-2">
                 <div className="rounded-xl border border-border bg-card p-6">
@@ -723,15 +665,15 @@ export default function BuilderPage() {
                     Skill Builder
                   </h3>
                   <p className="mb-4 text-sm text-muted">
-                    Describe what your skill should do and get a complete package
-                    with manifest, code, and schemas.
+                    Describe what your skill should do and get a complete
+                    prompt-only package: SKILL.md instructions plus manifest.
                   </p>
                   <ul className="space-y-2 text-sm">
                     {[
                       "Start from a description",
-                      "Get production-ready structure",
-                      "Editable code scaffold",
-                      "Valid ANP v0.2 output",
+                      "No code — safe by construction",
+                      "Editable SKILL.md instructions",
+                      "Valid ANP output",
                     ].map((t) => (
                       <li
                         key={t}
@@ -752,11 +694,11 @@ export default function BuilderPage() {
                     Have code?
                   </div>
                   <h3 className="mb-2 text-lg font-bold text-foreground">
-                    Import Skill
+                    Import Tools
                   </h3>
                   <p className="mb-4 text-sm text-muted">
                     Paste existing LangChain, MCP, OpenAI, or CrewAI code and
-                    convert it to a skill package.
+                    convert it to a tool package.
                   </p>
                   <ul className="space-y-2 text-sm">
                     {[

@@ -7,8 +7,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class BuilderGenerateRequest(BaseModel):
+    # The builder is skills-only: described capabilities become prompt-only
+    # skill packages. Toolpacks/agents are authored via import/upload instead.
     description: str = Field(..., min_length=10, max_length=1000)
-    package_type: str = Field(default="toolpack", pattern=r"^(toolpack|agent)$")
+    package_type: str = Field(default="skill", pattern=r"^skill$")
 
 
 _SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9/_.\-]+$")

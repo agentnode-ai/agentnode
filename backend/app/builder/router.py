@@ -20,7 +20,7 @@ from app.builder.schemas import (
     BuilderGenerateRequest,
     BuilderGenerateResponse,
 )
-from app.builder.service import generate_capability
+from app.builder.service import generate_skill_capability
 from app.config import settings
 from app.shared.exceptions import AppError
 from app.shared.rate_limit import rate_limit
@@ -39,12 +39,15 @@ async def builder_generate(
     body: BuilderGenerateRequest,
     user: User = Depends(get_current_user),
 ) -> BuilderGenerateResponse:
-    """Generate an ANP v0.2 manifest and code scaffold from a description."""
+    """Generate an ANP skill (manifest + SKILL.md) from a description.
+
+    The builder is skills-only: prompt-only packages, no executable code.
+    """
     description = body.description.strip()
     if len(description) < 10:
         raise AppError(
             "BUILDER_INPUT_TOO_SHORT",
-            "Please describe your capability in more detail.",
+            "Please describe your skill in more detail.",
             400,
         )
 
@@ -59,20 +62,18 @@ async def builder_generate(
     # Use AI generation when Anthropic API key is configured, fall back to heuristic
     if settings.ANTHROPIC_API_KEY:
         try:
-            from app.builder.ai import generate_with_ai
+            from app.builder.ai import generate_skill_with_ai
 
-            result = await generate_with_ai(
-                description=description, package_type=body.package_type
-            )
+            result = await generate_skill_with_ai(description=description)
         except Exception as exc:
             logger.warning("AI generation failed, falling back to heuristic: %s", exc)
 
     if result is None:
-        result = generate_capability(
-            description=description, package_type=body.package_type
-        )
+        result = generate_skill_capability(description=description)
 
-    # --- Output guardrails: scan generated code ---
+    # --- Output guardrails: scan generated content ---
+    # Skills are prompt-only, but the generated SKILL.md is still scanned:
+    # it instructs agents, so dangerous patterns are blocked conservatively.
     findings = scan_generated_code(result.code_files)
     if findings:
         logger.warning(
@@ -84,7 +85,7 @@ async def builder_generate(
         if has_critical_findings(findings):
             raise AppError(
                 "BUILDER_OUTPUT_BLOCKED",
-                "The generated code contains potentially unsafe patterns. Please try a different description.",
+                "The generated content contains potentially unsafe patterns. Please try a different description.",
                 400,
             )
         # Non-critical findings: attach as warnings
