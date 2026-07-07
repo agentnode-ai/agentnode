@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.20.0 — Credentialed toolpacks (bring your own API key)
+
+### Added
+
+- Toolpacks can declare the credentials they need (`env_requirements` in the
+  manifest: names, required flag, description — never values). The declaration
+  and the publisher's `permissions.network.allowed_domains` egress allowlist
+  are sealed into the lockfile at install (integrity-covered; tampering with
+  either breaks lockfile integrity).
+- `agentnode install` lists the declared environment variables with their
+  set/not-set status and tells you to set required ones before running.
+- Sandboxed community toolpacks can now receive user-provided API keys under
+  a fail-closed regime mirroring credentialed MCPs: a consent prompt (or a
+  stored grant) bound to the exact package identity
+  (slug + version + artifact hash + key names + domains), an enforced egress
+  proxy restricted to the sealed `allowed_domains`, and name-only key
+  pass-through (`--env NAME` — the value never appears on argv, in the
+  process spec, or in logs).
+
+### Changed
+
+- Running a toolpack with a missing *required* environment variable now fails
+  before dispatch with an actionable, value-free message
+  (`mode_used="credentials_missing"`) instead of a cryptic tool error.
+
+### Security
+
+- A credentialed toolpack without a valid, non-empty `allowed_domains`
+  allowlist is refused — a secret never rides an open or unrestricted
+  network. Consent cannot transfer between packages, versions, artifacts,
+  key sets, or domain sets. There is no fallback run without these
+  protections. Non-credentialed toolpacks behave exactly as before.
+
 ## 0.19.0 — Full setup wizard coverage
 
 ### Added
