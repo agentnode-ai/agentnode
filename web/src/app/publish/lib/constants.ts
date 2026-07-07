@@ -55,6 +55,7 @@ export const DEFAULT_GUIDED: GuidedState = {
   upgrade_replaces: "",
   upgrade_roles: "",
   upgrade_install_strategy: "local",
+  skill_content: "",
 };
 
 export const CAPABILITY_FALLBACK: CapabilityOption[] = [

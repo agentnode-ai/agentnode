@@ -21,7 +21,7 @@ export interface CodeFile {
 export interface GuidedState {
   name: string;
   package_id: string;
-  package_type: "toolpack" | "agent" | "upgrade";
+  package_type: "toolpack" | "skill" | "agent" | "upgrade";
   version: string;
   summary: string;
   description: string;
@@ -63,6 +63,8 @@ export interface GuidedState {
   upgrade_replaces: string;
   upgrade_roles: string;
   upgrade_install_strategy: string;
+  // Skill-specific fields (only used when package_type === "skill")
+  skill_content: string; // becomes SKILL.md in the published artifact
 }
 
 export interface GoldEligibility {
