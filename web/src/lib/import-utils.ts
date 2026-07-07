@@ -3,6 +3,8 @@
 /*  Used by /import (SEO landing page) and /publish (unified flow)     */
 /* ------------------------------------------------------------------ */
 
+import yaml from "js-yaml";
+
 export interface Platform {
   id: string;
   name: string;
@@ -280,4 +282,45 @@ compatibility:
   python: ">=3.10"
 tags: [${capIds.slice(0, 3).map((c) => `"${c}"`).join(", ")}]
 categories: ["${category}"]`;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Manifest paste: parse + light validation                           */
+/*  Used by /import to hand an existing ANP manifest to /publish.      */
+/* ------------------------------------------------------------------ */
+
+export type ManifestInputResult =
+  | { ok: true; manifest: Record<string, unknown> }
+  | { ok: false; error: string };
+
+export function parseManifestInput(text: string): ManifestInputResult {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return { ok: false, error: "Paste your ANP manifest above." };
+  }
+
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    try {
+      parsed = yaml.load(trimmed);
+    } catch {
+      parsed = null;
+    }
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, error: "Could not parse the manifest. Paste valid JSON or YAML." };
+  }
+
+  const m = parsed as Record<string, unknown>;
+  if (!m.package_id && !m.name) {
+    return {
+      ok: false,
+      error: "This doesn't look like an ANP manifest (missing package_id and name).",
+    };
+  }
+
+  return { ok: true, manifest: m };
 }
