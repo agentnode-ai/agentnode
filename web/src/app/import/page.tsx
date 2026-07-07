@@ -11,6 +11,9 @@ import {
   parseManifestInput,
   parseResult,
 } from "@/lib/import-utils";
+import { parseSkillMd } from "@/lib/skill-import";
+import { buildManifestFromGuided } from "@/app/publish/lib/manifest";
+import { DEFAULT_GUIDED, EMPTY_TOOL } from "@/app/publish/lib/constants";
 
 /* ------------------------------------------------------------------ */
 /*  Types for API response                                             */
@@ -61,8 +64,9 @@ interface ApiConvertResponse {
 export default function ImportPage() {
   const router = useRouter();
   // "code" = framework conversion via the platform pills;
-  // "manifest" = paste an existing ANP manifest and continue to /publish
-  const [inputMode, setInputMode] = useState<"code" | "manifest">("code");
+  // "manifest" = paste an existing ANP manifest and continue to /publish;
+  // "skillmd" = paste a (Claude-style) SKILL.md and continue as an ANP skill
+  const [inputMode, setInputMode] = useState<"code" | "manifest" | "skillmd">("code");
   const [platform, setPlatform] = useState("langchain");
   const [code, setCode] = useState("");
   const [result, setResult] = useState<ConversionResult | null>(null);
@@ -182,6 +186,47 @@ export default function ImportPage() {
     router.push("/publish?from=import");
   };
 
+  /* ---- Claude SKILL.md: map frontmatter to ANP, continue as a skill ---- */
+  const handleSkillMdContinue = () => {
+    const parsed = parseSkillMd(code);
+    if (!parsed.ok) {
+      setError(parsed.error);
+      return;
+    }
+    setError("");
+    const s = parsed.skill;
+    // Reuse the canonical skill manifest builder from the publish form so
+    // imported skills are byte-identical to manually authored ones.
+    const manifest = buildManifestFromGuided(
+      {
+        ...DEFAULT_GUIDED,
+        tools: [{ ...EMPTY_TOOL }],
+        package_type: "skill",
+        name: s.name,
+        package_id: s.packageId,
+        summary: s.summary,
+        description: s.description,
+        skill_content: s.skillContent,
+      },
+      ""
+    );
+    const warnings = s.ignoredFrontmatterKeys.length
+      ? [
+          `Frontmatter fields without an ANP mapping were not carried over: ${s.ignoredFrontmatterKeys.join(", ")}. In ANP, metadata lives in the manifest — review it on the next screen.`,
+        ]
+      : [];
+    sessionStorage.setItem(
+      "publish_prefill",
+      JSON.stringify({
+        source: "import",
+        manifestText: JSON.stringify(manifest, null, 2),
+        originalFiles: [{ path: "SKILL.md", content: s.skillContent }],
+        ...(warnings.length ? { warnings } : {}),
+      })
+    );
+    router.push("/publish?from=import");
+  };
+
   const handleCopy = async () => {
     if (result) {
       try {
@@ -275,7 +320,8 @@ export default function ImportPage() {
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-lg text-muted">
             Import tools from LangChain, CrewAI, MCP servers, or OpenAI function
-            schemas &mdash; or paste an existing ANP manifest.
+            schemas &mdash; or bring an existing ANP manifest or Claude-style
+            SKILL.md.
           </p>
         </div>
       </section>
@@ -308,22 +354,30 @@ export default function ImportPage() {
               </button>
             ))}
             <span className="mx-1 h-5 w-px bg-border" aria-hidden />
-            <button
-              onClick={() => {
-                setInputMode("manifest");
-                setResult(null);
-                setApiResponse(null);
-                setError("");
-              }}
-              className={`flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-all ${
-                inputMode === "manifest"
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-border text-muted hover:border-primary/30 hover:text-foreground"
-              }`}
-            >
-              <span>&#128196;</span>
-              ANP Manifest
-            </button>
+            {(
+              [
+                { id: "manifest" as const, icon: "\u{1F4C4}", label: "ANP Manifest" },
+                { id: "skillmd" as const, icon: "✨", label: "Claude Skill (SKILL.md)" },
+              ]
+            ).map((m) => (
+              <button
+                key={m.id}
+                onClick={() => {
+                  setInputMode(m.id);
+                  setResult(null);
+                  setApiResponse(null);
+                  setError("");
+                }}
+                className={`flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-all ${
+                  inputMode === m.id
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-border text-muted hover:border-primary/30 hover:text-foreground"
+                }`}
+              >
+                <span>{m.icon}</span>
+                {m.label}
+              </button>
+            ))}
           </div>
 
           {/* Input area */}
@@ -335,6 +389,8 @@ export default function ImportPage() {
               placeholder={
                 inputMode === "manifest"
                   ? "Paste your agentnode.yaml or manifest JSON here..."
+                  : inputMode === "skillmd"
+                  ? "Paste your SKILL.md here — YAML frontmatter (name, description) is mapped to the ANP manifest..."
                   : `Paste your ${selectedPlatform.name} tool code here...\n\nOr click "Try example" to see it in action`
               }
               className="h-64 w-full rounded-xl border border-border bg-card p-5 font-mono text-sm text-foreground placeholder:text-muted/40 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all"
@@ -353,7 +409,13 @@ export default function ImportPage() {
           {/* Convert / continue button */}
           <div className="mt-4 flex items-center gap-4">
             <button
-              onClick={inputMode === "manifest" ? handleManifestContinue : handleConvert}
+              onClick={
+                inputMode === "manifest"
+                  ? handleManifestContinue
+                  : inputMode === "skillmd"
+                  ? handleSkillMdContinue
+                  : handleConvert
+              }
               disabled={loading || !code.trim()}
               className="rounded-xl bg-primary px-8 py-3 text-sm font-semibold text-white transition-all hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed"
             >
@@ -364,6 +426,8 @@ export default function ImportPage() {
                 </span>
               ) : inputMode === "manifest" ? (
                 "Continue to publish"
+              ) : inputMode === "skillmd" ? (
+                "Import skill"
               ) : (
                 "Convert to ANP"
               )}
@@ -371,6 +435,8 @@ export default function ImportPage() {
             <span className="text-xs text-muted">
               {inputMode === "manifest"
                 ? "No conversion needed — your manifest is handed to the publish form"
+                : inputMode === "skillmd"
+                ? "Runs in your browser — becomes a prompt-only ANP skill (no code execution)"
                 : "Free — quick preview without an account, full conversion when signed in"}
             </span>
           </div>
