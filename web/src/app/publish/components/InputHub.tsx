@@ -10,6 +10,8 @@ import type { PublishFormState } from "../hooks/usePublishForm";
 
 export function InputHub({ form }: { form: PublishFormState }) {
   const {
+    user,
+    authChecked,
     activeTab,
     setActiveTab,
     guided,
@@ -106,6 +108,18 @@ export function InputHub({ form }: { form: PublishFormState }) {
       {/* ---- TAB: Describe ---- */}
       {activeTab === "describe" && (
         <div className="space-y-6">
+          {/* Say the auth requirement BEFORE the user writes a description,
+              not as a surprise on Generate. */}
+          {authChecked && !user && (
+            <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-4 py-2.5 text-xs text-yellow-400">
+              Generating requires an account &mdash; your description is kept
+              while you{" "}
+              <Link href={`/auth/login?returnTo=${encodeURIComponent(loginReturnTo)}`} className="underline font-medium hover:text-yellow-300">
+                sign in
+              </Link>
+              .
+            </div>
+          )}
           <div>
             <label className="mb-2 block text-sm font-medium text-foreground">
               Describe the skill you want to create in plain English
@@ -217,7 +231,9 @@ export function InputHub({ form }: { form: PublishFormState }) {
                 "Convert & continue"
               )}
             </button>
-            <span className="text-xs text-muted">Free &mdash; no account required</span>
+            <span className="text-xs text-muted">
+              Free &mdash; quick preview without an account, full conversion when signed in
+            </span>
           </div>
         </div>
       )}

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { slugify } from "../lib/manifest";
+import { slugify, typeLabel } from "../lib/manifest";
 import { computeReadiness } from "../lib/readiness";
 import { saveDraft } from "../hooks/useDraft";
 import { StepIndicator } from "./StepIndicator";
@@ -56,6 +56,8 @@ export function DraftReview({ form }: { form: PublishFormState }) {
   const hasArtifact = !!(builderArtifactName || artifact || tarGzFile);
   const { canPublish, items } = computeReadiness(guided, hasArtifact, source, codeFiles);
   const toolCount = guided.tools.filter((t) => t.name).length;
+  const label = typeLabel(guided.package_type);
+  const [showStartOverConfirm, setShowStartOverConfirm] = useState(false);
 
   // Determine source banner text
   let sourceBanner: string | null = null;
@@ -80,8 +82,8 @@ export function DraftReview({ form }: { form: PublishFormState }) {
         <div>
           <h1 className="text-2xl font-bold text-foreground">
             {canPublish
-              ? `Your ${guided.package_type === "agent" ? "agent" : "skill"} is ready to publish`
-              : `Review your ${guided.package_type === "agent" ? "agent" : "skill"}`}
+              ? `Your ${label} is ready to publish`
+              : `Review your ${label}`}
           </h1>
           {user?.publisher && (
             <p className="text-sm text-muted">
@@ -91,12 +93,38 @@ export function DraftReview({ form }: { form: PublishFormState }) {
         </div>
         <button
           type="button"
-          onClick={() => { setScreen("input"); setError(""); form.setSuccess(""); }}
+          onClick={() => setShowStartOverConfirm(true)}
           className="text-sm text-muted hover:text-foreground transition-colors"
         >
           &#8592; Start over
         </button>
       </div>
+
+      {/* Start-over is destructive — confirm before discarding the draft */}
+      {showStartOverConfirm && (
+        <div className="mb-6 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-4">
+          <p className="text-sm font-medium text-yellow-400 mb-1">Discard this draft?</p>
+          <p className="text-xs text-yellow-400/80 mb-3">
+            Starting over clears everything you entered for this {label}.
+          </p>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => { setScreen("input"); setError(""); form.setSuccess(""); }}
+              className="rounded-md bg-yellow-500/20 border border-yellow-500/30 px-4 py-2 text-xs font-medium text-yellow-400 hover:bg-yellow-500/30 transition-colors"
+            >
+              Discard and start over
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowStartOverConfirm(false)}
+              className="rounded-md border border-border px-4 py-2 text-xs text-muted hover:text-foreground transition-colors"
+            >
+              Keep my draft
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Source banner */}
       {sourceBanner && (
@@ -115,10 +143,15 @@ export function DraftReview({ form }: { form: PublishFormState }) {
         </div>
       )}
 
-      {/* Import conversion metadata (collapsed -- alert-fatigue reduction) */}
+      {/* Import conversion metadata. Collapsed for clean conversions
+          (alert-fatigue reduction), but auto-expanded when the import is not
+          draft-ready or has blocking issues — hiding the fix-list behind a
+          closed <details> made "Fix issues first" a dead end. */}
       {source?.startsWith("import") && importConfidence && (() => {
         const platform = source?.startsWith("import:") ? source.split(":")[1] : "import";
         const noteCount = importGroupedWarnings.length + importWarnings.length + importChanges.length;
+        const blockingCount = importGroupedWarnings.filter(w => w.category === "blocking").length;
+        const mustShowIssues = importDraftReady === false || blockingCount > 0;
         const colorClass = importConfidence.level === "high" ? "border-green-500/30 bg-green-500/5"
           : importConfidence.level === "medium" ? "border-yellow-500/30 bg-yellow-500/5"
           : "border-red-500/30 bg-red-500/5";
@@ -127,14 +160,18 @@ export function DraftReview({ form }: { form: PublishFormState }) {
 
         return (
           <div className="mb-6">
-            <details className={`rounded-lg border ${colorClass} group`}>
+            <details className={`rounded-lg border ${colorClass} group`} open={mustShowIssues || undefined}>
               <summary className="cursor-pointer px-4 py-3 flex items-center justify-between">
                 <span className="text-sm">
                   <span className={`font-semibold ${textClass}`}>
                     Converted from {platform}
                   </span>
                   <span className="text-muted"> &mdash; {importConfidence.level} confidence</span>
-                  {noteCount > 0 && <span className="text-muted">, {noteCount} note{noteCount !== 1 ? "s" : ""}</span>}
+                  {blockingCount > 0 ? (
+                    <span className="font-medium text-red-400">, {blockingCount} blocking issue{blockingCount !== 1 ? "s" : ""}</span>
+                  ) : noteCount > 0 ? (
+                    <span className="text-muted">, {noteCount} note{noteCount !== 1 ? "s" : ""}</span>
+                  ) : null}
                 </span>
                 <span className="text-xs text-muted group-open:hidden">Show details</span>
                 <span className="text-xs text-muted hidden group-open:inline">Hide details</span>
@@ -211,7 +248,7 @@ export function DraftReview({ form }: { form: PublishFormState }) {
       {/* ---- Preview Card ---- */}
       <div className="mb-6 rounded-xl border border-border bg-card p-6">
         <h2 className="text-lg font-bold text-foreground truncate">
-          {guided.name || `Untitled ${guided.package_type === "agent" ? "agent" : "skill"}`}
+          {guided.name || `Untitled ${label}`}
         </h2>
         <div className="mt-0.5 font-mono text-xs text-muted">
           {guided.package_id || "no-package-id"} &middot; v{guided.version}
@@ -318,7 +355,7 @@ export function DraftReview({ form }: { form: PublishFormState }) {
           return (
             <div className="rounded-lg border border-primary/30 bg-primary/5 px-5 py-4 text-center">
               <p className="text-sm font-medium text-foreground mb-1">Add your code</p>
-              <p className="text-xs text-muted mb-3">Upload files or write code to make your {guided.package_type === "agent" ? "agent" : "skill"} installable</p>
+              <p className="text-xs text-muted mb-3">Upload files or write code to make your {label} installable</p>
               <button
                 type="button"
                 onClick={() => navigateToIssue("artifact")}
