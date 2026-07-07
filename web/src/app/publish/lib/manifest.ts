@@ -16,21 +16,43 @@ export function isValidSemver(v: string): boolean {
 }
 
 export function buildManifestFromGuided(g: GuidedState, publisherSlug: string): Record<string, unknown> {
-  const tools = g.tools.map((t) => {
-    const tool: Record<string, unknown> = {
-      name: t.name,
-      description: t.description,
-      capability_id: t.capability_id,
-    };
-    if (t.entrypoint) tool.entrypoint = t.entrypoint;
-    if (t.input_schema.trim()) {
-      try { tool.input_schema = JSON.parse(t.input_schema); } catch { /* skip */ }
-    }
-    if (t.output_schema.trim()) {
-      try { tool.output_schema = JSON.parse(t.output_schema); } catch { /* skip */ }
-    }
-    return tool;
-  });
+  const isSkill = g.package_type === "skill";
+
+  const tools = isSkill
+    ? []
+    : g.tools.map((t) => {
+        const tool: Record<string, unknown> = {
+          name: t.name,
+          description: t.description,
+          capability_id: t.capability_id,
+        };
+        if (t.entrypoint) tool.entrypoint = t.entrypoint;
+        if (t.input_schema.trim()) {
+          try { tool.input_schema = JSON.parse(t.input_schema); } catch { /* skip */ }
+        }
+        if (t.output_schema.trim()) {
+          try { tool.output_schema = JSON.parse(t.output_schema); } catch { /* skip */ }
+        }
+        return tool;
+      });
+
+  // Skills are prompt-only: a single SKILL.md prompt, no tools, no runtime code.
+  // capability_id is set so the publish service persists the prompt cleanly.
+  const skillCapId = `${(g.package_id || slugify(g.name) || "skill").replace(/-/g, "_")}.prompt`;
+  const capabilities: Record<string, unknown> = isSkill
+    ? {
+        tools: [],
+        resources: [],
+        prompts: [
+          {
+            name: "main",
+            capability_id: skillCapId,
+            template: "SKILL.md",
+            ...(g.summary ? { description: g.summary } : {}),
+          },
+        ],
+      }
+    : { tools };
 
   const manifest: Record<string, unknown> = {
     manifest_version: "0.2",
@@ -40,30 +62,40 @@ export function buildManifestFromGuided(g: GuidedState, publisherSlug: string): 
     publisher: publisherSlug,
     version: g.version,
     summary: g.summary,
-    runtime: "python",
-    install_mode: "package",
+    runtime: isSkill ? "none" : "python",
+    install_mode: isSkill ? "prompt_only" : "package",
     hosting_type: "agentnode_hosted",
-    capabilities: { tools },
+    capabilities,
     compatibility: { frameworks: g.frameworks },
-    permissions: {
-      network: { level: g.network },
-      filesystem: { level: g.filesystem },
-      code_execution: { level: g.code_execution },
-      data_access: { level: g.data_access },
-      user_approval: { required: g.user_approval },
-    },
+    permissions: isSkill
+      ? {
+          network: { level: "none" },
+          filesystem: { level: "none" },
+          code_execution: { level: "none" },
+          data_access: { level: "input_only" },
+          user_approval: { required: "never" },
+        }
+      : {
+          network: { level: g.network },
+          filesystem: { level: g.filesystem },
+          code_execution: { level: g.code_execution },
+          data_access: { level: g.data_access },
+          user_approval: { required: g.user_approval },
+        },
   };
 
-  // Package-level entrypoint (explicit or auto-derived from first tool / agent entrypoint)
-  if (g.entrypoint) {
-    manifest.entrypoint = g.entrypoint;
-  } else if (g.package_type === "agent" && g.agent_entrypoint) {
-    // Derive module-level entrypoint from agent entrypoint (strip :function)
-    const parts = g.agent_entrypoint.split(":");
-    manifest.entrypoint = parts[0];
-  } else if (g.tools.length > 0 && g.tools[0].entrypoint) {
-    const parts = g.tools[0].entrypoint.split(":");
-    if (parts.length === 2) manifest.entrypoint = parts[0];
+  // Package-level entrypoint — never for skills (prompt-only, no code)
+  if (!isSkill) {
+    if (g.entrypoint) {
+      manifest.entrypoint = g.entrypoint;
+    } else if (g.package_type === "agent" && g.agent_entrypoint) {
+      // Derive module-level entrypoint from agent entrypoint (strip :function)
+      const parts = g.agent_entrypoint.split(":");
+      manifest.entrypoint = parts[0];
+    } else if (g.tools.length > 0 && g.tools[0].entrypoint) {
+      const parts = g.tools[0].entrypoint.split(":");
+      if (parts.length === 2) manifest.entrypoint = parts[0];
+    }
   }
 
   if (g.description) manifest.description = g.description;
@@ -142,6 +174,8 @@ export function parseManifestToGuided(json: Record<string, unknown>): GuidedStat
     g.package_type = json.package_type;
   } else if (json.package_type === "upgrade") {
     g.package_type = "upgrade";
+  } else if (json.package_type === "skill") {
+    g.package_type = "skill";
   }
   if (typeof json.version === "string") g.version = json.version;
 

@@ -27,7 +27,7 @@ export function computeReadiness(
     { label: "Package ID", ok: SLUG_PATTERN.test(g.package_id), required: true, target: "name" },
     { label: "Version", ok: isValidSemver(g.version), required: true },
     { label: "At least one tool with capability", ok: g.tools.some(t => t.name && t.capability_id), required: g.package_type === "toolpack", target: "tools" },
-    { label: "Code or artifact", ok: hasContent, required: g.package_type !== "upgrade", target: "artifact" },
+    { label: "Code or artifact", ok: hasContent, required: g.package_type !== "upgrade" && g.package_type !== "skill", target: "artifact" },
     { label: "Summary (20-200 characters)", ok: !!g.summary && g.summary.trim().length >= 20 && g.summary.trim().length <= 200, required: true, target: "name" },
     { label: "Description (min 50 characters)", ok: !!g.description && g.description.trim().length >= 50 && g.description !== g.summary, required: false },
     { label: "Tool descriptions", ok: g.tools.every(t => !!t.description?.trim()), required: false },
@@ -47,6 +47,11 @@ export function computeReadiness(
   // Upgrade-specific required fields
   if (g.package_type === "upgrade") {
     items.push({ label: "Upgrade target (recommended_for)", ok: !!g.upgrade_recommended_for.trim(), required: true });
+  }
+
+  // Skill-specific required fields (prompt-only: SKILL.md content instead of code)
+  if (g.package_type === "skill") {
+    items.push({ label: "Skill content (SKILL.md, min 20 characters)", ok: !!g.skill_content && g.skill_content.trim().length >= 20, required: true, target: "artifact" });
   }
 
   const canPublish = items.filter(i => i.required).every(i => i.ok);
