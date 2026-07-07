@@ -258,6 +258,83 @@ async def submit_mcp(
 
 
 # ---------------------------------------------------------------------------
+# Maintainer list endpoint (publisher-scoped)
+# ---------------------------------------------------------------------------
+
+
+class MaintainerSubmissionSummary(BaseModel):
+    id: str
+    package_name: str
+    package_registry: str
+    package_version: str | None
+    status: str
+    report_status: str | None
+    server_status: str | None
+    actions_high: int
+    actions_medium: int
+    maintainer_feedback: str | None
+    published_package_id: str | None
+    created_at: str
+
+
+class MaintainerSubmissionListResponse(BaseModel):
+    submissions: list[MaintainerSubmissionSummary]
+    total: int
+
+
+@router.get(
+    "/submissions",
+    response_model=MaintainerSubmissionListResponse,
+    dependencies=[Depends(rate_limit(20, 60))],
+)
+async def list_own_submissions(
+    status: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    user: User = Depends(require_publisher),
+    session: AsyncSession = Depends(get_session),
+):
+    """List own MCP submissions, newest first. Publisher-scoped — never
+    includes other publishers' submissions or admin-only reviewer notes."""
+    own = McpSubmission.publisher_id == user.publisher.id
+    query = select(McpSubmission).where(own).order_by(McpSubmission.created_at.desc())
+    count_query = select(func.count(McpSubmission.id)).where(own)
+
+    if status:
+        query = query.where(McpSubmission.status == status)
+        count_query = count_query.where(McpSubmission.status == status)
+
+    total = (await session.execute(count_query)).scalar() or 0
+    query = query.offset((page - 1) * per_page).limit(per_page)
+    rows = (await session.execute(query)).scalars().all()
+
+    submissions = []
+    for s in rows:
+        report = s.verification_report or {}
+        actions = report.get("actions", [])
+        submissions.append(
+            MaintainerSubmissionSummary(
+                id=str(s.id),
+                package_name=s.package_name,
+                package_registry=s.package_registry,
+                package_version=s.package_version,
+                status=s.status,
+                report_status=report.get("status"),
+                server_status=(s.server_verification or {}).get("server_status"),
+                actions_high=sum(1 for a in actions if a.get("severity") == "high"),
+                actions_medium=sum(1 for a in actions if a.get("severity") == "medium"),
+                maintainer_feedback=s.maintainer_feedback,
+                published_package_id=str(s.published_package_id)
+                if s.published_package_id
+                else None,
+                created_at=s.created_at.isoformat() if s.created_at else "",
+            )
+        )
+
+    return MaintainerSubmissionListResponse(submissions=submissions, total=total)
+
+
+# ---------------------------------------------------------------------------
 # Maintainer status endpoint (publisher-scoped)
 # ---------------------------------------------------------------------------
 

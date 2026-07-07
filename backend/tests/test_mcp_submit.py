@@ -1456,3 +1456,137 @@ async def test_regrant_after_revoke_allows_publish(client, session):
         f"/v1/admin/mcp/submissions/{sub_id}/publish", headers=_auth(admin_token)
     )
     assert resp.status_code == 200, resp.json()
+
+
+# ---------------------------------------------------------------------------
+# 11. Maintainer list endpoint (publisher-scoped)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_own_no_auth(client):
+    resp = await client.get("/v1/mcp/submissions")
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_list_own_user_without_publisher(client):
+    token = await register_and_login(
+        client, "nopublist@test.dev", "nopublist", "TestPass123!"
+    )
+    resp = await client.get("/v1/mcp/submissions", headers=_auth(token))
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_list_own_returns_own_submissions_newest_first(client):
+    token, _ = await setup_publisher_user(
+        client, "lista@test.dev", "lista", "TestPass123!", "pub-lista", "Pub ListA"
+    )
+    m1 = _mcp_manifest(
+        "test-mcp",
+        ["npx", "-y", "test-mcp@1.0.0"],
+        "https://github.com/test/test-mcp",
+        "mcp-list-one",
+    )
+    m2 = _mcp_manifest(
+        "norepo-mcp",
+        ["npx", "-y", "norepo-mcp@2.0.0"],
+        "https://github.com/test/norepo-mcp",
+        "mcp-list-two",
+    )
+    for m in (m1, m2):
+        r = await client.post(
+            "/v1/mcp/submit",
+            json={"manifest": m, "verification_report": TESTED_REPORT},
+            headers=_auth(token),
+        )
+        assert r.status_code == 201
+
+    resp = await client.get("/v1/mcp/submissions", headers=_auth(token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    names = {s["package_name"] for s in data["submissions"]}
+    assert names == {"test-mcp", "norepo-mcp"}
+    created = [s["created_at"] for s in data["submissions"]]
+    assert created == sorted(created, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_list_own_excludes_other_publishers(client):
+    token_a, _ = await setup_publisher_user(
+        client, "listb@test.dev", "listb", "TestPass123!", "pub-listb", "Pub ListB"
+    )
+    await client.post(
+        "/v1/mcp/submit",
+        json={"manifest": MCP_MANIFEST, "verification_report": TESTED_REPORT},
+        headers=_auth(token_a),
+    )
+    token_b, _ = await setup_publisher_user(
+        client, "listc@test.dev", "listc", "TestPass123!", "pub-listc", "Pub ListC"
+    )
+    resp = await client.get("/v1/mcp/submissions", headers=_auth(token_b))
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 0
+    assert resp.json()["submissions"] == []
+
+
+@pytest.mark.asyncio
+async def test_list_own_does_not_leak_reviewer_notes(client, session):
+    admin_token, pub_token, _pub, sub_id = await _approved(client, session, "listd")
+    # Re-review with admin-only notes + maintainer-visible feedback
+    await client.put(
+        f"/v1/admin/mcp/submissions/{sub_id}/review",
+        json={
+            "status": "needs_changes",
+            "notes": "SECRET-ADMIN-NOTE",
+            "maintainer_feedback": "Please pin the version.",
+        },
+        headers=_auth(admin_token),
+    )
+    resp = await client.get("/v1/mcp/submissions", headers=_auth(pub_token))
+    assert resp.status_code == 200
+    body = resp.text
+    assert "SECRET-ADMIN-NOTE" not in body
+    item = resp.json()["submissions"][0]
+    assert "reviewer_notes" not in item
+    assert item["maintainer_feedback"] == "Please pin the version."
+    assert item["status"] == "needs_changes"
+
+
+@pytest.mark.asyncio
+async def test_list_own_status_filter_and_pagination(client):
+    token, _ = await setup_publisher_user(
+        client, "liste@test.dev", "liste", "TestPass123!", "pub-liste", "Pub ListE"
+    )
+    m1 = _mcp_manifest(
+        "test-mcp",
+        ["npx", "-y", "test-mcp@1.0.0"],
+        "https://github.com/test/test-mcp",
+        "mcp-list-f1",
+    )
+    m2 = _mcp_manifest(
+        "norepo-mcp",
+        ["npx", "-y", "norepo-mcp@2.0.0"],
+        "https://github.com/test/norepo-mcp",
+        "mcp-list-f2",
+    )
+    for m in (m1, m2):
+        await client.post(
+            "/v1/mcp/submit",
+            json={"manifest": m, "verification_report": TESTED_REPORT},
+            headers=_auth(token),
+        )
+
+    resp = await client.get("/v1/mcp/submissions?status=pending", headers=_auth(token))
+    assert resp.status_code == 200
+    for s in resp.json()["submissions"]:
+        assert s["status"] == "pending"
+
+    resp = await client.get(
+        "/v1/mcp/submissions?page=1&per_page=1", headers=_auth(token)
+    )
+    assert resp.status_code == 200
+    assert len(resp.json()["submissions"]) == 1
+    assert resp.json()["total"] == 2
