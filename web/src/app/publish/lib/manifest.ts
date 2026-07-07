@@ -15,6 +15,14 @@ export function isValidSemver(v: string): boolean {
   return /^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$/.test(v);
 }
 
+/** Honest human label for a package type — never call a toolpack a "skill". */
+export function typeLabel(packageType: string): string {
+  if (packageType === "agent") return "agent";
+  if (packageType === "skill") return "skill";
+  if (packageType === "upgrade") return "upgrade";
+  return "tool pack";
+}
+
 export function buildManifestFromGuided(g: GuidedState, publisherSlug: string): Record<string, unknown> {
   const isSkill = g.package_type === "skill";
 

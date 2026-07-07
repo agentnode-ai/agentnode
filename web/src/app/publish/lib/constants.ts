@@ -1,7 +1,9 @@
 import type { GuidedState, ToolEntry, CapabilityOption } from "./types";
 
 export const MAX_UPLOAD_SIZE_MB = 10;
-export const DRAFT_TTL = 45 * 60 * 1000;
+// 6h: drafts must survive a lunch break or a suspended laptop — the previous
+// 45-min TTL silently destroyed long editing sessions.
+export const DRAFT_TTL = 6 * 60 * 60 * 1000;
 export const DRAFT_KEY = "publish_draft";
 export const SLUG_PATTERN = /^[a-z0-9-]{3,60}$/;
 

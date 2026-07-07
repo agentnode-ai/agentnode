@@ -65,17 +65,22 @@ export function computePanelStatuses(
   builderArtifactName: string,
   tarGzFile: File | null,
   uploadedFiles: File[],
-  permissionsTouched: boolean,
 ): Record<string, PanelStatus> {
   const hasCode = codeFiles.some((f) => f.content.trim());
   const hasArtifact = !!(builderArtifactName || artifactFile || tarGzFile || uploadedFiles.length > 0 || hasCode);
   const basicsOk = !!g.name && g.name.trim().length >= 3 && SLUG_PATTERN.test(g.package_id) && isValidSemver(g.version) && !!g.summary && g.summary.trim().length >= 20 && g.summary.trim().length <= 200;
   const toolsOk = g.tools.some((t) => t.name && t.capability_id);
 
+  // Safe defaults (everything "none") are a completed state — flagging them
+  // as "warning" trained users to open the panel for nothing. The warning is
+  // reserved for actually elevated permissions, which deserve a second look.
+  const elevated =
+    g.network !== "none" || g.filesystem !== "none" || g.code_execution !== "none";
+
   return {
     basics: basicsOk ? "complete" : "incomplete",
     artifact: hasArtifact ? "complete" : "incomplete",
     tools: toolsOk ? "complete" : "incomplete",
-    permissions: permissionsTouched ? "complete" : "warning",
+    permissions: elevated ? "warning" : "complete",
   };
 }

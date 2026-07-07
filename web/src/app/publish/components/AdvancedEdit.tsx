@@ -96,7 +96,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
     ? "Write code"
     : "Upload files";
 
-  const panelStatuses = computePanelStatuses(guided, codeFiles, artifact, builderArtifactName, tarGzFile, uploadedFiles, permissionsTouched);
+  const panelStatuses = computePanelStatuses(guided, codeFiles, artifact, builderArtifactName, tarGzFile, uploadedFiles);
 
   return (
     <div className="mx-auto max-w-4xl px-4 sm:px-6 py-12">
