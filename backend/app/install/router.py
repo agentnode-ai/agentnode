@@ -185,6 +185,7 @@ async def get_install_metadata(
         mcp_server=mcp_server_config,
         seeded=is_seeded,
         seed_source=seed_source_val,
+        env_requirements=pv.env_requirements or [],
     )
 
 

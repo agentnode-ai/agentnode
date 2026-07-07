@@ -64,6 +64,9 @@ class InstallMetadataResponse(BaseModel):
     mcp_server: McpServerInfo | None = None
     seeded: bool = False
     seed_source: str | None = None
+    # Declared runtime credentials (names + required flag + description — never
+    # values). Lets the SDK show which env vars a toolpack needs at install time.
+    env_requirements: list[dict] = []
 
 
 class DownloadResponse(BaseModel):

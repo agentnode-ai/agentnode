@@ -81,6 +81,7 @@ def _permissions_to_dict(perms: PermissionsInfo | None) -> dict | None:
         "code_execution_level": perms.code_execution_level,
         "data_access_level": perms.data_access_level,
         "user_approval_level": perms.user_approval_level,
+        "allowed_domains": list(perms.allowed_domains or []),
     }
 
 
@@ -543,6 +544,7 @@ class AgentNodeClient:
                 code_execution_level=p["code_execution_level"],
                 data_access_level=p["data_access_level"],
                 user_approval_level=p["user_approval_level"],
+                allowed_domains=list(p.get("allowed_domains") or []),
             )
 
         return InstallMetadata(
@@ -561,6 +563,7 @@ class AgentNodeClient:
             signatures=data.get("_signatures"),
             publisher_slug=data.get("publisher", {}).get("slug"),
             mcp_server=data.get("mcp_server"),
+            env_requirements=list(data.get("env_requirements") or []),
         )
 
     # --- Download ---
@@ -796,6 +799,7 @@ class AgentNodeClient:
             mcp_env_keys=mcp_env_keys,
             mcp_install=mcp_install,
             mcp_allowed_domains=mcp_allowed_domains,
+            env_requirements=meta.env_requirements or None,
         )
 
         return InstallResult(

@@ -210,10 +210,30 @@ def run_python(
     from agentnode_sdk.config import host_trust_policy
     from agentnode_sdk.sandbox import SandboxRequiredError
     from agentnode_sdk.sandbox.policy import requires_sandbox_for_policy
+    from agentnode_sdk.runtimes.toolpack_credentials import (
+        missing_env_message,
+        missing_required_env,
+    )
     dispatch_trust = (
         entry.get("trust_level") if entry is not None
         else _get_trust_level(slug, lockfile_path)
     )
+
+    # Declared-credentials gate (names/presence only — no value is read): a pack
+    # whose required env_requirements are not set fails HERE with an actionable
+    # message instead of a cryptic tool error deep inside the run. Applies to
+    # host and sandbox paths alike.
+    entry_for_creds = (
+        entry if entry is not None
+        else read_lockfile(lockfile_path).get("packages", {}).get(slug) or {}
+    )
+    _missing_creds = missing_required_env(entry_for_creds)
+    if _missing_creds:
+        return RunToolResult(
+            success=False,
+            error=missing_env_message(slug, _missing_creds),
+            mode_used="credentials_missing",
+        )
     # host-trust policy: "default" = curated/trusted on host (today); "curated_only"
     # / "none" route trusted (and curated) into the sandbox instead. Evaluated here,
     # BEFORE mode resolution, so an explicit mode='direct' can never bypass it.

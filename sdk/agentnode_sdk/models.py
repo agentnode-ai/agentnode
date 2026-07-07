@@ -127,6 +127,9 @@ class PermissionsInfo:
     code_execution_level: str
     data_access_level: str
     user_approval_level: str
+    # Publisher-declared egress allowlist (hostnames). Sealed into the lockfile
+    # at install; a credentialed sandbox run may only reach these domains.
+    allowed_domains: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -146,6 +149,9 @@ class InstallMetadata:
     signatures: dict | None = None
     publisher_slug: str | None = None
     mcp_server: dict | None = None
+    # Declared runtime credentials: [{name, required, description}] — names
+    # only, never values.
+    env_requirements: list[dict] = field(default_factory=list)
 
 
 @dataclass
