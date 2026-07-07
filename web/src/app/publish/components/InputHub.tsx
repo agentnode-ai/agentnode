@@ -33,7 +33,12 @@ export function InputHub({ form }: { form: PublishFormState }) {
     handleStartFresh,
   } = form;
 
-  const typeLabel = guided.package_type === "agent" ? "agent" : "skill";
+  const typeLabel =
+    guided.package_type === "agent"
+      ? "agent"
+      : guided.package_type === "skill"
+        ? "skill"
+        : "tool pack";
 
   const loginReturnTo = `/publish?tab=${activeTab}`;
 
@@ -103,14 +108,18 @@ export function InputHub({ form }: { form: PublishFormState }) {
         <div className="space-y-6">
           <div>
             <label className="mb-2 block text-sm font-medium text-foreground">
-              Describe what your {typeLabel} does in plain English
+              Describe the skill you want to create in plain English
             </label>
+            <p className="mb-2 text-xs text-muted">
+              Generates a prompt-only skill (SKILL.md + manifest). For tool packs
+              and agents, use Import code, Paste manifest, or start fresh.
+            </p>
             <textarea
               rows={4}
               value={descriptionText}
               onChange={(e) => { setDescriptionText(e.target.value); setError(""); }}
               className="w-full rounded-xl border border-border bg-card px-4 py-3 text-sm text-foreground placeholder:text-muted/60 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none"
-              placeholder='e.g. "A tool that extracts email addresses from a webpage and returns them as a list"'
+              placeholder='e.g. "A skill that turns commit history into concise release notes"'
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleGenerate();
               }}
@@ -262,8 +271,8 @@ export function InputHub({ form }: { form: PublishFormState }) {
           <div>
             <h3 className="mb-2 font-medium text-foreground">Three ways to publish</h3>
             <p>
-              <strong className="text-foreground">Describe it</strong> &mdash; tell us what your skill does in plain English and our AI generates the manifest and code scaffold.{" "}
-              <strong className="text-foreground">Import code</strong> &mdash; paste an existing LangChain tool, CrewAI tool, or MCP server and we convert it automatically.{" "}
+              <strong className="text-foreground">Describe it</strong> &mdash; tell us what your skill does in plain English and our AI writes the SKILL.md and manifest (skills are prompt-only).{" "}
+              <strong className="text-foreground">Import code</strong> &mdash; paste an existing LangChain tool, CrewAI tool, or MCP server and we convert it into a tool pack automatically.{" "}
               <strong className="text-foreground">Paste manifest</strong> &mdash; drop in your ANP manifest JSON or YAML directly.
             </p>
           </div>

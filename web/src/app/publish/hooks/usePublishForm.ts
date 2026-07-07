@@ -184,9 +184,20 @@ export function usePublishForm() {
   useEffect(() => {
     if (_prefillFiles?.length && !prefillAppliedRef.current) {
       prefillAppliedRef.current = true;
+      if (guided.package_type === "skill") {
+        // Skills are prompt-only: a prefilled SKILL.md belongs in the skill
+        // editor, never in the code files panel.
+        const skillFile = _prefillFiles.find(
+          (f) => f.path === "SKILL.md" || f.path.endsWith("/SKILL.md")
+        );
+        if (skillFile) {
+          setGuided((g) => ({ ...g, skill_content: skillFile.content }));
+        }
+        return;
+      }
       setCodeFiles(_prefillFiles);
     }
-  }, [_prefillFiles]);
+  }, [_prefillFiles, guided.package_type]);
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
   const [tarGzFile, setTarGzFile] = useState<File | null>(null);
 
@@ -396,13 +407,14 @@ export function usePublishForm() {
   /* ---- Describe tab: Generate ---- */
   async function handleGenerate() {
     if (descriptionText.trim().length < 10) {
-      setError("Please describe your tool in more detail (at least 10 characters).");
+      setError("Please describe your skill in more detail (at least 10 characters).");
       return;
     }
     setGenerating(true);
     setError("");
 
-    const res = await generateSkill(descriptionText, guided.package_type === "agent" ? "agent" : "toolpack");
+    // The builder is skills-only: descriptions become prompt-only skill packages
+    const res = await generateSkill(descriptionText);
 
     if (res.status === 401) {
       saveDraft({
@@ -417,11 +429,12 @@ export function usePublishForm() {
 
     if (res.ok && res.data) {
       setBuilderResult(res.data);
-      if (res.data.code_files?.length) {
-        setCodeFiles(res.data.code_files);
-        set_prefillFiles(res.data.code_files);
-      }
       const g = parseManifestToGuided(res.data.manifest_json);
+      // Route the generated SKILL.md into the skill editor, not the code panel
+      const skillFile = res.data.code_files?.find(
+        (f) => f.path === "SKILL.md" || f.path.endsWith("/SKILL.md")
+      );
+      if (skillFile) g.skill_content = skillFile.content;
       setGuided(g);
       setSource("builder");
       setScreen("draft");
