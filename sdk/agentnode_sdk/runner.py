@@ -312,8 +312,12 @@ def run_tool(
 
     if runtime == "python":
         from agentnode_sdk.runtimes.python_runner import run_python
+        # Credentialed toolpacks reuse the same dedicated consent callback as
+        # credentialed MCPs: TTY prompt or a stored grant; None ⇒ non-TTY
+        # (grant-or-refuse, fail-closed).
         res = run_python(slug, tool_name, mode=mode, timeout=timeout,
-                         entry=entry, lockfile_path=lockfile_path, **kwargs)
+                         entry=entry, lockfile_path=lockfile_path,
+                         consent_callback=mcp_consent_callback, **kwargs)
     elif runtime == "mcp":
         from agentnode_sdk.runtimes.mcp_runner import run_mcp
         # Stage 3B-2b: thread the DEDICATED consent callback (NOT the guard bool callback) so the
