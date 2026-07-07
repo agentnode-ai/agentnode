@@ -171,7 +171,7 @@ export function usePublishForm() {
 
   /* ---- Panels ---- */
   const [openPanels, setOpenPanels] = useState<Set<string>>(
-    () => hasPrefill ? new Set<string>() : new Set(["basics"])
+    () => hasPrefill ? new Set<string>() : new Set(["basics", "skill"])
   );
 
   /* ---- Artifact state ---- */
@@ -577,7 +577,7 @@ export function usePublishForm() {
   /* ---- Start fresh ---- */
   function handleStartFresh() {
     setGuided({ ...DEFAULT_GUIDED, tools: [{ ...EMPTY_TOOL }] });
-    setOpenPanels(new Set(["basics"]));
+    setOpenPanels(new Set(["basics", "skill"]));
     setValidation(null);
     setError("");
     setSource(null);
@@ -643,6 +643,31 @@ export function usePublishForm() {
   }
 
   async function resolveArtifact(parsed: Record<string, unknown>): Promise<File | null> {
+    // Skills are prompt-only: build a SKILL.md artifact from the skill content
+    // via the builder's skill branch. No code files / tools are involved.
+    if (guided.package_type === "skill") {
+      const content = guided.skill_content?.trim() ? guided.skill_content : "";
+      if (!content) return null;
+      const pkgId = (parsed.package_id as string) || "my-skill";
+      setBuildingArtifact(true);
+      try {
+        const buildRes = await fetchWithAuth("/builder/artifact", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            package_id: pkgId,
+            manifest_json: parsed,
+            code_files: [{ path: "SKILL.md", content }],
+          }),
+        });
+        if (!buildRes.ok) throw new Error("Failed to build skill artifact");
+        const blob = await buildRes.blob();
+        return new File([blob], `${pkgId}.tar.gz`, { type: "application/gzip" });
+      } finally {
+        setBuildingArtifact(false);
+      }
+    }
+
     if (builderArtifactName && artifact) return artifact;
     if (tarGzFile) return tarGzFile;
 
