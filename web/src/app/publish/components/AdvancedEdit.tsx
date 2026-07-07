@@ -25,6 +25,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
     removeTool,
     source,
     openPanels,
+    setOpenPanels,
     togglePanel,
     artifact,
     builderArtifactName,
@@ -163,15 +164,24 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
                 Validating
               </span>
             ) : validation ? (
-              <span
-                className={`rounded-full px-3 py-1 text-xs font-medium ${
-                  validation.valid
-                    ? "bg-success/10 text-success border border-success/20"
-                    : "bg-danger/10 text-danger border border-danger/20"
-                }`}
-              >
-                {validation.valid ? "Valid" : `${validation.errors.length} error${validation.errors.length !== 1 ? "s" : ""}`}
-              </span>
+              validation.valid ? (
+                <span className="rounded-full px-3 py-1 text-xs font-medium bg-success/10 text-success border border-success/20">
+                  Valid
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() =>
+                    document
+                      .getElementById("validation-details")
+                      ?.scrollIntoView({ behavior: "smooth", block: "center" })
+                  }
+                  title="Jump to the validation errors"
+                  className="rounded-full px-3 py-1 text-xs font-medium bg-danger/10 text-danger border border-danger/20 hover:bg-danger/20 transition-colors"
+                >
+                  {validation.errors.length} error{validation.errors.length !== 1 ? "s" : ""} &darr;
+                </button>
+              )
             ) : null}
           </div>
         </div>
@@ -309,7 +319,16 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
                   <button
                     key={t}
                     type="button"
-                    onClick={() => updateGuided("package_type", t)}
+                    onClick={() => {
+                      updateGuided("package_type", t);
+                      // Switching type swaps the required panels — open the
+                      // type's key panel so the change is visibly effective.
+                      setOpenPanels((prev) => {
+                        const next = new Set(prev);
+                        next.add(t === "skill" ? "skill" : t === "agent" ? "agent" : "artifact");
+                        return next;
+                      });
+                    }}
                     className={`px-3 py-1.5 rounded-md text-sm border transition-colors ${
                       guided.package_type === t
                         ? "border-primary bg-primary/10 text-primary"
@@ -320,6 +339,9 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
                   </button>
                 ))}
               </div>
+              <p className="mt-1 text-xs text-muted">
+                Required fields change with the type &mdash; the panels below adjust automatically.
+              </p>
             </div>
 
             <div>
@@ -1119,7 +1141,7 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
 
       {/* ---- Validation details ---- */}
       {validation && !validation.valid && (
-        <div className="mb-4 rounded-md border border-danger/30 bg-danger/5 px-4 py-3 text-sm">
+        <div id="validation-details" className="mb-4 rounded-md border border-danger/30 bg-danger/5 px-4 py-3 text-sm">
           <div className="font-medium text-danger mb-1">Validation errors:</div>
           <ul className="space-y-0.5">
             {validation.errors.map((err, i) => (

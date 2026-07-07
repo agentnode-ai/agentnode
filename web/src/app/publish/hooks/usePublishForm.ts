@@ -94,6 +94,18 @@ export function usePublishForm() {
     return "describe";
   });
 
+  /* ---- Type-first choice ---- */
+  // "What do you want to publish?" is the first question on a fresh visit.
+  // Deep links (?tab=...) and prefill flows already imply a type and skip it.
+  const [typeChosen, setTypeChosen] = useState<boolean>(() => !!tabParam || hasPrefill);
+  function chooseType(t: "toolpack" | "skill" | "agent") {
+    setGuided((g) => ({ ...g, package_type: t }));
+    // Default entry method per type: skills are described, toolpacks are
+    // usually imported from existing code, agents start from a manifest.
+    setActiveTab(t === "skill" ? "describe" : t === "toolpack" ? "import" : "manifest");
+    setTypeChosen(true);
+  }
+
   /* ---- Describe tab state ---- */
   const [descriptionText, setDescriptionText] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -591,8 +603,19 @@ export function usePublishForm() {
 
   /* ---- Start fresh ---- */
   function handleStartFresh() {
-    setGuided({ ...DEFAULT_GUIDED, tools: [{ ...EMPTY_TOOL }] });
-    setOpenPanels(new Set(["basics", "skill"]));
+    // Keep the chosen package type — resetting to the toolpack default made
+    // the type-first choice pointless and swapped the required fields.
+    const t = guided.package_type;
+    setGuided({ ...DEFAULT_GUIDED, package_type: t, tools: [{ ...EMPTY_TOOL }] });
+    setOpenPanels(
+      new Set(
+        t === "skill"
+          ? ["basics", "skill"]
+          : t === "agent"
+            ? ["basics", "agent"]
+            : ["basics", "artifact"]
+      )
+    );
     setValidation(null);
     setError("");
     setSource(null);
@@ -831,6 +854,9 @@ export function usePublishForm() {
     // Input Hub
     activeTab,
     setActiveTab,
+    typeChosen,
+    setTypeChosen,
+    chooseType,
     descriptionText,
     setDescriptionText,
     generating,
