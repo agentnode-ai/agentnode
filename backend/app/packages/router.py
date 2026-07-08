@@ -210,11 +210,16 @@ async def publish(
     if warnings:
         message += " (with warnings: " + "; ".join(warnings) + ")"
 
+    quarantined = pv.quarantine_status == "quarantined"
+
     return PublishResponse(
         slug=pkg.slug,
         version=pv.version_number,
         package_type=pkg.package_type,
         message=message,
+        quarantined=quarantined,
+        quarantine_reason=pv.quarantine_reason if quarantined else None,
+        warnings=warnings,
     )
 
 

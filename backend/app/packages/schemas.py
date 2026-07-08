@@ -271,6 +271,10 @@ class PublishResponse(BaseModel):
     version: str
     package_type: str
     message: str
+    # Machine-readable publish outcome so clients don't parse the message text.
+    quarantined: bool = False
+    quarantine_reason: str | None = None
+    warnings: list[str] = []
 
 
 class ActionResponse(BaseModel):
