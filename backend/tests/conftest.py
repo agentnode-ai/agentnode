@@ -49,7 +49,13 @@ SEED_CAPABILITY_IDS = [
 
 @pytest_asyncio.fixture
 async def engine():
-    eng = create_async_engine(TEST_DATABASE_URL)
+    # NullPool: open/close a connection per checkout instead of pooling. The
+    # full suite plus fire-and-forget background tasks (verification, security
+    # scan) could otherwise exhaust the default pool under CI's tighter limits,
+    # surfacing as AsyncAdaptedQueuePool termination errors and spurious 403s.
+    from sqlalchemy.pool import NullPool
+
+    eng = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
     async with eng.begin() as conn:
         from sqlalchemy import text
 
