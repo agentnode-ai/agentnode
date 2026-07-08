@@ -31,6 +31,7 @@ interface SearchHit {
   slug: string;
   name: string;
   package_type: string;
+  runtime?: string | null;
   summary: string;
   publisher_name: string;
   trust_level: "curated" | "trusted" | "verified" | "unverified";
@@ -268,6 +269,7 @@ export default async function McpPage() {
                 verification_tier={pkg.verification_tier}
                 verification_score={pkg.verification_score}
                 package_type={pkg.package_type}
+                runtime={pkg.runtime}
                 tags={pkg.tags}
                 publisher_name={pkg.publisher_name}
                 is_deprecated={pkg.is_deprecated}

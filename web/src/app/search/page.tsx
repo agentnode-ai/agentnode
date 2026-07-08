@@ -529,6 +529,7 @@ function SearchContent() {
                         verification_tier={pkg.verification_tier}
                         verification_score={pkg.verification_score}
                         package_type={pkg.package_type}
+                        runtime={pkg.runtime}
                         tags={pkg.tags}
                         publisher_name={pkg.publisher_name}
                         is_deprecated={pkg.is_deprecated}
