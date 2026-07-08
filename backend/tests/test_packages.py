@@ -171,7 +171,38 @@ async def test_publish_new_package(mock_meili, mock_s3, client, session):
     assert data["slug"] == "test-pack"
     assert data["version"] == "1.0.0"
     assert data["package_type"] == "toolpack"
+    # Trusted publisher → not quarantined; structured fields say so.
+    assert data["quarantined"] is False
+    assert data["quarantine_reason"] is None
+    # warnings is a machine-readable list (advisory notes may still appear);
+    # none of them is a quarantine notice.
+    assert isinstance(data["warnings"], list)
+    assert not any("quarantine" in w.lower() for w in data["warnings"])
     mock_meili.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("app.packages.service.upload_artifact")
+@patch("app.packages.service.sync_package_to_meilisearch")
+async def test_publish_first_time_is_quarantined_structured(
+    mock_meili, mock_s3, client, session
+):
+    """A first-time (untrusted) publisher's package is auto-quarantined, and the
+    publish response says so in machine-readable fields (not just the message)."""
+    token = await get_auth_token(client)
+
+    resp = await client.post(
+        "/v1/packages/publish",
+        data={"manifest": json.dumps(TEST_MANIFEST)},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 201, resp.json()
+    data = resp.json()
+    assert data["quarantined"] is True
+    assert data["quarantine_reason"]  # a human reason is present
+    assert any("quarantine" in w.lower() for w in data["warnings"])
+    # Quarantined versions are never synced to search.
+    mock_meili.assert_not_called()
 
 
 @pytest.mark.asyncio

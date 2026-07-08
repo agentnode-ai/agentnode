@@ -1,14 +1,24 @@
 import json
-from unittest.mock import AsyncMock, MagicMock
+import os
 
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+# Must be set BEFORE importing the app so app.database builds a NullPool engine
+# for the test run (avoids connection-pool exhaustion from background tasks).
+os.environ.setdefault("AGENTNODE_TEST_MODE", "1")
 
-from app.config import settings
-from app.database import get_session
-from app.main import app
+from unittest.mock import AsyncMock, MagicMock  # noqa: E402
+
+import pytest_asyncio  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy import update  # noqa: E402
+from sqlalchemy.ext.asyncio import (  # noqa: E402
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
+from app.config import settings  # noqa: E402
+from app.database import get_session  # noqa: E402
+from app.main import app  # noqa: E402
 from app.shared.models import Base
 
 # Import all models for metadata
@@ -49,7 +59,13 @@ SEED_CAPABILITY_IDS = [
 
 @pytest_asyncio.fixture
 async def engine():
-    eng = create_async_engine(TEST_DATABASE_URL)
+    # NullPool: open/close a connection per checkout instead of pooling. The
+    # full suite plus fire-and-forget background tasks (verification, security
+    # scan) could otherwise exhaust the default pool under CI's tighter limits,
+    # surfacing as AsyncAdaptedQueuePool termination errors and spurious 403s.
+    from sqlalchemy.pool import NullPool
+
+    eng = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
     async with eng.begin() as conn:
         from sqlalchemy import text
 

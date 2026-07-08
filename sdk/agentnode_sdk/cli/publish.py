@@ -324,6 +324,26 @@ def _extract_warnings(message: str) -> str:
     return text.strip()
 
 
+def _publish_outcome(resp: dict) -> tuple[bool, str, list[str]]:
+    """Normalize a publish response into (quarantined, reason, warnings).
+
+    Prefers the structured fields (quarantined / quarantine_reason / warnings);
+    falls back to parsing the message text for older backends that don't send
+    them yet.
+    """
+    if "quarantined" in resp:
+        quarantined = bool(resp.get("quarantined"))
+        warnings_list = [w for w in (resp.get("warnings") or []) if w]
+        reason = resp.get("quarantine_reason") or (
+            "; ".join(warnings_list) if warnings_list else ""
+        )
+        return quarantined, reason, warnings_list
+    msg = resp.get("message", "")
+    quarantined = "quarantine" in msg.lower()
+    reason = _extract_warnings(msg)
+    return quarantined, reason, ([reason] if reason else [])
+
+
 def cmd_publish(
     path_str: str,
     *,
@@ -496,8 +516,13 @@ def cmd_publish(
 
     slug = resp.get("slug", pkg_id)
     ver = resp.get("version", version)
-    msg = resp.get("message", "")
-    quarantined = "quarantine" in msg.lower()
+
+    # Prefer the structured publish outcome; fall back to parsing the message
+    # text for older backends that don't return the quarantined flag yet.
+    quarantined, reason, warnings_list = _publish_outcome(resp)
+    # For a quarantined result, the reason is shown on its own line; don't also
+    # repeat it in the generic warnings loop.
+    display_warnings = [] if quarantined else warnings_list
 
     print(f"  Published {slug}@{ver}")
     print()
@@ -507,15 +532,15 @@ def cmd_publish(
         # search and not installable until cleared. Frame it honestly instead
         # of printing the URL as if the package were already live.
         print("  Status: Under review — not yet public.")
-        reason = _extract_warnings(msg)
         if reason:
             print(f"  {reason}")
         print("  It won't appear in search or be installable until review clears it.")
         print()
         print(f"  Track status: https://agentnode.net/packages/{slug}")
     else:
-        if "warning" in msg.lower():
-            print(f"  {msg}")
+        for w in display_warnings:
+            print(f"  Warning: {w}")
+        if display_warnings:
             print()
         print(f"  Live: https://agentnode.net/packages/{slug}")
         print("  Verification runs automatically; its tier and score appear on the page shortly.")

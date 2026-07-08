@@ -699,3 +699,58 @@ class TestCmdPublishConfirmGate:
             rc = cmd_publish(str(tmp_path), token="test-key")
         assert rc == 0
         mock_post.assert_called_once()
+
+
+class TestPublishOutcome:
+    """_publish_outcome: structured fields preferred, message-parse fallback."""
+
+    def test_structured_quarantined(self):
+        from agentnode_sdk.cli.publish import _publish_outcome
+
+        q, reason, warnings = _publish_outcome({
+            "quarantined": True,
+            "quarantine_reason": "First-time publisher: held for review.",
+            "warnings": ["First-time publisher: version has been quarantined."],
+        })
+        assert q is True
+        assert "First-time" in reason
+        assert warnings
+
+    def test_structured_not_quarantined_with_warnings(self):
+        from agentnode_sdk.cli.publish import _publish_outcome
+
+        q, reason, warnings = _publish_outcome({
+            "quarantined": False,
+            "quarantine_reason": None,
+            "warnings": ["description is recommended"],
+        })
+        assert q is False
+        assert warnings == ["description is recommended"]
+
+    def test_structured_reason_falls_back_to_warnings(self):
+        from agentnode_sdk.cli.publish import _publish_outcome
+
+        q, reason, _ = _publish_outcome({
+            "quarantined": True,
+            "quarantine_reason": None,
+            "warnings": ["typosquat notice"],
+        })
+        assert q is True
+        assert reason == "typosquat notice"
+
+    def test_legacy_message_fallback_quarantined(self):
+        from agentnode_sdk.cli.publish import _publish_outcome
+
+        q, reason, warnings = _publish_outcome({
+            "message": "Published x@1 (with warnings: held for review, quarantined)",
+        })
+        assert q is True
+        assert "held for review" in reason
+
+    def test_legacy_message_fallback_clean(self):
+        from agentnode_sdk.cli.publish import _publish_outcome
+
+        q, reason, warnings = _publish_outcome({"message": "Published x@1"})
+        assert q is False
+        assert reason == ""
+        assert warnings == []
