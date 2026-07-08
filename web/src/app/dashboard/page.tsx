@@ -4,7 +4,20 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
-import { fetchWithAuth, search, type SearchHit } from "@/lib/api";
+import { fetchWithAuth } from "@/lib/api";
+
+interface MyPackage {
+  slug: string;
+  name: string;
+  package_type: string;
+  latest_version?: string | null;
+  is_deprecated?: boolean;
+  quarantine_status?: string | null;
+  quarantine_reason?: string | null;
+  verification_status?: string | null;
+  verification_tier?: string | null;
+  verification_score?: number | null;
+}
 import VerificationBadge from "@/components/VerificationBadge";
 
 const QRCodeImage = dynamic(() => import("./QRCodeImage"), {
@@ -113,7 +126,7 @@ export default function DashboardPage() {
   const [savingPublisher, setSavingPublisher] = useState(false);
 
   // My Packages (Fix 6)
-  const [myPackages, setMyPackages] = useState<SearchHit[]>([]);
+  const [myPackages, setMyPackages] = useState<MyPackage[]>([]);
   const [loadingPackages, setLoadingPackages] = useState(false);
 
   // Manual Reviews
@@ -387,11 +400,16 @@ export default function DashboardPage() {
     router.push("/auth/login");
   }
 
-  async function loadMyPackages(publisherSlug: string) {
+  async function loadMyPackages(_publisherSlug: string) {
     setLoadingPackages(true);
     try {
-      const res = await search({ publisher_slug: publisherSlug, per_page: 50 });
-      setMyPackages(res.hits || []);
+      // Owner-scoped list — includes under-review (quarantined) packages that
+      // never appear in public search.
+      const res = await fetchWithAuth("/packages/mine");
+      if (res.ok) {
+        const data = await res.json();
+        setMyPackages(data.packages || []);
+      }
     } catch { /* non-critical */ }
     finally { setLoadingPackages(false); }
   }
@@ -918,6 +936,14 @@ export default function DashboardPage() {
                     </Link>
                     {pkg.latest_version && (
                       <span className="font-mono text-xs text-muted">v{pkg.latest_version}</span>
+                    )}
+                    {pkg.quarantine_status === "quarantined" && (
+                      <span
+                        title={pkg.quarantine_reason || "Held for review — not yet public or installable."}
+                        className="shrink-0 rounded-full border border-yellow-500/30 bg-yellow-500/10 px-2 py-0.5 text-[10px] font-medium text-yellow-400"
+                      >
+                        Under review
+                      </span>
                     )}
                   </div>
                   <div className="flex items-center gap-2">
