@@ -1,7 +1,6 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import PackageCard from "@/components/PackageCard";
-import { BACKEND_URL } from "@/lib/constants";
+import PackageSearch from "@/components/PackageSearch";
 
 export const metadata: Metadata = {
   title: "AI Agents",
@@ -24,48 +23,7 @@ export const metadata: Metadata = {
   },
 };
 
-interface SearchHit {
-  slug: string;
-  name: string;
-  package_type: string;
-  runtime?: string | null;
-  summary: string;
-  publisher_name: string;
-  trust_level: "curated" | "trusted" | "verified" | "unverified";
-  latest_version: string | null;
-  frameworks: string[];
-  download_count: number;
-  install_count: number;
-  verification_status: string | null;
-  verification_tier?: string | null;
-  verification_score?: number | null;
-  tags: string[];
-  is_deprecated: boolean;
-  network_level?: string | null;
-  filesystem_level?: string | null;
-  code_execution_level?: string | null;
-  has_connector?: boolean | null;
-}
 
-async function fetchAgents(): Promise<SearchHit[]> {
-  try {
-    const res = await fetch(`${BACKEND_URL}/v1/search`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        package_type: "agent",
-        per_page: 50,
-        sort_by: "download_count:desc",
-      }),
-      next: { revalidate: 300 },
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.hits ?? [];
-  } catch {
-    return [];
-  }
-}
 
 const TIERS = [
   {
@@ -149,7 +107,6 @@ const ADVANTAGES = [
 ];
 
 export default async function AgentsPage() {
-  const agents = await fetchAgents();
 
   return (
     <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
@@ -179,49 +136,20 @@ export default async function AgentsPage() {
         </div>
       </header>
 
-      {/* Agent Listing */}
-      {agents.length > 0 && (
-        <section className="mb-16">
-          <div className="mb-6 flex items-center justify-between">
-            <h2 className="text-2xl font-bold text-foreground">
-              Available Agents
-            </h2>
-            <Link
-              href="/search?package_type=agent"
-              className="text-sm text-primary hover:underline"
-            >
-              View all
-            </Link>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {agents.map((agent) => (
-              <PackageCard
-                key={agent.slug}
-                slug={agent.slug}
-                name={agent.name}
-                summary={agent.summary}
-                trust_level={agent.trust_level}
-                frameworks={agent.frameworks}
-                version={agent.latest_version ?? undefined}
-                download_count={agent.download_count}
-                install_count={agent.install_count}
-                verification_status={agent.verification_status}
-                verification_tier={agent.verification_tier}
-                verification_score={agent.verification_score}
-                package_type={agent.package_type}
-                runtime={agent.runtime}
-                tags={agent.tags}
-                publisher_name={agent.publisher_name}
-                is_deprecated={agent.is_deprecated}
-                network_level={agent.network_level}
-                filesystem_level={agent.filesystem_level}
-                code_execution_level={agent.code_execution_level}
-                has_connector={agent.has_connector}
-              />
-            ))}
-          </div>
-        </section>
-      )}
+      {/* Agent Listing — embedded search with locked type filter */}
+      <section className="mb-16">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-2xl font-bold text-foreground">
+            Available Agents
+          </h2>
+        </div>
+        <PackageSearch
+          fixed={{ package_type: "agent" }}
+          basePath="/agents"
+          heading={null}
+          autoFocus={false}
+        />
+      </section>
 
       {/* What is an AgentNode Agent? */}
       <section className="mb-16">

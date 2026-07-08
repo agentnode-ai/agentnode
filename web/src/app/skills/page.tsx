@@ -1,10 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import {
-  fetchLibrary,
-  LibraryGrid,
-  LibraryHero,
-} from "@/components/PackageLibrary";
+import PackageSearch from "@/components/PackageSearch";
+import { LibraryHero } from "@/components/PackageLibrary";
 
 export const metadata: Metadata = {
   title: "Skills — Prompt-Only Capabilities for AI Agents",
@@ -15,9 +12,7 @@ export const metadata: Metadata = {
 
 export const revalidate = 300;
 
-export default async function SkillsPage() {
-  const hits = await fetchLibrary({ package_type: "skill" });
-
+export default function SkillsPage() {
   return (
     <div className="flex flex-col">
       <LibraryHero
@@ -31,13 +26,12 @@ export default async function SkillsPage() {
       />
 
       <section className="border-b border-border">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-10">
-          <LibraryGrid
-            hits={hits}
-            searchHref="/search?package_type=skill"
-            emptyLabel="No skills published yet — be the first."
-          />
-        </div>
+        <PackageSearch
+          fixed={{ package_type: "skill" }}
+          basePath="/skills"
+          heading={null}
+          autoFocus={false}
+        />
       </section>
 
       {/* Explainer below the library */}

@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import PackageCard from "@/components/PackageCard";
-import { BACKEND_URL } from "@/lib/constants";
+import PackageSearch from "@/components/PackageSearch";
 import McpCodeBlock from "./McpCodeBlock";
 
 export const dynamic = "force-dynamic";
@@ -27,51 +26,9 @@ export const metadata: Metadata = {
   },
 };
 
-interface SearchHit {
-  slug: string;
-  name: string;
-  package_type: string;
-  runtime?: string | null;
-  summary: string;
-  publisher_name: string;
-  trust_level: "curated" | "trusted" | "verified" | "unverified";
-  latest_version: string | null;
-  frameworks: string[];
-  download_count: number;
-  install_count: number;
-  verification_status: string | null;
-  verification_tier?: string | null;
-  verification_score?: number | null;
-  tags: string[];
-  is_deprecated: boolean;
-  network_level?: string | null;
-  filesystem_level?: string | null;
-  code_execution_level?: string | null;
-  has_connector?: boolean | null;
-}
 
-async function fetchMcpPackages(): Promise<SearchHit[]> {
-  try {
-    const res = await fetch(`${BACKEND_URL}/v1/search`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        q: "",
-        runtime: "mcp",
-        per_page: 50,
-      }),
-      next: { revalidate: 300 },
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.hits ?? [];
-  } catch {
-    return [];
-  }
-}
 
 export default async function McpPage() {
-  const mcpPackages = await fetchMcpPackages();
 
   return (
     <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
@@ -114,49 +71,20 @@ export default async function McpPage() {
         </div>
       </header>
 
-      {/* Browse MCP Servers */}
-      {mcpPackages.length > 0 && (
-        <section className="mb-16">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-2xl font-bold text-foreground">
-              Available MCP Servers
-            </h2>
-            <Link
-              href="/search?runtime=mcp"
-              className="text-sm text-primary hover:underline"
-            >
-              View all
-            </Link>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {mcpPackages.map((pkg) => (
-              <PackageCard
-                key={pkg.slug}
-                slug={pkg.slug}
-                name={pkg.name}
-                summary={pkg.summary}
-                trust_level={pkg.trust_level}
-                frameworks={pkg.frameworks}
-                version={pkg.latest_version ?? undefined}
-                download_count={pkg.download_count}
-                install_count={pkg.install_count}
-                verification_status={pkg.verification_status}
-                verification_tier={pkg.verification_tier}
-                verification_score={pkg.verification_score}
-                package_type={pkg.package_type}
-                runtime={pkg.runtime}
-                tags={pkg.tags}
-                publisher_name={pkg.publisher_name}
-                is_deprecated={pkg.is_deprecated}
-                network_level={pkg.network_level}
-                filesystem_level={pkg.filesystem_level}
-                code_execution_level={pkg.code_execution_level}
-                has_connector={pkg.has_connector}
-              />
-            ))}
-          </div>
-        </section>
-      )}
+      {/* Browse MCP Servers — embedded search with locked runtime filter */}
+      <section className="mb-16">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-2xl font-bold text-foreground">
+            Available MCP Servers
+          </h2>
+        </div>
+        <PackageSearch
+          fixed={{ runtime: "mcp" }}
+          basePath="/mcp"
+          heading={null}
+          autoFocus={false}
+        />
+      </section>
 
       {/* What is MCP? - brief context */}
       <section className="mb-14 text-center">
