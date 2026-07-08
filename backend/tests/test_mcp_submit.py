@@ -1590,3 +1590,118 @@ async def test_list_own_status_filter_and_pagination(client):
     assert resp.status_code == 200
     assert len(resp.json()["submissions"]) == 1
     assert resp.json()["total"] == 2
+
+
+# ---------------------------------------------------------------------------
+# 12. Maintainer report update (resubmit a report to an open submission)
+# ---------------------------------------------------------------------------
+
+
+async def _submit(client, token, manifest=None, report=None):
+    r = await client.post(
+        "/v1/mcp/submit",
+        json={
+            "manifest": manifest if manifest is not None else MCP_MANIFEST,
+            "verification_report": report if report is not None else TESTED_REPORT,
+        },
+        headers=_auth(token),
+    )
+    return r
+
+
+@pytest.mark.asyncio
+async def test_report_update_no_auth(client):
+    resp = await client.post(
+        "/v1/mcp/submissions/00000000-0000-0000-0000-000000000000/report",
+        json={"verification_report": TESTED_REPORT},
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_report_update_unblocks_action_required(client):
+    """A submission filed with a non-TESTED report lands action_required; posting
+    a TESTED report to it re-verifies and moves it to pending."""
+    token, _ = await setup_publisher_user(
+        client, "rup@test.dev", "ruppub", "TestPass123!", "pub-rup", "Pub Rup"
+    )
+    sr = await _submit(client, token, report=ACTION_REQUIRED_REPORT)
+    assert sr.status_code == 201
+    sub_id = sr.json()["id"]
+    assert sr.json()["status"] == "action_required"
+
+    upd = await client.post(
+        f"/v1/mcp/submissions/{sub_id}/report",
+        json={"verification_report": TESTED_REPORT},
+        headers=_auth(token),
+    )
+    assert upd.status_code == 200, upd.json()
+    assert upd.json()["status"] == "pending"
+    assert upd.json()["report_status"] == "TESTED"
+
+
+@pytest.mark.asyncio
+async def test_report_update_other_publisher_forbidden(client):
+    token_a, _ = await setup_publisher_user(
+        client, "rupa@test.dev", "rupa", "TestPass123!", "pub-rupa", "Pub A"
+    )
+    sr = await _submit(client, token_a, report=ACTION_REQUIRED_REPORT)
+    sub_id = sr.json()["id"]
+
+    token_b, _ = await setup_publisher_user(
+        client, "rupb@test.dev", "rupb", "TestPass123!", "pub-rupb", "Pub B"
+    )
+    resp = await client.post(
+        f"/v1/mcp/submissions/{sub_id}/report",
+        json={"verification_report": TESTED_REPORT},
+        headers=_auth(token_b),
+    )
+    assert resp.status_code == 404  # scoped: not found for another publisher
+
+
+@pytest.mark.asyncio
+async def test_report_update_rejects_invalid_report(client):
+    token, _ = await setup_publisher_user(
+        client, "rupi@test.dev", "rupi", "TestPass123!", "pub-rupi", "Pub I"
+    )
+    sr = await _submit(client, token, report=ACTION_REQUIRED_REPORT)
+    sub_id = sr.json()["id"]
+    resp = await client.post(
+        f"/v1/mcp/submissions/{sub_id}/report",
+        json={"verification_report": INVALID_REPORT},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_report_update_blocked_after_approved(client, session):
+    """Once approved, a maintainer can no longer swap the report underneath review."""
+    admin_token, pub_token, _pub, sub_id = await _approved(client, session, "rupapr")
+    resp = await client.post(
+        f"/v1/mcp/submissions/{sub_id}/report",
+        json={"verification_report": ACTION_REQUIRED_REPORT},
+        headers=_auth(pub_token),
+    )
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_report_update_rejects_different_package(client):
+    token, _ = await setup_publisher_user(
+        client, "rupd@test.dev", "rupd", "TestPass123!", "pub-rupd", "Pub D"
+    )
+    sr = await _submit(client, token, report=ACTION_REQUIRED_REPORT)
+    sub_id = sr.json()["id"]
+    other_manifest = _mcp_manifest(
+        "norepo-mcp",
+        ["npx", "-y", "norepo-mcp@2.0.0"],
+        "https://github.com/test/norepo-mcp",
+        "mcp-other",
+    )
+    resp = await client.post(
+        f"/v1/mcp/submissions/{sub_id}/report",
+        json={"verification_report": TESTED_REPORT, "manifest": other_manifest},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 400
