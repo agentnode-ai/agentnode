@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import TrustBadge from "@/components/TrustBadge";
+import SandboxBadge from "@/components/SandboxBadge";
 import VerificationBadgeShared from "@/components/VerificationBadge";
 import { BACKEND_URL } from "@/lib/constants";
 import CodeBlockWrapper from "./CodeBlockWrapper";
@@ -383,6 +384,12 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
                 {pkg.name}
               </h1>
               <TrustBadge level={publisher.trust_level ?? "unverified"} size="md" />
+              <SandboxBadge
+                package_type={pkg.package_type}
+                trust_level={publisher.trust_level ?? "unverified"}
+                runtime={compat.runtime}
+                size="md"
+              />
               {versions.length > 1 ? (
                 <VersionSelector
                   slug={pkg.slug}
@@ -921,6 +928,16 @@ export default async function PackageDetailPage({ params, searchParams }: PagePr
               <h2 className="mb-4 text-lg font-semibold text-foreground">
                 Permissions
               </h2>
+              {/* Sandbox posture — derived from trust tier + package type */}
+              <div className="mb-4 rounded-lg border border-border bg-background px-4 py-3">
+                <SandboxBadge
+                  package_type={pkg.package_type}
+                  trust_level={publisher.trust_level ?? "unverified"}
+                  runtime={compat.runtime}
+                  size="md"
+                  showReason
+                />
+              </div>
               <p className="mb-4 text-xs text-muted">
                 Declared by the publisher. Checked before execution by the policy gate.
               </p>

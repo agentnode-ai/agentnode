@@ -1,6 +1,7 @@
 import Link from "next/link";
 import TrustBadge from "./TrustBadge";
 import VerificationBadge from "./VerificationBadge";
+import SandboxBadge from "./SandboxBadge";
 
 interface PackageCardProps {
   slug: string;
@@ -15,6 +16,7 @@ interface PackageCardProps {
   verification_tier?: string | null;
   verification_score?: number | null;
   package_type?: string | null;
+  runtime?: string | null;
   tags?: string[];
   publisher_name?: string | null;
   is_deprecated?: boolean;
@@ -66,6 +68,7 @@ export default function PackageCard({
   verification_tier,
   verification_score,
   package_type,
+  runtime,
   tags,
   publisher_name,
   is_deprecated,
@@ -138,6 +141,11 @@ export default function PackageCard({
             status={!verification_tier ? verification_status : undefined}
           />
           <TrustBadge level={trust_level} />
+          <SandboxBadge
+            package_type={package_type}
+            trust_level={trust_level}
+            runtime={runtime}
+          />
         </div>
       </div>
 

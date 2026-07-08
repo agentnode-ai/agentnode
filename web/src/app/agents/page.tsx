@@ -28,6 +28,7 @@ interface SearchHit {
   slug: string;
   name: string;
   package_type: string;
+  runtime?: string | null;
   summary: string;
   publisher_name: string;
   trust_level: "curated" | "trusted" | "verified" | "unverified";
@@ -332,6 +333,7 @@ export default async function AgentsPage() {
                 verification_tier={agent.verification_tier}
                 verification_score={agent.verification_score}
                 package_type={agent.package_type}
+                runtime={agent.runtime}
                 tags={agent.tags}
                 publisher_name={agent.publisher_name}
                 is_deprecated={agent.is_deprecated}
