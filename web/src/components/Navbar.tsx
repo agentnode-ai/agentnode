@@ -33,9 +33,10 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Browse",
     items: [
       { href: "/search", label: "Search" },
+      { href: "/toolpacks", label: "Tool Packs" },
+      { href: "/skills", label: "Skills" },
       { href: "/agents", label: "Agents" },
       { href: "/mcp", label: "MCP Servers" },
-      { href: "/capabilities", label: "Capabilities" },
       { href: "/discover", label: "Trending" },
       { href: "/compare", label: "Compare" },
     ],
