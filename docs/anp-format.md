@@ -213,7 +213,7 @@ v0.2 adds optional discoverability and UX fields:
 ```yaml
 env_requirements:
   - name: "OPENAI_API_KEY"
-    purpose: "OpenAI GPT API access"
+    description: "OpenAI GPT API access"
     required: true
 use_cases:
   - "Extract structured data from academic PDFs"
