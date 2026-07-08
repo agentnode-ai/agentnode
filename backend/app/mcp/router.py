@@ -405,6 +405,149 @@ async def get_own_submission(
     )
 
 
+class McpReportUpdateRequest(BaseModel):
+    verification_report: dict = Field(
+        ..., description="Updated output of `agentnode mcp verify --json`"
+    )
+    manifest: dict | None = Field(
+        None, description="Optional updated manifest; keeps the existing one if omitted"
+    )
+
+
+# Statuses from which a maintainer may still attach a fresh report. Approved and
+# rejected are terminal for the maintainer; published packages are done.
+_REPORT_UPDATABLE_STATUSES = ("pending", "action_required", "needs_changes")
+
+
+@router.post(
+    "/submissions/{submission_id}/report",
+    response_model=MaintainerSubmissionStatus,
+    dependencies=[Depends(rate_limit(5, 60))],
+)
+async def update_own_submission_report(
+    request: Request,
+    submission_id: UUID,
+    body: McpReportUpdateRequest,
+    user: User = Depends(require_publisher),
+    session: AsyncSession = Depends(get_session),
+):
+    """Attach an updated verification report to an OPEN own submission.
+
+    Unblocks the web-submit path: a submission filed without a CLI-verified
+    (TESTED) report lands in ``action_required`` and the duplicate check then
+    prevents re-submitting. This lets the maintainer post an updated report
+    (e.g. after running ``agentnode mcp verify . --test --json``) to the same
+    submission — the server re-verifies against the registry and re-derives the
+    status. Publisher-scoped; never touches another publisher's submission and
+    never clears admin review state.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_SUBMIT_BODY_BYTES:
+        raise AppError(
+            "MCP_PAYLOAD_TOO_LARGE",
+            f"Request body must be under {MAX_SUBMIT_BODY_BYTES // 1024} KB",
+            400,
+        )
+
+    row = (
+        await session.execute(
+            select(McpSubmission).where(
+                McpSubmission.id == submission_id,
+                McpSubmission.publisher_id == user.publisher.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not row:
+        raise AppError(
+            "MCP_SUBMISSION_NOT_FOUND",
+            "Submission not found or not owned by your publisher",
+            404,
+        )
+
+    if row.status not in _REPORT_UPDATABLE_STATUSES:
+        raise AppError(
+            "MCP_SUBMISSION_NOT_UPDATABLE",
+            f"Submission status '{row.status}' cannot accept a new report "
+            f"(only {', '.join(_REPORT_UPDATABLE_STATUSES)}).",
+            409,
+            details={"existing_status": row.status},
+        )
+
+    report = body.verification_report
+    report_status = report.get("status", "")
+    if report_status not in VALID_STATUSES:
+        raise AppError(
+            "MCP_INVALID_REPORT",
+            f"Verification report status '{report_status}' is not valid",
+            400,
+        )
+    if report_status == "INVALID":
+        raise AppError(
+            "MCP_REPORT_INVALID",
+            "Cannot submit an INVALID verification report. Fix errors first.",
+            400,
+        )
+
+    # Optional manifest swap must stay the same package identity — a report
+    # update must never repoint the submission at a different package/version.
+    manifest = row.manifest_raw or {}
+    if body.manifest is not None:
+        new_mcp = body.manifest.get("mcp_server")
+        if not isinstance(new_mcp, dict):
+            raise AppError(
+                "MCP_MISSING_SERVER", "Manifest must have mcp_server block", 400
+            )
+        new_name = (
+            new_mcp.get("npm_package") or new_mcp.get("pypi_package") or "unknown"
+        )
+        if new_name != row.package_name:
+            raise AppError(
+                "MCP_PACKAGE_MISMATCH",
+                "The updated manifest is for a different package; submit it as a "
+                "new submission instead.",
+                400,
+            )
+        manifest = body.manifest
+
+    # Server-side re-verification is authoritative (same as initial submit).
+    server_verification = await verify_registry(manifest)
+
+    row.manifest_raw = manifest
+    row.verification_report = report
+    row.server_verification = server_verification
+    row.status = derive_status(server_verification, report)
+    await session.flush()
+    await session.commit()
+
+    logger.info(
+        "MCP submission %s report updated by publisher %s: %s (server=%s)",
+        row.id,
+        user.publisher.slug,
+        row.status,
+        server_verification.get("server_status"),
+    )
+
+    updated = report
+    return MaintainerSubmissionStatus(
+        id=str(row.id),
+        package_name=row.package_name,
+        package_registry=row.package_registry,
+        package_version=row.package_version,
+        source_repo=row.source_repo,
+        status=row.status,
+        report_status=updated.get("status"),
+        report_summary=updated.get("summary"),
+        actions=updated.get("actions"),
+        server_verification=row.server_verification,
+        maintainer_feedback=row.maintainer_feedback,
+        reviewed_at=row.reviewed_at.isoformat() if row.reviewed_at else None,
+        published_package_id=str(row.published_package_id)
+        if row.published_package_id
+        else None,
+        created_at=row.created_at.isoformat() if row.created_at else "",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Admin endpoints
 # ---------------------------------------------------------------------------
