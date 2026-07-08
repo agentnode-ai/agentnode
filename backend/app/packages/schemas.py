@@ -282,6 +282,25 @@ class ActionResponse(BaseModel):
     message: str = ""
 
 
+class MyPackageItem(BaseModel):
+    slug: str
+    name: str
+    package_type: str
+    latest_version: str | None = None
+    is_deprecated: bool = False
+    # Quarantine visibility — the owner sees under-review packages that never
+    # appear in public search.
+    quarantine_status: str | None = None
+    quarantine_reason: str | None = None
+    verification_status: str | None = None
+    verification_tier: str | None = None
+    verification_score: int | None = None
+
+
+class MyPackagesResponse(BaseModel):
+    packages: list[MyPackageItem]
+
+
 class UpdatePackageRequest(BaseModel):
     name: str | None = None  # Package-level
     summary: str | None = None  # Package-level

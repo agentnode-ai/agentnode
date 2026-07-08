@@ -34,6 +34,8 @@ from app.packages.models import (
 )
 from app.packages.schemas import (
     ActionResponse,
+    MyPackageItem,
+    MyPackagesResponse,
     PackageDetailResponse,
     PublishResponse,
     UpdatePackageRequest,
@@ -235,6 +237,70 @@ def _version_eager_loads():
         selectinload(PackageVersion.latest_verification_result),
         selectinload(PackageVersion.tags),
     ]
+
+
+@router.get(
+    "/mine",
+    response_model=MyPackagesResponse,
+    dependencies=[Depends(rate_limit(60, 60))],
+)
+async def list_my_packages(
+    user: User = Depends(require_publisher),
+    session: AsyncSession = Depends(get_session),
+):
+    """List the current publisher's packages, INCLUDING quarantined ones that
+    never appear in public search — so the owner can see under-review packages
+    on their dashboard. Publisher-scoped; never exposes reviewer-only fields."""
+    pkgs = (
+        (
+            await session.execute(
+                select(Package)
+                .options(selectinload(Package.latest_version))
+                .where(Package.publisher_id == user.publisher.id)
+                .order_by(Package.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    items: list[MyPackageItem] = []
+    for pkg in pkgs:
+        # A package is "under review" if any version is quarantined. Surface the
+        # newest quarantined version's reason; fall back to the public latest.
+        quarantined_v = (
+            await session.execute(
+                select(PackageVersion)
+                .where(
+                    PackageVersion.package_id == pkg.id,
+                    PackageVersion.quarantine_status == "quarantined",
+                )
+                .order_by(PackageVersion.published_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        display_v = pkg.latest_version or quarantined_v
+        items.append(
+            MyPackageItem(
+                slug=pkg.slug,
+                name=pkg.name,
+                package_type=pkg.package_type,
+                latest_version=display_v.version_number if display_v else None,
+                is_deprecated=pkg.is_deprecated,
+                quarantine_status="quarantined" if quarantined_v else None,
+                quarantine_reason=quarantined_v.quarantine_reason
+                if quarantined_v
+                else None,
+                verification_status=display_v.verification_status
+                if display_v
+                else None,
+                verification_tier=display_v.verification_tier if display_v else None,
+                verification_score=display_v.verification_score if display_v else None,
+            )
+        )
+
+    return MyPackagesResponse(packages=items)
 
 
 @router.get(

@@ -356,3 +356,74 @@ async def test_publish_versions_list(mock_meili, mock_s3, client, session):
     versions = resp.json()["versions"]
     assert len(versions) == 2
     assert versions[0]["version_number"] == "2.0.0"  # newest first
+
+
+# --- Owner package list (/mine) incl. quarantined ---
+
+
+@pytest.mark.asyncio
+async def test_my_packages_requires_publisher(client):
+    from tests.conftest import register_and_login
+
+    # A logged-in user WITHOUT a publisher profile is refused.
+    token = await register_and_login(
+        client, "nopub-mine@agentnode.dev", "nopubmine", "TestPass123!"
+    )
+    resp = await client.get(
+        "/v1/packages/mine", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_my_packages_unauthenticated(client):
+    resp = await client.get("/v1/packages/mine")
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+@patch("app.packages.service.upload_artifact")
+@patch("app.packages.service.sync_package_to_meilisearch")
+async def test_my_packages_includes_quarantined_own_only(
+    mock_meili, mock_s3, client, session
+):
+    """The owner's /mine list shows their first-time quarantined package (which
+    is absent from public search) with an under-review status, and never shows
+    another publisher's packages."""
+    token = await get_auth_token(client)  # first-time publisher → quarantined
+
+    pub_resp = await client.post(
+        "/v1/packages/publish",
+        data={"manifest": json.dumps(TEST_MANIFEST)},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert pub_resp.status_code == 201
+
+    resp = await client.get(
+        "/v1/packages/mine", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+    pkgs = resp.json()["packages"]
+    assert len(pkgs) == 1
+    item = pkgs[0]
+    assert item["slug"] == "test-pack"
+    assert item["quarantine_status"] == "quarantined"
+    assert item["quarantine_reason"]
+    assert item["latest_version"] == "1.0.0"
+
+    # A different publisher sees an empty list — no cross-publisher leakage.
+    from tests.conftest import register_and_login
+
+    other = await register_and_login(
+        client, "other-mine@agentnode.dev", "othermine", "TestPass123!"
+    )
+    await client.post(
+        "/v1/publishers",
+        json={"display_name": "Other Pub", "slug": "other-pub"},
+        headers={"Authorization": f"Bearer {other}"},
+    )
+    other_resp = await client.get(
+        "/v1/packages/mine", headers={"Authorization": f"Bearer {other}"}
+    )
+    assert other_resp.status_code == 200
+    assert other_resp.json()["packages"] == []
