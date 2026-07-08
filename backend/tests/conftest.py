@@ -1,14 +1,24 @@
 import json
-from unittest.mock import AsyncMock, MagicMock
+import os
 
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+# Must be set BEFORE importing the app so app.database builds a NullPool engine
+# for the test run (avoids connection-pool exhaustion from background tasks).
+os.environ.setdefault("AGENTNODE_TEST_MODE", "1")
 
-from app.config import settings
-from app.database import get_session
-from app.main import app
+from unittest.mock import AsyncMock, MagicMock  # noqa: E402
+
+import pytest_asyncio  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy import update  # noqa: E402
+from sqlalchemy.ext.asyncio import (  # noqa: E402
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
+from app.config import settings  # noqa: E402
+from app.database import get_session  # noqa: E402
+from app.main import app  # noqa: E402
 from app.shared.models import Base
 
 # Import all models for metadata
