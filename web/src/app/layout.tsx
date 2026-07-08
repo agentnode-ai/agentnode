@@ -28,7 +28,7 @@ export const metadata: Metadata = {
     default: "AgentNode — Verified Agent Skills & Tools for AI Agents",
   },
   description:
-    "The verified registry for AI agent skills and tools. Discover, install, and publish agent skills that work across LangChain, CrewAI, MCP, and plain Python.",
+    "The open-source, local-first registry for AI agent skills and tools. Discover, install, and publish verified capabilities that run on your machine — with your own models — across LangChain, CrewAI, MCP, and plain Python.",
   keywords: [
     "agent skills",
     "agent tools",

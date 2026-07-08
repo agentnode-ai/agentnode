@@ -93,7 +93,14 @@ const differentiators = [
     title: "Build or Import — Zero Friction",
     subtitle: "Go from idea to published package in minutes, not days.",
     description:
-      "Two paths to publishing, both frictionless. The AI Builder lets you describe what your agent should do in plain language — it generates a complete ANP package with manifest, code scaffold, and typed schemas, ready to publish. The Import tool takes existing LangChain, MCP, OpenAI, or CrewAI tool code and automatically converts it to ANP v0.2. No rewrite required. Paste your code, get a publish-ready package back.",
+      "Two paths to publishing, both frictionless. The AI Builder lets you describe a skill in plain language — it writes a complete, prompt-only ANP skill (SKILL.md plus manifest), ready to publish; no generated code, safe by construction. The Import tool takes existing LangChain, MCP, OpenAI, or CrewAI tool code and automatically converts it to a tool pack — and it accepts ANP manifests and Claude-style SKILL.md files too. No rewrite required.",
+  },
+  {
+    number: "08",
+    title: "Local-First Economics",
+    subtitle: "The affordable alternative to overpriced AI stacks.",
+    description:
+      "AgentNode exists so you don't have to rent intelligence. Run a local model — Ollama works keyless out of the box — and let your agent extend itself at runtime: it detects the capability it is missing and installs exactly that tool, verified and sandboxed by trust level. For many tasks, a small model with the right tool beats a big model without it. Tools execute on your machine, your prompts and data never reach AgentNode, and the SDK and runtime are MIT-licensed and free. No per-call fees, no lock-in.",
   },
 ];
 
@@ -107,6 +114,8 @@ const comparisonFeatures = [
   "Programmatic resolution",
   "Security scanning",
   "Quality gate (tests)",
+  "Local execution & data locality",
+  "Cost & lock-in",
 ];
 
 const comparisonData: Record<string, Record<string, string>> = {
@@ -120,6 +129,8 @@ const comparisonData: Record<string, Record<string, string>> = {
     "Programmatic resolution": "SDK + CLI + MCP integration",
     "Security scanning": "Bandit, Ed25519 signatures, typosquatting detection",
     "Quality gate (tests)": "Automated on every publish",
+    "Local execution & data locality": "Tools run on your machine; prompts and data never leave it",
+    "Cost & lock-in": "Free, MIT-licensed SDK; bring your own local model (Ollama)",
   },
   PyPI: {
     "AI-specific search": "Keyword search only",
@@ -131,6 +142,8 @@ const comparisonData: Record<string, Record<string, string>> = {
     "Programmatic resolution": "pip install — no resolution",
     "Security scanning": "Basic malware scan",
     "Quality gate (tests)": "Not required",
+    "Local execution & data locality": "Local, but no permission or isolation model",
+    "Cost & lock-in": "Free, but not built for AI agents",
   },
   npm: {
     "AI-specific search": "Keyword search only",
@@ -142,6 +155,8 @@ const comparisonData: Record<string, Record<string, string>> = {
     "Programmatic resolution": "npm install — no resolution",
     "Security scanning": "npm audit (CVE-based)",
     "Quality gate (tests)": "Not required",
+    "Local execution & data locality": "Local, but no permission or isolation model",
+    "Cost & lock-in": "Free, but not built for AI agents",
   },
   ClawHub: {
     "AI-specific search": "Category browsing",
@@ -153,6 +168,8 @@ const comparisonData: Record<string, Record<string, string>> = {
     "Programmatic resolution": "No",
     "Security scanning": "Manual review",
     "Quality gate (tests)": "Varies",
+    "Local execution & data locality": "Hosted platform — your data flows through it",
+    "Cost & lock-in": "Platform pricing; platform-specific format",
   },
   "Skills.sh": {
     "AI-specific search": "Curated list",
@@ -164,6 +181,8 @@ const comparisonData: Record<string, Record<string, string>> = {
     "Programmatic resolution": "No",
     "Security scanning": "Not documented",
     "Quality gate (tests)": "Not documented",
+    "Local execution & data locality": "Depends on the framework behind it",
+    "Cost & lock-in": "Free list; single-framework lock-in",
   },
 };
 
@@ -323,7 +342,7 @@ export default function WhyAgentNodePage() {
             How AgentNode Is Different
           </h2>
           <p className="mb-14 text-center text-muted">
-            Seven design decisions that make AgentNode the right choice for AI
+            Eight design decisions that make AgentNode the right choice for AI
             agent developers.
           </p>
 

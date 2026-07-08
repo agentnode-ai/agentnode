@@ -11,7 +11,7 @@ not pin an SDK version unless the user asks; install the latest with pip.
 
 ## Summary
 
-AgentNode does two things:
+AgentNode does three things:
 
 1. Capability extension — agents discover missing capabilities and install
    verified packages (tool packs, MCP servers, or full agents) at runtime, so
@@ -19,6 +19,12 @@ AgentNode does two things:
 2. Safer execution — every install and run passes a trust gate and policy
    checks; untrusted community code is isolated in a container or refused
    (fail-closed); credentials stay on the host.
+3. Local-first economics — the open-source alternative to overpriced hosted
+   AI stacks. Everything executes on the user's machine, works with local
+   models (Ollama, keyless), and the SDK/runtime are MIT-licensed and free.
+   For many tasks a small local model with the right tool substitutes for a
+   bigger, pricier one; prompts and data never reach AgentNode (only package
+   discovery talks to the registry).
 
 Packages use a portable format (ANP) and work with LangChain, CrewAI, MCP, and
 plain Python. The SDK is published on PyPI as `agentnode-sdk`.

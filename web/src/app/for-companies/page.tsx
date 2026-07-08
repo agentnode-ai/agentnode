@@ -93,6 +93,9 @@ export default function ForCompaniesPage() {
             AgentNode answers it with a pre-execution control plane: trust tiers,
             the Guard policy gateway, lockfile integrity, sandbox-or-fail-closed,
             and a local audit trail — enforced locally, before anything runs.
+            And because everything executes on your own infrastructure — with
+            models you own, Ollama included — there is no per-call bill and no
+            prompt or data egress to a third-party AI platform.
           </p>
           <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
             <Link

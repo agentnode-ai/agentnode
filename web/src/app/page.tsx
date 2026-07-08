@@ -142,7 +142,8 @@ export default function HomePage() {
                 Agents discover and install verified capabilities at runtime,
                 governed by trust tiers, policy checks, and lockfiles. Untrusted
                 community code is sandboxed or refused when isolation is
-                required. Works with LangChain, CrewAI, MCP, and Python.
+                required. Works with LangChain, CrewAI, MCP, and Python &mdash;
+                local-first, on models you own.
               </p>
               <p className="animate-fade-in-delay-1 mt-3 text-sm text-foreground/70">
                 Tools run locally on your machine. Your tool inputs, outputs, and
@@ -174,6 +175,62 @@ export default function HomePage() {
             {/* Right: terminal */}
             <div className="animate-fade-in-delay-3 w-full max-w-2xl flex-shrink-0 lg:w-[580px]">
               <TerminalAnimation />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ============================================================ */}
+      {/*  LOCAL-FIRST ECONOMICS — the affordable alternative           */}
+      {/* ============================================================ */}
+      <section className="border-b border-border bg-card/30">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
+          <div className="mx-auto max-w-3xl text-center">
+            <h2 className="mb-4 text-2xl font-bold text-foreground sm:text-3xl">
+              Small models. Right tools. No cloud bill.
+            </h2>
+            <p className="mb-12 text-lg leading-relaxed text-muted">
+              AgentNode is the open-source alternative to overpriced AI stacks.
+              Run a local model &mdash; Ollama works out of the box &mdash; and
+              let your agent extend itself at runtime: it detects the capability
+              it is missing and installs exactly that tool. For many tasks, a
+              small model with the right tool beats a big model without it.
+            </p>
+          </div>
+
+          <div className="grid gap-6 sm:grid-cols-3">
+            <div className="rounded-xl border border-border bg-card p-6 text-center">
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-xl">
+                💻
+              </div>
+              <h3 className="mb-2 font-semibold text-foreground">Runs on your machine</h3>
+              <p className="text-sm leading-relaxed text-muted">
+                Tools execute locally. Your prompts, inputs, and outputs never
+                reach AgentNode &mdash; only package discovery talks to the
+                registry.
+              </p>
+            </div>
+            <div className="rounded-xl border border-border bg-card p-6 text-center">
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-xl">
+                🧩
+              </div>
+              <h3 className="mb-2 font-semibold text-foreground">Self-extending agents</h3>
+              <p className="text-sm leading-relaxed text-muted">
+                Instead of paying for a bigger model, your agent fetches the
+                exact capability it needs &mdash; verified, permission-declared,
+                and sandboxed by trust level.
+              </p>
+            </div>
+            <div className="rounded-xl border border-border bg-card p-6 text-center">
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-xl">
+                🔓
+              </div>
+              <h3 className="mb-2 font-semibold text-foreground">Free &amp; open source</h3>
+              <p className="text-sm leading-relaxed text-muted">
+                The SDK and runtime are MIT-licensed and free to use. No
+                per-call fees, no lock-in &mdash; bring your own models and
+                keys.
+              </p>
             </div>
           </div>
         </div>
