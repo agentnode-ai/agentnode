@@ -12,9 +12,7 @@ from app.config import settings
 if os.environ.get("AGENTNODE_TEST_MODE"):
     from sqlalchemy.pool import NullPool
 
-    engine = create_async_engine(
-        settings.DATABASE_URL, echo=False, poolclass=NullPool
-    )
+    engine = create_async_engine(settings.DATABASE_URL, echo=False, poolclass=NullPool)
 else:
     engine = create_async_engine(
         settings.DATABASE_URL,
