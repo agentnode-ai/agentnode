@@ -1,10 +1,26 @@
-# agentnode-cli (legacy)
+# agentnode-cli — DEPRECATED
 
-> **Note:** This README documents the legacy TypeScript CLI. For the primary Python SDK CLI, install with `pip install agentnode-sdk`. The Python CLI includes all commands for searching, installing, validating, and publishing packages.
+> ## ⚠️ This package is deprecated and unmaintained.
+>
+> **Use the maintained CLI instead:** `pip install agentnode-sdk`
+>
+> The legacy TypeScript CLI is frozen. It lacks the AgentNode security model —
+> **no sandboxed execution, no publisher-signature verification, no Guard policy,
+> no MCP, no credentialed tool packs.** To protect users it now refuses to
+> install untrusted (community) packages and prints a deprecation notice on
+> every command. Please migrate.
 
 CLI for [AgentNode](https://agentnode.net) — discover, resolve, and install AI agent capabilities.
 
-## Installation
+## Migrate to the maintained CLI
+
+```bash
+pip install agentnode-sdk
+# same `agentnode` command, full set incl. sandbox, signing, mcp, guard
+agentnode --help
+```
+
+## Installation (legacy, not recommended)
 
 ```bash
 npm install -g agentnode-cli

@@ -22,9 +22,13 @@ describe("search", () => {
     expect(result.query).toBe("pdf");
     expect(mockFetch).toHaveBeenCalledOnce();
 
-    const url = mockFetch.mock.calls[0][0] as string;
+    // search is a POST with a JSON body (migrated from GET query params).
+    const call = mockFetch.mock.calls[0];
+    const url = call[0] as string;
     expect(url).toContain("/v1/search");
-    expect(url).toContain("q=pdf");
+    expect(call[1].method).toBe("POST");
+    const body = JSON.parse(call[1].body);
+    expect(body.q).toBe("pdf");
   });
 });
 

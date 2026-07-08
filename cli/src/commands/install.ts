@@ -163,6 +163,26 @@ export const installCommand = new Command("install")
         trustLevel = pkgDetail?.publisher?.trust_level || undefined;
       } catch { /* non-fatal */ }
 
+      // Fail-closed: the legacy CLI's installer does NOT verify publisher
+      // signatures or build community code in a sandbox (the Python SDK does).
+      // Refuse to install anything but host-trusted (curated/trusted) packages;
+      // direct the user to the maintained, sandboxed installer.
+      const hostTrusted = trustLevel === "curated" || trustLevel === "trusted";
+      if (!hostTrusted) {
+        const msg =
+          `Refusing to install '${slug}' (trust: ${trustLevel || "unknown"}) with the ` +
+          "deprecated legacy CLI, which does not verify publisher signatures or " +
+          "build community code in a sandbox. Install it with the maintained, " +
+          "sandboxed CLI instead:\n  pip install agentnode-sdk\n  agentnode install " +
+          slug;
+        if (opts.json) {
+          console.log(JSON.stringify({ success: false, error: msg }));
+        } else {
+          console.error(chalk.red(msg));
+        }
+        process.exit(1);
+      }
+
       // Extract permissions from install metadata
       const permissionsInfo = meta.permissions ? {
         network: meta.permissions.network_level,
