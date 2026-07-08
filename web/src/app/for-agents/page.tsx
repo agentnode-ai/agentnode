@@ -79,7 +79,9 @@ export default function ForAgentsPage() {
             An agent without a way to acquire tools at runtime stays stuck at its
             starting capabilities. With AgentNode it detects a missing capability,
             installs a verified skill, and continues — no human in the loop. One
-            command to install, one call to self-extend.
+            command to install, one call to self-extend. It works with local
+            models too (Ollama, keyless): a small model with the right tool
+            handles tasks that would otherwise need a bigger, pricier one.
           </p>
           <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
             <a
