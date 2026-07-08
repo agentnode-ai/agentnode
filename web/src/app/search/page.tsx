@@ -9,10 +9,14 @@ import type { SearchHit, SearchResponse } from "@/lib/api";
 
 const PER_PAGE = 20;
 
+// One concept per filter: the package TYPE (what it is), the RUNTIME (how it
+// executes — MCP servers live here, nowhere else), CATEGORY (topic), FRAMEWORK
+// (compatibility), and the two trust axes. "node" was never a real runtime and
+// MCP no longer appears in three different filters.
 const FILTER_OPTIONS = {
-  package_type: ["toolpack", "agent"],
-  runtime: ["python", "mcp", "node"],
-  category: ["connector", "character", "research", "automation", "data", "mcp", "mcp-server"],
+  package_type: ["toolpack", "skill", "agent"],
+  runtime: ["python", "mcp"],
+  category: ["connector", "character", "research", "automation", "data"],
   framework: ["langchain", "crewai", "mcp", "generic"],
   trust_level: ["curated", "trusted", "verified", "unverified"],
   verification_tier: ["gold", "verified", "partial"],
@@ -29,16 +33,15 @@ const FILTER_LABELS: Record<string, string> = {
 
 const OPTION_LABELS: Record<string, string> = {
   toolpack: "Tool Pack",
+  skill: "Skill",
   agent: "Agent",
   python: "Python",
   mcp: "MCP Server",
-  node: "Node.js",
   connector: "Connector",
   character: "Character / Persona",
   research: "Research",
   automation: "Automation",
   data: "Data & Analytics",
-  "mcp-server": "MCP Server",
   generic: "Any framework",
 };
 
@@ -402,7 +405,9 @@ function SearchContent() {
                       : "text-muted border border-transparent hover:text-foreground hover:bg-card"
                   }`}
                 >
-                  {OPTION_LABELS[option] ?? option}
+                  {key === "framework" && option === "mcp"
+                    ? "MCP"
+                    : (OPTION_LABELS[option] ?? option)}
                 </button>
               );
             })}

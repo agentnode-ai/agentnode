@@ -105,48 +105,49 @@ export default function PackageCard({
       href={`/packages/${slug}`}
       className="group flex flex-col gap-3 rounded-xl border border-border bg-card p-5 transition-all hover:border-primary/30 hover:bg-card/80"
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
+      {/* Name gets its own full-width row — badges live on a second row so
+          they can never squeeze the package name out of view. */}
+      <div className="min-w-0">
+        <div className="flex items-baseline gap-2 min-w-0">
           <h3 className="truncate font-mono text-sm font-semibold text-foreground group-hover:text-primary transition-colors">
             {name ?? slug}
           </h3>
-          <div className="flex items-center gap-1.5">
-            {version && (
-              <span className="text-xs text-muted">v{version}</span>
-            )}
-            {category && CATEGORY_STYLES[category] && (
-              <span className={`rounded ${CATEGORY_STYLES[category].bg} px-1.5 py-0.5 text-[10px] font-medium ${CATEGORY_STYLES[category].text}`}>
-                {CATEGORY_STYLES[category].label}
-              </span>
-            )}
-            {!category && package_type && package_type !== "toolpack" && (
-              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                {package_type}
-              </span>
-            )}
-          </div>
-          {is_deprecated && (
-            <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-400">
-              deprecated
-            </span>
-          )}
-          {publisher_name && (
-            <span className="text-xs text-muted truncate">by {publisher_name}</span>
+          {version && (
+            <span className="shrink-0 text-xs text-muted">v{version}</span>
           )}
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <VerificationBadge
-            tier={verification_tier}
-            score={verification_score}
-            status={!verification_tier ? verification_status : undefined}
-          />
-          <TrustBadge level={trust_level} />
-          <SandboxBadge
-            package_type={package_type}
-            trust_level={trust_level}
-            runtime={runtime}
-          />
-        </div>
+        {publisher_name && (
+          <div className="text-xs text-muted truncate">by {publisher_name}</div>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        <VerificationBadge
+          tier={verification_tier}
+          score={verification_score}
+          status={!verification_tier ? verification_status : undefined}
+        />
+        <TrustBadge level={trust_level} />
+        <SandboxBadge
+          package_type={package_type}
+          trust_level={trust_level}
+          runtime={runtime}
+        />
+        {category && CATEGORY_STYLES[category] && (
+          <span className={`rounded ${CATEGORY_STYLES[category].bg} px-1.5 py-0.5 text-[10px] font-medium ${CATEGORY_STYLES[category].text}`}>
+            {CATEGORY_STYLES[category].label}
+          </span>
+        )}
+        {!category && package_type && package_type !== "toolpack" && (
+          <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+            {package_type}
+          </span>
+        )}
+        {is_deprecated && (
+          <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-400">
+            deprecated
+          </span>
+        )}
       </div>
 
       <p className="text-sm leading-relaxed text-muted line-clamp-2">
