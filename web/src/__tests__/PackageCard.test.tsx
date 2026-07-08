@@ -92,17 +92,29 @@ describe('PackageCard', () => {
     expect(screen.queryByText(/downloads/)).not.toBeInTheDocument()
   })
 
-  it('shows package_type badge when not toolpack', () => {
-    render(<PackageCard {...baseProps} package_type="upgrade" />)
-    expect(screen.getByText('upgrade')).toBeInTheDocument()
+  it('always shows a canonical kind chip', () => {
+    render(<PackageCard {...baseProps} package_type="toolpack" />)
+    expect(screen.getByText('Tool Pack')).toBeInTheDocument()
   })
 
-  it('hides package_type badge when it is toolpack', () => {
-    render(<PackageCard {...baseProps} package_type="toolpack" />)
-    // "toolpack" should not appear as a badge — the component skips it
-    const allText = document.body.textContent || ''
-    // The slug 'web-scraper' and summary will be present, but not "toolpack" as a badge
-    expect(screen.queryByText('toolpack')).not.toBeInTheDocument()
+  it('shows Skill / Agent kind chips by package_type', () => {
+    const { unmount } = render(<PackageCard {...baseProps} package_type="skill" />)
+    expect(screen.getByText('Skill')).toBeInTheDocument()
+    unmount()
+    render(<PackageCard {...baseProps} package_type="agent" />)
+    expect(screen.getByText('Agent')).toBeInTheDocument()
+  })
+
+  it('shows MCP Server kind chip when runtime is mcp regardless of package_type', () => {
+    render(<PackageCard {...baseProps} package_type="toolpack" runtime="mcp" />)
+    expect(screen.getByText('MCP Server')).toBeInTheDocument()
+    expect(screen.queryByText('Tool Pack')).not.toBeInTheDocument()
+  })
+
+  it('never shows raw package_type values as chips', () => {
+    render(<PackageCard {...baseProps} package_type="upgrade" />)
+    expect(screen.queryByText('upgrade')).not.toBeInTheDocument()
+    expect(screen.getByText('Tool Pack')).toBeInTheDocument()
   })
 
   it('renders trust and verification badges', () => {

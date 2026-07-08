@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
-import {
-  fetchLibrary,
-  LibraryGrid,
-  LibraryHero,
-} from "@/components/PackageLibrary";
+import PackageSearch from "@/components/PackageSearch";
+import { LibraryHero } from "@/components/PackageLibrary";
 
 export const metadata: Metadata = {
   title: "Tool Packs — Executable Tools for AI Agents",
@@ -14,9 +11,7 @@ export const metadata: Metadata = {
 
 export const revalidate = 300;
 
-export default async function ToolpacksPage() {
-  const hits = await fetchLibrary({ package_type: "toolpack" });
-
+export default function ToolpacksPage() {
   return (
     <div className="flex flex-col">
       <LibraryHero
@@ -30,13 +25,12 @@ export default async function ToolpacksPage() {
       />
 
       <section className="border-b border-border">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-10">
-          <LibraryGrid
-            hits={hits}
-            searchHref="/search?package_type=toolpack"
-            emptyLabel="No tool packs found."
-          />
-        </div>
+        <PackageSearch
+          fixed={{ package_type: "toolpack" }}
+          basePath="/toolpacks"
+          heading={null}
+          autoFocus={false}
+        />
       </section>
 
       {/* Explainer below the library */}

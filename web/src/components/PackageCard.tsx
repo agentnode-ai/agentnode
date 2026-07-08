@@ -26,6 +26,14 @@ interface PackageCardProps {
   has_connector?: boolean | null;
 }
 
+// One consistent kind chip per card — same wording and colors everywhere.
+const KIND_STYLES = {
+  toolpack: { label: "Tool Pack", className: "bg-primary/10 text-primary border-primary/20" },
+  skill: { label: "Skill", className: "bg-green-500/10 text-green-400 border-green-500/20" },
+  agent: { label: "Agent", className: "bg-blue-500/10 text-blue-400 border-blue-500/20" },
+  mcp: { label: "MCP Server", className: "bg-violet-500/10 text-violet-400 border-violet-500/20" },
+} as const;
+
 const NETWORK_EXTERNAL_VALUES = new Set(["restricted", "unrestricted"]);
 const FILESYSTEM_WRITE_VALUES = new Set(["workspace_write", "any"]);
 const CODE_EXEC_ACTIVE_VALUES = new Set(["limited_subprocess", "shell"]);
@@ -100,6 +108,17 @@ export default function PackageCard({
     category === "connector",
   );
 
+  // The one canonical package KIND, derived the same way everywhere:
+  // MCP servers are identified by runtime, everything else by package_type.
+  const kind: keyof typeof KIND_STYLES =
+    runtime === "mcp"
+      ? "mcp"
+      : package_type === "skill"
+        ? "skill"
+        : package_type === "agent"
+          ? "agent"
+          : "toolpack";
+
   return (
     <Link
       href={`/packages/${slug}`}
@@ -122,6 +141,11 @@ export default function PackageCard({
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5">
+        {/* Package KIND — always first, always shown, one consistent style:
+            the reader identifies what kind of package this is at a glance. */}
+        <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${KIND_STYLES[kind].className}`}>
+          {KIND_STYLES[kind].label}
+        </span>
         <VerificationBadge
           tier={verification_tier}
           score={verification_score}
@@ -133,14 +157,9 @@ export default function PackageCard({
           trust_level={trust_level}
           runtime={runtime}
         />
-        {category && CATEGORY_STYLES[category] && (
+        {category && CATEGORY_STYLES[category] && category !== "agent" && (
           <span className={`rounded ${CATEGORY_STYLES[category].bg} px-1.5 py-0.5 text-[10px] font-medium ${CATEGORY_STYLES[category].text}`}>
             {CATEGORY_STYLES[category].label}
-          </span>
-        )}
-        {!category && package_type && package_type !== "toolpack" && (
-          <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-            {package_type}
           </span>
         )}
         {is_deprecated && (
@@ -162,14 +181,18 @@ export default function PackageCard({
 
       <div className="mt-auto flex items-center justify-between gap-2">
         <div className="flex flex-wrap gap-1.5">
-          {frameworks.map((fw) => (
-            <span
-              key={fw}
-              className="rounded-md bg-background px-2 py-0.5 text-xs text-muted"
-            >
-              {fw}
-            </span>
-          ))}
+          {/* "generic" (works anywhere) and "mcp" (already the kind chip) are
+              noise here — show only genuinely distinguishing frameworks. */}
+          {frameworks
+            .filter((fw) => fw !== "generic" && fw !== "mcp")
+            .map((fw) => (
+              <span
+                key={fw}
+                className="rounded-md bg-background px-2 py-0.5 text-xs text-muted"
+              >
+                {fw}
+              </span>
+            ))}
         </div>
         <div className="flex items-center gap-2">
           {download_count != null && (
