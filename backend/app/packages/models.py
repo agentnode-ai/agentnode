@@ -26,7 +26,14 @@ class Package(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     slug = Column(Text, nullable=False, unique=True, index=True)
     name = Column(Text, nullable=False)
     package_type = Column(
-        Enum("agent", "toolpack", "upgrade", name="package_type", create_type=False),
+        Enum(
+            "agent",
+            "toolpack",
+            "upgrade",
+            "skill",
+            name="package_type",
+            create_type=False,
+        ),
         nullable=False,
     )
     summary = Column(Text, nullable=False)
@@ -88,6 +95,7 @@ class PackageVersion(Base, UUIDPrimaryKeyMixin):
             "docker",
             "remote",
             "mcp",
+            "none",
             name="runtime_type",
             create_type=False,
         ),
@@ -98,6 +106,7 @@ class PackageVersion(Base, UUIDPrimaryKeyMixin):
             "package",
             "remote_endpoint",
             "mcp_server",
+            "prompt_only",
             name="install_mode",
             create_type=False,
         ),

@@ -87,6 +87,18 @@ async def engine():
             text("CREATE SEQUENCE IF NOT EXISTS support_ticket_number_seq START 1")
         )
         await conn.run_sync(Base.metadata.create_all)
+        # Persistent local test DBs keep enum TYPES across runs (only tables
+        # are dropped above), so values added later to the models never arrive.
+        # Mirror the alembic additions here (no-op on fresh CI databases).
+        await conn.execute(
+            text("ALTER TYPE package_type ADD VALUE IF NOT EXISTS 'skill'")
+        )
+        await conn.execute(
+            text("ALTER TYPE runtime_type ADD VALUE IF NOT EXISTS 'none'")
+        )
+        await conn.execute(
+            text("ALTER TYPE install_mode ADD VALUE IF NOT EXISTS 'prompt_only'")
+        )
         # Seed capability taxonomy for validation tests
         for cap_id, display_name, description, category in SEED_CAPABILITY_IDS:
             await conn.execute(
