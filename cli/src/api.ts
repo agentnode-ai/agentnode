@@ -87,6 +87,9 @@ async function request(method: string, path: string, body?: unknown): Promise<an
 }
 
 export async function search(query: string, options: Record<string, any> = {}): Promise<any> {
+  // Pass through extra options, but NOT page/per_page — those are coerced to
+  // numbers below and must not be clobbered by their raw (string) form.
+  const { page: _page, per_page: _perPage, ...extra } = options;
   return request("POST", "/v1/search", {
     q: query,
     capability_id: options.capability_id,
@@ -94,11 +97,11 @@ export async function search(query: string, options: Record<string, any> = {}): 
     runtime: options.runtime,
     trust_level: options.trust_level,
     sort_by: options.sort_by,
+    ...Object.fromEntries(
+      Object.entries(extra).filter(([_, v]) => v !== undefined)
+    ),
     page: options.page ? Number(options.page) : undefined,
     per_page: options.per_page ? Number(options.per_page) : undefined,
-    ...Object.fromEntries(
-      Object.entries(options).filter(([_, v]) => v !== undefined)
-    ),
   });
 }
 

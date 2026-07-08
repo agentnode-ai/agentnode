@@ -1,13 +1,14 @@
 name: Publish CLI to npm
 
+# FROZEN: agentnode-cli (npm) is deprecated. Auto-publish on release is
+# disabled — this workflow only runs on manual dispatch so a stale, unmaintained
+# CLI can't ship new versions. The maintained CLI ships with the Python SDK.
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/cli-v')
     defaults:
       run:
         working-directory: cli

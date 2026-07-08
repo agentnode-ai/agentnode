@@ -44,11 +44,31 @@ function getCliVersion(): string {
   }
 }
 
+// DEPRECATION: this legacy TypeScript CLI is frozen. The maintained CLI ships
+// with the Python SDK (`pip install agentnode-sdk`) and is the only one with the
+// full security model — sandboxed execution, publisher-signature verification,
+// Guard policy, MCP, and credentialed tool packs. Print a one-line notice on
+// every invocation (stderr, so JSON output on stdout stays clean). Skip it for
+// --version / --help to keep those outputs tidy.
+function printDeprecationNotice(): void {
+  const argv = process.argv.slice(2);
+  if (argv.some((a) => a === "-V" || a === "--version" || a === "-h" || a === "--help")) {
+    return;
+  }
+  process.stderr.write(
+    "⚠ agentnode-cli (npm) is deprecated and unmaintained. " +
+      "Switch to the maintained CLI: pip install agentnode-sdk\n",
+  );
+}
+printDeprecationNotice();
+
 const program = new Command();
 
 program
   .name("agentnode")
-  .description("CLI for AgentNode — discover, resolve, and install AI agent capabilities.")
+  .description(
+    "[DEPRECATED] Legacy AgentNode CLI. Use `pip install agentnode-sdk` instead.",
+  )
   .version(getCliVersion());
 
 program.addCommand(loginCommand);
