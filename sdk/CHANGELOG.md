@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.22.0 — MCP from the terminal + refreshed compatibility
+
+### Added
+
+- `agentnode init --type mcp` scaffolds an MCP server listing: a schema-valid
+  manifest (runtime `mcp`, a pinned `mcp_server` command with an npm/PyPI
+  package and `source_repo`, honest permissions) plus a README that walks
+  `agentnode mcp verify` → `agentnode mcp submit`. MCP now has the same
+  terminal starting point as toolpacks, skills, and agents.
+
+### Changed
+
+- `agentnode publish` detects an MCP manifest (runtime `mcp` or an `mcp_server`
+  block) and routes you to `agentnode mcp verify` / `agentnode mcp submit`
+  instead of failing deep in toolpack validation. Non-MCP manifests are
+  unaffected.
+- Refreshed model compatibility data: 246 scored models (222 S-tier), current
+  flagships added, models untestable in the latest batch kept with their prior
+  result marked legacy, and only hard-evidence removals delisted.
+
 ## 0.21.0 — Community agents run sandboxed by default
 
 ### Changed
