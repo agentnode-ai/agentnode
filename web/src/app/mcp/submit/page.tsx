@@ -188,11 +188,11 @@ export default function McpSubmitPage() {
             Submit your <span className="text-primary">MCP server</span>
           </h1>
           <p className="mx-auto mt-4 max-w-2xl text-muted">
-            List your MCP server in the AgentNode catalog. Every submission is
-            reviewed before it goes live: the server independently re-verifies
-            your package against the npm/PyPI registry, and an ownership check
-            plus a human review happen before publication. Nothing is published
-            automatically.
+            Submit an existing npm/PyPI MCP server for automated checks and catalog
+            listing. AgentNode verifies the package and ownership signals
+            automatically — independently re-checking your package against the
+            registry. Today, MCP listings still get a review before going live; the
+            long-term goal is self-service publishing once all automated gates pass.
           </p>
         </div>
       </section>

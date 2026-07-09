@@ -646,7 +646,9 @@ export function AdvancedEdit({ form }: { form: PublishFormState }) {
           >
             {guided.package_type === "agent" && (
               <div className="rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-blue-400 mb-3">
-                Agents orchestrate other packages. Tool declarations are optional for agent packages.
+                Agents use tools from the registry at runtime — they reference
+                allowed packages, not embedded tool code. Leave this empty unless
+                you are also shipping a tool inside the agent package.
               </div>
             )}
             {guided.tools.map((tool, i) => (
