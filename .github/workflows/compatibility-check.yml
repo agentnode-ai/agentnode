@@ -1,16 +1,26 @@
 name: Compatibility Smoke Test
 
-# Manual-only: the stored OPENROUTER_API_KEY is invalid, so the push trigger
-# just painted every SDK merge red (and a valid key would burn OpenRouter
-# credit on every push — the weekly cron was disabled 2026-06-17 for the same
-# reason). Re-enable a trigger only together with a fresh, funded key.
+# Reactivated 2026-07-09 with a fresh funded OPENROUTER_API_KEY.
+# - Smoke (5 core models, ~cents per run): on SDK pushes to main + manual.
+# - Model drift check (free, no LLM calls): monthly cron + manual; fails when
+#   new tool-capable models are missing from the compatibility snapshot so the
+#   matrix cannot silently age. The full matrix run stays manual/local
+#   (batch_verify -> merge_batches -> generate_compatibility_artifacts).
 on:
+  push:
+    branches: [main]
+    paths:
+      - sdk/agentnode_sdk/**
+      - sdk/scripts/**
+  schedule:
+    - cron: "0 8 1 * *"
   workflow_dispatch:
 
 jobs:
   smoke-test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
@@ -28,3 +38,18 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: python sdk/scripts/ci_smoke_test.py
+
+  model-drift:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check for untested models (no LLM calls, free)
+        run: python sdk/scripts/check_model_drift.py

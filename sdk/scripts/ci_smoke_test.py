@@ -19,11 +19,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from agentnode_sdk.runtime import AgentNodeRuntime
 
-# 5 core models via OpenRouter
+# 5 core models via OpenRouter (must exist there — gemini-2.0-flash-exp was
+# delisted from OpenRouter and would fail every smoke run regardless of key)
 SMOKE_MODELS = [
     "openai/gpt-4o-mini",
     "anthropic/claude-sonnet-4.6",
-    "google/gemini-2.0-flash-exp",
+    "google/gemini-2.5-flash-lite",
     "deepseek/deepseek-chat",
     "qwen/qwen3-30b-a3b",
 ]
