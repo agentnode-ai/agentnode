@@ -314,7 +314,7 @@ export default function ImportPage() {
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-primary/10 via-transparent to-transparent" />
         <div className="relative mx-auto max-w-4xl px-4 sm:px-6 pt-16 pb-6 text-center">
           <h1 className="text-4xl font-bold leading-tight tracking-tight text-foreground sm:text-5xl">
-            <span className="text-primary">Agent Skill Import</span>
+            <span className="text-primary">Import &amp; Convert</span>
             <br />
             Turn Any Tool Into an AgentNode Package
           </h1>
@@ -379,6 +379,18 @@ export default function ImportPage() {
               </button>
             ))}
           </div>
+
+          {inputMode === "code" && platform === "mcp" && (
+            <div className="mb-4 rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-3 text-sm text-blue-400">
+              Importing MCP/FastMCP code converts it into a <strong>Tool Pack</strong> —
+              a runnable ANP package. It does not create an MCP-runtime listing. To list
+              an existing npm/PyPI MCP server as-is, use{" "}
+              <Link href="/mcp/submit" className="underline hover:text-blue-300">
+                MCP submit
+              </Link>{" "}
+              instead.
+            </div>
+          )}
 
           {/* Input area */}
           <div className="relative">

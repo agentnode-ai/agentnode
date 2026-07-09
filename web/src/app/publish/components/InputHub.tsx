@@ -95,7 +95,9 @@ export function InputHub({ form }: { form: PublishFormState }) {
           >
             <h2 className="text-lg font-bold text-foreground">MCP Server</h2>
             <p className="mt-1.5 text-sm text-muted">
-              List an existing MCP server in the catalog — reviewed submission flow.
+              List an existing npm/PyPI MCP server — not a from-scratch build like
+              the others. AgentNode verifies the package and ownership automatically;
+              today, listings still get a review before going live.
             </p>
           </Link>
         </div>
