@@ -255,9 +255,10 @@ class TestAgentSandboxConfigSection:
     documented config path (agent_sandbox.enabled) and the C2 host LLM
     ceiling (agent_sandbox.llm) never reached their consumers."""
 
-    def test_defaults_include_agent_sandbox_disabled(self):
+    def test_defaults_include_agent_sandbox_enabled(self):
+        # Slice B: agent sandbox defaults ON (community agents run sandbox-or-refuse).
         cfg = default_config()
-        assert cfg["agent_sandbox"]["enabled"] is False
+        assert cfg["agent_sandbox"]["enabled"] is True
 
     def test_handwritten_section_survives_load(self, isolated_config):
         isolated_config.parent.mkdir(parents=True, exist_ok=True)

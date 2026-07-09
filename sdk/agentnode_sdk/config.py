@@ -42,7 +42,13 @@ DEFAULTS: dict[str, Any] = {
         "unknown": "prompt",
     },
     "agent_sandbox": {
-        "enabled": False,
+        # Default ON (Slice B, SDK 0.21.0): community agents run sandbox-or-refuse,
+        # consistent with toolpacks and MCPs. On a host without a container runtime
+        # + pinned image they are refused cleanly (never a host fallback); with the
+        # sandbox present they run in the container (LLM key stays host-side behind
+        # the broker, tool calls via RPC). Set to false to restore the old behavior
+        # (community agents refused outright).
+        "enabled": True,
     },
     "sandbox": {
         "host_trust_policy": "default",

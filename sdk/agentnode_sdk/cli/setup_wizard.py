@@ -342,19 +342,15 @@ def _sandbox_screen(cfg: dict) -> tuple[str, bool]:
         print()
         print("  Sandbox ready — community packages run isolated.")
         print()
-        print("  Sandboxed community agents are currently disabled (default).")
-        print("  Enabling lets verified/unverified community agents run isolated;")
-        print("  without it they are refused.")
+        print("  Sandboxed community agents are enabled by default: verified/")
+        print("  unverified community agents run isolated in the sandbox, or are")
+        print("  refused if it is unavailable — never on the host.")
         if sys.stdin.isatty():
-            en = _prompt("  Enable sandboxed community agents now? [y/N]: ", "n")
-            if en.lower() == "y":
-                cfg["agent_sandbox"]["enabled"] = True
-            else:
-                print(dim("  You can enable it later with "
-                          "`agentnode config set agent_sandbox.enabled true`."))
-        else:
-            print(dim("  Enable later with "
-                      "`agentnode config set agent_sandbox.enabled true`."))
+            dis = _prompt("  Disable sandboxed community agents? [y/N]: ", "n")
+            if dis.lower() == "y":
+                cfg["agent_sandbox"]["enabled"] = False
+                print(dim("  Disabled — community agents will be refused outright. "
+                          "Re-enable with `agentnode config set agent_sandbox.enabled true`."))
         return "ready", False
 
     from agentnode_sdk.cli.sandbox_commands import _first_failure

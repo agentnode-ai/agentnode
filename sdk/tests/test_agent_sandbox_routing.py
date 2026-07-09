@@ -1,9 +1,10 @@
-"""B2a — run_agent routing behind the default-OFF agent-sandbox flag.
+"""run_agent routing behind the agent-sandbox flag (default ON since Slice B).
 
 All Docker-free: a fake backend returns a scripted FakeSession, and the volume
-``inspect`` is mocked. These prove the flag default-OFF leaves behaviour
-unchanged, that community agents route sandbox-or-fail-closed (never host) when
-the flag is ON, and that trusted/curated/unknown are unchanged.
+``inspect`` is mocked. These prove that with the flag ON community agents route
+sandbox-or-fail-closed (never host), that an explicit off (env/config) restores
+the old refuse-outright behaviour, and that trusted/curated/unknown are
+unchanged.
 """
 from __future__ import annotations
 
@@ -90,20 +91,31 @@ def _mock_volume_inspect_ok(monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestFlag:
-    def test_default_off(self, monkeypatch):
+    def test_default_on(self, monkeypatch):
+        """Slice B: default ON when neither env nor config say otherwise."""
         monkeypatch.delenv("AGENTNODE_AGENT_SANDBOX", raising=False)
         monkeypatch.setattr("agentnode_sdk.config.load_config", lambda: {})
+        assert _agent_sandbox_enabled() is True
+
+    def test_env_off_disables(self, monkeypatch):
+        monkeypatch.setenv("AGENTNODE_AGENT_SANDBOX", "0")
+        assert _agent_sandbox_enabled() is False
+
+    def test_config_off_disables(self, monkeypatch):
+        monkeypatch.delenv("AGENTNODE_AGENT_SANDBOX", raising=False)
+        monkeypatch.setattr("agentnode_sdk.config.load_config",
+                            lambda: {"agent_sandbox": {"enabled": False}})
         assert _agent_sandbox_enabled() is False
 
     def test_env_on(self, monkeypatch):
         monkeypatch.setenv("AGENTNODE_AGENT_SANDBOX", "1")
         assert _agent_sandbox_enabled() is True
 
-    def test_config_on(self, monkeypatch):
-        monkeypatch.delenv("AGENTNODE_AGENT_SANDBOX", raising=False)
+    def test_env_off_beats_config_on(self, monkeypatch):
+        monkeypatch.setenv("AGENTNODE_AGENT_SANDBOX", "0")
         monkeypatch.setattr("agentnode_sdk.config.load_config",
                             lambda: {"agent_sandbox": {"enabled": True}})
-        assert _agent_sandbox_enabled() is True
+        assert _agent_sandbox_enabled() is False
 
 
 # ---------------------------------------------------------------------------
@@ -111,12 +123,43 @@ class TestFlag:
 # ---------------------------------------------------------------------------
 
 class TestRouting:
-    def test_flag_off_community_still_refused(self, monkeypatch):
-        monkeypatch.delenv("AGENTNODE_AGENT_SANDBOX", raising=False)
-        monkeypatch.setattr("agentnode_sdk.config.load_config", lambda: {})
+    def test_explicit_off_community_refused_outright(self, monkeypatch):
+        """With the flag explicitly disabled, community agents are refused at the
+        trust gate (the pre-Slice-B behaviour), never sandboxed."""
+        monkeypatch.setenv("AGENTNODE_AGENT_SANDBOX", "0")
         result = run_agent("test-agent", entry=_agent_entry(trust_level="unverified"))
         assert result.success is False
         assert "trust level" in (result.error or "")
+
+    def test_default_routes_community_to_sandbox(self, monkeypatch):
+        """Slice B default (no env, empty config): community routes to the sandbox
+        path — never the host, never a trust-gate refusal."""
+        monkeypatch.delenv("AGENTNODE_AGENT_SANDBOX", raising=False)
+        monkeypatch.setattr("agentnode_sdk.config.load_config", lambda: {})
+        seen = {}
+
+        def spy(slug, entry, agent_config, *, goal=None, run_id=None, **kwargs):
+            seen["slug"] = slug
+            return RunToolResult(success=False, error="spy", mode_used="agent_sandbox", run_id=run_id)
+
+        monkeypatch.setattr("agentnode_sdk.runtimes.agent_sandbox.run_agent_sandboxed", spy)
+        result = run_agent("test-agent", entry=_agent_entry(trust_level="unverified"))
+        assert seen.get("slug") == "test-agent"
+        assert result.mode_used == "agent_sandbox"
+
+    def test_default_on_no_sandbox_refuses_never_host(self, monkeypatch):
+        """The end-to-end Slice B invariant: default ON + no container runtime ->
+        a community agent is refused (sandbox_unavailable), NEVER run on the host."""
+        monkeypatch.delenv("AGENTNODE_AGENT_SANDBOX", raising=False)
+        monkeypatch.setattr("agentnode_sdk.config.load_config", lambda: {})
+        monkeypatch.setattr("agentnode_sdk.sandbox.get_default_backend",
+                            lambda: _FakeBackend(available=False))
+        entry = _agent_entry(trust_level="unverified", artifact_hash="sha256:abc",
+                             sandboxed=True)
+        result = run_agent("test-agent", entry=entry)
+        # Refused via the sandbox path (volume/backend gate), never a host run.
+        assert result.success is False
+        assert result.mode_used == "sandbox_unavailable"
 
     def test_flag_on_routes_community_to_sandbox(self, monkeypatch):
         monkeypatch.setenv("AGENTNODE_AGENT_SANDBOX", "1")
@@ -152,7 +195,9 @@ class TestRouting:
 
 class TestHostTrustPolicyRouting:
     def _flag_off(self, monkeypatch):
-        monkeypatch.delenv("AGENTNODE_AGENT_SANDBOX", raising=False)
+        # Default is ON since Slice B, so disabling the community flag now takes an
+        # explicit off — these A1 tests isolate the host_trust_policy path.
+        monkeypatch.setenv("AGENTNODE_AGENT_SANDBOX", "0")
         monkeypatch.setattr("agentnode_sdk.config.load_config", lambda: {})
 
     def _policy(self, monkeypatch, policy):

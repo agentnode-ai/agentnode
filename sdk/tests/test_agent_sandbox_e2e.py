@@ -78,7 +78,13 @@ def run(context, **kwargs):
 
 
 def test_agent_sandbox_e2e(monkeypatch, tmp_path):
+    from agentnode_sdk.sandbox import set_default_backend
+
     backend = ContainerBackend()
+    # The conftest autouse fixture installs a fake backend (no open_agent_session).
+    # Inject the REAL container backend so run_agent -> run_agent_sandboxed opens a
+    # real session; reset in the finally block.
+    set_default_backend(backend)
     avail = backend.check_available()
     if not avail.available:
         pytest.skip("no container runtime + pinned image")
@@ -169,6 +175,7 @@ def test_agent_sandbox_e2e(monkeypatch, tmp_path):
         leftover = rt("ps", "-aq", "--filter", "name=agentnode-agent-").stdout.strip()
         assert leftover == "", f"leftover agent container(s): {leftover}"
     finally:
+        set_default_backend(None)
         # teardown: never touch host services — only the test's own container/volume
         for cid in rt("ps", "-aq", "--filter", "name=agentnode-agent-").stdout.split():
             rt("rm", "-f", cid)

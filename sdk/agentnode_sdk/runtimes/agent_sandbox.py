@@ -26,16 +26,21 @@ logger = logging.getLogger("agentnode.agent_sandbox")
 
 
 def _agent_sandbox_enabled() -> bool:
-    """Default OFF. Env ``AGENTNODE_AGENT_SANDBOX`` wins, else config
-    ``agent_sandbox.enabled`` in ~/.agentnode/config.json."""
-    if os.environ.get("AGENTNODE_AGENT_SANDBOX", "").strip().lower() in ("1", "true"):
+    """Default ON (Slice B). Env ``AGENTNODE_AGENT_SANDBOX`` wins (``0``/``false``
+    disables, ``1``/``true`` enables), else config ``agent_sandbox.enabled`` in
+    ~/.agentnode/config.json, else the default True. When on, community agents
+    route sandbox-or-refuse; they never fall back to the host."""
+    env = os.environ.get("AGENTNODE_AGENT_SANDBOX", "").strip().lower()
+    if env in ("1", "true"):
         return True
+    if env in ("0", "false"):
+        return False
     try:
         from agentnode_sdk.config import load_config
         section = (load_config() or {}).get("agent_sandbox") or {}
-        return bool(section.get("enabled", False))
+        return bool(section.get("enabled", True))
     except Exception:
-        return False
+        return True
 
 
 def _audit_sandbox_run(slug, *, trust_level, run_id, success, reason,

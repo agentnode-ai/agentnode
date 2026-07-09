@@ -283,7 +283,8 @@ def test_sandbox_no_runtime_friendly_no_prompts(monkeypatch, capsys):
     assert "Trusted/curated" in out
     assert "agentnode sandbox doctor" in out
     assert "not ready" in out
-    assert load_config()["agent_sandbox"]["enabled"] is False
+    # no runtime -> not ready -> the wizard leaves the (default on) flag untouched
+    assert load_config()["agent_sandbox"]["enabled"] is True
 
 
 def test_host_trust_policy_choice_persists(monkeypatch):
@@ -293,29 +294,29 @@ def test_host_trust_policy_choice_persists(monkeypatch):
     assert load_config()["sandbox"]["host_trust_policy"] == "curated_only"
 
 
-def test_sandbox_ready_enable_default_no(monkeypatch, capsys):
+def test_sandbox_ready_default_stays_enabled(monkeypatch, capsys):
     monkeypatch.setattr("agentnode_sdk.cli.sandbox_commands._build_env_checks",
                         lambda: CHECKS_READY)
-    # cred skip, htp "", enable "" (default No), adv, save
+    # cred skip, htp "", disable "" (default No -> stays enabled), adv, save
     _wire(monkeypatch, _PRE + [""] + ["", ""] + _ADV + _SAVE)
     assert run_wizard() == 0
     out = capsys.readouterr().out
     assert "Sandbox ready" in out
-    assert "agent_sandbox.enabled true" in out
+    assert "enabled by default" in out
     cfg = load_config()
-    assert cfg["agent_sandbox"]["enabled"] is False
-    assert "disabled" in out
+    assert cfg["agent_sandbox"]["enabled"] is True
 
 
-def test_sandbox_ready_enable_yes_persists_real_bool(monkeypatch, capsys):
+def test_sandbox_ready_disable_yes_persists_real_bool(monkeypatch, capsys):
     monkeypatch.setattr("agentnode_sdk.cli.sandbox_commands._build_env_checks",
                         lambda: CHECKS_READY)
+    # disable "y" -> enabled False (a real bool, not "y")
     _wire(monkeypatch, _PRE + [""] + ["", "y"] + _ADV + _SAVE)
     assert run_wizard() == 0
     cfg = load_config()
-    assert cfg["agent_sandbox"]["enabled"] is True
+    assert cfg["agent_sandbox"]["enabled"] is False
     assert not isinstance(cfg["agent_sandbox"]["enabled"], str)
-    assert "enabled" in capsys.readouterr().out
+    assert "Disabled" in capsys.readouterr().out
 
 
 def test_image_missing_user_declines_pull(monkeypatch, capsys):
@@ -330,8 +331,9 @@ def test_image_missing_user_declines_pull(monkeypatch, capsys):
     assert pulls == []
     out = capsys.readouterr().out
     assert "Skipped" in out
-    assert "Enable sandboxed community agents" not in out
-    assert load_config()["agent_sandbox"]["enabled"] is False
+    assert "Disable sandboxed community agents" not in out
+    # image missing -> not ready -> the wizard does not touch the (default on) flag
+    assert load_config()["agent_sandbox"]["enabled"] is True
 
 
 def test_image_missing_user_accepts_pull_success(monkeypatch, capsys):
@@ -341,12 +343,12 @@ def test_image_missing_user_accepts_pull_success(monkeypatch, capsys):
     pulls = []
     monkeypatch.setattr("agentnode_sdk.cli.sandbox_commands.cmd_sandbox_pull",
                         lambda: pulls.append(1) or 0)
-    # cred skip, htp "", pull "y", enable "" (No), adv, save
+    # cred skip, htp "", pull "y", disable "" (No -> stays enabled), adv, save
     _wire(monkeypatch, _PRE + [""] + ["", "y", ""] + _ADV + _SAVE)
     assert run_wizard() == 0
     assert pulls == [1]
     assert "Sandbox ready" in capsys.readouterr().out
-    assert load_config()["agent_sandbox"]["enabled"] is False
+    assert load_config()["agent_sandbox"]["enabled"] is True
 
 
 def test_pull_failure_is_non_blocking(monkeypatch, capsys):
@@ -358,8 +360,8 @@ def test_pull_failure_is_non_blocking(monkeypatch, capsys):
     assert run_wizard() == 0
     out = capsys.readouterr().out
     assert "the wizard continues" in out
-    assert "Enable sandboxed community agents" not in out
-    assert load_config()["agent_sandbox"]["enabled"] is False
+    assert "Disable sandboxed community agents" not in out
+    assert load_config()["agent_sandbox"]["enabled"] is True
 
 
 def test_non_tty_no_pull_no_enable_prompt(monkeypatch, capsys):
@@ -484,4 +486,4 @@ def test_existing_screens_still_write_config(monkeypatch):
     cfg = load_config()
     assert cfg["install_confirmation"] == "prompt"
     assert cfg["permissions"]["network"] == "prompt"
-    assert cfg["agent_sandbox"]["enabled"] is False
+    assert cfg["agent_sandbox"]["enabled"] is True
