@@ -389,6 +389,20 @@ def cmd_publish(
         print("  Error: package_id and version are required in agentnode.yaml.", file=sys.stderr)
         return 1
 
+    # MCP listings go through the dedicated submit flow (registry re-verification
+    # + ownership), not the toolpack/skill/agent publish path. Route the user
+    # cleanly instead of failing deep in validation.
+    if manifest.get("runtime") == "mcp" or manifest.get("mcp_server"):
+        print()
+        print(section("  This is an MCP server listing"))
+        print("  MCP servers are listed with a dedicated command, not `publish`:")
+        print()
+        print("      agentnode mcp verify .        # check ownership, package, pinning")
+        print("      agentnode mcp submit .        # submit for the catalog")
+        print()
+        print("  (`publish` is for toolpacks, skills, and agents.)")
+        return 1
+
     print()
     print(section("  AgentNode Publish"))
     print(kv("Package", f"{pkg_id}@{version}"))

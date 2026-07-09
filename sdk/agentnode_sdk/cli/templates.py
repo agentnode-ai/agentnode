@@ -601,6 +601,92 @@ A concise summary of the analysis.
 """,
         },
     },
+    "mcp": {
+        "label": "MCP server (list an existing npm/PyPI MCP server)",
+        "description": "A listing for an MCP server already published to npm or PyPI. No code is uploaded — you point AgentNode at the package. Submit with `agentnode mcp submit` after `agentnode mcp verify`.",
+        "files": {
+            "agentnode.yaml": """\
+manifest_version: "0.3"
+package_id: "{package_id}"
+package_type: "toolpack"
+name: "{name}"
+publisher: "{publisher}"
+version: "1.0.0"
+summary: "{summary}"
+description: |
+  {description}
+
+runtime: "mcp"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+
+# The MCP server to run. Fill in ONE of npm_package / pypi_package and pin the
+# EXACT version in the command (e.g. @0.1.0 for npm, ==0.1.0 for PyPI) — an
+# unpinned command is not reproducible and is flagged on submit.
+mcp_server:
+  # npm example (delete the pypi_package line):
+  command: ["npx", "-y", "REPLACE_ME_PACKAGE@REPLACE_VERSION"]
+  npm_package: "REPLACE_ME_PACKAGE"
+  # pypi example (swap the command + use pypi_package instead of npm_package):
+  #   command: ["uvx", "REPLACE_ME_PACKAGE==REPLACE_VERSION"]
+  #   pypi_package: "REPLACE_ME_PACKAGE"
+  # Ownership is checked against this repo — it must match the package's
+  # registry metadata (npm/PyPI "repository" / homepage).
+  source_repo: "https://github.com/REPLACE_ME_OWNER/REPLACE_ME_REPO"
+
+tags: []
+categories: []
+
+compatibility:
+  frameworks: ["generic"]
+
+# Declare honestly what the MCP server needs. Verification compares these
+# against what the server actually requests.
+permissions:
+  network:
+    level: "restricted"
+    allowed_domains: []
+  filesystem:
+    level: "none"
+  code_execution:
+    level: "none"
+  data_access:
+    level: "input_only"
+  user_approval:
+    required: "high_risk_only"
+  external_integrations: []
+""",
+            "README.md": """\
+# {name} (MCP server listing)
+
+This package LISTS an existing MCP server (published on npm or PyPI) in the
+AgentNode catalog. No code is uploaded — AgentNode points at the upstream
+package.
+
+## Before you submit
+
+1. Edit `agentnode.yaml`:
+   - Set `mcp_server.npm_package` OR `mcp_server.pypi_package` (not both).
+   - Pin the EXACT version in `mcp_server.command` (npm `@x.y.z`, PyPI `==x.y.z`).
+   - Set `mcp_server.source_repo` to the repo that owns the package.
+   - Declare `permissions` honestly.
+2. Verify locally:
+
+   ```
+   agentnode mcp verify . --test
+   ```
+
+3. Submit for the catalog (server re-verifies authoritatively):
+
+   ```
+   agentnode mcp submit . --token $AGENTNODE_API_KEY
+   ```
+
+`agentnode publish` is for toolpacks / skills / agents; MCP listings go
+through `agentnode mcp submit`.
+""",
+        },
+    },
     "agent": {
         "label": "Agent (orchestrates tools to accomplish goals)",
         "description": "An autonomous agent that uses other tool packages to accomplish goals via an LLM.",
