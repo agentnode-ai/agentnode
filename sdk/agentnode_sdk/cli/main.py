@@ -149,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     # init
     init_parser = sub.add_parser("init", help="Create a new package from template")
     init_parser.add_argument("name", nargs="?", default=None, help="Package ID (optional, prompted if omitted)")
-    init_parser.add_argument("--type", dest="template_type", choices=["local", "api", "file", "agent", "skill"], default=None)
+    init_parser.add_argument("--type", dest="template_type", choices=["local", "api", "file", "agent", "skill", "mcp"], default=None)
 
     # validate
     validate_parser = sub.add_parser("validate", help="Validate package before publishing")
