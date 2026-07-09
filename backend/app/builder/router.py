@@ -59,8 +59,9 @@ async def builder_generate(
     # --- Generate ---
     result: BuilderGenerateResponse | None = None
 
-    # Use AI generation when Anthropic API key is configured, fall back to heuristic
-    if settings.ANTHROPIC_API_KEY:
+    # Use AI generation when an LLM key is configured (OpenRouter preferred,
+    # Anthropic fallback), otherwise fall back to the heuristic generator
+    if settings.OPENROUTER_API_KEY or settings.ANTHROPIC_API_KEY:
         try:
             from app.builder.ai import generate_skill_with_ai
 

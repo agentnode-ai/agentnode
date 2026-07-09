@@ -95,8 +95,12 @@ class Settings(BaseSettings):
     EMAIL_FROM_NAME: str = "AgentNode"
     FRONTEND_URL: str = "https://agentnode.net"
 
-    # AI / Builder
+    # AI / Builder — OpenRouter is preferred when configured (cheap models,
+    # one key shared with the compatibility pipeline); Anthropic-direct stays
+    # as fallback; without any key the builder uses the heuristic generator.
     ANTHROPIC_API_KEY: str = ""
+    OPENROUTER_API_KEY: str = ""
+    BUILDER_MODEL: str = "google/gemini-2.5-flash-lite"
 
     # Verification pipeline
     VERIFICATION_ENABLED: bool = True
