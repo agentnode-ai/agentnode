@@ -8,11 +8,21 @@
 > this document — it makes the existing contract explicit and testable.
 
 > **Update (0.18.0):** the agent-sandbox path described below as "future" now
-> exists (opt-in `agent_sandbox.enabled` routes community agents into a container),
+> exists (`agent_sandbox.enabled` routes community agents into a container),
 > and `sandbox.host_trust_policy` additionally routes `trusted`/`curated` agents
 > into that sandbox — see [host-trust-policy.md](host-trust-policy.md). The trust
-> gate and host-execution details below describe the `default`-policy path (which
-> remains today's behavior).
+> gate and host-execution details below describe the `default`-policy path.
+>
+> **Update (0.21.0, Slice B):** `agent_sandbox.enabled` now defaults to **ON**.
+> Community agents (`verified`/`unverified`/unknown) run **sandbox-or-refuse**:
+> in the container when a runtime + pinned image are present, otherwise refused
+> cleanly — **never a host fallback**. Set `agent_sandbox.enabled=false` (or
+> `AGENTNODE_AGENT_SANDBOX=0`) to restore the pre-0.21 refuse-outright behavior.
+> `trusted`/`curated` agents still run on the host under the `default` policy
+> (unchanged); `sandbox.host_trust_policy` can tighten that. The in-container
+> wrapper also installs a fork/exec/subprocess guard (defense-in-depth; the
+> container flags — `--cap-drop=ALL`, `--read-only`, `noexec /tmp`,
+> `--pids-limit`, `--network none` — are the real boundary).
 
 ## The three foreign-code execution paths
 

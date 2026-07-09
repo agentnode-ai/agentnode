@@ -55,6 +55,12 @@ def _permissive_guard(tmp_path, monkeypatch):
     cfg_file.write_text(json.dumps(cfg))
     monkeypatch.setenv("AGENTNODE_CONFIG", str(cfg_file))
     monkeypatch.setenv("AGENTNODE_CONFIG_DIR", str(tmp_path))
+    # These tests exercise the runner, trust gate, and host execution mechanics.
+    # Since Slice B flips the community-agent sandbox flag to default ON, pin it
+    # OFF here so the gate's refuse-outright path stays under test; the default-ON
+    # routing (community -> sandbox-or-refuse) is covered in
+    # test_agent_sandbox_routing.py.
+    monkeypatch.setenv("AGENTNODE_AGENT_SANDBOX", "0")
     from agentnode_sdk.guard import reset_guard_config_cache, reset_rate_limits
     reset_guard_config_cache()
     reset_rate_limits()
