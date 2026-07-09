@@ -31,6 +31,7 @@ export default function SkillsPage() {
           basePath="/skills"
           heading={null}
           autoFocus={false}
+          showCapability={false}
         />
       </section>
 

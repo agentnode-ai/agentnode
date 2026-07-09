@@ -148,6 +148,7 @@ export default async function AgentsPage() {
           basePath="/agents"
           heading={null}
           autoFocus={false}
+          showCapability={false}
         />
       </section>
 

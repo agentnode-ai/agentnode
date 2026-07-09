@@ -51,6 +51,7 @@ def _build_search_cache_key(body: SearchRequest) -> str:
         "sort_by": body.sort_by,
         "page": body.page,
         "per_page": body.per_page,
+        "facets": sorted(body.facets) if body.facets else None,
     }
     raw = json.dumps(key_parts, sort_keys=True)
     digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
@@ -114,6 +115,9 @@ async def search_packages(body: SearchRequest, request: Request):
     elif not q:
         meili_body["sort"] = [DEFAULT_SORT]
 
+    if body.facets:
+        meili_body["facets"] = body.facets
+
     headers = {"Authorization": f"Bearer {_get_search_key()}"}
     try:
         client = _get_search_client()
@@ -165,7 +169,12 @@ async def search_packages(body: SearchRequest, request: Request):
     total = data.get("estimatedTotalHits", data.get("totalHits", len(hits)))
 
     response = SearchResponse(
-        query=q, hits=hits, total=total, page=page, per_page=per_page
+        query=q,
+        hits=hits,
+        total=total,
+        page=page,
+        per_page=per_page,
+        facet_distribution=data.get("facetDistribution") if body.facets else None,
     )
 
     # Cache the response
