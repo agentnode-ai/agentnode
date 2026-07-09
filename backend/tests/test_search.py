@@ -260,3 +260,61 @@ def test_build_meili_document_missing_permissions():
     assert doc["filesystem_level"] is None
     assert doc["code_execution_level"] is None
     assert doc["has_connector"] is False
+
+
+# ---------------------------------------------------------------------------
+# Facets (data-driven filter sidebars)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("app.search.router._get_search_client")
+async def test_search_facets_passed_and_returned(mock_get_client, client):
+    """Whitelisted facets reach Meilisearch and the distribution comes back."""
+    mock_client = MagicMock()
+    mock_client.post = _mock_meili_post(
+        {
+            "hits": [],
+            "estimatedTotalHits": 0,
+            "facetDistribution": {
+                "tags": {"database": 2, "search": 1},
+                "runtime": {"python": 83},
+            },
+        }
+    )
+    mock_get_client.return_value = mock_client
+
+    resp = await client.post(
+        "/v1/search",
+        json={"package_type": "toolpack", "facets": ["tags", "runtime"]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["facet_distribution"]["tags"]["database"] == 2
+
+    call_args = mock_client.post.call_args
+    sent_body = call_args.kwargs.get("json") or call_args[1].get("json")
+    assert sent_body["facets"] == ["tags", "runtime"]
+
+
+@pytest.mark.asyncio
+async def test_search_rejects_unknown_facet(client):
+    """Facet names outside the whitelist are rejected."""
+    resp = await client.post(
+        "/v1/search",
+        json={"facets": ["publisher_email"]},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+@patch("app.search.router._get_search_client")
+async def test_search_without_facets_has_null_distribution(mock_get_client, client):
+    """No facets requested -> facet_distribution stays null."""
+    mock_client = MagicMock()
+    mock_client.post = _mock_meili_post(MOCK_MEILI_RESPONSE)
+    mock_get_client.return_value = mock_client
+
+    resp = await client.post("/v1/search", json={"q": "pdf"})
+    assert resp.status_code == 200
+    assert resp.json()["facet_distribution"] is None

@@ -85,9 +85,11 @@ export interface PackageSearchProps {
   /** Page heading; null hides the header block (library pages bring their own hero). */
   heading?: string | null;
   autoFocus?: boolean;
+  /** Show the capability picker (taxonomy is tool-centric; hide on skills/agents). */
+  showCapability?: boolean;
 }
 
-function SearchContent({ fixed = {}, basePath = "/search", heading = "Search Packages", autoFocus = true }: PackageSearchProps) {
+function SearchContent({ fixed = {}, basePath = "/search", heading = "Search Packages", autoFocus = true, showCapability = true }: PackageSearchProps) {
   const searchParams = useSearchParams();
   const hasInitializedRef = useRef(false);
 
@@ -112,6 +114,31 @@ function SearchContent({ fixed = {}, basePath = "/search", heading = "Search Pac
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
+
+  // Facet distribution for the page scope (fixed filters only) — drives
+  // which filter options are offered at all. null = not loaded (static fallback).
+  const [facets, setFacets] = useState<Record<string, Record<string, number>> | null>(null);
+
+  useEffect(() => {
+    const body: Record<string, unknown> = {
+      per_page: 1,
+      facets: ["package_type", "runtime", "frameworks", "trust_level", "verification_tier", "tags"],
+    };
+    (Object.keys(fixed) as (keyof Filters)[]).forEach((k) => {
+      if (fixed[k]) body[k === "category" ? "tag" : k] = fixed[k];
+    });
+    fetch("/api/v1/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.facet_distribution) setFacets(data.facet_distribution);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Capabilities
   const [capabilities, setCapabilities] = useState<CapabilityItem[]>([]);
@@ -322,6 +349,7 @@ function SearchContent({ fixed = {}, basePath = "/search", heading = "Search Pac
       )}
 
       {/* Capability dropdown */}
+      {showCapability && (
       <div ref={capRef}>
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted">
           Capability
@@ -385,12 +413,17 @@ function SearchContent({ fixed = {}, basePath = "/search", heading = "Search Pac
           )}
         </div>
       </div>
+      )}
 
-      {/* Filter sections */}
+      {/* Filter sections — options are limited to values that actually
+          exist in the page scope (facet counts); a section with fewer than
+          two real choices distinguishes nothing and is hidden entirely. */}
       {(
         Object.entries(FILTER_OPTIONS) as [keyof Filters, string[]][]
       )
         .filter(([key]) => !fixed[key])
+        .map(([key, options]) => [key, facetedOptions(key, options, facets)] as [keyof Filters, string[]])
+        .filter(([, options]) => options.length >= 2)
         .map(([key, options]) => (
         <div key={key} role="group" aria-labelledby={`filter-${key}`}>
           <h3
@@ -623,6 +656,37 @@ function SearchContent({ fixed = {}, basePath = "/search", heading = "Search Pac
       </div>
     </div>
   );
+}
+
+// Facet attribute per filter section.
+const FACET_ATTR: Record<string, string> = {
+  package_type: "package_type",
+  runtime: "runtime",
+  category: "tags",
+  framework: "frameworks",
+  trust_level: "trust_level",
+  verification_tier: "verification_tier",
+};
+
+// Tags that just duplicate the package kind — never useful as a category.
+const NOISE_TAGS = new Set(["mcp", "mcp-server", "agent", "toolpack", "skill"]);
+
+function facetedOptions(
+  key: string,
+  staticOptions: string[],
+  facets: Record<string, Record<string, number>> | null,
+): string[] {
+  if (!facets) return staticOptions; // not loaded / failed -> static fallback
+  const dist = facets[FACET_ATTR[key]] ?? {};
+  if (key === "category") {
+    // Categories are data-driven: the top tags that actually exist in scope.
+    return Object.entries(dist)
+      .filter(([tag, count]) => count > 0 && !NOISE_TAGS.has(tag))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([tag]) => tag);
+  }
+  return staticOptions.filter((o) => (dist[o] ?? 0) > 0);
 }
 
 function SearchFallback({ heading }: { heading?: string | null }) {
