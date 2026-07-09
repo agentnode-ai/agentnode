@@ -115,7 +115,59 @@ def _response_from_skill_data(data: dict) -> BuilderGenerateResponse:
 
 
 async def generate_skill_with_ai(description: str) -> BuilderGenerateResponse:
-    """Generate a complete ANP skill package using Claude."""
+    """Generate a complete ANP skill package via the configured LLM provider.
+
+    OpenRouter is preferred when its key is set (configurable cheap model,
+    one key shared with the compatibility pipeline); Anthropic-direct is the
+    fallback. The router only calls this when at least one key is configured.
+    """
+    if settings.OPENROUTER_API_KEY:
+        raw = await _complete_via_openrouter(description)
+    else:
+        raw = await _complete_via_anthropic(description)
+
+    data = _extract_json(raw)
+    return _response_from_skill_data(data)
+
+
+async def _complete_via_openrouter(description: str) -> str:
+    """Chat completion against OpenRouter (OpenAI-compatible API)."""
+    import httpx
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                "HTTP-Referer": "https://agentnode.net",
+                "X-Title": "AgentNode Skill Builder",
+            },
+            json={
+                "model": settings.BUILDER_MODEL,
+                "max_tokens": 8192,
+                "messages": [
+                    {"role": "system", "content": SKILL_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": USER_TEMPLATE.format(description=description),
+                    },
+                ],
+            },
+        )
+    resp.raise_for_status()
+    body = resp.json()
+    raw = body["choices"][0]["message"]["content"] or ""
+    logger.info(
+        "AI response (openrouter/%s): %d chars, finish_reason: %s",
+        settings.BUILDER_MODEL,
+        len(raw),
+        body["choices"][0].get("finish_reason"),
+    )
+    return raw
+
+
+async def _complete_via_anthropic(description: str) -> str:
+    """Chat completion against the Anthropic API (legacy direct path)."""
     client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
     message = await client.messages.create(
@@ -131,5 +183,4 @@ async def generate_skill_with_ai(description: str) -> BuilderGenerateResponse:
     logger.info(
         "AI response length: %d chars, stop_reason: %s", len(raw), message.stop_reason
     )
-    data = _extract_json(raw)
-    return _response_from_skill_data(data)
+    return raw
