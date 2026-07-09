@@ -2338,9 +2338,14 @@ def cmd_init(name: str | None = None, template_type: str | None = None) -> int:
     print()
     print(dim("  Next steps:"))
     print(dim(f"    cd {pkg_id}"))
-    print(dim("    # Edit the tool code and manifest"))
-    print(dim("    agentnode validate ."))
-    print(dim("    # Publish via web UI at agentnode.net/publish"))
+    if chosen == "mcp":
+        print(dim("    # Fill in npm_package/pypi_package, pin the version, set source_repo"))
+        print(dim("    agentnode mcp verify . --test    # check ownership, package, pinning"))
+        print(dim("    agentnode mcp submit .           # submit for the catalog"))
+    else:
+        print(dim("    # Edit the tool code and manifest"))
+        print(dim("    agentnode validate ."))
+        print(dim("    agentnode publish .              # or publish via agentnode.net/publish"))
     print()
     return 0
 
