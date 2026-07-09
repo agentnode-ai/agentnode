@@ -171,6 +171,14 @@ export default function CompatibilityTable({ data }: Props) {
                 </td>
                 <td className="px-4 py-2 text-sm text-foreground font-mono whitespace-nowrap">
                   {m.model}
+                  {m.stale && (
+                    <span
+                      className="ml-2 rounded bg-amber-500/10 px-1.5 py-0.5 font-sans text-[10px] font-medium text-amber-400"
+                      title={`Not re-tested in the latest batch — result from ${m.testedAt}`}
+                    >
+                      legacy
+                    </span>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-center">
                   <TierBadge tier={m.tier} />

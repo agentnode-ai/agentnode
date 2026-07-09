@@ -1,21 +1,21 @@
 {
-  "run_id": "batch-2026-04-08",
-  "tested_at": "2026-04-08",
-  "generated_by": "merge_batches.py bootstrap from April merged_matrix.json",
-  "source_hash": "bdf8b63a411c66d581f862a8881c9fb7cd6fbd1a3259b227e739d9c024b6e171",
-  "total_models": 182,
-  "s_tier_count": 175,
-  "pass_rate": 96,
-  "provider_count_total": 35,
-  "provider_count_visible": 32,
+  "run_id": "batch-2026-07-09",
+  "tested_at": "2026-07-09",
+  "generated_by": "merge_batches.py keep-legacy 2026-07-09",
+  "source_hash": "4848698a29572b2cc5fd81e2836ec1f1965df06216638f5b2235e046bec2ea67",
+  "total_models": 246,
+  "s_tier_count": 222,
+  "pass_rate": 90,
+  "provider_count_total": 40,
+  "provider_count_visible": 37,
   "excluded_provider_count": 3,
   "tier_counts": {
-    "A": 2,
+    "A": 13,
     "B": 1,
-    "C": 3,
-    "F": 1,
-    "S": 175,
-    "X": 11
+    "C": 6,
+    "F": 4,
+    "S": 222,
+    "X": 19
   },
   "models": [
     {
@@ -29,10 +29,11 @@
         "3. Run Tool (word counter)": "FAIL",
         "4. Multi-step Autonomous": "FAIL"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "alibaba/tongyi-deepresearch-30b-a3b",
+      "model": "aion-labs/aion-2.0",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -42,10 +43,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
-      "model": "allenai/olmo-3.1-32b-instruct",
+      "model": "aion-labs/aion-3.0",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -55,7 +57,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "aion-labs/aion-3.0-mini",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "amazon/nova-2-lite-v1",
@@ -68,7 +85,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "amazon/nova-lite-v1",
@@ -81,7 +99,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "amazon/nova-micro-v1",
@@ -94,7 +113,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "amazon/nova-premier-v1",
@@ -107,7 +127,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "amazon/nova-pro-v1",
@@ -120,7 +141,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "anthropic/claude-3-haiku",
@@ -133,10 +155,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "anthropic/claude-3.7-sonnet",
+      "model": "anthropic/claude-fable-5",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -146,7 +169,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "anthropic/claude-haiku-4.5",
@@ -159,7 +183,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "anthropic/claude-opus-4",
@@ -172,7 +197,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "anthropic/claude-opus-4.1",
@@ -185,7 +211,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "anthropic/claude-opus-4.5",
@@ -198,7 +225,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "anthropic/claude-opus-4.6",
@@ -211,7 +239,50 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "anthropic/claude-opus-4.7",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "anthropic/claude-opus-4.8",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "anthropic/claude-opus-4.8-fast",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "anthropic/claude-sonnet-4",
@@ -224,7 +295,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "anthropic/claude-sonnet-4.5",
@@ -237,7 +309,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "anthropic/claude-sonnet-4.6",
@@ -250,7 +323,36 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "anthropic/claude-sonnet-5",
+      "tier": "A",
+      "passed": 3,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "arcee-ai/trinity-large-thinking",
+      "tier": "A",
+      "passed": 3,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "arcee-ai/trinity-mini",
@@ -263,7 +365,8 @@
         "3. Run Tool (word counter)": "FAIL",
         "4. Multi-step Autonomous": "FAIL"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "bytedance-seed/seed-1.6",
@@ -276,7 +379,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "bytedance-seed/seed-1.6-flash",
@@ -289,7 +393,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "bytedance-seed/seed-2.0-lite",
@@ -302,7 +407,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "bytedance-seed/seed-2.0-mini",
@@ -315,7 +421,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "cohere/command-r-08-2024",
@@ -328,7 +435,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "cohere/command-r-plus-08-2024",
@@ -341,7 +449,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "cohere/north-mini-code:free",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "deepseek/deepseek-chat",
@@ -354,7 +477,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "deepseek/deepseek-chat-v3-0324",
@@ -367,7 +491,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "deepseek/deepseek-chat-v3.1",
@@ -380,7 +505,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "deepseek/deepseek-r1",
@@ -393,7 +519,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "deepseek/deepseek-r1-0528",
@@ -406,7 +533,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "deepseek/deepseek-v3.1-terminus",
@@ -419,7 +547,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "deepseek/deepseek-v3.2",
@@ -432,7 +561,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "deepseek/deepseek-v3.2-exp",
@@ -445,10 +575,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "essentialai/rnj-1-instruct",
+      "model": "deepseek/deepseek-v4-flash",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -458,33 +589,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
-      "model": "google/gemini-2.0-flash-001",
-      "tier": "S",
-      "passed": 4,
+      "model": "deepseek/deepseek-v4-pro",
+      "tier": "A",
+      "passed": 3,
       "total": 4,
       "scenarios": {
         "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
+        "2. Search + Install": "FAIL",
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
-    },
-    {
-      "model": "google/gemini-2.0-flash-lite-001",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "google/gemini-2.5-flash",
@@ -497,7 +617,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "google/gemini-2.5-flash-lite",
@@ -510,7 +631,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "google/gemini-2.5-flash-lite-preview-09-2025",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "google/gemini-2.5-pro",
@@ -523,7 +659,162 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "google/gemini-2.5-pro-preview",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "google/gemini-2.5-pro-preview-05-06",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "google/gemini-3-flash-preview",
+      "tier": "A",
+      "passed": 3,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "google/gemini-3-pro-image",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "google/gemini-3.1-flash-lite",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "google/gemini-3.1-flash-lite-preview",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "google/gemini-3.1-pro-preview",
+      "tier": "A",
+      "passed": 3,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "google/gemini-3.1-pro-preview-customtools",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "google/gemini-3.5-flash",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "google/gemma-3-12b-it",
+      "tier": "F",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "google/gemma-3-27b-it",
+      "tier": "C",
+      "passed": 1,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "google/gemma-4-26b-a4b-it",
@@ -536,7 +827,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "tier": "F",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "google/gemma-4-31b-it",
@@ -549,10 +855,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "inception/mercury",
+      "model": "ibm-granite/granite-4.1-8b",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -562,7 +869,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "inception/mercury-2",
@@ -575,10 +883,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "inception/mercury-coder",
+      "model": "inclusionai/ling-2.6-1t",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -588,7 +897,36 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "inclusionai/ling-2.6-flash",
+      "tier": "A",
+      "passed": 3,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "inclusionai/ring-2.6-1t",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "kwaipilot/kat-coder-pro-v2",
@@ -601,20 +939,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
-    },
-    {
-      "model": "meituan/longcat-flash-chat",
-      "tier": "C",
-      "passed": 1,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "FAIL",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "FAIL",
-        "4. Multi-step Autonomous": "FAIL"
-      },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "meta-llama/llama-3-8b-instruct",
@@ -627,7 +953,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "meta-llama/llama-3.1-70b-instruct",
@@ -640,7 +967,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "meta-llama/llama-3.1-8b-instruct",
@@ -653,7 +981,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "meta-llama/llama-3.3-70b-instruct",
@@ -666,7 +995,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "meta-llama/llama-4-maverick",
@@ -679,7 +1009,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "meta-llama/llama-4-scout",
@@ -692,7 +1023,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "minimax/minimax-m1",
@@ -705,7 +1037,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "minimax/minimax-m2",
@@ -718,7 +1051,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "minimax/minimax-m2.1",
@@ -731,7 +1065,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "minimax/minimax-m2.5",
@@ -744,7 +1079,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "minimax/minimax-m2.7",
@@ -757,7 +1093,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "minimax/minimax-m3",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "mistralai/codestral-2508",
@@ -770,7 +1121,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/devstral-2512",
@@ -783,33 +1135,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
-    },
-    {
-      "model": "mistralai/devstral-medium",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
-    },
-    {
-      "model": "mistralai/devstral-small",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/ministral-14b-2512",
@@ -822,7 +1149,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/ministral-3b-2512",
@@ -835,7 +1163,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/ministral-8b-2512",
@@ -848,7 +1177,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/mistral-large",
@@ -861,7 +1191,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/mistral-large-2407",
@@ -874,20 +1205,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
-    },
-    {
-      "model": "mistralai/mistral-large-2411",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/mistral-large-2512",
@@ -900,7 +1219,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/mistral-medium-3",
@@ -913,7 +1233,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "mistralai/mistral-medium-3-5",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "mistralai/mistral-medium-3.1",
@@ -926,7 +1261,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/mistral-nemo",
@@ -939,7 +1275,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/mistral-saba",
@@ -952,7 +1289,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/mistral-small-2603",
@@ -965,7 +1303,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/mistral-small-3.2-24b-instruct",
@@ -978,20 +1317,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
-    },
-    {
-      "model": "mistralai/mistral-small-creative",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/mixtral-8x22b-instruct",
@@ -1004,33 +1331,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
-    },
-    {
-      "model": "mistralai/mixtral-8x7b-instruct",
-      "tier": "F",
-      "passed": 0,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "FAIL",
-        "2. Search + Install": "FAIL",
-        "3. Run Tool (word counter)": "FAIL",
-        "4. Multi-step Autonomous": "FAIL"
-      },
-      "note": ""
-    },
-    {
-      "model": "mistralai/pixtral-large-2411",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "mistralai/voxtral-small-24b-2507",
@@ -1043,7 +1345,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "moonshotai/kimi-k2",
@@ -1056,7 +1359,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "moonshotai/kimi-k2-0905",
@@ -1069,7 +1373,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "moonshotai/kimi-k2-thinking",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "moonshotai/kimi-k2.5",
@@ -1082,10 +1401,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "nex-agi/deepseek-v3.1-nex-n1",
+      "model": "moonshotai/kimi-k2.6",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -1095,10 +1415,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
-      "model": "nvidia/llama-3.1-nemotron-70b-instruct",
+      "model": "moonshotai/kimi-k2.7-code",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -1108,7 +1429,36 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "nex-agi/nex-n2-mini",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "nex-agi/nex-n2-pro",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
@@ -1121,7 +1471,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "nvidia/nemotron-3-nano-30b-a3b",
@@ -1134,10 +1485,25 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "nvidia/nemotron-nano-9b-v2",
+      "model": "nvidia/nemotron-3-nano-30b-a3b:free",
+      "tier": "A",
+      "passed": 3,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -1147,7 +1513,92 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "tier": "A",
+      "passed": 3,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "nvidia/nemotron-3-ultra-550b-a55b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "nvidia/nemotron-nano-12b-v2-vl:free",
+      "tier": "C",
+      "passed": 1,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "nvidia/nemotron-nano-9b-v2:free",
+      "tier": "A",
+      "passed": 3,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "openai/gpt-3.5-turbo",
@@ -1160,7 +1611,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-3.5-turbo-0613",
@@ -1173,7 +1625,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-3.5-turbo-16k",
@@ -1186,7 +1639,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-4",
@@ -1199,7 +1653,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-4-turbo",
@@ -1212,7 +1667,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-4.1",
@@ -1225,7 +1681,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-4.1-mini",
@@ -1238,7 +1695,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-4.1-nano",
@@ -1251,7 +1709,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-4o",
@@ -1264,7 +1723,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-4o-2024-05-13",
@@ -1277,7 +1737,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-4o-2024-08-06",
@@ -1290,7 +1751,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-4o-2024-11-20",
@@ -1303,7 +1765,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-4o-mini",
@@ -1316,7 +1779,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-4o-mini-2024-07-18",
@@ -1329,7 +1793,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-5",
@@ -1342,7 +1807,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "openai/gpt-5-codex",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "openai/gpt-5-mini",
@@ -1355,7 +1835,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-5-nano",
@@ -1368,7 +1849,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-5-pro",
@@ -1381,7 +1863,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-5.1",
@@ -1394,7 +1877,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-5.1-chat",
@@ -1407,7 +1891,50 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "openai/gpt-5.1-codex",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "openai/gpt-5.1-codex-max",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "openai/gpt-5.1-codex-mini",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "openai/gpt-5.2",
@@ -1420,7 +1947,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-5.2-chat",
@@ -1433,7 +1961,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "openai/gpt-5.2-codex",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "openai/gpt-5.3-chat",
@@ -1446,7 +1989,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "openai/gpt-5.3-codex",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "openai/gpt-5.4",
@@ -1459,7 +2017,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-5.4-mini",
@@ -1472,7 +2031,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-5.4-nano",
@@ -1485,7 +2045,50 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "openai/gpt-5.5",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "openai/gpt-audio",
+      "tier": "F",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "openai/gpt-chat-latest",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "openai/gpt-oss-120b",
@@ -1498,7 +2101,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "openai/gpt-oss-120b:free",
+      "tier": "C",
+      "passed": 1,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "openai/gpt-oss-20b",
@@ -1511,7 +2129,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "openai/gpt-oss-20b:free",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "openai/gpt-oss-safeguard-20b",
@@ -1524,7 +2157,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "FAIL"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/o1",
@@ -1537,7 +2171,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/o3",
@@ -1550,7 +2185,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/o3-mini",
@@ -1563,7 +2199,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/o3-mini-high",
@@ -1576,7 +2213,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/o3-pro",
@@ -1589,7 +2227,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/o4-mini",
@@ -1602,7 +2241,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/o4-mini-high",
@@ -1615,7 +2255,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openrouter/auto",
@@ -1628,7 +2269,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openrouter/free",
@@ -1641,10 +2283,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "prime-intellect/intellect-3",
+      "model": "poolside/laguna-m.1",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -1654,7 +2297,78 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "poolside/laguna-m.1:free",
+      "tier": "A",
+      "passed": 3,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "poolside/laguna-xs-2.1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "poolside/laguna-xs-2.1:free",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "poolside/laguna-xs.2",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "poolside/laguna-xs.2:free",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "qwen/qwen-2.5-72b-instruct",
@@ -1667,7 +2381,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen-2.5-7b-instruct",
@@ -1680,20 +2395,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
-    },
-    {
-      "model": "qwen/qwen-max",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen-plus",
@@ -1706,7 +2409,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen-plus-2025-07-28",
@@ -1719,10 +2423,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "qwen/qwen-turbo",
+      "model": "qwen/qwen-plus-2025-07-28:thinking",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -1732,7 +2437,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "qwen/qwen3-14b",
@@ -1745,7 +2451,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3-235b-a22b",
@@ -1758,7 +2465,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3-235b-a22b-2507",
@@ -1771,7 +2479,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "qwen/qwen3-235b-a22b-thinking-2507",
+      "tier": "C",
+      "passed": 1,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "qwen/qwen3-30b-a3b",
@@ -1784,7 +2507,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3-30b-a3b-instruct-2507",
@@ -1797,7 +2521,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "qwen/qwen3-30b-a3b-thinking-2507",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "qwen/qwen3-32b",
@@ -1810,7 +2549,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3-8b",
@@ -1823,7 +2563,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3-coder",
@@ -1836,7 +2577,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3-coder-30b-a3b-instruct",
@@ -1849,7 +2591,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3-coder-flash",
@@ -1862,7 +2605,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3-coder-next",
@@ -1875,7 +2619,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3-coder-plus",
@@ -1888,7 +2633,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3-max",
@@ -1901,7 +2647,22 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "qwen/qwen3-max-thinking",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "qwen/qwen3-next-80b-a3b-instruct",
@@ -1914,7 +2675,120 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "qwen/qwen3-next-80b-a3b-thinking",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3-vl-235b-a22b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3-vl-235b-a22b-thinking",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3-vl-30b-a3b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3-vl-30b-a3b-thinking",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3-vl-32b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3-vl-8b-thinking",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "qwen/qwen3.5-122b-a10b",
@@ -1927,7 +2801,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3.5-27b",
@@ -1940,7 +2815,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3.5-35b-a3b",
@@ -1953,7 +2829,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3.5-397b-a17b",
@@ -1966,7 +2843,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3.5-9b",
@@ -1979,7 +2857,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3.5-flash-02-23",
@@ -1992,7 +2871,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "qwen/qwen3.5-plus-02-15",
@@ -2005,10 +2885,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "qwen/qwq-32b",
+      "model": "qwen/qwen3.5-plus-20260420",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -2018,7 +2899,106 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3.6-27b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3.6-35b-a3b",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3.6-flash",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3.6-max-preview",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3.6-plus",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3.7-max",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3.7-plus",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "rekaai/reka-edge",
@@ -2031,7 +3011,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "relace/relace-search",
@@ -2044,7 +3025,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "stepfun/step-3.5-flash",
@@ -2057,10 +3039,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "tngtech/deepseek-r1t2-chimera",
+      "model": "stepfun/step-3.7-flash",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -2070,7 +3053,64 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "tencent/hy3",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "tencent/hy3-preview",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "tencent/hy3:free",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "thedrummer/unslopnemo-12b",
+      "tier": "F",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "upstage/solar-pro-3",
@@ -2083,98 +3123,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
-    },
-    {
-      "model": "x-ai/grok-3",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
-    },
-    {
-      "model": "x-ai/grok-3-beta",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
-    },
-    {
-      "model": "x-ai/grok-3-mini",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
-    },
-    {
-      "model": "x-ai/grok-3-mini-beta",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
-    },
-    {
-      "model": "x-ai/grok-4",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
-    },
-    {
-      "model": "x-ai/grok-4-fast",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
-    },
-    {
-      "model": "x-ai/grok-4.1-fast",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "x-ai/grok-4.20",
@@ -2187,10 +3137,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "x-ai/grok-code-fast-1",
+      "model": "x-ai/grok-build-0.1",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -2200,10 +3151,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
-      "model": "xiaomi/mimo-v2-flash",
+      "model": "xiaomi/mimo-v2.5",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -2213,10 +3165,11 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
-      "model": "xiaomi/mimo-v2-omni",
+      "model": "xiaomi/mimo-v2.5-pro",
       "tier": "S",
       "passed": 4,
       "total": 4,
@@ -2226,33 +3179,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
-    },
-    {
-      "model": "xiaomi/mimo-v2-pro",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
-    },
-    {
-      "model": "z-ai/glm-4-32b",
-      "tier": "S",
-      "passed": 4,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "PASS",
-        "2. Search + Install": "PASS",
-        "3. Run Tool (word counter)": "PASS",
-        "4. Multi-step Autonomous": "PASS"
-      },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "z-ai/glm-4.5",
@@ -2265,7 +3193,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "z-ai/glm-4.5-air",
@@ -2278,7 +3207,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "z-ai/glm-4.5v",
@@ -2291,7 +3221,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "z-ai/glm-4.6",
@@ -2304,7 +3235,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "z-ai/glm-4.6v",
@@ -2317,7 +3249,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "z-ai/glm-4.7",
@@ -2330,7 +3263,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "z-ai/glm-4.7-flash",
@@ -2343,7 +3277,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "z-ai/glm-5",
@@ -2356,7 +3291,8 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "z-ai/glm-5-turbo",
@@ -2369,7 +3305,36 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "z-ai/glm-5.1",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "z-ai/glm-5.2",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "z-ai/glm-5v-turbo",
@@ -2382,7 +3347,120 @@
         "3. Run Tool (word counter)": "PASS",
         "4. Multi-step Autonomous": "PASS"
       },
-      "note": ""
+      "note": "",
+      "tested_at": "2026-04-08"
+    },
+    {
+      "model": "~anthropic/claude-haiku-latest",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "~anthropic/claude-opus-latest",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "~anthropic/claude-sonnet-latest",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "~google/gemini-flash-latest",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "~moonshotai/kimi-latest",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "~openai/gpt-latest",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "~openai/gpt-mini-latest",
+      "tier": "A",
+      "passed": 3,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "~x-ai/grok-latest",
+      "tier": "S",
+      "passed": 4,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "PASS",
+        "2. Search + Install": "PASS",
+        "3. Run Tool (word counter)": "PASS",
+        "4. Multi-step Autonomous": "PASS"
+      },
+      "note": "",
+      "tested_at": "2026-07-09"
     }
   ],
   "providers": [
@@ -2400,15 +3478,16 @@
             "3. Run Tool (word counter)": "FAIL",
             "4. Multi-step Autonomous": "FAIL"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         }
       ]
     },
     {
-      "name": "alibaba",
+      "name": "aion-labs",
       "models": [
         {
-          "model": "alibaba/tongyi-deepresearch-30b-a3b",
+          "model": "aion-labs/aion-2.0",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -2418,15 +3497,11 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
-        }
-      ]
-    },
-    {
-      "name": "allenai",
-      "models": [
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
         {
-          "model": "allenai/olmo-3.1-32b-instruct",
+          "model": "aion-labs/aion-3.0",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -2436,7 +3511,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "aion-labs/aion-3.0-mini",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
@@ -2454,7 +3544,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "amazon/nova-lite-v1",
@@ -2467,7 +3558,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "amazon/nova-micro-v1",
@@ -2480,7 +3572,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "amazon/nova-premier-v1",
@@ -2493,7 +3586,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "amazon/nova-pro-v1",
@@ -2506,7 +3600,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         }
       ]
     },
@@ -2524,10 +3619,11 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
-          "model": "anthropic/claude-3.7-sonnet",
+          "model": "anthropic/claude-fable-5",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -2537,7 +3633,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "anthropic/claude-haiku-4.5",
@@ -2550,7 +3647,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "anthropic/claude-opus-4",
@@ -2563,7 +3661,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "anthropic/claude-opus-4.1",
@@ -2576,7 +3675,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "anthropic/claude-opus-4.5",
@@ -2589,7 +3689,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "anthropic/claude-opus-4.6",
@@ -2602,7 +3703,50 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "anthropic/claude-opus-4.7",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "anthropic/claude-opus-4.8",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "anthropic/claude-opus-4.8-fast",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "anthropic/claude-sonnet-4",
@@ -2615,7 +3759,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "anthropic/claude-sonnet-4.5",
@@ -2628,7 +3773,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "anthropic/claude-sonnet-4.6",
@@ -2641,13 +3787,42 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "anthropic/claude-sonnet-5",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
     {
       "name": "arcee-ai",
       "models": [
+        {
+          "model": "arcee-ai/trinity-large-thinking",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
         {
           "model": "arcee-ai/trinity-mini",
           "tier": "C",
@@ -2659,7 +3834,8 @@
             "3. Run Tool (word counter)": "FAIL",
             "4. Multi-step Autonomous": "FAIL"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         }
       ]
     },
@@ -2677,7 +3853,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "bytedance-seed/seed-1.6-flash",
@@ -2690,7 +3867,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "bytedance-seed/seed-2.0-lite",
@@ -2703,7 +3881,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "bytedance-seed/seed-2.0-mini",
@@ -2716,7 +3895,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         }
       ]
     },
@@ -2734,7 +3914,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "cohere/command-r-plus-08-2024",
@@ -2747,7 +3928,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "cohere/north-mini-code:free",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
@@ -2765,7 +3961,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "deepseek/deepseek-chat-v3-0324",
@@ -2778,7 +3975,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "deepseek/deepseek-chat-v3.1",
@@ -2791,7 +3989,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "deepseek/deepseek-r1",
@@ -2804,7 +4003,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "deepseek/deepseek-r1-0528",
@@ -2817,7 +4017,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "deepseek/deepseek-v3.1-terminus",
@@ -2830,7 +4031,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "deepseek/deepseek-v3.2",
@@ -2843,7 +4045,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "deepseek/deepseek-v3.2-exp",
@@ -2856,15 +4059,11 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
-        }
-      ]
-    },
-    {
-      "name": "essentialai",
-      "models": [
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
         {
-          "model": "essentialai/rnj-1-instruct",
+          "model": "deepseek/deepseek-v4-flash",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -2874,39 +4073,28 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "deepseek/deepseek-v4-pro",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
     {
       "name": "google",
       "models": [
-        {
-          "model": "google/gemini-2.0-flash-001",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
-        },
-        {
-          "model": "google/gemini-2.0-flash-lite-001",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
-        },
         {
           "model": "google/gemini-2.5-flash",
           "tier": "S",
@@ -2918,7 +4106,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "google/gemini-2.5-flash-lite",
@@ -2931,7 +4120,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "google/gemini-2.5-flash-lite-preview-09-2025",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "google/gemini-2.5-pro",
@@ -2944,7 +4148,162 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "google/gemini-2.5-pro-preview",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "google/gemini-2.5-pro-preview-05-06",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "google/gemini-3-flash-preview",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "google/gemini-3-pro-image",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "google/gemini-3.1-flash-lite",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "google/gemini-3.1-flash-lite-preview",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "google/gemini-3.1-pro-preview",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "google/gemini-3.1-pro-preview-customtools",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "google/gemini-3.5-flash",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "google/gemma-3-12b-it",
+          "tier": "F",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "FAIL",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "FAIL",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "google/gemma-3-27b-it",
+          "tier": "C",
+          "passed": 1,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "FAIL",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "FAIL",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "google/gemma-4-26b-a4b-it",
@@ -2957,7 +4316,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "google/gemma-4-26b-a4b-it:free",
+          "tier": "F",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "FAIL",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "FAIL",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "google/gemma-4-31b-it",
@@ -2970,15 +4344,16 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         }
       ]
     },
     {
-      "name": "inception",
+      "name": "ibm-granite",
       "models": [
         {
-          "model": "inception/mercury",
+          "model": "ibm-granite/granite-4.1-8b",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -2988,8 +4363,14 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
-        },
+          "note": "",
+          "tested_at": "2026-07-09"
+        }
+      ]
+    },
+    {
+      "name": "inception",
+      "models": [
         {
           "model": "inception/mercury-2",
           "tier": "S",
@@ -3001,10 +4382,16 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
-        },
+          "note": "",
+          "tested_at": "2026-04-08"
+        }
+      ]
+    },
+    {
+      "name": "inclusionai",
+      "models": [
         {
-          "model": "inception/mercury-coder",
+          "model": "inclusionai/ling-2.6-1t",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -3014,7 +4401,36 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "inclusionai/ling-2.6-flash",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "FAIL",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "inclusionai/ring-2.6-1t",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
@@ -3032,25 +4448,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
-        }
-      ]
-    },
-    {
-      "name": "meituan",
-      "models": [
-        {
-          "model": "meituan/longcat-flash-chat",
-          "tier": "C",
-          "passed": 1,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "FAIL",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "FAIL",
-            "4. Multi-step Autonomous": "FAIL"
-          },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         }
       ]
     },
@@ -3068,7 +4467,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "meta-llama/llama-3.1-70b-instruct",
@@ -3081,7 +4481,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "meta-llama/llama-3.1-8b-instruct",
@@ -3094,7 +4495,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "meta-llama/llama-3.3-70b-instruct",
@@ -3107,7 +4509,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "meta-llama/llama-4-maverick",
@@ -3120,7 +4523,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "meta-llama/llama-4-scout",
@@ -3133,7 +4537,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         }
       ]
     },
@@ -3151,7 +4556,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "minimax/minimax-m2",
@@ -3164,7 +4570,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "minimax/minimax-m2.1",
@@ -3177,7 +4584,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "minimax/minimax-m2.5",
@@ -3190,7 +4598,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "minimax/minimax-m2.7",
@@ -3203,7 +4612,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "minimax/minimax-m3",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
@@ -3221,7 +4645,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/devstral-2512",
@@ -3234,33 +4659,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
-        },
-        {
-          "model": "mistralai/devstral-medium",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
-        },
-        {
-          "model": "mistralai/devstral-small",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/ministral-14b-2512",
@@ -3273,7 +4673,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/ministral-3b-2512",
@@ -3286,7 +4687,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/ministral-8b-2512",
@@ -3299,7 +4701,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/mistral-large",
@@ -3312,7 +4715,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/mistral-large-2407",
@@ -3325,20 +4729,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
-        },
-        {
-          "model": "mistralai/mistral-large-2411",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/mistral-large-2512",
@@ -3351,7 +4743,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/mistral-medium-3",
@@ -3364,7 +4757,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "mistralai/mistral-medium-3-5",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "mistralai/mistral-medium-3.1",
@@ -3377,7 +4785,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/mistral-nemo",
@@ -3390,7 +4799,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/mistral-saba",
@@ -3403,7 +4813,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/mistral-small-2603",
@@ -3416,7 +4827,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/mistral-small-3.2-24b-instruct",
@@ -3429,20 +4841,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
-        },
-        {
-          "model": "mistralai/mistral-small-creative",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/mixtral-8x22b-instruct",
@@ -3455,33 +4855,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
-        },
-        {
-          "model": "mistralai/mixtral-8x7b-instruct",
-          "tier": "F",
-          "passed": 0,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "FAIL",
-            "2. Search + Install": "FAIL",
-            "3. Run Tool (word counter)": "FAIL",
-            "4. Multi-step Autonomous": "FAIL"
-          },
-          "note": ""
-        },
-        {
-          "model": "mistralai/pixtral-large-2411",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "mistralai/voxtral-small-24b-2507",
@@ -3494,7 +4869,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         }
       ]
     },
@@ -3512,7 +4888,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "moonshotai/kimi-k2-0905",
@@ -3525,7 +4902,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "moonshotai/kimi-k2-thinking",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "moonshotai/kimi-k2.5",
@@ -3538,7 +4930,36 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "moonshotai/kimi-k2.6",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "moonshotai/kimi-k2.7-code",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
@@ -3546,7 +4967,7 @@
       "name": "nex-agi",
       "models": [
         {
-          "model": "nex-agi/deepseek-v3.1-nex-n1",
+          "model": "nex-agi/nex-n2-mini",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -3556,26 +4977,28 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "nex-agi/nex-n2-pro",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
     {
       "name": "nvidia",
       "models": [
-        {
-          "model": "nvidia/llama-3.1-nemotron-70b-instruct",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
-        },
         {
           "model": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
           "tier": "S",
@@ -3587,7 +5010,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "nvidia/nemotron-3-nano-30b-a3b",
@@ -3600,10 +5024,25 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
-          "model": "nvidia/nemotron-nano-9b-v2",
+          "model": "nvidia/nemotron-3-nano-30b-a3b:free",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -3613,7 +5052,92 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "nvidia/nemotron-3-super-120b-a12b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "nvidia/nemotron-3-ultra-550b-a55b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "nvidia/nemotron-nano-12b-v2-vl:free",
+          "tier": "C",
+          "passed": 1,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "FAIL",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "nvidia/nemotron-nano-9b-v2:free",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
@@ -3631,7 +5155,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-3.5-turbo-0613",
@@ -3644,7 +5169,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-3.5-turbo-16k",
@@ -3657,7 +5183,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-4",
@@ -3670,7 +5197,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-4-turbo",
@@ -3683,7 +5211,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-4.1",
@@ -3696,7 +5225,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-4.1-mini",
@@ -3709,7 +5239,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-4.1-nano",
@@ -3722,7 +5253,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-4o",
@@ -3735,7 +5267,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-4o-2024-05-13",
@@ -3748,7 +5281,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-4o-2024-08-06",
@@ -3761,7 +5295,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-4o-2024-11-20",
@@ -3774,7 +5309,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-4o-mini",
@@ -3787,7 +5323,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-4o-mini-2024-07-18",
@@ -3800,7 +5337,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-5",
@@ -3813,7 +5351,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "openai/gpt-5-codex",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "openai/gpt-5-mini",
@@ -3826,7 +5379,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-5-nano",
@@ -3839,7 +5393,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-5-pro",
@@ -3852,7 +5407,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-5.1",
@@ -3865,7 +5421,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-5.1-chat",
@@ -3878,7 +5435,50 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "openai/gpt-5.1-codex",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "openai/gpt-5.1-codex-max",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "openai/gpt-5.1-codex-mini",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "openai/gpt-5.2",
@@ -3891,7 +5491,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-5.2-chat",
@@ -3904,7 +5505,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "openai/gpt-5.2-codex",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "openai/gpt-5.3-chat",
@@ -3917,7 +5533,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "openai/gpt-5.3-codex",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "openai/gpt-5.4",
@@ -3930,7 +5561,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-5.4-mini",
@@ -3943,7 +5575,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/gpt-5.4-nano",
@@ -3956,7 +5589,50 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "openai/gpt-5.5",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "openai/gpt-audio",
+          "tier": "F",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "FAIL",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "FAIL",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "openai/gpt-chat-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "openai/gpt-oss-120b",
@@ -3969,7 +5645,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "openai/gpt-oss-120b:free",
+          "tier": "C",
+          "passed": 1,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "FAIL",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "openai/gpt-oss-20b",
@@ -3982,7 +5673,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "openai/gpt-oss-20b:free",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "openai/gpt-oss-safeguard-20b",
@@ -3995,7 +5701,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "FAIL"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/o1",
@@ -4008,7 +5715,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/o3",
@@ -4021,7 +5729,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/o3-mini",
@@ -4034,7 +5743,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/o3-mini-high",
@@ -4047,7 +5757,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/o3-pro",
@@ -4060,7 +5771,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/o4-mini",
@@ -4073,7 +5785,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openai/o4-mini-high",
@@ -4086,7 +5799,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         }
       ]
     },
@@ -4104,7 +5818,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "openrouter/free",
@@ -4117,15 +5832,16 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         }
       ]
     },
     {
-      "name": "prime-intellect",
+      "name": "poolside",
       "models": [
         {
-          "model": "prime-intellect/intellect-3",
+          "model": "poolside/laguna-m.1",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -4135,7 +5851,78 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "poolside/laguna-m.1:free",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "poolside/laguna-xs-2.1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "poolside/laguna-xs-2.1:free",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "poolside/laguna-xs.2",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "poolside/laguna-xs.2:free",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
@@ -4153,7 +5940,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen-2.5-7b-instruct",
@@ -4166,20 +5954,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
-        },
-        {
-          "model": "qwen/qwen-max",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen-plus",
@@ -4192,7 +5968,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen-plus-2025-07-28",
@@ -4205,10 +5982,11 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
-          "model": "qwen/qwen-turbo",
+          "model": "qwen/qwen-plus-2025-07-28:thinking",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -4218,7 +5996,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "qwen/qwen3-14b",
@@ -4231,7 +6010,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3-235b-a22b",
@@ -4244,7 +6024,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3-235b-a22b-2507",
@@ -4257,7 +6038,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "qwen/qwen3-235b-a22b-thinking-2507",
+          "tier": "C",
+          "passed": 1,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "FAIL",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "qwen/qwen3-30b-a3b",
@@ -4270,7 +6066,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3-30b-a3b-instruct-2507",
@@ -4283,7 +6080,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "qwen/qwen3-30b-a3b-thinking-2507",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "qwen/qwen3-32b",
@@ -4296,7 +6108,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3-8b",
@@ -4309,7 +6122,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3-coder",
@@ -4322,7 +6136,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3-coder-30b-a3b-instruct",
@@ -4335,7 +6150,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3-coder-flash",
@@ -4348,7 +6164,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3-coder-next",
@@ -4361,7 +6178,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3-coder-plus",
@@ -4374,7 +6192,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3-max",
@@ -4387,7 +6206,22 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "qwen/qwen3-max-thinking",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "qwen/qwen3-next-80b-a3b-instruct",
@@ -4400,7 +6234,120 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "qwen/qwen3-next-80b-a3b-thinking",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3-vl-235b-a22b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3-vl-235b-a22b-thinking",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3-vl-30b-a3b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3-vl-30b-a3b-thinking",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3-vl-32b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3-vl-8b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3-vl-8b-thinking",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "qwen/qwen3.5-122b-a10b",
@@ -4413,7 +6360,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3.5-27b",
@@ -4426,7 +6374,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3.5-35b-a3b",
@@ -4439,7 +6388,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3.5-397b-a17b",
@@ -4452,7 +6402,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3.5-9b",
@@ -4465,7 +6416,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3.5-flash-02-23",
@@ -4478,7 +6430,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "qwen/qwen3.5-plus-02-15",
@@ -4491,10 +6444,11 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
-          "model": "qwen/qwq-32b",
+          "model": "qwen/qwen3.5-plus-20260420",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -4504,7 +6458,106 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3.6-27b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3.6-35b-a3b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3.6-flash",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3.6-max-preview",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3.6-plus",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3.7-max",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "qwen/qwen3.7-plus",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
@@ -4522,7 +6575,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         }
       ]
     },
@@ -4540,7 +6594,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         }
       ]
     },
@@ -4558,15 +6613,11 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
-        }
-      ]
-    },
-    {
-      "name": "tngtech",
-      "models": [
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
         {
-          "model": "tngtech/deepseek-r1t2-chimera",
+          "model": "stepfun/step-3.7-flash",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -4576,7 +6627,74 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
+        }
+      ]
+    },
+    {
+      "name": "tencent",
+      "models": [
+        {
+          "model": "tencent/hy3",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "tencent/hy3-preview",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "tencent/hy3:free",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        }
+      ]
+    },
+    {
+      "name": "thedrummer",
+      "models": [
+        {
+          "model": "thedrummer/unslopnemo-12b",
+          "tier": "F",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "FAIL",
+            "2. Search + Install": "FAIL",
+            "3. Run Tool (word counter)": "FAIL",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
@@ -4594,104 +6712,14 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         }
       ]
     },
     {
       "name": "x-ai",
       "models": [
-        {
-          "model": "x-ai/grok-3",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
-        },
-        {
-          "model": "x-ai/grok-3-beta",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
-        },
-        {
-          "model": "x-ai/grok-3-mini",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
-        },
-        {
-          "model": "x-ai/grok-3-mini-beta",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
-        },
-        {
-          "model": "x-ai/grok-4",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
-        },
-        {
-          "model": "x-ai/grok-4-fast",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
-        },
-        {
-          "model": "x-ai/grok-4.1-fast",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
-        },
         {
           "model": "x-ai/grok-4.20",
           "tier": "S",
@@ -4703,10 +6731,11 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
-          "model": "x-ai/grok-code-fast-1",
+          "model": "x-ai/grok-build-0.1",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -4716,7 +6745,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
@@ -4724,7 +6754,7 @@
       "name": "xiaomi",
       "models": [
         {
-          "model": "xiaomi/mimo-v2-flash",
+          "model": "xiaomi/mimo-v2.5",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -4734,10 +6764,11 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
-          "model": "xiaomi/mimo-v2-omni",
+          "model": "xiaomi/mimo-v2.5-pro",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -4747,39 +6778,14 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
-        },
-        {
-          "model": "xiaomi/mimo-v2-pro",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     },
     {
       "name": "z-ai",
       "models": [
-        {
-          "model": "z-ai/glm-4-32b",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "1. Capabilities List": "PASS",
-            "2. Search + Install": "PASS",
-            "3. Run Tool (word counter)": "PASS",
-            "4. Multi-step Autonomous": "PASS"
-          },
-          "note": ""
-        },
         {
           "model": "z-ai/glm-4.5",
           "tier": "S",
@@ -4791,7 +6797,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "z-ai/glm-4.5-air",
@@ -4804,7 +6811,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "z-ai/glm-4.5v",
@@ -4817,7 +6825,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "z-ai/glm-4.6",
@@ -4830,7 +6839,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "z-ai/glm-4.6v",
@@ -4843,7 +6853,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "z-ai/glm-4.7",
@@ -4856,7 +6867,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "z-ai/glm-4.7-flash",
@@ -4869,7 +6881,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "z-ai/glm-5",
@@ -4882,7 +6895,8 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
         },
         {
           "model": "z-ai/glm-5-turbo",
@@ -4895,7 +6909,36 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        },
+        {
+          "model": "z-ai/glm-5.1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "z-ai/glm-5.2",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         },
         {
           "model": "z-ai/glm-5v-turbo",
@@ -4908,25 +6951,150 @@
             "3. Run Tool (word counter)": "PASS",
             "4. Multi-step Autonomous": "PASS"
           },
-          "note": ""
+          "note": "",
+          "tested_at": "2026-04-08"
+        }
+      ]
+    },
+    {
+      "name": "~anthropic",
+      "models": [
+        {
+          "model": "~anthropic/claude-haiku-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "~anthropic/claude-opus-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "~anthropic/claude-sonnet-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        }
+      ]
+    },
+    {
+      "name": "~google",
+      "models": [
+        {
+          "model": "~google/gemini-flash-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        }
+      ]
+    },
+    {
+      "name": "~moonshotai",
+      "models": [
+        {
+          "model": "~moonshotai/kimi-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        }
+      ]
+    },
+    {
+      "name": "~openai",
+      "models": [
+        {
+          "model": "~openai/gpt-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        },
+        {
+          "model": "~openai/gpt-mini-latest",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "FAIL"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
+        }
+      ]
+    },
+    {
+      "name": "~x-ai",
+      "models": [
+        {
+          "model": "~x-ai/grok-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "1. Capabilities List": "PASS",
+            "2. Search + Install": "PASS",
+            "3. Run Tool (word counter)": "PASS",
+            "4. Multi-step Autonomous": "PASS"
+          },
+          "note": "",
+          "tested_at": "2026-07-09"
         }
       ]
     }
   ],
   "excluded_models": [
-    {
-      "model": "anthropic/claude-3.5-haiku",
-      "tier": "X",
-      "passed": 0,
-      "total": 4,
-      "scenarios": {
-        "1. Capabilities List": "FAIL",
-        "2. Search + Install": "FAIL",
-        "3. Run Tool (word counter)": "FAIL",
-        "4. Multi-step Autonomous": "FAIL"
-      },
-      "note": "API error: identical 544-char responses, no tools called"
-    },
     {
       "model": "arcee-ai/virtuoso-large",
       "tier": "X",
@@ -4938,10 +7106,11 @@
         "3. Run Tool (word counter)": "FAIL",
         "4. Multi-step Autonomous": "FAIL"
       },
-      "note": "API error: identical 36-char responses, no tools called"
+      "note": "API error: identical 36-char responses, no tools called",
+      "tested_at": "2026-07-09"
     },
     {
-      "model": "baidu/ernie-4.5-21b-a3b",
+      "model": "google/gemma-4-31b-it:free",
       "tier": "X",
       "passed": 0,
       "total": 4,
@@ -4951,10 +7120,11 @@
         "3. Run Tool (word counter)": "FAIL",
         "4. Multi-step Autonomous": "FAIL"
       },
-      "note": "Timeout: scenarios exceeded 180s without tool calls"
+      "note": "API error: identical 36-char responses, no tools called",
+      "tested_at": "2026-07-09"
     },
     {
-      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "model": "liquid/lfm-2.5-1.2b-thinking:free",
       "tier": "X",
       "passed": 0,
       "total": 4,
@@ -4964,10 +7134,11 @@
         "3. Run Tool (word counter)": "FAIL",
         "4. Multi-step Autonomous": "FAIL"
       },
-      "note": "API error: identical 36-char responses, no tools called"
+      "note": "API error: identical 214-char responses, no tools called",
+      "tested_at": "2026-07-09"
     },
     {
-      "model": "openai/gpt-4-0314",
+      "model": "meta-llama/llama-3.3-70b-instruct:free",
       "tier": "X",
       "passed": 0,
       "total": 4,
@@ -4977,7 +7148,22 @@
         "3. Run Tool (word counter)": "FAIL",
         "4. Multi-step Autonomous": "FAIL"
       },
-      "note": "API error: identical 36-char responses, no tools called"
+      "note": "API error: identical 36-char responses, no tools called",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "openai/gpt-4-turbo-preview",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 132-char responses, no tools called",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "openai/gpt-5.2-pro",
@@ -4990,7 +7176,8 @@
         "3. Run Tool (word counter)": "FAIL",
         "4. Multi-step Autonomous": "FAIL"
       },
-      "note": "API error: identical 337-char responses, no tools called"
+      "note": "API error: identical 337-char responses, no tools called",
+      "tested_at": "2026-04-08"
     },
     {
       "model": "openai/gpt-5.4-pro",
@@ -5003,10 +7190,11 @@
         "3. Run Tool (word counter)": "FAIL",
         "4. Multi-step Autonomous": "FAIL"
       },
-      "note": "API error: identical 375-char responses, no tools called"
+      "note": "API error: identical 375-char responses, no tools called",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "sao10k/l3-euryale-70b",
+      "model": "openai/gpt-audio-mini",
       "tier": "X",
       "passed": 0,
       "total": 4,
@@ -5016,7 +7204,78 @@
         "3. Run Tool (word counter)": "FAIL",
         "4. Multi-step Autonomous": "FAIL"
       },
-      "note": "API error: identical 339-char responses, no tools called"
+      "note": "API error: identical 36-char responses, no tools called",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "openai/o3-deep-research",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "Timeout: scenarios exceeded 180s without tool calls",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "openai/o4-mini-deep-research",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "Timeout: scenarios exceeded 180s without tool calls",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3-coder:free",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 36-char responses, no tools called",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "qwen/qwen3-next-80b-a3b-instruct:free",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 36-char responses, no tools called",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "sakana/fugu-ultra",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 132-char responses, no tools called",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "sao10k/l3.1-euryale-70b",
@@ -5029,7 +7288,8 @@
         "3. Run Tool (word counter)": "FAIL",
         "4. Multi-step Autonomous": "FAIL"
       },
-      "note": "API error: identical 348-char responses, no tools called"
+      "note": "API error: identical 132-char responses, no tools called",
+      "tested_at": "2026-07-09"
     },
     {
       "model": "thedrummer/rocinante-12b",
@@ -5042,10 +7302,11 @@
         "3. Run Tool (word counter)": "FAIL",
         "4. Multi-step Autonomous": "FAIL"
       },
-      "note": "API error: identical 36-char responses, no tools called"
+      "note": "API error: identical 36-char responses, no tools called",
+      "tested_at": "2026-04-08"
     },
     {
-      "model": "thedrummer/unslopnemo-12b",
+      "model": "x-ai/grok-4.3",
       "tier": "X",
       "passed": 0,
       "total": 4,
@@ -5055,7 +7316,50 @@
         "3. Run Tool (word counter)": "FAIL",
         "4. Multi-step Autonomous": "FAIL"
       },
-      "note": "API error: identical 36-char responses, no tools called"
+      "note": "API error: identical 132-char responses, no tools called",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "x-ai/grok-4.5",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 132-char responses, no tools called",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "~anthropic/claude-fable-latest",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 36-char responses, no tools called",
+      "tested_at": "2026-07-09"
+    },
+    {
+      "model": "~google/gemini-pro-latest",
+      "tier": "X",
+      "passed": 0,
+      "total": 4,
+      "scenarios": {
+        "1. Capabilities List": "FAIL",
+        "2. Search + Install": "FAIL",
+        "3. Run Tool (word counter)": "FAIL",
+        "4. Multi-step Autonomous": "FAIL"
+      },
+      "note": "API error: identical 132-char responses, no tools called",
+      "tested_at": "2026-07-09"
     }
   ]
 }

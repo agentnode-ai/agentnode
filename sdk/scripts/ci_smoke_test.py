@@ -56,11 +56,19 @@ SCENARIOS = [
 
 
 def _is_transient_error(error_msg: str) -> bool:
-    """Check if an error is transient (network/rate-limit)."""
+    """Check if an error is transient (network / rate-limit / provider-side).
+
+    A provider outage is NOT a model regression: OpenRouter routinely returns
+    'provider returned error' / 'provider unavailable' / 'no endpoints' when an
+    upstream is briefly down. Treating those as regressions painted main red for
+    a healthy model, so they count as transient (warn + retry), never a failure.
+    """
     lower = error_msg.lower()
     transient_signals = [
         "rate limit", "429", "timeout", "timed out", "connection",
         "502", "503", "504", "server error", "overloaded",
+        "provider returned error", "provider unavailable", "no endpoints",
+        "no instances", "temporarily", "try again",
     ]
     return any(s in lower for s in transient_signals)
 

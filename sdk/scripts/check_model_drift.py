@@ -27,10 +27,12 @@ def main() -> int:
     args = parser.parse_args()
 
     snap = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
-    tested = {
-        m.get("model") or m.get("model_id") or m.get("id")
-        for m in (snap.get("models") or snap.get("results") or [])
-    }
+    # Count scored AND excluded (attempted-but-not-scorable) models as "known", so
+    # a provider-error model does not resurface as "new" every month.
+    known_entries = (snap.get("models") or snap.get("results") or []) + snap.get(
+        "excluded_models", []
+    )
+    tested = {m.get("model") or m.get("model_id") or m.get("id") for m in known_entries}
     tested.discard(None)
 
     with urllib.request.urlopen(CATALOG_URL, timeout=30) as resp:

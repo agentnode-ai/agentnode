@@ -1,20 +1,20 @@
 {
-  "generated_at": "2026-04-08",
-  "source_version": "batch-2026-04-08",
-  "total_models": 182,
-  "s_tier_count": 175,
-  "pass_rate": 96,
+  "generated_at": "2026-07-09",
+  "source_version": "batch-2026-07-09",
+  "total_models": 246,
+  "s_tier_count": 222,
+  "pass_rate": 90,
   "tier_counts": {
-    "A": 2,
+    "A": 13,
     "B": 1,
-    "C": 3,
-    "F": 1,
-    "S": 175,
-    "X": 11
+    "C": 6,
+    "F": 4,
+    "S": 222,
+    "X": 19
   },
-  "provider_count": 35,
-  "provider_count_total": 35,
-  "provider_count_visible": 32,
+  "provider_count": 40,
+  "provider_count_total": 40,
+  "provider_count_visible": 37,
   "providers": [
     {
       "name": "ai21",
@@ -34,10 +34,10 @@
       ]
     },
     {
-      "name": "alibaba",
+      "name": "aion-labs",
       "models": [
         {
-          "model": "tongyi-deepresearch-30b-a3b",
+          "model": "aion-2.0",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -47,14 +47,21 @@
             "s3": true,
             "s4": true
           }
-        }
-      ]
-    },
-    {
-      "name": "allenai",
-      "models": [
+        },
         {
-          "model": "olmo-3.1-32b-instruct",
+          "model": "aion-3.0",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "aion-3.0-mini",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -148,19 +155,7 @@
           }
         },
         {
-          "model": "claude-3.5-haiku",
-          "tier": "X",
-          "passed": 0,
-          "total": 4,
-          "scenarios": {
-            "s1": false,
-            "s2": false,
-            "s3": false,
-            "s4": false
-          }
-        },
-        {
-          "model": "claude-3.7-sonnet",
+          "model": "claude-fable-5",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -232,6 +227,42 @@
           }
         },
         {
+          "model": "claude-opus-4.7",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "claude-opus-4.8",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "claude-opus-4.8-fast",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
           "model": "claude-sonnet-4",
           "tier": "S",
           "passed": 4,
@@ -266,12 +297,36 @@
             "s3": true,
             "s4": true
           }
+        },
+        {
+          "model": "claude-sonnet-5",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": false,
+            "s3": true,
+            "s4": true
+          }
         }
       ]
     },
     {
       "name": "arcee-ai",
       "models": [
+        {
+          "model": "trinity-large-thinking",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": false,
+            "s3": true,
+            "s4": true
+          }
+        },
         {
           "model": "trinity-mini",
           "tier": "C",
@@ -286,23 +341,6 @@
         },
         {
           "model": "virtuoso-large",
-          "tier": "X",
-          "passed": 0,
-          "total": 4,
-          "scenarios": {
-            "s1": false,
-            "s2": false,
-            "s3": false,
-            "s4": false
-          }
-        }
-      ]
-    },
-    {
-      "name": "baidu",
-      "models": [
-        {
-          "model": "ernie-4.5-21b-a3b",
           "tier": "X",
           "passed": 0,
           "total": 4,
@@ -385,6 +423,18 @@
         },
         {
           "model": "command-r-plus-08-2024",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "north-mini-code:free",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -495,20 +545,27 @@
             "s3": true,
             "s4": true
           }
-        }
-      ]
-    },
-    {
-      "name": "essentialai",
-      "models": [
+        },
         {
-          "model": "rnj-1-instruct",
+          "model": "deepseek-v4-flash",
           "tier": "S",
           "passed": 4,
           "total": 4,
           "scenarios": {
             "s1": true,
             "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "deepseek-v4-pro",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": false,
             "s3": true,
             "s4": true
           }
@@ -518,30 +575,6 @@
     {
       "name": "google",
       "models": [
-        {
-          "model": "gemini-2.0-flash-001",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
-          "model": "gemini-2.0-flash-lite-001",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
         {
           "model": "gemini-2.5-flash",
           "tier": "S",
@@ -567,6 +600,18 @@
           }
         },
         {
+          "model": "gemini-2.5-flash-lite-preview-09-2025",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
           "model": "gemini-2.5-pro",
           "tier": "S",
           "passed": 4,
@@ -576,6 +621,138 @@
             "s2": true,
             "s3": true,
             "s4": true
+          }
+        },
+        {
+          "model": "gemini-2.5-pro-preview",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gemini-2.5-pro-preview-05-06",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gemini-3-flash-preview",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": false,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gemini-3-pro-image",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gemini-3.1-flash-lite",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gemini-3.1-flash-lite-preview",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gemini-3.1-pro-preview",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": false,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gemini-3.1-pro-preview-customtools",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gemini-3.5-flash",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gemma-3-12b-it",
+          "tier": "F",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        },
+        {
+          "model": "gemma-3-27b-it",
+          "tier": "C",
+          "passed": 1,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": true,
+            "s3": false,
+            "s4": false
           }
         },
         {
@@ -591,7 +768,48 @@
           }
         },
         {
+          "model": "gemma-4-26b-a4b-it:free",
+          "tier": "F",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        },
+        {
           "model": "gemma-4-31b-it",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gemma-4-31b-it:free",
+          "tier": "X",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "ibm-granite",
+      "models": [
+        {
+          "model": "granite-4.1-8b",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -608,18 +826,6 @@
       "name": "inception",
       "models": [
         {
-          "model": "mercury",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
           "model": "mercury-2",
           "tier": "S",
           "passed": 4,
@@ -630,9 +836,38 @@
             "s3": true,
             "s4": true
           }
+        }
+      ]
+    },
+    {
+      "name": "inclusionai",
+      "models": [
+        {
+          "model": "ling-2.6-1t",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
         },
         {
-          "model": "mercury-coder",
+          "model": "ling-2.6-flash",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": false,
+            "s4": true
+          }
+        },
+        {
+          "model": "ring-2.6-1t",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -663,16 +898,16 @@
       ]
     },
     {
-      "name": "meituan",
+      "name": "liquid",
       "models": [
         {
-          "model": "longcat-flash-chat",
-          "tier": "C",
-          "passed": 1,
+          "model": "lfm-2.5-1.2b-thinking:free",
+          "tier": "X",
+          "passed": 0,
           "total": 4,
           "scenarios": {
             "s1": false,
-            "s2": true,
+            "s2": false,
             "s3": false,
             "s4": false
           }
@@ -728,6 +963,18 @@
             "s2": true,
             "s3": true,
             "s4": true
+          }
+        },
+        {
+          "model": "llama-3.3-70b-instruct:free",
+          "tier": "X",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
           }
         },
         {
@@ -818,6 +1065,18 @@
             "s3": true,
             "s4": true
           }
+        },
+        {
+          "model": "minimax-m3",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
         }
       ]
     },
@@ -838,30 +1097,6 @@
         },
         {
           "model": "devstral-2512",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
-          "model": "devstral-medium",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
-          "model": "devstral-small",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -933,18 +1168,6 @@
           }
         },
         {
-          "model": "mistral-large-2411",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
           "model": "mistral-large-2512",
           "tier": "S",
           "passed": 4,
@@ -958,6 +1181,18 @@
         },
         {
           "model": "mistral-medium-3",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "mistral-medium-3-5",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -1029,43 +1264,7 @@
           }
         },
         {
-          "model": "mistral-small-creative",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
           "model": "mixtral-8x22b-instruct",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
-          "model": "mixtral-8x7b-instruct",
-          "tier": "F",
-          "passed": 0,
-          "total": 4,
-          "scenarios": {
-            "s1": false,
-            "s2": false,
-            "s3": false,
-            "s4": false
-          }
-        },
-        {
-          "model": "pixtral-large-2411",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -1118,7 +1317,43 @@
           }
         },
         {
+          "model": "kimi-k2-thinking",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
           "model": "kimi-k2.5",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "kimi-k2.6",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "kimi-k2.7-code",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -1135,7 +1370,19 @@
       "name": "nex-agi",
       "models": [
         {
-          "model": "deepseek-v3.1-nex-n1",
+          "model": "nex-n2-mini",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "nex-n2-pro",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -1151,18 +1398,6 @@
     {
       "name": "nvidia",
       "models": [
-        {
-          "model": "llama-3.1-nemotron-70b-instruct",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
         {
           "model": "llama-3.3-nemotron-super-49b-v1.5",
           "tier": "S",
@@ -1188,19 +1423,19 @@
           }
         },
         {
-          "model": "nemotron-3-super-120b-a12b",
-          "tier": "X",
-          "passed": 0,
+          "model": "nemotron-3-nano-30b-a3b:free",
+          "tier": "A",
+          "passed": 3,
           "total": 4,
           "scenarios": {
-            "s1": false,
+            "s1": true,
             "s2": false,
-            "s3": false,
-            "s4": false
+            "s3": true,
+            "s4": true
           }
         },
         {
-          "model": "nemotron-nano-9b-v2",
+          "model": "nemotron-3-nano-omni-30b-a3b-reasoning:free",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -1209,6 +1444,78 @@
             "s2": true,
             "s3": true,
             "s4": true
+          }
+        },
+        {
+          "model": "nemotron-3-super-120b-a12b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "nemotron-3-super-120b-a12b:free",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": false,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "nemotron-3-ultra-550b-a55b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "nemotron-3-ultra-550b-a55b:free",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "nemotron-nano-12b-v2-vl:free",
+          "tier": "C",
+          "passed": 1,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        },
+        {
+          "model": "nemotron-nano-9b-v2:free",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": false
           }
         }
       ]
@@ -1265,18 +1572,6 @@
           }
         },
         {
-          "model": "gpt-4-0314",
-          "tier": "X",
-          "passed": 0,
-          "total": 4,
-          "scenarios": {
-            "s1": false,
-            "s2": false,
-            "s3": false,
-            "s4": false
-          }
-        },
-        {
           "model": "gpt-4-turbo",
           "tier": "S",
           "passed": 4,
@@ -1286,6 +1581,18 @@
             "s2": true,
             "s3": true,
             "s4": true
+          }
+        },
+        {
+          "model": "gpt-4-turbo-preview",
+          "tier": "X",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
           }
         },
         {
@@ -1409,6 +1716,18 @@
           }
         },
         {
+          "model": "gpt-5-codex",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
           "model": "gpt-5-mini",
           "tier": "S",
           "passed": 4,
@@ -1469,6 +1788,42 @@
           }
         },
         {
+          "model": "gpt-5.1-codex",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gpt-5.1-codex-max",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gpt-5.1-codex-mini",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
           "model": "gpt-5.2",
           "tier": "S",
           "passed": 4,
@@ -1493,6 +1848,18 @@
           }
         },
         {
+          "model": "gpt-5.2-codex",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
           "model": "gpt-5.2-pro",
           "tier": "X",
           "passed": 0,
@@ -1506,6 +1873,18 @@
         },
         {
           "model": "gpt-5.3-chat",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gpt-5.3-codex",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -1565,6 +1944,54 @@
           }
         },
         {
+          "model": "gpt-5.5",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gpt-audio",
+          "tier": "F",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        },
+        {
+          "model": "gpt-audio-mini",
+          "tier": "X",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        },
+        {
+          "model": "gpt-chat-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
           "model": "gpt-oss-120b",
           "tier": "S",
           "passed": 4,
@@ -1577,7 +2004,31 @@
           }
         },
         {
+          "model": "gpt-oss-120b:free",
+          "tier": "C",
+          "passed": 1,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        },
+        {
           "model": "gpt-oss-20b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gpt-oss-20b:free",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -1622,6 +2073,18 @@
             "s2": true,
             "s3": true,
             "s4": true
+          }
+        },
+        {
+          "model": "o3-deep-research",
+          "tier": "X",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
           }
         },
         {
@@ -1673,6 +2136,18 @@
           }
         },
         {
+          "model": "o4-mini-deep-research",
+          "tier": "X",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        },
+        {
           "model": "o4-mini-high",
           "tier": "S",
           "passed": 4,
@@ -1716,10 +2191,70 @@
       ]
     },
     {
-      "name": "prime-intellect",
+      "name": "poolside",
       "models": [
         {
-          "model": "intellect-3",
+          "model": "laguna-m.1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "laguna-m.1:free",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": false,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "laguna-xs-2.1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "laguna-xs-2.1:free",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "laguna-xs.2",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "laguna-xs.2:free",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -1760,18 +2295,6 @@
           }
         },
         {
-          "model": "qwen-max",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
           "model": "qwen-plus",
           "tier": "S",
           "passed": 4,
@@ -1796,7 +2319,7 @@
           }
         },
         {
-          "model": "qwen-turbo",
+          "model": "qwen-plus-2025-07-28:thinking",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -1844,6 +2367,18 @@
           }
         },
         {
+          "model": "qwen3-235b-a22b-thinking-2507",
+          "tier": "C",
+          "passed": 1,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        },
+        {
           "model": "qwen3-30b-a3b",
           "tier": "S",
           "passed": 4,
@@ -1857,6 +2392,18 @@
         },
         {
           "model": "qwen3-30b-a3b-instruct-2507",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3-30b-a3b-thinking-2507",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -1952,6 +2499,18 @@
           }
         },
         {
+          "model": "qwen3-coder:free",
+          "tier": "X",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        },
+        {
           "model": "qwen3-max",
           "tier": "S",
           "passed": 4,
@@ -1964,7 +2523,127 @@
           }
         },
         {
+          "model": "qwen3-max-thinking",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
           "model": "qwen3-next-80b-a3b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3-next-80b-a3b-instruct:free",
+          "tier": "X",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        },
+        {
+          "model": "qwen3-next-80b-a3b-thinking",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3-vl-235b-a22b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3-vl-235b-a22b-thinking",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3-vl-30b-a3b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3-vl-30b-a3b-thinking",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3-vl-32b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3-vl-8b-instruct",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3-vl-8b-thinking",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -2060,7 +2739,91 @@
           }
         },
         {
-          "model": "qwq-32b",
+          "model": "qwen3.5-plus-20260420",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3.6-27b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3.6-35b-a3b",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3.6-flash",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3.6-max-preview",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3.6-plus",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3.7-max",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "qwen3.7-plus",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -2108,10 +2871,10 @@
       ]
     },
     {
-      "name": "sao10k",
+      "name": "sakana",
       "models": [
         {
-          "model": "l3-euryale-70b",
+          "model": "fugu-ultra",
           "tier": "X",
           "passed": 0,
           "total": 4,
@@ -2121,7 +2884,12 @@
             "s3": false,
             "s4": false
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "sao10k",
+      "models": [
         {
           "model": "l3.1-euryale-70b",
           "tier": "X",
@@ -2141,6 +2909,59 @@
       "models": [
         {
           "model": "step-3.5-flash",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "step-3.7-flash",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "tencent",
+      "models": [
+        {
+          "model": "hy3",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "hy3-preview",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "hy3:free",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -2170,7 +2991,7 @@
         },
         {
           "model": "unslopnemo-12b",
-          "tier": "X",
+          "tier": "F",
           "passed": 0,
           "total": 4,
           "scenarios": {
@@ -2178,23 +2999,6 @@
             "s2": false,
             "s3": false,
             "s4": false
-          }
-        }
-      ]
-    },
-    {
-      "name": "tngtech",
-      "models": [
-        {
-          "model": "deepseek-r1t2-chimera",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
           }
         }
       ]
@@ -2220,90 +3024,6 @@
       "name": "x-ai",
       "models": [
         {
-          "model": "grok-3",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
-          "model": "grok-3-beta",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
-          "model": "grok-3-mini",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
-          "model": "grok-3-mini-beta",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
-          "model": "grok-4",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
-          "model": "grok-4-fast",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
-          "model": "grok-4.1-fast",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
           "model": "grok-4.20",
           "tier": "S",
           "passed": 4,
@@ -2316,7 +3036,31 @@
           }
         },
         {
-          "model": "grok-code-fast-1",
+          "model": "grok-4.3",
+          "tier": "X",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        },
+        {
+          "model": "grok-4.5",
+          "tier": "X",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        },
+        {
+          "model": "grok-build-0.1",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -2333,7 +3077,7 @@
       "name": "xiaomi",
       "models": [
         {
-          "model": "mimo-v2-flash",
+          "model": "mimo-v2.5",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -2345,19 +3089,7 @@
           }
         },
         {
-          "model": "mimo-v2-omni",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
-        {
-          "model": "mimo-v2-pro",
+          "model": "mimo-v2.5-pro",
           "tier": "S",
           "passed": 4,
           "total": 4,
@@ -2373,18 +3105,6 @@
     {
       "name": "z-ai",
       "models": [
-        {
-          "model": "glm-4-32b",
-          "tier": "S",
-          "passed": 4,
-          "total": 4,
-          "scenarios": {
-            "s1": true,
-            "s2": true,
-            "s3": true,
-            "s4": true
-          }
-        },
         {
           "model": "glm-4.5",
           "tier": "S",
@@ -2494,7 +3214,176 @@
           }
         },
         {
+          "model": "glm-5.1",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "glm-5.2",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
           "model": "glm-5v-turbo",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "~anthropic",
+      "models": [
+        {
+          "model": "claude-fable-latest",
+          "tier": "X",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        },
+        {
+          "model": "claude-haiku-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "claude-opus-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "claude-sonnet-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "~google",
+      "models": [
+        {
+          "model": "gemini-flash-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gemini-pro-latest",
+          "tier": "X",
+          "passed": 0,
+          "total": 4,
+          "scenarios": {
+            "s1": false,
+            "s2": false,
+            "s3": false,
+            "s4": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "~moonshotai",
+      "models": [
+        {
+          "model": "kimi-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "~openai",
+      "models": [
+        {
+          "model": "gpt-latest",
+          "tier": "S",
+          "passed": 4,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": true
+          }
+        },
+        {
+          "model": "gpt-mini-latest",
+          "tier": "A",
+          "passed": 3,
+          "total": 4,
+          "scenarios": {
+            "s1": true,
+            "s2": true,
+            "s3": true,
+            "s4": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "~x-ai",
+      "models": [
+        {
+          "model": "grok-latest",
           "tier": "S",
           "passed": 4,
           "total": 4,

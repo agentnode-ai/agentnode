@@ -113,7 +113,12 @@ export default function CompatibilityPage() {
               scenarios ({passRate}%).
             </p>
             <p className="mt-2 text-sm text-muted">
-              Last tested: {LAST_UPDATED}
+              Last tested: {LAST_UPDATED}. Models marked{" "}
+              <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
+                legacy
+              </span>{" "}
+              were verified in an earlier batch and not re-tested in the latest run —
+              still listed with their last known result, not removed.
             </p>
           </div>
 
