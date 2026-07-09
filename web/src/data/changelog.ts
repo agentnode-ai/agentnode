@@ -38,6 +38,40 @@ export function anchorId(r: ChangelogRelease): string {
 
 export const RELEASES: ChangelogRelease[] = [
   {
+    version: "0.21.0",
+    date: "2026-07-09",
+    dateSource: "pypi",
+    title: "Community agents run sandboxed by default",
+    summary:
+      "Community agents now run sandbox-or-refuse by default, consistent with toolpacks and MCP servers: isolated in a container when the sandbox is available, otherwise refused cleanly — never on the host. Trusted and curated agents still run on the host under the default policy, unchanged.",
+    highlights: [
+      "`agent_sandbox.enabled` now defaults to on: verified/unverified/unknown community agents run in an isolated container when a runtime and the pinned image are present, and are refused (never a host fallback) when it is unavailable",
+      "Hardened agent container profile is locked by tests: CPU/memory/PID limits, read-only rootfs, all capabilities dropped, no-new-privileges, non-root user, noexec/nosuid /tmp, a clean ephemeral HOME, and no network",
+      "Host secrets stay on the host: the container env carries only PYTHONPATH, the LLM key stays behind a host-side broker, and tool calls are brokered host-side where the allowlist is enforced",
+      "The in-container wrapper neutralizes fork/exec/subprocess before agent code loads (defense-in-depth); end-to-end verified on a real container host",
+    ],
+    breaking:
+      "Community agents were previously refused outright; they now run sandboxed or are refused with a sandbox-required message — no one loses a working agent, but the refusal wording changes on hosts without a container runtime. Set `agent_sandbox.enabled=false` (or `AGENTNODE_AGENT_SANDBOX=0`) to restore the previous behavior. Trusted/curated agents are unchanged.",
+    onPyPI: true,
+    hasTag: true,
+  },
+  {
+    version: "0.20.0",
+    date: "2026-07-08",
+    dateSource: "pypi",
+    title: "Credentialed toolpacks (bring your own API key)",
+    summary:
+      "Toolpacks can now declare the credentials they need, and sandboxed community toolpacks can receive your API keys under a fail-closed regime: consent bound to the exact package identity, an enforced egress allowlist, and name-only key pass-through. AgentNode never stores your keys.",
+    highlights: [
+      "Toolpacks declare their required credentials in the manifest (`env_requirements`: names, required flag, description — never values); the declaration and the publisher's egress allowlist are sealed into the lockfile at install (tampering breaks integrity)",
+      "`agentnode install` lists the declared environment variables with set/not-set status and tells you which required ones to set before running",
+      "Sandboxed community toolpacks receive user-provided keys via a consent prompt bound to slug + version + artifact hash + key names + domains, an enforced egress proxy restricted to the sealed allowed domains, and name-only pass-through (the value never appears on argv, in the process spec, or in logs)",
+      "Running with a missing required environment variable now fails before dispatch with an actionable, value-free message",
+    ],
+    onPyPI: true,
+    hasTag: true,
+  },
+  {
     version: "0.19.0",
     date: "2026-07-06",
     dateSource: "pypi",
