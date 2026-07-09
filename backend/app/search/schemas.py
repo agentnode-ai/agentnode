@@ -15,6 +15,18 @@ _ALLOWED_SORTS = {
 }
 
 
+_ALLOWED_FACETS = frozenset(
+    {
+        "package_type",
+        "runtime",
+        "frameworks",
+        "trust_level",
+        "verification_tier",
+        "tags",
+    }
+)
+
+
 class SearchRequest(BaseModel):
     q: str = Field("", max_length=256)
     package_type: str | None = None
@@ -28,6 +40,19 @@ class SearchRequest(BaseModel):
     sort_by: str | None = None
     page: int = Field(1, ge=1, le=500)
     per_page: int = Field(20, ge=1, le=100)
+    # Facet distributions to return alongside hits (whitelisted attribute
+    # names). Lets the UI build data-driven filter sidebars: only values
+    # that actually exist in the current scope are offered.
+    facets: list[str] | None = Field(None, max_length=6)
+
+    @field_validator("facets", mode="before")
+    @classmethod
+    def sanitize_facets(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        if not isinstance(v, list) or any(f not in _ALLOWED_FACETS for f in v):
+            raise ValueError("Invalid facet name")
+        return v
 
     @field_validator(
         "package_type",
@@ -89,3 +114,6 @@ class SearchResponse(BaseModel):
     total: int
     page: int
     per_page: int
+    # Present only when the request asked for facets:
+    # {"tags": {"database": 2, ...}, "runtime": {"python": 83, ...}}
+    facet_distribution: dict[str, dict[str, int]] | None = None

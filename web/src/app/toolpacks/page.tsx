@@ -25,8 +25,10 @@ export default function ToolpacksPage() {
       />
 
       <section className="border-b border-border">
+        {/* runtime is pinned too: MCP servers are package_type=toolpack with
+            runtime=mcp and have their own page — this library is python packs. */}
         <PackageSearch
-          fixed={{ package_type: "toolpack" }}
+          fixed={{ package_type: "toolpack", runtime: "python" }}
           basePath="/toolpacks"
           heading={null}
           autoFocus={false}
