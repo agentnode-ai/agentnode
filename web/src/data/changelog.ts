@@ -38,6 +38,21 @@ export function anchorId(r: ChangelogRelease): string {
 
 export const RELEASES: ChangelogRelease[] = [
   {
+    version: "0.22.0",
+    date: "2026-07-10",
+    dateSource: "pypi",
+    title: "MCP from the terminal + refreshed compatibility",
+    summary:
+      "MCP servers now have the same terminal starting point as the other package types, and the model compatibility matrix has been refreshed with current flagships while keeping older still-valid results.",
+    highlights: [
+      "`agentnode init --type mcp` scaffolds an MCP server listing — a schema-valid manifest (runtime mcp, a pinned mcp_server command with an npm/PyPI package and source_repo, honest permissions) plus a README that walks verify → submit",
+      "`agentnode publish` detects an MCP manifest and routes you to `agentnode mcp verify` / `agentnode mcp submit` instead of failing deep in toolpack validation; non-MCP manifests are unaffected",
+      "Refreshed compatibility data: 246 scored models (222 S-tier) with current flagships, models untestable in the latest batch kept and marked legacy rather than removed, and only hard-evidence removals delisted",
+    ],
+    onPyPI: true,
+    hasTag: true,
+  },
+  {
     version: "0.21.0",
     date: "2026-07-09",
     dateSource: "pypi",
