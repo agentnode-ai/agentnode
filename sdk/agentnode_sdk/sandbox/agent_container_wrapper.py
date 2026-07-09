@@ -8,6 +8,11 @@ corrupt the control channel. Bidirectional production form of
 ``python_runner._CONTAINER_WRAPPER`` — importing an installed entrypoint, not
 injected source.
 
+Before loading the agent, it installs a process-spawn guard that neutralizes
+fork/exec/subprocess at the Python level (defense-in-depth; the container flags
+— cap-drop-ALL, read-only rootfs, noexec /tmp, pids-limit, network none — are
+the real boundary).
+
 Protocol (one JSON object per line):
   host -> container: {"entrypoint":"module:func","goal":...,"kwargs":{...}}  (init)
   container -> host: {"id","type":"run_tool"|"call_llm", ...}               (request)
@@ -19,11 +24,47 @@ NOT wired into ``run_agent`` in B1 — only the backend session can use it.
 from __future__ import annotations
 
 WRAPPER_SOURCE = r'''
-import sys, json, io, importlib
+import sys, json, io, importlib, os
 
 _real_out = sys.stdout
 _real_err = sys.stderr
 _real_in = sys.stdin
+
+# Defense-in-depth (NOT the security boundary — the container is: --cap-drop=ALL,
+# --read-only, noexec /tmp, --pids-limit, --network none). This Python-level guard
+# neutralizes process-spawning APIs before the agent's code loads, so a sandboxed
+# agent cannot fork/exec even inside the locked container. A determined native/
+# ctypes call could bypass it, but the container flags contain that too; this only
+# removes the easy footgun. Threads are unaffected (CPython threads don't os.fork).
+def _install_process_guard():
+    def _blocked(*_a, **_k):
+        raise PermissionError(
+            "process spawning is disabled for sandboxed agents (fork/exec/subprocess)"
+        )
+    for _name in (
+        "fork", "forkpty", "system", "posix_spawn", "posix_spawnp",
+        "exec", "execl", "execle", "execlp", "execlpe",
+        "execv", "execve", "execvp", "execvpe", "spawnl", "spawnle",
+        "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe",
+    ):
+        if hasattr(os, _name):
+            try:
+                setattr(os, _name, _blocked)
+            except Exception:
+                pass
+    try:
+        import subprocess as _sp
+        _sp.Popen = _blocked
+        _sp.run = _blocked
+        _sp.call = _blocked
+        _sp.check_call = _blocked
+        _sp.check_output = _blocked
+        _sp.getoutput = _blocked
+        _sp.getstatusoutput = _blocked
+    except Exception:
+        pass
+
+_install_process_guard()
 
 def _send(req):
     _real_out.write(json.dumps(req) + "\n")
