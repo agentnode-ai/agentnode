@@ -71,7 +71,17 @@ def _norm_scenarios(raw: Any) -> dict[str, str]:
     return out
 
 
-def _norm_model(raw: dict[str, Any]) -> dict[str, Any]:
+def _date_rank(tested_at: str) -> int:
+    """Sortable int from a YYYY-MM-DD date (for newest-wins tiebreak). 0 if unparseable."""
+    digits = "".join(ch for ch in (tested_at or "") if ch.isdigit())[:8]
+    return int(digits) if len(digits) == 8 else 0
+
+
+def _norm_model(raw: dict[str, Any], tested_at: str) -> dict[str, Any]:
+    # A model keeps its OWN tested_at (per-model provenance): prior-snapshot models
+    # carry their original date, new-batch models get the new run's date. This is
+    # what lets the matrix mark not-retested models "legacy" instead of deleting them.
+    mt = raw.get("tested_at") or tested_at
     return {
         "model": raw["model"],
         "tier": raw.get("tier", "X"),
@@ -79,31 +89,56 @@ def _norm_model(raw: dict[str, Any]) -> dict[str, Any]:
         "total": int(raw.get("total", 4)) or 4,
         "scenarios": _norm_scenarios(raw.get("scenarios")),
         "note": raw.get("note", "") or "",
-        "_ts": int(raw.get("timestamp", 0)),
+        "tested_at": mt,
+        "_ts": _date_rank(mt),
     }
 
 
 def _better(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
-    """Best-result-wins: non-X beats X; then more passed; then more recent timestamp."""
+    """A re-test (newer date) always wins so a model reflects its LATEST run; then
+    non-X over X; then more passed. Newest-date-wins first keeps provenance honest:
+    a fresh result supersedes a stale one even if the stale one scored higher."""
+    if a["_ts"] != b["_ts"]:
+        return a if a["_ts"] > b["_ts"] else b
     ax, bx = a["tier"] == "X", b["tier"] == "X"
     if ax != bx:
         return b if ax else a
     if a["passed"] != b["passed"]:
         return a if a["passed"] > b["passed"] else b
-    return a if a["_ts"] >= b["_ts"] else b
+    return a
 
 
-def merge(inputs: list[Path]) -> list[dict[str, Any]]:
+def merge(sources: list[tuple[list[dict[str, Any]], str]],
+          remove: set[str] | None = None) -> list[dict[str, Any]]:
+    """Merge (raw_models, tested_at) sources. Later re-tests override earlier ones
+    (newest date wins). ``remove`` drops model IDs entirely (hard-evidence removals)."""
+    remove = remove or set()
     best: dict[str, dict[str, Any]] = {}
-    for path in inputs:
-        for raw in _load(path):
-            m = _norm_model(raw)
+    for raws, tested_at in sources:
+        for raw in raws:
+            if raw["model"] in remove:
+                continue
+            m = _norm_model(raw, tested_at)
             cur = best.get(m["model"])
             best[m["model"]] = m if cur is None else _better(cur, m)
     models = sorted(best.values(), key=lambda m: m["model"])
     for m in models:
         m.pop("_ts", None)
     return models
+
+
+def _load_prior(path: Path) -> list[dict[str, Any]]:
+    """Load a prior snapshot's models + excluded_models, each already carrying its
+    own tested_at (or falling back to the snapshot's global tested_at)."""
+    with open(path, encoding="utf-8") as f:
+        snap = json.load(f)
+    global_ta = snap.get("tested_at", "")
+    out = []
+    for m in snap.get("models", []) + snap.get("excluded_models", []):
+        m = dict(m)
+        m.setdefault("tested_at", global_ta)
+        out.append(m)
+    return out
 
 
 def _provider(model_id: str) -> str:
@@ -164,6 +199,12 @@ def main() -> None:
                     help="REAL test date/time (e.g. 2026-04-08). Never 'now' — this is test provenance.")
     ap.add_argument("--generated-by", default="merge_batches.py",
                     help="Provenance note for generated_by")
+    ap.add_argument("--prior", default="",
+                    help="Prior snapshot (current.json). Its models are preserved with "
+                         "their OWN tested_at (keep-legacy); new --inputs override on re-test.")
+    ap.add_argument("--remove-file", default="",
+                    help="File with one model ID per line to HARD-REMOVE (delist). Use only "
+                         "for hard-evidence removals: provider-removed / 404 / deprecated.")
     ap.add_argument("--out", required=True, help="Output path (e.g. sdk/data/compatibility/current.json)")
     args = ap.parse_args()
 
@@ -173,8 +214,30 @@ def main() -> None:
         print("ERROR: missing input(s):\n  " + "\n  ".join(missing), file=sys.stderr)
         sys.exit(1)
 
-    models = merge(inputs)
+    remove: set[str] = set()
+    if args.remove_file:
+        rp = Path(args.remove_file)
+        if not rp.exists():
+            print(f"ERROR: --remove-file not found: {rp}", file=sys.stderr)
+            sys.exit(1)
+        remove = {ln.strip() for ln in rp.read_text(encoding="utf-8").splitlines()
+                  if ln.strip() and not ln.startswith("#")}
+
+    # Prior snapshot first (oldest provenance), then this run's batch reports on top.
+    sources: list[tuple[list[dict[str, Any]], str]] = []
+    if args.prior:
+        pp = Path(args.prior)
+        if not pp.exists():
+            print(f"ERROR: --prior not found: {pp}", file=sys.stderr)
+            sys.exit(1)
+        sources.append((_load_prior(pp), ""))  # per-model tested_at already present
+    for p in inputs:
+        sources.append((_load(p), args.tested_at))
+
+    models = merge(sources, remove=remove)
     snap = build_snapshot(models, args.run_id, args.tested_at, args.generated_by)
+    if remove:
+        print(f"  removed (hard-evidence delist): {len(remove)}")
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

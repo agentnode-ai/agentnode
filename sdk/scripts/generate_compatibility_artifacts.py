@@ -211,6 +211,10 @@ def generate_frontend(models: list[dict], snapshot: dict, output_dir: Path | Non
         "  s2: boolean;",
         "  s3: boolean;",
         "  s4: boolean;",
+        "  testedAt: string;",
+        "  // true when this model was not re-tested in the latest batch (result",
+        "  // carried over from an earlier run — still listed, honestly marked).",
+        "  stale: boolean;",
         "}",
         "",
         "export interface ProviderData {",
@@ -244,9 +248,12 @@ def generate_frontend(models: list[dict], snapshot: dict, output_dir: Path | Non
             name = m["_short_model"]
             passed = m["passed"]
             total = m["total"]
+            tested_at = m.get("tested_at", today)
+            stale = "true" if tested_at != today else "false"
             lines.append(
                 f'      {{ model: "{name}", tier: "{tier}", passed: {passed}, '
-                f"total: {total}, s1: {s1}, s2: {s2}, s3: {s3}, s4: {s4} }},"
+                f"total: {total}, s1: {s1}, s2: {s2}, s3: {s3}, s4: {s4}, "
+                f'testedAt: "{tested_at}", stale: {stale} }},'
             )
         lines.append("    ],")
         lines.append("  },")
