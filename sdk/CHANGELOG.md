@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.21.0 — Community agents run sandboxed by default
+
+### Changed
+
+- **`agent_sandbox.enabled` now defaults to ON.** Community agents
+  (`verified`/`unverified`/unknown) run **sandbox-or-refuse**, consistent with
+  toolpacks and MCP servers: in an isolated container when a container runtime
+  and the pinned image are present, otherwise **refused cleanly** — never a host
+  fallback. Set `agent_sandbox.enabled=false` (or `AGENTNODE_AGENT_SANDBOX=0`)
+  to restore the previous behavior (community agents refused outright).
+- `trusted`/`curated` agents are **unchanged**: they still run on the host under
+  the `default` host-trust policy. `sandbox.host_trust_policy` can still tighten
+  this (`curated_only`, `none`).
+- The setup wizard's sandbox screen now states community agents are isolated by
+  default and offers to disable, instead of prompting to opt in.
+
+### Security
+
+- Agent containers are regression-locked to the hardened profile: CPU, memory
+  and PID limits, read-only rootfs, all Linux capabilities dropped,
+  `no-new-privileges`, a non-root user, `noexec`/`nosuid` `/tmp`, a clean
+  ephemeral HOME, and `network=none`. The container env carries only
+  `PYTHONPATH` — no host secret reaches the container in the environment or on
+  the argv; the LLM key stays host-side behind the broker.
+- The in-container agent wrapper installs a fork/exec/subprocess guard before
+  loading agent code (defense-in-depth; the container flags are the real
+  boundary).
+- End-to-end verified on a real container host: a community agent runs isolated
+  with tool calls brokered host-side (allowlist enforced), LLM calls through the
+  host broker, and no host env/filesystem/network/key leakage — with no host
+  fallback when the sandbox is unavailable.
+
+### Fixed
+
+- The gated agent-sandbox end-to-end test now injects the real container backend
+  past the test-suite's fake, so it actually exercises the real
+  `run_agent → run_agent_sandboxed` path on a Docker host.
+
 ## 0.20.0 — Credentialed toolpacks (bring your own API key)
 
 ### Added
