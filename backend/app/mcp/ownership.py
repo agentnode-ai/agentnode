@@ -17,12 +17,73 @@ never suffices; everything else is review-fallback.
 
 from __future__ import annotations
 
+import hashlib
+import secrets
+
 # Confidence levels (derived, stored in the gate_result JSONB).
 STRONG = "strong"
 MEDIUM = "medium"
 WEAK = "weak"
 ADMIN_ATTESTED = "admin_attested"
 NONE = "none"
+
+# --- publish-challenge (Slice 2b-2) ------------------------------------------
+# The publisher proves package control by publishing a version whose keywords
+# carry a server-issued token: only someone with publish rights can do that.
+# The token is shown ONCE and stored only as a SHA-256 hash.
+CHALLENGE_KEYWORD_PREFIX = "agentnode-ownership-"
+CHALLENGE_PENDING_TTL_DAYS = 30  # unverified challenge lifetime
+CHALLENGE_STATUS_PENDING = "pending"
+
+
+def new_challenge_token() -> str:
+    """A fresh, URL-safe challenge token (shown once, never stored in plaintext)."""
+    return secrets.token_urlsafe(24)
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def challenge_keyword(token: str) -> str:
+    """The keyword the publisher must add to a published version's keywords."""
+    return f"{CHALLENGE_KEYWORD_PREFIX}{token}"
+
+
+def _keywords_from_registry_data(registry: str, data: dict) -> list[str]:
+    """Extract the LATEST published version's keywords from npm/PyPI data.
+
+    npm packument: versions[dist-tags.latest].keywords (list).
+    PyPI project json: info.keywords (comma/space-separated string).
+    Pure — the caller supplies the already-fetched data.
+    """
+    if registry == "npm":
+        latest = ((data.get("dist-tags") or {}).get("latest")) if data else None
+        ver = (data.get("versions") or {}).get(latest) if latest else None
+        kw = (ver or {}).get("keywords") or []
+        return [str(k) for k in kw if isinstance(k, str)]
+    # pypi
+    raw = ((data.get("info") or {}).get("keywords") or "") if data else ""
+    return [k.strip() for k in raw.replace(",", " ").split() if k.strip()]
+
+
+def find_challenge_match(registry: str, data: dict, token_hash: str) -> dict:
+    """Scan the fetched registry data for a challenge keyword whose token hashes
+    to ``token_hash``. Returns {found: bool, version: str|None, keyword: str|None}.
+    Pure: no I/O — the caller fetches the data."""
+    keywords = _keywords_from_registry_data(registry, data)
+    version = None
+    if registry == "npm" and data:
+        version = (data.get("dist-tags") or {}).get("latest")
+    elif data:
+        version = (data.get("info") or {}).get("version")
+    for kw in keywords:
+        if kw.startswith(CHALLENGE_KEYWORD_PREFIX):
+            token = kw[len(CHALLENGE_KEYWORD_PREFIX) :]
+            if token and hash_token(token) == token_hash:
+                return {"found": True, "version": version, "keyword": kw}
+    return {"found": False, "version": version, "keyword": None}
+
 
 # Methods that constitute an AUTOMATED, unforgeable strong proof. Defined now,
 # produced later (2b-2+). manual_admin is deliberately NOT here — an admin
