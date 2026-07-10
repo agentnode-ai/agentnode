@@ -246,7 +246,7 @@ async def test_submit_with_publisher(client):
     )
     assert resp.status_code == 201
     data = resp.json()
-    assert data["status"] == "pending"
+    assert data["status"] == "quarantined_review"
     assert data["package_name"] == "test-mcp"
 
 
@@ -368,7 +368,7 @@ async def test_maintainer_can_read_own_submission(client):
     )
     assert status_resp.status_code == 200
     data = status_resp.json()
-    assert data["status"] == "pending"
+    assert data["status"] == "quarantined_review"
     assert data["package_name"] == "test-mcp"
 
 
@@ -840,7 +840,7 @@ async def test_unpinned_command_resolves_version(client, session):
         headers=_auth(token),
     )
     assert resp.status_code == 201
-    assert resp.json()["status"] == "pending"
+    assert resp.json()["status"] == "quarantined_review"
 
     sid = resp.json()["id"]
     sv = (await client.get(f"/v1/mcp/submissions/{sid}", headers=_auth(token))).json()[
@@ -869,7 +869,7 @@ async def test_registry_repo_missing_is_indeterminate(client, session):
         headers=_auth(token),
     )
     assert resp.status_code == 201
-    assert resp.json()["status"] == "pending"
+    assert resp.json()["status"] == "quarantined_review"
 
     sid = resp.json()["id"]
     sv = (await client.get(f"/v1/mcp/submissions/{sid}", headers=_auth(token))).json()[
@@ -1636,7 +1636,7 @@ async def test_report_update_unblocks_action_required(client):
         headers=_auth(token),
     )
     assert upd.status_code == 200, upd.json()
-    assert upd.json()["status"] == "pending"
+    assert upd.json()["status"] == "quarantined_review"
     assert upd.json()["report_status"] == "TESTED"
 
 

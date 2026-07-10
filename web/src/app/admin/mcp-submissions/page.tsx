@@ -73,11 +73,20 @@ const SERVER_STATUS: Record<string, { label: string; cls: string }> = {
 };
 
 const STATUS_COLORS: Record<string, string> = {
+  // pending is the legacy alias of quarantined_review (both "in review").
   pending: "bg-blue-500/20 text-blue-400",
+  quarantined_review: "bg-blue-500/20 text-blue-400",
   action_required: "bg-yellow-500/20 text-yellow-400",
   approved: "bg-green-500/20 text-green-400",
+  published: "bg-green-500/20 text-green-400",
   rejected: "bg-red-500/20 text-red-400",
   needs_changes: "bg-orange-500/20 text-orange-400",
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  pending: "in review",
+  quarantined_review: "in review",
+  published: "published",
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -85,7 +94,7 @@ function StatusBadge({ status }: { status: string }) {
     <span
       className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[status] || "bg-zinc-500/20 text-zinc-400"}`}
     >
-      {status.replace("_", " ")}
+      {STATUS_LABELS[status] || status.replace("_", " ")}
     </span>
   );
 }
@@ -284,7 +293,7 @@ export default function McpSubmissionsPage() {
 
       {/* Filter */}
       <div className="flex gap-2">
-        {["", "pending", "action_required", "needs_changes", "approved", "rejected"].map(
+        {["", "quarantined_review", "pending", "action_required", "needs_changes", "approved", "published", "rejected"].map(
           (s) => (
             <button
               key={s}
@@ -295,7 +304,7 @@ export default function McpSubmissionsPage() {
                   : "bg-card border-border text-muted hover:text-foreground"
               }`}
             >
-              {s || "All"}
+              {s ? STATUS_LABELS[s] || s.replace(/_/g, " ") : "All"}
             </button>
           )
         )}
