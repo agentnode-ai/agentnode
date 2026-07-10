@@ -17,6 +17,36 @@ interface Submission {
   actions_medium: number;
   tools_count: number;
   created_at: string;
+  auto_publish_eligible: boolean | null;
+  objective_blockers: string[];
+  future_blockers: string[];
+}
+
+// Honest, advisory gate badge — describes what the automated gates would decide,
+// never claims a submission will be auto-published (that is not live).
+function GateBadge({ s }: { s: Submission }) {
+  if (s.auto_publish_eligible === null || s.auto_publish_eligible === undefined) {
+    return null;
+  }
+  const objective = s.objective_blockers?.length ?? 0;
+  if (objective === 0) {
+    return (
+      <span
+        className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-400"
+        title="Passes every automated gate that exists today; only the not-yet-built ownership + sandbox-smoke gates remain. Not auto-published — review still required."
+      >
+        gates: clean · pending ownership+smoke
+      </span>
+    );
+  }
+  return (
+    <span
+      className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-400"
+      title={`Blocked by: ${s.objective_blockers.join(", ")}`}
+    >
+      gates: blocked ({objective})
+    </span>
+  );
 }
 
 interface ServerVerification {
@@ -340,6 +370,7 @@ export default function McpSubmissionsPage() {
                     ● {SERVER_STATUS[s.server_status]?.label || s.server_status}
                   </span>
                 )}
+                <GateBadge s={s} />
               </div>
               <div className="flex items-center gap-3 text-xs text-muted">
                 {s.tools_count > 0 && <span>{s.tools_count} tools</span>}
