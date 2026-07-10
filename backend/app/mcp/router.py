@@ -17,6 +17,7 @@ from app.shared.exceptions import AppError
 from app.shared.rate_limit import rate_limit
 from app.mcp.models import McpSubmission, PublisherPackageClaim
 from app.mcp import status as mcp_status
+from app.mcp.gates import evaluate_gates
 from app.mcp.registry_verify import (
     verify_registry,
     derive_status,
@@ -82,6 +83,29 @@ def _ownership_view(claim: PublisherPackageClaim | None) -> dict:
 
 router = APIRouter(prefix="/v1/mcp", tags=["mcp"])
 admin_router = APIRouter(prefix="/v1/admin/mcp", tags=["admin-mcp"])
+
+
+async def _attach_gate_result(sv: dict, manifest: dict, report: dict, session) -> dict:
+    """Compute the advisory gate result and store it inside the server_verification
+    JSONB (no migration, no status change). Advisory only — activates nothing."""
+    from app.packages.typosquatting import find_similar_slugs_db
+
+    slug = (manifest.get("package_id") or "").strip()
+    typosquat_hit = False
+    if slug:
+        try:
+            typosquat_hit = bool(await find_similar_slugs_db(slug, session))
+        except Exception:
+            typosquat_hit = False  # advisory signal only; never block on lookup error
+    sv["gate_result"] = evaluate_gates(
+        manifest=manifest,
+        server_verification=sv,
+        report=report or {},
+        typosquat_hit=typosquat_hit,
+    )
+    return sv
+
+
 logger = logging.getLogger(__name__)
 
 VALID_STATUSES = {
@@ -169,6 +193,9 @@ async def submit_mcp(
     # Server-side re-verification: re-derive registry-checkable facts ourselves.
     # The client report is advisory; this is authoritative. No code is executed.
     server_verification = await verify_registry(manifest)
+    server_verification = await _attach_gate_result(
+        server_verification, manifest, report, session
+    )
     # Resolved version is authoritative; fall back to the client claim only if the
     # registry was unavailable and we could not resolve anything.
     pkg_version = server_verification.get("resolved_version") or report.get(
@@ -512,6 +539,9 @@ async def update_own_submission_report(
 
     # Server-side re-verification is authoritative (same as initial submit).
     server_verification = await verify_registry(manifest)
+    server_verification = await _attach_gate_result(
+        server_verification, manifest, report, session
+    )
 
     row.manifest_raw = manifest
     row.verification_report = report
@@ -568,6 +598,12 @@ class SubmissionSummary(BaseModel):
     actions_medium: int
     tools_count: int
     created_at: str
+    # Slice 2a advisory gate result (from server_verification.gate_result JSONB).
+    # auto_publish_eligible is always False today (ownership + smoke gates are
+    # not built); objective_blockers are the real blockers excluding those.
+    auto_publish_eligible: bool | None = None
+    objective_blockers: list[str] = []
+    future_blockers: list[str] = []
 
 
 class SubmissionListResponse(BaseModel):
@@ -640,6 +676,7 @@ async def list_submissions(
     for s in rows:
         report = s.verification_report or {}
         actions = report.get("actions", [])
+        gate = (s.server_verification or {}).get("gate_result") or {}
         submissions.append(
             SubmissionSummary(
                 id=str(s.id),
@@ -655,6 +692,9 @@ async def list_submissions(
                 actions_medium=sum(1 for a in actions if a.get("severity") == "medium"),
                 tools_count=len(report.get("tools_snapshot", [])),
                 created_at=s.created_at.isoformat() if s.created_at else "",
+                auto_publish_eligible=gate.get("auto_publish_eligible"),
+                objective_blockers=gate.get("objective_blockers") or [],
+                future_blockers=gate.get("future_blockers") or [],
             )
         )
 
@@ -974,6 +1014,9 @@ async def reverify_submission(
         raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
 
     sv = await verify_registry(row.manifest_raw or {})
+    sv = await _attach_gate_result(
+        sv, row.manifest_raw or {}, row.verification_report or {}, session
+    )
     row.server_verification = sv
     if sv.get("resolved_version"):
         row.package_version = sv["resolved_version"]
