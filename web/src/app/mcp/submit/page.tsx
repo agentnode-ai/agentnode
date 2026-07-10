@@ -41,11 +41,22 @@ interface SubmitResult {
 /* ------------------------------------------------------------------ */
 
 const STATUS_STYLES: Record<string, string> = {
+  // pending is the legacy alias of quarantined_review — both are "in review".
   pending: "border-yellow-500/40 bg-yellow-500/10 text-yellow-400",
+  quarantined_review: "border-yellow-500/40 bg-yellow-500/10 text-yellow-400",
   action_required: "border-orange-500/40 bg-orange-500/10 text-orange-400",
   needs_changes: "border-orange-500/40 bg-orange-500/10 text-orange-400",
   approved: "border-green-500/40 bg-green-500/10 text-green-400",
+  published: "border-green-500/40 bg-green-500/10 text-green-400",
   rejected: "border-red-500/40 bg-red-500/10 text-red-400",
+};
+
+// Honest labels — the review-hold states read "in review", not "quarantined review".
+const STATUS_LABELS: Record<string, string> = {
+  pending: "in review",
+  quarantined_review: "in review",
+  approved: "approved",
+  published: "published",
 };
 
 function StatusPill({ status }: { status: string }) {
@@ -55,7 +66,7 @@ function StatusPill({ status }: { status: string }) {
         STATUS_STYLES[status] || "border-border bg-card text-muted"
       }`}
     >
-      {status.replace(/_/g, " ")}
+      {STATUS_LABELS[status] || status.replace(/_/g, " ")}
     </span>
   );
 }

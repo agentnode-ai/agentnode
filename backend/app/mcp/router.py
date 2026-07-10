@@ -16,6 +16,7 @@ from app.database import get_session
 from app.shared.exceptions import AppError
 from app.shared.rate_limit import rate_limit
 from app.mcp.models import McpSubmission, PublisherPackageClaim
+from app.mcp import status as mcp_status
 from app.mcp.registry_verify import (
     verify_registry,
     derive_status,
@@ -175,7 +176,7 @@ async def submit_mcp(
     ).get("version")
 
     # Duplicate check: block if an open submission exists for same package+version
-    open_statuses = ("pending", "action_required", "needs_changes", "approved")
+    open_statuses = tuple(mcp_status.OPEN_STATUSES)
     existing = (
         await session.execute(
             select(McpSubmission).where(
@@ -234,7 +235,7 @@ async def submit_mcp(
         server_verification.get("server_status"),
     )
 
-    if submission.status == "pending":
+    if submission.status in mcp_status.REVIEW_HOLD:
         msg = f"Submission received. {pkg_name} is queued for catalog review."
     else:
         sstatus = server_verification.get("server_status")
@@ -416,7 +417,7 @@ class McpReportUpdateRequest(BaseModel):
 
 # Statuses from which a maintainer may still attach a fresh report. Approved and
 # rejected are terminal for the maintainer; published packages are done.
-_REPORT_UPDATABLE_STATUSES = ("pending", "action_required", "needs_changes")
+_REPORT_UPDATABLE_STATUSES = tuple(mcp_status.REPORT_UPDATABLE)
 
 
 @router.post(
@@ -608,13 +609,7 @@ class ReviewResponse(BaseModel):
     message: str
 
 
-ADMIN_VALID_STATUSES = {
-    "approved",
-    "rejected",
-    "needs_changes",
-    "pending",
-    "action_required",
-}
+ADMIN_VALID_STATUSES = set(mcp_status.ADMIN_SETTABLE) | {mcp_status.ACTION_REQUIRED}
 
 
 @admin_router.get(
@@ -919,6 +914,9 @@ async def publish_submission(
         raise AppError("MCP_PUBLISH_FAILED", f"Publish failed: {e}", 500)
 
     row.published_package_id = pkg.id
+    # Converged terminal state: 'published' is now a real status (was implicit in
+    # published_package_id). Only this admin path sets it — never derive_status.
+    row.status = mcp_status.PUBLISHED
     row.updated_at = datetime.now(timezone.utc)
     await session.commit()
 
@@ -979,7 +977,7 @@ async def reverify_submission(
     row.server_verification = sv
     if sv.get("resolved_version"):
         row.package_version = sv["resolved_version"]
-    if row.status in ("pending", "action_required"):
+    if row.status in mcp_status.REVERIFY_SOURCE:
         row.status = derive_status(sv, row.verification_report or {})
     row.updated_at = datetime.now(timezone.utc)
     await session.commit()

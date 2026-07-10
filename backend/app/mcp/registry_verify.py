@@ -364,14 +364,18 @@ def derive_status(server_verification: dict, report: dict) -> str:
     """Combined submission status: server facts authoritative, client report advisory.
 
     Precedence: server ``mismatch`` always wins (-> action_required). Otherwise the
-    client-attested status drives: clean (TESTED/RESOLVED, no high actions) -> pending,
-    everything else -> action_required. indeterminate/unavailable -> pending (the
-    publish gate blocks them anyway; re-verify resolves unavailable).
+    client-attested status drives: clean (TESTED/RESOLVED, no high actions) ->
+    quarantined_review (the converged review-hold state), everything else ->
+    action_required. This NEVER returns ``published``: a clean submission is held
+    for review, not made live — admin approval + publish are still required
+    (Slice 1 of the MCP auto-publish arc: prepare, do not activate).
     """
+    from app.mcp.status import ACTION_REQUIRED, QUARANTINED_REVIEW
+
     actions = report.get("actions") or []
     client_high = any(a.get("severity") == "high" for a in actions)
     if server_verification.get("server_status") == "mismatch":
-        return "action_required"
+        return ACTION_REQUIRED
     if report.get("status") in ("TESTED", "RESOLVED") and not client_high:
-        return "pending"
-    return "action_required"
+        return QUARANTINED_REVIEW
+    return ACTION_REQUIRED
