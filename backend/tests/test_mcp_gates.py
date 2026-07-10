@@ -70,12 +70,15 @@ def test_never_eligible_today_even_when_objectively_clean():
 
 
 def test_future_gates_are_blocking_and_never_pass():
+    from app.mcp.ownership import derive_ownership_evidence
+
     r = evaluate_gates(
         manifest=_manifest(),
         server_verification=_clean_sv(),
         report=_clean_report(),
         typosquat_hit=False,
-        ownership_method="manual_admin",  # admin attestation is NOT an auto proof
+        # admin attestation is NOT an automated proof -> ownership gate stays False
+        ownership=derive_ownership_evidence("manual_admin", "verified"),
     )
     assert _gate(r, "ownership_automatically_proven")["passed"] is False
     assert _gate(r, "ownership_automatically_proven")["blocking"] is True
