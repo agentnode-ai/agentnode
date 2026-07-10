@@ -685,6 +685,211 @@ class ReviewResponse(BaseModel):
 ADMIN_VALID_STATUSES = set(mcp_status.ADMIN_SETTABLE) | {mcp_status.ACTION_REQUIRED}
 
 
+# ---------------------------------------------------------------------------
+# Publish-challenge ownership (Slice 2b-2): prove package control by publishing
+# a version whose keywords carry a server-issued token. Strong, automated, and
+# self-contained (npm + PyPI, no OAuth). This produces STRONG ownership evidence
+# but activates NO auto-publish — sandbox_smoke is still a future blocker and MCP
+# stays review-gated.
+# ---------------------------------------------------------------------------
+
+
+class ChallengeRequest(BaseModel):
+    registry: str = Field(..., description="npm | pypi")
+    package_name: str = Field(..., min_length=1, max_length=200)
+
+
+class ChallengeIssueResponse(BaseModel):
+    token: str  # shown ONCE — only stored as a hash server-side
+    keyword: str
+    registry: str
+    package_name: str
+    expires_at: str
+    instructions: str
+
+
+class ChallengeVerifyResponse(BaseModel):
+    verified: bool
+    status: str
+    message: str
+    version: str | None = None
+
+
+async def _find_claim(session, publisher_id, registry, norm):
+    return (
+        (
+            await session.execute(
+                select(PublisherPackageClaim)
+                .where(
+                    PublisherPackageClaim.publisher_id == publisher_id,
+                    PublisherPackageClaim.registry == registry,
+                    PublisherPackageClaim.package_name_normalized == norm,
+                )
+                .order_by(PublisherPackageClaim.verified_at.desc())
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
+@router.post(
+    "/ownership/challenge",
+    response_model=ChallengeIssueResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
+async def issue_ownership_challenge(
+    body: ChallengeRequest,
+    user: User = Depends(require_publisher),
+    session: AsyncSession = Depends(get_session),
+):
+    """Issue a publish-challenge: returns a one-time token + the keyword to add to
+    a newly published package version. Only the hash is stored."""
+    from app.mcp import ownership as own
+
+    registry = body.registry.strip().lower()
+    if registry not in ("npm", "pypi"):
+        raise AppError("MCP_INVALID_REGISTRY", "registry must be 'npm' or 'pypi'", 400)
+    name = body.package_name.strip()
+    norm = normalize_package_name(registry, name)
+
+    token = own.new_challenge_token()
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(days=own.CHALLENGE_PENDING_TTL_DAYS)
+    evidence = {"basis": "publish_challenge", "issued_at": now.isoformat()}
+
+    claim = await _find_claim(session, user.publisher.id, registry, norm)
+    if claim is not None:
+        claim.method = "publish_challenge"
+        claim.strength = "strong"
+        claim.status = own.CHALLENGE_STATUS_PENDING
+        claim.challenge_token_hash = own.hash_token(token)
+        claim.verified_at = None
+        claim.expires_at = expires
+        claim.evidence = evidence
+    else:
+        session.add(
+            PublisherPackageClaim(
+                id=uuid4(),
+                publisher_id=user.publisher.id,
+                registry=registry,
+                package_name=name,
+                package_name_normalized=norm,
+                method="publish_challenge",
+                strength="strong",
+                status=own.CHALLENGE_STATUS_PENDING,
+                challenge_token_hash=own.hash_token(token),
+                evidence=evidence,
+                expires_at=expires,
+            )
+        )
+    await session.commit()
+
+    return ChallengeIssueResponse(
+        token=token,
+        keyword=own.challenge_keyword(token),
+        registry=registry,
+        package_name=name,
+        expires_at=expires.isoformat(),
+        instructions=(
+            f"Add the keyword '{own.challenge_keyword(token)}' to your package's "
+            "keywords, publish a new version, then call verify. The token is shown "
+            "only once and is stored only as a hash."
+        ),
+    )
+
+
+@router.post(
+    "/ownership/challenge/verify",
+    response_model=ChallengeVerifyResponse,
+    dependencies=[Depends(rate_limit(10, 60))],
+)
+async def verify_ownership_challenge(
+    body: ChallengeRequest,
+    user: User = Depends(require_publisher),
+    session: AsyncSession = Depends(get_session),
+):
+    """Verify a pending publish-challenge by checking the latest published version's
+    keywords for the token. On success the claim becomes STRONG + verified."""
+    from app.mcp import ownership as own
+    from app.mcp.registry_verify import RegistryUnavailable, _fetch_npm, _fetch_pypi
+
+    registry = body.registry.strip().lower()
+    if registry not in ("npm", "pypi"):
+        raise AppError("MCP_INVALID_REGISTRY", "registry must be 'npm' or 'pypi'", 400)
+    name = body.package_name.strip()
+    norm = normalize_package_name(registry, name)
+
+    claim = await _find_claim(session, user.publisher.id, registry, norm)
+    now = datetime.now(timezone.utc)
+    if (
+        claim is None
+        or claim.method != "publish_challenge"
+        or not claim.challenge_token_hash
+    ):
+        raise AppError(
+            "MCP_NO_CHALLENGE",
+            "No publish-challenge to verify — issue one first.",
+            404,
+        )
+    if claim.status != own.CHALLENGE_STATUS_PENDING:
+        return ChallengeVerifyResponse(
+            verified=claim.status == "verified",
+            status=claim.status,
+            message=f"Challenge is already '{claim.status}'.",
+        )
+    if claim.expires_at and claim.expires_at <= now:
+        raise AppError(
+            "MCP_CHALLENGE_EXPIRED",
+            "The challenge has expired — issue a new one.",
+            400,
+        )
+
+    try:
+        data = await _fetch_npm(name) if registry == "npm" else await _fetch_pypi(name)
+    except RegistryUnavailable:
+        raise AppError(
+            "MCP_REGISTRY_UNAVAILABLE",
+            "The registry is temporarily unavailable — try verify again shortly.",
+            503,
+        )
+    if data is None:
+        raise AppError(
+            "MCP_PACKAGE_NOT_FOUND",
+            f"Package '{name}' not found on {registry}.",
+            404,
+        )
+
+    match = own.find_challenge_match(registry, data, claim.challenge_token_hash)
+    if not match["found"]:
+        return ChallengeVerifyResponse(
+            verified=False,
+            status=own.CHALLENGE_STATUS_PENDING,
+            message=(
+                "Token not found in the latest published version's keywords yet. "
+                "Publish a version with the keyword, then verify again."
+            ),
+        )
+
+    claim.status = "verified"
+    claim.verified_at = now
+    claim.verified_by_id = user.id
+    claim.expires_at = now + timedelta(days=OWNERSHIP_CLAIM_TTL_DAYS)
+    claim.evidence = {
+        "basis": "publish_challenge",
+        "verified_via": "published_version_keyword",
+        "version": match["version"],
+    }
+    await session.commit()
+
+    return ChallengeVerifyResponse(
+        verified=True,
+        status="verified",
+        message="Ownership verified via a published version — strong evidence.",
+        version=match["version"],
+    )
+
+
 @admin_router.get(
     "/submissions",
     response_model=SubmissionListResponse,
