@@ -21,12 +21,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-# Ownership methods that count as an AUTOMATED, unforgeable proof. Empty today:
-# the only fulfillment path is ``manual_admin`` (an admin attests), which is the
-# review step this arc exists to remove — so it is NOT an auto proof. Slice 2b
-# adds npm provenance / PyPI Trusted Publishing / verified maintainer here.
-AUTOMATED_OWNERSHIP_METHODS: frozenset[str] = frozenset()
-
 
 def _gate(id, label, passed, blocking, reason="", evidence=None, future=False):
     return {
@@ -46,12 +40,20 @@ def evaluate_gates(
     server_verification: dict,
     report: dict | None = None,
     typosquat_hit: bool = False,
-    ownership_method: str | None = None,
+    ownership: dict | None = None,
 ) -> dict:
     """Evaluate the hard + advisory gates for a submission. Pure; returns a dict
-    ready to store in the ``server_verification`` JSONB (no migration)."""
+    ready to store in the ``server_verification`` JSONB (no migration).
+
+    ``ownership`` is the derived ownership evidence (see mcp.ownership); when
+    absent it defaults to 'no proof'. The ownership gate passes only for a STRONG,
+    verified proof — none exists today (2b-2+ produce them), so it stays False.
+    """
+    from app.mcp.ownership import derive_ownership_evidence
+
     report = report or {}
     sv = server_verification or {}
+    ownership = ownership or derive_ownership_evidence(None, "missing")
     mcp_server = manifest.get("mcp_server")
 
     sstatus = sv.get("server_status")
@@ -147,18 +149,26 @@ def evaluate_gates(
             True,
             evidence={"credentialed": credentialed},
         ),
-        # --- FUTURE gates: mechanism not built (Slice 2b / 2c). Always blocking,
-        # never passing today -> auto_publish_eligible stays False. ---
+        # --- Ownership gate: reads the derived evidence (Slice 2b-1 wiring).
+        # Passes ONLY for a STRONG, verified proof. No mechanism produces strong
+        # evidence yet (2b-2+), so it stays False today -> still a future blocker.
         _gate(
             "ownership_automatically_proven",
             "Ownership proven by an automated, unforgeable method",
-            ownership_method in AUTOMATED_OWNERSHIP_METHODS,
+            bool(ownership.get("auto_eligible")),
             True,
-            reason="no automated ownership proof yet (npm provenance / PyPI Trusted "
-            "Publishing / verified maintainer) — only manual admin attestation exists",
-            evidence={"ownership_method": ownership_method},
-            future=True,
+            reason=ownership.get("reason", ""),
+            evidence={
+                "confidence": ownership.get("confidence"),
+                "method": ownership.get("method"),
+                "status": ownership.get("status"),
+                **(ownership.get("evidence") or {}),
+            },
+            # 'future' = the gate cannot pass yet because no mechanism produces a
+            # strong proof. Once a strong claim can exist (2b-2), remove this flag.
+            future=ownership.get("confidence") != "strong",
         ),
+        # --- FUTURE gate: mechanism not built (Slice 2c). Always blocking. ---
         _gate(
             "sandbox_smoke",
             "Server ran the MCP in the sandbox and it responded",

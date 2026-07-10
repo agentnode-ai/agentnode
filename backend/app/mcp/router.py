@@ -85,7 +85,42 @@ router = APIRouter(prefix="/v1/mcp", tags=["mcp"])
 admin_router = APIRouter(prefix="/v1/admin/mcp", tags=["admin-mcp"])
 
 
-async def _attach_gate_result(sv: dict, manifest: dict, report: dict, session) -> dict:
+async def _ownership_evidence_for(session, publisher_id, manifest: dict) -> dict:
+    """Derive the ownership evidence (Slice 2b-1) for the gate — internal DB read
+    only, no external calls. Today no claim can be STRONG (2b-2+ produce those),
+    so this never makes the ownership gate pass."""
+    from app.mcp.ownership import derive_ownership_evidence
+
+    if publisher_id is None:
+        return derive_ownership_evidence(None, "missing")
+    mcp = manifest.get("mcp_server") or {}
+    name = mcp.get("npm_package") or mcp.get("pypi_package")
+    registry = "npm" if mcp.get("npm_package") else "pypi"
+    if not name:
+        return derive_ownership_evidence(None, "missing")
+    norm = normalize_package_name(registry, name)
+    claim = (
+        (
+            await session.execute(
+                select(PublisherPackageClaim)
+                .where(
+                    PublisherPackageClaim.publisher_id == publisher_id,
+                    PublisherPackageClaim.registry == registry,
+                    PublisherPackageClaim.package_name_normalized == norm,
+                )
+                .order_by(PublisherPackageClaim.verified_at.desc())
+            )
+        )
+        .scalars()
+        .first()
+    )
+    view = _ownership_view(claim)
+    return derive_ownership_evidence(view["method"], view["status"])
+
+
+async def _attach_gate_result(
+    sv: dict, manifest: dict, report: dict, session, *, publisher_id=None
+) -> dict:
     """Compute the advisory gate result and store it inside the server_verification
     JSONB (no migration, no status change). Advisory only — activates nothing."""
     from app.packages.typosquatting import find_similar_slugs_db
@@ -97,11 +132,13 @@ async def _attach_gate_result(sv: dict, manifest: dict, report: dict, session) -
             typosquat_hit = bool(await find_similar_slugs_db(slug, session))
         except Exception:
             typosquat_hit = False  # advisory signal only; never block on lookup error
+    ownership = await _ownership_evidence_for(session, publisher_id, manifest)
     sv["gate_result"] = evaluate_gates(
         manifest=manifest,
         server_verification=sv,
         report=report or {},
         typosquat_hit=typosquat_hit,
+        ownership=ownership,
     )
     return sv
 
@@ -194,7 +231,7 @@ async def submit_mcp(
     # The client report is advisory; this is authoritative. No code is executed.
     server_verification = await verify_registry(manifest)
     server_verification = await _attach_gate_result(
-        server_verification, manifest, report, session
+        server_verification, manifest, report, session, publisher_id=user.publisher.id
     )
     # Resolved version is authoritative; fall back to the client claim only if the
     # registry was unavailable and we could not resolve anything.
@@ -540,7 +577,7 @@ async def update_own_submission_report(
     # Server-side re-verification is authoritative (same as initial submit).
     server_verification = await verify_registry(manifest)
     server_verification = await _attach_gate_result(
-        server_verification, manifest, report, session
+        server_verification, manifest, report, session, publisher_id=row.publisher_id
     )
 
     row.manifest_raw = manifest
@@ -1015,7 +1052,11 @@ async def reverify_submission(
 
     sv = await verify_registry(row.manifest_raw or {})
     sv = await _attach_gate_result(
-        sv, row.manifest_raw or {}, row.verification_report or {}, session
+        sv,
+        row.manifest_raw or {},
+        row.verification_report or {},
+        session,
+        publisher_id=row.publisher_id,
     )
     row.server_verification = sv
     if sv.get("resolved_version"):
