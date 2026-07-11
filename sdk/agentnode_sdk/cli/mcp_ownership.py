@@ -8,10 +8,10 @@ Two verbs let a publisher prove they control an npm/PyPI package:
 `challenge` asks the backend for a one-time token + keyword; the publisher adds
 the keyword to their package's metadata and publishes a new version. `verify`
 then asks the backend to look at the latest published version and confirm the
-keyword — only someone with publish rights can put it there, so a match is
+keyword -- only someone with publish rights can put it there, so a match is
 strong ownership evidence.
 
-The token is never written to disk here — it is shown once, straight from the
+The token is never written to disk here -- it is shown once, straight from the
 API response. Verifying ownership does NOT publish anything: MCP listings stay
 review-gated until the sandbox-smoke gate is built.
 """
@@ -138,7 +138,7 @@ def cmd_mcp_ownership_challenge(
     print(f"    3. Run: {verify_cmd}")
     print()
     print("  The token is shown only once and is stored only as a hash. If you")
-    print("  lose it, just issue a new challenge — that replaces the old one.")
+    print("  lose it, just issue a new challenge -- that replaces the old one.")
     print()
     print(_REVIEW_NOTE)
     print()
