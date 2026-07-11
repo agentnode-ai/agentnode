@@ -61,6 +61,19 @@ def main(argv: list[str] | None = None) -> int:
     mcp_revoke_p.add_argument("--key", default=None, help="Revoke only this consent_key")
     mcp_grants_p = mcp_sub.add_parser("grants", help="List stored consent grants (metadata only)")
     mcp_grants_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    # Slice 2b-2: prove package ownership via a publish-challenge (npm/PyPI).
+    mcp_own_p = mcp_sub.add_parser("ownership", help="Prove package ownership (publish-challenge)")
+    mcp_own_sub = mcp_own_p.add_subparsers(dest="ownership_command")
+    mcp_own_ch = mcp_own_sub.add_parser("challenge", help="Issue a one-time publish-challenge token")
+    mcp_own_ch.add_argument("package", help="Package name on the registry")
+    mcp_own_ch.add_argument("--registry", required=True, choices=["npm", "pypi"], help="Package registry")
+    mcp_own_ch.add_argument("--token", default=None, help="API key (default: AGENTNODE_API_KEY)")
+    mcp_own_ch.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    mcp_own_vf = mcp_own_sub.add_parser("verify", help="Verify a pending publish-challenge")
+    mcp_own_vf.add_argument("package", help="Package name on the registry")
+    mcp_own_vf.add_argument("--registry", required=True, choices=["npm", "pypi"], help="Package registry")
+    mcp_own_vf.add_argument("--token", default=None, help="API key (default: AGENTNODE_API_KEY)")
+    mcp_own_vf.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
 
     # reset
     sub.add_parser("reset", help="Reset configuration")
@@ -268,6 +281,21 @@ def main(argv: list[str] | None = None) -> int:
             if args.mcp_command == "grants":
                 from agentnode_sdk.cli.mcp_commands import cmd_mcp_grants
                 return cmd_mcp_grants(json_output=args.json_output)
+            if args.mcp_command == "ownership":
+                from agentnode_sdk.cli.mcp_ownership import (
+                    cmd_mcp_ownership_challenge,
+                    cmd_mcp_ownership_verify,
+                )
+                if args.ownership_command == "challenge":
+                    return cmd_mcp_ownership_challenge(
+                        args.registry, args.package, token=args.token, json_output=args.json_output
+                    )
+                if args.ownership_command == "verify":
+                    return cmd_mcp_ownership_verify(
+                        args.registry, args.package, token=args.token, json_output=args.json_output
+                    )
+                mcp_own_p.print_help()
+                return 0
             mcp_parser.print_help()
             return 0
         if args.command == "sandbox":
