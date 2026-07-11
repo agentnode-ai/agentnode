@@ -36,6 +36,19 @@ interface SubmitResult {
   message: string;
 }
 
+interface OwnershipChallenge {
+  token: string;
+  keyword: string;
+  expires_at: string;
+}
+
+interface OwnershipVerify {
+  verified: boolean;
+  status: string;
+  message: string;
+  version: string | null;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Status pill                                                        */
 /* ------------------------------------------------------------------ */
@@ -87,6 +100,14 @@ export default function McpSubmitPage() {
 
   const [submissions, setSubmissions] = useState<SubmissionSummary[]>([]);
   const [listLoaded, setListLoaded] = useState(false);
+
+  // Publish-challenge ownership (Slice 2b-2-UX-b)
+  const [ownRegistry, setOwnRegistry] = useState<"npm" | "pypi">("npm");
+  const [ownPackage, setOwnPackage] = useState("");
+  const [ownBusy, setOwnBusy] = useState(false);
+  const [ownChallenge, setOwnChallenge] = useState<OwnershipChallenge | null>(null);
+  const [ownVerify, setOwnVerify] = useState<OwnershipVerify | null>(null);
+  const [ownError, setOwnError] = useState("");
 
   const isPublisher = !!user?.publisher;
 
@@ -187,6 +208,83 @@ export default function McpSubmitPage() {
       setError("Network error. Please check your connection.");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  /* ---- Publish-challenge ownership ---- */
+  function ownErrorFrom(status: number, data: Record<string, unknown>): string {
+    if (status === 401) return "Sign in to prove package ownership.";
+    if (status === 403) return "Proving ownership requires a publisher account.";
+    const err = data?.error as { message?: string } | undefined;
+    return (
+      err?.message ||
+      (data?.detail as string) ||
+      (data?.message as string) ||
+      "Request failed. Please try again."
+    );
+  }
+
+  async function handleIssueChallenge() {
+    setOwnError("");
+    setOwnVerify(null);
+    if (!ownPackage.trim()) {
+      setOwnError("Enter the package name first.");
+      return;
+    }
+    setOwnBusy(true);
+    try {
+      const res = await fetchWithAuth("/mcp/ownership/challenge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ registry: ownRegistry, package_name: ownPackage.trim() }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (res.status === 200) {
+        setOwnChallenge({
+          token: String(data.token ?? ""),
+          keyword: String(data.keyword ?? ""),
+          expires_at: String(data.expires_at ?? ""),
+        });
+      } else {
+        setOwnChallenge(null);
+        setOwnError(ownErrorFrom(res.status, data));
+      }
+    } catch {
+      setOwnError("Network error. Please check your connection.");
+    } finally {
+      setOwnBusy(false);
+    }
+  }
+
+  async function handleVerifyChallenge() {
+    setOwnError("");
+    if (!ownPackage.trim()) {
+      setOwnError("Enter the package name first.");
+      return;
+    }
+    setOwnBusy(true);
+    try {
+      const res = await fetchWithAuth("/mcp/ownership/challenge/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ registry: ownRegistry, package_name: ownPackage.trim() }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (res.status === 200) {
+        setOwnVerify({
+          verified: Boolean(data.verified),
+          status: String(data.status ?? ""),
+          message: String(data.message ?? ""),
+          version: data.version ? String(data.version) : null,
+        });
+      } else {
+        setOwnVerify(null);
+        setOwnError(ownErrorFrom(res.status, data));
+      }
+    } catch {
+      setOwnError("Network error. Please check your connection.");
+    } finally {
+      setOwnBusy(false);
     }
   }
 
@@ -314,6 +412,136 @@ export default function McpSubmitPage() {
             &rarr; <code className="rounded bg-card px-1.5 py-0.5 font-mono">agentnode mcp submit .</code>{" "}
             &rarr; <code className="rounded bg-card px-1.5 py-0.5 font-mono">agentnode mcp status &lt;id&gt;</code>{" "}
             — see the <Link href="/docs/cli" className="text-primary hover:underline">CLI reference</Link>.
+          </p>
+        </div>
+      </section>
+
+      {/* Prove ownership via publish-challenge */}
+      <section className="border-b border-border">
+        <div className="mx-auto max-w-3xl px-4 sm:px-6 py-10">
+          <h2 className="mb-2 text-xl font-bold text-foreground">
+            Prove ownership via publish-challenge
+          </h2>
+          <p className="mb-4 text-sm text-muted">
+            Prove you control the npm/PyPI package behind your MCP server. Issue a
+            one-time challenge, then add the keyword to your package metadata,
+            publish a new version, and verify. Only someone with publish rights can
+            do that.
+          </p>
+
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label htmlFor="own-registry" className="mb-1 block text-xs font-semibold text-foreground">
+                Registry
+              </label>
+              <select
+                id="own-registry"
+                value={ownRegistry}
+                onChange={(e) => setOwnRegistry(e.target.value as "npm" | "pypi")}
+                className="rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground focus:border-primary/50 focus:outline-none"
+              >
+                <option value="npm">npm</option>
+                <option value="pypi">pypi</option>
+              </select>
+            </div>
+            <div className="min-w-[12rem] flex-1">
+              <label htmlFor="own-package" className="mb-1 block text-xs font-semibold text-foreground">
+                Package name
+              </label>
+              <input
+                id="own-package"
+                value={ownPackage}
+                onChange={(e) => { setOwnPackage(e.target.value); setOwnError(""); }}
+                placeholder="e.g. my-mcp-server"
+                className="w-full rounded-lg border border-border bg-card px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted/40 focus:border-primary/50 focus:outline-none"
+                spellCheck={false}
+              />
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              onClick={handleIssueChallenge}
+              disabled={ownBusy || !ownPackage.trim()}
+              className="rounded-xl border border-primary/40 bg-primary/10 px-5 py-2.5 text-sm font-semibold text-primary transition-all hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {ownBusy ? "Working..." : "Issue challenge"}
+            </button>
+            <button
+              onClick={handleVerifyChallenge}
+              disabled={ownBusy || !ownPackage.trim()}
+              className="rounded-xl border border-border bg-card px-5 py-2.5 text-sm font-semibold text-foreground transition-all hover:border-primary/40 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {ownBusy ? "Working..." : "Verify ownership"}
+            </button>
+          </div>
+
+          {ownError && (
+            <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-400">
+              {ownError}
+            </div>
+          )}
+
+          {ownChallenge && (
+            <div className="mt-4 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-sm">
+              <p className="font-semibold text-foreground">
+                Challenge issued — the token is shown once
+              </p>
+              <dl className="mt-2 space-y-1 font-mono text-xs text-foreground/90">
+                <div>
+                  <span className="text-muted">token: </span>
+                  {ownChallenge.token}
+                </div>
+                <div>
+                  <span className="text-muted">keyword: </span>
+                  {ownChallenge.keyword}
+                </div>
+                {ownChallenge.expires_at && (
+                  <div>
+                    <span className="text-muted">expires: </span>
+                    {ownChallenge.expires_at.slice(0, 10)}
+                  </div>
+                )}
+              </dl>
+              <p className="mt-3 text-muted">
+                Add this keyword to your package metadata, publish a new version,
+                then verify. The token is shown once and is stored only as a hash —
+                if you lose it, just issue a new challenge.
+              </p>
+            </div>
+          )}
+
+          {ownVerify && (
+            <div
+              className={`mt-4 rounded-lg border px-4 py-3 text-sm ${
+                ownVerify.verified
+                  ? "border-green-500/30 bg-green-500/5 text-green-400"
+                  : "border-yellow-500/30 bg-yellow-500/5 text-yellow-300"
+              }`}
+            >
+              <p className="font-semibold">
+                {ownVerify.verified
+                  ? `Ownership verified — strong evidence${ownVerify.version ? ` (v${ownVerify.version})` : ""}.`
+                  : "Not verified yet."}
+              </p>
+              <p className="mt-1">
+                {ownVerify.verified
+                  ? "Strong ownership evidence is recorded for this package."
+                  : "Publish a version carrying the challenge keyword, then verify again."}
+              </p>
+            </div>
+          )}
+
+          <p className="mt-4 text-xs text-muted">
+            Ownership can be verified, but MCP listings still remain review-gated
+            until the sandbox-smoke gate is built.
+          </p>
+          <p className="mt-2 text-xs text-muted">
+            Prefer the CLI?{" "}
+            <code className="rounded bg-card px-1.5 py-0.5 font-mono">
+              agentnode mcp ownership challenge --registry {ownRegistry}{" "}
+              {ownPackage.trim() || "<package>"}
+            </code>
           </p>
         </div>
       </section>
