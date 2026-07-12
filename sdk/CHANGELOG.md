@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.23.0 — Prove MCP package ownership from the terminal
+
+### Added
+
+- `agentnode mcp ownership challenge --registry npm|pypi <package>` issues a
+  one-time challenge: the server returns a token and a keyword
+  (`agentnode-ownership-<token>`). Add the keyword to your package's metadata
+  and publish a new version — only someone with publish rights can do that. The
+  token is shown once and is stored server-side only as a hash; it is never
+  written to local config.
+- `agentnode mcp ownership verify --registry npm|pypi <package>` checks the
+  latest published version for the keyword and, on a match, records strong
+  ownership evidence. It reports `verified` / `pending` / expired / no-challenge
+  / package-not-found / registry-unavailable clearly, and exits non-zero until
+  ownership is verified (CI-gateable).
+
+Verifying ownership does **not** publish anything: MCP listings still remain
+review-gated until the sandbox-smoke gate is built. The same flow is available
+in the browser on `/mcp/submit`.
+
 ## 0.22.0 — MCP from the terminal + refreshed compatibility
 
 ### Added
