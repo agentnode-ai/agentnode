@@ -41,6 +41,7 @@ def evaluate_gates(
     report: dict | None = None,
     typosquat_hit: bool = False,
     ownership: dict | None = None,
+    smoke: dict | None = None,
 ) -> dict:
     """Evaluate the hard + advisory gates for a submission. Pure; returns a dict
     ready to store in the ``server_verification`` JSONB (no migration).
@@ -48,12 +49,19 @@ def evaluate_gates(
     ``ownership`` is the derived ownership evidence (see mcp.ownership); when
     absent it defaults to 'no proof'. The ownership gate passes only for a STRONG,
     verified proof — none exists today (2b-2+ produce them), so it stays False.
+
+    ``smoke`` is the SmokeResult (see mcp.smoke) from a server-authoritative
+    sandbox run; when absent it defaults to 'not run' -> the sandbox_smoke gate
+    stays a future blocker. No mechanism produces a real smoke yet (2c-2+), so it
+    stays False today too.
     """
     from app.mcp.ownership import derive_ownership_evidence
+    from app.mcp.smoke import derive_smoke_evidence
 
     report = report or {}
     sv = server_verification or {}
     ownership = ownership or derive_ownership_evidence(None, "missing")
+    smoke_ev = derive_smoke_evidence(smoke)
     mcp_server = manifest.get("mcp_server")
 
     sstatus = sv.get("server_status")
@@ -168,15 +176,19 @@ def evaluate_gates(
             # strong proof. Once a strong claim can exist (2b-2), remove this flag.
             future=ownership.get("confidence") != "strong",
         ),
-        # --- FUTURE gate: mechanism not built (Slice 2c). Always blocking. ---
+        # --- Sandbox smoke gate: reads the derived SmokeResult (Slice 2c-1 wiring).
+        # Passes ONLY for a real, passed smoke. No executor produces one yet
+        # (2c-2 npm / 2c-3 PyPI), so with the default 'not_run' result it stays a
+        # future blocker — identical to the hardcoded gate it replaces. Always
+        # blocking. 'future' is False only once a real result decides it.
         _gate(
             "sandbox_smoke",
             "Server ran the MCP in the sandbox and it responded",
-            False,
+            smoke_ev["passed"],
             True,
-            reason="server-authoritative sandbox smoke not built yet",
-            evidence={"ran": False},
-            future=True,
+            reason=smoke_ev["reason"],
+            evidence=smoke_ev["evidence"],
+            future=smoke_ev["future"],
         ),
         # --- ADVISORY: the client's self-attestation. Recorded, never blocking. ---
         _gate(
