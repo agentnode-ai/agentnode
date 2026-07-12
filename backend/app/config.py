@@ -129,6 +129,20 @@ class Settings(BaseSettings):
     VERIFICATION_MODEL_CACHE_DIR: str = "/opt/agentnode/model-cache"
     VERIFICATION_SMOKE_BUDGET_SECONDS_HEAVY: int = 180
 
+    # MCP sandbox smoke (Slice 2c) — INERT by default. When MCP_SMOKE_MODE !=
+    # "container" the executor reports 'unavailable' (fail-closed) and never runs
+    # a container. Enabling it in prod is a separate gated config + deploy. The
+    # image is the pinned multi-runtime sandbox (node/npx + python/uvx), distinct
+    # from the python-only verifier image.
+    MCP_SMOKE_MODE: str = "disabled"  # "disabled" or "container"
+    MCP_SMOKE_IMAGE: str = (
+        "ghcr.io/agentnode-ai/sandbox@sha256:"
+        "6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
+    )
+    MCP_SMOKE_MAX_CONCURRENT: int = 1
+    MCP_SMOKE_INSTALL_TIMEOUT: int = 120
+    MCP_SMOKE_RUNTIME_TIMEOUT: int = 30
+
     # Stripe (billing)
     STRIPE_SECRET_KEY: str = ""
     STRIPE_PUBLISHABLE_KEY: str = ""

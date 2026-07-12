@@ -49,12 +49,15 @@ def test_passed_result_is_pass_not_future():
     assert ev["evidence"]["initialized"] is True
 
 
-def test_failed_initialize_is_hard_objective_blocker():
+def test_failed_initialize_is_review_fallback():
+    # D6: initialize_failed is ambiguous under network=none/no-creds -> review,
+    # not a hard objective block (avoids false-rejecting legit servers).
     ev = derive_smoke_evidence(
         {"status": "failed", "failure_reason": "initialize_failed"}
     )
     assert ev["passed"] is False
-    assert ev["future"] is False  # hard failure -> objective blocker, not future
+    assert ev["future"] is True
+    assert ev["review_fallback"] is True
     assert "initialize" in ev["reason"].lower()
 
 
@@ -160,7 +163,8 @@ def test_smoke_unavailable_blocks_and_stays_review_fallback():
     assert r["auto_publish_eligible"] is False
 
 
-def test_smoke_failed_initialize_is_objective_blocker():
+def test_smoke_failed_initialize_is_review_fallback():
+    # D6 refinement: initialize_failed -> review-fallback (future), not objective.
     r = evaluate_gates(
         manifest=_manifest(),
         server_verification=_clean_sv(),
@@ -170,8 +174,9 @@ def test_smoke_failed_initialize_is_objective_blocker():
     )
     g = _gate(r, "sandbox_smoke")
     assert g["passed"] is False
-    assert g["future"] is False
-    assert "sandbox_smoke" in r["objective_blockers"]
+    assert g["future"] is True
+    assert "sandbox_smoke" in r["future_blockers"]
+    assert "sandbox_smoke" not in r["objective_blockers"]
     assert r["auto_publish_eligible"] is False
 
 

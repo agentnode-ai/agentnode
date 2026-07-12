@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -183,6 +183,7 @@ class McpSubmitResponse(BaseModel):
 async def submit_mcp(
     request: Request,
     body: McpSubmitRequest,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_publisher),
     session: AsyncSession = Depends(get_session),
 ):
@@ -292,6 +293,13 @@ async def submit_mcp(
     session.add(submission)
     await session.flush()
     await session.commit()
+
+    # 2c-2: schedule the server-authoritative sandbox smoke as a BACKGROUND task
+    # (never blocks this response). Inert by default — a cheap no-op unless
+    # MCP_SMOKE_MODE=container AND the submission is smoke-eligible.
+    from app.mcp.smoke_executor import maybe_schedule_smoke
+
+    maybe_schedule_smoke(background_tasks, submission.id, manifest, server_verification)
 
     logger.info(
         "MCP submission %s by publisher %s: %s (%s, server=%s)",
