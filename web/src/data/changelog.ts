@@ -38,6 +38,22 @@ export function anchorId(r: ChangelogRelease): string {
 
 export const RELEASES: ChangelogRelease[] = [
   {
+    version: "0.23.0",
+    date: "2026-07-12",
+    dateSource: "pypi",
+    title: "Prove MCP package ownership from the terminal",
+    summary:
+      "Publishers can now prove they control the npm/PyPI package behind an MCP server with a publish-challenge — the first automated strong-ownership mechanism. Verifying ownership publishes nothing: MCP listings stay review-gated until the sandbox-smoke gate is built.",
+    highlights: [
+      "`agentnode mcp ownership challenge --registry npm|pypi <package>` issues a one-time challenge: add the returned keyword (`agentnode-ownership-<token>`) to your package metadata and publish a new version — only someone with publish rights can do that; the token is shown once and stored server-side only as a hash",
+      "`agentnode mcp ownership verify --registry npm|pypi <package>` checks the latest published version for the keyword and records strong ownership evidence on a match, reporting verified / pending / expired / package-not-found / registry-unavailable clearly (exits non-zero until verified, so it is CI-gateable)",
+      "The same publish-challenge flow is already live in the browser on /mcp/submit",
+      "Ownership can be verified, but MCP listings still remain review-gated until the sandbox-smoke gate is built — verifying ownership does not auto-publish anything",
+    ],
+    onPyPI: true,
+    hasTag: true,
+  },
+  {
     version: "0.22.0",
     date: "2026-07-10",
     dateSource: "pypi",
