@@ -139,6 +139,9 @@ async def _attach_gate_result(
         report=report or {},
         typosquat_hit=typosquat_hit,
         ownership=ownership,
+        # 2c-1 forward-compat: no executor writes sv["smoke"] yet, so this is None
+        # today (gate stays a future blocker). When 2c-2 populates it, it flows in.
+        smoke=sv.get("smoke"),
     )
     return sv
 
