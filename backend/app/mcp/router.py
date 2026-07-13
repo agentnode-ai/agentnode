@@ -133,6 +133,10 @@ async def _attach_gate_result(
         except Exception:
             typosquat_hit = False  # advisory signal only; never block on lookup error
     ownership = await _ownership_evidence_for(session, publisher_id, manifest)
+    # 2c-4a: pass the current submission's binding keys so evaluate_gates can
+    # downgrade a stale/expired passed smoke (freshness). No I/O; config reads only.
+    from app.mcp.smoke_executor import current_smoke_keys
+
     sv["gate_result"] = evaluate_gates(
         manifest=manifest,
         server_verification=sv,
@@ -142,6 +146,7 @@ async def _attach_gate_result(
         # 2c-1 forward-compat: no executor writes sv["smoke"] yet, so this is None
         # today (gate stays a future blocker). When 2c-2 populates it, it flows in.
         smoke=sv.get("smoke"),
+        smoke_keys=current_smoke_keys(manifest, sv),
     )
     return sv
 

@@ -361,6 +361,19 @@ def _run_container(argv: list[str], input_text: str | None, timeout: int):
 
 
 def _result(status: str, **fields) -> dict:
+    # 2c-4a: stamp expires_at / recheck_at (checked_at + TTL) + schema_version so
+    # freshness can be evaluated later. checked_at is present on every result.
+    checked = fields.get("checked_at")
+    expires = None
+    recheck = None
+    if checked:
+        try:
+            dt = datetime.fromisoformat(checked)
+            exp = dt + timedelta(days=settings.MCP_SMOKE_TTL_DAYS)
+            expires = exp.isoformat()
+            recheck = expires  # recheck when it expires
+        except Exception:
+            pass
     r = {
         "status": status,
         "runtime": fields.get("runtime"),
@@ -373,11 +386,32 @@ def _result(status: str, **fields) -> dict:
         "sandbox_backend": fields.get("sandbox_backend"),
         "image_digest": fields.get("image_digest"),
         "run_model": fields.get("run_model"),
+        "schema_version": settings.MCP_SMOKE_SCHEMA_VERSION,
         "failure_reason": fields.get("failure_reason"),
         "review_reason": fields.get("review_reason"),
-        "checked_at": fields.get("checked_at"),
+        "checked_at": checked,
+        "expires_at": expires,
+        "recheck_at": recheck,
     }
     return r
+
+
+def current_smoke_keys(manifest: dict, sv: dict) -> dict:
+    """The binding keys the CURRENT submission would produce, for freshness
+    comparison against a stored SmokeResult. Pure (config reads only)."""
+    registry = (sv.get("registry") or "").lower()
+    reg = _REGISTRIES.get(registry, {})
+    mcp_server = manifest.get("mcp_server") or {}
+    package = mcp_server.get(reg.get("package_field", "")) or sv.get("package_name")
+    return {
+        "runtime": registry,
+        "package": package,
+        "version": sv.get("resolved_version"),
+        "command_hash": command_hash(mcp_server.get("command") or []),
+        "image_digest": settings.MCP_SMOKE_IMAGE,
+        "run_model": reg.get("run_model"),
+        "schema_version": settings.MCP_SMOKE_SCHEMA_VERSION,
+    }
 
 
 # Per-registry install/run argv builders + evidence labels. npm = 2c-2,

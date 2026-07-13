@@ -12,9 +12,11 @@ SmokeResult as data. No container, no install, no network, no migration.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from app.mcp.gates import evaluate_gates
 from app.mcp.ownership import derive_ownership_evidence
-from app.mcp.smoke import derive_smoke_evidence
+from app.mcp.smoke import derive_smoke_evidence, evaluate_smoke_freshness
 
 
 # --- pure derive_smoke_evidence ---------------------------------------------
@@ -266,3 +268,183 @@ def test_result_shape_is_json_serializable_with_smoke():
         },
     )
     json.dumps(r)  # must not raise (stored in JSONB)
+
+
+# --- 2c-4a: freshness / expiry ----------------------------------------------
+
+_NOW = datetime(2026, 7, 13, tzinfo=timezone.utc)
+
+
+def _passed_smoke(**over):
+    s = {
+        "status": "passed",
+        "runtime": "npm",
+        "package": "@scope/mcp",
+        "version": "1.2.3",
+        "command_hash": "abc",
+        "image_digest": "sha256:img",
+        "run_model": "npx_offline",
+        "schema_version": 1,
+        "tools_count": 3,
+        "initialized": True,
+        "checked_at": (_NOW - timedelta(days=1)).isoformat(),
+        "expires_at": (_NOW + timedelta(days=29)).isoformat(),
+    }
+    s.update(over)
+    return s
+
+
+def _keys(**over):
+    k = {
+        "runtime": "npm",
+        "package": "@scope/mcp",
+        "version": "1.2.3",
+        "command_hash": "abc",
+        "image_digest": "sha256:img",
+        "run_model": "npx_offline",
+        "schema_version": 1,
+    }
+    k.update(over)
+    return k
+
+
+def test_freshness_fresh():
+    assert evaluate_smoke_freshness(_passed_smoke(), _keys(), _NOW) == "fresh"
+
+
+def test_freshness_expired():
+    s = _passed_smoke(expires_at=(_NOW - timedelta(days=1)).isoformat())
+    assert evaluate_smoke_freshness(s, _keys(), _NOW) == "expired"
+
+
+def test_freshness_key_mismatch_version():
+    assert (
+        evaluate_smoke_freshness(_passed_smoke(), _keys(version="9.9.9"), _NOW)
+        == "key_mismatch"
+    )
+
+
+def test_freshness_key_mismatch_image_digest():
+    assert (
+        evaluate_smoke_freshness(
+            _passed_smoke(), _keys(image_digest="sha256:other"), _NOW
+        )
+        == "key_mismatch"
+    )
+
+
+def test_freshness_key_mismatch_schema_version():
+    assert (
+        evaluate_smoke_freshness(_passed_smoke(), _keys(schema_version=2), _NOW)
+        == "key_mismatch"
+    )
+
+
+def test_freshness_running_and_unavailable():
+    assert (
+        evaluate_smoke_freshness(_passed_smoke(status="running"), _keys(), _NOW)
+        == "running"
+    )
+    assert (
+        evaluate_smoke_freshness(_passed_smoke(status="unavailable"), _keys(), _NOW)
+        == "unavailable"
+    )
+
+
+def test_freshness_not_passed_and_none():
+    assert evaluate_smoke_freshness({"status": "failed"}, _keys(), _NOW) == "not_passed"
+    assert evaluate_smoke_freshness(None, _keys(), _NOW) == "not_passed"
+
+
+# --- gate integration: stale passed no longer passes ------------------------
+
+
+def _gate_with(smoke, keys, now=_NOW, ownership=None):
+    return evaluate_gates(
+        manifest=_manifest(),
+        server_verification=_clean_sv(),
+        report=_report(),
+        typosquat_hit=False,
+        ownership=ownership,
+        smoke=smoke,
+        smoke_keys=keys,
+        now=now,
+    )
+
+
+def test_gate_passed_fresh_smoke_passes():
+    r = _gate_with(_passed_smoke(), _keys())
+    assert _gate(r, "sandbox_smoke")["passed"] is True
+
+
+def test_gate_passed_fresh_plus_strong_ownership_is_eligible():
+    r = _gate_with(
+        _passed_smoke(),
+        _keys(),
+        ownership=derive_ownership_evidence("publish_challenge", "verified"),
+    )
+    assert r["auto_publish_eligible"] is True
+
+
+def test_gate_expired_smoke_not_passed_future_not_eligible():
+    s = _passed_smoke(expires_at=(_NOW - timedelta(days=1)).isoformat())
+    r = _gate_with(
+        s, _keys(), ownership=derive_ownership_evidence("publish_challenge", "verified")
+    )
+    g = _gate(r, "sandbox_smoke")
+    assert g["passed"] is False
+    assert g["future"] is True
+    assert "sandbox_smoke" in r["future_blockers"]
+    assert r["auto_publish_eligible"] is False
+
+
+def test_gate_command_hash_mismatch_not_passed():
+    r = _gate_with(_passed_smoke(), _keys(command_hash="different"))
+    assert _gate(r, "sandbox_smoke")["passed"] is False
+    assert r["auto_publish_eligible"] is False
+
+
+def test_gate_image_digest_mismatch_not_passed():
+    r = _gate_with(_passed_smoke(), _keys(image_digest="sha256:rotated"))
+    assert _gate(r, "sandbox_smoke")["passed"] is False
+
+
+def test_gate_version_mismatch_not_passed():
+    r = _gate_with(_passed_smoke(), _keys(version="2.0.0"))
+    assert _gate(r, "sandbox_smoke")["passed"] is False
+
+
+def test_gate_run_model_mismatch_not_passed():
+    r = _gate_with(_passed_smoke(), _keys(run_model="console_script"))
+    assert _gate(r, "sandbox_smoke")["passed"] is False
+
+
+def test_gate_schema_version_mismatch_not_passed():
+    r = _gate_with(_passed_smoke(), _keys(schema_version=2))
+    assert _gate(r, "sandbox_smoke")["passed"] is False
+    assert r["auto_publish_eligible"] is False
+
+
+def test_gate_running_not_eligible():
+    r = _gate_with(_passed_smoke(status="running"), _keys())
+    assert _gate(r, "sandbox_smoke")["passed"] is False
+    assert r["auto_publish_eligible"] is False
+
+
+def test_gate_unavailable_not_eligible():
+    r = _gate_with(_passed_smoke(status="unavailable"), _keys())
+    assert _gate(r, "sandbox_smoke")["passed"] is False
+    assert r["auto_publish_eligible"] is False
+
+
+def test_gate_no_smoke_keys_keeps_legacy_behavior():
+    # Without smoke_keys, no freshness downgrade (backward compat) — a passed
+    # smoke still passes (the pre-2c-4a behavior for callers that don't pass keys).
+    r = evaluate_gates(
+        manifest=_manifest(),
+        server_verification=_clean_sv(),
+        report=_report(),
+        typosquat_hit=False,
+        smoke=_passed_smoke(),
+    )
+    assert _gate(r, "sandbox_smoke")["passed"] is True
