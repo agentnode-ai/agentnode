@@ -657,6 +657,32 @@ class SubmissionSummary(BaseModel):
     auto_publish_eligible: bool | None = None
     objective_blockers: list[str] = []
     future_blockers: list[str] = []
+    # Slice 2c-4c — sandbox-smoke visibility (advisory; from the gate evidence +
+    # the running marker). Reflects freshness (expired/key_mismatch downgrades).
+    smoke_status: str | None = None
+    smoke_checked_at: str | None = None
+    smoke_expires_at: str | None = None
+    smoke_recheck_reason: str | None = None
+
+
+def _smoke_summary(sv: dict) -> dict:
+    """Extract the admin-visible smoke fields from a server_verification dict.
+    smoke_status reflects the freshness-aware gate evidence (expired/key_mismatch
+    when stale), or 'running' while a recheck is in progress."""
+    sv = sv or {}
+    gate = sv.get("gate_result") or {}
+    g = next(
+        (x for x in (gate.get("gates") or []) if x.get("id") == "sandbox_smoke"), {}
+    )
+    ev = g.get("evidence") or {}
+    running = sv.get("smoke_running") or {}
+    status = "running" if running.get("started_at") else ev.get("status")
+    return {
+        "smoke_status": status,
+        "smoke_checked_at": ev.get("checked_at"),
+        "smoke_expires_at": ev.get("expires_at"),
+        "smoke_recheck_reason": (g.get("reason") or None),
+    }
 
 
 class SubmissionListResponse(BaseModel):
@@ -953,6 +979,7 @@ async def list_submissions(
                 auto_publish_eligible=gate.get("auto_publish_eligible"),
                 objective_blockers=gate.get("objective_blockers") or [],
                 future_blockers=gate.get("future_blockers") or [],
+                **_smoke_summary(s.server_verification or {}),
             )
         )
 
