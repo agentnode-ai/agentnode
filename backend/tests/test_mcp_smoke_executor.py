@@ -235,6 +235,9 @@ def test_success_maps_to_passed(enabled):
     assert res["initialized"] is True
     assert res["runtime"] == "npm" and res["version"] == "1.2.3"
     assert res["command_hash"] and res["image_digest"]
+    # 2c-4a: freshness stamps
+    assert res["checked_at"] and res["expires_at"] and res["recheck_at"]
+    assert res["schema_version"] == ex.settings.MCP_SMOKE_SCHEMA_VERSION
 
 
 def test_install_fail_is_review_fallback(enabled):
@@ -392,3 +395,35 @@ def test_pypi_tools_list_fail_after_init_is_hard(enabled):
         _pypi_manifest(), _pypi_sv(), run_container=_fake_runner(run=(0, out, ""))
     )
     assert res["failure_reason"] == "tools_list_failed"
+
+
+# --- 2c-4a: current_smoke_keys + expiry stamp -------------------------------
+
+
+def test_current_smoke_keys_npm():
+    keys = ex.current_smoke_keys(_manifest(), _sv())
+    assert keys["runtime"] == "npm"
+    assert keys["package"] == "@scope/mcp"
+    assert keys["version"] == "1.2.3"
+    assert keys["run_model"] == "npx_offline"
+    assert keys["image_digest"] == ex.settings.MCP_SMOKE_IMAGE
+    assert keys["schema_version"] == ex.settings.MCP_SMOKE_SCHEMA_VERSION
+    assert keys["command_hash"]  # hash of the manifest command
+
+
+def test_current_smoke_keys_pypi():
+    keys = ex.current_smoke_keys(_pypi_manifest(), _pypi_sv())
+    assert keys["runtime"] == "pypi"
+    assert keys["package"] == "mcp-server-time"
+    assert keys["run_model"] == "console_script"
+
+
+def test_result_expires_is_checked_plus_ttl():
+    from datetime import datetime
+
+    r = ex._result("passed", checked_at="2026-07-13T00:00:00+00:00")
+    exp = datetime.fromisoformat(r["expires_at"])
+    chk = datetime.fromisoformat(r["checked_at"])
+    assert (exp - chk).days == ex.settings.MCP_SMOKE_TTL_DAYS
+    assert r["recheck_at"] == r["expires_at"]
+    assert r["schema_version"] == ex.settings.MCP_SMOKE_SCHEMA_VERSION

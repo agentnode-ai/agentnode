@@ -42,6 +42,8 @@ def evaluate_gates(
     typosquat_hit: bool = False,
     ownership: dict | None = None,
     smoke: dict | None = None,
+    smoke_keys: dict | None = None,
+    now=None,
 ) -> dict:
     """Evaluate the hard + advisory gates for a submission. Pure; returns a dict
     ready to store in the ``server_verification`` JSONB (no migration).
@@ -56,12 +58,19 @@ def evaluate_gates(
     stays False today too.
     """
     from app.mcp.ownership import derive_ownership_evidence
-    from app.mcp.smoke import derive_smoke_evidence
+    from app.mcp.smoke import derive_smoke_evidence, evaluate_smoke_freshness
 
     report = report or {}
     sv = server_verification or {}
     ownership = ownership or derive_ownership_evidence(None, "missing")
-    smoke_ev = derive_smoke_evidence(smoke)
+    # 2c-4a: a passed smoke only counts while fresh. When the caller supplies the
+    # current submission's binding keys, downgrade a stale passed smoke to
+    # expired/key_mismatch (review / recheck-needed) so the gate stops passing.
+    freshness = None
+    if smoke and smoke_keys is not None:
+        now = now or datetime.now(timezone.utc)
+        freshness = evaluate_smoke_freshness(smoke, smoke_keys, now)
+    smoke_ev = derive_smoke_evidence(smoke, freshness=freshness)
     mcp_server = manifest.get("mcp_server")
 
     sstatus = sv.get("server_status")

@@ -142,6 +142,11 @@ class Settings(BaseSettings):
     MCP_SMOKE_MAX_CONCURRENT: int = 1
     MCP_SMOKE_INSTALL_TIMEOUT: int = 120
     MCP_SMOKE_RUNTIME_TIMEOUT: int = 30
+    # 2c-4a: a passed smoke stays valid for this long (transitive-dep drift),
+    # bound to the SmokeResult's binding keys. Bump MCP_SMOKE_SCHEMA_VERSION on a
+    # security-relevant executor change to invalidate all older passed smokes.
+    MCP_SMOKE_TTL_DAYS: int = 30
+    MCP_SMOKE_SCHEMA_VERSION: int = 1
 
     # Stripe (billing)
     STRIPE_SECRET_KEY: str = ""

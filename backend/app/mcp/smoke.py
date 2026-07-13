@@ -28,12 +28,21 @@ SmokeResult (produced later by the executor):
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 # Status values a SmokeResult can carry.
 PASSED = "passed"
 FAILED = "failed"
 UNAVAILABLE = "unavailable"  # backend/image/runtime missing — infra gap, review
 SKIPPED = "skipped"  # policy (credentialed/private/high-risk) — review-fallback
+RUNNING = "running"  # a recheck/first run is in progress
 NOT_RUN = "not_run"  # no executor / no result yet — today's default
+
+# 2c-4a — derived freshness states (a stored passed smoke that is no longer valid).
+# These are NOT stored on the SmokeResult; evaluate_gates derives them from a
+# freshness check and downgrades a stale `passed` to one of these for the gate.
+EXPIRED = "expired"  # TTL elapsed — recheck needed, not a package fault
+KEY_MISMATCH = "key_mismatch"  # version/command/image/schema changed — recheck
 
 # A genuine failure is an OBJECTIVE fault of the submission (the server is broken)
 # UNLESS it is a known-transient/ambiguous reason, which is retryable /
@@ -85,7 +94,56 @@ def _skip_text(reason: str | None) -> str:
     return _SKIP_TEXT.get(reason or "", "smoke skipped — review-fallback")
 
 
-def derive_smoke_evidence(smoke: dict | None) -> dict:
+# 2c-4a — the keys a passed smoke is bound to. If any differs from the current
+# submission, the stored smoke is for a different artifact/runtime and must be
+# rechecked. (registry is stored on the SmokeResult as ``runtime``.)
+BINDING_KEYS: tuple[str, ...] = (
+    "runtime",
+    "package",
+    "version",
+    "command_hash",
+    "image_digest",
+    "run_model",
+    "schema_version",
+)
+
+
+def evaluate_smoke_freshness(
+    smoke: dict | None, current_keys: dict | None, now: datetime
+) -> str:
+    """Pure freshness verdict for a stored SmokeResult against the current
+    submission's binding keys + clock. Returns one of:
+    fresh | expired | key_mismatch | running | unavailable | not_passed | none.
+
+    Only a ``passed`` smoke is freshness-checked; other statuses are handed back
+    for normal handling. No I/O — ``current_keys`` and ``now`` are supplied.
+    """
+    smoke = smoke or {}
+    status = smoke.get("status") or NOT_RUN
+    if status == RUNNING:
+        return RUNNING
+    if status == UNAVAILABLE:
+        return UNAVAILABLE
+    if status != PASSED:
+        return "not_passed"
+    keys = current_keys or {}
+    for k in BINDING_KEYS:
+        if smoke.get(k) != keys.get(k):
+            return KEY_MISMATCH
+    exp = smoke.get("expires_at")
+    if exp:
+        try:
+            e = datetime.fromisoformat(exp)
+            if e.tzinfo is None:
+                e = e.replace(tzinfo=timezone.utc)
+            if e <= now:
+                return EXPIRED
+        except Exception:
+            pass
+    return "fresh"
+
+
+def derive_smoke_evidence(smoke: dict | None, *, freshness: str | None = None) -> dict:
     """Derive the ``sandbox_smoke`` gate inputs from a SmokeResult (or None).
 
     Returns {status, passed, ran, future, review_fallback, reason, evidence}.
@@ -101,9 +159,26 @@ def derive_smoke_evidence(smoke: dict | None) -> dict:
     failure_reason = smoke.get("failure_reason")
     review_reason = smoke.get("review_reason")
 
+    # 2c-4a: a passed smoke only counts while fresh. A caller-supplied freshness
+    # verdict downgrades a stale passed smoke to expired / key_mismatch so the
+    # gate no longer passes (review / recheck-needed, NOT a hard package fault).
+    if status == PASSED and freshness in (EXPIRED, KEY_MISMATCH):
+        status = freshness
+
     if status == PASSED:
         passed, ran, future, review_fallback = True, True, False, False
         reason = ""
+    elif status in (EXPIRED, KEY_MISMATCH):
+        passed, ran, future, review_fallback = False, True, True, True
+        reason = (
+            "sandbox smoke expired (TTL) — recheck needed"
+            if status == EXPIRED
+            else "sandbox smoke is stale (package/command/image/schema changed) "
+            "— recheck needed"
+        )
+    elif status == RUNNING:
+        passed, ran, future, review_fallback = False, False, True, False
+        reason = "sandbox smoke in progress"
     elif status == FAILED:
         passed, ran = False, True
         transient = failure_reason in TRANSIENT_FAILURES
@@ -134,6 +209,8 @@ def derive_smoke_evidence(smoke: dict | None) -> dict:
         "duration_ms": smoke.get("duration_ms"),
         "sandbox_backend": smoke.get("sandbox_backend"),
         "image_digest": smoke.get("image_digest"),
+        "run_model": smoke.get("run_model"),
+        "schema_version": smoke.get("schema_version"),
         "failure_reason": failure_reason,
     }
     for k in ("checked_at", "expires_at", "recheck_at"):
