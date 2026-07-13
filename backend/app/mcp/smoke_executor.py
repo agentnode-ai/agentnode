@@ -4,10 +4,10 @@ Runs a submitted npm MCP server in the pinned sandbox container and checks it
 answers the MCP basics (initialize + tools/list), producing a SmokeResult (see
 mcp.smoke). Two phases:
 
-  Phase 1 (install): container with network -> populate a named volume with the
-      pinned package (npm install into the volume).
-  Phase 2 (runtime): container with network=none, volume read-only -> start the
-      server via `npx --offline` and speak JSON-RPC over stdio.
+  Phase 1 (install): container with network, as root (a fresh named volume is
+      root-owned) -> npm install the pinned package into the volume.
+  Phase 2 (runtime): container with network=none, volume read-only, as non-root
+      (uid 1000) -> start the server via `npx --offline`, speak JSON-RPC.
 
 Then the volume is removed (always, even on error). No host filesystem, no host
 secrets, no host fallback: if the runtime/image is missing or MCP_SMOKE_MODE is
@@ -40,16 +40,18 @@ logger = logging.getLogger("agentnode.mcp.smoke")
 
 _MAX_OUTPUT_BYTES = 64 * 1024
 
-# Hardened flags shared by both phases (network + read-only differ per phase).
-_HARDENED = [
+# Hardened flags shared by both phases (network, read-only, and USER differ per
+# phase — see below). Host verification (2c-2) showed a fresh named volume is
+# root-owned, so phase 1 (install) must run as root to populate it; the
+# security-critical phase 2 (running the untrusted server) stays non-root
+# (uid 1000) + network=none + read-only + volume read-only.
+_HARDENED_BASE = [
     "--rm",
     "--cap-drop=ALL",
     "--security-opt=no-new-privileges:true",
     "--pids-limit=256",
     "--memory=512m",
     "--cpus=1.0",
-    "--user",
-    "1000:1000",
 ]
 
 
@@ -124,11 +126,16 @@ def _volume_name() -> str:
 
 
 def install_argv(image: str, volume: str, package: str, version: str) -> list[str]:
-    """Phase 1: install the pinned package into the volume, WITH network."""
+    """Phase 1: install the pinned package into the volume, WITH network. Runs as
+    root (--user 0:0) because a fresh named volume is root-owned; still fully
+    hardened (cap-drop=ALL, no-new-privileges, limits, no host mounts, ephemeral).
+    """
     return [
         CONTAINER_RUNTIME or "docker",
         "run",
-        *_HARDENED,
+        *_HARDENED_BASE,
+        "--user",
+        "0:0",
         "--network",
         "default",
         "--tmpfs",
@@ -149,12 +156,16 @@ def install_argv(image: str, volume: str, package: str, version: str) -> list[st
 
 
 def run_argv(image: str, volume: str, package: str, version: str) -> list[str]:
-    """Phase 2: start the server from the volume, network=none, volume read-only."""
+    """Phase 2: start the server from the volume, network=none, volume read-only,
+    as non-root (uid 1000) — the security-critical phase where untrusted server
+    code runs. Reads the root-installed files (world-readable)."""
     return [
         CONTAINER_RUNTIME or "docker",
         "run",
         "-i",
-        *_HARDENED,
+        *_HARDENED_BASE,
+        "--user",
+        "1000:1000",
         "--read-only",
         "--network",
         "none",
