@@ -6,15 +6,22 @@ would be auto-publish-eligible, which gates block, which are advisory, and why a
 submission stays in review — WITHOUT changing any status, without a migration,
 and without auto-publishing anything.
 
-Safety invariant: two gates require infrastructure that does not exist yet
-(automatable ownership proof, server-authoritative sandbox smoke). They are
-``blocking`` and can never pass today, so ``auto_publish_eligible`` is ALWAYS
-False. ``objective_blockers`` reports the blockers EXCLUDING those future gates —
-so a submission whose only remaining blockers are the future gates reads as
-"objectively clean, pending infrastructure".
+Two gates depend on evidence that must be produced per submission: an automated
+ownership proof (2b — publish-challenge etc.) and a server-authoritative sandbox
+smoke (2c — npm/PyPI executors, host-verified). The MECHANISMS are built; they
+pass only once a submission actually has a STRONG verified ownership claim AND a
+FRESH passing smoke. Until then they block. ``objective_blockers`` reports the
+blockers EXCLUDING those two (which carry ``future=True`` while pending a
+result/proof) — so a submission whose only remaining blockers are those reads as
+"objectively clean, pending ownership + smoke". ``auto_publish_eligible`` can
+therefore compute True (strong ownership + fresh passing smoke + all other gates
+clean), but it is ADVISORY ONLY: no code publishes on it — publish is admin-only
+(see mcp.router.publish_submission). In prod the smoke is disabled by default, so
+no smoke result exists and this stays False for real submissions.
 
 No I/O here: the caller supplies ``typosquat_hit`` (and optionally the ownership
-claim) so this stays a pure, table-testable function.
+claim, the smoke result, and the current binding keys) so this stays a pure,
+table-testable function.
 """
 
 from __future__ import annotations
@@ -181,15 +188,16 @@ def evaluate_gates(
                 "status": ownership.get("status"),
                 **(ownership.get("evidence") or {}),
             },
-            # 'future' = the gate cannot pass yet because no mechanism produces a
-            # strong proof. Once a strong claim can exist (2b-2), remove this flag.
+            # 'future' = pending a proof: the mechanism exists (2b), but this claim
+            # is not a STRONG verified proof yet, so the gate blocks as future.
             future=ownership.get("confidence") != "strong",
         ),
-        # --- Sandbox smoke gate: reads the derived SmokeResult (Slice 2c-1 wiring).
-        # Passes ONLY for a real, passed smoke. No executor produces one yet
-        # (2c-2 npm / 2c-3 PyPI), so with the default 'not_run' result it stays a
-        # future blocker — identical to the hardcoded gate it replaces. Always
-        # blocking. 'future' is False only once a real result decides it.
+        # --- Sandbox smoke gate: reads the derived SmokeResult (2c-1 wiring +
+        # 2c-4a freshness). The npm/PyPI executors exist (2c-2/2c-3, host-verified)
+        # but are inert unless MCP_SMOKE_MODE=container, so with the default
+        # 'not_run' result it stays a future blocker. Always blocking; 'future' is
+        # False only once a real, fresh result decides it (a fresh pass, or a hard
+        # failure -> objective).
         _gate(
             "sandbox_smoke",
             "Server ran the MCP in the sandbox and it responded",
@@ -221,8 +229,8 @@ def evaluate_gates(
         reason = "all gates pass"
     elif not objective_blockers:
         reason = (
-            "objectively clean — would be eligible once the automated ownership "
-            "and sandbox-smoke gates are built"
+            "objectively clean — pending an automated ownership proof and a "
+            "passing sandbox smoke"
         )
     else:
         reason = "blocked by: " + ", ".join(objective_blockers)

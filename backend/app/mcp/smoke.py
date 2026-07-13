@@ -1,14 +1,15 @@
-"""Slice 2c-1 — sandbox-smoke result model + evaluator (advisory only, no exec).
+"""Sandbox-smoke result model + evaluator (2c-1 gate wiring, 2c-4a freshness).
 
-Defines the ``SmokeResult`` contract a future executor (2c-2 npm / 2c-3 PyPI)
-will produce, and derives the ``sandbox_smoke`` gate from it. NO mechanism runs
-an MCP yet — no container, no install, no network, no MCP code execution. With no
-result the gate stays a ``future`` blocker, identical to the hardcoded gate it
-replaces, so ``auto_publish_eligible`` stays False for everything and MCP stays
-review-gated.
+Defines the ``SmokeResult`` contract the executor (2c-2 npm / 2c-3 PyPI, both
+host-verified) produces, and derives the ``sandbox_smoke`` gate from it. This
+module runs nothing itself — the executor lives in ``mcp.smoke_executor`` and is
+INERT unless ``MCP_SMOKE_MODE=container``. With no result the gate stays a
+``future`` blocker, so ``auto_publish_eligible`` stays False (in prod there is no
+smoke result while the executor is disabled) and MCP stays review-gated. A fresh
+passing smoke makes the gate pass; a stale one is downgraded (2c-4a).
 
 No I/O here: a caller supplies the already-collected ``SmokeResult`` dict (or
-None). This stays a pure, table-testable function — the 2a / 2b-1 pattern.
+None) plus, for the gate, the current binding keys + clock. Pure + table-testable.
 
 No migration: the result lives in the existing ``server_verification`` JSONB
 (under the ``smoke`` key), and the derived gate lives in ``gate_result``.
