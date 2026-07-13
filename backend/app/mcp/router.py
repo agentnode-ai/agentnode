@@ -591,7 +591,17 @@ async def update_own_submission_report(
         manifest = body.manifest
 
     # Server-side re-verification is authoritative (same as initial submit).
+    old_sv = row.server_verification or {}
     server_verification = await verify_registry(manifest)
+    # 2c-4c follow-up: carry the existing smoke forward so a report update doesn't
+    # silently drop it. Freshness decides whether it still counts — if the manifest
+    # changed, the binding keys mismatch and the gate downgrades it (no false pass).
+    # No recheck is scheduled here (report update is publisher-facing; keep it a
+    # pure carry-forward — submit/reverify own the scheduling).
+    if old_sv.get("smoke"):
+        server_verification["smoke"] = old_sv["smoke"]
+    if old_sv.get("smoke_running"):
+        server_verification["smoke_running"] = old_sv["smoke_running"]
     server_verification = await _attach_gate_result(
         server_verification, manifest, report, session, publisher_id=row.publisher_id
     )
