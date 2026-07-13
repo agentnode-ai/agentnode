@@ -69,7 +69,7 @@ function GateBadge({ s }: { s: Submission }) {
     return (
       <span
         className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-400"
-        title="Passes every automated gate that exists today; only the not-yet-built ownership + sandbox-smoke gates remain. Not auto-published — review still required."
+        title="Passes every objective gate; only the ownership + sandbox-smoke gates remain — pending a strong ownership proof and a passing sandbox smoke. Advisory only, not auto-published — review still required."
       >
         gates: clean · pending ownership+smoke
       </span>

@@ -66,7 +66,9 @@ def test_never_eligible_today_even_when_objectively_clean():
         "ownership_automatically_proven",
         "sandbox_smoke",
     }
-    assert "would be eligible" in r["review_fallback_reason"]
+    # Honest reason (2c-5): pending a proof/result, not "gates not built".
+    assert "pending" in r["review_fallback_reason"]
+    assert "ownership" in r["review_fallback_reason"]
 
 
 def test_future_gates_are_blocking_and_never_pass():
@@ -215,3 +217,56 @@ def test_result_shape_is_json_serializable():
         "checked_at",
     ):
         assert key in r
+
+
+# --- 2c-5 lock-in: eligibility is advisory; publish stays admin-only ----------
+
+
+def test_full_eligibility_is_advisory_data_only():
+    """Strong ownership + fresh passing smoke + clean gates -> auto_publish_eligible
+    True, but evaluate_gates is a PURE function returning data — it publishes
+    nothing. (Freshness matches by giving the smoke the same binding keys.)"""
+    from datetime import datetime, timedelta, timezone
+
+    from app.mcp.ownership import derive_ownership_evidence
+
+    now = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    keys = {
+        "runtime": "npm",
+        "package": "@scope/mcp",
+        "version": "1.2.3",
+        "command_hash": "h",
+        "image_digest": "sha256:img",
+        "run_model": "npx_offline",
+        "schema_version": 1,
+    }
+    smoke = {
+        **keys,
+        "status": "passed",
+        "expires_at": (now + timedelta(days=10)).isoformat(),
+    }
+    r = evaluate_gates(
+        manifest=_manifest(),
+        server_verification=_clean_sv(),
+        report=_clean_report(),
+        typosquat_hit=False,
+        ownership=derive_ownership_evidence("publish_challenge", "verified"),
+        smoke=smoke,
+        smoke_keys=keys,
+        now=now,
+    )
+    assert r["auto_publish_eligible"] is True
+    # It is just data (advisory) — no status, no publish side effect here.
+    assert set(r) >= {"auto_publish_eligible", "gates", "review_fallback_reason"}
+
+
+def test_publish_submission_is_admin_only_and_ignores_eligibility():
+    """Lock-in: the ONLY publish path is admin-gated and never keys on
+    auto_publish_eligible. Guards against a future accidental auto-publish."""
+    import inspect
+
+    from app.mcp import router
+
+    src = inspect.getsource(router.publish_submission)
+    assert "require_admin" in src  # admin-only
+    assert "auto_publish_eligible" not in src  # never triggers on eligibility

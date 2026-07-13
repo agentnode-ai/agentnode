@@ -661,9 +661,11 @@ class SubmissionSummary(BaseModel):
     actions_medium: int
     tools_count: int
     created_at: str
-    # Slice 2a advisory gate result (from server_verification.gate_result JSONB).
-    # auto_publish_eligible is always False today (ownership + smoke gates are
-    # not built); objective_blockers are the real blockers excluding those.
+    # Advisory gate result (from server_verification.gate_result JSONB).
+    # auto_publish_eligible is ADVISORY ONLY — True needs a strong ownership proof
+    # + a fresh passing sandbox smoke + all other gates clean; nothing publishes on
+    # it (publish is admin-only). In prod the smoke is disabled by default, so it
+    # stays False. objective_blockers are the real blockers excluding ownership/smoke.
     auto_publish_eligible: bool | None = None
     objective_blockers: list[str] = []
     future_blockers: list[str] = []
