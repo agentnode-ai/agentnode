@@ -1705,3 +1705,58 @@ async def test_report_update_rejects_different_package(client):
         headers=_auth(token),
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_report_update_carries_smoke_forward(client, session):
+    """2c-4c follow-up: a report update must NOT silently drop an existing smoke.
+    The carried-forward smoke + running marker survive; gate_result is recomputed;
+    freshness (not the report update) decides whether it still counts."""
+    from datetime import datetime, timedelta, timezone
+    from uuid import UUID
+
+    from sqlalchemy import select as _select
+
+    from app.mcp.smoke_executor import current_smoke_keys
+
+    token, _ = await setup_publisher_user(
+        client, "rupsmk@test.dev", "rupsmk", "TestPass123!", "pub-rupsmk", "Pub Smk"
+    )
+    sr = await _submit(client, token, report=ACTION_REQUIRED_REPORT)
+    sub_id = sr.json()["id"]
+
+    # Inject a fresh passed smoke + a running marker into the submission.
+    row = await session.get(McpSubmission, UUID(sub_id))
+    sv = dict(row.server_verification or {})
+    keys = current_smoke_keys(row.manifest_raw or {}, sv)
+    now = datetime.now(timezone.utc)
+    sv["smoke"] = {
+        **keys,
+        "status": "passed",
+        "checked_at": now.isoformat(),
+        "expires_at": (now + timedelta(days=20)).isoformat(),
+    }
+    sv["smoke_running"] = {"started_at": now.isoformat()}
+    row.server_verification = sv
+    await session.commit()
+
+    # Report-only update (keeps the manifest) — must carry the smoke forward.
+    upd = await client.post(
+        f"/v1/mcp/submissions/{sub_id}/report",
+        json={"verification_report": TESTED_REPORT},
+        headers=_auth(token),
+    )
+    assert upd.status_code == 200, upd.json()
+
+    session.expire_all()
+    row2 = (
+        await session.execute(
+            _select(McpSubmission).where(McpSubmission.id == UUID(sub_id))
+        )
+    ).scalar_one()
+    sv2 = row2.server_verification or {}
+    assert sv2.get("smoke", {}).get("status") == "passed"  # not dropped
+    assert sv2.get("smoke_running", {}).get("started_at")  # running preserved
+    assert "gate_result" in sv2  # recomputed
+    # Advisory only: still not auto-published, publish stays admin-only.
+    assert sv2["gate_result"]["auto_publish_eligible"] is False
