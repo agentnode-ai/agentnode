@@ -1,9 +1,11 @@
-"""Slice 2c-2 — npm sandbox-smoke executor (inert by default, container mocked).
+"""Slice 2c-2/2c-3 — sandbox-smoke executor (npm + PyPI, inert by default).
 
 No real network / registry / container runs here: the single `run_container`
 seam is injected, and availability is toggled via settings. Tests cover the
-fail-closed availability, the should_smoke gating, the pure argv/JSON-RPC/parse
-helpers, and the full status mapping (pass / hard-block / review-fallback).
+fail-closed availability, the should_smoke gating (npm + pypi), the pure
+argv/JSON-RPC/parse helpers (npm `npx --offline` + pypi `uv pip install --target`
+/ console script), and the full status mapping (pass / hard-block /
+review-fallback) for both registries.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ def test_container_mode_without_runtime_is_unavailable(monkeypatch):
 def test_run_npm_smoke_unavailable_when_disabled(monkeypatch):
     monkeypatch.setattr(ex.settings, "MCP_SMOKE_MODE", "disabled")
     calls = []
-    res = ex.run_npm_smoke(
+    res = ex.run_smoke(
         _manifest(), _sv(), run_container=lambda *a, **k: calls.append(a) or (0, "", "")
     )
     assert res["status"] == "unavailable"
@@ -62,6 +64,27 @@ def _sv(registry="npm", exists=True, version="1.2.3", pinning="pinned"):
     }
 
 
+def _pypi_manifest():
+    return {
+        "runtime": "mcp",
+        "package_id": "time-mcp",
+        "mcp_server": {
+            "pypi_package": "mcp-server-time",
+            "command": ["uvx", "mcp-server-time==2026.7.10"],
+        },
+    }
+
+
+def _pypi_sv(exists=True, version="2026.7.10", pinning="pinned"):
+    return {
+        "registry": "pypi",
+        "package_name": "mcp-server-time",
+        "package_exists": exists,
+        "resolved_version": version,
+        "command_pinning": pinning,
+    }
+
+
 def test_should_smoke_npm_public_pinned_true():
     run, skip, reason = ex.should_smoke(_manifest(), _sv())
     assert run is True and skip is None
@@ -72,9 +95,29 @@ def test_should_smoke_credentialed_is_skipped():
     assert run is False and skip == "skipped" and reason == "credentialed"
 
 
-def test_should_smoke_pypi_is_skipped():
-    run, skip, reason = ex.should_smoke(_manifest(), _sv(registry="pypi"))
-    assert run is False and skip == "skipped" and reason == "pypi_not_supported"
+def test_should_smoke_pypi_public_pinned_true():
+    # 2c-3: PyPI is now supported (was skipped in 2c-2).
+    run, skip, reason = ex.should_smoke(_pypi_manifest(), _pypi_sv())
+    assert run is True and skip is None
+
+
+def test_should_smoke_unsupported_registry_is_skipped():
+    run, skip, reason = ex.should_smoke(_manifest(), _sv(registry="cargo"))
+    assert run is False and skip == "skipped" and reason == "unsupported_registry"
+
+
+def test_should_smoke_pypi_credentialed_is_skipped():
+    m = _pypi_manifest()
+    m["mcp_server"]["env_keys"] = ["TOKEN"]
+    run, skip, reason = ex.should_smoke(m, _pypi_sv())
+    assert run is False and skip == "skipped" and reason == "credentialed"
+
+
+def test_should_smoke_pypi_unpinned_is_precondition():
+    run, skip, reason = ex.should_smoke(
+        _pypi_manifest(), _pypi_sv(pinning="unpinned_resolved")
+    )
+    assert run is False and skip is None and reason is None
 
 
 def test_should_smoke_not_public_is_precondition_no_record():
@@ -184,7 +227,7 @@ def _passing_stdout():
 
 
 def test_success_maps_to_passed(enabled):
-    res = ex.run_npm_smoke(
+    res = ex.run_smoke(
         _manifest(), _sv(), run_container=_fake_runner(run=(0, _passing_stdout(), ""))
     )
     assert res["status"] == "passed"
@@ -195,14 +238,14 @@ def test_success_maps_to_passed(enabled):
 
 
 def test_install_fail_is_review_fallback(enabled):
-    res = ex.run_npm_smoke(
+    res = ex.run_smoke(
         _manifest(), _sv(), run_container=_fake_runner(install=(1, "", "boom"))
     )
     assert res["status"] == "failed" and res["failure_reason"] == "install_failed"
 
 
 def test_install_timeout_is_review_fallback(enabled):
-    res = ex.run_npm_smoke(
+    res = ex.run_smoke(
         _manifest(),
         _sv(),
         run_container=_fake_runner(install_exc=subprocess.TimeoutExpired("x", 1)),
@@ -212,7 +255,7 @@ def test_install_timeout_is_review_fallback(enabled):
 
 def test_startup_crash_is_hard(enabled):
     # no JSON on stdout + non-zero exit -> startup_crash (hard block)
-    res = ex.run_npm_smoke(
+    res = ex.run_smoke(
         _manifest(), _sv(), run_container=_fake_runner(run=(1, "boom traceback", ""))
     )
     assert res["status"] == "failed" and res["failure_reason"] == "startup_crash"
@@ -220,7 +263,7 @@ def test_startup_crash_is_hard(enabled):
 
 def test_protocol_error_is_hard(enabled):
     # ran (rc 0) but emitted no valid JSON-RPC -> protocol_error (hard)
-    res = ex.run_npm_smoke(
+    res = ex.run_smoke(
         _manifest(), _sv(), run_container=_fake_runner(run=(0, "hello not json", ""))
     )
     assert res["failure_reason"] == "protocol_error"
@@ -228,9 +271,7 @@ def test_protocol_error_is_hard(enabled):
 
 def test_initialize_fail_is_review(enabled):
     out = '{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"no"}}'
-    res = ex.run_npm_smoke(
-        _manifest(), _sv(), run_container=_fake_runner(run=(0, out, ""))
-    )
+    res = ex.run_smoke(_manifest(), _sv(), run_container=_fake_runner(run=(0, out, "")))
     assert res["failure_reason"] == "initialize_failed"
 
 
@@ -239,14 +280,12 @@ def test_tools_list_fail_after_init_is_hard(enabled):
         '{"jsonrpc":"2.0","id":1,"result":{}}\n'
         '{"jsonrpc":"2.0","id":2,"error":{"code":-1,"message":"no tools"}}'
     )
-    res = ex.run_npm_smoke(
-        _manifest(), _sv(), run_container=_fake_runner(run=(0, out, ""))
-    )
+    res = ex.run_smoke(_manifest(), _sv(), run_container=_fake_runner(run=(0, out, "")))
     assert res["failure_reason"] == "tools_list_failed"
 
 
 def test_runtime_timeout_is_review(enabled):
-    res = ex.run_npm_smoke(
+    res = ex.run_smoke(
         _manifest(),
         _sv(),
         run_container=_fake_runner(run_exc=subprocess.TimeoutExpired("x", 1)),
@@ -263,7 +302,7 @@ def test_volume_is_always_removed(enabled):
             return (1, "", "boom")  # install fails
         return (0, "", "")
 
-    ex.run_npm_smoke(_manifest(), _sv(), run_container=runner)
+    ex.run_smoke(_manifest(), _sv(), run_container=runner)
     # last call must be the volume rm even though install failed
     assert any(
         a[:3] == [ex.CONTAINER_RUNTIME or "docker", "volume", "rm"] for a in seen
@@ -271,14 +310,85 @@ def test_volume_is_always_removed(enabled):
 
 
 def test_skipped_credentialed_returns_skipped_result(enabled):
-    res = ex.run_npm_smoke(
-        _manifest(env_keys=["K"]), _sv(), run_container=_fake_runner()
-    )
+    res = ex.run_smoke(_manifest(env_keys=["K"]), _sv(), run_container=_fake_runner())
     assert res["status"] == "skipped" and res["review_reason"] == "credentialed"
 
 
 def test_precondition_returns_none(enabled):
-    res = ex.run_npm_smoke(
+    res = ex.run_smoke(
         _manifest(), _sv(exists=False, version=None), run_container=_fake_runner()
     )
     assert res is None  # nothing recorded; pre-smoke gate handles it
+
+
+# --- PyPI (2c-3) argv + success ---------------------------------------------
+
+
+def test_install_argv_pypi_uv_pip_target_as_root():
+    argv = ex.install_argv_pypi("img", "vol", "mcp-server-time", "2026.7.10")
+    assert argv[argv.index("--network") + 1] == "default"
+    assert "vol:/app:rw" in argv
+    assert argv[argv.index("--user") + 1] == "0:0"  # fresh volume is root-owned
+    assert "--cap-drop=ALL" in argv
+    joined = " ".join(argv)
+    assert "uv pip install --target /app mcp-server-time==2026.7.10" in joined
+
+
+def test_run_argv_pypi_console_script_nonroot_netnone_ro():
+    argv = ex.run_argv_pypi("img", "vol", "mcp-server-time", "2026.7.10")
+    assert argv[argv.index("--network") + 1] == "none"
+    assert "--read-only" in argv
+    assert "vol:/app:ro" in argv
+    assert argv[argv.index("--user") + 1] == "1000:1000"
+    assert "PYTHONPATH=/app" in argv
+    assert "/app/bin/mcp-server-time" in argv  # console script, faithful to uvx <pkg>
+
+
+def test_pypi_success_maps_to_passed_console_script(enabled):
+    res = ex.run_smoke(
+        _pypi_manifest(),
+        _pypi_sv(),
+        run_container=_fake_runner(run=(0, _passing_stdout(), "")),
+    )
+    assert res["status"] == "passed"
+    assert res["runtime"] == "pypi"
+    assert res["run_model"] == "console_script"
+    assert res["package"] == "mcp-server-time"
+    assert res["version"] == "2026.7.10"
+    assert res["tools_count"] == 1
+    assert res["command_hash"] and res["image_digest"]
+
+
+def test_pypi_startup_crash_is_hard(enabled):
+    res = ex.run_smoke(
+        _pypi_manifest(), _pypi_sv(), run_container=_fake_runner(run=(1, "boom", ""))
+    )
+    assert res["status"] == "failed" and res["failure_reason"] == "startup_crash"
+
+
+def test_pypi_install_fail_is_review_fallback(enabled):
+    res = ex.run_smoke(
+        _pypi_manifest(),
+        _pypi_sv(),
+        run_container=_fake_runner(install=(1, "", "boom")),
+    )
+    assert res["failure_reason"] == "install_failed"
+
+
+def test_pypi_initialize_fail_is_review(enabled):
+    out = '{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"no"}}'
+    res = ex.run_smoke(
+        _pypi_manifest(), _pypi_sv(), run_container=_fake_runner(run=(0, out, ""))
+    )
+    assert res["failure_reason"] == "initialize_failed"
+
+
+def test_pypi_tools_list_fail_after_init_is_hard(enabled):
+    out = (
+        '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+        '{"jsonrpc":"2.0","id":2,"error":{"code":-1,"message":"no tools"}}'
+    )
+    res = ex.run_smoke(
+        _pypi_manifest(), _pypi_sv(), run_container=_fake_runner(run=(0, out, ""))
+    )
+    assert res["failure_reason"] == "tools_list_failed"
