@@ -1252,6 +1252,7 @@ class ReverifyResponse(BaseModel):
 )
 async def reverify_submission(
     submission_id: UUID,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1271,7 +1272,14 @@ async def reverify_submission(
     if not row:
         raise AppError("MCP_SUBMISSION_NOT_FOUND", "Submission not found", 404)
 
+    old_sv = row.server_verification or {}
     sv = await verify_registry(row.manifest_raw or {})
+    # 2c-4b: carry the existing smoke forward so reverify doesn't wipe it — the
+    # freshness check decides whether a recheck is needed (no needless re-run).
+    if old_sv.get("smoke"):
+        sv["smoke"] = old_sv["smoke"]
+    if old_sv.get("smoke_running"):
+        sv["smoke_running"] = old_sv["smoke_running"]
     sv = await _attach_gate_result(
         sv,
         row.manifest_raw or {},
@@ -1286,6 +1294,12 @@ async def reverify_submission(
         row.status = derive_status(sv, row.verification_report or {})
     row.updated_at = datetime.now(timezone.utc)
     await session.commit()
+
+    # 2c-4b: schedule a smoke recheck if enabled + eligible + not already fresh.
+    # Inert no-op unless MCP_SMOKE_MODE=container. Never blocks the response.
+    from app.mcp.smoke_executor import maybe_schedule_smoke
+
+    maybe_schedule_smoke(background_tasks, row.id, row.manifest_raw or {}, sv)
 
     logger.info(
         "MCP submission %s re-verified by %s: server=%s status=%s",

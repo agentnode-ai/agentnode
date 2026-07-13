@@ -38,6 +38,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from app.config import CONTAINER_RUNTIME, settings
+from app.mcp.smoke import TRANSIENT_FAILURES, evaluate_smoke_freshness
 
 logger = logging.getLogger("agentnode.mcp.smoke")
 
@@ -589,12 +590,48 @@ def _is_fresh(iso: str | None) -> bool:
     return datetime.now(timezone.utc) - started < _RUNNING_TTL
 
 
+def should_schedule_smoke_recheck(manifest: dict, sv: dict, now=None) -> bool:
+    """2c-4b: whether a (re)check is worth scheduling for the CURRENT stored smoke.
+    Anti-spam: a fresh passed smoke or a fresh running marker returns False; no
+    result / expired / key_mismatch / failed / skipped / unavailable / stale-running
+    returns True. Pure (config reads only)."""
+    now = now or datetime.now(timezone.utc)
+    sv = sv or {}
+    # A fresh run already in progress (marker in either the new or legacy slot).
+    if _is_fresh((sv.get("smoke_running") or {}).get("started_at")):
+        return False
+    smoke = sv.get("smoke") or {}
+    if smoke.get("status") == "running" and _is_fresh(smoke.get("started_at")):
+        return False
+    if smoke.get("status") == "passed":
+        keys = current_smoke_keys(manifest, sv)
+        return evaluate_smoke_freshness(smoke, keys, now) != "fresh"
+    # no result / failed / skipped / unavailable / not_run -> (re)schedule on an
+    # explicit trigger. Submit is once and reverify is manual, so no spam (no cron).
+    return True
+
+
+def _should_overwrite_smoke(previous_freshness: str, result: dict | None) -> bool:
+    """2c-4b transient-protection: whether a recheck result should REPLACE the
+    stored smoke. A fresh passed smoke is never clobbered by a transient blip
+    (unavailable / transient failure) — only by a new pass or a definitive HARD
+    failure. If the previous result was not a fresh pass, the new result wins."""
+    if previous_freshness != "fresh":
+        return True
+    status = (result or {}).get("status")
+    if status == "passed":
+        return True
+    if status == "failed":
+        return (result or {}).get("failure_reason") not in TRANSIENT_FAILURES
+    return False  # unavailable / skipped / other transient -> keep the fresh pass
+
+
 def maybe_schedule_smoke(
     background_tasks, submission_id, manifest: dict, sv: dict
 ) -> bool:
-    """Schedule the smoke as a background task IF enabled AND eligible. A cheap
-    no-op when MCP_SMOKE_MODE is disabled (the default) — the availability check
-    short-circuits before touching a runtime. Never blocks the request. Returns
+    """Schedule the smoke as a background task IF enabled, eligible, AND a recheck
+    is actually needed (freshness-gated — 2c-4b). A cheap no-op when
+    MCP_SMOKE_MODE is disabled (the default). Never blocks the request. Returns
     True if a task was scheduled."""
     available, _ = smoke_availability()
     if not available:
@@ -602,6 +639,8 @@ def maybe_schedule_smoke(
     run, _skip, _reason = should_smoke(manifest, sv)
     if not run:
         return False
+    if not should_schedule_smoke_recheck(manifest, sv):
+        return False  # a fresh result / running marker already covers it — no spam
     background_tasks.add_task(run_and_store_smoke, str(submission_id))
     return True
 
@@ -620,20 +659,23 @@ async def run_and_store_smoke(submission_id: str) -> None:
                 if row is None:
                     return
                 sv = dict(row.server_verification or {})
-                current = sv.get("smoke") or {}
-                if current.get("status") == "running" and _is_fresh(
-                    current.get("started_at")
-                ):
+                running = sv.get("smoke_running") or {}
+                if _is_fresh(running.get("started_at")):
                     return  # another fresh run is in progress
-                sv["smoke"] = {
-                    "status": "running",
-                    "started_at": datetime.now(timezone.utc).isoformat(),
-                }
-                row.server_verification = sv
-                await session.commit()
-
                 manifest = row.manifest_raw or {}
                 report = row.verification_report or {}
+
+                # 2c-4b: mark running in a SEPARATE key so the previous result
+                # stays valid during the recheck (a fresh passed smoke keeps
+                # counting while we re-run — no transient gap).
+                previous = sv.get("smoke")
+                now = datetime.now(timezone.utc)
+                prev_freshness = evaluate_smoke_freshness(
+                    previous, current_smoke_keys(manifest, sv), now
+                )
+                sv["smoke_running"] = {"started_at": now.isoformat()}
+                row.server_verification = sv
+                await session.commit()
 
                 loop = asyncio.get_running_loop()
                 budget = (
@@ -656,9 +698,13 @@ async def run_and_store_smoke(submission_id: str) -> None:
                     )
 
                 sv2 = dict(row.server_verification or {})
-                if result is None:
-                    sv2.pop("smoke", None)  # nothing to record; clear the marker
-                else:
+                sv2.pop("smoke_running", None)  # clear the running marker
+                # Overwrite only when authoritative — never clobber a fresh passed
+                # smoke with a transient blip (2c-4b transient-protection). result
+                # is None -> nothing to record; keep the previous smoke.
+                if result is not None and _should_overwrite_smoke(
+                    prev_freshness, result
+                ):
                     sv2["smoke"] = result
                 # Recompute the gate with the new smoke (reuses the same wiring as
                 # submit; reads sv2["smoke"]). Lazy import avoids a circular import.

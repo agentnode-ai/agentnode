@@ -11,6 +11,7 @@ review-fallback) for both registries.
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -427,3 +428,140 @@ def test_result_expires_is_checked_plus_ttl():
     assert (exp - chk).days == ex.settings.MCP_SMOKE_TTL_DAYS
     assert r["recheck_at"] == r["expires_at"]
     assert r["schema_version"] == ex.settings.MCP_SMOKE_SCHEMA_VERSION
+
+
+# --- 2c-4b: recheck triggers (freshness-gated scheduling) --------------------
+
+
+def _now():
+    return datetime.now(timezone.utc)
+
+
+def _fresh_passed_sv():
+    sv = _sv()
+    keys = ex.current_smoke_keys(_manifest(), sv)
+    sv["smoke"] = {
+        **keys,
+        "status": "passed",
+        "checked_at": _now().isoformat(),
+        "expires_at": (_now() + timedelta(days=20)).isoformat(),
+    }
+    return sv
+
+
+def _expired_passed_sv():
+    sv = _sv()
+    keys = ex.current_smoke_keys(_manifest(), sv)
+    sv["smoke"] = {
+        **keys,
+        "status": "passed",
+        "expires_at": (_now() - timedelta(days=1)).isoformat(),
+    }
+    return sv
+
+
+def test_recheck_skip_when_fresh():
+    assert ex.should_schedule_smoke_recheck(_manifest(), _fresh_passed_sv()) is False
+
+
+def test_recheck_scheduled_when_expired():
+    assert ex.should_schedule_smoke_recheck(_manifest(), _expired_passed_sv()) is True
+
+
+def test_recheck_scheduled_when_key_mismatch():
+    sv = _fresh_passed_sv()
+    sv["smoke"]["command_hash"] = "changed"
+    assert ex.should_schedule_smoke_recheck(_manifest(), sv) is True
+
+
+def test_recheck_scheduled_when_no_result():
+    assert ex.should_schedule_smoke_recheck(_manifest(), _sv()) is True
+
+
+def test_recheck_skip_when_running_fresh():
+    sv = _sv()
+    sv["smoke_running"] = {"started_at": _now().isoformat()}
+    assert ex.should_schedule_smoke_recheck(_manifest(), sv) is False
+
+
+def test_recheck_scheduled_when_running_stale():
+    sv = _sv()
+    sv["smoke_running"] = {"started_at": (_now() - timedelta(hours=1)).isoformat()}
+    assert ex.should_schedule_smoke_recheck(_manifest(), sv) is True
+
+
+# --- transient protection: _should_overwrite_smoke ---------------------------
+
+
+def test_overwrite_fresh_pass_not_clobbered_by_unavailable():
+    assert ex._should_overwrite_smoke("fresh", {"status": "unavailable"}) is False
+
+
+def test_overwrite_fresh_pass_not_clobbered_by_transient_fail():
+    assert (
+        ex._should_overwrite_smoke(
+            "fresh", {"status": "failed", "failure_reason": "install_failed"}
+        )
+        is False
+    )
+
+
+def test_overwrite_fresh_pass_by_new_pass():
+    assert ex._should_overwrite_smoke("fresh", {"status": "passed"}) is True
+
+
+def test_overwrite_fresh_pass_by_hard_failure():
+    # A definitive hard failure DOES overwrite a fresh pass (the server broke).
+    assert (
+        ex._should_overwrite_smoke(
+            "fresh", {"status": "failed", "failure_reason": "startup_crash"}
+        )
+        is True
+    )
+
+
+def test_overwrite_when_previous_not_fresh():
+    assert ex._should_overwrite_smoke("expired", {"status": "unavailable"}) is True
+    assert ex._should_overwrite_smoke("key_mismatch", {"status": "unavailable"}) is True
+
+
+# --- maybe_schedule_smoke end-to-end (fake BackgroundTasks) ------------------
+
+
+class _BG:
+    def __init__(self):
+        self.tasks = []
+
+    def add_task(self, fn, *a):
+        self.tasks.append((fn, a))
+
+
+def test_schedule_disabled_no_task(monkeypatch):
+    monkeypatch.setattr(ex.settings, "MCP_SMOKE_MODE", "disabled")
+    bg = _BG()
+    assert ex.maybe_schedule_smoke(bg, "id", _manifest(), _sv()) is False
+    assert bg.tasks == []
+
+
+def test_schedule_fresh_no_task(enabled):
+    bg = _BG()
+    assert ex.maybe_schedule_smoke(bg, "id", _manifest(), _fresh_passed_sv()) is False
+    assert bg.tasks == []
+
+
+def test_schedule_expired_creates_task(enabled):
+    bg = _BG()
+    assert ex.maybe_schedule_smoke(bg, "id", _manifest(), _expired_passed_sv()) is True
+    assert len(bg.tasks) == 1
+
+
+def test_schedule_no_result_creates_task(enabled):
+    bg = _BG()
+    assert ex.maybe_schedule_smoke(bg, "id", _manifest(), _sv()) is True
+    assert len(bg.tasks) == 1
+
+
+def test_schedule_credentialed_no_task(enabled):
+    bg = _BG()
+    assert ex.maybe_schedule_smoke(bg, "id", _manifest(env_keys=["K"]), _sv()) is False
+    assert bg.tasks == []
