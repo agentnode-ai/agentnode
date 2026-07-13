@@ -1,13 +1,16 @@
-"""Slice 2c-2 — npm sandbox-smoke executor (INERT by default, fail-closed).
+"""Slice 2c-2/2c-3 — sandbox-smoke executor (INERT by default, fail-closed).
 
-Runs a submitted npm MCP server in the pinned sandbox container and checks it
-answers the MCP basics (initialize + tools/list), producing a SmokeResult (see
-mcp.smoke). Two phases:
+Runs a submitted MCP server in the pinned sandbox container and checks it answers
+the MCP basics (initialize + tools/list), producing a SmokeResult (see mcp.smoke).
+Registry-generic (npm 2c-2, PyPI 2c-3) — the two paths differ only in the
+install/run argv; the handshake, parsing, status mapping, and cleanup are shared.
+Two phases:
 
   Phase 1 (install): container with network, as root (a fresh named volume is
-      root-owned) -> npm install the pinned package into the volume.
+      root-owned) -> npm: `npm install`; pypi: `uv pip install --target /app`.
   Phase 2 (runtime): container with network=none, volume read-only, as non-root
-      (uid 1000) -> start the server via `npx --offline`, speak JSON-RPC.
+      (uid 1000) -> npm: `npx --offline`; pypi: the console script
+      `/app/bin/<pypi_package>` (host-verified). Speak JSON-RPC over stdio.
 
 Then the volume is removed (always, even on error). No host filesystem, no host
 secrets, no host fallback: if the runtime/image is missing or MCP_SMOKE_MODE is
@@ -95,9 +98,9 @@ def should_smoke(manifest: dict, sv: dict) -> tuple[bool, str | None, str | None
     mcp_server = manifest.get("mcp_server") or {}
     registry = (sv.get("registry") or "").lower()
 
-    # PyPI awaits 2c-3 — record a skip so the reason is visible.
-    if registry != "npm":
-        return False, "skipped", "pypi_not_supported"
+    # npm (2c-2) and pypi (2c-3) are supported; anything else is review-fallback.
+    if registry not in ("npm", "pypi"):
+        return False, "skipped", "unsupported_registry"
     # Credentialed servers can't be fairly smoked without real secrets.
     if mcp_server.get("env_keys"):
         return False, "skipped", "credentialed"
@@ -188,6 +191,69 @@ def run_argv(image: str, volume: str, package: str, version: str) -> list[str]:
         "/app",
         "-y",
         f"{package}@{version}",
+    ]
+
+
+def install_argv_pypi(image: str, volume: str, package: str, version: str) -> list[str]:
+    """Phase 1 (PyPI): `uv pip install --target /app pkg==ver` into the volume,
+    WITH network, as root (fresh named volume is root-owned — same as npm). The uv
+    cache goes to a tmpfs so nothing writable is needed in the runtime volume.
+    Host-verified 2c-3 (Variant B)."""
+    return [
+        CONTAINER_RUNTIME or "docker",
+        "run",
+        *_HARDENED_BASE,
+        "--user",
+        "0:0",
+        "--network",
+        "default",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=256m",
+        "-v",
+        f"{volume}:/app:rw",
+        "-e",
+        "HOME=/app",
+        "-e",
+        "UV_CACHE_DIR=/tmp/uvcache",
+        "-w",
+        "/app",
+        image,
+        "sh",
+        "-c",
+        f"uv pip install --target /app {package}=={version}",
+    ]
+
+
+def run_argv_pypi(image: str, volume: str, package: str, version: str) -> list[str]:
+    """Phase 2 (PyPI): run the installed console script `/app/bin/<package>` from
+    the volume, network=none, volume read-only, non-root (uid 1000), PYTHONPATH=/app
+    so the flat --target install resolves. This is the faithful analog of
+    `uvx <package>`. If the package ships no such console script the container
+    fails -> startup_crash (honest). ``version`` is unused (the installed script is
+    already the pinned version) but kept for a uniform dispatch signature.
+    Host-verified 2c-3 (Variant B, console-script run model)."""
+    return [
+        CONTAINER_RUNTIME or "docker",
+        "run",
+        "-i",
+        *_HARDENED_BASE,
+        "--user",
+        "1000:1000",
+        "--read-only",
+        "--network",
+        "none",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=32m",
+        "-v",
+        f"{volume}:/app:ro",
+        "-e",
+        "HOME=/app",
+        "-e",
+        "PYTHONPATH=/app",
+        "-w",
+        "/app",
+        image,
+        f"/app/bin/{package}",
     ]
 
 
@@ -306,6 +372,7 @@ def _result(status: str, **fields) -> dict:
         "duration_ms": fields.get("duration_ms"),
         "sandbox_backend": fields.get("sandbox_backend"),
         "image_digest": fields.get("image_digest"),
+        "run_model": fields.get("run_model"),
         "failure_reason": fields.get("failure_reason"),
         "review_reason": fields.get("review_reason"),
         "checked_at": fields.get("checked_at"),
@@ -313,11 +380,31 @@ def _result(status: str, **fields) -> dict:
     return r
 
 
-def run_npm_smoke(
-    manifest: dict, sv: dict, *, run_container=None, now=None
-) -> dict | None:
-    """Execute (or skip) the npm smoke and return a SmokeResult dict, or None if
-    no smoke should be recorded (a pre-smoke gate handles it).
+# Per-registry install/run argv builders + evidence labels. npm = 2c-2,
+# pypi = 2c-3 (both host-verified). Adding a registry here does not touch the
+# shared orchestration below.
+_REGISTRIES = {
+    "npm": {
+        "install": install_argv,
+        "run": run_argv,
+        "package_field": "npm_package",
+        "run_model": "npx_offline",
+    },
+    "pypi": {
+        "install": install_argv_pypi,
+        "run": run_argv_pypi,
+        "package_field": "pypi_package",
+        "run_model": "console_script",
+    },
+}
+
+
+def run_smoke(manifest: dict, sv: dict, *, run_container=None, now=None) -> dict | None:
+    """Execute (or skip) the sandbox smoke for an npm or PyPI MCP and return a
+    SmokeResult dict, or None if no smoke should be recorded (a pre-smoke gate
+    handles it). Registry-generic: the npm (2c-2) and pypi (2c-3) paths differ
+    only in the install/run argv + evidence labels; the JSON-RPC handshake,
+    parsing, status mapping, and cleanup are shared.
 
     ``run_container`` and ``now`` are injectable for testing. Pure except for the
     container seam. Never raises — failures map to a SmokeResult.
@@ -336,18 +423,23 @@ def run_npm_smoke(
             return _result("skipped", review_reason=review_reason, checked_at=stamp)
         return None  # pre-smoke gate handles it — record nothing
 
+    registry = (sv.get("registry") or "").lower()
+    reg = _REGISTRIES[registry]
+    install_fn, run_fn = reg["install"], reg["run"]
+
     mcp_server = manifest.get("mcp_server") or {}
-    package = mcp_server.get("npm_package") or sv.get("package_name")
+    package = mcp_server.get(reg["package_field"]) or sv.get("package_name")
     version = sv.get("resolved_version")
     chash = command_hash(mcp_server.get("command") or [])
     image = settings.MCP_SMOKE_IMAGE
     base = dict(
-        runtime="npm",
+        runtime=registry,
         package=package,
         version=version,
         command_hash=chash,
         sandbox_backend=CONTAINER_RUNTIME,
         image_digest=image,
+        run_model=reg["run_model"],
         checked_at=stamp,
     )
     volume = _volume_name()
@@ -360,7 +452,7 @@ def run_npm_smoke(
         # Phase 1 — install (with network) into the volume.
         try:
             rc, out, err = run_container(
-                install_argv(image, volume, package, version),
+                install_fn(image, volume, package, version),
                 None,
                 settings.MCP_SMOKE_INSTALL_TIMEOUT,
             )
@@ -379,7 +471,7 @@ def run_npm_smoke(
         # Phase 2 — run the server (network=none, volume read-only) + handshake.
         try:
             rc2, out2, err2 = run_container(
-                run_argv(image, volume, package, version),
+                run_fn(image, volume, package, version),
                 handshake_frames(),
                 settings.MCP_SMOKE_RUNTIME_TIMEOUT,
             )
@@ -518,7 +610,7 @@ async def run_and_store_smoke(submission_id: str) -> None:
                 try:
                     result = await asyncio.wait_for(
                         loop.run_in_executor(
-                            None, functools.partial(run_npm_smoke, manifest, dict(sv))
+                            None, functools.partial(run_smoke, manifest, dict(sv))
                         ),
                         timeout=budget,
                     )
