@@ -36,10 +36,23 @@ SKIPPED = "skipped"  # policy (credentialed/private/high-risk) — review-fallba
 NOT_RUN = "not_run"  # no executor / no result yet — today's default
 
 # A genuine failure is an OBJECTIVE fault of the submission (the server is broken)
-# UNLESS it is a known-transient reason, which is retryable / review-fallback.
-# Default: anything not explicitly transient counts as a hard, objective failure.
+# UNLESS it is a known-transient/ambiguous reason, which is retryable /
+# review-fallback. Only UNAMBIGUOUS brokenness is a hard, objective failure:
+# startup_crash, protocol_error, and tools_list_failed AFTER a successful
+# initialize. initialize_failed is ambiguous under runtime network=none / no
+# credentials (a legit server may fail init benignly), and timeout /
+# excessive_output / internal_error are transient — all route to review, never a
+# false hard-reject (they still block auto-publish). (Founder decision D6, 2c-2.)
 TRANSIENT_FAILURES: frozenset[str] = frozenset(
-    {"install_failed", "registry_unavailable", "timeout", "backend_unavailable"}
+    {
+        "install_failed",
+        "registry_unavailable",
+        "timeout",
+        "backend_unavailable",
+        "initialize_failed",
+        "excessive_output",
+        "internal_error",
+    }
 )
 
 _FAILURE_TEXT = {
@@ -47,6 +60,8 @@ _FAILURE_TEXT = {
     "registry_unavailable": "registry unavailable during smoke — retry",
     "timeout": "sandbox smoke timed out",
     "backend_unavailable": "sandbox backend unavailable",
+    "excessive_output": "sandbox smoke produced too much output",
+    "internal_error": "internal smoke runner error",
     "initialize_failed": "MCP initialize failed in the sandbox",
     "tools_list_failed": "MCP tools/list failed in the sandbox",
     "startup_crash": "MCP server crashed on startup in the sandbox",
