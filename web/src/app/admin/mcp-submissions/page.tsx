@@ -20,6 +20,42 @@ interface Submission {
   auto_publish_eligible: boolean | null;
   objective_blockers: string[];
   future_blockers: string[];
+  smoke_status: string | null;
+  smoke_checked_at: string | null;
+  smoke_expires_at: string | null;
+  smoke_recheck_reason: string | null;
+}
+
+// Advisory sandbox-smoke indicator (Slice 2c-4c). The smoke is inert in prod
+// until MCP_SMOKE_MODE=container, so most submissions have no smoke status yet.
+const SMOKE_STYLE: Record<string, string> = {
+  passed: "bg-emerald-500/15 text-emerald-400",
+  failed: "bg-red-500/15 text-red-400",
+  expired: "bg-amber-500/15 text-amber-400",
+  key_mismatch: "bg-amber-500/15 text-amber-400",
+  running: "bg-blue-500/15 text-blue-400",
+  unavailable: "bg-slate-500/15 text-slate-400",
+  skipped: "bg-slate-500/15 text-slate-400",
+};
+
+function SmokeBadge({ s }: { s: Submission }) {
+  const st = s.smoke_status;
+  if (!st || st === "not_run") return null;
+  const title = [
+    s.smoke_recheck_reason,
+    s.smoke_checked_at ? `checked ${s.smoke_checked_at.slice(0, 10)}` : "",
+    s.smoke_expires_at ? `expires ${s.smoke_expires_at.slice(0, 10)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 text-xs font-medium ${SMOKE_STYLE[st] || "bg-card text-muted"}`}
+      title={title || undefined}
+    >
+      smoke: {st.replace(/_/g, " ")}
+    </span>
+  );
 }
 
 // Honest, advisory gate badge — describes what the automated gates would decide,
@@ -371,6 +407,7 @@ export default function McpSubmissionsPage() {
                   </span>
                 )}
                 <GateBadge s={s} />
+                <SmokeBadge s={s} />
               </div>
               <div className="flex items-center gap-3 text-xs text-muted">
                 {s.tools_count > 0 && <span>{s.tools_count} tools</span>}
