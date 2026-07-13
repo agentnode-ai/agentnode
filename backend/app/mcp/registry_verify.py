@@ -65,9 +65,22 @@ def _gh(url: str | None) -> str | None:
 
 
 def _command_version(command: list | None) -> str | None:
-    """Extract a pinned version from the launch command (mirrors the CLI verifier)."""
+    """Extract a pinned version from the launch command (mirrors the CLI verifier).
+
+    Handles both pin forms:
+      - PyPI (uv/pip): ``pkg==1.2.3`` (also ``pkg[extra]==1.2.3``) -> "1.2.3"
+      - npm (npx):     ``pkg@1.2.3`` and scoped ``@scope/name@1.2.3`` -> "1.2.3"
+    npm packages never contain ``==`` and PyPI packages never use the npm ``@``
+    form, so the two are mutually exclusive per token — adding ``==`` does not
+    change npm behavior.
+    """
     for part in command or []:
         if not isinstance(part, str):
+            continue
+        if "==" in part:  # PyPI exact pin (pkg==ver, pkg[extra]==ver, --from pkg==ver)
+            ver = part.split("==")[-1].strip()
+            if ver:
+                return ver
             continue
         if "@" in part and not part.startswith("@"):
             return part.split("@")[-1]
