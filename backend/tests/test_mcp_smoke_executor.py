@@ -90,20 +90,27 @@ def test_should_smoke_unpinned_is_precondition_no_record():
 # --- pure helpers ------------------------------------------------------------
 
 
-def test_install_argv_has_network_and_writable_volume():
+def test_install_argv_has_network_writable_volume_and_root_user():
     argv = ex.install_argv("img", "vol", "@scope/mcp", "1.2.3")
     assert "--network" in argv and argv[argv.index("--network") + 1] == "default"
     assert "-v" in argv and "vol:/app:rw" in argv
     assert "img" in argv
     assert any("@scope/mcp@1.2.3" in a for a in argv)
+    # Host verification (2c-2): a fresh named volume is root-owned -> phase 1 must
+    # install as root, else EACCES. Still hardened (cap-drop etc).
+    assert argv[argv.index("--user") + 1] == "0:0"
+    assert "--cap-drop=ALL" in argv
 
 
-def test_run_argv_is_network_none_readonly_volume():
+def test_run_argv_is_network_none_readonly_volume_nonroot():
     argv = ex.run_argv("img", "vol", "@scope/mcp", "1.2.3")
     assert argv[argv.index("--network") + 1] == "none"
     assert "--read-only" in argv
     assert "vol:/app:ro" in argv
     assert "--offline" in argv
+    # The security-critical run phase stays non-root.
+    assert argv[argv.index("--user") + 1] == "1000:1000"
+    assert "--cap-drop=ALL" in argv
 
 
 def test_handshake_frames_contain_initialize_and_tools_list():
