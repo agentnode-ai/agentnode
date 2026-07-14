@@ -228,9 +228,15 @@ async def test_g2_docker_fault_reaper_e2e(client, session, controls):
     sub_id = str(sub.id)
     smoke_canon = json.dumps(synthetic_smoke, sort_keys=True)
 
-    # ---- 2. spawn the REAL runner child; capture its PID ----
+    # ---- 2. spawn the REAL runner child; capture its PID + output ----
+    child_log = _HERE / f"_g2_child_{tag}.log"
+    child_fh = open(child_log, "w")
     child = subprocess.Popen(
-        [sys.executable, _RUNNER, sub_id], cwd=str(_BACKEND), env={**os.environ}
+        [sys.executable, _RUNNER, sub_id],
+        cwd=str(_BACKEND),
+        env={**os.environ},
+        stdout=child_fh,
+        stderr=subprocess.STDOUT,
     )
     runner_pid = child.pid
     print("RUNNER PID:", runner_pid)
@@ -256,6 +262,17 @@ async def test_g2_docker_fault_reaper_e2e(client, session, controls):
         if child.poll() is not None:
             break
         time.sleep(0.2)
+    if not install_cid:
+        try:
+            child.wait(timeout=5)
+        except Exception:
+            pass
+        child_fh.flush()
+        print(
+            "---- CHILD OUTPUT ----\n"
+            + child_log.read_text()
+            + "\n----------------------"
+        )
     assert install_cid, "install container never observed -> INCONCLUSIVE (no retry)"
 
     inspect = None

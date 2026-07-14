@@ -17,15 +17,31 @@ import sys
 
 os.environ["MCP_SMOKE_MODE"] = "container"
 
+
+def _log(*a):
+    print("child:", *a, file=sys.stderr, flush=True)
+
+
+_log("start; importing app.main")
 import app.main  # noqa: E402,F401 — register ALL ORM models (FK mapper config)
 from app.mcp import smoke_executor as ex  # noqa: E402
 
 ex._set_recovery_status("ready")
+_log(
+    "MCP_SMOKE_MODE=",
+    ex.settings.MCP_SMOKE_MODE,
+    "CONTAINER_RUNTIME=",
+    ex.CONTAINER_RUNTIME,
+    "availability=",
+    ex.smoke_availability(),
+)
 
 
 async def _main(submission_id: str) -> None:
-    await ex.run_and_store_smoke(submission_id)
+    result = await ex.run_and_store_smoke(submission_id)
+    _log("run_and_store_smoke returned", result)
 
 
 if __name__ == "__main__":
     asyncio.run(_main(sys.argv[1]))
+    _log("done")
