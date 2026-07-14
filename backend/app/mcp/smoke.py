@@ -213,6 +213,7 @@ def derive_smoke_evidence(smoke: dict | None, *, freshness: str | None = None) -
         "run_model": smoke.get("run_model"),
         "schema_version": smoke.get("schema_version"),
         "failure_reason": failure_reason,
+        "protocol_stage": smoke.get("protocol_stage"),
     }
     for k in ("checked_at", "expires_at", "recheck_at"):
         if smoke.get(k):

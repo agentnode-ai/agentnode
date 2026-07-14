@@ -10,7 +10,9 @@ review-fallback) for both registries.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -157,40 +159,7 @@ def test_run_argv_is_network_none_readonly_volume_nonroot():
     assert "--cap-drop=ALL" in argv
 
 
-def test_handshake_frames_contain_initialize_and_tools_list():
-    import json
-
-    frames = [json.loads(li) for li in ex.handshake_frames().splitlines() if li.strip()]
-    methods = [f.get("method") for f in frames]
-    assert "initialize" in methods
-    assert "notifications/initialized" in methods
-    assert "tools/list" in methods
-
-
-def test_parse_handshake_passed():
-    out = "\n".join(
-        [
-            "some server log line",
-            '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}',
-            '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"a"},{"name":"b"}]}}',
-        ]
-    )
-    p = ex.parse_handshake_output(out)
-    assert p["init_result"] is True and p["tools_count"] == 2 and p["any_json"] is True
-
-
-def test_parse_handshake_initialize_error():
-    out = '{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"nope"}}'
-    p = ex.parse_handshake_output(out)
-    assert p["init_error"] is True and p["init_result"] is False
-
-
-def test_parse_handshake_malformed():
-    p = ex.parse_handshake_output("{not json")
-    assert p["malformed"] is True and p["any_json"] is False
-
-
-# --- full status mapping via injected run_container --------------------------
+# --- full status mapping via injected seams (run_container + handshake) -------
 
 
 @pytest.fixture
@@ -201,8 +170,8 @@ def enabled(monkeypatch):
     monkeypatch.setattr(ex, "smoke_availability", lambda: (True, ""))
 
 
-def _fake_runner(install=(0, "", ""), run=(0, "", ""), install_exc=None, run_exc=None):
-    """Return a run_container stub: 1st call = install, 2nd = run, 3rd = volume rm."""
+def _run_seam(install=(0, "", ""), install_exc=None):
+    """run_container fake: phase-1 install (1st call) then volume-rm (later)."""
     state = {"n": 0}
 
     def runner(argv, input_text, timeout):
@@ -211,29 +180,43 @@ def _fake_runner(install=(0, "", ""), run=(0, "", ""), install_exc=None, run_exc
             if install_exc:
                 raise install_exc
             return install
-        if state["n"] == 2:
-            if run_exc:
-                raise run_exc
-            return run
         return (0, "", "")  # volume rm
 
     return runner
 
 
-def _passing_stdout():
-    return (
-        '{"jsonrpc":"2.0","id":1,"result":{}}\n'
-        '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"a"}]}}'
-    )
+def _hs_never(argv, timeout):
+    raise AssertionError("handshake must not run (phase 2 should be unreached)")
+
+
+def _hs_pass(tools_count=1):
+    return lambda argv, timeout: {
+        "ok": True,
+        "initialized": True,
+        "tools_count": tools_count,
+        "protocol_stage": "ok",
+        "failure_reason": None,
+    }
+
+
+def _hs_fail(failure_reason, protocol_stage=None):
+    return lambda argv, timeout: {
+        "ok": False,
+        "initialized": False,
+        "tools_count": None,
+        "protocol_stage": protocol_stage,
+        "failure_reason": failure_reason,
+    }
 
 
 def test_success_maps_to_passed(enabled):
     res = ex.run_smoke(
-        _manifest(), _sv(), run_container=_fake_runner(run=(0, _passing_stdout(), ""))
+        _manifest(), _sv(), run_container=_run_seam(), handshake=_hs_pass(1)
     )
     assert res["status"] == "passed"
     assert res["tools_count"] == 1
     assert res["initialized"] is True
+    assert res["protocol_stage"] == "ok"
     assert res["runtime"] == "npm" and res["version"] == "1.2.3"
     assert res["command_hash"] and res["image_digest"]
     # 2c-4a: freshness stamps
@@ -243,7 +226,10 @@ def test_success_maps_to_passed(enabled):
 
 def test_install_fail_is_review_fallback(enabled):
     res = ex.run_smoke(
-        _manifest(), _sv(), run_container=_fake_runner(install=(1, "", "boom"))
+        _manifest(),
+        _sv(),
+        run_container=_run_seam(install=(1, "", "boom")),
+        handshake=_hs_never,
     )
     assert res["status"] == "failed" and res["failure_reason"] == "install_failed"
 
@@ -252,47 +238,72 @@ def test_install_timeout_is_review_fallback(enabled):
     res = ex.run_smoke(
         _manifest(),
         _sv(),
-        run_container=_fake_runner(install_exc=subprocess.TimeoutExpired("x", 1)),
+        run_container=_run_seam(install_exc=subprocess.TimeoutExpired("x", 1)),
+        handshake=_hs_never,
     )
     assert res["failure_reason"] == "timeout"
 
 
 def test_startup_crash_is_hard(enabled):
-    # no JSON on stdout + non-zero exit -> startup_crash (hard block)
     res = ex.run_smoke(
-        _manifest(), _sv(), run_container=_fake_runner(run=(1, "boom traceback", ""))
+        _manifest(),
+        _sv(),
+        run_container=_run_seam(),
+        handshake=_hs_fail("startup_crash", "process_exited_before_initialize"),
     )
     assert res["status"] == "failed" and res["failure_reason"] == "startup_crash"
 
 
 def test_protocol_error_is_hard(enabled):
-    # ran (rc 0) but emitted no valid JSON-RPC -> protocol_error (hard)
     res = ex.run_smoke(
-        _manifest(), _sv(), run_container=_fake_runner(run=(0, "hello not json", ""))
+        _manifest(),
+        _sv(),
+        run_container=_run_seam(),
+        handshake=_hs_fail("protocol_error", "initialize_malformed"),
     )
     assert res["failure_reason"] == "protocol_error"
 
 
 def test_initialize_fail_is_review(enabled):
-    out = '{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"no"}}'
-    res = ex.run_smoke(_manifest(), _sv(), run_container=_fake_runner(run=(0, out, "")))
+    res = ex.run_smoke(
+        _manifest(),
+        _sv(),
+        run_container=_run_seam(),
+        handshake=_hs_fail("initialize_failed", "initialize_error"),
+    )
     assert res["failure_reason"] == "initialize_failed"
 
 
-def test_tools_list_fail_after_init_is_hard(enabled):
-    out = (
-        '{"jsonrpc":"2.0","id":1,"result":{}}\n'
-        '{"jsonrpc":"2.0","id":2,"error":{"code":-1,"message":"no tools"}}'
+def test_tools_list_error_is_hard(enabled):
+    # A genuine JSON-RPC error response to tools/list -> hard block.
+    res = ex.run_smoke(
+        _manifest(),
+        _sv(),
+        run_container=_run_seam(),
+        handshake=_hs_fail("tools_list_failed", "tools_list_error"),
     )
-    res = ex.run_smoke(_manifest(), _sv(), run_container=_fake_runner(run=(0, out, "")))
     assert res["failure_reason"] == "tools_list_failed"
+
+
+def test_tools_list_no_response_is_transient_not_hard(enabled):
+    # 2c-6 FIX: a server exiting after initialize (the prod race symptom) -> a
+    # TRANSIENT timeout/review, NOT a hard tools_list_failed.
+    res = ex.run_smoke(
+        _manifest(),
+        _sv(),
+        run_container=_run_seam(),
+        handshake=_hs_fail("timeout", "tools_list_no_response"),
+    )
+    assert res["failure_reason"] == "timeout"  # transient/review, not hard
+    assert res["protocol_stage"] == "tools_list_no_response"
 
 
 def test_runtime_timeout_is_review(enabled):
     res = ex.run_smoke(
         _manifest(),
         _sv(),
-        run_container=_fake_runner(run_exc=subprocess.TimeoutExpired("x", 1)),
+        run_container=_run_seam(),
+        handshake=_hs_fail("timeout", "tools_list_timeout"),
     )
     assert res["failure_reason"] == "timeout"
 
@@ -306,7 +317,7 @@ def test_volume_is_always_removed(enabled):
             return (1, "", "boom")  # install fails
         return (0, "", "")
 
-    ex.run_smoke(_manifest(), _sv(), run_container=runner)
+    ex.run_smoke(_manifest(), _sv(), run_container=runner, handshake=_hs_never)
     # last call must be the volume rm even though install failed
     assert any(
         a[:3] == [ex.CONTAINER_RUNTIME or "docker", "volume", "rm"] for a in seen
@@ -314,13 +325,18 @@ def test_volume_is_always_removed(enabled):
 
 
 def test_skipped_credentialed_returns_skipped_result(enabled):
-    res = ex.run_smoke(_manifest(env_keys=["K"]), _sv(), run_container=_fake_runner())
+    res = ex.run_smoke(
+        _manifest(env_keys=["K"]), _sv(), run_container=_run_seam(), handshake=_hs_never
+    )
     assert res["status"] == "skipped" and res["review_reason"] == "credentialed"
 
 
 def test_precondition_returns_none(enabled):
     res = ex.run_smoke(
-        _manifest(), _sv(exists=False, version=None), run_container=_fake_runner()
+        _manifest(),
+        _sv(exists=False, version=None),
+        run_container=_run_seam(),
+        handshake=_hs_never,
     )
     assert res is None  # nothing recorded; pre-smoke gate handles it
 
@@ -350,22 +366,24 @@ def test_run_argv_pypi_console_script_nonroot_netnone_ro():
 
 def test_pypi_success_maps_to_passed_console_script(enabled):
     res = ex.run_smoke(
-        _pypi_manifest(),
-        _pypi_sv(),
-        run_container=_fake_runner(run=(0, _passing_stdout(), "")),
+        _pypi_manifest(), _pypi_sv(), run_container=_run_seam(), handshake=_hs_pass(2)
     )
     assert res["status"] == "passed"
     assert res["runtime"] == "pypi"
     assert res["run_model"] == "console_script"
     assert res["package"] == "mcp-server-time"
     assert res["version"] == "2026.7.10"
-    assert res["tools_count"] == 1
+    assert res["tools_count"] == 2
+    assert res["protocol_stage"] == "ok"
     assert res["command_hash"] and res["image_digest"]
 
 
 def test_pypi_startup_crash_is_hard(enabled):
     res = ex.run_smoke(
-        _pypi_manifest(), _pypi_sv(), run_container=_fake_runner(run=(1, "boom", ""))
+        _pypi_manifest(),
+        _pypi_sv(),
+        run_container=_run_seam(),
+        handshake=_hs_fail("startup_crash", "process_exited_before_initialize"),
     )
     assert res["status"] == "failed" and res["failure_reason"] == "startup_crash"
 
@@ -374,26 +392,28 @@ def test_pypi_install_fail_is_review_fallback(enabled):
     res = ex.run_smoke(
         _pypi_manifest(),
         _pypi_sv(),
-        run_container=_fake_runner(install=(1, "", "boom")),
+        run_container=_run_seam(install=(1, "", "boom")),
+        handshake=_hs_never,
     )
     assert res["failure_reason"] == "install_failed"
 
 
 def test_pypi_initialize_fail_is_review(enabled):
-    out = '{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"no"}}'
     res = ex.run_smoke(
-        _pypi_manifest(), _pypi_sv(), run_container=_fake_runner(run=(0, out, ""))
+        _pypi_manifest(),
+        _pypi_sv(),
+        run_container=_run_seam(),
+        handshake=_hs_fail("initialize_failed", "initialize_error"),
     )
     assert res["failure_reason"] == "initialize_failed"
 
 
-def test_pypi_tools_list_fail_after_init_is_hard(enabled):
-    out = (
-        '{"jsonrpc":"2.0","id":1,"result":{}}\n'
-        '{"jsonrpc":"2.0","id":2,"error":{"code":-1,"message":"no tools"}}'
-    )
+def test_pypi_tools_list_error_is_hard(enabled):
     res = ex.run_smoke(
-        _pypi_manifest(), _pypi_sv(), run_container=_fake_runner(run=(0, out, ""))
+        _pypi_manifest(),
+        _pypi_sv(),
+        run_container=_run_seam(),
+        handshake=_hs_fail("tools_list_failed", "tools_list_error"),
     )
     assert res["failure_reason"] == "tools_list_failed"
 
@@ -565,3 +585,167 @@ def test_schedule_credentialed_no_task(enabled):
     bg = _BG()
     assert ex.maybe_schedule_smoke(bg, "id", _manifest(env_keys=["K"]), _sv()) is False
     assert bg.tasks == []
+
+
+# --- 2c-6: deterministic handshake state machine (pure, fake send/recv) -------
+
+_INIT_OK = '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}'
+_INIT_ERR = '{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"no"}}'
+_TOOLS_OK = '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"a"},{"name":"b"}]}}'
+_TOOLS_ERR = '{"jsonrpc":"2.0","id":2,"error":{"code":-1,"message":"no tools"}}'
+_TOOLS_NOTOOLS = '{"jsonrpc":"2.0","id":2,"result":{"nope":true}}'
+_NOTIF = '{"jsonrpc":"2.0","method":"notifications/message"}'
+_UNKNOWN_ID = '{"jsonrpc":"2.0","id":99,"result":{}}'
+_TIMEOUT = "__TIMEOUT__"
+
+
+def _mk_recv(items):
+    """items: list of str line / ex._EOF / _TIMEOUT (raises _Timeout)."""
+    it = iter(items)
+
+    def recv(timeout):
+        try:
+            item = next(it)
+        except StopIteration:
+            return ex._EOF
+        if item == _TIMEOUT:
+            raise ex._Timeout
+        return item
+
+    return recv
+
+
+def _do(items):
+    sent = []
+    res = ex._do_handshake(lambda m: sent.append(m), _mk_recv(items), step_timeout=1)
+    return res, sent
+
+
+def test_hs_normal_success():
+    res, sent = _do([_INIT_OK, _TOOLS_OK])
+    assert (
+        res["ok"] is True and res["tools_count"] == 2 and res["protocol_stage"] == "ok"
+    )
+    # sequential: initialize sent first, then initialized + tools/list AFTER the
+    # initialize response was received.
+    assert sent[0]["method"] == "initialize"
+    methods = [m.get("method") for m in sent]
+    assert "notifications/initialized" in methods and "tools/list" in methods
+
+
+def test_hs_skips_notification_and_log_noise_before_responses():
+    res, _ = _do([_NOTIF, "starting up (not json)", _INIT_OK, _NOTIF, _TOOLS_OK])
+    assert res["ok"] is True and res["tools_count"] == 2
+
+
+def test_hs_skips_unknown_response_id():
+    res, _ = _do([_INIT_OK, _UNKNOWN_ID, _TOOLS_OK])
+    assert res["ok"] is True
+
+
+def test_hs_process_exit_before_initialize_is_startup_crash():
+    res, _ = _do([ex._EOF])
+    assert res["protocol_stage"] == "process_exited_before_initialize"
+    assert res["failure_reason"] == "startup_crash"
+
+
+def test_hs_initialize_timeout():
+    res, _ = _do([_TIMEOUT])
+    assert (
+        res["protocol_stage"] == "initialize_timeout"
+        and res["failure_reason"] == "timeout"
+    )
+
+
+def test_hs_initialize_error():
+    res, _ = _do([_INIT_ERR])
+    assert res["protocol_stage"] == "initialize_error"
+    assert res["failure_reason"] == "initialize_failed"
+
+
+def test_hs_initialize_malformed():
+    res, _ = _do(["{not valid json"])
+    assert res["protocol_stage"] == "initialize_malformed"
+    assert res["failure_reason"] == "protocol_error"
+
+
+def test_hs_tools_list_no_response_after_init_is_transient():
+    # THE regression at the state-machine level: EOF after initialize -> transient.
+    res, _ = _do([_INIT_OK, ex._EOF])
+    assert res["initialized"] is True
+    assert res["protocol_stage"] == "tools_list_no_response"
+    assert res["failure_reason"] == "timeout"  # NOT tools_list_failed
+
+
+def test_hs_tools_list_timeout_is_transient():
+    res, _ = _do([_INIT_OK, _TIMEOUT])
+    assert (
+        res["protocol_stage"] == "tools_list_timeout"
+        and res["failure_reason"] == "timeout"
+    )
+
+
+def test_hs_tools_list_error_is_hard():
+    res, _ = _do([_INIT_OK, _TOOLS_ERR])
+    assert res["protocol_stage"] == "tools_list_error"
+    assert res["failure_reason"] == "tools_list_failed"
+
+
+def test_hs_tools_list_malformed_shape():
+    res, _ = _do([_INIT_OK, _TOOLS_NOTOOLS])
+    assert res["protocol_stage"] == "tools_list_malformed"
+    assert res["failure_reason"] == "protocol_error"
+
+
+# --- 2c-6: real-subprocess integration (a REAL interactive mock MCP server) ---
+# No docker/image needed: exercises the real Popen + threaded reader + handshake.
+
+_MOCK = os.path.join(os.path.dirname(__file__), "_mcp_mock_server.py")
+
+
+def _rh(mode, timeout=5):
+    return ex._run_handshake([sys.executable, _MOCK, mode], timeout)
+
+
+def test_integration_normal_handshake_passes():
+    r = _rh("normal")
+    assert r["ok"] is True and r["tools_count"] == 2 and r["protocol_stage"] == "ok"
+
+
+def test_integration_exit_after_init_is_transient_regression():
+    # Reproduces the production race: the server answers initialize then exits
+    # before tools/list. The OLD send-all-then-EOF runner classified this as a
+    # HARD tools_list_failed; the deterministic handshake classifies it as
+    # tools_list_no_response -> timeout (transient/review), never a hard block.
+    r = _rh("exit_after_init")
+    assert r["ok"] is False
+    assert r["initialized"] is True
+    assert r["protocol_stage"] == "tools_list_no_response"
+    assert r["failure_reason"] == "timeout"
+
+
+def test_integration_crash_is_startup_crash():
+    r = _rh("crash")
+    assert r["failure_reason"] == "startup_crash"
+
+
+def test_integration_tools_error_is_hard():
+    r = _rh("tools_error")
+    assert r["failure_reason"] == "tools_list_failed"
+    assert r["protocol_stage"] == "tools_list_error"
+
+
+def test_integration_init_error():
+    r = _rh("init_error")
+    assert r["failure_reason"] == "initialize_failed"
+
+
+def test_integration_noise_before_responses_is_skipped():
+    r = _rh("noise")
+    assert r["ok"] is True and r["tools_count"] == 2
+
+
+def test_integration_hang_init_times_out():
+    r = _rh("hang_init", timeout=1)  # short per-step timeout
+    assert r["failure_reason"] == "timeout"
+    assert r["protocol_stage"] == "initialize_timeout"

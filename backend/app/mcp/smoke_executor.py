@@ -33,7 +33,9 @@ import functools
 import hashlib
 import json
 import logging
+import queue
 import subprocess
+import threading
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -262,10 +264,25 @@ def volume_rm_argv(volume: str) -> list[str]:
     return [CONTAINER_RUNTIME or "docker", "volume", "rm", "-f", volume]
 
 
-def handshake_frames() -> str:
-    """The three newline-delimited JSON-RPC messages fed to the server's stdin:
-    initialize (id=1), the initialized notification, and tools/list (id=2)."""
-    init = {
+# ---------------------------------------------------------------------------
+# Deterministic MCP stdio handshake (2c-6). MCP stdio transport = newline-
+# delimited JSON. We send one request at a time and FULLY await its response by
+# id BEFORE the next step, keeping stdin OPEN until after the tools/list response.
+# This fixes the 2c-2 send-all-then-EOF race, where a server could exit on stdin
+# EOF before emitting the tools/list response (falsely classified tools_list_failed).
+# ---------------------------------------------------------------------------
+
+_EOF = object()  # sentinel: the process closed stdout / exited
+_MALFORMED = object()  # sentinel: a line looked like JSON but did not parse
+_MAX_SKIP = 200  # bound the skip loop against a chatty server (log/notification spam)
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _init_msg() -> dict:
+    return {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
@@ -275,71 +292,185 @@ def handshake_frames() -> str:
             "clientInfo": {"name": "agentnode-smoke", "version": "0.1.0"},
         },
     }
-    initialized = {"jsonrpc": "2.0", "method": "notifications/initialized"}
-    tools = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
-    return "\n".join(json.dumps(m) for m in (init, initialized, tools)) + "\n"
 
 
-def parse_handshake_output(stdout: str) -> dict:
-    """Pure parse of the server's stdout. Matches JSON-RPC responses by id.
+_INITIALIZED_MSG = {"jsonrpc": "2.0", "method": "notifications/initialized"}
 
-    Returns {any_json, malformed, init_result, init_error, tools_count,
-    tools_error}. Non-JSON log lines are ignored, but a line that starts like
-    JSON yet fails to parse flips ``malformed``.
-    """
-    any_json = False
-    malformed = False
-    init_result = False
-    init_error = False
-    tools_count: int | None = None
-    tools_error = False
 
-    for line in (stdout or "").splitlines():
-        s = line.strip()
-        if not s:
-            continue
-        if s[0] not in "{[":
-            continue  # server log noise, not a JSON-RPC frame
-        try:
-            msg = json.loads(s)
-        except Exception:
-            malformed = True
-            continue
-        if not isinstance(msg, dict):
-            continue
-        any_json = True
-        mid = msg.get("id")
-        if mid == 1:
-            if "error" in msg:
-                init_error = True
-            elif "result" in msg:
-                init_result = True
-        elif mid == 2:
-            if "error" in msg:
-                tools_error = True
-            else:
-                result = msg.get("result") or {}
-                tools = result.get("tools")
-                if isinstance(tools, list):
-                    tools_count = len(tools)
-                else:
-                    tools_error = True
+def _tools_list_msg() -> dict:
+    return {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
 
+
+def _parse_line(line: str):
+    """A stdout line -> a JSON-RPC dict, None (log noise), or _MALFORMED."""
+    s = (line or "").strip()
+    if not s or s[0] not in "{[":
+        return None  # server log noise, not a JSON-RPC frame
+    try:
+        msg = json.loads(s)
+    except Exception:
+        return _MALFORMED
+    return msg if isinstance(msg, dict) else None
+
+
+def _hs(stage: str, failure=None, initialized: bool = False, tools_count=None) -> dict:
     return {
-        "any_json": any_json,
-        "malformed": malformed,
-        "init_result": init_result,
-        "init_error": init_error,
+        "ok": stage == "ok",
+        "initialized": initialized,
         "tools_count": tools_count,
-        "tools_error": tools_error,
+        "protocol_stage": stage,
+        "failure_reason": failure,
     }
 
 
-def _truncate(text: str) -> str:
-    b = (text or "").encode("utf-8", "replace")
-    if len(b) <= _MAX_OUTPUT_BYTES:
-        return text or ""
-    return b[:_MAX_OUTPUT_BYTES].decode("utf-8", "replace") + "\n[truncated]"
+def _do_handshake(send, recv_line, *, step_timeout: float) -> dict:
+    """Sequential JSON-RPC handshake. ``send(dict)`` writes a message; each read
+    ``recv_line(timeout)`` returns the next stdout line (str), the ``_EOF``
+    sentinel on process exit, and raises ``_Timeout`` on a per-step timeout.
+
+    Requests go one at a time and each response is awaited by id before the next
+    step (stdin stays open). Returns {ok, initialized, tools_count, protocol_stage,
+    failure_reason}. protocol_stage is a fine-grained sanitized diagnostic; the
+    failure_reason maps to the STABLE codes the gate already understands.
+    """
+    # --- step 1: initialize (wait for the id=1 response) ---
+    send(_init_msg())
+    for _ in range(_MAX_SKIP):
+        try:
+            line = recv_line(step_timeout)
+        except _Timeout:
+            return _hs("initialize_timeout", "timeout")
+        if line is _EOF:
+            return _hs("process_exited_before_initialize", "startup_crash")
+        msg = _parse_line(line)
+        if msg is None:
+            continue  # server log noise
+        if msg is _MALFORMED:
+            return _hs("initialize_malformed", "protocol_error")
+        if msg.get("id") == 1:
+            if "error" in msg:
+                return _hs("initialize_error", "initialize_failed")
+            if "result" in msg:
+                break
+            return _hs("initialize_malformed", "protocol_error")
+        # a notification or a different id -> skip and keep reading
+    else:
+        return _hs("initialize_timeout", "timeout")  # only noise, never a response
+
+    # --- step 2: initialized notification + tools/list (wait for the id=2 response) ---
+    send(_INITIALIZED_MSG)
+    send(_tools_list_msg())
+    for _ in range(_MAX_SKIP):
+        try:
+            line = recv_line(step_timeout)
+        except _Timeout:
+            return _hs("tools_list_timeout", "timeout", initialized=True)
+        if line is _EOF:
+            # Server exited after initialize without answering tools/list — the old
+            # race symptom. Classify TRANSIENT (review), never a hard tools_list_failed,
+            # so a good-but-eager server is never falsely hard-blocked.
+            return _hs("tools_list_no_response", "timeout", initialized=True)
+        msg = _parse_line(line)
+        if msg is None:
+            continue
+        if msg is _MALFORMED:
+            return _hs("tools_list_malformed", "protocol_error", initialized=True)
+        if msg.get("id") == 2:
+            if "error" in msg:
+                # A genuine JSON-RPC error response -> the server is broken (hard).
+                return _hs("tools_list_error", "tools_list_failed", initialized=True)
+            result = msg.get("result") or {}
+            tools = result.get("tools")
+            if isinstance(tools, list):
+                return _hs("ok", None, initialized=True, tools_count=len(tools))
+            return _hs("tools_list_malformed", "protocol_error", initialized=True)
+        # skip
+    else:
+        return _hs("tools_list_timeout", "timeout", initialized=True)
+
+
+class _StdioProc:
+    """Wraps a Popen'd stdio process: one background thread reads stdout line-by-
+    line into a queue (so recv_line has a real per-call timeout without leaking a
+    reader per call and without a partial-read/multiple-per-read bug), a second
+    drains stderr (bounded, discarded) to avoid a full-pipe deadlock."""
+
+    def __init__(self, proc: subprocess.Popen):
+        self._proc = proc
+        self._q: queue.Queue = queue.Queue()
+        threading.Thread(target=self._read_stdout, daemon=True).start()
+        threading.Thread(target=self._drain_stderr, daemon=True).start()
+
+    def _read_stdout(self) -> None:
+        try:
+            for line in self._proc.stdout:  # complete lines until EOF
+                self._q.put(line)
+        except Exception:
+            pass
+        finally:
+            self._q.put(_EOF)
+
+    def _drain_stderr(self) -> None:
+        try:
+            for _line in self._proc.stderr:  # discard (never parsed as JSON-RPC)
+                pass
+        except Exception:
+            pass
+
+    def send(self, msg: dict) -> None:
+        try:
+            self._proc.stdin.write(json.dumps(msg) + "\n")
+            self._proc.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            # The process exited / stdin closed. Don't raise — the recv side will
+            # surface EOF and classify the stage correctly (process_exited_before_
+            # initialize, or tools_list_no_response when it exits after initialize).
+            pass
+
+    def recv_line(self, timeout: float):
+        try:
+            return self._q.get(timeout=timeout)  # str line or _EOF
+        except queue.Empty:
+            raise _Timeout
+
+    def close(self) -> None:
+        try:
+            if self._proc.stdin and not self._proc.stdin.closed:
+                self._proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self._proc.terminate()
+            self._proc.wait(timeout=5)
+        except Exception:
+            try:
+                self._proc.kill()
+                self._proc.wait(timeout=2)
+            except Exception:
+                pass
+
+
+def _run_handshake(argv: list[str], timeout: int) -> dict:
+    """Popen the runtime container (argv), run the deterministic handshake over its
+    stdio, and ALWAYS terminate + reap the process in finally. ``timeout`` is the
+    per-step read timeout. Returns the _do_handshake result; never leaves the
+    process running. This is the real-runtime seam — tests inject a fake."""
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    sp = _StdioProc(proc)
+    try:
+        return _do_handshake(sp.send, sp.recv_line, step_timeout=timeout)
+    except (BrokenPipeError, OSError):
+        # stdin write failed -> the process exited immediately (startup crash).
+        return _hs("process_exited_before_initialize", "startup_crash")
+    finally:
+        sp.close()
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +521,9 @@ def _result(status: str, **fields) -> dict:
         "schema_version": settings.MCP_SMOKE_SCHEMA_VERSION,
         "failure_reason": fields.get("failure_reason"),
         "review_reason": fields.get("review_reason"),
+        # 2c-6: fine-grained sanitized handshake diagnostic (no secrets); the
+        # stable failure_reason above is what the gate classifies on.
+        "protocol_stage": fields.get("protocol_stage"),
         "checked_at": checked,
         "expires_at": expires,
         "recheck_at": recheck,
@@ -434,17 +568,21 @@ _REGISTRIES = {
 }
 
 
-def run_smoke(manifest: dict, sv: dict, *, run_container=None, now=None) -> dict | None:
+def run_smoke(
+    manifest: dict, sv: dict, *, run_container=None, handshake=None, now=None
+) -> dict | None:
     """Execute (or skip) the sandbox smoke for an npm or PyPI MCP and return a
     SmokeResult dict, or None if no smoke should be recorded (a pre-smoke gate
     handles it). Registry-generic: the npm (2c-2) and pypi (2c-3) paths differ
-    only in the install/run argv + evidence labels; the JSON-RPC handshake,
-    parsing, status mapping, and cleanup are shared.
+    only in the install/run argv + evidence labels; the deterministic JSON-RPC
+    handshake (2c-6), status mapping, and cleanup are shared.
 
-    ``run_container`` and ``now`` are injectable for testing. Pure except for the
-    container seam. Never raises — failures map to a SmokeResult.
+    ``run_container`` (install + volume rm), ``handshake`` (the phase-2 stdio
+    handshake), and ``now`` are injectable for testing. Never raises — failures
+    map to a SmokeResult.
     """
     run_container = run_container or _run_container
+    handshake = handshake or _run_handshake
     now = now or (lambda: datetime.now(timezone.utc))
     stamp = now().isoformat()
 
@@ -503,50 +641,35 @@ def run_smoke(manifest: dict, sv: dict, *, run_container=None, now=None) -> dict
                 **base,
             )
 
-        # Phase 2 — run the server (network=none, volume read-only) + handshake.
+        # Phase 2 — run the server (network=none, volume read-only) + the
+        # deterministic sequential JSON-RPC handshake (2c-6).
         try:
-            rc2, out2, err2 = run_container(
+            hs = handshake(
                 run_fn(image, volume, package, version),
-                handshake_frames(),
                 settings.MCP_SMOKE_RUNTIME_TIMEOUT,
             )
         except subprocess.TimeoutExpired:
             return _result(
-                "failed", failure_reason="timeout", duration_ms=_elapsed_ms(), **base
-            )
-
-        if len(_truncate(out2)) != len(out2 or "") or len(_truncate(err2)) != len(
-            err2 or ""
-        ):
-            # Output blew past the cap — couldn't complete cleanly.
-            return _result(
                 "failed",
-                failure_reason="excessive_output",
+                failure_reason="timeout",
+                protocol_stage="runtime_timeout",
                 duration_ms=_elapsed_ms(),
                 **base,
             )
-
-        p = parse_handshake_output(out2)
         dur = _elapsed_ms()
-        if not p["any_json"]:
-            reason = "startup_crash" if rc2 != 0 else "protocol_error"
-            return _result("failed", failure_reason=reason, duration_ms=dur, **base)
-        if p["malformed"] and not p["init_result"]:
+        if hs.get("ok"):
             return _result(
-                "failed", failure_reason="protocol_error", duration_ms=dur, **base
-            )
-        if p["init_error"] or not p["init_result"]:
-            return _result(
-                "failed", failure_reason="initialize_failed", duration_ms=dur, **base
-            )
-        if p["tools_error"] or p["tools_count"] is None:
-            return _result(
-                "failed", failure_reason="tools_list_failed", duration_ms=dur, **base
+                "passed",
+                initialized=True,
+                tools_count=hs.get("tools_count"),
+                protocol_stage="ok",
+                duration_ms=dur,
+                **base,
             )
         return _result(
-            "passed",
-            initialized=True,
-            tools_count=p["tools_count"],
+            "failed",
+            failure_reason=hs.get("failure_reason") or "protocol_error",
+            protocol_stage=hs.get("protocol_stage"),
             duration_ms=dur,
             **base,
         )
