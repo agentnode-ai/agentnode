@@ -15,6 +15,7 @@ import os
 
 os.environ.setdefault("MCP_SMOKE_MODE", "disabled")
 
+import app.main  # noqa: E402,F401 — register ALL ORM models (FK mapper config)
 from app.mcp import smoke_executor as ex  # noqa: E402
 
 

@@ -17,6 +17,7 @@ import sys
 
 os.environ["MCP_SMOKE_MODE"] = "container"
 
+import app.main  # noqa: E402,F401 — register ALL ORM models (FK mapper config)
 from app.mcp import smoke_executor as ex  # noqa: E402
 
 ex._set_recovery_status("ready")
