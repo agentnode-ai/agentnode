@@ -184,7 +184,7 @@ def _run_seam(install=(0, "", ""), install_exc=None):
     """run_container fake: phase-1 install (1st call) then volume-rm (later)."""
     state = {"n": 0}
 
-    def runner(argv, input_text, timeout):
+    def runner(argv, input_text, timeout, capture=True):
         state["n"] += 1
         if state["n"] == 1:
             if install_exc:
@@ -321,7 +321,7 @@ def test_runtime_timeout_is_review(enabled):
 def test_volume_is_always_removed(enabled):
     seen = []
 
-    def runner(argv, input_text, timeout):
+    def runner(argv, input_text, timeout, capture=True):
         seen.append(argv)
         if len(seen) == 1:
             return (1, "", "boom")  # install fails

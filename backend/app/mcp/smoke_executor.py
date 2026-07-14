@@ -33,19 +33,19 @@ import functools
 import hashlib
 import json
 import logging
+import os
 import queue
 import re
 import subprocess
 import threading
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 from uuid import UUID, uuid4
 
 from app.config import CONTAINER_RUNTIME, settings
 from app.mcp.smoke import TRANSIENT_FAILURES, evaluate_smoke_freshness
 
 logger = logging.getLogger("agentnode.mcp.smoke")
-
-_MAX_OUTPUT_BYTES = 64 * 1024
 
 # Hardened flags shared by both phases (network, read-only, and USER differ per
 # phase — see below). Host verification (2c-2) showed a fresh named volume is
@@ -340,7 +340,9 @@ def volume_rm_argv(volume: str) -> list[str]:
 
 _EOF = object()  # sentinel: the process closed stdout / exited
 _MALFORMED = object()  # sentinel: a line looked like JSON but did not parse
+_EXCESSIVE_OUTPUT = object()  # sentinel (G3): stdout exceeded the byte cap
 _MAX_SKIP = 200  # bound the skip loop against a chatty server (log/notification spam)
+_READ_CHUNK = 8192  # G3: fixed byte chunk for the bounded stdout reader
 
 
 class _Timeout(Exception):
@@ -408,6 +410,8 @@ def _do_handshake(send, recv_line, *, step_timeout: float) -> dict:
             return _hs("initialize_timeout", "timeout")
         if line is _EOF:
             return _hs("process_exited_before_initialize", "startup_crash")
+        if line is _EXCESSIVE_OUTPUT:
+            return _hs("initialize_excessive_output", "excessive_output")
         msg = _parse_line(line)
         if msg is None:
             continue  # server log noise
@@ -436,6 +440,10 @@ def _do_handshake(send, recv_line, *, step_timeout: float) -> dict:
             # race symptom. Classify TRANSIENT (review), never a hard tools_list_failed,
             # so a good-but-eager server is never falsely hard-blocked.
             return _hs("tools_list_no_response", "timeout", initialized=True)
+        if line is _EXCESSIVE_OUTPUT:
+            return _hs(
+                "tools_list_excessive_output", "excessive_output", initialized=True
+            )
         msg = _parse_line(line)
         if msg is None:
             continue
@@ -456,36 +464,64 @@ def _do_handshake(send, recv_line, *, step_timeout: float) -> dict:
 
 
 class _StdioProc:
-    """Wraps a Popen'd stdio process: one background thread reads stdout line-by-
-    line into a queue (so recv_line has a real per-call timeout without leaking a
-    reader per call and without a partial-read/multiple-per-read bug), a second
-    drains stderr (bounded, discarded) to avoid a full-pipe deadlock."""
+    """Wraps a Popen'd stdio process (BINARY stdout). ONE background thread reads
+    stdout in fixed byte chunks (G3), splits newline-delimited frames, and pushes
+    decoded str lines into a BOUNDED queue — capping TOTAL bytes at
+    ``max_output_bytes`` so neither a chatty server (many lines) nor a single giant
+    line (no newline) can grow the API process's memory. stderr goes straight to
+    DEVNULL (no pipe -> no drain thread, no full-pipe deadlock). ``recv_line``
+    yields a str line, the ``_EOF`` sentinel on exit, or ``_EXCESSIVE_OUTPUT`` when
+    the cap is hit; it raises ``_Timeout`` on a per-step timeout."""
 
-    def __init__(self, proc: subprocess.Popen):
+    def __init__(self, proc: subprocess.Popen, max_output_bytes: int):
         self._proc = proc
-        self._q: queue.Queue = queue.Queue()
-        threading.Thread(target=self._read_stdout, daemon=True).start()
-        threading.Thread(target=self._drain_stderr, daemon=True).start()
+        self._max = max_output_bytes
+        self._q: queue.Queue = queue.Queue(maxsize=256)
+        self._stop = threading.Event()
+        self._reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self._reader.start()
+
+    def _safe_put(self, item) -> None:
+        # Bounded queue: never block forever. Once close() sets _stop (consumer is
+        # gone), stop trying — the daemon thread then exits with the process.
+        while not self._stop.is_set():
+            try:
+                self._q.put(item, timeout=0.2)
+                return
+            except queue.Full:
+                continue
 
     def _read_stdout(self) -> None:
+        buf = bytearray()
+        total = 0
         try:
-            for line in self._proc.stdout:  # complete lines until EOF
-                self._q.put(line)
+            stream = self._proc.stdout  # binary BufferedReader
+            while not self._stop.is_set():
+                chunk = stream.read1(_READ_CHUNK)  # available bytes, not block-for-full
+                if not chunk:
+                    break  # EOF
+                total += len(chunk)
+                if total > self._max:
+                    self._safe_put(_EXCESSIVE_OUTPUT)  # hard byte cap (line or flood)
+                    return
+                buf.extend(chunk)
+                while True:
+                    nl = buf.find(b"\n")
+                    if nl < 0:
+                        break
+                    line = bytes(buf[:nl])
+                    del buf[: nl + 1]
+                    self._safe_put(line.decode("utf-8", "replace"))
+            if buf and not self._stop.is_set():
+                self._safe_put(bytes(buf).decode("utf-8", "replace"))
         except Exception:
             pass
         finally:
-            self._q.put(_EOF)
-
-    def _drain_stderr(self) -> None:
-        try:
-            for _line in self._proc.stderr:  # discard (never parsed as JSON-RPC)
-                pass
-        except Exception:
-            pass
+            self._safe_put(_EOF)
 
     def send(self, msg: dict) -> None:
         try:
-            self._proc.stdin.write(json.dumps(msg) + "\n")
+            self._proc.stdin.write((json.dumps(msg) + "\n").encode("utf-8"))
             self._proc.stdin.flush()
         except (BrokenPipeError, OSError, ValueError):
             # The process exited / stdin closed. Don't raise — the recv side will
@@ -495,11 +531,12 @@ class _StdioProc:
 
     def recv_line(self, timeout: float):
         try:
-            return self._q.get(timeout=timeout)  # str line or _EOF
+            return self._q.get(timeout=timeout)  # str line, _EOF, or _EXCESSIVE_OUTPUT
         except queue.Empty:
             raise _Timeout
 
     def close(self) -> None:
+        self._stop.set()  # unblock a queue-full reader; stop further reads
         try:
             if self._proc.stdin and not self._proc.stdin.closed:
                 self._proc.stdin.close()
@@ -514,22 +551,25 @@ class _StdioProc:
                 self._proc.wait(timeout=2)
             except Exception:
                 pass
+        # Reader ends on process-exit (read1 -> b"") or _stop; join so no thread leak.
+        try:
+            self._reader.join(timeout=2)
+        except Exception:
+            pass
 
 
 def _run_handshake(argv: list[str], timeout: int) -> dict:
-    """Popen the runtime container (argv), run the deterministic handshake over its
-    stdio, and ALWAYS terminate + reap the process in finally. ``timeout`` is the
-    per-step read timeout. Returns the _do_handshake result; never leaves the
-    process running. This is the real-runtime seam — tests inject a fake."""
+    """Popen the runtime container (argv) in BINARY mode with stderr -> DEVNULL, run
+    the deterministic handshake over its stdio, and ALWAYS terminate + reap the
+    process in finally. ``timeout`` is the per-step read timeout. Returns the
+    _do_handshake result; never leaves the process running. Real-runtime seam."""
     proc = subprocess.Popen(
         argv,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
+        stderr=subprocess.DEVNULL,  # server logs discarded — no pipe, no deadlock
     )
-    sp = _StdioProc(proc)
+    sp = _StdioProc(proc, settings.MCP_SMOKE_MAX_OUTPUT_BYTES)
     try:
         return _do_handshake(sp.send, sp.recv_line, step_timeout=timeout)
     except (BrokenPipeError, OSError):
@@ -544,10 +584,24 @@ def _run_handshake(argv: list[str], timeout: int) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _run_container(argv: list[str], input_text: str | None, timeout: int):
-    """Run one container invocation. Returns (returncode, stdout, stderr).
-    Raises subprocess.TimeoutExpired on timeout. The ONLY seam that touches a
-    real runtime — tests inject a fake."""
+def _run_container(argv: list[str], input_text: str | None, timeout: int, capture=True):
+    """Run one container invocation. Returns (returncode, stdout, stderr). Raises
+    subprocess.TimeoutExpired on timeout. The ONLY seam that touches a real runtime.
+
+    G3: ``capture=False`` sends stdout+stderr to DEVNULL and returns empty strings —
+    used for the install + volume-rm phases (run_smoke only needs the returncode),
+    so a verbose/hostile install can't hold unbounded output in the API process's
+    RAM. The reaper/list/inspect callers keep ``capture=True`` (they need the text)."""
+    if not capture:
+        proc = subprocess.run(
+            argv,
+            input=input_text,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode, "", ""
     proc = subprocess.run(
         argv,
         input=input_text,
@@ -688,12 +742,14 @@ def run_smoke(
         return int((now() - started).total_seconds() * 1000)
 
     try:
-        # Phase 1 — install (with network) into the volume.
+        # Phase 1 — install (with network) into the volume. G3: no output capture
+        # (only rc matters) so a verbose/hostile install can't fill the API's RAM.
         try:
             rc, out, err = run_container(
                 install_fn(image, volume, package, version),
                 None,
                 settings.MCP_SMOKE_INSTALL_TIMEOUT,
+                capture=False,
             )
         except subprocess.TimeoutExpired:
             return _result(
@@ -747,7 +803,7 @@ def run_smoke(
     finally:
         # Always remove the volume, even on failure — no leaked state.
         try:
-            run_container(volume_rm_argv(volume), None, 15)
+            run_container(volume_rm_argv(volume), None, 15, capture=False)
         except Exception:
             pass
 
@@ -777,6 +833,134 @@ def _is_fresh(iso: str | None) -> bool:
     if started.tzinfo is None:
         started = started.replace(tzinfo=timezone.utc)
     return datetime.now(timezone.utc) - started < _RUNNING_TTL
+
+
+# ---------------------------------------------------------------------------
+# G3 — host-resource preflight (RAM/disk) + backlog bounding. Measured with stdlib
+# only (/proc/meminfo, os.statvfs, os.getloadavg) — no psutil, no shell pipes, no
+# docker-info per smoke. A shortfall or a measurement error is FAIL-CLOSED for the
+# smoke (no container) and transient/review, never a hard package fault.
+# ---------------------------------------------------------------------------
+
+
+class ResourceCheck(NamedTuple):
+    ok: bool
+    memory_available_mb: int | None
+    memory_required_mb: int
+    disk_free_gb: float | None
+    disk_required_gb: int
+    load_1m: float | None
+    reason: str | None  # None when ok; else *_below_minimum / *_measurement_failed
+
+
+def _read_mem_available_mb() -> int | None:
+    """MemAvailable from /proc/meminfo, in MiB. None on any read/parse error."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024  # kB -> MiB
+    except Exception:
+        return None
+    return None
+
+
+def _free_disk_gb(path: str) -> float | None:
+    """Free space (available to unprivileged users) at ``path``, in GiB. None on
+    error. On this host /var/lib/docker is on /, so this reflects the docker fs."""
+    try:
+        st = os.statvfs(path)
+        return (st.f_bavail * st.f_frsize) / (1024**3)
+    except Exception:
+        return None
+
+
+def check_host_resources() -> ResourceCheck:
+    """Authoritative host-resource gate, measured just before a docker run. Load is
+    diagnostic ONLY (never blocks). RAM/disk below the configured minimum -> not ok;
+    a measurement failure -> not ok (fail-closed). Testable via the injectable
+    module-level measurement helpers (_read_mem_available_mb / _free_disk_gb)."""
+    req_mem = settings.MCP_SMOKE_MIN_AVAILABLE_MEMORY_MB
+    req_disk = settings.MCP_SMOKE_MIN_FREE_DISK_GB
+    try:
+        load1 = round(os.getloadavg()[0], 2)
+    except Exception:
+        load1 = None
+    mem = _read_mem_available_mb()
+    if mem is None:
+        return ResourceCheck(
+            False, None, req_mem, None, req_disk, load1, "memory_measurement_failed"
+        )
+    disk = _free_disk_gb(settings.MCP_SMOKE_DOCKER_ROOT)
+    if disk is None:
+        return ResourceCheck(
+            False, mem, req_mem, None, req_disk, load1, "disk_measurement_failed"
+        )
+    if mem < req_mem:
+        return ResourceCheck(
+            False, mem, req_mem, round(disk, 2), req_disk, load1, "memory_below_minimum"
+        )
+    if disk < req_disk:
+        return ResourceCheck(
+            False, mem, req_mem, round(disk, 2), req_disk, load1, "disk_below_minimum"
+        )
+    return ResourceCheck(True, mem, req_mem, round(disk, 2), req_disk, load1, None)
+
+
+def _should_store_resource_unavailable(prev: dict | None, prev_freshness: str) -> bool:
+    """Whether a resource_unavailable ('could not test right now') result may REPLACE
+    the stored smoke. It must NEVER downgrade authoritative evidence: not a fresh,
+    key-matching PASS (kept; G1 already guards this) and not an objective HARD
+    failure (kept — a momentary host shortfall must not turn a real hard block into
+    transient/review). It DOES replace absent / expired / key-mismatch / transient /
+    unavailable / skipped evidence."""
+    if not prev:
+        return True
+    if prev_freshness == "fresh":
+        return False  # fresh key-matching pass — keep
+    if (
+        prev.get("status") == "failed"
+        and prev.get("failure_reason") not in TRANSIENT_FAILURES
+    ):
+        return False  # objective HARD failure — never downgrade to transient
+    return True
+
+
+# ---------------------------------------------------------------------------
+# G3 — bounded in-flight scheduling. asyncio is single-threaded, so this counter is
+# mutated only from the event loop with NO await between check and increment ->
+# atomic, no lock needed. Process-local: an API restart resets it to 0. It caps how
+# many tasks may WAIT (the Semaphore already caps ACTIVE docker runs at 1).
+# ---------------------------------------------------------------------------
+
+_inflight = 0
+
+
+def _try_claim_inflight() -> bool:
+    """Non-blocking, no-await claim of a scheduling slot. max in-flight = 1 active +
+    MCP_SMOKE_MAX_PENDING. Returns False (busy) when the cap is reached."""
+    global _inflight
+    if _inflight >= 1 + settings.MCP_SMOKE_MAX_PENDING:
+        return False
+    _inflight += 1
+    return True
+
+
+def _release_inflight() -> None:
+    global _inflight
+    if _inflight > 0:  # never negative
+        _inflight -= 1
+
+
+async def _run_scheduled_smoke(submission_id: str) -> None:
+    """BackgroundTask wrapper that ALWAYS releases the in-flight slot — on success,
+    G1-skip, resource_unavailable, or any error. NOTE: run_and_store_smoke may also
+    be called DIRECTLY (canary/tests) without a claim; that path does not touch the
+    counter (only this wrapper claims/releases)."""
+    try:
+        await run_and_store_smoke(submission_id)
+    finally:
+        _release_inflight()
 
 
 # ---------------------------------------------------------------------------
@@ -1006,7 +1190,24 @@ def maybe_schedule_smoke(
         return False
     if not should_schedule_smoke_recheck(manifest, sv):
         return False  # a fresh result / running marker already covers it — no spam
-    background_tasks.add_task(run_and_store_smoke, str(submission_id))
+    # G3: bound the WAITING backlog (the semaphore bounds ACTIVE runs). Excess ->
+    # busy: no task, no smoke_running, no docker; gate stays not_run/future so an
+    # admin reverify can retry later.
+    if not _try_claim_inflight():
+        logger.info(
+            "mcp smoke busy: inflight=%s max_inflight=%s active_limit=1 "
+            "max_pending=%s sub=%s",
+            _inflight,
+            1 + settings.MCP_SMOKE_MAX_PENDING,
+            settings.MCP_SMOKE_MAX_PENDING,
+            str(submission_id)[:8],
+        )
+        return False
+    try:
+        background_tasks.add_task(_run_scheduled_smoke, str(submission_id))
+    except Exception:
+        _release_inflight()  # scheduling failed -> free the slot immediately
+        raise
     return True
 
 
@@ -1047,6 +1248,49 @@ async def run_and_store_smoke(submission_id: str) -> None:
                         "%s; skipping duplicate run",
                         submission_id,
                     )
+                    return
+
+                # G3: host-resource preflight — measured NOW, just before the docker
+                # run, after G1. A shortfall/measurement-error never starts a
+                # container, sets no smoke_running, and is transient/review
+                # (resource_unavailable). It must NOT downgrade authoritative
+                # evidence (a fresh pass or an objective hard fail).
+                rchk = check_host_resources()
+                if not rchk.ok:
+                    logger.info(
+                        "mcp smoke resource block: sub=%s reason=%s mem=%s/%s MB "
+                        "disk=%s/%s GB load=%s",
+                        str(submission_id)[:8],
+                        rchk.reason,
+                        rchk.memory_available_mb,
+                        rchk.memory_required_mb,
+                        rchk.disk_free_gb,
+                        rchk.disk_required_gb,
+                        rchk.load_1m,
+                    )
+                    r_now = datetime.now(timezone.utc)
+                    prev = sv.get("smoke")
+                    prev_fresh = evaluate_smoke_freshness(
+                        prev, current_smoke_keys(manifest, sv), r_now
+                    )
+                    if _should_store_resource_unavailable(prev, prev_fresh):
+                        sv_r = dict(row.server_verification or {})
+                        sv_r["smoke"] = _result(
+                            "unavailable",
+                            failure_reason="resource_unavailable",
+                            checked_at=r_now.isoformat(),
+                        )
+                        from app.mcp.router import _attach_gate_result
+
+                        sv_r = await _attach_gate_result(
+                            sv_r,
+                            manifest,
+                            report,
+                            session,
+                            publisher_id=row.publisher_id,
+                        )
+                        row.server_verification = sv_r
+                        await session.commit()
                     return
 
                 # 2c-4b: mark running in a SEPARATE key so the previous result

@@ -14,6 +14,21 @@ from app.mcp import smoke_executor as ex
 from app.mcp.models import McpSubmission
 
 
+@pytest.fixture(autouse=True)
+def _resources_ok(monkeypatch):
+    # G3: these recovery/G1 tests are not about host resources — keep the preflight
+    # green so run_and_store_smoke reaches its normal path. (Windows has no
+    # /proc/meminfo, so the real check would fail-closed here.)
+    monkeypatch.setattr(
+        ex,
+        "check_host_resources",
+        lambda: ex.ResourceCheck(True, 4096, 1024, 50.0, 5, 0.1, None),
+    )
+    ex._inflight = 0
+    yield
+    ex._inflight = 0
+
+
 def _now():
     return datetime.now(timezone.utc)
 

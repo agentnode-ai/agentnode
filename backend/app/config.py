@@ -1,6 +1,7 @@
 import shutil
 import sys
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -147,6 +148,22 @@ class Settings(BaseSettings):
     # security-relevant executor change to invalidate all older passed smokes.
     MCP_SMOKE_TTL_DAYS: int = 30
     MCP_SMOKE_SCHEMA_VERSION: int = 1
+    # G3 — host-resource preflight + backlog/output bounding (safe permanent-
+    # activation prerequisites). Conservative defaults for the 2-core, no-swap host.
+    # None of these ACTIVATES a smoke; MCP_SMOKE_MODE stays "disabled" by default.
+    # Never start a container below these host thresholds (measured just before the
+    # docker run); a shortfall is transient/review, never a hard package fault.
+    MCP_SMOKE_MIN_AVAILABLE_MEMORY_MB: int = Field(1024, ge=1)
+    MCP_SMOKE_MIN_FREE_DISK_GB: int = Field(5, ge=1)
+    # active runs are capped by the semaphore (MCP_SMOKE_MAX_CONCURRENT); this caps
+    # how many MORE tasks may WAIT. max in-flight = 1 active + MCP_SMOKE_MAX_PENDING.
+    MCP_SMOKE_MAX_PENDING: int = Field(1, ge=0)
+    # hard cap on runtime-container stdout buffered in the API process (bounds the
+    # reader against a chatty server or a single giant line).
+    MCP_SMOKE_MAX_OUTPUT_BYTES: int = Field(1_048_576, ge=1024)
+    # Docker data lives here; on this host it is on / (same fs), so the disk
+    # preflight statvfs's this path. Kept configurable for non-standard hosts.
+    MCP_SMOKE_DOCKER_ROOT: str = "/var/lib/docker"
 
     # Stripe (billing)
     STRIPE_SECRET_KEY: str = ""
