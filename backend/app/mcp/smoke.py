@@ -76,6 +76,9 @@ _FAILURE_TEXT = {
     "tools_list_failed": "MCP tools/list failed in the sandbox",
     "startup_crash": "MCP server crashed on startup in the sandbox",
     "protocol_error": "MCP protocol error in the sandbox",
+    # G3 — host RAM/disk was below the safe threshold; the smoke was NOT run (no
+    # container). Transient/review, never a hard package fault.
+    "resource_unavailable": "host resources low (RAM/disk) — smoke deferred; review/recheck",
 }
 
 _SKIP_TEXT = {
@@ -189,7 +192,13 @@ def derive_smoke_evidence(smoke: dict | None, *, freshness: str | None = None) -
         reason = _failure_text(failure_reason)
     elif status == UNAVAILABLE:
         passed, ran, future, review_fallback = False, False, True, True
-        reason = "sandbox smoke unavailable (runtime/image/backend missing) — review"
+        # G3: a host-resource shortfall reuses the UNAVAILABLE status (future/review)
+        # — same objective-block-free semantics, just a clearer reason string.
+        reason = (
+            _failure_text("resource_unavailable")
+            if failure_reason == "resource_unavailable"
+            else "sandbox smoke unavailable (runtime/image/backend missing) — review"
+        )
     elif status == SKIPPED:
         passed, ran, future, review_fallback = False, False, True, True
         reason = _skip_text(review_reason)

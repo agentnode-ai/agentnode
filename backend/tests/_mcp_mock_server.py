@@ -25,6 +25,22 @@ def main():
     if mode == "crash":
         sys.exit(1)  # exit immediately, no output -> startup_crash
 
+    if mode == "flood":
+        # G3: spew many newline-delimited lines before answering init -> the bounded
+        # reader must hit the byte cap and return _EXCESSIVE_OUTPUT.
+        line = "x" * 500 + "\n"
+        for _ in range(5000):
+            sys.stdout.write(line)
+        sys.stdout.flush()
+        return
+
+    if mode == "giant_line":
+        # G3: one huge line WITHOUT a newline -> the byte cap must trip before any
+        # newline (a mere line-based/bounded-queue reader would blow memory here).
+        sys.stdout.write("y" * 2_000_000)
+        sys.stdout.flush()
+        return
+
     if mode == "noise":
         # log noise + a notification BEFORE any response (must be skipped)
         sys.stdout.write("mock server starting (not json)\n")
