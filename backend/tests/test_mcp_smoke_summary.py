@@ -7,7 +7,13 @@ status (expired/key_mismatch) and the running marker.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from app.mcp.router import _smoke_summary
+
+
+def _iso(delta):
+    return (datetime.now(timezone.utc) + delta).isoformat()
 
 
 def test_smoke_summary_from_gate_evidence():
@@ -46,14 +52,27 @@ def test_smoke_summary_passed():
     assert r["smoke_recheck_reason"] is None
 
 
-def test_smoke_summary_running_marker_wins():
+def test_smoke_summary_fresh_running_marker_wins():
+    # G2: a FRESH running marker wins over the gate status.
     sv = {
-        "smoke_running": {"started_at": "2026-07-13T00:00:00+00:00"},
+        "smoke_running": {"started_at": _iso(timedelta(seconds=-5))},
         "gate_result": {
             "gates": [{"id": "sandbox_smoke", "evidence": {"status": "passed"}}]
         },
     }
     assert _smoke_summary(sv)["smoke_status"] == "running"
+
+
+def test_smoke_summary_stale_running_marker_falls_back():
+    # G2: a stale marker (older than the TTL) left by a crashed process must NOT
+    # show "running" forever — fall back to the real smoke status.
+    sv = {
+        "smoke_running": {"started_at": _iso(timedelta(minutes=-20))},
+        "gate_result": {
+            "gates": [{"id": "sandbox_smoke", "evidence": {"status": "passed"}}]
+        },
+    }
+    assert _smoke_summary(sv)["smoke_status"] == "passed"
 
 
 def test_smoke_summary_empty():

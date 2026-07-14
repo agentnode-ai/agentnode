@@ -20,6 +20,16 @@ import pytest
 from app.mcp import smoke_executor as ex
 
 
+@pytest.fixture(autouse=True)
+def _recovery_ready():
+    # G2: smoke_availability() now also gates on the process-local recovery status.
+    # Default it to "ready" so these existing tests reach the runtime/image checks;
+    # the dedicated recovery-gate tests live in test_mcp_smoke_reaper.py.
+    ex._set_recovery_status("ready")
+    yield
+    ex._set_recovery_status("ready")
+
+
 # --- availability (fail-closed) ---------------------------------------------
 
 

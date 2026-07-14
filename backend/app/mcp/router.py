@@ -687,8 +687,13 @@ def _smoke_summary(sv: dict) -> dict:
         (x for x in (gate.get("gates") or []) if x.get("id") == "sandbox_smoke"), {}
     )
     ev = g.get("evidence") or {}
+    # G2: only show "running" while the marker is FRESH (same TTL the scheduler
+    # uses). A stale marker left by a crashed/restarted process must not display
+    # "running" forever — fall back to the real smoke status (or not_run).
+    from app.mcp.smoke_executor import _is_fresh
+
     running = sv.get("smoke_running") or {}
-    status = "running" if running.get("started_at") else ev.get("status")
+    status = "running" if _is_fresh(running.get("started_at")) else ev.get("status")
     return {
         "smoke_status": status,
         "smoke_checked_at": ev.get("checked_at"),

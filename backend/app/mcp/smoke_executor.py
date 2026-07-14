@@ -34,6 +34,7 @@ import hashlib
 import json
 import logging
 import queue
+import re
 import subprocess
 import threading
 from datetime import datetime, timedelta, timezone
@@ -66,14 +67,43 @@ _HARDENED_BASE = [
 # ---------------------------------------------------------------------------
 
 
+# G2 — process-local recovery gate. The startup reaper + smoke_running recovery
+# must complete cleanly before THIS process runs any new smoke. Fail-closed: until
+# recovery is confirmed, smoke_availability() reports unavailable so no container
+# runs — while the rest of the API still comes up normally. A later successful
+# recovery attempt (only at startup today) flips it to ready.
+# Values: "not_started" | "ready" | "unavailable".
+_RECOVERY_STATUS = "not_started"
+
+
+def get_recovery_status() -> str:
+    return _RECOVERY_STATUS
+
+
+def _set_recovery_status(status: str) -> None:
+    global _RECOVERY_STATUS
+    _RECOVERY_STATUS = status
+
+
 def smoke_availability() -> tuple[bool, str]:
     """Whether a real smoke can run. Fail-closed: (False, reason) unless
-    MCP_SMOKE_MODE=container AND a runtime AND the pinned image are present.
+    MCP_SMOKE_MODE=container AND the startup recovery is ready AND a runtime AND
+    the pinned image are present.
 
-    reason is one of: "disabled" | "no_runtime" | "image_missing" | "".
+    reason is one of: "disabled" | "recovery_pending" | "recovery_unavailable" |
+    "no_runtime" | "image_missing" | "".
     """
     if settings.MCP_SMOKE_MODE != "container":
         return False, "disabled"
+    # G2: never start a container until this process has confirmed a clean
+    # orphan/marker recovery. A reaper/DB-recovery failure keeps smokes off.
+    if _RECOVERY_STATUS != "ready":
+        reason = (
+            "recovery_pending"
+            if _RECOVERY_STATUS == "not_started"
+            else "recovery_unavailable"
+        )
+        return False, reason
     if not CONTAINER_RUNTIME:
         return False, "no_runtime"
     try:
@@ -131,6 +161,38 @@ def _volume_name() -> str:
     return f"mcp-smoke-{uuid4().hex[:16]}"
 
 
+# G2 — strict identity so the reaper can target ONLY our own resources. Every
+# phase container gets a deterministic --name + AgentNode labels; the volume keeps
+# its strict prefix. The reaper only ever acts on the label / this exact regex —
+# never an unscoped substring, never a generic prune.
+_SMOKE_COMPONENT_LABEL = "agentnode.component=mcp-smoke"
+_VOLUME_RE = re.compile(r"^mcp-smoke-[0-9a-f]{16}$")
+
+
+def _sid_from_volume(volume: str) -> str:
+    """The 16-hex smoke id embedded in our own volume name (never a package name)."""
+    return volume[len("mcp-smoke-") :] if volume.startswith("mcp-smoke-") else volume
+
+
+def _identity_args(volume: str, phase: str) -> list[str]:
+    """`--name` + labels tying a container to this smoke. phase = install|runtime.
+    Derived from our own volume id, so no user-controlled string reaches a Docker
+    name/label."""
+    sid = _sid_from_volume(volume)
+    return [
+        "--name",
+        f"mcp-smoke-{sid}-{phase}",
+        "--label",
+        "agentnode.managed=true",
+        "--label",
+        _SMOKE_COMPONENT_LABEL,
+        "--label",
+        f"agentnode.smoke_id={sid}",
+        "--label",
+        f"agentnode.phase={phase}",
+    ]
+
+
 def install_argv(image: str, volume: str, package: str, version: str) -> list[str]:
     """Phase 1: install the pinned package into the volume, WITH network. Runs as
     root (--user 0:0) because a fresh named volume is root-owned; still fully
@@ -139,6 +201,7 @@ def install_argv(image: str, volume: str, package: str, version: str) -> list[st
     return [
         CONTAINER_RUNTIME or "docker",
         "run",
+        *_identity_args(volume, "install"),
         *_HARDENED_BASE,
         "--user",
         "0:0",
@@ -169,6 +232,7 @@ def run_argv(image: str, volume: str, package: str, version: str) -> list[str]:
         CONTAINER_RUNTIME or "docker",
         "run",
         "-i",
+        *_identity_args(volume, "runtime"),
         *_HARDENED_BASE,
         "--user",
         "1000:1000",
@@ -205,6 +269,7 @@ def install_argv_pypi(image: str, volume: str, package: str, version: str) -> li
     return [
         CONTAINER_RUNTIME or "docker",
         "run",
+        *_identity_args(volume, "install"),
         *_HARDENED_BASE,
         "--user",
         "0:0",
@@ -239,6 +304,7 @@ def run_argv_pypi(image: str, volume: str, package: str, version: str) -> list[s
         CONTAINER_RUNTIME or "docker",
         "run",
         "-i",
+        *_identity_args(volume, "runtime"),
         *_HARDENED_BASE,
         "--user",
         "1000:1000",
@@ -713,6 +779,182 @@ def _is_fresh(iso: str | None) -> bool:
     return datetime.now(timezone.utc) - started < _RUNNING_TTL
 
 
+# ---------------------------------------------------------------------------
+# G2 — orphan reaper + startup recovery (restart/crash hardening). No new worker,
+# no cron: this runs once in the FastAPI lifespan at startup, before any smoke can
+# be scheduled. After a full restart every existing smoke resource is orphaned by
+# construction (BackgroundTasks are not persisted, the old process is gone, the
+# semaphore is fresh) — so we can safely remove ALL of our own resources.
+# ---------------------------------------------------------------------------
+
+
+def reap_smoke_orphans(run=None, *, timeout: int = 15) -> dict:
+    """Remove orphaned AgentNode smoke containers + volumes left by a prior process.
+
+    Targets ONLY resources carrying our label / matching our strict volume regex —
+    never a generic prune, never a fuzzy substring, never the sandbox image.
+    Idempotent and race-tolerant (already-gone objects are ignored). Containers are
+    stopped then removed BEFORE their volume (a volume in use can't be removed).
+    ``run`` is the injectable docker subprocess seam (tests mock it).
+
+    Returns a sanitized summary: {containers_found, containers_stopped,
+    containers_removed, volumes_found, volumes_removed, errors, successful}.
+    ``successful`` is True only if enumeration succeeded (or there is no runtime, so
+    nothing can be leaked). An enumeration/exec failure -> False -> fail-closed.
+    """
+    run = run or _run_container
+    res: dict = {
+        "containers_found": 0,
+        "containers_stopped": 0,
+        "containers_removed": 0,
+        "volumes_found": 0,
+        "volumes_removed": 0,
+        "errors": [],
+        "successful": False,
+    }
+    cr = CONTAINER_RUNTIME
+    if not cr:
+        # No runtime -> no smoke resources can exist. Nothing to reap; not a failure.
+        res["successful"] = True
+        return res
+    try:
+        # --- containers: only those carrying our component label ---
+        rc, out, _ = run(
+            [cr, "ps", "-aq", "--filter", f"label={_SMOKE_COMPONENT_LABEL}"],
+            None,
+            timeout,
+        )
+        if rc != 0:
+            res["errors"].append("container_list_failed")
+            return res
+        cids = [c.strip() for c in (out or "").splitlines() if c.strip()]
+        res["containers_found"] = len(cids)
+        for cid in cids:
+            rc_s, _, _ = run([cr, "stop", "-t", "2", cid], None, timeout)
+            if rc_s == 0:
+                res["containers_stopped"] += 1
+            rc_r, _, _ = run([cr, "rm", "-f", cid], None, timeout)
+            if rc_r == 0:
+                res["containers_removed"] += 1  # non-zero = already gone -> ignore
+        # --- volumes: strict regex over the name-prefixed candidates ---
+        rc, out, _ = run(
+            [cr, "volume", "ls", "-q", "--filter", "name=mcp-smoke-"], None, timeout
+        )
+        if rc != 0:
+            res["errors"].append("volume_list_failed")
+            return res
+        vols = [
+            v.strip() for v in (out or "").splitlines() if _VOLUME_RE.match(v.strip())
+        ]
+        res["volumes_found"] = len(vols)
+        for v in vols:
+            rc_v, _, _ = run([cr, "volume", "rm", "-f", v], None, timeout)
+            if rc_v == 0:
+                res["volumes_removed"] += 1
+        res["successful"] = not res["errors"]
+    except subprocess.TimeoutExpired:
+        res["errors"].append("timeout")
+    except Exception as e:  # noqa: BLE001 — recovery must never raise
+        res["errors"].append(type(e).__name__)
+    return res
+
+
+async def _recover_stale_smoke_running() -> tuple[bool, int]:
+    """Clear smoke_running markers left by a prior process (submission-specific,
+    transactional). At full startup any existing marker is orphaned, so it is
+    removed and the gate recomputed via the existing central helper. Never deletes a
+    stored `smoke` result or touches report/ownership fields. Returns (ok, cleared).
+    """
+    from sqlalchemy import select
+
+    from app.database import async_session_factory
+    from app.mcp.models import McpSubmission
+
+    cleared = 0
+    try:
+        async with async_session_factory() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(McpSubmission).where(
+                            McpSubmission.server_verification.has_key("smoke_running")
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for row in rows:
+                sv = dict(row.server_verification or {})
+                if "smoke_running" not in sv:
+                    continue
+                started = (sv.get("smoke_running") or {}).get("started_at")
+                if started is not None and not isinstance(started, str):
+                    logger.warning(
+                        "smoke_running recovery: non-str started_at for %s, "
+                        "treating as stale",
+                        row.id,
+                    )
+                sv.pop("smoke_running", None)  # remove ONLY this field
+                from app.mcp.router import _attach_gate_result
+
+                sv = await _attach_gate_result(
+                    sv,
+                    row.manifest_raw or {},
+                    row.verification_report or {},
+                    session,
+                    publisher_id=row.publisher_id,
+                )
+                row.server_verification = sv
+                cleared += 1
+            await session.commit()
+        return True, cleared
+    except Exception as e:  # noqa: BLE001 — recovery must never crash startup
+        logger.warning("smoke_running startup recovery failed: %s", type(e).__name__)
+        return False, cleared
+
+
+async def startup_smoke_recovery() -> dict:
+    """G2 startup recovery: reap orphaned smoke containers/volumes + clear stale
+    smoke_running markers, then flip the process-local recovery gate. Fail-closed:
+    ONLY a clean reaper AND a clean DB recovery set status=ready; any failure (or an
+    undecidable state) leaves status=unavailable, so no smoke runs this process. The
+    rest of the API is unaffected. NEVER raises. Called from the FastAPI lifespan
+    before serving requests."""
+    _set_recovery_status("not_started")
+    summary: dict = {"reaper": None, "markers_cleared": 0, "status": "unavailable"}
+    try:
+        loop = asyncio.get_running_loop()
+        reap = await asyncio.wait_for(
+            loop.run_in_executor(None, reap_smoke_orphans), timeout=90
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("smoke reaper failed: %s", type(e).__name__)
+        reap = {"successful": False, "errors": [type(e).__name__]}
+    summary["reaper"] = reap
+
+    db_ok, cleared = await _recover_stale_smoke_running()
+    summary["markers_cleared"] = cleared
+
+    if reap.get("successful") and db_ok:
+        _set_recovery_status("ready")
+        summary["status"] = "ready"
+    else:
+        _set_recovery_status("unavailable")
+        summary["status"] = "unavailable"
+    logger.info(
+        "mcp smoke startup recovery: status=%s reaper_ok=%s db_ok=%s "
+        "markers_cleared=%s containers_removed=%s volumes_removed=%s",
+        summary["status"],
+        reap.get("successful"),
+        db_ok,
+        cleared,
+        reap.get("containers_removed"),
+        reap.get("volumes_removed"),
+    )
+    return summary
+
+
 def should_schedule_smoke_recheck(manifest: dict, sv: dict, now=None) -> bool:
     """2c-4b: whether a (re)check is worth scheduling for the CURRENT stored smoke.
     Anti-spam: a fresh passed smoke or a fresh running marker returns False; no
@@ -787,6 +1029,25 @@ async def run_and_store_smoke(submission_id: str) -> None:
                     return  # another fresh run is in progress
                 manifest = row.manifest_raw or {}
                 report = row.verification_report or {}
+
+                # G1 dedup: a concurrently-scheduled task (e.g. two near-simultaneous
+                # reverifies) may have already produced a fresh, key-matching passed
+                # smoke while this task waited on the semaphore. If so, skip the
+                # duplicate run — no container, no new smoke_running marker.
+                if (
+                    evaluate_smoke_freshness(
+                        sv.get("smoke"),
+                        current_smoke_keys(manifest, sv),
+                        datetime.now(timezone.utc),
+                    )
+                    == "fresh"
+                ):
+                    logger.info(
+                        "mcp smoke dedup: fresh passing smoke already present for "
+                        "%s; skipping duplicate run",
+                        submission_id,
+                    )
+                    return
 
                 # 2c-4b: mark running in a SEPARATE key so the previous result
                 # stays valid during the recheck (a fresh passed smoke keeps
