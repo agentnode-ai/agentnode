@@ -71,6 +71,17 @@ jobs:
       - run: pip install -e ".[dev]" --no-deps
       - run: pip install pytest pytest-asyncio httpx
 
+      - name: Force docker runtime (executor prefers podman; prod uses docker)
+        run: |
+          # GitHub runners ship both podman and docker; _detect_container_runtime()
+          # prefers podman. Production uses docker, so remove podman from PATH to
+          # keep this test faithful and consistent with the docker-based harness.
+          if command -v podman >/dev/null 2>&1; then
+            echo "Removing podman so the executor detects docker (matches prod)"
+            sudo rm -f "$(command -v podman)"
+          fi
+          command -v podman >/dev/null 2>&1 && echo "WARN: podman still on PATH" || echo "podman not on PATH -> docker will be used"
+
       - name: Docker + pinned sandbox image (public, anonymous pull)
         run: |
           docker version
