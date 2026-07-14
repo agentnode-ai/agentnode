@@ -138,6 +138,21 @@ async def lifespan(app: FastAPI):
             "lifespan: failed to load SMTP config from DB — falling back to env vars"
         )
 
+    # G2: MCP sandbox-smoke restart recovery. Reap orphaned smoke containers/volumes
+    # + clear stale smoke_running markers left by a prior process, and set the
+    # process-local smoke recovery gate. Fail-closed for SMOKES (a failure keeps
+    # smokes off via smoke_availability) but never blocks the rest of the API.
+    # Inert while MCP_SMOKE_MODE=disabled (nothing to reap, no smoke runs).
+    try:
+        from app.mcp.smoke_executor import startup_smoke_recovery
+
+        await startup_smoke_recovery()
+    except Exception:  # noqa: BLE001 — recovery must never break startup
+        logger.warning(
+            "lifespan: mcp smoke startup recovery crashed — smokes disabled "
+            "this process"
+        )
+
     yield
 
     # Shutdown
