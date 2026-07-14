@@ -1,0 +1,104 @@
+name: G2 Docker Fault Test
+
+# Isolated, real-Docker regression test for the MCP sandbox-smoke restart/orphan
+# reaper (G2). Runs ONLY on manual dispatch or when the smoke files change — it
+# pulls the pinned sandbox image and runs one real fault-smoke, so it is not on
+# every commit. No production secrets, no deployment, minimal permissions.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - backend/app/mcp/smoke_executor.py
+      - backend/app/mcp/router.py
+      - backend/app/main.py
+      - backend/tests/test_g2_fault_docker.py
+      - backend/tests/_g2_fault_runner.py
+      - backend/tests/_g2_recovery_proc.py
+      - .github/workflows/g2-fault-test.yml
+
+permissions:
+  contents: read
+
+jobs:
+  fault-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: agentnode
+          POSTGRES_PASSWORD: agentnode
+          POSTGRES_DB: agentnode_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://agentnode:agentnode@localhost:5432/agentnode_test
+      REDIS_URL: redis://localhost:6379
+      MEILISEARCH_URL: http://localhost:7700
+      MEILISEARCH_KEY: masterKey
+      S3_ENDPOINT: http://localhost:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: agentnode-artifacts
+      S3_REGION: auto
+      JWT_SECRET: test-secret-ci
+      ENVIRONMENT: test
+      RUN_G2_FAULT_TEST: "1"
+      SANDBOX_IMAGE: ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.lock
+      - run: pip install -e ".[dev]" --no-deps
+      - run: pip install pytest pytest-asyncio httpx
+
+      - name: Force docker runtime (executor prefers podman; prod uses docker)
+        run: |
+          # GitHub runners ship both podman and docker; _detect_container_runtime()
+          # prefers podman. Production uses docker, so remove podman from PATH to
+          # keep this test faithful and consistent with the docker-based harness.
+          if command -v podman >/dev/null 2>&1; then
+            echo "Removing podman so the executor detects docker (matches prod)"
+            sudo rm -f "$(command -v podman)"
+          fi
+          command -v podman >/dev/null 2>&1 && echo "WARN: podman still on PATH" || echo "podman not on PATH -> docker will be used"
+
+      - name: Docker + pinned sandbox image (public, anonymous pull)
+        run: |
+          docker version
+          echo "Pinned sandbox digest: $SANDBOX_IMAGE"
+          docker pull "$SANDBOX_IMAGE"
+          docker pull alpine:3.20
+
+      - name: Reaper / recovery / G1 / summary tests (seam + DB)
+        run: pytest -v tests/test_mcp_smoke_reaper.py tests/test_mcp_smoke_recovery_db.py tests/test_mcp_smoke_summary.py
+
+      - name: Real Docker fault-test (one fault-smoke, no retry)
+        run: pytest -v -s tests/test_g2_fault_docker.py
+
+      - name: Cleanup (always — only explicit controls + strict smoke resources)
+        if: always()
+        run: |
+          docker rm -f fault-control-unrelated mcp-smoke-control-invalid fault-control-labeled 2>/dev/null || true
+          docker volume rm -f fault-control-volume mcp-smoke-nothex mcp-smoke-0123456789abcdef-extra 2>/dev/null || true
+          for c in $(docker ps -aq --filter label=agentnode.component=mcp-smoke); do docker rm -f "$c" || true; done
+          for v in $(docker volume ls -q --filter name=mcp-smoke- | grep -E '^mcp-smoke-[0-9a-f]{16}$'); do docker volume rm -f "$v" || true; done
