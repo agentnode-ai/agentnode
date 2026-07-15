@@ -153,22 +153,67 @@ def check_schema(manifest: dict, report: VerifyReport) -> bool:
 # Check 2+3: Package + version resolve
 # ---------------------------------------------------------------------------
 
+# Range / comparison / list markers that disqualify a token from being an
+# *exact* pin. An exact version starts with a digit and contains none of these.
+_RANGE_MARKERS = "^~<>=*,| "
+# A bare x/X/* release component (npm ranges like 1.x / 1.2.X).
+_WILDCARD_RE = re.compile(r"(?:^|[.\-])[xX*](?:[.\-]|$)")
+
+
+def _is_exact_version(ver: str | None) -> bool:
+    """True only for a fully-specified exact version (semver or PEP 440).
+
+    Accepts 1.2.3, 1.2.3rc1, 1.2.3+build.1, 1.2.3.post1; rejects ranges
+    (^, ~, >=, <=, ~=), wildcards (*, 1.2.*, 1.x), dist-tags (latest, next)
+    and multi-specifier lists (commas). Deliberately permissive about the exact
+    release shape so it never *under*-reports a real, published version -- the
+    registry-existence check remains the authority on whether it exists.
+    """
+    ver = (ver or "").strip()
+    if not ver or not ver[0].isdigit():
+        return False
+    if any(c in _RANGE_MARKERS for c in ver):
+        return False
+    return not _WILDCARD_RE.search(ver)
+
+
+def _extract_pinned_version(command: list | None) -> str | None:
+    """Extract an *exact* pinned version from the launch command, or None.
+
+    Mirrors backend registry_verify._command_version and additionally requires
+    the token to be an exact version so ranges/tags/wildcards are reported as
+    *not pinned* rather than mislabelled:
+      - PyPI (uv/pip): pkg==1.2.3 (also pkg[extra]==1.2.3)
+      - npm (npx):     pkg@1.2.3 and scoped @scope/pkg@1.2.3
+    npm tokens never contain '==' and PyPI tokens never use the npm '@' pin
+    form, so the two separators are mutually exclusive per token.
+    """
+    for part in command or []:
+        if not isinstance(part, str):
+            continue
+        if "==" in part:  # PyPI exact pin (pkg==ver, pkg[extra]==ver, --from pkg==ver)
+            ver = part.split("==")[-1].strip()
+            if _is_exact_version(ver):
+                return ver
+            continue
+        if "@" in part and not part.startswith("@"):  # npm name@version
+            ver = part.split("@")[-1]
+            if _is_exact_version(ver):
+                return ver
+            continue
+        if part.startswith("@"):  # npm @scope/name@version
+            parts = part.split("@")
+            if len(parts) == 3 and _is_exact_version(parts[2]):
+                return parts[2]
+    return None
+
+
 def check_package(manifest: dict, report: VerifyReport) -> bool:
     mcp = manifest["mcp_server"]
     npm_name = mcp.get("npm_package")
     pypi_name = mcp.get("pypi_package")
 
-    version = None
-    cmd = mcp.get("command", [])
-    for part in cmd:
-        if "@" in part and not part.startswith("@"):
-            version = part.split("@")[-1]
-            break
-        if "@" in part and part.startswith("@"):
-            parts = part.split("@")
-            if len(parts) == 3:
-                version = parts[2]
-                break
+    version = _extract_pinned_version(mcp.get("command", []))
 
     if npm_name:
         report.package = {"registry": "npm", "name": npm_name, "version": version}
@@ -262,11 +307,13 @@ def _check_pypi(name: str, version: str | None, report: VerifyReport) -> bool:
 # ---------------------------------------------------------------------------
 
 def check_pinning(manifest: dict, report: VerifyReport) -> None:
-    cmd = manifest["mcp_server"]["command"]
+    # The exact version is resolved once, in check_package (_extract_pinned_version,
+    # which understands both npm @ and PyPI == forms). Here we only evaluate that
+    # normalised result -- no second, divergent parse of the command.
+    cmd_str = " ".join(manifest["mcp_server"]["command"])
     version = report.package.get("version")
-    cmd_str = " ".join(cmd)
 
-    if version and (f"@{version}" in cmd_str or f"=={version}" in cmd_str):
+    if version:
         report.checks.append(Check("version_pinned", True, cmd_str))
     else:
         report.checks.append(Check("version_pinned", False, "command does not pin exact version"))
@@ -509,7 +556,7 @@ def derive_actions(report: VerifyReport) -> None:
                 severity="medium", code="VERSION_NOT_PINNED",
                 title="Command does not pin exact version",
                 detail=c.detail,
-                fix="Add @version to the package name in mcp_server.command (e.g. @org/pkg@1.2.3).",
+                fix="Pin the exact version in mcp_server.command (npm: pkg@1.2.3 or @scope/pkg@1.2.3; PyPI: pkg==1.2.3).",
             ))
 
         elif c.name == "owner_verified":
