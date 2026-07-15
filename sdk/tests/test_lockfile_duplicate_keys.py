@@ -175,11 +175,33 @@ def test_mcp_doctor_starts_no_server_on_duplicate(tmp_path, monkeypatch):
 
 def test_error_message_has_key_but_no_values(tmp_path):
     lf = tmp_path / "agentnode.lock"
-    _write(lf, '{"packages":{"secret-slug":{"token":"SUPERSECRET","token":"OTHERSECRET"}}}')
+    _write(lf, '{"packages":{"a-pack":{"token":"SUPERSECRET","token":"OTHERSECRET"}}}')
     with pytest.raises(LockfileFormatError) as ei:
         read_lockfile(lf)
     msg = str(ei.value)
-    assert "token" in msg               # the duplicate KEY name is allowed
-    assert "SUPERSECRET" not in msg      # values must never appear
+    # ONLY the duplicate key is surfaced (a duplicate package key could itself be a
+    # slug — that is intentional); never a value or full file content.
+    assert "token" in msg
+    assert "SUPERSECRET" not in msg
     assert "OTHERSECRET" not in msg
-    assert "secret-slug" not in msg      # no unrelated content / full file
+
+
+# --------------------------------------------------------------------------- #
+# Central CLI boundary: one generic translation (no raw traceback)             #
+# --------------------------------------------------------------------------- #
+
+def test_readonly_cli_path_translates_error_without_traceback(tmp_path, monkeypatch, capsys):
+    """A read-only lockfile command (NOT cmd_mcp_doctor) that lets the error
+    propagate is translated by the central main() handler into a deterministic
+    message + non-zero exit — never a raw traceback."""
+    from agentnode_sdk.cli.main import main
+
+    lf = tmp_path / "agentnode.lock"
+    _write(lf, '{"packages":{},"packages":{}}')
+    monkeypatch.setenv("AGENTNODE_LOCKFILE", str(lf))
+
+    rc = main(["lock", "verify"])          # read-only; cmd_lock_verify → read_lockfile
+    assert rc == 1                          # non-zero, did NOT raise
+    err = capsys.readouterr().err
+    assert "duplicate key" in err           # deterministic message
+    assert "Traceback" not in err           # not a raw traceback
