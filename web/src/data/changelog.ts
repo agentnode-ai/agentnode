@@ -5,6 +5,12 @@
 
 export interface ChangelogRelease {
   version: string;
+  /**
+   * "platform" = an infrastructure/security platform update, NOT an SDK release
+   * (no PyPI package, no git tag, and never counted as the LATEST SDK version).
+   * Omitted for the SDK releases that make up the rest of this list.
+   */
+  kind?: "sdk" | "platform";
   /** ISO date (YYYY-MM-DD), verified via PyPI or git tag; null if no verifiable source exists. */
   date: string | null;
   dateSource: "pypi" | "tag" | null;
@@ -37,6 +43,24 @@ export function anchorId(r: ChangelogRelease): string {
 }
 
 export const RELEASES: ChangelogRelease[] = [
+  {
+    version: "platform-mcp-sandbox",
+    kind: "platform",
+    date: "2026-07-15",
+    dateSource: null,
+    title: "MCP sandbox verification is now live",
+    summary:
+      "npm and PyPI MCP submissions are now started in an isolated sandbox before they can be listed: AgentNode checks that the server initializes and answers the MCP protocol (tools discovery) under restricted permissions and bounded resources. This completes the sandbox-smoke gate announced with 0.23.0 — a passing check is one review signal only, and MCP listings still require manual approval.",
+    highlights: [
+      "Automated sandbox smoke check for npm and PyPI MCP submissions: the server is launched in an isolated sandbox and must initialize and answer MCP tools discovery to pass",
+      "The check runs with restricted permissions and bounded resources; if the host is momentarily low on resources the check is deferred, not failed",
+      "A failed or temporarily-unrunnable check is a review signal, not an automatic rejection — it stays reviewable and can be rechecked later",
+      "This is a technical executability + protocol check, not a guarantee of a package's safety or trustworthiness",
+      "MCP listings remain review-gated: passing the check does not auto-approve or auto-publish anything",
+    ],
+    onPyPI: false,
+    hasTag: false,
+  },
   {
     version: "0.23.0",
     date: "2026-07-12",
@@ -528,7 +552,10 @@ export const RELEASES: ChangelogRelease[] = [
   },
 ];
 
-export const LATEST = RELEASES[0];
+// The newest SDK release. Platform updates (kind === "platform") are not SDK
+// releases, so they never stand in for the current package version in the page
+// metadata or the "upgrade" CTA.
+export const LATEST = RELEASES.find((r) => r.kind !== "platform") ?? RELEASES[0];
 
 /** Most recent verified release date — used for the visible "Last updated". */
 export const LAST_UPDATED = RELEASES.reduce<string>(

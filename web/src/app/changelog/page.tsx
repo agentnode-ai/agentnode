@@ -84,7 +84,7 @@ function ReleaseSection({ release, latest }: { release: ChangelogRelease; latest
       <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-xl font-bold text-foreground">
           <a href={`#${anchorId(release)}`} className="hover:text-primary">
-            {release.version}
+            {release.kind === "platform" ? "Platform update" : release.version}
           </a>{" "}
           <span className="font-semibold">— {release.title}</span>
         </h2>
@@ -127,8 +127,6 @@ function ReleaseSection({ release, latest }: { release: ChangelogRelease; latest
 }
 
 export default function ChangelogPage() {
-  const [latest, ...rest] = RELEASES;
-
   const jsonLd = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
@@ -193,9 +191,12 @@ export default function ChangelogPage() {
         </header>
 
         <div className="space-y-6">
-          <ReleaseSection release={latest} latest />
-          {rest.map((release) => (
-            <ReleaseSection key={release.version} release={release} />
+          {RELEASES.map((release) => (
+            <ReleaseSection
+              key={release.version}
+              release={release}
+              latest={release === LATEST}
+            />
           ))}
         </div>
 
