@@ -74,7 +74,7 @@ const TRUST_ROWS = [
 ];
 
 const PUBLISH_ROWS = [
-  ["agentnode init [name] [--type local|api|file|agent|skill]", "Scaffold a new package from a template."],
+  ["agentnode init [name] [--type local|api|file|agent|skill|mcp]", "Scaffold a new package from a template. --type mcp scaffolds an MCP server listing."],
   ["agentnode validate [path]", "Validate a manifest offline; check cases and predict the maximum achievable tier."],
   ["agentnode record-cases [path] [--strict]", "Record VCR cassettes for API verification cases. --strict fails on detected secrets."],
   ["agentnode verify-local [path]", "Run the full verification pipeline locally (install, import, smoke, tests, scoring)."],
@@ -83,6 +83,8 @@ const PUBLISH_ROWS = [
   ["agentnode mcp verify [path] [--test] [--json]", "Verify an MCP agentnode.yaml manifest; --test runs a protocol test."],
   ["agentnode mcp submit [path] [--test] [--token <key>] [--dry-run]", "Submit an MCP server for catalog review."],
   ["agentnode mcp status <submission_id> [--token <key>] [--json]", "Check the status of an MCP submission."],
+  ["agentnode mcp ownership challenge <package> --registry npm|pypi [--token <key>] [--json]", "Issue a one-time publish-challenge to prove package ownership."],
+  ["agentnode mcp ownership verify <package> --registry npm|pypi [--token <key>] [--json]", "Verify a pending publish-challenge (checks the latest published version)."],
 ];
 
 export default function Page() {
@@ -145,6 +147,11 @@ $ agentnode auth status            # check configured providers`}</CodeBlock>
             and{" "}
             <Link href="/docs/verification" className="text-primary hover:underline">
               Package Verification
+            </Link>
+            . For the complete MCP verification, ownership, submission, and
+            review workflow, see{" "}
+            <Link href="/docs/mcp-publishing" className="text-primary hover:underline">
+              Publish an MCP server
             </Link>
             .
           </p>
