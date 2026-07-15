@@ -3072,6 +3072,12 @@ def cmd_lock_seal(*, force: bool = False) -> int:
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    # Audit events are COLLECTED here and emitted only after the atomic write
+    # succeeds and the lock is released — never during in-memory sealing. A path
+    # that refuses, is idempotent, or fails to write returns without emitting,
+    # so no audit ever claims a seal that did not reach disk.
+    audits: list[tuple[str, str]] = []
+
     # The ENTIRE transaction — read, base-model + entry validation, status check,
     # in-memory seal, single write — runs under one file_lock. Nothing is read,
     # status-checked, or sealed before the lock is held.
@@ -3100,40 +3106,45 @@ def cmd_lock_seal(*, force: bool = False) -> int:
                 packages[slug] = seal_entry(entry)
                 label = "resealed" if has else "sealed"
                 print(f"  {slug}: {label}")
-                _lock_seal_audit(f"entry force-{label}", slug)
+                audits.append((f"entry force-{label}", slug))
             sealed = seal_structure(data)
             sealed["updated_at"] = _now()
-            atomic_write_json(lf, sealed)
-            _lock_seal_audit("structure force-reseal", "-")
+            atomic_write_json(lf, sealed)   # if this raises, `audits` is never emitted
+            audits.append(("structure force-reseal", "-"))
             print("\n  force reseal complete (per-entry + structure).")
-            return 0
+            # fall through to the post-lock audit emit
+        else:
+            # --- non-force ---
+            missing = [s for s, e in packages.items() if verify_entry(s, e).status == "missing"]
+            mismatch = [s for s, e in packages.items() if verify_entry(s, e).status == "mismatch"]
+            if mismatch:
+                print(f"  {len(mismatch)} entry integrity mismatch(es) — not healed.")
+                print("  Run `agentnode lock verify`; reseal deliberately with `agentnode lock seal --force`.")
+                return 1
+            for slug in missing:
+                packages[slug] = seal_entry(packages[slug])
+                print(f"  {slug}: sealed")
+                audits.append(("entry sealed", slug))
 
-        # --- non-force ---
-        missing = [s for s, e in packages.items() if verify_entry(s, e).status == "missing"]
-        mismatch = [s for s, e in packages.items() if verify_entry(s, e).status == "mismatch"]
-        if mismatch:
-            print(f"  {len(mismatch)} entry integrity mismatch(es) — not healed.")
-            print("  Run `agentnode lock verify`; reseal deliberately with `agentnode lock seal --force`.")
-            return 1
-        for slug in missing:
-            packages[slug] = seal_entry(packages[slug])
-            print(f"  {slug}: sealed")
-            _lock_seal_audit("entry sealed", slug)
+            st = verify_structure(data)
+            if st == "verified" and not missing:
+                print("  Already sealed (no changes).")
+                return 0
+            if st not in ("verified", "missing"):
+                print(f"  structure {st} — not healed.")
+                print("  Run `agentnode lock verify`; reseal deliberately with `agentnode lock seal --force`.")
+                return 1
+            sealed = seal_structure(data)
+            sealed["updated_at"] = _now()
+            atomic_write_json(lf, sealed)   # if this raises, `audits` is never emitted
+            n = len(missing)
+            print(f"\n  {n} sealed, structure_digest written." if n else "  structure_digest written.")
+            # fall through to the post-lock audit emit
 
-        st = verify_structure(data)
-        if st == "verified" and not missing:
-            print("  Already sealed (no changes).")
-            return 0
-        if st not in ("verified", "missing"):
-            print(f"  structure {st} — not healed.")
-            print("  Run `agentnode lock verify`; reseal deliberately with `agentnode lock seal --force`.")
-            return 1
-        sealed = seal_structure(data)
-        sealed["updated_at"] = _now()
-        atomic_write_json(lf, sealed)
-        n = len(missing)
-        print(f"\n  {n} sealed, structure_digest written." if n else "  structure_digest written.")
-        return 0
+    # Reached ONLY after a successful atomic write; the file lock is released.
+    for reason, slug in audits:
+        _lock_seal_audit(reason, slug)
+    return 0
 
 
 def _sig_display(sig_dict: dict) -> str:

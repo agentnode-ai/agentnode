@@ -46,6 +46,37 @@ def _sealed_entry(**over) -> dict:
     return seal_entry(e)
 
 
+def _drifted_entry(**over) -> dict:
+    """A sealed entry whose CONTENT was mutated after sealing: verify_entry reports
+    'mismatch', but its _integrity (and thus the structure digest over the
+    _integrity set) is unchanged, so verify_structure stays 'verified'."""
+    e = _sealed_entry(**over)
+    e["version"] = e["version"] + "-drifted"   # content drift; _integrity untouched
+    return e
+
+
+def _write_spy(monkeypatch):
+    """Count atomic_write_json calls (0 == no write reached disk)."""
+    import agentnode_sdk._fileutil as fu
+    calls = {"n": 0}
+    real = fu.atomic_write_json
+
+    def spy(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(fu, "atomic_write_json", spy)
+    return calls
+
+
+def _audit_spy(monkeypatch):
+    """Record every (reason, slug) passed to cmd_lock_seal's audit hook."""
+    import agentnode_sdk.cli.commands as cmds
+    events: list[tuple[str, str]] = []
+    monkeypatch.setattr(cmds, "_lock_seal_audit", lambda reason, slug: events.append((reason, slug)))
+    return events
+
+
 def _write_lock(lf, packages, *, structure=False, updated_at="2026-01-01T00:00:00+00:00"):
     data = {"lockfile_version": LOCKFILE_VERSION, "updated_at": updated_at, "packages": packages}
     if structure:
@@ -441,3 +472,121 @@ class TestSealMalformedEntry:
         before = env_lock.read_bytes()
         assert main(["lock", "seal", *force]) == 1
         assert env_lock.read_bytes() == before
+
+
+# --------------------------------------------------------------------------- #
+# Per-entry pre-mutation gate — normal mutations refuse existing entry drift    #
+# --------------------------------------------------------------------------- #
+
+class TestPerEntryPreMutationGate:
+    """A hash-of-hashes structure digest stays 'verified' when an entry's CONTENT
+    drifts but its _integrity is untouched. A normal install/upgrade/remove must
+    still refuse — it may not conserve that drift into a rewritten lockfile."""
+
+    def _drift_lock(self, lf):
+        # a-pack content-drifted (verify_entry mismatch), b-pack clean; structure
+        # sealed over the (unchanged) _integrity set → verify_structure verified.
+        _write_lock(lf, {"a-pack": _drifted_entry(version="1.0.0"),
+                         "b-pack": _sealed_entry(version="1.0.0")}, structure=True)
+
+    def test_precondition_structure_verified_entry_mismatch(self, lf):
+        self._drift_lock(lf)
+        lock = read_lockfile(lf)
+        assert verify_structure(lock) == "verified"                       # global digest intact
+        assert verify_entry("a-pack", lock["packages"]["a-pack"]).status == "mismatch"
+        assert verify_entry("b-pack", lock["packages"]["b-pack"]).status == "verified"
+
+    def test_install_other_refused_no_write(self, lf, monkeypatch):
+        self._drift_lock(lf)
+        before, spy = lf.read_bytes(), _write_spy(monkeypatch)
+        with pytest.raises(LockfileFormatError):
+            update_lockfile("c-pack", _sealed_entry(), path=lf)
+        assert spy["n"] == 0 and lf.read_bytes() == before
+
+    def test_upgrade_other_refused_no_write(self, lf, monkeypatch):
+        self._drift_lock(lf)
+        before, spy = lf.read_bytes(), _write_spy(monkeypatch)
+        with pytest.raises(LockfileFormatError):
+            update_lockfile("b-pack", _sealed_entry(version="2.0.0"), path=lf)
+        assert spy["n"] == 0 and lf.read_bytes() == before
+
+    def test_remove_other_refused_no_write(self, lf, monkeypatch):
+        self._drift_lock(lf)
+        before, spy = lf.read_bytes(), _write_spy(monkeypatch)
+        with pytest.raises(LockfileFormatError):
+            remove_from_lockfile("b-pack", path=lf)
+        assert spy["n"] == 0 and lf.read_bytes() == before
+
+    def test_update_drifted_slug_itself_refused_no_write(self, lf, monkeypatch):
+        self._drift_lock(lf)
+        before, spy = lf.read_bytes(), _write_spy(monkeypatch)
+        with pytest.raises(LockfileFormatError):
+            update_lockfile("a-pack", _sealed_entry(version="2.0.0"), path=lf)   # no target-slug exception
+        assert spy["n"] == 0 and lf.read_bytes() == before
+
+    def test_clean_mutations_leave_all_entries_and_structure_verified(self, lf):
+        update_lockfile("a-pack", _sealed_entry(version="1.0.0"), path=lf)       # install
+        update_lockfile("b-pack", _sealed_entry(version="1.0.0"), path=lf)       # install
+        update_lockfile("a-pack", _sealed_entry(version="2.0.0"), path=lf)       # upgrade
+        remove_from_lockfile("b-pack", path=lf)                                  # remove
+        lock = read_lockfile(lf)
+        for slug, entry in lock["packages"].items():
+            assert verify_entry(slug, entry).status == "verified"
+        assert verify_structure(lock) == "verified"
+
+
+# --------------------------------------------------------------------------- #
+# lock seal audits — emitted only AFTER a successful write                      #
+# --------------------------------------------------------------------------- #
+
+class TestSealAuditAfterCommit:
+    def test_non_force_seal_then_structure_drift_no_audit(self, env_lock, monkeypatch):
+        # a-pack unsealed (missing _integrity) + a corrupt structure_digest that
+        # still mismatches after the entry is sealed in memory → non-force seals
+        # the entry in memory, then hits non-healable structure drift → refuse.
+        e = _sealed_entry(version="1.0.0")
+        del e["_integrity"]
+        data = {"lockfile_version": "0.1", "updated_at": "2026-01-01T00:00:00+00:00",
+                "packages": {"a-pack": e},
+                "structure_digest": {"algorithm": "sha256", "canonicalization_version": 1, "hash": "0" * 64}}
+        env_lock.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        before = env_lock.read_bytes()
+        audits, spy = _audit_spy(monkeypatch), _write_spy(monkeypatch)
+        assert main(["lock", "seal"]) == 1
+        assert spy["n"] == 0                             # no write
+        assert audits == []                              # no seal audit for an unwritten seal
+        assert env_lock.read_bytes() == before
+
+    def test_force_write_failure_no_audit(self, env_lock, monkeypatch):
+        _write_lock(env_lock, {"a-pack": _sealed_entry()}, structure=True)
+        audits = _audit_spy(monkeypatch)
+        import agentnode_sdk._fileutil as fu
+
+        def boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(fu, "atomic_write_json", boom)
+        with pytest.raises(OSError):                     # propagates (not an AgentNodeError)
+            main(["lock", "seal", "--force"])
+        assert audits == []                              # write failed → no reseal audit
+
+    def test_successful_seal_emits_once_strictly_after_write(self, env_lock, monkeypatch):
+        e = _sealed_entry()
+        del e["_integrity"]                              # unsealed → non-force will seal it
+        _write_lock(env_lock, {"a-pack": e})            # no structure digest yet
+        order: list = []
+        import agentnode_sdk._fileutil as fu
+        import agentnode_sdk.cli.commands as cmds
+        real_write = fu.atomic_write_json
+        monkeypatch.setattr(fu, "atomic_write_json",
+                            lambda *a, **k: (order.append("write"), real_write(*a, **k))[1])
+        monkeypatch.setattr(cmds, "_lock_seal_audit",
+                            lambda reason, slug: order.append(("audit", reason, slug)))
+        assert main(["lock", "seal"]) == 0
+        assert order == ["write", ("audit", "entry sealed", "a-pack")]   # one write, then one audit
+
+    def test_idempotent_seal_no_audit(self, env_lock, monkeypatch):
+        _write_lock(env_lock, {"a-pack": _sealed_entry()}, structure=True)   # fully verified
+        audits = _audit_spy(monkeypatch)
+        assert main(["lock", "seal"]) == 0
+        assert audits == []                              # no new seal/reseal audit

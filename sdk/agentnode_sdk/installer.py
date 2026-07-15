@@ -648,26 +648,51 @@ def read_lockfile_strict(path: Path | None = None) -> dict | None:
 
 
 def _require_mutable_structure(data: dict) -> str:
-    """Pre-mutation structure gate.
+    """Pre-mutation integrity gate — checks BOTH levels of the integrity chain.
+
+    A normal mutation must never conserve or heal existing drift, so an existing
+    lockfile is refused unless every existing per-entry integrity AND the global
+    structure digest are intact. The structure digest is a hash-of-hashes over the
+    per-entry ``_integrity`` values, so a manipulated entry whose ``_integrity``
+    was left untouched keeps the structure ``"verified"`` while the entry itself is
+    ``"mismatch"`` — the per-entry level is therefore checked independently, with
+    NO exception for the slug being changed or removed.
 
     Returns the structure status (``"verified"`` or ``"missing"``) when the
-    mutation may proceed; otherwise raises :class:`LockfileFormatError` (so no
-    write happens). The message is neutral (no lockfile values) and points to
-    ``agentnode lock verify`` / ``agentnode lock seal --force`` as applicable.
+    mutation may proceed; otherwise raises :class:`LockfileFormatError` (no write).
+    Messages are neutral (no lockfile values) and point to ``agentnode lock seal``
+    (unsealed) or ``agentnode lock verify`` / ``lock seal --force`` (drift).
     """
-    from agentnode_sdk.lock_integrity import verify_structure
+    from agentnode_sdk.lock_integrity import verify_entry, verify_structure
 
+    # (1) Every existing per-entry integrity — checked FIRST so an unsealed entry
+    # routes to plain `lock seal` (not the deliberate --force reseal), and so
+    # content drift is refused even when the global structure digest still matches.
+    for slug, entry in data["packages"].items():
+        if not isinstance(entry, dict):
+            raise LockfileFormatError(
+                "lockfile_entry_invalid",
+                "an existing lockfile entry is not an object — run `agentnode lock verify`",
+            )
+        est = verify_entry(slug, entry).status
+        if est == "verified":
+            continue
+        if est == "missing":
+            raise LockfileFormatError(
+                "lockfile_unsealed_entries",
+                "existing lockfile entries are not fully sealed — run `agentnode lock seal` first",
+            )
+        # "mismatch" (or any other non-verified status): deliberate reseal only.
+        raise LockfileFormatError(
+            "lockfile_entry_mismatch",
+            "an existing lockfile entry fails its integrity check — run `agentnode lock verify`; "
+            "if the change is intended, reseal deliberately with `agentnode lock seal --force`",
+        )
+
+    # (2) Global structure digest over the (now individually-verified) set.
     status = verify_structure(data)
     if status in ("verified", "missing"):
         return status
-    if status == "invalid" and "structure_digest" not in data:
-        # No digest yet, but an existing entry is unsealed/malformed — a plain
-        # `lock seal` (not --force) is the fix; a normal package mutation must not
-        # silently reseal all independent entries.
-        raise LockfileFormatError(
-            "lockfile_unsealed_entries",
-            "existing lockfile entries are not fully sealed — run `agentnode lock seal` first",
-        )
     raise LockfileFormatError(
         f"lockfile_structure_{status}",
         "lockfile structure check failed — run `agentnode lock verify`; if the change "
