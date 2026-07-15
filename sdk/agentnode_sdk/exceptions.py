@@ -30,6 +30,20 @@ class RateLimitError(AgentNodeError):
     pass
 
 
+class LockfileFormatError(AgentNodeError):
+    """agentnode.lock is structurally malformed in a way that must FAIL CLOSED
+    rather than be treated as empty.
+
+    Currently raised for duplicate object keys at any nesting level — a tamper /
+    ambiguity signal that plain ``json.loads`` would silently collapse to
+    last-wins. Deliberately NOT a ``json.JSONDecodeError``/``OSError`` subclass,
+    so it is not swallowed by the fail-soft handling for a missing file or
+    syntactically corrupt JSON (which keep returning an empty default lockfile).
+    Only the offending key name is surfaced — never a value or file content.
+    """
+    pass
+
+
 class AgentNodeToolError(Exception):
     """Base error for tool execution failures.
 

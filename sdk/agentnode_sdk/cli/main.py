@@ -6,6 +6,7 @@ import sys
 
 import agentnode_sdk
 from agentnode_sdk.cli.output import set_color
+from agentnode_sdk.exceptions import AgentNodeError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -446,6 +447,13 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print()
         return 130
+    except AgentNodeError as e:
+        # Generic, traceback-free translation for expected AgentNode errors that a
+        # command lets propagate (e.g. a malformed lockfile from read_lockfile).
+        # Read-only commands get a deterministic message + non-zero exit instead of
+        # a raw traceback — no per-command catch duplication.
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
 
 def cli() -> None:

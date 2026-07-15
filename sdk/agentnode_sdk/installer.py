@@ -22,6 +22,8 @@ from typing import Any
 
 import httpx
 
+from agentnode_sdk.exceptions import LockfileFormatError
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -560,11 +562,37 @@ def _lockfile_path() -> Path:
     return Path.cwd() / LOCKFILE_NAME
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict:
+    """``json`` object_pairs_hook — reject duplicate keys at ANY nesting level.
+
+    JSON permits duplicate keys; ``json.loads`` keeps last-wins, which would let a
+    tampered lockfile silently hide an entry or field (the structure digest in a
+    later slice would then never see it). Fail closed on the FIRST duplicate.
+    Only the key name is surfaced — never a value or file content. Arrays and
+    unique-keyed objects are unaffected (this hook fires only for JSON objects).
+    """
+    seen: set[str] = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise LockfileFormatError(
+                "lockfile_format",
+                f"duplicate key {key!r} in agentnode.lock (malformed or tampered)",
+            )
+        seen.add(key)
+    return dict(pairs)
+
+
 def read_lockfile(path: Path | None = None) -> dict:
     lf = path or _lockfile_path()
     if lf.is_file():
         try:
-            data = json.loads(lf.read_text(encoding="utf-8"))
+            # object_pairs_hook rejects duplicate keys (raises LockfileFormatError,
+            # which is NOT caught below — a duplicate-key lockfile fails closed
+            # rather than being swallowed into an empty default).
+            data = json.loads(
+                lf.read_text(encoding="utf-8"),
+                object_pairs_hook=_reject_duplicate_keys,
+            )
             if isinstance(data, dict) and "packages" in data:
                 return data
         except (json.JSONDecodeError, OSError):
