@@ -2,7 +2,6 @@
 import base64
 import hashlib as _hashlib
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -100,9 +99,11 @@ class TestLockSeal:
         assert rc == 0
 
         lock = read_lockfile(tmp_lockfile)
+        # existing per-entry integrity is untouched; the missing structure digest
+        # is now added (0.2A-2a migration).
         assert lock["packages"]["test-pack"]["_integrity"]["hash"] == original_hash
-        out = capsys.readouterr().out
-        assert "unchanged" in out
+        from agentnode_sdk.lock_integrity import verify_structure
+        assert verify_structure(lock) == "verified"
 
     def test_seal_force_recomputes(self, tmp_lockfile, capsys):
         sealed = seal_entry(_make_entry())
@@ -150,11 +151,15 @@ class TestLockSeal:
         lock = read_lockfile(tmp_lockfile)
         assert verify_entry("sealed-pack", lock["packages"]["sealed-pack"]).status == "verified"
         assert verify_entry("unsealed-pack", lock["packages"]["unsealed-pack"]).status == "verified"
+        # sealed-pack keeps its integrity (not re-sealed); structure digest is
+        # written over the full set (0.2A-2a).
+        assert lock["packages"]["sealed-pack"]["_integrity"]["hash"] == sealed["_integrity"]["hash"]
+        from agentnode_sdk.lock_integrity import verify_structure
+        assert verify_structure(lock) == "verified"
 
         out = capsys.readouterr().out
         assert "unsealed-pack: sealed" in out
         assert "1 sealed" in out
-        assert "1 unchanged" in out
 
 
 # ---------------------------------------------------------------------------

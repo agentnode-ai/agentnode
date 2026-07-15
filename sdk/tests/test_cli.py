@@ -2,7 +2,6 @@
 import base64
 import hashlib as _hashlib
 import json
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -248,6 +247,8 @@ def test_remove_not_installed(capsys, saved_config):
 
 
 def test_remove_with_yes(capsys, saved_config, lockfile_with_packages, isolated_env):
+    main(["lock", "seal"])   # migrate the legacy fixture to a sealed lockfile first
+    capsys.readouterr()       # drop seal output
     code = main(["remove", "pdf-reader-pack", "--yes"])
     assert code == 0
     out = capsys.readouterr().out

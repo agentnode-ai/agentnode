@@ -603,20 +603,133 @@ def read_lockfile(path: Path | None = None) -> dict:
     return {"lockfile_version": LOCKFILE_VERSION, "updated_at": "", "packages": {}}
 
 
+def _new_lockfile() -> dict:
+    return {"lockfile_version": LOCKFILE_VERSION, "updated_at": "", "packages": {}}
+
+
+def read_lockfile_strict(path: Path | None = None) -> dict | None:
+    """Read agentnode.lock for MUTATION — fail-closed, never fail-soft.
+
+    Unlike :func:`read_lockfile` (fail-soft for read-only callers), an EXISTING
+    file that is unreadable / syntactically invalid / duplicate-keyed / has an
+    invalid base model raises :class:`LockfileFormatError` so the mutation is
+    refused — a broken file is NEVER treated as empty and overwritten. Returns
+    ``None`` when the file does not exist (a fresh lockfile may be created).
+    """
+    lf = path or _lockfile_path()
+    if not lf.is_file():
+        return None
+    try:
+        text = lf.read_text(encoding="utf-8")
+    except OSError:
+        raise LockfileFormatError("lockfile_unreadable", "agentnode.lock could not be read")
+    try:
+        # object_pairs_hook raises LockfileFormatError on duplicate keys (propagates).
+        data = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+    except json.JSONDecodeError:
+        raise LockfileFormatError("lockfile_invalid_json", "agentnode.lock is not valid JSON")
+    # Base model for a mutation: a dict with a dict ``packages``. lockfile_version
+    # is optional here (the writer normalizes it) — matching read_lockfile's model,
+    # so a legacy lockfile without it is not spuriously refused.
+    if not isinstance(data, dict) or not isinstance(data.get("packages"), dict):
+        raise LockfileFormatError("lockfile_invalid_model", "agentnode.lock has an invalid base model")
+    return data
+
+
+def _require_mutable_structure(data: dict) -> str:
+    """Pre-mutation structure gate.
+
+    Returns the structure status (``"verified"`` or ``"missing"``) when the
+    mutation may proceed; otherwise raises :class:`LockfileFormatError` (so no
+    write happens). The message is neutral (no lockfile values) and points to
+    ``agentnode lock verify`` / ``agentnode lock seal --force`` as applicable.
+    """
+    from agentnode_sdk.lock_integrity import verify_structure
+
+    status = verify_structure(data)
+    if status in ("verified", "missing"):
+        return status
+    if status == "invalid" and "structure_digest" not in data:
+        # No digest yet, but an existing entry is unsealed/malformed — a plain
+        # `lock seal` (not --force) is the fix; a normal package mutation must not
+        # silently reseal all independent entries.
+        raise LockfileFormatError(
+            "lockfile_unsealed_entries",
+            "existing lockfile entries are not fully sealed — run `agentnode lock seal` first",
+        )
+    raise LockfileFormatError(
+        f"lockfile_structure_{status}",
+        "lockfile structure check failed — run `agentnode lock verify`; if the change "
+        "is intended, reseal deliberately with `agentnode lock seal --force`",
+    )
+
+
+def _audit_structure_event(reason: str, slug: str | None) -> None:
+    """Best-effort audit for a structure-digest migration (never crashes)."""
+    try:
+        from agentnode_sdk.policy import PolicyResult, audit_decision
+        audit_decision(
+            PolicyResult(action="allow", reason=reason, source="lock_integrity"),
+            "lockfile_structure",
+            slug or "-",
+        )
+    except Exception:
+        pass
+
+
+def mutate_lockfile(apply, *, path: Path | None = None, audit_slug: str | None = None) -> None:
+    """Central, structure-safe lockfile mutation — the single writer path.
+
+    Order: mutation-strict read -> pre-mutation structure gate -> ``apply(data)``
+    in memory -> ``seal_structure`` (last, over the post-mutation set) -> single
+    ``updated_at`` -> atomic write. Refuses (raises, no write) a corrupt /
+    mismatch / invalid existing lockfile. No partial state ever reaches disk.
+    """
+    from agentnode_sdk._fileutil import atomic_write_json, file_lock
+    from agentnode_sdk.lock_integrity import seal_structure
+
+    lf = path or _lockfile_path()
+    with file_lock(lf):
+        data = read_lockfile_strict(lf)
+        migrating = False
+        if data is None:
+            data = _new_lockfile()
+        else:
+            data.setdefault("lockfile_version", LOCKFILE_VERSION)   # normalize base model
+            migrating = _require_mutable_structure(data) == "missing"
+        apply(data)                                    # in-memory upsert/remove
+        sealed = seal_structure(data)                  # last; raises if any entry invalid
+        sealed["updated_at"] = datetime.now(timezone.utc).isoformat()
+        atomic_write_json(lf, sealed)
+    if migrating:
+        _audit_structure_event("structure_digest_migration", audit_slug)
+
+
 def update_lockfile(
     slug: str,
     entry: dict[str, Any],
     path: Path | None = None,
 ) -> None:
-    """Write or update a package entry in agentnode.lock."""
-    from agentnode_sdk._fileutil import atomic_write_json, file_lock
+    """Write or update a package entry in agentnode.lock (structure-safe)."""
+    from agentnode_sdk.lock_integrity import seal_entry
 
-    lf = path or _lockfile_path()
-    with file_lock(lf):
-        data = read_lockfile(lf)
-        data["packages"][slug] = entry
-        data["updated_at"] = datetime.now(timezone.utc).isoformat()
-        atomic_write_json(lf, data)
+    def _apply(data: dict) -> None:
+        data["packages"][slug] = seal_entry(entry)   # seal the changed entry (idempotent)
+
+    mutate_lockfile(_apply, path=path, audit_slug=slug)
+
+
+def remove_from_lockfile(slug: str, path: Path | None = None) -> dict | None:
+    """Remove *slug* from agentnode.lock (structure-safe). Returns the removed
+    entry (for post-removal cleanup) or None. The digest is rebuilt over the
+    post-removal set."""
+    removed: dict = {}
+
+    def _apply(data: dict) -> None:
+        removed["entry"] = data["packages"].pop(slug, None)
+
+    mutate_lockfile(_apply, path=path, audit_slug=slug)
+    return removed.get("entry")
 
 
 def check_installed(slug: str, version: str, path: Path | None = None) -> str:
