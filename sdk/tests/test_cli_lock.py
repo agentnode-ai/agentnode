@@ -120,11 +120,17 @@ class TestLockSeal:
         assert "resealed" in out
 
     def test_seal_empty_lockfile(self, tmp_lockfile, capsys):
+        # An empty but valid lockfile is sealed with the empty-set structure
+        # digest (0.2A-2a), not treated as "nothing to do".
         _write_lockfile(tmp_lockfile, {})
         rc = main(["lock", "seal"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "No packages" in out
+        assert "structure_digest written" in out
+        from agentnode_sdk.lock_integrity import verify_structure
+        lock = read_lockfile(tmp_lockfile)
+        assert lock["packages"] == {}
+        assert verify_structure(lock) == "verified"
 
     def test_seal_writes_valid_lockfile(self, tmp_lockfile):
         _write_lockfile(tmp_lockfile, {"pack-a": _make_entry()})

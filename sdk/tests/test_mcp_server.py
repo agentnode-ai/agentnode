@@ -16,7 +16,7 @@ def isolated_env(tmp_path, monkeypatch):
     cfg_file = cfg_dir / "config.json"
     lock_file = tmp_path / "agentnode.lock"
     cfg_file.write_text(json.dumps({"version": "0.1"}))
-    lock_file.write_text(json.dumps({"version": "0.1", "packages": {}}))
+    lock_file.write_text(json.dumps({"lockfile_version": "0.1", "packages": {}}))
     monkeypatch.setenv("AGENTNODE_CONFIG", str(cfg_file))
     monkeypatch.setenv("AGENTNODE_LOCKFILE", str(lock_file))
     monkeypatch.setenv("AGENTNODE_CONFIG_DIR", str(cfg_dir))

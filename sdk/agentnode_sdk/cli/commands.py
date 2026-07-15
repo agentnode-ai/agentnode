@@ -3061,75 +3061,79 @@ def cmd_lock_seal(*, force: bool = False) -> int:
 
     from agentnode_sdk._fileutil import atomic_write_json, file_lock
     from agentnode_sdk.exceptions import LockfileFormatError
-    from agentnode_sdk.installer import LOCKFILE_VERSION, _lockfile_path, read_lockfile_strict
+    from agentnode_sdk.installer import _lockfile_path, read_lockfile_strict
     from agentnode_sdk.lock_integrity import (
         seal_entry, seal_structure, verify_entry, verify_structure,
     )
     from agentnode_sdk.references import is_valid_package_slug
 
     lf = _lockfile_path()
-    try:
-        data = read_lockfile_strict(lf)
-    except LockfileFormatError as e:
-        print(f"  Cannot seal: {e}")
-        return 1
-    if data is None or not data["packages"]:
-        print("  No packages in lockfile.")
-        return 0
-    data.setdefault("lockfile_version", LOCKFILE_VERSION)   # normalize base model
-    packages = data["packages"]
-
-    # Entries that cannot be safely sealed are refused in BOTH modes.
-    for slug, entry in packages.items():
-        if not is_valid_package_slug(slug) or not isinstance(entry, dict):
-            print("  Cannot seal: lockfile contains an invalid slug/entry — run `agentnode lock verify`.")
-            return 1
 
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    if force:
+    # The ENTIRE transaction — read, base-model + entry validation, status check,
+    # in-memory seal, single write — runs under one file_lock. Nothing is read,
+    # status-checked, or sealed before the lock is held.
+    with file_lock(lf):
+        try:
+            data = read_lockfile_strict(lf)
+        except LockfileFormatError as e:
+            print(f"  Cannot seal: {e}")
+            return 1
+        if data is None:
+            print("  No lockfile.")
+            return 0
+        packages = data["packages"]
+
+        # Malformed slugs/entries are refused in BOTH modes, BEFORE any entry
+        # operation (verify_entry / seal_entry). An empty-but-valid lockfile
+        # passes straight through to the empty-set seal below.
         for slug, entry in packages.items():
-            has = "_integrity" in entry
-            packages[slug] = seal_entry(entry)
-            label = "resealed" if has else "sealed"
-            print(f"  {slug}: {label}")
-            _lock_seal_audit(f"entry force-{label}", slug)
+            if not is_valid_package_slug(slug) or not isinstance(entry, dict):
+                print("  Cannot seal: lockfile contains an invalid slug/entry — run `agentnode lock verify`.")
+                return 1
+
+        if force:
+            for slug, entry in packages.items():
+                has = "_integrity" in entry
+                packages[slug] = seal_entry(entry)
+                label = "resealed" if has else "sealed"
+                print(f"  {slug}: {label}")
+                _lock_seal_audit(f"entry force-{label}", slug)
+            sealed = seal_structure(data)
+            sealed["updated_at"] = _now()
+            atomic_write_json(lf, sealed)
+            _lock_seal_audit("structure force-reseal", "-")
+            print("\n  force reseal complete (per-entry + structure).")
+            return 0
+
+        # --- non-force ---
+        missing = [s for s, e in packages.items() if verify_entry(s, e).status == "missing"]
+        mismatch = [s for s, e in packages.items() if verify_entry(s, e).status == "mismatch"]
+        if mismatch:
+            print(f"  {len(mismatch)} entry integrity mismatch(es) — not healed.")
+            print("  Run `agentnode lock verify`; reseal deliberately with `agentnode lock seal --force`.")
+            return 1
+        for slug in missing:
+            packages[slug] = seal_entry(packages[slug])
+            print(f"  {slug}: sealed")
+            _lock_seal_audit("entry sealed", slug)
+
+        st = verify_structure(data)
+        if st == "verified" and not missing:
+            print("  Already sealed (no changes).")
+            return 0
+        if st not in ("verified", "missing"):
+            print(f"  structure {st} — not healed.")
+            print("  Run `agentnode lock verify`; reseal deliberately with `agentnode lock seal --force`.")
+            return 1
         sealed = seal_structure(data)
         sealed["updated_at"] = _now()
-        with file_lock(lf):
-            atomic_write_json(lf, sealed)
-        _lock_seal_audit("structure force-reseal", "-")
-        print("\n  force reseal complete (per-entry + structure).")
-        return 0
-
-    # --- non-force ---
-    missing = [s for s, e in packages.items() if verify_entry(s, e).status == "missing"]
-    mismatch = [s for s, e in packages.items() if verify_entry(s, e).status == "mismatch"]
-    if mismatch:
-        print(f"  {len(mismatch)} entry integrity mismatch(es) — not healed.")
-        print("  Run `agentnode lock verify`; reseal deliberately with `agentnode lock seal --force`.")
-        return 1
-    for slug in missing:
-        packages[slug] = seal_entry(packages[slug])
-        print(f"  {slug}: sealed")
-        _lock_seal_audit("entry sealed", slug)
-
-    st = verify_structure(data)
-    if st == "verified" and not missing:
-        print("  Already sealed (no changes).")
-        return 0
-    if st not in ("verified", "missing"):
-        print(f"  structure {st} — not healed.")
-        print("  Run `agentnode lock verify`; reseal deliberately with `agentnode lock seal --force`.")
-        return 1
-    sealed = seal_structure(data)
-    sealed["updated_at"] = _now()
-    with file_lock(lf):
         atomic_write_json(lf, sealed)
-    n = len(missing)
-    print(f"\n  {n} sealed, structure_digest written." if n else "  structure_digest written.")
-    return 0
+        n = len(missing)
+        print(f"\n  {n} sealed, structure_digest written." if n else "  structure_digest written.")
+        return 0
 
 
 def _sig_display(sig_dict: dict) -> str:

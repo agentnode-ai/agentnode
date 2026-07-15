@@ -603,6 +603,12 @@ def read_lockfile(path: Path | None = None) -> dict:
     return {"lockfile_version": LOCKFILE_VERSION, "updated_at": "", "packages": {}}
 
 
+# Lockfile schema versions this SDK can safely mutate. A file whose
+# lockfile_version is absent or outside this set is refused for mutation (never
+# silently "repaired"): 0.2A-2a has no historical migration path for it.
+_SUPPORTED_LOCKFILE_VERSIONS: tuple[str, ...] = (LOCKFILE_VERSION,)
+
+
 def _new_lockfile() -> dict:
     return {"lockfile_version": LOCKFILE_VERSION, "updated_at": "", "packages": {}}
 
@@ -628,10 +634,15 @@ def read_lockfile_strict(path: Path | None = None) -> dict | None:
         data = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
     except json.JSONDecodeError:
         raise LockfileFormatError("lockfile_invalid_json", "agentnode.lock is not valid JSON")
-    # Base model for a mutation: a dict with a dict ``packages``. lockfile_version
-    # is optional here (the writer normalizes it) — matching read_lockfile's model,
-    # so a legacy lockfile without it is not spuriously refused.
-    if not isinstance(data, dict) or not isinstance(data.get("packages"), dict):
+    # Base model for a mutation: a top-level dict, a dict ``packages``, and a
+    # supported ``lockfile_version`` string. A missing/unsupported version is NOT
+    # auto-repaired — the mutation fails closed rather than silently normalizing a
+    # base model the last review rejected healing.
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("packages"), dict)
+        or data.get("lockfile_version") not in _SUPPORTED_LOCKFILE_VERSIONS
+    ):
         raise LockfileFormatError("lockfile_invalid_model", "agentnode.lock has an invalid base model")
     return data
 
@@ -680,28 +691,33 @@ def _audit_structure_event(reason: str, slug: str | None) -> None:
 def mutate_lockfile(apply, *, path: Path | None = None, audit_slug: str | None = None) -> None:
     """Central, structure-safe lockfile mutation — the single writer path.
 
-    Order: mutation-strict read -> pre-mutation structure gate -> ``apply(data)``
-    in memory -> ``seal_structure`` (last, over the post-mutation set) -> single
-    ``updated_at`` -> atomic write. Refuses (raises, no write) a corrupt /
-    mismatch / invalid existing lockfile. No partial state ever reaches disk.
+    Order (all under one ``file_lock``): mutation-strict read -> pre-mutation
+    structure gate -> ``apply(data)`` in memory -> ``seal_structure`` (last, over
+    the post-mutation set) -> single ``updated_at`` -> atomic write. ``apply``
+    returns a truthy value iff it changed the set; a falsey return is a
+    transactional no-op — NOTHING is written, resealed, restamped, or audited.
+    Refuses (raises, no write) a corrupt / mismatch / invalid existing lockfile.
+    No partial state ever reaches disk.
     """
     from agentnode_sdk._fileutil import atomic_write_json, file_lock
     from agentnode_sdk.lock_integrity import seal_structure
 
     lf = path or _lockfile_path()
+    did_write = False
+    migrating = False
     with file_lock(lf):
         data = read_lockfile_strict(lf)
-        migrating = False
         if data is None:
             data = _new_lockfile()
         else:
-            data.setdefault("lockfile_version", LOCKFILE_VERSION)   # normalize base model
             migrating = _require_mutable_structure(data) == "missing"
-        apply(data)                                    # in-memory upsert/remove
+        if not apply(data):                            # transactional no-op -> no write
+            return
         sealed = seal_structure(data)                  # last; raises if any entry invalid
         sealed["updated_at"] = datetime.now(timezone.utc).isoformat()
         atomic_write_json(lf, sealed)
-    if migrating:
+        did_write = True
+    if did_write and migrating:
         _audit_structure_event("structure_digest_migration", audit_slug)
 
 
@@ -713,8 +729,9 @@ def update_lockfile(
     """Write or update a package entry in agentnode.lock (structure-safe)."""
     from agentnode_sdk.lock_integrity import seal_entry
 
-    def _apply(data: dict) -> None:
+    def _apply(data: dict) -> bool:
         data["packages"][slug] = seal_entry(entry)   # seal the changed entry (idempotent)
+        return True                                   # an upsert always changes the set
 
     mutate_lockfile(_apply, path=path, audit_slug=slug)
 
@@ -725,8 +742,11 @@ def remove_from_lockfile(slug: str, path: Path | None = None) -> dict | None:
     post-removal set."""
     removed: dict = {}
 
-    def _apply(data: dict) -> None:
-        removed["entry"] = data["packages"].pop(slug, None)
+    def _apply(data: dict) -> bool:
+        if slug not in data["packages"]:
+            return False                              # transactional no-op: slug absent
+        removed["entry"] = data["packages"].pop(slug)
+        return True
 
     mutate_lockfile(_apply, path=path, audit_slug=slug)
     return removed.get("entry")

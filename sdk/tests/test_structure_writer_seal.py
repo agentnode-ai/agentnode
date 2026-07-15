@@ -65,6 +65,41 @@ def env_lock(tmp_path, monkeypatch):
     return p
 
 
+def _seal_spies(monkeypatch):
+    """Record the ordered (lock, read, write) events of ``cmd_lock_seal`` so a
+    test can prove the whole transaction runs under one file_lock: the lock is
+    acquired BEFORE the strict read, there is exactly one read, and at most one
+    write. Returns the mutable event list."""
+    import contextlib
+
+    import agentnode_sdk._fileutil as fu
+    import agentnode_sdk.installer as inst
+
+    events: list[str] = []
+    real_lock = fu.file_lock
+    real_read = inst.read_lockfile_strict
+    real_write = fu.atomic_write_json
+
+    @contextlib.contextmanager
+    def spy_lock(*a, **k):
+        events.append("lock")
+        with real_lock(*a, **k):
+            yield
+
+    def spy_read(*a, **k):
+        events.append("read")
+        return real_read(*a, **k)
+
+    def spy_write(*a, **k):
+        events.append("write")
+        return real_write(*a, **k)
+
+    monkeypatch.setattr(fu, "file_lock", spy_lock)
+    monkeypatch.setattr(inst, "read_lockfile_strict", spy_read)
+    monkeypatch.setattr(fu, "atomic_write_json", spy_write)
+    return events
+
+
 # --------------------------------------------------------------------------- #
 # Writer + migration                                                           #
 # --------------------------------------------------------------------------- #
@@ -120,15 +155,6 @@ class TestWriter:
         with pytest.raises(LockfileFormatError):
             update_lockfile("b-pack", _sealed_entry(), path=lf)
         assert lf.read_bytes() == before
-
-    def test_missing_lockfile_version_is_normalized(self, lf):
-        # A legacy lockfile without lockfile_version is normalized by the writer
-        # (not refused) — read_lockfile's model only requires `packages`.
-        lf.write_text('{"packages":{}}', encoding="utf-8")
-        update_lockfile("a-pack", _sealed_entry(), path=lf)
-        lock = read_lockfile(lf)
-        assert lock["lockfile_version"] == LOCKFILE_VERSION
-        assert verify_structure(lock) == "verified"
 
     def test_remove_last_entry_empty_set_digest(self, lf):
         update_lockfile("a-pack", _sealed_entry(), path=lf)
@@ -273,4 +299,145 @@ class TestSealForce:
         env_lock.write_text(text, encoding="utf-8")
         before = env_lock.read_bytes()
         assert main(["lock", "seal", "--force"]) == 1
+        assert env_lock.read_bytes() == before
+
+
+# --------------------------------------------------------------------------- #
+# Missing / unsupported lockfile_version — refused for EVERY mutation, no write #
+# --------------------------------------------------------------------------- #
+
+class TestMissingLockfileVersionRefused:
+    """A lockfile whose lockfile_version is absent or unsupported is NOT
+    auto-repaired: every mutation fails closed and writes nothing. 0.2A-2a has
+    no historical migration path for a missing lockfile_version."""
+
+    @pytest.mark.parametrize("body", [
+        '{"packages":{}}',                              # missing entirely
+        '{"lockfile_version":"9.9","packages":{}}',     # unsupported string
+        '{"lockfile_version":0.1,"packages":{}}',       # wrong type (number)
+        '{"lockfile_version":null,"packages":{}}',      # null
+    ])
+    def test_strict_reader_refuses(self, lf, body):
+        lf.write_text(body, encoding="utf-8")
+        with pytest.raises(LockfileFormatError):
+            read_lockfile_strict(lf)
+
+    def test_install_upgrade_refused_no_write(self, lf):
+        lf.write_text('{"packages":{}}', encoding="utf-8")
+        before = lf.read_bytes()
+        with pytest.raises(LockfileFormatError):
+            update_lockfile("a-pack", _sealed_entry(), path=lf)
+        assert lf.read_bytes() == before
+
+    def test_remove_refused_no_write(self, lf):
+        lf.write_text('{"packages":{"a-pack":{"version":"1.0.0"}}}', encoding="utf-8")
+        before = lf.read_bytes()
+        with pytest.raises(LockfileFormatError):
+            remove_from_lockfile("a-pack", path=lf)
+        assert lf.read_bytes() == before
+
+    def test_lock_seal_refused_no_write(self, env_lock, monkeypatch):
+        events = _seal_spies(monkeypatch)
+        env_lock.write_text('{"packages":{}}', encoding="utf-8")
+        before = env_lock.read_bytes()
+        assert main(["lock", "seal"]) == 1
+        assert "write" not in events                     # atomic_write_json never called
+        assert env_lock.read_bytes() == before
+
+    def test_lock_seal_force_refused_no_write(self, env_lock, monkeypatch):
+        events = _seal_spies(monkeypatch)
+        env_lock.write_text('{"packages":{}}', encoding="utf-8")
+        before = env_lock.read_bytes()
+        assert main(["lock", "seal", "--force"]) == 1
+        assert "write" not in events
+        assert env_lock.read_bytes() == before
+
+
+# --------------------------------------------------------------------------- #
+# lock seal on an EMPTY but valid lockfile (empty-set digest)                   #
+# --------------------------------------------------------------------------- #
+
+class TestSealEmptyLockfile:
+    def test_missing_digest_writes_empty_set_vector(self, env_lock):
+        _write_lock(env_lock, {})                        # valid model, packages == {}, no digest
+        assert verify_structure(read_lockfile(env_lock)) == "missing"
+        assert main(["lock", "seal"]) == 0
+        lock = read_lockfile(env_lock)
+        assert lock["packages"] == {}
+        assert verify_structure(lock) == "verified"
+        assert lock["structure_digest"]["hash"] == EMPTY_SET_DIGEST
+
+    def test_verified_empty_is_idempotent(self, env_lock):
+        _write_lock(env_lock, {}, structure=True)        # empty + empty-set digest already
+        before = env_lock.read_bytes()
+        assert main(["lock", "seal"]) == 0
+        assert env_lock.read_bytes() == before           # no rewrite, updated_at unchanged
+
+    def test_absent_file_is_noop(self, env_lock):
+        assert not env_lock.exists()
+        assert main(["lock", "seal"]) == 0
+        assert not env_lock.exists()                     # nothing created
+
+
+# --------------------------------------------------------------------------- #
+# Transactional remove no-op (absent slug) — returns None, no write            #
+# --------------------------------------------------------------------------- #
+
+class TestRemoveNoOp:
+    def test_absent_slug_returns_none_no_write(self, lf, monkeypatch):
+        update_lockfile("a-pack", _sealed_entry(), path=lf)   # verified, one entry
+        before = lf.read_bytes()
+        import agentnode_sdk._fileutil as fu
+        calls = {"n": 0}
+        monkeypatch.setattr(fu, "atomic_write_json",
+                            lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
+        removed = remove_from_lockfile("ghost-pack", path=lf)
+        assert removed is None                            # transactional no-op
+        assert calls["n"] == 0                            # no seal/updated_at/write
+        assert lf.read_bytes() == before                  # byte-identical incl. updated_at
+
+
+# --------------------------------------------------------------------------- #
+# lock seal transaction order — lock acquired before read; one read, one write  #
+# --------------------------------------------------------------------------- #
+
+class TestSealTransactionOrder:
+    def test_change_locks_before_read_then_single_write(self, env_lock, monkeypatch):
+        events = _seal_spies(monkeypatch)
+        _write_lock(env_lock, {"a-pack": _sealed_entry()})   # sealed entry, missing structure digest
+        assert main(["lock", "seal"]) == 0
+        assert events == ["lock", "read", "write"]           # lock BEFORE read; one read + one write
+
+    def test_idempotent_locks_and_reads_but_never_writes(self, env_lock, monkeypatch):
+        events = _seal_spies(monkeypatch)
+        _write_lock(env_lock, {"a-pack": _sealed_entry()}, structure=True)   # already verified
+        assert main(["lock", "seal"]) == 0
+        assert events == ["lock", "read"]                    # no write on idempotency
+
+
+# --------------------------------------------------------------------------- #
+# lock seal — malformed slug/entry refused before any entry op (both modes)     #
+# --------------------------------------------------------------------------- #
+
+class TestSealMalformedEntry:
+    @pytest.mark.parametrize("bad", ["null", '"a string"', "[1,2]", "42"])
+    @pytest.mark.parametrize("force", [[], ["--force"]], ids=["noforce", "force"])
+    def test_non_object_entry_refused_no_write(self, env_lock, bad, force):
+        env_lock.write_text(
+            '{"lockfile_version":"0.1","updated_at":"","packages":{"a-pack":%s}}' % bad,
+            encoding="utf-8",
+        )
+        before = env_lock.read_bytes()
+        rc = main(["lock", "seal", *force])
+        assert rc == 1                                    # controlled exit, no traceback
+        assert env_lock.read_bytes() == before            # byte-identical, no write
+
+    @pytest.mark.parametrize("force", [[], ["--force"]], ids=["noforce", "force"])
+    def test_invalid_slug_refused_no_write(self, env_lock, force):
+        env_lock.write_text(
+            '{"lockfile_version":"0.1","updated_at":"","packages":{"Bad_Slug":{"version":"1.0.0"}}}',
+            encoding="utf-8",
+        )
+        before = env_lock.read_bytes()
+        assert main(["lock", "seal", *force]) == 1
         assert env_lock.read_bytes() == before
