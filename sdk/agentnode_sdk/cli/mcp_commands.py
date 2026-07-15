@@ -142,7 +142,20 @@ def cmd_mcp_doctor(
         return ok
 
     # --- 1. Package installed ---
-    lock = read_lockfile()
+    # A malformed lockfile (duplicate keys) fails closed here — no MCP server is
+    # ever started from an ambiguous lockfile.
+    from agentnode_sdk.exceptions import LockfileFormatError
+    try:
+        lock = read_lockfile()
+    except LockfileFormatError as e:
+        if json_output:
+            print(json.dumps({"slug": slug, "error": str(e), "ready": False}, indent=2))
+        else:
+            print()
+            print(f"  {bold(slug)} - MCP Health Check")
+            print(f"  Lockfile error: {e}")
+            print()
+        return 1
     pkgs = lock.get("packages", {})
     entry = pkgs.get(slug)
 

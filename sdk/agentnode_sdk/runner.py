@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable
 
+from agentnode_sdk.exceptions import LockfileFormatError
 from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.models import RunToolResult
 from agentnode_sdk.policy import resolve_runtime, check_run, check_risk_policies, audit_decision, _resolve_interactive, PolicyResult
@@ -121,8 +122,12 @@ def run_tool(
             "rename the tool argument(s) or use a wrapper function."
         )
 
-    # Read lockfile entry
-    entry = _get_lockfile_entry(slug, lockfile_path)
+    # Read lockfile entry. A malformed lockfile (duplicate keys) fails closed
+    # here — before any runtime dispatch, so no side effect is reached.
+    try:
+        entry = _get_lockfile_entry(slug, lockfile_path)
+    except LockfileFormatError as e:
+        return RunToolResult(success=False, error=str(e), mode_used="lockfile_error")
 
     # Integrity check — warn or deny before any dispatch
     if entry:
