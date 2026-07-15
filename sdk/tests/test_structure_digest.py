@@ -454,3 +454,61 @@ class TestContractCorrections:
     def test_seal_refuses_invalid_slug(self):
         with pytest.raises(StructureIntegrityError):
             seal_structure(_lock({"Bad Slug": _entry()}))
+
+
+# --------------------------------------------------------------------------- #
+# Slug rule is centralised in a neutral core module (no core -> cli dependency) #
+# --------------------------------------------------------------------------- #
+
+class TestSlugRuleCentralization:
+    def test_cli_init_reexports_the_central_rule(self):
+        # cli.init.SLUG_RE must remain importable (API compat) and be the SAME
+        # object as the central rule — one source of truth.
+        from agentnode_sdk.references import PACKAGE_SLUG_RE
+        from agentnode_sdk.cli import init
+        assert init.SLUG_RE is PACKAGE_SLUG_RE
+
+    @pytest.mark.parametrize("slug,valid", [
+        ("word-counter-pack", True),   # valid normal slug
+        ("ab", True),                  # two-char
+        ("a1", True),
+        ("a", False),                  # one-char — current regex requires >= 2
+        ("", False),
+        ("A-Pack", False),             # uppercase
+        ("-lead", False),              # leading hyphen
+        ("trail-", False),             # trailing hyphen
+        ("has space", False),          # whitespace
+        ("café", False),               # unicode
+    ])
+    def test_central_rule_cli_and_structure_agree(self, slug, valid):
+        from agentnode_sdk.references import is_valid_package_slug
+        from agentnode_sdk.cli.init import SLUG_RE
+
+        assert is_valid_package_slug(slug) is valid
+        assert bool(SLUG_RE.match(slug)) is valid          # cli init accepts/refuses the same
+        lock = _lock({slug: {"_integrity": {"algorithm": "sha256", "canonical_version": 1, "hash": "a" * 64}}})
+        if valid:
+            compute_structure_digest(lock)                  # structure accepts it too
+        else:
+            with pytest.raises(StructureIntegrityError):    # ...and refuses the same
+                compute_structure_digest(lock)
+
+    def test_importing_lock_integrity_does_not_require_cli(self):
+        # Layering guard: importing + exercising the core integrity logic must NOT
+        # load any agentnode_sdk.cli module (not even lazily). Run in a fresh
+        # interpreter so other tests' imports don't mask a real dependency.
+        import subprocess
+        import sys
+
+        code = (
+            "import sys\n"
+            "import agentnode_sdk.lock_integrity as m\n"
+            "m.compute_structure_digest({'lockfile_version':'0.1','packages':{'a-pack':"
+            "{'_integrity':{'algorithm':'sha256','canonical_version':1,'hash':'a'*64}}}})\n"
+            "cli = [k for k in sys.modules if k == 'agentnode_sdk.cli' or k.startswith('agentnode_sdk.cli.')]\n"
+            "assert not cli, cli\n"
+            "print('OK')\n"
+        )
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        assert "OK" in r.stdout

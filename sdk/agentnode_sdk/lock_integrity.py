@@ -29,6 +29,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from agentnode_sdk.references import is_valid_package_slug
+
 
 CANONICAL_VERSION = 3
 
@@ -271,21 +273,6 @@ STRUCTURE_CANONICALIZATION_VERSION = 1
 _SUPPORTED_STRUCTURE_VERSIONS = (1,)
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
-_slug_re_cache = None
-
-
-def _slug_valid(slug: Any) -> bool:
-    """Reuse the single central ASCII-kebab slug rule (``cli.init.SLUG_RE``).
-
-    No new regex, no normalization. Non-string keys are rejected. Imported
-    lazily + cached to avoid a module-load dependency from core into the CLI.
-    """
-    global _slug_re_cache
-    if _slug_re_cache is None:
-        from agentnode_sdk.cli.init import SLUG_RE
-        _slug_re_cache = SLUG_RE
-    return isinstance(slug, str) and bool(_slug_re_cache.match(slug))
-
 
 class StructureIntegrityError(Exception):
     """The lockfile cannot be reduced to a canonical structure input.
@@ -340,7 +327,7 @@ def _canonical_structure_input(lock: dict, canonicalization_version: int) -> dic
 
     entries: list = []
     for slug, entry in packages.items():
-        if not _slug_valid(slug):
+        if not is_valid_package_slug(slug):
             raise StructureIntegrityError("invalid package slug (not ASCII kebab-case)")
         if not isinstance(entry, dict):
             raise StructureIntegrityError(f"entry {slug!r} is not an object")
