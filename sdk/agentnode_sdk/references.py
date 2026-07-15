@@ -10,6 +10,19 @@ Used by both the CLI run path (``cli.commands.cmd_run``) and the agent runtime
 """
 from __future__ import annotations
 
+import re
+
+# Central ASCII-kebab package-slug rule — the single source of truth for the slug
+# format. Runtime-neutral (this module imports only the stdlib), so both the core
+# integrity logic (lock_integrity) and the CLI (cli.init re-exports it as SLUG_RE)
+# depend on the same rule without core depending on the CLI. Semantics unchanged.
+PACKAGE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
+
+
+def is_valid_package_slug(value: object) -> bool:
+    """True iff *value* is a string matching the central package-slug rule."""
+    return isinstance(value, str) and bool(PACKAGE_SLUG_RE.match(value))
+
 
 def parse_tool_reference(ref: str) -> tuple[str, str | None]:
     """Parse ``'slug:tool'`` or ``'slug'`` into ``(slug, tool_name)``.

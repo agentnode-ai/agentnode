@@ -1,12 +1,10 @@
 """Package scaffolding for `agentnode init`."""
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from agentnode_sdk.cli.templates import TEMPLATES
-
-SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
+from agentnode_sdk.references import PACKAGE_SLUG_RE as SLUG_RE  # central rule; kept as SLUG_RE for API compat
 
 
 def scaffold_package(
@@ -38,7 +36,7 @@ def scaffold_package(
     if not capability_id:
         capability_id = f"{module_name}_capability"
     if not agent_goal:
-        agent_goal = f"Accomplish tasks using available tools"
+        agent_goal = "Accomplish tasks using available tools"
 
     fmt = {
         "package_id": package_id,
