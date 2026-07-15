@@ -190,6 +190,9 @@ class TestErrorStates:
         {"algorithm": "md5", "canonical_version": 1, "hash": "a" * 64},   # wrong algo
         {"algorithm": "sha256", "canonical_version": "1", "hash": "a" * 64},  # bad version type
         {"algorithm": "sha256", "canonical_version": 0, "hash": "a" * 64},    # version < 1
+        {"algorithm": "sha256", "canonical_version": 4, "hash": "a" * 64},    # > CANONICAL_VERSION
+        {"algorithm": "sha256", "canonical_version": 999, "hash": "a" * 64},  # unsupported version
+        {"algorithm": "sha256", "canonical_version": True, "hash": "a" * 64}, # bool is not a version
         {"algorithm": "sha256", "canonical_version": 1, "hash": "AB" * 32},   # uppercase hex
         {"algorithm": "sha256", "canonical_version": 1, "hash": "a" * 63},    # not 64 chars
         {"algorithm": "sha256", "canonical_version": 1, "hash": "z" * 64},    # non-hex
@@ -362,3 +365,92 @@ class TestReport:
         r = evaluate_lock_integrity("secret-slug", lock, strict=True)
         assert "secret-slug" not in r.reason        # no slug/value leakage
         assert "structure_mismatch" in r.reason
+
+
+# --------------------------------------------------------------------------- #
+# Contract corrections (amendment): state order, absent slug, versions, slugs  #
+# --------------------------------------------------------------------------- #
+
+# One entry with an EXPLICIT fixed _integrity triple (independent of seal_entry).
+# Canonical bytes:
+# {"canonicalization_version":1,"entries":[["a-pack",{"algorithm":"sha256",
+#  "canonical_version":1,"hash":"a...a"}]],"kind":"agentnode.lock.structure","lockfile_version":"0.1"}
+ONE_ENTRY_DIGEST = "0feb9e3ff46a71ff70264518209a068f5634c2289c96b934e85f06899cd73750"
+
+
+def _fixed_triple_lock():
+    return {
+        "lockfile_version": "0.1",
+        "updated_at": "",
+        "packages": {"a-pack": {"_integrity": {"algorithm": "sha256", "canonical_version": 1, "hash": "a" * 64}}},
+    }
+
+
+class TestContractCorrections:
+    def test_one_entry_fixed_vector(self):
+        assert compute_structure_digest(_fixed_triple_lock()) == ONE_ENTRY_DIGEST
+
+    @pytest.mark.parametrize("bad", [None, [], "x", 42])
+    def test_verify_non_dict_is_invalid(self, bad):
+        assert verify_structure(bad) == "invalid"
+
+    def test_no_digest_but_invalid_base_is_invalid_not_missing(self):
+        # entry lacks _integrity, no structure_digest -> base is invalid, so the
+        # result is 'invalid', never the migration 'missing'.
+        assert verify_structure(_lock({"a-pack": {"version": "1.0.0"}})) == "invalid"
+
+    def test_no_digest_valid_base_is_missing(self):
+        assert verify_structure(_lock({"a-pack": _entry()})) == "missing"
+        assert verify_structure(_lock({})) == "missing"
+
+    def test_digest_key_absent_is_missing(self):
+        sealed = seal_structure(_lock({"a-pack": _entry()}))
+        del sealed["structure_digest"]
+        assert verify_structure(sealed) == "missing"
+
+    def test_explicit_null_digest_is_invalid(self):
+        sealed = seal_structure(_lock({"a-pack": _entry()}))
+        sealed["structure_digest"] = None
+        assert verify_structure(sealed) == "invalid"
+
+    def test_absent_slug_is_denied_in_both_modes(self):
+        lock = seal_structure(_lock({"a-pack": _entry()}))  # structure verified
+        for strict in (False, True):
+            r = evaluate_lock_integrity("does-not-exist", lock, strict=strict)
+            assert r.entry_status == "absent"
+            assert r.allowed is False
+            assert "entry_absent" in r.reason
+
+    def test_present_missing_integrity_vs_absent_slug(self):
+        # present entry without _integrity -> entry_status 'missing' (migration),
+        # NOT 'absent'. (structure is missing here too, so normal allows.)
+        lock = _lock({"a-pack": {"version": "1.0.0"}})
+        r = evaluate_lock_integrity("a-pack", lock, strict=False)
+        assert r.entry_status == "missing"
+
+    @pytest.mark.parametrize("lock", [None, {"packages": []}, {"packages": "nope"}, "x", 42])
+    def test_report_path_non_dict_is_controlled_no_attributeerror(self, lock):
+        r = evaluate_lock_integrity("a-pack", lock, strict=False)
+        assert isinstance(r, LockIntegrityReport)
+        assert r.entry_status == "absent"
+        assert r.allowed is False
+
+    def test_unsupported_entry_canonical_version_is_invalid(self):
+        sealed = seal_structure(_lock({"a-pack": _entry()}))
+        sealed["packages"]["a-pack"]["_integrity"]["canonical_version"] = 999
+        assert verify_structure(sealed) == "invalid"
+
+    @pytest.mark.parametrize("slug", ["A-Pack", "-lead", "trail-", "has space", "café", "x", ""])
+    def test_invalid_slug_is_invalid_on_verify(self, slug):
+        lock = _lock({slug: {"_integrity": {"algorithm": "sha256", "canonical_version": 1, "hash": "a" * 64}}})
+        assert verify_structure(lock) == "invalid"
+        with pytest.raises(StructureIntegrityError):
+            compute_structure_digest(lock)
+
+    def test_non_string_slug_raises(self):
+        with pytest.raises(StructureIntegrityError):
+            compute_structure_digest(_lock({123: {"_integrity": {"algorithm": "sha256", "canonical_version": 1, "hash": "a" * 64}}}))
+
+    def test_seal_refuses_invalid_slug(self):
+        with pytest.raises(StructureIntegrityError):
+            seal_structure(_lock({"Bad Slug": _entry()}))

@@ -271,6 +271,21 @@ STRUCTURE_CANONICALIZATION_VERSION = 1
 _SUPPORTED_STRUCTURE_VERSIONS = (1,)
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
+_slug_re_cache = None
+
+
+def _slug_valid(slug: Any) -> bool:
+    """Reuse the single central ASCII-kebab slug rule (``cli.init.SLUG_RE``).
+
+    No new regex, no normalization. Non-string keys are rejected. Imported
+    lazily + cached to avoid a module-load dependency from core into the CLI.
+    """
+    global _slug_re_cache
+    if _slug_re_cache is None:
+        from agentnode_sdk.cli.init import SLUG_RE
+        _slug_re_cache = SLUG_RE
+    return isinstance(slug, str) and bool(_slug_re_cache.match(slug))
+
 
 class StructureIntegrityError(Exception):
     """The lockfile cannot be reduced to a canonical structure input.
@@ -297,8 +312,10 @@ def _canonical_integrity(integ: Any) -> dict:
     h = integ.get("hash")
     if algo != "sha256":
         raise StructureIntegrityError("_integrity.algorithm must be 'sha256'")
-    if not isinstance(cver, int) or isinstance(cver, bool) or cver < 1:
-        raise StructureIntegrityError("_integrity.canonical_version is invalid")
+    # Reuse the existing per-entry version ceiling (CANONICAL_VERSION) — do not
+    # invent a separate ">= 1" rule. An unsupported version is structure_invalid.
+    if not (isinstance(cver, int) and not isinstance(cver, bool) and 1 <= cver <= CANONICAL_VERSION):
+        raise StructureIntegrityError("_integrity.canonical_version is unsupported")
     if not (isinstance(h, str) and _HEX64.fullmatch(h)):
         raise StructureIntegrityError("_integrity.hash is not 64 lowercase hex chars")
     return {"algorithm": "sha256", "canonical_version": cver, "hash": h}
@@ -323,6 +340,8 @@ def _canonical_structure_input(lock: dict, canonicalization_version: int) -> dic
 
     entries: list = []
     for slug, entry in packages.items():
+        if not _slug_valid(slug):
+            raise StructureIntegrityError("invalid package slug (not ASCII kebab-case)")
         if not isinstance(entry, dict):
             raise StructureIntegrityError(f"entry {slug!r} is not an object")
         entries.append([slug, _canonical_integrity(entry.get("_integrity"))])
@@ -365,10 +384,25 @@ def verify_structure(lock: dict) -> str:
     - ``mismatch``: a formally-valid stored digest disagrees with the recompute.
 
     Never mutates *lock*. Does not decide CLI exit codes or runtime results.
+
+    Order of checks (deliberate): a non-dict argument, an invalid base model or
+    any invalid entry integrity resolve to ``invalid`` BEFORE the missing check —
+    a broken lockfile without a digest is not a mere migration case. Only a truly
+    absent ``structure_digest`` key is ``missing``; an explicit ``null`` (or any
+    other malformed value) is ``invalid``.
     """
-    sd = lock.get("structure_digest")
-    if sd is None:
+    if not isinstance(lock, dict):
+        return "invalid"
+    # Validate the base model + every entry integrity first (raises → invalid).
+    # Reused for the recompute below, so this is computed once.
+    try:
+        base_digest = compute_structure_digest(lock)
+    except StructureIntegrityError:
+        return "invalid"
+
+    if "structure_digest" not in lock:
         return "missing"
+    sd = lock["structure_digest"]          # present: null or malformed → invalid
     if not isinstance(sd, dict):
         return "invalid"
     algo = sd.get("algorithm")
@@ -382,10 +416,11 @@ def verify_structure(lock: dict) -> str:
         return "unsupported"
     if not (isinstance(stored, str) and _HEX64.fullmatch(stored)):
         return "invalid"
-    try:
-        recomputed = compute_structure_digest(lock, canonicalization_version=cver)
-    except StructureIntegrityError:
-        return "invalid"
+    recomputed = (
+        base_digest
+        if cver == STRUCTURE_CANONICALIZATION_VERSION
+        else compute_structure_digest(lock, canonicalization_version=cver)
+    )
     return "verified" if recomputed == stored else "mismatch"
 
 
@@ -421,7 +456,7 @@ def seal_structure(lock: dict) -> dict:
 class LockIntegrityReport:
     """Runtime-neutral integrity decision for one execution of *slug*."""
 
-    entry_status: str        # verified | missing | mismatch
+    entry_status: str        # verified | missing | mismatch | absent
     structure_status: str    # verified | missing | mismatch | unsupported | invalid
     strict: bool
     allowed: bool
@@ -441,8 +476,11 @@ class LockIntegrityDenied(Exception):
 
 
 def _entry_allowed(entry_status: str, strict: bool) -> bool:
-    # Mirrors today's runner semantics: verified/missing continue; a mismatch is
-    # warn (normal) / deny (strict).
+    # 'absent' (the slug is not in packages, or is malformed) is NEVER runnable —
+    # deny in both modes. 'missing' (entry present, no _integrity) keeps today's
+    # migration semantics (continue). 'mismatch' is warn (normal) / deny (strict).
+    if entry_status == "absent":
+        return False
     if entry_status in ("verified", "missing"):
         return True
     return not strict
@@ -461,11 +499,18 @@ def evaluate_lock_integrity(slug: str, lock: dict, *, strict: bool) -> LockInteg
     """Compute the combined per-entry + structure integrity report for *slug*.
 
     Entry status is delegated to :func:`verify_entry`; structure status to
-    :func:`verify_structure`. Pure and runtime-neutral.
+    :func:`verify_structure`. Pure and runtime-neutral — a non-dict *lock* or
+    ``packages`` yields a determined report (never an AttributeError). A slug that
+    is not present in ``packages`` (or maps to a non-object) is ``absent`` and is
+    denied in both modes — distinct from an existing entry whose ``_integrity`` is
+    merely ``missing``.
     """
-    entry = (lock.get("packages") or {}).get(slug) or {}
-    entry_status = verify_entry(slug, entry).status
     structure_status = verify_structure(lock)
+    packages = lock.get("packages") if isinstance(lock, dict) else None
+    if not isinstance(packages, dict) or not isinstance(packages.get(slug), dict):
+        entry_status = "absent"
+    else:
+        entry_status = verify_entry(slug, packages[slug]).status
 
     e_ok = _entry_allowed(entry_status, strict)
     s_ok = _structure_allowed(structure_status, strict)
