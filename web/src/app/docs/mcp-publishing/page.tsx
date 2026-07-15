@@ -288,8 +288,8 @@ $ agentnode mcp ownership verify example-mcp --registry npm --token $AGENTNODE_A
           </ul>
           <SubHeading>What it does not do</SubHeading>
           <ul className="mb-4 list-inside list-disc space-y-1.5 text-sm text-muted">
-            <li>It is not a full security audit and makes no malware-free or
-              trustworthiness guarantee.</li>
+            <li>It is not a full security audit, and it is not a safety or
+              trustworthiness certification of the package.</li>
             <li>It does not assess functional quality, and does not guarantee
               every later use will succeed.</li>
           </ul>
