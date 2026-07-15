@@ -47,6 +47,15 @@ export default function Page() {
               editors like Claude Code and Cursor.
             </p>
 
+            <div className="mb-4 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-sm text-muted">
+              Building your <span className="font-medium text-foreground/80">own</span> MCP server and want
+              to list it in the AgentNode registry? That is a separate flow — see the{" "}
+              <a href="/docs/mcp-publishing" className="text-primary hover:underline">
+                Publish &amp; verify an MCP server
+              </a>{" "}
+              guide.
+            </div>
+
             <SubHeading>Installation</SubHeading>
             <CodeBlock title="terminal">{`$ pip install agentnode-mcp`}</CodeBlock>
 

@@ -43,6 +43,7 @@ export const DOCS_NAV: DocsNavGroup[] = [
     title: "Publishing & Registry",
     entries: [
       { href: "/docs/publishing", label: "Publishing Guide" },
+      { href: "/docs/mcp-publishing", label: "Publish an MCP server" },
       { href: "/docs/credentialed-toolpacks", label: "Credentialed Tool Packs" },
       { href: "/docs/verification", label: "Package Verification" },
       { href: "/docs/manifest", label: "ANP Manifest Reference" },
