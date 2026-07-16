@@ -42,6 +42,21 @@ def _drifted_entry(**over) -> dict:
     return e
 
 
+def _entry_with_integrity(integ) -> dict:
+    """A well-formed entry whose ``_integrity`` value is set to *integ* (used to
+    inject malformed integrity metadata)."""
+    return {
+        "version": "1.0.0",
+        "package_type": "toolpack",
+        "runtime": "python",
+        "entrypoint": "m.tool",
+        "artifact_hash": "sha256:x",
+        "tools": [],
+        "permissions": {"network_level": "none"},
+        "_integrity": integ,
+    }
+
+
 def _write_lock(lf, packages, *, structure=False, updated_at="2026-01-01T00:00:00+00:00"):
     data = {"lockfile_version": LOCKFILE_VERSION, "updated_at": updated_at, "packages": packages}
     if structure:
@@ -324,3 +339,97 @@ class TestVerifyReadOnly:
         after = env_lock.read_bytes()
         assert after == before                               # byte-identical
         assert json.loads(after)["updated_at"] == before_updated_at
+
+
+# --------------------------------------------------------------------------- #
+# Deviation 1: empty package set never bypasses the structure check             #
+# --------------------------------------------------------------------------- #
+
+class TestEmptyStructureNotBypassed:
+    def test_empty_missing_digest_normal_0_strict_1(self, env_lock, capsys):
+        _write_lock(env_lock, {})                            # empty, no structure digest
+        assert main(["lock", "verify"]) == 0
+        assert "structure: missing (not sealed)" in capsys.readouterr().out
+        assert main(["lock", "verify", "--strict"]) == 1
+        assert "structure: MISSING (strict)" in capsys.readouterr().out
+
+    def test_empty_structure_mismatch_exit_1(self, env_lock, capsys):
+        _write_lock(env_lock, {}, structure=True)
+        d = json.loads(env_lock.read_text(encoding="utf-8"))
+        d["structure_digest"]["hash"] = "0" * 64
+        env_lock.write_text(json.dumps(d, indent=2), encoding="utf-8")
+        assert main(["lock", "verify"]) == 1
+        assert "structure: MISMATCH" in capsys.readouterr().out
+
+    def test_empty_structure_unsupported_exit_1(self, env_lock, capsys):
+        _write_lock(env_lock, {}, structure=True)
+        d = json.loads(env_lock.read_text(encoding="utf-8"))
+        d["structure_digest"]["canonicalization_version"] = 99
+        env_lock.write_text(json.dumps(d, indent=2), encoding="utf-8")
+        assert main(["lock", "verify"]) == 1
+        assert "structure: UNSUPPORTED" in capsys.readouterr().out
+
+    def test_empty_malformed_digest_exit_1(self, env_lock, capsys):
+        _write_lock(env_lock, {}, structure=True)
+        d = json.loads(env_lock.read_text(encoding="utf-8"))
+        d["structure_digest"] = "nope"
+        env_lock.write_text(json.dumps(d, indent=2), encoding="utf-8")
+        assert main(["lock", "verify"]) == 1
+        assert "structure: INVALID" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# Deviation 2: package lines sorted by ONE global raw-slug sort, not by status  #
+# --------------------------------------------------------------------------- #
+
+class TestGlobalSlugOrder:
+    def test_mixed_states_ordered_a_m_z(self, env_lock, capsys):
+        a = _sealed_entry()
+        del a["_integrity"]                                  # a-missing → missing
+        m = _drifted_entry(version="1.0.0")                  # m-mismatch → mismatch
+        z = _sealed_entry(version="1.0.0")                   # z-verified → verified
+        _write_lock(env_lock, {"z-verified": z, "a-missing": a, "m-mismatch": m})
+        main(["lock", "verify"])
+        out = capsys.readouterr().out
+        ia, im, iz = out.index("a-missing"), out.index("m-mismatch"), out.index("z-verified")
+        assert ia < im < iz                                  # a, m, z regardless of status
+
+
+# --------------------------------------------------------------------------- #
+# Deviation 3: malformed present _integrity stays an entry+structure error      #
+# --------------------------------------------------------------------------- #
+
+class TestReconciliationSafety:
+    @pytest.mark.parametrize("integ", [
+        {"algorithm": "md5", "canonical_version": 1, "hash": "a" * 64},        # wrong algorithm
+        {"algorithm": "sha256", "canonical_version": 1},                        # hash missing
+        {"algorithm": "sha256", "canonical_version": 1, "hash": "abc"},         # hash wrong length
+        {"algorithm": "sha256", "canonical_version": 1, "hash": "A" * 64},      # uppercase / non-hex
+        {"algorithm": "sha256", "canonical_version": "1", "hash": "a" * 64},    # canonical_version type
+        {"algorithm": "sha256", "canonical_version": 99, "hash": "a" * 64},     # unsupported version
+        {"algorithm": "sha256"},                                               # missing required fields
+    ], ids=["algo", "no-hash", "short-hash", "upper-hash", "cver-type", "cver-unsupported", "missing-fields"])
+    @pytest.mark.parametrize("flags", [[], ["--strict"]], ids=["normal", "strict"])
+    def test_malformed_integrity_never_softened_to_missing(self, env_lock, capsys, monkeypatch, integ, flags):
+        _write_lock(env_lock, {"a-pack": _entry_with_integrity(integ)})   # NO top-level digest
+        before = env_lock.read_bytes()
+        spy = _write_spy(monkeypatch)
+        rc = main(["lock", "verify", *flags])
+        out = capsys.readouterr().out
+        assert rc == 1                                       # normal AND strict
+        assert "a-pack" in out and "INVALID" in out          # entry shown as a clear error
+        assert "structure: INVALID" in out                   # NOT downgraded to missing
+        assert "structure: missing" not in out
+        assert spy["n"] == 0                                 # read-only
+        assert env_lock.read_bytes() == before               # byte-identical
+
+    def test_absent_integrity_still_migration(self, env_lock, capsys):
+        # Truly-absent _integrity (not malformed) stays the migration case.
+        e = _sealed_entry()
+        del e["_integrity"]
+        _write_lock(env_lock, {"a-pack": e})                 # no top-level digest
+        assert main(["lock", "verify"]) == 0
+        out = capsys.readouterr().out
+        assert "a-pack" in out and "missing (not sealed)" in out
+        assert "structure: missing (not sealed)" in out
+        assert main(["lock", "verify", "--strict"]) == 1

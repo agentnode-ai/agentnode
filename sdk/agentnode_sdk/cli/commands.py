@@ -3183,7 +3183,7 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False, online: 
     import warnings
 
     from agentnode_sdk.installer import read_lockfile_strict
-    from agentnode_sdk.lock_integrity import verify_entry, verify_structure
+    from agentnode_sdk.lock_integrity import entry_integrity_status, verify_entry, verify_structure
     from agentnode_sdk.references import is_valid_package_slug
     from agentnode_sdk.signature import verify_entry_signature, SignatureStatus
 
@@ -3203,29 +3203,40 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False, online: 
     verified: list[str] = []
     missing: list[str] = []
     mismatch: list[str] = []
-    invalid: list[str] = []          # malformed slug / non-object entry / bad _integrity
+    invalid: list[str] = []          # malformed slug / non-object entry / malformed _integrity
+    status_by_slug: dict[str, str] = {}   # every package slug -> its integrity status
 
     sig_results: dict[str, dict] = {}
     sig_invalid: list[str] = []
 
     for slug, entry in packages.items():
-        # Malformed slug / non-dict entry / non-dict _integrity → controlled error
-        # state (shown, exit 1); guarded before verify_entry (which assumes a dict).
-        if (
-            not is_valid_package_slug(slug)
-            or not isinstance(entry, dict)
-            or (entry.get("_integrity") is not None and not isinstance(entry.get("_integrity"), dict))
-        ):
+        # Malformed slug or non-object entry → controlled error state (shown, exit 1),
+        # guarded before verify_entry (which assumes a dict).
+        if not is_valid_package_slug(slug) or not isinstance(entry, dict):
             invalid.append(slug if isinstance(slug, str) else "<invalid-slug>")
+            status_by_slug[slug] = "invalid"
             continue
 
-        status = verify_entry(slug, entry).status
-        if status == "verified":
-            verified.append(slug)
-        elif status == "missing":
+        # Integrity METADATA shape (runtime-neutral, no canonicalization rebuild):
+        # absent = unsealed (migration); malformed = present-but-broken _integrity
+        # (an entry ERROR — must never be softened to a mere missing structure);
+        # present = safe to verify content (→ verified / mismatch).
+        integ_status = entry_integrity_status(entry)
+        if integ_status == "malformed":
+            invalid.append(slug)
+            status_by_slug[slug] = "invalid"
+            continue
+        if integ_status == "absent":
             missing.append(slug)
-        else:
-            mismatch.append(slug)
+            status_by_slug[slug] = "missing"
+        else:  # present
+            status = verify_entry(slug, entry).status
+            if status == "verified":
+                verified.append(slug)
+                status_by_slug[slug] = "verified"
+            else:
+                mismatch.append(slug)
+                status_by_slug[slug] = "mismatch"
 
         sig = verify_entry_signature(slug, entry)
         sig_dict: dict[str, str] = {"status": sig.status.value}
@@ -3241,11 +3252,12 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False, online: 
         if sig.status in (SignatureStatus.INVALID, SignatureStatus.UNKNOWN_KEY):
             sig_invalid.append(slug)
 
-    # Global structure status (reuses verify_structure — no reimplementation). A
-    # truly-absent structure_digest is a migration state ("missing") even when an
-    # entry is unsealed (already flagged per-entry); verify_structure returns
-    # "invalid" then only because it cannot compute over an unsealed set. A
-    # malformed entry or a present-but-malformed digest keeps "invalid".
+    # Global structure status (reuses verify_structure — no reimplementation). Only
+    # a genuinely-absent structure_digest with otherwise-classifiable entries (no
+    # malformed slug/entry/_integrity in `invalid`) is softened to the migration
+    # state "missing": verify_structure returns "invalid" then only because it
+    # cannot compute over an unsealed (_integrity-absent) set. A malformed entry or
+    # a present-but-malformed digest keeps "invalid".
     structure_status = verify_structure(lock)
     if structure_status == "invalid" and "structure_digest" not in lock and not invalid:
         structure_status = "missing"
@@ -3320,23 +3332,26 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False, online: 
         print(json.dumps(report, indent=2))
         return 0 if ok else 1
 
+    # An empty package set is only an extra info line — it never replaces the
+    # structure line or the computed exit code below.
     if total == 0:
         print("  No packages in lockfile.")
-    for slug in sorted(verified):
-        pub = packages[slug].get("publisher_slug")
+    # One single sort across ALL package slugs (raw ASCII), then print each slug's
+    # status — NOT status-grouped blocks (so a < b < c regardless of status).
+    for slug in sorted(status_by_slug):
+        st = status_by_slug[slug]
+        entry = packages[slug]
+        pub = entry.get("publisher_slug") if isinstance(entry, dict) else None
         pub_tag = f" [{pub}]" if pub else ""
-        print(f"  ✓ {slug}{pub_tag}: verified, {_sig_display(sig_results[slug])}")
-    for slug in sorted(missing):
-        pub = packages[slug].get("publisher_slug")
-        pub_tag = f" [{pub}]" if pub else ""
-        label = "missing (not sealed)" if not strict else "MISSING (strict)"
-        print(f"  - {slug}{pub_tag}: {label}, {_sig_display(sig_results[slug])}")
-    for slug in sorted(mismatch):
-        pub = packages[slug].get("publisher_slug")
-        pub_tag = f" [{pub}]" if pub else ""
-        print(f"  ✗ {slug}{pub_tag}: MISMATCH, {_sig_display(sig_results[slug])}")
-    for slug in sorted(invalid):
-        print(f"  ✗ {slug}: INVALID (malformed entry)")
+        if st == "verified":
+            print(f"  ✓ {slug}{pub_tag}: verified, {_sig_display(sig_results[slug])}")
+        elif st == "missing":
+            label = "missing (not sealed)" if not strict else "MISSING (strict)"
+            print(f"  - {slug}{pub_tag}: {label}, {_sig_display(sig_results[slug])}")
+        elif st == "mismatch":
+            print(f"  ✗ {slug}{pub_tag}: MISMATCH, {_sig_display(sig_results[slug])}")
+        else:  # invalid
+            print(f"  ✗ {slug}: INVALID (malformed entry)")
 
     # Exactly one structure line, fixed status terms, shown even for empty packages.
     struct_label = {
