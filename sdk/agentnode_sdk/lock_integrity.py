@@ -308,6 +308,34 @@ def _canonical_integrity(integ: Any) -> dict:
     return {"algorithm": "sha256", "canonical_version": cver, "hash": h}
 
 
+def entry_integrity_status(entry: Any) -> str:
+    """Runtime-neutral, read-only classification of an entry's ``_integrity``
+    METADATA shape (NOT a content check). Never raises, never mutates.
+
+    - ``"absent"``: the ``_integrity`` KEY is not present — an unsealed entry (a
+      migration state). Determined by key presence, NOT by a ``None`` value.
+    - ``"malformed"``: ``_integrity`` present but not a well-formed integrity
+      object — an explicit ``null``, a non-dict, or a dict with a wrong algorithm,
+      unsupported/mistyped ``canonical_version``, missing fields, or a hash that is
+      not 64 lowercase hex chars.
+    - ``"present"``: a well-formed ``_integrity`` object — safe to hand to
+      :func:`verify_entry` and :func:`compute_structure_digest`.
+
+    Lets a read-only caller (``lock verify``) distinguish a genuinely-absent
+    structure digest (migration) from malformed integrity metadata, without
+    recomputing any canonicalization.
+    """
+    if not isinstance(entry, dict):
+        return "malformed"
+    if "_integrity" not in entry:
+        return "absent"                     # key presence, never a null value
+    try:
+        _canonical_integrity(entry["_integrity"])   # null / non-dict / bad object → raises
+    except StructureIntegrityError:
+        return "malformed"
+    return "present"
+
+
 def _canonical_structure_input(lock: dict, canonicalization_version: int) -> dict:
     """Build the canonical structure input, or raise StructureIntegrityError.
 
