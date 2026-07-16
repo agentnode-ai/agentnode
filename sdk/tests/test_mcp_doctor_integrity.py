@@ -47,14 +47,31 @@ def _write(lf, packages, *, structure):
 
 @pytest.fixture()
 def doctor(tmp_path, monkeypatch):
-    """Mock node/npx probes + MCPServerProcess start/stop + write spy."""
+    """Mock + COUNT every downstream side-effect: node/npx probe (shutil.which),
+    version subprocess, MCPServerProcess construction + start, plus a write spy."""
     import agentnode_sdk._fileutil as fu
     import agentnode_sdk.cli.mcp_commands as mc
     import agentnode_sdk.runtimes.mcp_runner as mcpr
 
-    state = {"starts": 0, "writes": 0, "lf": tmp_path / "agentnode.lock"}
-    monkeypatch.setattr(mc.shutil, "which", lambda n: f"/usr/bin/{n}")
-    monkeypatch.setattr(mc.subprocess, "run", lambda *a, **k: mock.Mock(stdout="v20.0.0\n"))
+    state = {"starts": 0, "writes": 0, "which": 0, "subproc": 0, "ctor": 0,
+             "lf": tmp_path / "agentnode.lock"}
+
+    def _which(n):
+        state["which"] += 1
+        return f"/usr/bin/{n}"
+    monkeypatch.setattr(mc.shutil, "which", _which)
+
+    def _sub(*a, **k):
+        state["subproc"] += 1
+        return mock.Mock(stdout="v20.0.0\n")
+    monkeypatch.setattr(mc.subprocess, "run", _sub)
+
+    real_ctor = mcpr.MCPServerProcess.__init__
+
+    def _ctor(self, *a, **k):
+        state["ctor"] += 1
+        real_ctor(self, *a, **k)
+    monkeypatch.setattr(mcpr.MCPServerProcess, "__init__", _ctor)
     monkeypatch.setattr(mcpr.MCPServerProcess, "start",
                         lambda self, *a, **k: state.__setitem__("starts", state["starts"] + 1))
     monkeypatch.setattr(mcpr.MCPServerProcess, "stop", lambda self, *a, **k: None)
@@ -176,3 +193,60 @@ class TestDoctorSnapshot:
         _write(doctor["lf"], {"m-pack": _sealed_mcp()}, structure=True)
         cmd_mcp_doctor("m-pack", json_output=True, skip_start=False)
         assert reads["n"] == 1
+
+    def test_no_fallsoft_reader(self, doctor, monkeypatch):
+        # The OLD fail-soft installer.read_lockfile must never be called.
+        import agentnode_sdk.installer as inst
+        monkeypatch.setattr(inst, "read_lockfile",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("fail-soft reader called")))
+        _write(doctor["lf"], {"m-pack": _sealed_mcp()}, structure=True)
+        assert cmd_mcp_doctor("m-pack", json_output=True, skip_start=False) == 0
+        assert doctor["starts"] == 1
+
+
+class TestDoctorNoProbeOnDeny:
+    def test_strict_deny_zero_probes_and_start(self, doctor, monkeypatch):
+        _strict(monkeypatch)
+        _write(doctor["lf"], {"m-pack": _sealed_mcp()}, structure=False)   # strict deny
+        rc = cmd_mcp_doctor("m-pack", json_output=True, skip_start=False)
+        assert rc == 1
+        assert doctor["which"] == 0 and doctor["subproc"] == 0
+        assert doctor["ctor"] == 0 and doctor["starts"] == 0               # no probe / no server
+
+    def test_read_error_zero_probes_and_start(self, doctor):
+        doctor["lf"].write_text('{"lockfile_version":"0.1","packages":{},"packages":{}}', encoding="utf-8")
+        rc = cmd_mcp_doctor("m-pack", json_output=True, skip_start=False)
+        assert rc == 1
+        assert doctor["which"] == 0 and doctor["subproc"] == 0
+        assert doctor["ctor"] == 0 and doctor["starts"] == 0
+
+    def test_absent_zero_probes_and_start(self, doctor):
+        _write(doctor["lf"], {"other": _sealed_mcp()}, structure=True)
+        rc = cmd_mcp_doctor("m-pack", json_output=True, skip_start=False)
+        assert rc == 1
+        assert doctor["which"] == 0 and doctor["subproc"] == 0
+        assert doctor["ctor"] == 0 and doctor["starts"] == 0
+
+
+class TestDoctorAuditFailure:
+    @staticmethod
+    def _raise_on_integrity(monkeypatch):
+        import agentnode_sdk.runner as runner
+
+        def _audit(decision, event, slug, **k):
+            if event == "lock_integrity_check":
+                raise RuntimeError("audit backend down")
+        monkeypatch.setattr(runner, "audit_decision", _audit)
+
+    def test_normal_allow_survives_audit_failure(self, doctor, monkeypatch):
+        self._raise_on_integrity(monkeypatch)
+        _write(doctor["lf"], {"m-pack": _sealed_mcp()}, structure=False)   # not verified
+        assert cmd_mcp_doctor("m-pack", json_output=True, skip_start=False) == 0
+        assert doctor["starts"] == 1                                       # still starts once
+
+    def test_strict_deny_survives_audit_failure(self, doctor, monkeypatch):
+        self._raise_on_integrity(monkeypatch)
+        _strict(monkeypatch)
+        _write(doctor["lf"], {"m-pack": _sealed_mcp()}, structure=False)
+        assert cmd_mcp_doctor("m-pack", json_output=True, skip_start=False) == 1
+        assert doctor["starts"] == 0                                       # decision unchanged

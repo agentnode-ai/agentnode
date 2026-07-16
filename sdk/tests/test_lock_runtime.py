@@ -449,3 +449,70 @@ class TestReadOnlyAllStates:
         assert rt["writes"] == 0                            # integrity gate never writes
         assert rt["lf"].read_bytes() == before
         assert json.loads(rt["lf"].read_bytes())["updated_at"] == before_updated
+
+
+# --------------------------------------------------------------------------- #
+# Single snapshot: no fall-soft reader; dispatched entry IS the snapshot object #
+# --------------------------------------------------------------------------- #
+
+class TestSingleSnapshotStrong:
+    def test_no_fallsoft_reader_exactly_one_strict_read(self, rt, monkeypatch):
+        # The OLD fail-soft installer.read_lockfile must NEVER be called; patch it
+        # to explode. Exactly one read_lockfile_strict via the gate.
+        import agentnode_sdk.installer as inst
+        import agentnode_sdk.runtime_integrity as ri
+        monkeypatch.setattr(inst, "read_lockfile",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("fail-soft reader called")))
+        reads = {"n": 0}
+        real = ri.read_lockfile_strict
+        monkeypatch.setattr(ri, "read_lockfile_strict",
+                            lambda *a, **k: (reads.__setitem__("n", reads["n"] + 1), real(*a, **k))[1])
+        _write(rt["lf"], {"a-pack": _sealed()}, structure=True)
+        res = _run(rt)
+        assert res.success is True and rt["dispatch"] == ["python"]
+        assert reads["n"] == 1                              # one strict read, no fallback
+
+    def test_dispatched_entry_is_the_snapshot_object(self, rt, monkeypatch):
+        # The exact entry object from the single snapshot reaches the dispatcher —
+        # no re-resolve or copy from a second read.
+        import agentnode_sdk.runtime_integrity as ri
+        import agentnode_sdk.runtimes.python_runner as pyr
+        from agentnode_sdk.models import RunToolResult
+        entry_obj = _sealed()
+        lock = {"lockfile_version": "0.1", "updated_at": "", "packages": {"a-pack": entry_obj}}
+        monkeypatch.setattr(ri, "read_lockfile_strict", lambda *a, **k: lock)
+        captured: dict = {}
+        monkeypatch.setattr(pyr, "run_python",
+                            lambda slug, tool_name=None, **k: (captured.__setitem__("entry", k.get("entry")),
+                                                               RunToolResult(success=True, mode_used="python"))[1])
+        _run(rt)
+        assert captured["entry"] is entry_obj              # same object, single snapshot
+
+
+# --------------------------------------------------------------------------- #
+# Audit failure never changes the decision                                      #
+# --------------------------------------------------------------------------- #
+
+class TestAuditFailure:
+    @staticmethod
+    def _raise_on_integrity(monkeypatch):
+        import agentnode_sdk.runner as runner
+
+        def _audit(decision, event, slug, **k):
+            if event == "lock_integrity_check":
+                raise RuntimeError("audit backend down")
+        monkeypatch.setattr(runner, "audit_decision", _audit)
+
+    def test_normal_allow_survives_audit_failure(self, rt, monkeypatch, caplog):
+        self._raise_on_integrity(monkeypatch)
+        _write(rt["lf"], {"a-pack": _sealed()}, structure=False)   # not verified → allow-audit fires
+        res = _run(rt)
+        assert res.success is True and rt["dispatch"] == ["python"]   # decision unchanged
+        assert caplog.text.count("Lockfile integrity for") == 1       # exactly one warning, no dup
+
+    def test_strict_deny_survives_audit_failure(self, rt, monkeypatch):
+        self._raise_on_integrity(monkeypatch)
+        _strict(monkeypatch)
+        _write(rt["lf"], {"a-pack": _sealed()}, structure=False)
+        res = _run(rt)
+        assert res.mode_used == "integrity_denied" and rt["dispatch"] == []
