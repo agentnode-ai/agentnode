@@ -312,10 +312,12 @@ def entry_integrity_status(entry: Any) -> str:
     """Runtime-neutral, read-only classification of an entry's ``_integrity``
     METADATA shape (NOT a content check). Never raises, never mutates.
 
-    - ``"absent"``: no ``_integrity`` key — an unsealed entry (a migration state).
+    - ``"absent"``: the ``_integrity`` KEY is not present — an unsealed entry (a
+      migration state). Determined by key presence, NOT by a ``None`` value.
     - ``"malformed"``: ``_integrity`` present but not a well-formed integrity
-      object (non-dict, wrong algorithm, unsupported/mistyped ``canonical_version``,
-      missing fields, or a hash that is not 64 lowercase hex chars).
+      object — an explicit ``null``, a non-dict, or a dict with a wrong algorithm,
+      unsupported/mistyped ``canonical_version``, missing fields, or a hash that is
+      not 64 lowercase hex chars.
     - ``"present"``: a well-formed ``_integrity`` object — safe to hand to
       :func:`verify_entry` and :func:`compute_structure_digest`.
 
@@ -325,11 +327,10 @@ def entry_integrity_status(entry: Any) -> str:
     """
     if not isinstance(entry, dict):
         return "malformed"
-    integ = entry.get("_integrity")
-    if integ is None:
-        return "absent"
+    if "_integrity" not in entry:
+        return "absent"                     # key presence, never a null value
     try:
-        _canonical_integrity(integ)
+        _canonical_integrity(entry["_integrity"])   # null / non-dict / bad object → raises
     except StructureIntegrityError:
         return "malformed"
     return "present"

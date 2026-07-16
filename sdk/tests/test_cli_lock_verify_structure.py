@@ -15,7 +15,7 @@ import pytest
 
 from agentnode_sdk.cli.main import main
 from agentnode_sdk.installer import LOCKFILE_VERSION
-from agentnode_sdk.lock_integrity import seal_entry, seal_structure
+from agentnode_sdk.lock_integrity import entry_integrity_status, seal_entry, seal_structure
 
 EMPTY_SET_DIGEST = "57eae92f23a97fd2292d317ea26c67a68464eee9b488f39652584804ca883d5d"
 
@@ -424,7 +424,7 @@ class TestReconciliationSafety:
         assert env_lock.read_bytes() == before               # byte-identical
 
     def test_absent_integrity_still_migration(self, env_lock, capsys):
-        # Truly-absent _integrity (not malformed) stays the migration case.
+        # Truly-absent _integrity KEY (not malformed) stays the migration case.
         e = _sealed_entry()
         del e["_integrity"]
         _write_lock(env_lock, {"a-pack": e})                 # no top-level digest
@@ -433,3 +433,49 @@ class TestReconciliationSafety:
         assert "a-pack" in out and "missing (not sealed)" in out
         assert "structure: missing (not sealed)" in out
         assert main(["lock", "verify", "--strict"]) == 1
+
+    @pytest.mark.parametrize("flags", [[], ["--strict"]], ids=["normal", "strict"])
+    def test_null_integrity_is_invalid_not_migration(self, env_lock, capsys, monkeypatch, flags):
+        # An explicit `_integrity: null` is malformed metadata, NOT an absent key —
+        # it must never be softened to a migration `missing`.
+        _write_lock(env_lock, {"a-pack": _entry_with_integrity(None)})   # no top-level digest
+        before = env_lock.read_bytes()
+        spy = _write_spy(monkeypatch)
+        rc = main(["lock", "verify", *flags])
+        out = capsys.readouterr().out
+        assert rc == 1                                       # normal AND strict
+        assert "a-pack" in out and "INVALID" in out          # entry error
+        assert "structure: INVALID" in out                   # NOT downgraded to missing
+        assert "structure: missing" not in out
+        assert spy["n"] == 0
+        assert env_lock.read_bytes() == before
+
+
+# --------------------------------------------------------------------------- #
+# Core helper: entry_integrity_status — key presence, null ≠ absent             #
+# --------------------------------------------------------------------------- #
+
+class TestEntryIntegrityStatusCore:
+    def test_key_absent_is_absent(self):
+        assert entry_integrity_status({"version": "1.0.0"}) == "absent"
+
+    def test_null_value_is_malformed(self):
+        assert entry_integrity_status({"_integrity": None}) == "malformed"
+
+    @pytest.mark.parametrize("val", ["a-string", [1, 2], 42, {}],
+                             ids=["string", "list", "number", "empty-object"])
+    def test_non_object_or_empty_is_malformed(self, val):
+        assert entry_integrity_status({"_integrity": val}) == "malformed"
+
+    def test_valid_object_is_present(self):
+        assert entry_integrity_status(_sealed_entry()) == "present"
+
+    def test_non_dict_entry_is_malformed(self):
+        assert entry_integrity_status("not a dict") == "malformed"
+
+    def test_does_not_mutate_entry(self):
+        import copy
+        for entry in ({"_integrity": None}, {"_integrity": {"algorithm": "sha256"}}, _sealed_entry()):
+            snapshot = copy.deepcopy(entry)
+            entry_integrity_status(entry)
+            assert entry == snapshot                         # helper is read-only
