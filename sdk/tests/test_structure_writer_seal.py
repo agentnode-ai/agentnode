@@ -77,6 +77,39 @@ def _audit_spy(monkeypatch):
     return events
 
 
+def _raise_oserror(*a, **k):
+    """Stand-in for a failing atomic_write_json; its message carries a path + OS
+    detail so a test can prove the neutral CLI error does NOT leak them."""
+    raise OSError("simulated write failure at /secret/path/agentnode.lock (ENOSPC)")
+
+
+def _order_spies(monkeypatch):
+    """Record the interleaved order of atomic_write_json, cmd_lock_seal's success
+    prints, and its audit events as a single event stream:
+    ``"write"`` / ``("out", line)`` / ``("audit", reason, slug)``."""
+    import builtins
+
+    import agentnode_sdk._fileutil as fu
+    import agentnode_sdk.cli.commands as cmds
+
+    events: list = []
+    real_write = fu.atomic_write_json
+    real_print = builtins.print
+
+    def spy_write(*a, **k):
+        events.append("write")
+        return real_write(*a, **k)
+
+    def spy_print(*a, **k):
+        events.append(("out", " ".join(str(x) for x in a)))
+        return real_print(*a, **k)
+
+    monkeypatch.setattr(fu, "atomic_write_json", spy_write)
+    monkeypatch.setattr(builtins, "print", spy_print)
+    monkeypatch.setattr(cmds, "_lock_seal_audit", lambda reason, slug: events.append(("audit", reason, slug)))
+    return events
+
+
 def _write_lock(lf, packages, *, structure=False, updated_at="2026-01-01T00:00:00+00:00"):
     data = {"lockfile_version": LOCKFILE_VERSION, "updated_at": updated_at, "packages": packages}
     if structure:
@@ -561,13 +594,9 @@ class TestSealAuditAfterCommit:
         _write_lock(env_lock, {"a-pack": _sealed_entry()}, structure=True)
         audits = _audit_spy(monkeypatch)
         import agentnode_sdk._fileutil as fu
-
-        def boom(*a, **k):
-            raise OSError("disk full")
-
-        monkeypatch.setattr(fu, "atomic_write_json", boom)
-        with pytest.raises(OSError):                     # propagates (not an AgentNodeError)
-            main(["lock", "seal", "--force"])
+        monkeypatch.setattr(fu, "atomic_write_json", _raise_oserror)
+        rc = main(["lock", "seal", "--force"])           # controlled, not raised
+        assert rc == 1
         assert audits == []                              # write failed → no reseal audit
 
     def test_successful_seal_emits_once_strictly_after_write(self, env_lock, monkeypatch):
@@ -590,3 +619,89 @@ class TestSealAuditAfterCommit:
         audits = _audit_spy(monkeypatch)
         assert main(["lock", "seal"]) == 0
         assert audits == []                              # no new seal/reseal audit
+
+
+# --------------------------------------------------------------------------- #
+# lock seal — success output buffered until commit; write errors controlled     #
+# --------------------------------------------------------------------------- #
+
+_SUCCESS_WORDS = ("sealed", "resealed", "complete", "written")
+
+
+class TestSealOutputAndWriteErrorContract:
+    def test_force_write_error_is_controlled(self, env_lock, monkeypatch, capsys):
+        _write_lock(env_lock, {"a-pack": _sealed_entry()}, structure=True)
+        before = env_lock.read_bytes()
+        audits = _audit_spy(monkeypatch)
+        import agentnode_sdk._fileutil as fu
+        monkeypatch.setattr(fu, "atomic_write_json", _raise_oserror)
+        rc = main(["lock", "seal", "--force"])           # no pytest.raises — must be handled
+        out = capsys.readouterr().out
+        assert rc == 1
+        for w in _SUCCESS_WORDS:
+            assert w not in out                          # no success claim before a failed write
+        assert "could not save the lockfile" in out      # neutral, path-free error
+        assert "/secret/path" not in out and "ENOSPC" not in out
+        assert audits == []                              # no audit
+        assert env_lock.read_bytes() == before           # byte-identical
+
+    def test_non_force_write_error_is_controlled(self, env_lock, monkeypatch, capsys):
+        _write_lock(env_lock, {"a-pack": _sealed_entry()})   # sealed entry, missing digest → would write
+        before = env_lock.read_bytes()
+        audits = _audit_spy(monkeypatch)
+        import agentnode_sdk._fileutil as fu
+        monkeypatch.setattr(fu, "atomic_write_json", _raise_oserror)
+        rc = main(["lock", "seal"])
+        out = capsys.readouterr().out
+        assert rc == 1
+        for w in _SUCCESS_WORDS:
+            assert w not in out
+        assert "could not save the lockfile" in out
+        assert "/secret/path" not in out and "ENOSPC" not in out
+        assert audits == []
+        assert env_lock.read_bytes() == before
+
+    def test_non_force_success_order_write_output_audit(self, env_lock, monkeypatch):
+        e = _sealed_entry()
+        del e["_integrity"]                              # unsealed → non-force will seal it
+        _write_lock(env_lock, {"a-pack": e})            # no structure digest yet
+        events = _order_spies(monkeypatch)
+        assert main(["lock", "seal"]) == 0
+        assert events.count("write") == 1
+        wi = events.index("write")
+        outs = [i for i, ev in enumerate(events) if isinstance(ev, tuple) and ev[0] == "out"]
+        auds = [i for i, ev in enumerate(events) if isinstance(ev, tuple) and ev[0] == "audit"]
+        assert outs and auds
+        assert wi < min(outs)                            # write BEFORE any success output
+        assert max(outs) < min(auds)                     # all output BEFORE any audit
+        assert len(auds) == 1                            # audit exactly once
+        assert events.count(("audit", "entry sealed", "a-pack")) == 1
+
+    def test_force_success_outputs_before_audits_no_duplicates(self, env_lock, monkeypatch):
+        _write_lock(env_lock, {"a-pack": _sealed_entry(),
+                               "b-pack": _sealed_entry(version="2.0.0")}, structure=True)
+        events = _order_spies(monkeypatch)
+        assert main(["lock", "seal", "--force"]) == 0
+        assert events.count("write") == 1
+        wi = events.index("write")
+        outs = [i for i, ev in enumerate(events) if isinstance(ev, tuple) and ev[0] == "out"]
+        auds = [i for i, ev in enumerate(events) if isinstance(ev, tuple) and ev[0] == "audit"]
+        assert wi < min(outs)                            # every entry/summary output AFTER write
+        assert max(outs) < min(auds)                     # then audits
+        assert len(events) == len(set(events))           # no duplicate events
+        assert ("out", "  a-pack: resealed") in events
+        assert ("out", "  b-pack: resealed") in events
+
+    def test_idempotent_no_write_no_success_output_no_audit(self, env_lock, monkeypatch, capsys):
+        _write_lock(env_lock, {"a-pack": _sealed_entry()}, structure=True)   # fully verified
+        before = env_lock.read_bytes()
+        audits, spy = _audit_spy(monkeypatch), _write_spy(monkeypatch)
+        rc = main(["lock", "seal"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert spy["n"] == 0                             # no write
+        assert audits == []                              # no audit
+        assert out.strip() == "Already sealed (no changes)."   # only the neutral message
+        for w in ("resealed", "written", "complete"):
+            assert w not in out                          # no seal/reseal success output
+        assert env_lock.read_bytes() == before
