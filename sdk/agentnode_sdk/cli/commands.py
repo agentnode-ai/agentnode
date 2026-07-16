@@ -3174,27 +3174,55 @@ def _sig_display(sig_dict: dict) -> str:
 
 
 def cmd_lock_verify(*, json_output: bool = False, strict: bool = False, online: bool = False) -> int:
-    """Verify integrity of all lockfile entries."""
+    """Verify the full two-stage lockfile integrity: per-entry + global structure.
+
+    Strictly READ-ONLY: never seals, writes, restamps, or audits. Uses the
+    mutation-strict, duplicate-key-safe reader so a corrupt / invalid lockfile
+    fails closed (exit 1) instead of being silently treated as empty.
+    """
     import warnings
 
-    from agentnode_sdk.lock_integrity import verify_entry
+    from agentnode_sdk.installer import read_lockfile_strict
+    from agentnode_sdk.lock_integrity import verify_entry, verify_structure
+    from agentnode_sdk.references import is_valid_package_slug
     from agentnode_sdk.signature import verify_entry_signature, SignatureStatus
 
-    lock = read_lockfile()
-    packages = lock.get("packages", {})
+    # Fail-closed read: parser / duplicate-key / OSError / base-model / unsupported
+    # lockfile_version raise LockfileFormatError, which the central main() handler
+    # translates to a deterministic stderr message + exit 1 — never a fail-soft
+    # empty, never a raw traceback. Reuses the existing CLI error translation.
+    lock = read_lockfile_strict()
+    if lock is None:
+        # No deliberate prior missing-file contract (fail-soft conflated it with
+        # empty); adopt: neutral message, exit 0 normal / 1 strict.
+        print("  No lockfile found.")
+        return 1 if strict else 0
+
+    packages = lock["packages"]
 
     verified: list[str] = []
     missing: list[str] = []
     mismatch: list[str] = []
+    invalid: list[str] = []          # malformed slug / non-object entry / bad _integrity
 
     sig_results: dict[str, dict] = {}
     sig_invalid: list[str] = []
 
     for slug, entry in packages.items():
-        result = verify_entry(slug, entry)
-        if result.status == "verified":
+        # Malformed slug / non-dict entry / non-dict _integrity → controlled error
+        # state (shown, exit 1); guarded before verify_entry (which assumes a dict).
+        if (
+            not is_valid_package_slug(slug)
+            or not isinstance(entry, dict)
+            or (entry.get("_integrity") is not None and not isinstance(entry.get("_integrity"), dict))
+        ):
+            invalid.append(slug if isinstance(slug, str) else "<invalid-slug>")
+            continue
+
+        status = verify_entry(slug, entry).status
+        if status == "verified":
             verified.append(slug)
-        elif result.status == "missing":
+        elif status == "missing":
             missing.append(slug)
         else:
             mismatch.append(slug)
@@ -3213,6 +3241,15 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False, online: 
         if sig.status in (SignatureStatus.INVALID, SignatureStatus.UNKNOWN_KEY):
             sig_invalid.append(slug)
 
+    # Global structure status (reuses verify_structure — no reimplementation). A
+    # truly-absent structure_digest is a migration state ("missing") even when an
+    # entry is unsealed (already flagged per-entry); verify_structure returns
+    # "invalid" then only because it cannot compute over an unsealed set. A
+    # malformed entry or a present-but-malformed digest keeps "invalid".
+    structure_status = verify_structure(lock)
+    if structure_status == "invalid" and "structure_digest" not in lock and not invalid:
+        structure_status = "missing"
+
     # Online key verification pass
     key_status_results: dict[str, dict] = {}
     online_failures: list[str] = []
@@ -3222,6 +3259,8 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False, online: 
         from agentnode_sdk.signature import _extract_publisher_signature
 
         for slug, entry in packages.items():
+            if not isinstance(entry, dict):
+                continue
             pub_slug = entry.get("publisher_slug")
             sig_data = _extract_publisher_signature(entry)
             if not pub_slug or not sig_data:
@@ -3242,20 +3281,36 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False, online: 
 
     total = len(packages)
     has_mismatch = len(mismatch) > 0
+    has_invalid = len(invalid) > 0
     has_missing_strict = strict and len(missing) > 0
     has_sig_invalid = len(sig_invalid) > 0
     has_online_failure = online and len(online_failures) > 0
-    ok = not has_mismatch and not has_missing_strict and not has_sig_invalid and not has_online_failure
+    # Structure exit rule: mismatch/invalid/unsupported always fail; missing fails
+    # only under --strict (a missing digest is a visible migration state normally).
+    structure_fail = structure_status in ("mismatch", "invalid", "unsupported") or (
+        structure_status == "missing" and strict
+    )
+    ok = not (
+        has_mismatch
+        or has_invalid
+        or has_missing_strict
+        or has_sig_invalid
+        or has_online_failure
+        or structure_fail
+    )
 
     if json_output:
         report: dict = {
             "verified": sorted(verified),
             "missing": sorted(missing),
             "mismatch": sorted(mismatch),
+            "structure": structure_status,
             "total": total,
             "ok": ok,
             "signatures": sig_results,
         }
+        if invalid:
+            report["invalid"] = sorted(invalid)
         if sig_invalid:
             report["signature_invalid"] = sorted(sig_invalid)
         if online:
@@ -3267,8 +3322,6 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False, online: 
 
     if total == 0:
         print("  No packages in lockfile.")
-        return 0
-
     for slug in sorted(verified):
         pub = packages[slug].get("publisher_slug")
         pub_tag = f" [{pub}]" if pub else ""
@@ -3282,6 +3335,18 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False, online: 
         pub = packages[slug].get("publisher_slug")
         pub_tag = f" [{pub}]" if pub else ""
         print(f"  ✗ {slug}{pub_tag}: MISMATCH, {_sig_display(sig_results[slug])}")
+    for slug in sorted(invalid):
+        print(f"  ✗ {slug}: INVALID (malformed entry)")
+
+    # Exactly one structure line, fixed status terms, shown even for empty packages.
+    struct_label = {
+        "verified": "verified",
+        "missing": "missing (not sealed)" if not strict else "MISSING (strict)",
+        "mismatch": "MISMATCH",
+        "unsupported": "UNSUPPORTED",
+        "invalid": "INVALID",
+    }[structure_status]
+    print(f"  structure: {struct_label}")
 
     parts = []
     if verified:
@@ -3290,7 +3355,10 @@ def cmd_lock_verify(*, json_output: bool = False, strict: bool = False, online: 
         parts.append(f"{len(mismatch)} mismatch")
     if missing:
         parts.append(f"{len(missing)} missing")
-    print(f"\n  {', '.join(parts)} ({total} total)")
+    if invalid:
+        parts.append(f"{len(invalid)} invalid")
+    if total:
+        print(f"\n  {', '.join(parts)} ({total} total)")
 
     if online and key_status_results:
         print()
