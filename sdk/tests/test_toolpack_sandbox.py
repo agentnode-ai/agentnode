@@ -15,7 +15,6 @@ check_available() stays False and all of this is fully fail-closed.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -458,15 +457,17 @@ def test_uninstall_removes_sandbox_volume(monkeypatch, tmp_path):
     import subprocess as _sp
     from agentnode_sdk.cli.commands import cmd_remove
 
+    from agentnode_sdk.lock_integrity import seal_entry, seal_structure
     lock = {
         "lockfile_version": "0.1", "updated_at": "", "packages": {
-            "community-pack": {
+            "community-pack": seal_entry({
                 "version": "2.0", "package_type": "toolpack",
                 "sandboxed": True,
                 "sandbox_volume": "agentnode-pack-community-pack-2.0-abc123de",
-            },
+            }),
         },
     }
+    lock = seal_structure(lock)
     lf = tmp_path / "agentnode.lock"
     lf.write_text(json.dumps(lock))
     monkeypatch.setenv("AGENTNODE_LOCKFILE", str(lf))

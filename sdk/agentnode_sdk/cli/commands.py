@@ -1357,10 +1357,17 @@ def _cmd_run_plan(
 
 
 def cmd_remove(capability: str, yes: bool = False) -> int:
-    from agentnode_sdk._fileutil import atomic_write_json, file_lock
+    from agentnode_sdk.exceptions import LockfileFormatError
+    from agentnode_sdk.installer import read_lockfile_strict, remove_from_lockfile
 
-    lock = read_lockfile()
-    if capability not in lock.get("packages", {}):
+    # Fail-closed presence check: a corrupt/invalid lockfile is refused, never
+    # silently treated as empty.
+    try:
+        pre = read_lockfile_strict()
+    except LockfileFormatError as e:
+        print(f"\n  Cannot read agentnode.lock: {e}\n")
+        return 1
+    if pre is None or capability not in pre.get("packages", {}):
         print(f"\n  {capability} is not installed.\n")
         return 1
 
@@ -1374,18 +1381,18 @@ def cmd_remove(capability: str, yes: bool = False) -> int:
             print("  Cancelled.")
             return 0
 
-    lock_path = _lockfile_path()
-    with file_lock(lock_path):
-        lock = read_lockfile(lock_path)
-        if capability not in lock.get("packages", {}):
-            print(f"\n  {capability} is not installed.\n")
-            return 1
-        pkg_entry = lock["packages"][capability]
-        pkg_type = pkg_entry.get("package_type", "")
-        sandbox_volume = pkg_entry.get("sandbox_volume")
-
-        del lock["packages"][capability]
-        atomic_write_json(lock_path, lock)
+    # Authoritative, structure-safe removal: rebuilds the digest over the
+    # post-removal set; refuses without writing on drift/corruption.
+    try:
+        pkg_entry = remove_from_lockfile(capability)
+    except LockfileFormatError as e:
+        print(f"\n  Cannot remove {capability}: {e}\n")
+        return 1
+    if pkg_entry is None:
+        print(f"\n  {capability} is not installed.\n")
+        return 1
+    pkg_type = pkg_entry.get("package_type", "")
+    sandbox_volume = pkg_entry.get("sandbox_volume")
 
     # P0.3: a community toolpack built into a sandbox volume — remove it too so an
     # uninstall doesn't leave the built code cached on disk (best-effort).
@@ -3029,62 +3036,124 @@ def cmd_guard_reset() -> int:
 # lock seal / lock verify
 # ---------------------------------------------------------------------------
 
+def _lock_seal_audit(reason: str, slug: str) -> None:
+    try:
+        from agentnode_sdk.policy import PolicyResult, audit_decision
+        audit_decision(
+            PolicyResult(action="allow", reason=reason, source="lock_integrity"),
+            "lock_seal", slug,
+        )
+    except Exception:
+        pass
+
+
 def cmd_lock_seal(*, force: bool = False) -> int:
-    """Compute integrity hashes for lockfile entries."""
-    from agentnode_sdk.lock_integrity import seal_entry, verify_entry
+    """Seal per-entry integrity + the global structure digest.
+
+    Without --force: add MISSING per-entry integrity and a missing structure
+    digest; a fully-verified lockfile is idempotent (no rewrite). Per-entry or
+    structure DRIFT is not silently healed — it exits non-zero and points to
+    --force. With --force: the single deliberate reseal path over formally
+    readable drift. A corrupt / duplicate-key / invalid-model / non-object-entry
+    lockfile is refused in BOTH modes (never overwritten).
+    """
+    from datetime import datetime, timezone
+
     from agentnode_sdk._fileutil import atomic_write_json, file_lock
+    from agentnode_sdk.exceptions import LockfileFormatError
+    from agentnode_sdk.installer import _lockfile_path, read_lockfile_strict
+    from agentnode_sdk.lock_integrity import (
+        seal_entry, seal_structure, verify_entry, verify_structure,
+    )
+    from agentnode_sdk.references import is_valid_package_slug
 
-    lock = read_lockfile()
-    packages = lock.get("packages", {})
+    lf = _lockfile_path()
 
-    if not packages:
-        print("  No packages in lockfile.")
-        return 0
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
 
-    sealed_count = 0
-    skipped_count = 0
+    # BOTH the success output and the audit events are BUFFERED here and flushed
+    # only after the atomic write succeeds and the lock is released — never during
+    # read, verify, or in-memory sealing. A path that refuses, is idempotent, or
+    # fails to write returns without flushing, so the CLI never claims a seal
+    # (``sealed`` / ``resealed`` / ``structure_digest written`` / ``force reseal
+    # complete``) and no audit is recorded unless the write reached disk.
+    outputs: list[str] = []
+    audits: list[tuple[str, str]] = []
 
-    for slug, entry in packages.items():
-        has_integrity = "_integrity" in entry
-        if has_integrity and not force:
-            skipped_count += 1
-            continue
-
-        packages[slug] = seal_entry(entry)
-        sealed_count += 1
-        label = "resealed" if has_integrity else "sealed"
-        print(f"  {slug}: {label}")
-
+    # The ENTIRE transaction — read, base-model + entry validation, status check,
+    # in-memory seal, single write — runs under one file_lock. Nothing is read,
+    # status-checked, or sealed before the lock is held.
+    with file_lock(lf):
         try:
-            from agentnode_sdk.policy import audit_decision, PolicyResult
-            audit_decision(
-                PolicyResult(
-                    action="allow",
-                    reason=f"entry {'resealed' if has_integrity else 'sealed'}",
-                    source="lock_integrity",
-                ),
-                "lock_seal",
-                slug,
-            )
-        except Exception:
-            pass
+            data = read_lockfile_strict(lf)
+        except LockfileFormatError as e:
+            print(f"  Cannot seal: {e}")
+            return 1
+        if data is None:
+            print("  No lockfile.")
+            return 0
+        packages = data["packages"]
 
-    if sealed_count > 0:
-        from agentnode_sdk.installer import _lockfile_path
-        lf = _lockfile_path()
-        with file_lock(lf):
-            lock["packages"] = packages
-            from datetime import datetime, timezone
-            lock["updated_at"] = datetime.now(timezone.utc).isoformat()
-            atomic_write_json(lf, lock)
+        # Malformed slugs/entries are refused in BOTH modes, BEFORE any entry
+        # operation (verify_entry / seal_entry). An empty-but-valid lockfile
+        # passes straight through to the empty-set seal below.
+        for slug, entry in packages.items():
+            if not is_valid_package_slug(slug) or not isinstance(entry, dict):
+                print("  Cannot seal: lockfile contains an invalid slug/entry — run `agentnode lock verify`.")
+                return 1
 
-    total = sealed_count + skipped_count
-    parts = []
-    if sealed_count:
-        parts.append(f"{sealed_count} sealed")
-    if skipped_count:
-        parts.append(f"{skipped_count} unchanged")
-    print(f"\n  {', '.join(parts)} ({total} total)")
+        if force:
+            for slug, entry in packages.items():
+                has = "_integrity" in entry
+                packages[slug] = seal_entry(entry)              # in-memory only
+                label = "resealed" if has else "sealed"
+                outputs.append(f"  {slug}: {label}")
+                audits.append((f"entry force-{label}", slug))
+            audits.append(("structure force-reseal", "-"))
+            outputs.append("\n  force reseal complete (per-entry + structure).")
+        else:
+            # --- non-force ---
+            missing = [s for s, e in packages.items() if verify_entry(s, e).status == "missing"]
+            mismatch = [s for s, e in packages.items() if verify_entry(s, e).status == "mismatch"]
+            if mismatch:
+                print(f"  {len(mismatch)} entry integrity mismatch(es) — not healed.")
+                print("  Run `agentnode lock verify`; reseal deliberately with `agentnode lock seal --force`.")
+                return 1
+            for slug in missing:
+                packages[slug] = seal_entry(packages[slug])    # in-memory only
+                outputs.append(f"  {slug}: sealed")
+                audits.append(("entry sealed", slug))
+
+            st = verify_structure(data)
+            if st == "verified" and not missing:
+                print("  Already sealed (no changes).")        # neutral, no write
+                return 0
+            if st not in ("verified", "missing"):
+                print(f"  structure {st} — not healed.")
+                print("  Run `agentnode lock verify`; reseal deliberately with `agentnode lock seal --force`.")
+                return 1
+            n = len(missing)
+            outputs.append(f"\n  {n} sealed, structure_digest written." if n else "  structure_digest written.")
+
+        # Single commit for both modes. Only an I/O failure of the write is
+        # translated to a controlled, path-free error + exit 1 (no success output,
+        # no audit); unexpected errors (e.g. a StructureIntegrityError from a
+        # programming fault) are NOT swallowed and propagate.
+        sealed = seal_structure(data)
+        sealed["updated_at"] = _now()
+        try:
+            atomic_write_json(lf, sealed)
+        except OSError:
+            print("  Cannot seal: could not save the lockfile.")
+            return 1
+
+    # Reached ONLY after a successful atomic write; the file lock is released.
+    # Order: write (above) -> buffered success output -> buffered audit events.
+    for line in outputs:
+        print(line)
+    for reason, slug in audits:
+        _lock_seal_audit(reason, slug)
     return 0
 
 
