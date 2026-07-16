@@ -34,6 +34,21 @@ def _write_lockfile(tmp_path: Path, packages: dict) -> Path:
     return lf
 
 
+def _write_verified_lockfile(tmp_path: Path, packages: dict) -> Path:
+    """A sealed lockfile (per-entry + structure verified) so the 0.2A-2c runtime
+    integrity gate passes through to the guard/policy layer under test."""
+    from agentnode_sdk.lock_integrity import seal_entry, seal_structure
+    sealed = {slug: seal_entry(e) for slug, e in packages.items()}
+    data = seal_structure({
+        "lockfile_version": "0.1",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "packages": sealed,
+    })
+    lf = tmp_path / "agentnode.lock"
+    lf.write_text(json.dumps(data))
+    return lf
+
+
 @pytest.fixture(autouse=True)
 def _guard_env(tmp_path, monkeypatch):
     """Set up guard config where unknown=prompt and delete=deny for testing."""
@@ -341,7 +356,7 @@ class TestStrictMode:
         monkeypatch.setenv("AGENTNODE_GUARD_STRICT", "true")
         reset_guard_config_cache()
 
-        lf = _write_lockfile(tmp_path, {
+        lf = _write_verified_lockfile(tmp_path, {
             "send-pack": {
                 "version": "1.0",
                 "entrypoint": "send_pack.tool",
@@ -366,7 +381,7 @@ class TestStrictMode:
         monkeypatch.setenv("AGENTNODE_GUARD_STRICT", "true")
         reset_guard_config_cache()
 
-        lf = _write_lockfile(tmp_path, {
+        lf = _write_verified_lockfile(tmp_path, {
             "unk-pack": {
                 "version": "1.0",
                 "entrypoint": "unk_pack.tool",

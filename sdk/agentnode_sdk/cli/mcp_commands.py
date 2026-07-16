@@ -6,7 +6,6 @@ import subprocess
 import sys
 
 from agentnode_sdk.cli.output import bold, dim
-from agentnode_sdk.installer import read_lockfile
 
 
 def _check(label: str, ok: bool, detail: str) -> None:
@@ -141,38 +140,58 @@ def cmd_mcp_doctor(
             failed += 1
         return ok
 
-    # --- 1. Package installed ---
-    # A malformed lockfile (duplicate keys) fails closed here — no MCP server is
-    # ever started from an ambiguous lockfile.
+    # --- 1. Package installed + two-stage integrity gate ---
+    # ONE fail-closed read → resolve the entry → integrity gate from the SAME
+    # snapshot, BEFORE any Node/npx probe or MCP server start. A malformed/
+    # unreadable lockfile or an absent package fails closed here; a strict-mode
+    # integrity denial refuses without starting or connecting to anything. This
+    # path bypasses run_tool, so it carries its own gate (same core matrix).
     from agentnode_sdk.exceptions import LockfileFormatError
-    try:
-        lock = read_lockfile()
-    except LockfileFormatError as e:
-        if json_output:
-            print(json.dumps({"slug": slug, "error": str(e), "ready": False}, indent=2))
-        else:
-            print()
-            print(f"  {bold(slug)} - MCP Health Check")
-            print(f"  Lockfile error: {e}")
-            print()
-        return 1
-    pkgs = lock.get("packages", {})
-    entry = pkgs.get(slug)
+    from agentnode_sdk.guard import _is_strict
+    from agentnode_sdk.lock_integrity import LockIntegrityDenied
+    from agentnode_sdk.runner import _audit_lock_integrity, _warn_lock_integrity
+    from agentnode_sdk.runtime_integrity import gate_lock_integrity
 
-    if entry is None:
-        record("installed", False, "not found in lockfile",
-               f"agentnode install {slug}")
+    def _doctor_error(detail: str) -> int:
         if json_output:
-            print(json.dumps({"slug": slug, "checks": checks, "ready": False}, indent=2))
+            print(json.dumps({"slug": slug, "error": detail, "ready": False}, indent=2))
         else:
             print()
             print(f"  {bold(slug)} - MCP Health Check")
-            print(f"  {'-' * 36}")
-            print()
-            _check("Package installed", False, "not found")
-            print(f"    -> agentnode install {slug}")
+            print(f"  {detail}")
             print()
         return 1
+
+    try:
+        _lock, entry, report = gate_lock_integrity(slug, None, strict=_is_strict())
+    except LockfileFormatError as e:
+        return _doctor_error(f"Lockfile error: {e}")
+    except LockIntegrityDenied as denied:
+        _audit_lock_integrity(denied.report, slug)
+        if denied.report.entry_status == "absent":
+            # Preserve the existing "not installed / not found" contract.
+            record("installed", False, "not found in lockfile", f"agentnode install {slug}")
+            if json_output:
+                print(json.dumps({"slug": slug, "checks": checks, "ready": False}, indent=2))
+            else:
+                print()
+                print(f"  {bold(slug)} - MCP Health Check")
+                print(f"  {'-' * 36}")
+                print()
+                _check("Package installed", False, "not found")
+                print(f"    -> agentnode install {slug}")
+                print()
+            return 1
+        return _doctor_error(
+            f"Integrity check denied (strict): entry={denied.report.entry_status}, "
+            f"structure={denied.report.structure_status}. Run 'agentnode lock verify'."
+        )
+
+    # Allowed but not fully verified → exactly one migration warning + one audit,
+    # then the normal doctor flow proceeds (start included).
+    if report.reason != "verified":
+        _warn_lock_integrity(slug, report)
+        _audit_lock_integrity(report, slug)
 
     version = entry.get("version", "?")
     record("installed", True, f"v{version}")

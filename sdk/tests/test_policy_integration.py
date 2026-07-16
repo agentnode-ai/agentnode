@@ -38,7 +38,7 @@ class TestRunnerPolicyIntegration:
 
         lockfile = self._make_lockfile("test-pack", trust="unverified")
 
-        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+        with mock.patch("agentnode_sdk.runtime_integrity.read_lockfile_strict", return_value=lockfile):
             with mock.patch("agentnode_sdk.config.load_config", return_value={
                 "trust": {"minimum_trust_level": "verified"},
                 "permissions": {"network": "allow", "filesystem": "allow", "code_execution": "sandboxed"},
@@ -58,7 +58,7 @@ class TestRunnerPolicyIntegration:
             perms={"network_level": "unrestricted"},
         )
 
-        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+        with mock.patch("agentnode_sdk.runtime_integrity.read_lockfile_strict", return_value=lockfile):
             with mock.patch("agentnode_sdk.config.load_config", return_value={
                 "trust": {"minimum_trust_level": "verified"},
                 "permissions": {"network": "prompt", "filesystem": "allow", "code_execution": "sandboxed"},
@@ -89,7 +89,7 @@ class TestRunnerPolicyIntegration:
                 "read": "allow", "compute": "allow", "unknown": "allow",
             },
         }
-        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+        with mock.patch("agentnode_sdk.runtime_integrity.read_lockfile_strict", return_value=lockfile):
             with mock.patch("agentnode_sdk.config.load_config", return_value=cfg):
                 reset_guard_config_cache()
                 with mock.patch("agentnode_sdk.policy.audit_decision"):
@@ -399,7 +399,7 @@ class TestRiskPolicyRunnerIntegration:
         from agentnode_sdk.runner import run_tool
 
         lockfile = self._make_lockfile("gmail-pack")
-        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+        with mock.patch("agentnode_sdk.runtime_integrity.read_lockfile_strict", return_value=lockfile):
             with mock.patch("agentnode_sdk.config.load_config", return_value=self._allow_cfg("prompt")):
                 with mock.patch("agentnode_sdk.policy.audit_decision"):
                     result = run_tool("gmail-pack")
@@ -411,7 +411,7 @@ class TestRiskPolicyRunnerIntegration:
         from agentnode_sdk.runner import run_tool
 
         lockfile = self._make_lockfile("gmail-pack")
-        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+        with mock.patch("agentnode_sdk.runtime_integrity.read_lockfile_strict", return_value=lockfile):
             with mock.patch("agentnode_sdk.config.load_config", return_value=self._allow_cfg("deny")):
                 with mock.patch("agentnode_sdk.policy.audit_decision"):
                     result = run_tool("gmail-pack")
@@ -429,7 +429,7 @@ class TestRiskPolicyRunnerIntegration:
         def capture_audit(decision, event_type, slug, **kwargs):
             audit_calls.append(decision.source)
 
-        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+        with mock.patch("agentnode_sdk.runtime_integrity.read_lockfile_strict", return_value=lockfile):
             with mock.patch("agentnode_sdk.config.load_config", return_value=self._allow_cfg("log")):
                 with mock.patch("agentnode_sdk.runner.audit_decision", capture_audit):
                     with mock.patch(
@@ -444,7 +444,7 @@ class TestRiskPolicyRunnerIntegration:
         from agentnode_sdk.runner import run_tool
 
         lockfile = self._make_lockfile("untrusted-pack", trust_level="unverified")
-        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+        with mock.patch("agentnode_sdk.runtime_integrity.read_lockfile_strict", return_value=lockfile):
             with mock.patch("agentnode_sdk.config.load_config", return_value=self._allow_cfg("prompt")):
                 with mock.patch("agentnode_sdk.policy.audit_decision"):
                     result = run_tool("untrusted-pack")
@@ -465,7 +465,7 @@ class TestRiskPolicyRunnerIntegration:
 
         cfg = default_config()
         cfg["permissions"]["network"] = "allow"
-        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+        with mock.patch("agentnode_sdk.runtime_integrity.read_lockfile_strict", return_value=lockfile):
             with mock.patch("agentnode_sdk.config.load_config", return_value=cfg):
                 with mock.patch("agentnode_sdk.runner.audit_decision", capture_audit):
                     with mock.patch(
@@ -516,7 +516,7 @@ class TestDecisionLogIntegration:
                 "read": "allow", "compute": "allow", "unknown": "allow",
             },
         }
-        with mock.patch("agentnode_sdk.runner.read_lockfile", return_value=lockfile):
+        with mock.patch("agentnode_sdk.runtime_integrity.read_lockfile_strict", return_value=lockfile):
             with mock.patch("agentnode_sdk.config.load_config", return_value=cfg):
                 reset_guard_config_cache()
                 with mock.patch("agentnode_sdk.runner.audit_decision", capture_audit):

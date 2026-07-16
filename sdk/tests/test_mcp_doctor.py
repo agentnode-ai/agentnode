@@ -8,39 +8,53 @@ import pytest
 from agentnode_sdk.cli.mcp_commands import cmd_mcp_doctor
 
 
+def _write_lock(lock_path, packages):
+    """Write a real, sealed lockfile (lockfile_version + structure digest) so the
+    doctor's fail-closed reader accepts it and the integrity gate is verified."""
+    from agentnode_sdk.lock_integrity import seal_entry, seal_structure
+    sealed = {slug: seal_entry(e) for slug, e in packages.items()}
+    data = seal_structure({
+        "lockfile_version": "0.1",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "packages": sealed,
+    })
+    lock_path.write_text(json.dumps(data), encoding="utf-8")
+    return data
+
+
 @pytest.fixture
 def mcp_lockfile(tmp_path, monkeypatch):
-    """Create a lockfile with an MCP package."""
+    """A real, sealed lockfile with an MCP package, via AGENTNODE_LOCKFILE."""
     lock_path = tmp_path / "agentnode.lock"
-    lock_data = {
-        "version": "1",
-        "packages": {
-            "mcp-test": {
-                "version": "0.1.0",
-                "runtime": "mcp",
-                "mcp_command": ["npx", "-y", "test-mcp-server@1.0.0"],
-                "mcp_env_keys": ["TEST_API_KEY"],
-                "tools": [{"name": "test_tool"}],
-                "permissions": {},
-            },
-            "python-pack": {
-                "version": "1.0.0",
-                "runtime": "python",
-                "entrypoint": "tool.py",
-                "tools": [],
-                "permissions": {},
-            },
+    data = _write_lock(lock_path, {
+        "mcp-test": {
+            "version": "0.1.0",
+            "runtime": "mcp",
+            "mcp_command": ["npx", "-y", "test-mcp-server@1.0.0"],
+            "mcp_env_keys": ["TEST_API_KEY"],
+            "tools": [{"name": "test_tool"}],
+            "permissions": {},
         },
-    }
-    lock_path.write_text(json.dumps(lock_data), encoding="utf-8")
-    monkeypatch.setattr("agentnode_sdk.cli.mcp_commands.read_lockfile", lambda: lock_data)
-    return lock_data
+        "python-pack": {
+            "version": "1.0.0",
+            "runtime": "python",
+            "entrypoint": "tool.py",
+            "tools": [],
+            "permissions": {},
+        },
+    })
+    monkeypatch.setenv("AGENTNODE_LOCKFILE", str(lock_path))
+    return data
 
 
-def test_not_installed(monkeypatch, capsys):
+def test_not_installed(tmp_path, monkeypatch, capsys):
     """Package not in lockfile → exit 1, shows install command."""
-    monkeypatch.setattr("agentnode_sdk.cli.mcp_commands.read_lockfile",
-                        lambda: {"packages": {}})
+    lock_path = tmp_path / "agentnode.lock"
+    lock_path.write_text(
+        json.dumps({"lockfile_version": "0.1", "updated_at": "", "packages": {}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENTNODE_LOCKFILE", str(lock_path))
     result = cmd_mcp_doctor("nonexistent", json_output=False, skip_start=True)
     assert result == 1
     out = capsys.readouterr().out
@@ -181,10 +195,14 @@ def test_json_output_pass(mcp_lockfile, monkeypatch, capsys):
     assert all(c["ok"] in (True, None) for c in data["checks"])
 
 
-def test_json_output_fail(monkeypatch, capsys):
+def test_json_output_fail(tmp_path, monkeypatch, capsys):
     """JSON output with failure."""
-    monkeypatch.setattr("agentnode_sdk.cli.mcp_commands.read_lockfile",
-                        lambda: {"packages": {}})
+    lock_path = tmp_path / "agentnode.lock"
+    lock_path.write_text(
+        json.dumps({"lockfile_version": "0.1", "updated_at": "", "packages": {}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENTNODE_LOCKFILE", str(lock_path))
     result = cmd_mcp_doctor("missing", json_output=True, skip_start=True)
     assert result == 1
     out = capsys.readouterr().out
@@ -192,21 +210,20 @@ def test_json_output_fail(monkeypatch, capsys):
     assert data["ready"] is False
 
 
-def test_no_env_keys_no_warning(mcp_lockfile, monkeypatch, capsys):
+def test_no_env_keys_no_warning(tmp_path, monkeypatch, capsys):
     """MCP with no env_keys → no env check shown, still passes."""
-    lock_data = {
-        "packages": {
-            "mcp-filesystem": {
-                "version": "0.1.0",
-                "runtime": "mcp",
-                "mcp_command": ["npx", "-y", "test-fs@1.0.0"],
-                "mcp_env_keys": [],
-                "tools": [{"name": "read_file"}],
-                "permissions": {},
-            },
+    lock_path = tmp_path / "agentnode.lock"
+    _write_lock(lock_path, {
+        "mcp-filesystem": {
+            "version": "0.1.0",
+            "runtime": "mcp",
+            "mcp_command": ["npx", "-y", "test-fs@1.0.0"],
+            "mcp_env_keys": [],
+            "tools": [{"name": "read_file"}],
+            "permissions": {},
         },
-    }
-    monkeypatch.setattr("agentnode_sdk.cli.mcp_commands.read_lockfile", lambda: lock_data)
+    })
+    monkeypatch.setenv("AGENTNODE_LOCKFILE", str(lock_path))
 
     def fake_which(name):
         return f"/usr/bin/{name}"
