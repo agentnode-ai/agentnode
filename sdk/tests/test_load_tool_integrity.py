@@ -456,3 +456,121 @@ class TestSubprocessMode:
         result, error, timed_out = pr._run_subprocess(entry, "a-pack", tool_name, {}, 10.0)
         assert result is None and error and "ImportError" in error
         assert spawned["n"] == 0                              # no process started on unresolvable
+
+    def test_lockfile_path_not_in_child_env_or_stdin(self, monkeypatch):
+        import agentnode_sdk.runtimes.python_runner as pr
+        monkeypatch.setenv("AGENTNODE_LOCKFILE", "/sensitive/path/agentnode.lock")
+        captured: dict = {}
+
+        class _P:
+            returncode = 0
+
+            def communicate(self, input=None, timeout=None):
+                captured["stdin"] = input
+                return json.dumps({"ok": True, "result": {}}), ""
+
+        def _popen(cmd, **k):
+            captured["env"] = k.get("env")
+            return _P()
+        monkeypatch.setattr(pr.subprocess, "Popen", _popen)
+        pr._run_subprocess(_sealed(entrypoint="mod_s.tool"), "a-pack", None, {}, 10.0)
+        assert "AGENTNODE_LOCKFILE" not in captured["env"]        # never crosses the boundary
+        assert "/sensitive/path" not in captured["stdin"]
+        assert "agentnode.lock" not in captured["stdin"]
+        assert "AGENTNODE_LOCKFILE" not in pr._SUBPROCESS_WRAPPER  # not in the child wrapper
+
+
+# --------------------------------------------------------------------------- #
+# run_python refuses a non-gated entry — no fail-soft read, no side effect       #
+# --------------------------------------------------------------------------- #
+
+class TestRunPythonRequiresGatedEntry:
+    @pytest.mark.parametrize("mode", ["direct", "subprocess", "auto"])
+    @pytest.mark.parametrize("bad", [None, "not-a-dict", 42], ids=["none", "str", "int"])
+    def test_missing_or_nonobject_entry_refused(self, monkeypatch, mode, bad):
+        import agentnode_sdk.installer as inst
+        import agentnode_sdk.runtime_integrity as ri
+        import agentnode_sdk.runtimes.python_runner as pr
+        counters = {"load": 0, "popen": 0, "container": 0}
+        monkeypatch.setattr(inst, "read_lockfile",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("read_lockfile")))
+        monkeypatch.setattr(ri, "read_lockfile_strict",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("read_lockfile_strict")))
+        monkeypatch.setattr(pr, "_load_entrypoint_from_entry",
+                            lambda *a, **k: counters.__setitem__("load", counters["load"] + 1))
+        monkeypatch.setattr(pr.subprocess, "Popen",
+                            lambda *a, **k: counters.__setitem__("popen", counters["popen"] + 1))
+        monkeypatch.setattr(pr, "_run_container",
+                            lambda *a, **k: (counters.__setitem__("container", counters["container"] + 1),
+                                             (None, None, False))[1])
+        res = pr.run_python("a-pack", None, mode=mode, entry=bad)
+        assert res.success is False and res.mode_used == "no_entry"
+        assert counters == {"load": 0, "popen": 0, "container": 0}   # no reader / import / spawn / container
+
+
+# --------------------------------------------------------------------------- #
+# Gated python paths never read the lockfile (reader on raise)                  #
+# --------------------------------------------------------------------------- #
+
+class TestGatedPathsNoReader:
+    @staticmethod
+    def _raise_readers(monkeypatch):
+        import agentnode_sdk.installer as inst
+        import agentnode_sdk.runtime_integrity as ri
+        monkeypatch.setattr(inst, "read_lockfile",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("read_lockfile")))
+        monkeypatch.setattr(ri, "read_lockfile_strict",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("read_lockfile_strict")))
+
+    @pytest.mark.parametrize("mode", ["direct", "subprocess", "auto"])
+    def test_host_paths_no_read(self, monkeypatch, mode):
+        import agentnode_sdk.runtimes.python_runner as pr
+        self._raise_readers(monkeypatch)
+        monkeypatch.setattr(pr, "_load_entrypoint_from_entry", lambda e, s, t: (lambda **k: {"ok": True}))
+
+        class _P:
+            returncode = 0
+
+            def communicate(self, input=None, timeout=None):
+                return json.dumps({"ok": True, "result": {"r": 1}}), ""
+        monkeypatch.setattr(pr.subprocess, "Popen", lambda *a, **k: _P())
+        res = pr.run_python("a-pack", None, mode=mode, entry=_sealed())   # trusted → host
+        assert res.success is True
+
+    def test_container_dispatch_no_read(self, monkeypatch):
+        import agentnode_sdk.runtimes.python_runner as pr
+        self._raise_readers(monkeypatch)
+        got: dict = {}
+
+        def _spy_container(slug, tool_name, kwargs, timeout, entry, consent_callback=None):
+            got["entry"] = entry
+            return {"ok": True}, None, False
+        monkeypatch.setattr(pr, "_run_container", _spy_container)
+        entry = _sealed(trust_level="unverified")             # community → sandbox/container dispatch
+        res = pr.run_python("a-pack", None, mode="auto", entry=entry)
+        assert res.success is True and got["entry"] is entry  # container got the gated entry, no read
+
+
+# --------------------------------------------------------------------------- #
+# Gate precedes EVERY entrypoint variant (strict deny → 0 import)               #
+# --------------------------------------------------------------------------- #
+
+class TestGateBeforeEntrypointVariants:
+    @pytest.mark.parametrize("tools,ep,tool_name", [
+        ([{"name": "go", "entrypoint": "m:go"}], None, "go"),         # per-tool
+        ([], "mod.pkg", "alt"),                                       # v0.1 fallback + candidate order
+        ([], "mod.pkg", None),                                        # no tool_name
+        ([{"name": "only", "entrypoint": "m:o"}], None, None),        # single-tool auto
+        ([{"name": "x", "entrypoint": "m:x"}], None, "unknown"),      # unknown tool
+    ], ids=["per-tool", "v01", "no-name", "single", "unknown"])
+    def test_strict_denies_before_variant_resolution(self, env_lock, imp, monkeypatch, tools, ep, tool_name):
+        _strict(monkeypatch)
+        e = _entry(tools=tools)
+        if ep:
+            e["entrypoint"] = ep
+        sealed = seal_entry(e)
+        _write_lock(env_lock, {"a-pack": sealed}, structure=False)   # verified entry, structure missing → strict deny
+        with pytest.warns(RuntimeWarning):
+            with pytest.raises(LockIntegrityDenied):
+                load_tool("a-pack", tool_name)
+        assert imp["imports"] == []                                   # no import for ANY variant

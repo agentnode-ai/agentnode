@@ -226,17 +226,23 @@ def run_python(
         missing_env_message,
         missing_required_env,
     )
-    dispatch_trust = (
-        entry.get("trust_level") if entry is not None
-        else _get_trust_level(slug, lockfile_path)
-    )
+    # run_python is reached ONLY through the run_tool gate, which passes the
+    # already-gated entry. There is NO fallback lockfile read: without a gated
+    # snapshot there is no integrity report to honour, so a missing / non-object
+    # entry is refused UP FRONT — before credentials, mode resolution, import,
+    # subprocess, or container — with no side effect and no invented decision.
+    if not isinstance(entry, dict):
+        return RunToolResult(
+            success=False,
+            error=(
+                f"run_python requires an already-gated lockfile entry for '{slug}'; "
+                "none was provided."
+            ),
+            mode_used="no_entry",
+        )
 
-    # run_python is called (in production) only by the run_tool gate, which passes
-    # the already-gated entry. Normalise it to a dict once here (the None branch is
-    # a defensive fallback for non-gated internal callers only) so the host paths
-    # resolve the entrypoint from THIS entry — never a second lockfile read.
-    if entry is None:
-        entry = read_lockfile(lockfile_path).get("packages", {}).get(slug) or {}
+    # Mode/trust decisions use THIS gated entry only — never a second lockfile read.
+    dispatch_trust = entry.get("trust_level")
 
     # Declared-credentials gate (names/presence only — no value is read): a pack
     # whose required env_requirements are not set fails HERE with an actionable
@@ -256,7 +262,7 @@ def run_python(
         t0 = time.monotonic()
         try:
             result, error, timed_out = _run_container(
-                slug, tool_name, kwargs, timeout, entry, lockfile_path,
+                slug, tool_name, kwargs, timeout, entry,
                 consent_callback=consent_callback,
             )
             elapsed = (time.monotonic() - t0) * 1000
@@ -411,10 +417,11 @@ def _run_subprocess(
             "kwargs": kwargs,
         })
 
-        # AGENTNODE_LOCKFILE is intentionally NOT set: the child imports by module
-        # name and reads no lockfile. (Allowlisted env still passes through, but the
-        # child never uses it to resolve the entry.)
+        # The child imports by module name and reads NO lockfile, so the lockfile
+        # path must never cross the process boundary. _filtered_env() allowlists
+        # AGENTNODE_LOCKFILE, so explicitly drop any inherited value here.
         env = _filtered_env()
+        env.pop("AGENTNODE_LOCKFILE", None)
 
         proc = subprocess.Popen(
             [sys.executable, "-c", script],
@@ -512,8 +519,7 @@ def _run_container(
     tool_name: str | None,
     kwargs: dict,
     timeout: float,
-    entry: dict | None,
-    lockfile_path: Path | None,
+    entry: dict,
     consent_callback=None,
 ) -> tuple[Any, str | None, bool]:
     """Run a community toolpack inside an ephemeral container that mounts ONLY
@@ -538,9 +544,7 @@ def _run_container(
     )
     from agentnode_sdk.sandbox.types import MountSpec
 
-    if entry is None:
-        entry = read_lockfile(lockfile_path).get("packages", {}).get(slug) or {}
-
+    # entry is the already-gated object from run_python — never re-read here.
     _reinstall = (
         "Sandbox volume missing or stale. Reinstall this toolpack to rebuild it "
         f"in the sandbox (run: agentnode install {slug})."
