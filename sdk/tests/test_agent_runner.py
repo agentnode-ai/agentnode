@@ -629,8 +629,11 @@ class TestRunnerAgentDispatch:
         entry = _agent_entry(trust_level="trusted")
         entry["agent"]["entrypoint"] = "agent_dispatch.core:run"
 
-        # Mock _get_lockfile_entry to return our test entry
-        monkeypatch.setattr(runner, "_get_lockfile_entry", lambda slug, path: entry)
+        # Inject the entry via the single fail-closed runtime read seam.
+        import agentnode_sdk.runtime_integrity as _ri
+        monkeypatch.setattr(_ri, "read_lockfile_strict",
+                            lambda path=None: {"lockfile_version": "0.1", "updated_at": "",
+                                               "packages": {"test-agent": entry}})
 
         # Mock check_run to allow
         from agentnode_sdk.policy import PolicyResult
@@ -651,7 +654,10 @@ class TestRunnerAgentDispatch:
         from agentnode_sdk import runner
 
         entry = {"package_type": "upgrade", "trust_level": "curated"}
-        monkeypatch.setattr(runner, "_get_lockfile_entry", lambda slug, path: entry)
+        import agentnode_sdk.runtime_integrity as _ri
+        monkeypatch.setattr(_ri, "read_lockfile_strict",
+                            lambda path=None: {"lockfile_version": "0.1", "updated_at": "",
+                                               "packages": {"my-upgrade": entry}})
 
         result = runner.run_tool("my-upgrade")
 

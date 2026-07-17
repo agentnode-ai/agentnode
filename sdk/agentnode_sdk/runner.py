@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agentnode_sdk.exceptions import LockfileFormatError
-from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.models import RunToolResult
 from agentnode_sdk.policy import resolve_runtime, check_run, check_risk_policies, audit_decision, _resolve_interactive, PolicyResult
 
@@ -122,18 +121,30 @@ def run_tool(
             "rename the tool argument(s) or use a wrapper function."
         )
 
-    # Read lockfile entry. A malformed lockfile (duplicate keys) fails closed
-    # here — before any runtime dispatch, so no side effect is reached.
+    # ONE fail-closed lockfile read → resolve the entry → two-stage integrity gate,
+    # all from the SAME snapshot, BEFORE any side effect (trust refresh, sandbox,
+    # policy, dispatch). No second read: the resolved ``entry`` is dispatched as-is.
+    # A malformed/unreadable lockfile fails closed via the existing lockfile_error
+    # surface (no invented integrity report); a denied decision → integrity_denied.
+    from agentnode_sdk.guard import _is_strict
+    from agentnode_sdk.lock_integrity import LockIntegrityDenied
+    from agentnode_sdk.runtime_integrity import gate_lock_integrity
+
+    strict = _is_strict()
     try:
-        entry = _get_lockfile_entry(slug, lockfile_path)
+        _lock, entry, integrity_report = gate_lock_integrity(slug, lockfile_path, strict=strict)
     except LockfileFormatError as e:
         return RunToolResult(success=False, error=str(e), mode_used="lockfile_error")
+    except LockIntegrityDenied as denied:
+        _audit_lock_integrity(denied.report, slug)
+        return _integrity_denied_result(slug, denied.report)
 
-    # Integrity check — warn or deny before any dispatch
-    if entry:
-        integrity_deny = _check_entry_integrity(slug, entry)
-        if integrity_deny is not None:
-            return integrity_deny
+    # Allowed but not fully verified → exactly one migration warning + one allow
+    # audit (normal mode). Strict would already have denied above; verified/verified
+    # is silent (no warning, no migration audit).
+    if integrity_report.reason != "verified":
+        _warn_lock_integrity(slug, integrity_report)
+        _audit_lock_integrity(integrity_report, slug)
 
     # upgrade is a distribution/relationship type, NOT an execution model.
     # Runner and Policy ignore it. UI shows as "Add-on".
@@ -373,58 +384,66 @@ def _audit_runtime_run(
         logger.debug("Failed to audit runtime dispatch", exc_info=True)
 
 
-def _get_lockfile_entry(slug: str, lockfile_path: Path | None) -> dict:
-    """Read the lockfile entry for a package."""
-    data = read_lockfile(lockfile_path)
-    return data.get("packages", {}).get(slug, {})
+def _integrity_denied_result(slug: str, report: Any) -> RunToolResult:
+    """Translate a :class:`LockIntegrityReport` denial into the run_tool surface:
+    a stable ``mode_used="integrity_denied"`` + ONLY the safe report fields
+    (status names / flags — no hashes, entry content, signatures, paths, tokens)."""
+    return RunToolResult(
+        success=False,
+        error=(
+            f"Lockfile integrity check denied execution of '{slug}' "
+            f"(entry={report.entry_status}, structure={report.structure_status}, "
+            f"strict={report.strict}). Run 'agentnode lock verify'."
+        ),
+        mode_used="integrity_denied",
+        policy={
+            "integrity": {
+                "entry_status": report.entry_status,
+                "structure_status": report.structure_status,
+                "strict": report.strict,
+                "allowed": report.allowed,
+                "reason": report.reason,
+            }
+        },
+    )
 
 
-def _check_entry_integrity(slug: str, entry: dict) -> RunToolResult | None:
-    """Check lockfile entry integrity.  Returns a deny result in strict mode."""
-    from agentnode_sdk.lock_integrity import verify_entry
-    from agentnode_sdk.guard import _is_strict
+def _warn_lock_integrity(slug: str, report: Any) -> None:
+    """Emit exactly ONE top-level migration warning (normal mode). Names the entry
+    and structure status, notes strict would deny, points to ``lock verify`` (and
+    ``lock seal`` when something is unsealed). Never claims an automatic repair."""
+    msg = (
+        f"Lockfile integrity for '{slug}': entry={report.entry_status}, "
+        f"structure={report.structure_status}. Allowed in normal mode; strict mode "
+        "(AGENTNODE_GUARD_STRICT) would deny. Run 'agentnode lock verify'"
+    )
+    if report.entry_status == "missing" or report.structure_status == "missing":
+        msg += "; seal with 'agentnode lock seal' if the state is intended"
+    logger.warning(msg + ".")
 
-    result = verify_entry(slug, entry)
 
-    if result.status in ("verified", "missing"):
-        return None
-
-    if result.status == "mismatch":
-        strict = _is_strict()
-        action = "deny" if strict else "warn"
-        logger.warning(
-            "Lockfile integrity mismatch for '%s'. "
-            "Run 'agentnode lock verify' for details.",
+def _audit_lock_integrity(report: Any, slug: str) -> None:
+    """Best-effort audit for a non-verified integrity decision: ``allow`` in normal
+    mode, ``deny`` in strict. Never changes the decision, never raises, never emits
+    a second event. Carries only status names + the strict flag (no sensitive
+    values)."""
+    try:
+        audit_decision(
+            PolicyResult(
+                action="deny" if not report.allowed else "allow",
+                reason=report.reason,
+                source="lock_integrity",
+            ),
+            "lock_integrity_check",
             slug,
+            extra={
+                "entry_status": report.entry_status,
+                "structure_status": report.structure_status,
+                "strict": report.strict,
+            },
         )
-        try:
-            audit_decision(
-                PolicyResult(
-                    action=action,
-                    reason="lockfile_integrity_mismatch",
-                    source="lock_integrity",
-                ),
-                "lock_integrity_check",
-                slug,
-                extra={
-                    "integrity_status": "mismatch",
-                    "canonical_version": 1,
-                },
-            )
-        except Exception:
-            logger.debug("Failed to audit integrity mismatch", exc_info=True)
-
-        if strict:
-            return RunToolResult(
-                success=False,
-                error=(
-                    f"Lockfile integrity check failed for '{slug}' (strict mode). "
-                    "Run 'agentnode lock seal' after verifying the change is intentional."
-                ),
-                mode_used="integrity_denied",
-            )
-
-    return None
+    except Exception:
+        logger.debug("Failed to audit lock integrity", exc_info=True)
 
 
 def _audit_guard_decision(

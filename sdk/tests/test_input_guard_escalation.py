@@ -245,6 +245,12 @@ class TestGuardTakesPrecedence:
             },
             "tools": [{"name": "run_cmd", "action_type": "execute"}],
         }
+        # Seal the whole lockfile so the 0.2A-2c strict runtime integrity gate
+        # passes through to the guard (which denies 'execute' in strict mode).
+        from agentnode_sdk.lock_integrity import seal_entry, seal_structure
+        data.setdefault("lockfile_version", "0.1")
+        data["packages"] = {s: seal_entry(e) for s, e in data["packages"].items()}
+        data = seal_structure(data)
         lock_file.write_text(json.dumps(data), encoding="utf-8")
 
         from agentnode_sdk.runner import run_tool
