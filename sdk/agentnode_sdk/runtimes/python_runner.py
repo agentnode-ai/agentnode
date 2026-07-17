@@ -12,21 +12,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# P1-SDK7: serialize concurrent callers of _run_direct so the
-# os.environ["AGENTNODE_LOCKFILE"] save/restore dance is atomic.
-# Concurrent calls from different threads would otherwise race the
-# environment variable and leak one another's lockfile paths.
-_DIRECT_ENV_LOCK = threading.Lock()
-
 from agentnode_sdk.exceptions import AgentNodeToolError
-from agentnode_sdk.installer import load_tool, read_lockfile
+from agentnode_sdk.installer import (
+    _load_entrypoint_from_entry,
+    _resolve_entrypoint_from_entry,
+    read_lockfile,
+)
 from agentnode_sdk.models import RunToolResult
 
 # ---------------------------------------------------------------------------
@@ -61,12 +58,17 @@ _ENV_ALLOWLIST = {
 
 # Wrapper script executed inside the subprocess.
 #
-# P1-SDK8: slug and tool_name are passed on stdin alongside kwargs, not
-# format-injected into the script source. Previously any slug/tool_name
-# containing escape sequences, braces, or weird Unicode could either
-# break `.format()` or inject arbitrary Python via `repr()`. The wrapper
-# is now a pure static string — no `.format()` substitution happens.
+# 0.3A: the child NEVER reads the lockfile and NEVER calls load_tool. The parent
+# (post run_tool gate) resolves the entrypoint STRING-ONLY from the already-gated
+# entry and passes (module, [candidate functions]) on stdin; the child only does
+# importlib + getattr. This removes the second lockfile read and the entry-
+# substitution / TOCTOU window (a file change after the parent's gate can no
+# longer swap the imported entry). Same shape as _CONTAINER_WRAPPER.
+#
+# P1-SDK8: all inputs travel via stdin JSON — the wrapper is a pure static string,
+# no `.format()` substitution.
 _SUBPROCESS_WRAPPER = '''\
+import importlib
 import io
 import json
 import sys
@@ -81,13 +83,22 @@ def _safe_serialize(obj):
 
 try:
     _payload = json.loads(sys.stdin.read())
-    _slug = _payload["slug"]
-    _tool_name = _payload.get("tool_name")
+    _module = _payload["module"]
+    _functions = _payload.get("functions") or []
     kwargs = _payload.get("kwargs") or {}
 
-    from agentnode_sdk.installer import load_tool
-
-    func = load_tool(_slug, tool_name=_tool_name, _internal=True)
+    mod = importlib.import_module(_module)
+    func = None
+    for _name in _functions:
+        cand = getattr(mod, _name, None)
+        if callable(cand):
+            func = cand
+            break
+    if func is None:
+        raise ImportError(
+            "none of the candidate functions " + repr(_functions)
+            + " found in module '" + _module + "'"
+        )
 
     # Capture stdout so tool print() calls don't corrupt our JSON output.
     captured = io.StringIO()
@@ -220,15 +231,18 @@ def run_python(
         else _get_trust_level(slug, lockfile_path)
     )
 
+    # run_python is called (in production) only by the run_tool gate, which passes
+    # the already-gated entry. Normalise it to a dict once here (the None branch is
+    # a defensive fallback for non-gated internal callers only) so the host paths
+    # resolve the entrypoint from THIS entry — never a second lockfile read.
+    if entry is None:
+        entry = read_lockfile(lockfile_path).get("packages", {}).get(slug) or {}
+
     # Declared-credentials gate (names/presence only — no value is read): a pack
     # whose required env_requirements are not set fails HERE with an actionable
     # message instead of a cryptic tool error deep inside the run. Applies to
     # host and sandbox paths alike.
-    entry_for_creds = (
-        entry if entry is not None
-        else read_lockfile(lockfile_path).get("packages", {}).get(slug) or {}
-    )
-    _missing_creds = missing_required_env(entry_for_creds)
+    _missing_creds = missing_required_env(entry)
     if _missing_creds:
         return RunToolResult(
             success=False,
@@ -263,11 +277,10 @@ def run_python(
                 duration_ms=round(elapsed, 1),
             )
 
-    # Resolve auto-mode
+    # Resolve auto-mode (no second lockfile read — reuse the entry's trust level).
     resolved = mode
     if mode == "auto":
-        trust = _get_trust_level(slug, lockfile_path)
-        resolved = _resolve_mode(mode, trust)
+        resolved = _resolve_mode(mode, dispatch_trust)
 
     if resolved == "direct" and mode == "direct":
         logger.warning(
@@ -279,7 +292,7 @@ def run_python(
     t0 = time.monotonic()
     try:
         if resolved == "direct":
-            result = _run_direct(slug, tool_name, kwargs, lockfile_path)
+            result = _run_direct(entry, slug, tool_name, kwargs)
             elapsed = (time.monotonic() - t0) * 1000
             return RunToolResult(
                 success=True,
@@ -289,7 +302,7 @@ def run_python(
             )
         else:
             result, error, timed_out = _run_subprocess(
-                slug, tool_name, kwargs, timeout, lockfile_path,
+                entry, slug, tool_name, kwargs, timeout,
             )
             elapsed = (time.monotonic() - t0) * 1000
             return RunToolResult(
@@ -341,42 +354,24 @@ def _get_trust_level(slug: str, lockfile_path: Path | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _run_direct(
+    entry: dict,
     slug: str,
     tool_name: str | None,
     kwargs: dict,
-    lockfile_path: Path | None,
 ) -> Any:
-    """Load and call the tool in the current process.
+    """Load and call the tool in the current process, using the ALREADY-GATED
+    entry from the run_tool snapshot.
 
-    P1-SDK7: the env-var mutation is guarded by ``_DIRECT_ENV_LOCK`` so
-    concurrent callers from different threads can't clobber each other's
-    ``AGENTNODE_LOCKFILE``. Note this still does NOT make the ACTUAL tool
-    call concurrency-safe — two threads loading different tools that
-    share a module will still interleave inside the tool. The lock only
-    covers the env-var save/restore and the ``load_tool()`` lookup.
+    0.3A: this no longer calls ``load_tool`` and reads NO lockfile — the entry is
+    the object the run_tool gate already evaluated, so there is no second read, no
+    second integrity gate, and no entry-substitution window. (The old
+    ``AGENTNODE_LOCKFILE`` env dance existed only for ``load_tool``'s lookup and is
+    therefore gone.)
     """
-    if lockfile_path is None:
-        # No lockfile override — env doesn't need touching, no lock needed.
-        try:
-            func = load_tool(slug, tool_name=tool_name, _internal=True)
-            return func(**kwargs)
-        except ImportError as exc:
-            raise AgentNodeToolError(str(exc), tool_name=tool_name or slug) from exc
-
-    with _DIRECT_ENV_LOCK:
-        old_env = os.environ.get("AGENTNODE_LOCKFILE")
-        os.environ["AGENTNODE_LOCKFILE"] = str(lockfile_path)
-        try:
-            func = load_tool(slug, tool_name=tool_name, _internal=True)
-        except ImportError as exc:
-            raise AgentNodeToolError(str(exc), tool_name=tool_name or slug) from exc
-        finally:
-            if old_env is None:
-                os.environ.pop("AGENTNODE_LOCKFILE", None)
-            else:
-                os.environ["AGENTNODE_LOCKFILE"] = old_env
-    # Run the tool OUTSIDE the lock — holding it across user code would
-    # serialize every direct-mode run_tool call unnecessarily.
+    try:
+        func = _load_entrypoint_from_entry(entry, slug, tool_name)
+    except ImportError as exc:
+        raise AgentNodeToolError(str(exc), tool_name=tool_name or slug) from exc
     return func(**kwargs)
 
 
@@ -385,31 +380,41 @@ def _run_direct(
 # ---------------------------------------------------------------------------
 
 def _run_subprocess(
+    entry: dict,
     slug: str,
     tool_name: str | None,
     kwargs: dict,
     timeout: float,
-    lockfile_path: Path | None,
 ) -> tuple[Any, str | None, bool]:
-    """Run tool in an isolated child process.
+    """Run tool in an isolated child process, using the ALREADY-GATED entry.
+
+    0.3A: the parent resolves the entrypoint STRING-ONLY from the gated entry (no
+    import) and passes only ``(module, functions)`` on stdin. The child reads NO
+    lockfile and never calls ``load_tool`` — so a lockfile change after the gate
+    cannot substitute the imported entry (no TOCTOU), and there is no second read.
 
     Returns ``(result, error_message, timed_out)``.
     """
+    try:
+        module_path, functions = _resolve_entrypoint_from_entry(entry, slug, tool_name)
+    except ImportError as exc:
+        return None, f"ImportError: {exc}", False
+
     tmpdir = tempfile.mkdtemp(prefix="agentnode-run-")
     try:
-        # P1-SDK8: wrapper is a static string; slug/tool_name travel via
-        # stdin alongside kwargs. No `.format()` substitution happens.
+        # P1-SDK8: wrapper is a static string; the resolved module/functions travel
+        # via stdin alongside kwargs. No `.format()` substitution happens.
         script = _SUBPROCESS_WRAPPER
         input_json = json.dumps({
-            "slug": slug,
-            "tool_name": tool_name,
+            "module": module_path,
+            "functions": functions,
             "kwargs": kwargs,
         })
 
+        # AGENTNODE_LOCKFILE is intentionally NOT set: the child imports by module
+        # name and reads no lockfile. (Allowlisted env still passes through, but the
+        # child never uses it to resolve the entry.)
         env = _filtered_env()
-        # Point subprocess at the real lockfile (cwd will be tmpdir)
-        lf_path = str(lockfile_path) if lockfile_path else str(Path.cwd() / "agentnode.lock")
-        env["AGENTNODE_LOCKFILE"] = lf_path
 
         proc = subprocess.Popen(
             [sys.executable, "-c", script],

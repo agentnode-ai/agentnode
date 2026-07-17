@@ -1499,17 +1499,77 @@ def _multi_tool_hint(entry: dict, slug: str = "<slug>") -> str:
     return ""
 
 
+def _resolve_entrypoint_from_entry(
+    entry: dict, slug: str, tool_name: str | None
+) -> tuple[str, list[str]]:
+    """Resolve ``(module_path, [ordered_function_candidates])`` from a lockfile
+    entry — STRING-ONLY, no import, no lockfile read, no policy. Mirrors the
+    historical ``load_tool`` precedence exactly:
+      - v0.2 per-tool entrypoint match → that module + its function;
+      - v0.1 (tool_name given, no ``tools`` list) → package module, try
+        ``tool_name`` first then the default function (``run``);
+      - no tool_name → the default/sole-tool/package entrypoint module + function.
+    Raises :class:`ImportError` (controlled, message-only) when unresolvable.
+    """
+    tools = entry.get("tools") or []
+    if tool_name:
+        for t in tools:
+            if t.get("name") == tool_name and t.get("entrypoint"):
+                module_path, func_name = _resolve_entrypoint(t["entrypoint"])
+                return module_path, [func_name]
+        entrypoint = entry.get("entrypoint")
+        if entrypoint and not tools:
+            module_path, func_name = _resolve_entrypoint(entrypoint)
+            cands = [tool_name] if tool_name == func_name else [tool_name, func_name]
+            return module_path, cands
+        raise ImportError(
+            f"Tool '{tool_name}' not found in package '{slug}'. "
+            f"Available tools: {[t.get('name') for t in tools]}"
+        )
+
+    entrypoint = _default_tool_entrypoint(entry)
+    if not entrypoint:
+        raise ImportError(
+            f"Package '{slug}' has no entrypoint in lockfile." + _multi_tool_hint(entry, slug)
+        )
+    module_path, func_name = _resolve_entrypoint(entrypoint)
+    return module_path, [func_name]
+
+
+def _load_entrypoint_from_entry(entry: dict, slug: str, tool_name: str | None) -> Any:
+    """Private, POLICY-FREE loader: resolve the entrypoint from *entry*, import the
+    module, and return the first callable candidate. Reads NO lockfile, runs NO
+    integrity gate / warning / audit / trust-refresh / mutation / network — only
+    the string resolution above then ``importlib``. Callers that need an integrity
+    decision (public :func:`load_tool`) gate BEFORE calling this."""
+    module_path, candidates = _resolve_entrypoint_from_entry(entry, slug, tool_name)
+    mod = _import_module(module_path, slug)          # first code execution (module import)
+    for name in candidates:
+        func = getattr(mod, name, None)
+        if func is not None and callable(func):
+            return func
+    raise ImportError(
+        f"Function {candidates!r} not found in module '{module_path}' "
+        f"for package '{slug}'." + _multi_tool_hint(entry, slug)
+    )
+
+
 def load_tool(slug: str, tool_name: str | None = None, *, _internal: bool = False) -> Any:
-    """Load an installed package's tool function.
+    """Load an installed package's tool function (Direct Mode).
 
-    Args:
-        slug: Package slug (e.g. "csv-analyzer-pack").
-        tool_name: Optional tool name for multi-tool v0.2 packs.
-            If None, uses the package-level entrypoint (v0.1 behavior).
+    Two-stage lockfile integrity is enforced BEFORE any module import — the same
+    merged core decision as ``run_tool`` (0.2A-2c), NOT a second policy. Order:
+    policy-bypass warning (unless ``_internal``) → ONE fail-closed snapshot →
+    integrity gate (unconditional) → integrity warning/audit on a normal-mode
+    migration → resolve the entry from the SAME snapshot → import.
 
-    Returns the callable tool function.
-    For v0.1 packs: returns module.run
-    For v0.2 packs with tool_name: returns the specific tool function
+    ``_internal`` ONLY suppresses the policy-bypass warning; it NEVER affects the
+    integrity gate (a leading underscore is not a security boundary). The gate runs
+    on every public call even if the target module is already cached in
+    ``sys.modules`` (a cached module must not become a bypass).
+
+    Returns the callable tool function. For v0.1 packs: ``module.run``; for v0.2
+    packs with ``tool_name``: the specific tool function.
     """
     if not _internal:
         import warnings
@@ -1518,71 +1578,36 @@ def load_tool(slug: str, tool_name: str | None = None, *, _internal: bool = Fals
             RuntimeWarning,
             stacklevel=2,
         )
-    data = read_lockfile()
-    pkg = data.get("packages", {}).get(slug)
-    if not pkg:
-        raise ImportError(
-            f"Package '{slug}' is not installed. "
-            f"Install it first: client.install('{slug}')"
-        )
 
-    # v0.2: check for per-tool entrypoints in lockfile
-    if tool_name:
-        tools = pkg.get("tools", [])
-        for t in tools:
-            if t.get("name") == tool_name:
-                ep = t.get("entrypoint", "")
-                if ep:
-                    module_path, func_name = _resolve_entrypoint(ep)
-                    mod = _import_module(module_path, slug)
-                    func = getattr(mod, func_name, None)
-                    if func is None:
-                        raise ImportError(
-                            f"Function '{func_name}' not found in module '{module_path}' "
-                            f"for tool '{tool_name}' in package '{slug}'."
-                        )
-                    return func
-        # Fallback: tool_name given but not in tools list — use package-level entrypoint
-        # Most tool-packs have a single run() function that handles all operations.
-        # The tool_name is passed by the caller but maps to the same entrypoint.
-        # Only attempt fallback if no explicit tools list exists (v0.1 pack).
-        entrypoint = pkg.get("entrypoint")
-        if entrypoint and not tools:
-            module_path, func_name = _resolve_entrypoint(entrypoint)
-            mod = _import_module(module_path, slug)
-            # Try tool_name as function name in the module first
-            func = getattr(mod, tool_name, None)
-            if func and callable(func):
-                return func
-            # Fall back to the default entrypoint function (usually run())
-            func = getattr(mod, func_name, None)
-            if func and callable(func):
-                return func
+    # Fail-closed snapshot + two-stage integrity gate, BEFORE any import. Lazy
+    # import avoids an installer<->runtime_integrity cycle and keeps installer free
+    # of any runner import.
+    from agentnode_sdk.guard import _is_strict
+    from agentnode_sdk.lock_integrity import LockIntegrityDenied
+    from agentnode_sdk.lock_surface import audit_lock_integrity, warn_lock_integrity
+    from agentnode_sdk.runtime_integrity import gate_lock_integrity
 
-        raise ImportError(
-            f"Tool '{tool_name}' not found in package '{slug}'. "
-            f"Available tools: {[t.get('name') for t in pkg.get('tools', [])]}"
-        )
+    try:
+        _lock, entry, report = gate_lock_integrity(slug, None, strict=_is_strict())
+    except LockIntegrityDenied as denied:
+        audit_lock_integrity(denied.report, slug)
+        if denied.report.entry_status == "absent":
+            # Preserve the historical "not installed" contract as a neutral ImportError.
+            raise ImportError(
+                f"Package '{slug}' is not installed. Install it first: client.install('{slug}')"
+            ) from None
+        raise
+    # LockfileFormatError (unreadable / parser / base-model) propagates uncaught —
+    # a hard read error is never disguised as "not installed", and no import runs.
 
-    # No tool_name: auto-select the sole tool when exactly one is declared,
-    # else fall back to the package-level entrypoint (multi-tool unchanged).
-    entrypoint = _default_tool_entrypoint(pkg)
-    if not entrypoint:
-        raise ImportError(
-            f"Package '{slug}' has no entrypoint in lockfile."
-            + _multi_tool_hint(pkg, slug)
-        )
+    # Allowed but not fully verified → exactly one integrity warning + one allow
+    # audit (normal mode). Strict would already have denied above; verified/verified
+    # is silent. This is SEPARATE from the policy-bypass warning above.
+    if report.reason != "verified":
+        warn_lock_integrity(slug, report)
+        audit_lock_integrity(report, slug)
 
-    module_path, func_name = _resolve_entrypoint(entrypoint)
-    mod = _import_module(module_path, slug)
-    func = getattr(mod, func_name, None)
-    if func is None:
-        raise ImportError(
-            f"Function '{func_name}' not found in module '{module_path}' "
-            f"for package '{slug}'."
-            + _multi_tool_hint(pkg, slug)
-        )
-    return func
+    return _load_entrypoint_from_entry(entry, slug, tool_name)
 
 
 def _import_module(module_path: str, slug: str) -> Any:
