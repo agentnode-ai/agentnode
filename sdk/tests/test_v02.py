@@ -48,7 +48,7 @@ class TestResolveEntrypoint:
 
 class TestLoadTool:
     def _write_lockfile(self, tmp: Path, packages: dict):
-        data = {"lockfile_version": "0.2", "updated_at": "", "packages": packages}
+        data = {"lockfile_version": "0.1", "updated_at": "", "packages": packages}
         (tmp / "agentnode.lock").write_text(json.dumps(data))
 
     def test_load_v01_single_tool(self, tmp_path):

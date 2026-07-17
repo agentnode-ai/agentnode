@@ -150,7 +150,7 @@ class TestFormatGuardDeny:
 # ---------------------------------------------------------------------------
 
 class TestUserConfirmsToolRuns:
-    @patch("agentnode_sdk.runtimes.python_runner.load_tool")
+    @patch("agentnode_sdk.runtimes.python_runner._load_entrypoint_from_entry")
     def test_callback_yes_proceeds(self, mock_load, tmp_path):
         mock_fn = MagicMock(return_value={"ok": True})
         mock_load.return_value = mock_fn
@@ -181,7 +181,7 @@ class TestUserConfirmsToolRuns:
         assert result.result == {"ok": True}
         mock_fn.assert_called_once_with(cmd="echo hi")
 
-    @patch("agentnode_sdk.runtimes.python_runner.load_tool")
+    @patch("agentnode_sdk.runtimes.python_runner._load_entrypoint_from_entry")
     def test_callback_receives_guard_decision(self, mock_load, tmp_path):
         mock_fn = MagicMock(return_value={"ok": True})
         mock_load.return_value = mock_fn

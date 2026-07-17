@@ -148,7 +148,7 @@ class TestGetTrustLevel:
 # ---------------------------------------------------------------------------
 
 class TestRunToolDirect:
-    @patch("agentnode_sdk.runtimes.python_runner.load_tool")
+    @patch("agentnode_sdk.runtimes.python_runner._load_entrypoint_from_entry")
     def test_success(self, mock_load, tmp_path):
         mock_fn = MagicMock(return_value={"answer": 42})
         mock_load.return_value = mock_fn
@@ -166,7 +166,7 @@ class TestRunToolDirect:
         assert result.duration_ms >= 0
         mock_fn.assert_called_once_with(x=1)
 
-    @patch("agentnode_sdk.runtimes.python_runner.load_tool", side_effect=ImportError("not installed"))
+    @patch("agentnode_sdk.runtimes.python_runner._load_entrypoint_from_entry", side_effect=ImportError("not installed"))
     def test_error_wraps_in_result(self, mock_load, tmp_path, bypass_policy):
         # trusted → host direct path (community tiers route to the container).
         lf = _write_lockfile(tmp_path, {
@@ -303,7 +303,7 @@ class TestRunToolAuto:
     def test_explicit_direct_still_works(self, tmp_path):
         """mode='direct' remains the explicit opt-in for in-process execution."""
         mock_fn = MagicMock(return_value={"ok": True})
-        with patch("agentnode_sdk.runtimes.python_runner.load_tool", return_value=mock_fn):
+        with patch("agentnode_sdk.runtimes.python_runner._load_entrypoint_from_entry", return_value=mock_fn):
             lf = _write_lockfile(tmp_path, {
                 "d-pack": {
                     "version": "1.0",
@@ -394,7 +394,7 @@ class TestSubprocessEdgeCases:
 
         mock_fn = MagicMock(return_value=datetime.datetime(2026, 1, 1))
 
-        with patch("agentnode_sdk.runtimes.python_runner.load_tool", return_value=mock_fn):
+        with patch("agentnode_sdk.runtimes.python_runner._load_entrypoint_from_entry", return_value=mock_fn):
             lf = _write_lockfile(tmp_path, {
                 "dt-pack": {"version": "1.0", "entrypoint": "dt.tool", "trust_level": "trusted"},
             })

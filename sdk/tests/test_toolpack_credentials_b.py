@@ -196,7 +196,6 @@ def test_container_credentialed_happy_path(monkeypatch, container_env):
         {"x": 1},
         30.0,
         entry,
-        None,
         consent_callback=lambda identity: (True, "this_run"),
     )
 
@@ -231,7 +230,6 @@ def test_container_refusal_starts_nothing(monkeypatch, container_env):
         {},
         30.0,
         entry,
-        None,
         consent_callback=lambda identity: (True, "this_run"),
     )
 
@@ -247,7 +245,7 @@ def test_container_non_credentialed_path_unchanged(container_env):
 
     entry = _sandboxed_entry("plain-pack", env_requirements=[])
 
-    result, error, timed_out = _run_container("plain-pack", None, {}, 30.0, entry, None)
+    result, error, timed_out = _run_container("plain-pack", None, {}, 30.0, entry)
 
     assert error is None
     assert result == {"n": 1}
