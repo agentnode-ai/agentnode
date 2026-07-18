@@ -2031,15 +2031,29 @@ def _emit_host_execution_observability(
     # 1. Exactly one host-execution warning (before the import). Best-effort: a
     #    pathological logging handler that raises in emit must never convert the
     #    already-allowed host run into a failure — observability is not a gate.
+    #
+    # The remediation is TRUST-SPECIFIC and must match the real routing matrix:
+    # host_trust_policy="curated_only" sandboxes trusted but NOT curated; only
+    # "none" sandboxes curated. AGENTNODE_AGENT_SANDBOX routes only community tiers,
+    # so it is NOT a remediation for a trusted/curated host route and is not offered.
+    if trust_level == "curated":
+        remediation = (
+            "To require sandbox execution for curated agents, set "
+            "sandbox.host_trust_policy to none."
+        )
+    else:  # trusted — the only other trust level that reaches the host route here
+        remediation = (
+            "To require sandbox execution for trusted agents, set "
+            "sandbox.host_trust_policy to curated_only or none."
+        )
     try:
         logger.warning(
             "Agent '%s' will execute UNSANDBOXED on the host "
             "(trust=%s, isolation=%s). Agent code can access host resources "
             "(filesystem, network, environment, subprocesses) directly; tool gates do "
             "not constrain the agent's own code, and the on-disk code is not re-verified "
-            "against the lockfile at start. To sandbox host-tier agents, set "
-            "sandbox.host_trust_policy (curated_only|none) or enable the agent sandbox.",
-            slug, trust_level, isolation,
+            "against the lockfile at start. %s",
+            slug, trust_level, isolation, remediation,
         )
     except Exception:
         pass

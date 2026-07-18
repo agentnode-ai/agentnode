@@ -382,6 +382,99 @@ class TestSequentialNoObservability:
 
 
 # ---------------------------------------------------------------------------
+# 7b. Warning remediation must match the real routing matrix (trust-specific)
+# ---------------------------------------------------------------------------
+
+class TestWarningRemediationTrustSpecific:
+    """The remediation named in the host warning must actually sandbox the shown
+    trust level: curated_only sandboxes trusted but NOT curated; only none
+    sandboxes curated; the community flag AGENTNODE_AGENT_SANDBOX sandboxes
+    neither host tier and must never be offered."""
+
+    def _host_warning(self, monkeypatch, *, trust, policy="default", flag=None):
+        h = _Harness(monkeypatch).install()
+        if flag is not None:
+            monkeypatch.setenv("AGENTNODE_AGENT_SANDBOX", flag)
+        monkeypatch.setattr("agentnode_sdk.config.host_trust_policy", lambda: policy)
+        r = run_agent("a", entry=_agent_entry(trust_level=trust))
+        return h, r
+
+    def test_trusted_remediation_names_curated_only_and_none(self, monkeypatch):
+        h, r = self._host_warning(monkeypatch, trust="trusted")
+        assert r.success is True
+        assert len(h.warnings) == 1
+        w = h.warnings[0]
+        assert "curated_only" in w and "none" in w
+        assert "enable the agent sandbox" not in w
+        assert "AGENTNODE_AGENT_SANDBOX" not in w
+
+    def test_curated_remediation_names_none_only(self, monkeypatch):
+        # curated is NOT sandboxed by curated_only → it must not be offered as a
+        # sufficient remediation; only none is correct for curated.
+        h, r = self._host_warning(monkeypatch, trust="curated")
+        assert r.success is True
+        assert len(h.warnings) == 1
+        w = h.warnings[0]
+        assert "none" in w
+        assert "curated_only" not in w
+        assert "enable the agent sandbox" not in w
+        assert "AGENTNODE_AGENT_SANDBOX" not in w
+
+
+# ---------------------------------------------------------------------------
+# 7c. Routing matrix pinned — proves the warning describes the real routing
+# ---------------------------------------------------------------------------
+
+class TestRoutingMatrixUnchanged:
+    def _run(self, monkeypatch, *, trust, policy, flag=None):
+        h = _Harness(monkeypatch).install()
+        if flag is not None:
+            monkeypatch.setenv("AGENTNODE_AGENT_SANDBOX", flag)
+        monkeypatch.setattr("agentnode_sdk.config.host_trust_policy", lambda: policy)
+        seen = {}
+
+        def spy(slug, entry, agent_config, *, goal=None, run_id=None, **kwargs):
+            seen["sandboxed"] = True
+            return RunToolResult(success=False, error="spy", mode_used="agent_sandbox", run_id=run_id)
+        monkeypatch.setattr("agentnode_sdk.runtimes.agent_sandbox.run_agent_sandboxed", spy)
+        r = run_agent("a", entry=_agent_entry(trust_level=trust))
+        return h, r, seen
+
+    def test_trusted_curated_only_sandboxed_no_host_warning(self, monkeypatch):
+        h, r, seen = self._run(monkeypatch, trust="trusted", policy="curated_only")
+        assert seen.get("sandboxed") is True and r.mode_used == "agent_sandbox"
+        assert h.warnings == [] and h.boundary_audits == []
+
+    def test_curated_curated_only_host_with_curated_warning(self, monkeypatch):
+        h, r, seen = self._run(monkeypatch, trust="curated", policy="curated_only")
+        assert seen.get("sandboxed") is None and r.success is True   # host route
+        assert len(h.warnings) == 1
+        w = h.warnings[0]
+        assert "none" in w and "curated_only" not in w
+
+    def test_curated_none_sandboxed_no_host_warning(self, monkeypatch):
+        h, r, seen = self._run(monkeypatch, trust="curated", policy="none")
+        assert seen.get("sandboxed") is True and r.mode_used == "agent_sandbox"
+        assert h.warnings == [] and h.boundary_audits == []
+
+    def test_flag_on_trusted_default_stays_host_with_trusted_warning(self, monkeypatch):
+        h, r, seen = self._run(monkeypatch, trust="trusted", policy="default", flag="1")
+        assert seen.get("sandboxed") is None and r.success is True
+        assert len(h.warnings) == 1
+        w = h.warnings[0]
+        assert "curated_only" in w and "none" in w
+        assert "enable the agent sandbox" not in w
+
+    def test_flag_on_curated_default_stays_host_with_curated_warning(self, monkeypatch):
+        h, r, seen = self._run(monkeypatch, trust="curated", policy="default", flag="1")
+        assert seen.get("sandboxed") is None and r.success is True
+        assert len(h.warnings) == 1
+        w = h.warnings[0]
+        assert "none" in w and "curated_only" not in w
+        assert "enable the agent sandbox" not in w
+
+
+# ---------------------------------------------------------------------------
 # 8. Structural guard — the observability call precedes import/AgentContext
 # ---------------------------------------------------------------------------
 
