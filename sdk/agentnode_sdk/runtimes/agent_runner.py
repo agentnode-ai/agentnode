@@ -1360,9 +1360,15 @@ def run_agent(
     from agentnode_sdk.sandbox.policy import requires_sandbox_for_policy
     _community = trust_level in ("verified", "unverified")
     _host_tier = trust_level in ("trusted", "curated")
-    if (_agent_sandbox_enabled() and _community) or (
-        _host_tier and requires_sandbox_for_policy(trust_level, host_trust_policy())
-    ):
+    # Evaluate the production routing decision ONCE and keep the facts, so the D1
+    # observability below reflects exactly this decision (no second policy pass).
+    _sandbox_enabled = _agent_sandbox_enabled()
+    _resolved_policy = host_trust_policy()
+    _policy_recognized = _resolved_policy in ("default", "curated_only", "none")
+    _sandbox_required = (_sandbox_enabled and _community) or (
+        _host_tier and requires_sandbox_for_policy(trust_level, _resolved_policy)
+    )
+    if _sandbox_required:
         return run_agent_sandboxed(slug, entry, agent_config, goal=goal, run_id=run_id, **kwargs)
     if not _trust_meets_minimum(trust_level, "trusted"):
         _audit_agent_run(
@@ -1412,6 +1418,31 @@ def run_agent(
     orchestration = agent_config.get("orchestration")
     if isinstance(orchestration, dict) and orchestration.get("mode") == "sequential":
         return _run_sequential(slug, agent_config, kwargs, effective_timeout, run_id=run_id, run_log=run_log)
+
+    # --- 4a'. Host-execution observability (Agent-Exec D1) ---
+    # The production routing above confirmed the UNSANDBOXED HOST route for this
+    # entrypoint agent. Before any foreign agent code is imported/initialised, emit
+    # exactly one warning + one best-effort pre-import audit that surface this fact.
+    # This is OBSERVABILITY ONLY: it does not re-route, allow, deny, or isolate.
+    # Sequential agents returned above (they import no foreign host code).
+    _isolation_cfg = agent_config.get("isolation", "thread")
+    _effective_isolation = "process" if _isolation_cfg == "process" else "thread"
+    _routing_reason = (
+        "unrecognized_policy_host_fallback"
+        if (_host_tier and not _policy_recognized)
+        else "host_execution_selected"
+    )
+    _emit_host_execution_observability(
+        slug=slug,
+        trust_level=trust_level,
+        host_trust_policy=(_resolved_policy if _policy_recognized else "unknown"),
+        isolation=_effective_isolation,
+        sandbox_required=_sandbox_required,
+        sandbox_enabled=_sandbox_enabled,
+        routing_reason=_routing_reason,
+        policy_recognized=_policy_recognized,
+        run_id=run_id,
+    )
 
     # --- 4b. Eager dependency installation ---
     if allowed_packages:
@@ -1968,6 +1999,90 @@ def _eager_install_deps(
 
     if run_log:
         run_log._write("eager_install_end", slugs=missing)
+
+
+def _emit_host_execution_observability(
+    *,
+    slug: str,
+    trust_level: str,
+    host_trust_policy: str,
+    isolation: str,
+    sandbox_required: bool,
+    sandbox_enabled: bool,
+    routing_reason: str,
+    policy_recognized: bool,
+    run_id: str | None = None,
+) -> None:
+    """Agent-Exec D1 — pre-import observability for an unsandboxed HOST agent run.
+
+    OBSERVABILITY ONLY. This is NOT an RCE mitigation: it reduces no host
+    capability, isolates no import-time code, verifies no runtime artifact, and
+    makes no allow/deny/routing decision. It only surfaces the ALREADY-MADE
+    production routing decision (host route) before any foreign agent code is
+    imported, so the run is visible and auditable.
+
+    Contract: exactly one warning + one best-effort audit per host run. Both are
+    wrapped so that neither a pathological logging handler nor an audit-backend
+    failure can convert the already-allowed run into a denial or emit a second
+    event — observability is not a gate. Only trust/boundary/isolation
+    facts are carried — never goal, kwargs, entrypoint, module, paths, env,
+    secrets, hashes, signatures, or tool results.
+    """
+    # 1. Exactly one host-execution warning (before the import). Best-effort: a
+    #    pathological logging handler that raises in emit must never convert the
+    #    already-allowed host run into a failure — observability is not a gate.
+    #
+    # The remediation is TRUST-SPECIFIC and must match the real routing matrix:
+    # host_trust_policy="curated_only" sandboxes trusted but NOT curated; only
+    # "none" sandboxes curated. AGENTNODE_AGENT_SANDBOX routes only community tiers,
+    # so it is NOT a remediation for a trusted/curated host route and is not offered.
+    if trust_level == "curated":
+        remediation = (
+            "To require sandbox execution for curated agents, set "
+            "sandbox.host_trust_policy to none."
+        )
+    else:  # trusted — the only other trust level that reaches the host route here
+        remediation = (
+            "To require sandbox execution for trusted agents, set "
+            "sandbox.host_trust_policy to curated_only or none."
+        )
+    try:
+        logger.warning(
+            "Agent '%s' will execute UNSANDBOXED on the host "
+            "(trust=%s, isolation=%s). Agent code can access host resources "
+            "(filesystem, network, environment, subprocesses) directly; tool gates do "
+            "not constrain the agent's own code, and the on-disk code is not re-verified "
+            "against the lockfile at start. %s",
+            slug, trust_level, isolation, remediation,
+        )
+    except Exception:
+        pass
+    # 2. Exactly one best-effort pre-import audit. Never raises, never re-routes.
+    try:
+        result = PolicyResult(
+            action="allow",
+            reason=routing_reason,
+            source="agent_runner",
+        )
+        audit_decision(
+            result, "agent_execution_boundary", slug,
+            trust_level=trust_level,
+            run_id=run_id,
+            extra={
+                "host_trust_policy": host_trust_policy,
+                "execution_boundary": "host",
+                "isolation": isolation,
+                "sandbox_required": sandbox_required,
+                "sandbox_enabled": sandbox_enabled,
+                "routing_reason": routing_reason,
+                "policy_recognized": policy_recognized,
+            },
+        )
+    except Exception:
+        try:
+            logger.debug("Failed to audit host execution boundary: %s", slug, exc_info=True)
+        except Exception:
+            pass
 
 
 def _audit_agent_run(
