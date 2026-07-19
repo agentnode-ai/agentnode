@@ -28,7 +28,9 @@ from agentnode_sdk.runtimes.mcp_runner import MCPServerProcess
 from agentnode_sdk.sandbox import set_default_backend
 from agentnode_sdk.sandbox.container_backend import ContainerBackend, mcp_sandbox_volume_name
 from agentnode_sdk.sandbox.types import EgressSpec, SandboxAvailability, SandboxRequiredError
+from tests.hostpolicy import decision as _dec
 
+_VDEC = _dec("verified")
 HEX = "a" * 64
 SLUG = "some-mcp"
 MCP_VERSION = "1.0"
@@ -174,7 +176,7 @@ def test_happy_path_secret_by_name_not_on_argv(monkeypatch):
     eg = _patch_egress(monkeypatch)
     proc = _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN))
 
-    proc.start(env_keys=["GITHUB_TOKEN"])
+    proc.start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
 
     fp = _FakePopen.instances[-1]
     argv = fp.args
@@ -208,7 +210,7 @@ def test_non_tty_valid_grant_authorized(monkeypatch):
     _seed_forever_grant(entry)
     proc = _proc(entry, cb=None)  # non-TTY
 
-    proc.start(env_keys=["GITHUB_TOKEN"])  # authorized by the stored grant
+    proc.start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])  # authorized by the stored grant
     assert eg.started == 1
     assert _FakePopen.instances[-1].env.get("GITHUB_TOKEN") == SECRET_VALUE
     proc.stop()
@@ -224,7 +226,7 @@ def test_non_tty_no_grant_refused(monkeypatch):
     _patch_inspect(monkeypatch)
     eg = _patch_egress(monkeypatch)
     with pytest.raises(CredentialedMcpRefused):
-        _proc(_cred_entry(), cb=None).start(env_keys=["GITHUB_TOKEN"])
+        _proc(_cred_entry(), cb=None).start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
     assert eg.started == 0 and not _FakePopen.instances
 
 
@@ -234,7 +236,7 @@ def test_tty_reject_refused(monkeypatch):
     _patch_inspect(monkeypatch)
     eg = _patch_egress(monkeypatch)
     with pytest.raises(CredentialedMcpRefused):
-        _proc(_cred_entry(), cb=lambda i: (False, store.LIFETIME_90D)).start(env_keys=["GITHUB_TOKEN"])
+        _proc(_cred_entry(), cb=lambda i: (False, store.LIFETIME_90D)).start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
     assert eg.started == 0 and not _FakePopen.instances
 
 
@@ -248,7 +250,7 @@ def test_non_preinstalled_credentialed_refused_before_consent(monkeypatch):
     entry = lock_integrity.seal_entry({"version": MCP_VERSION, "mcp_env_keys": ["GITHUB_TOKEN"],
                                        "mcp_allowed_domains": ["api.github.com"]})
     with pytest.raises(CredentialedMcpRefused):
-        _proc(entry, cb=cb).start(env_keys=["GITHUB_TOKEN"])
+        _proc(entry, cb=cb).start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
     assert calls == [] and eg.started == 0 and not _FakePopen.instances
 
 
@@ -258,7 +260,7 @@ def test_missing_sealed_domains_refused_before_egress(monkeypatch):
     _patch_inspect(monkeypatch)
     eg = _patch_egress(monkeypatch)
     with pytest.raises(CredentialedMcpRefused):
-        _proc(_cred_entry(domains=[]), cb=_approve(store.LIFETIME_THIS_RUN)).start(env_keys=["GITHUB_TOKEN"])
+        _proc(_cred_entry(domains=[]), cb=_approve(store.LIFETIME_THIS_RUN)).start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
     assert eg.started == 0 and not _FakePopen.instances
 
 
@@ -269,7 +271,7 @@ def test_invalid_sealed_domains_refused_before_egress(monkeypatch):
     eg = _patch_egress(monkeypatch)
     with pytest.raises(CredentialedMcpRefused):
         _proc(_cred_entry(domains=["http://evil.example.com/x"]),
-              cb=_approve(store.LIFETIME_THIS_RUN)).start(env_keys=["GITHUB_TOKEN"])
+              cb=_approve(store.LIFETIME_THIS_RUN)).start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
     assert eg.started == 0 and not _FakePopen.instances
 
 
@@ -279,7 +281,7 @@ def test_missing_host_key_refused_before_egress_and_no_value_read(monkeypatch):
     _patch_inspect(monkeypatch)
     eg = _patch_egress(monkeypatch)
     with pytest.raises(CredentialedMcpRefused):
-        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(env_keys=["GITHUB_TOKEN"])
+        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
     assert eg.started == 0 and not _FakePopen.instances
 
 
@@ -293,7 +295,7 @@ def test_egress_start_failure_no_container(monkeypatch):
     _patch_inspect(monkeypatch)
     _patch_egress(monkeypatch, start_raises=True)
     with pytest.raises(SandboxRequiredError):
-        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(env_keys=["GITHUB_TOKEN"])
+        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
     assert not _FakePopen.instances  # no container started after egress failure
 
 
@@ -308,7 +310,7 @@ def test_container_start_failure_tears_down_egress(monkeypatch):
     monkeypatch.setattr(mcp_runner.subprocess, "Popen", _boom)
 
     with pytest.raises(OSError):
-        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(env_keys=["GITHUB_TOKEN"])
+        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
     assert eg.started == 1 and eg.stopped == 1  # egress proxy cleaned up
 
 
@@ -330,7 +332,7 @@ def test_wrap_command_failure_after_egress_tears_down_and_no_secret_read(monkeyp
     monkeypatch.setattr(be, "wrap_command", _boom_wrap)
 
     with pytest.raises(SandboxRequiredError):
-        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(env_keys=["GITHUB_TOKEN"])
+        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
 
     assert eg.started == 1 and eg.stopped == 1   # egress started then torn down (no leak)
     assert not _FakePopen.instances              # no container
@@ -351,7 +353,7 @@ def test_order_wrap_command_strictly_before_secret_read(monkeypatch):
                         lambda ek: events.append("read") or real_read(ek))
 
     proc = _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN))
-    proc.start(env_keys=["GITHUB_TOKEN"])
+    proc.start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
     assert events == ["wrap", "read"]  # wrap_command strictly BEFORE the secret-value read
     proc.stop()
 
@@ -373,7 +375,7 @@ def test_final_read_missing_key_fail_closed_value_free(monkeypatch):
     monkeypatch.setattr(be, "wrap_command", _wrap)
 
     with pytest.raises(CredentialedMcpRefused) as ei:
-        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(env_keys=["GITHUB_TOKEN"])
+        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
 
     assert ei.value.reason == "missing_host_env_key"
     msg = str(ei.value)
@@ -391,7 +393,7 @@ def test_final_read_empty_key_fail_closed_value_free(monkeypatch):
     eg = _patch_egress(monkeypatch)
 
     with pytest.raises(CredentialedMcpRefused) as ei:
-        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(env_keys=["GITHUB_TOKEN"])
+        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
 
     assert ei.value.reason == "empty_host_env_key"
     assert "GITHUB_TOKEN" not in str(ei.value)   # value-free AND name-free
@@ -416,7 +418,7 @@ def test_env_keys_mismatch_with_identity_refused_before_consent(monkeypatch):
     # entry/identity authorizes GITHUB_TOKEN; the caller tries to inject OPENAI_API_KEY
     proc = _proc(_cred_entry(env_keys=("GITHUB_TOKEN",)), cb=cb)
     with pytest.raises(CredentialedMcpRefused) as ei:
-        proc.start(env_keys=["OPENAI_API_KEY"])
+        proc.start(_host_policy_decision=_VDEC, env_keys=["OPENAI_API_KEY"])
 
     assert ei.value.reason == "env_keys_identity_mismatch"
     msg = str(ei.value)
@@ -437,7 +439,7 @@ def test_injection_uses_identity_names_order_insensitive(monkeypatch):
     _patch_inspect(monkeypatch)
     _patch_egress(monkeypatch)
     proc = _proc(_cred_entry(env_keys=("GH_TOKEN", "API_KEY")), cb=_approve(store.LIFETIME_THIS_RUN))
-    proc.start(env_keys=["API_KEY", "GH_TOKEN"])  # different order than the entry
+    proc.start(_host_policy_decision=_VDEC, env_keys=["API_KEY", "GH_TOKEN"])  # different order than the entry
 
     fp = _FakePopen.instances[-1]
     env_names = [fp.args[i + 1] for i, a in enumerate(fp.args) if a == "--env"]
@@ -458,7 +460,7 @@ def test_credentialed_server_not_pooled(monkeypatch):
     _patch_inspect(monkeypatch)
     _patch_egress(monkeypatch)
     pool = mcp_runner.MCPProcessPool()
-    server = pool.get_or_start(SLUG, NPX_CMD, env_keys=["GITHUB_TOKEN"], trust_level="verified",
+    server = pool.get_or_start(SLUG, NPX_CMD, env_keys=["GITHUB_TOKEN"], host_policy_decision=_VDEC, compatibility=None,
                                entry=_cred_entry(), mcp_consent_callback=_approve(store.LIFETIME_THIS_RUN))
     assert server is not None
     assert SLUG not in pool._servers  # credentialed is NEVER cached
@@ -499,7 +501,7 @@ def test_credentialed_tool_timeout_tears_down_container_and_egress(monkeypatch):
 
     entry = _cred_entry(mcp_command=list(NPX_CMD), trust_level="verified",
                         tools=[{"name": "do_it", "input_schema": {"type": "object"}}])
-    result = mcp_runner.run_mcp(SLUG, "do_it", timeout=0.5, entry=entry,
+    result = mcp_runner.run_mcp(SLUG, "do_it", timeout=0.5, entry=entry, _host_policy_decision=_VDEC,
                                 mcp_consent_callback=_approve(store.LIFETIME_THIS_RUN))
 
     assert result.success is False and result.timed_out is True
@@ -528,7 +530,7 @@ def test_credentialed_start_cancel_tears_down_before_secret_read(monkeypatch):
     monkeypatch.setattr(be, "wrap_command", _cancel_wrap)
 
     with pytest.raises(KeyboardInterrupt):
-        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(env_keys=["GITHUB_TOKEN"])
+        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
 
     assert eg.started == 1 and eg.stopped == 1   # partial resources (egress) torn down on cancel
     assert not _FakePopen.instances              # no container ever started
@@ -549,7 +551,7 @@ def test_credentialed_podman_uses_podman_argv_secret_by_name(monkeypatch):
     eg = _patch_egress(monkeypatch)
 
     proc = _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN))
-    proc.start(env_keys=["GITHUB_TOKEN"])
+    proc.start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
 
     fp = _FakePopen.instances[-1]
     argv = fp.args
@@ -580,7 +582,7 @@ def test_credentialed_no_runtime_fail_closed(monkeypatch):
                         lambda ek: reads.append(ek) or real_read(ek))
 
     with pytest.raises(SandboxRequiredError):
-        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(env_keys=["GITHUB_TOKEN"])
+        _proc(_cred_entry(), cb=_approve(store.LIFETIME_THIS_RUN)).start(_host_policy_decision=_VDEC, env_keys=["GITHUB_TOKEN"])
 
     assert eg.started == 0            # fail-closed BEFORE egress
     assert not _FakePopen.instances  # no container ever started
@@ -618,7 +620,7 @@ def test_credentialed_server_reflected_secret_not_in_error(monkeypatch):
 
     entry = _cred_entry(mcp_command=list(NPX_CMD), trust_level="verified",
                         tools=[{"name": "do_it", "input_schema": {"type": "object"}}])
-    result = mcp_runner.run_mcp(SLUG, "do_it", timeout=5.0, entry=entry,
+    result = mcp_runner.run_mcp(SLUG, "do_it", timeout=5.0, entry=entry, _host_policy_decision=_VDEC,
                                 mcp_consent_callback=_approve(store.LIFETIME_THIS_RUN))
 
     assert result.success is False

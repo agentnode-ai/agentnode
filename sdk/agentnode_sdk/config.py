@@ -5,7 +5,9 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+HostTrustPolicy = Literal["default", "curated_only", "none"]
 
 DEFAULT_CONFIG_DIR = Path.home() / ".agentnode"
 DEFAULT_CONFIG_FILE = "config.json"
@@ -210,6 +212,49 @@ def host_trust_policy() -> str:
         return get_value(load_config(), "sandbox.host_trust_policy")
     except KeyError:
         return "default"
+
+
+def normalize_host_trust_policy(value: object) -> HostTrustPolicy:
+    """Pure (no file/config I/O) normalization of a ``sandbox.host_trust_policy``
+    value to its canonical form.
+
+    Accepts ONLY strings, applying the existing case/whitespace tolerance
+    (``strip().lower()``) so valid values like ``"NONE"`` / ``" none "`` still
+    resolve. Anything else raises :class:`ConfigurationError` — unknown string,
+    empty / whitespace-only string, explicit ``None`` (JSON null), ``bool``,
+    number, list, or dict. A *missing* key is handled upstream (``_merge_defaults``
+    fills ``"default"``); an explicit null is present-but-invalid. The raw
+    offending value is NEVER put in the message (or any log/audit).
+    """
+    from agentnode_sdk.exceptions import ConfigurationError
+
+    allowed = VALID_VALUES["sandbox.host_trust_policy"]
+    if isinstance(value, str):
+        canonical = value.strip().lower()
+        if canonical in allowed:
+            return canonical  # type: ignore[return-value]
+    raise ConfigurationError(
+        "INVALID_CONFIG",
+        "Invalid sandbox.host_trust_policy configuration. "
+        f"Allowed values: {', '.join(allowed)}. Execution was denied before import.",
+    )
+
+
+def read_host_trust_policy_snapshot() -> HostTrustPolicy:
+    """Load config EXACTLY ONCE, extract ``sandbox.host_trust_policy``, and
+    normalize it to the canonical value — the single validated read owned by the
+    two execution-policy owners (``run_tool`` and ``cmd_mcp_doctor``).
+
+    Raises :class:`ConfigurationError` on an invalid value. Unlike the raw
+    :func:`host_trust_policy` (kept for the non-executing status/installer
+    surfaces), this never returns an unvalidated value and performs no second
+    read.
+    """
+    try:
+        raw: object = get_value(load_config(), "sandbox.host_trust_policy")
+    except KeyError:
+        raw = "default"
+    return normalize_host_trust_policy(raw)
 
 
 def save_config(cfg: dict[str, Any]) -> None:

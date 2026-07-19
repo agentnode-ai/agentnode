@@ -61,7 +61,7 @@ def _rm_volume(name: str) -> None:
 
 def test_toolpack_build_and_run_real(tmp_path, monkeypatch):
     from agentnode_sdk import installer
-    from agentnode_sdk.runtimes.python_runner import run_python
+    from tests.hostpolicy import run_python
 
     # A tiny self-contained toolpack source. run() also reports whether it can see
     # a host secret env var — it must NOT (host env is never passed into the run).
@@ -106,7 +106,7 @@ def test_toolpack_build_and_run_real(tmp_path, monkeypatch):
 
 def test_run_failclosed_when_volume_removed(tmp_path):
     """A stale lockfile pointing at a missing volume → fail-closed, never host."""
-    from agentnode_sdk.runtimes.python_runner import run_python
+    from tests.hostpolicy import run_python
 
     slug, version, ahash = "e2e-missing", "0.0.1", "sha256:" + "b" * 64
     entry = {
@@ -150,9 +150,10 @@ def test_mcp_starts_in_container_real():
     and completes the initialize handshake."""
     from agentnode_sdk.runtimes.mcp_runner import MCPServerProcess
 
+    from tests.hostpolicy import decision
     server = MCPServerProcess("e2e-mcp", ["python", "-c", _MCP_STUB], trust_level="verified")
     try:
-        server.start()  # routes into the container + performs the JSON-RPC handshake
+        server.start(_host_policy_decision=decision("verified"))  # container + JSON-RPC handshake
         assert server._container_name and server._container_name.startswith("agentnode-mcp-")
     finally:
         server.stop()

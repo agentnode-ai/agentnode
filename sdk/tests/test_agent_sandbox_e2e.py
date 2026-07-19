@@ -28,7 +28,7 @@ import subprocess
 import pytest
 
 from agentnode_sdk.models import RunToolResult
-from agentnode_sdk.runtimes.agent_runner import run_agent
+from tests.hostpolicy import run_agent
 from agentnode_sdk.sandbox import sandbox_volume_name
 from agentnode_sdk.sandbox.container_backend import _BASE_IMAGE, ContainerBackend
 

@@ -48,24 +48,38 @@ class MCPServerProcess:
         self._last_used = time.monotonic()
         self._container_name: str | None = None
         self._runtime: str | None = None
+        # F1: full launch/boundary compatibility identity, set by the pool AFTER a
+        # successful start. A cache hit is reused ONLY when this equals the current
+        # call's requested compatibility (None ⇒ legacy ⇒ never reused).
+        self.compatibility = None
         # Stage 3B-2b: live egress proxy handle for a credentialed run (bound in
         # _credentialed_launch, torn down in stop()).
         self._egress_handle = None
 
-    def start(self, timeout: float = 10.0, env_keys: list[str] | None = None) -> None:
+    def start(
+        self,
+        timeout: float = 10.0,
+        env_keys: list[str] | None = None,
+        *,
+        _host_policy_decision: Any,
+    ) -> None:
         """Start the MCP server subprocess.
 
-        Community/unverified/unknown tiers run INSIDE a container (P0.2). This is
-        the central enforcement+routing point — it covers the agent path (via the
-        pool) AND direct CLI use (e.g. `agentnode mcp doctor`), closing the
-        run_tool-only gate gap. curated -> host; trusted -> host (transition).
+        F1: the host/sandbox routing is taken from the immutable
+        ``_host_policy_decision`` made ONCE by the owner (``run_tool`` or
+        ``cmd_mcp_doctor``) — start() reads no config and re-runs no policy. The
+        real runtime availability is still re-probed on the sandbox path
+        (fail-closed if it vanished); the policy is never recomputed. Community/
+        unverified tiers ⇒ container; curated ⇒ host; trusted ⇒ host (transition).
         """
-        from agentnode_sdk.config import host_trust_policy
-        from agentnode_sdk.sandbox import enforce_sandbox_policy, get_default_backend
-        from agentnode_sdk.sandbox.policy import requires_sandbox_for_policy
+        from agentnode_sdk.sandbox import get_default_backend
+        from agentnode_sdk.sandbox.policy import HostTrustPolicyDecision
 
-        # Fail-closed gate: community without a runtime is blocked here, not on host.
-        enforce_sandbox_policy(self.trust_level, runtime_hint="mcp")
+        # Decision is mandatory and must match this process's trust; no fallback.
+        if not isinstance(_host_policy_decision, HostTrustPolicyDecision):
+            raise RuntimeError("MCP start requires a host-trust policy decision")
+        if _host_policy_decision.trust_level != (self.trust_level or ""):
+            raise RuntimeError("host-trust policy decision does not match MCP trust level")
 
         # Windows: CREATE_NEW_PROCESS_GROUP for clean shutdown
         kwargs: dict[str, Any] = {}
@@ -75,9 +89,8 @@ class MCPServerProcess:
         backend = None
         spec = None
         credentialed = False
-        # host-trust policy: "default" = trusted/curated on host (today); "curated_only"
-        # / "none" route trusted (and curated) into the container path instead.
-        if requires_sandbox_for_policy(self.trust_level, host_trust_policy()):
+        # Boundary from the decision: sandbox ⇒ container path; host ⇒ host path.
+        if _host_policy_decision.sandbox_required:
             # Containerized path. P0.2 isolates host-FS, HOME and secrets — NOT the
             # network (npx/uvx fetch live). No host env, no mounts, clean container HOME.
             from agentnode_sdk.sandbox.mcp_preinstall import has_preinstall_intent
@@ -111,8 +124,8 @@ class MCPServerProcess:
                 from agentnode_sdk.sandbox.types import SandboxRequiredError
                 raise SandboxRequiredError(
                     f"MCP '{self.slug}' is not preinstalled — cannot run sandboxed "
-                    f"(sandbox.host_trust_policy={host_trust_policy()}). Reinstall it pinned "
-                    "(exact mcp_install version) and declare egress domains via "
+                    f"(sandbox.host_trust_policy={_host_policy_decision.policy}). Reinstall it "
+                    "pinned (exact mcp_install version) and declare egress domains via "
                     "mcp_allowed_domains; unpinnable (floating npx/uvx) MCPs are refused."
                 )
             self._container_name = name
@@ -311,12 +324,10 @@ class MCPServerProcess:
         entry = self.entry or {}
         # 1. credentialed non-preinstalled stays refused
         if not has_preinstall_intent(entry):
-            from agentnode_sdk.config import host_trust_policy
             raise CredentialedMcpRefused(
                 "credentialed_requires_preinstall",
                 f"MCP '{self.slug}' requests credentials but is not preinstalled — refusing "
-                f"(sandbox.host_trust_policy={host_trust_policy()}; no runtime registry-fetch "
-                "with a secret). Pin an exact mcp_install.",
+                "(no runtime registry-fetch with a secret). Pin an exact mcp_install.",
             )
         # 2. TRUST-BINDING (NO value read). The secret flow binds to the CONSENTED identity names
         #    (the sealed, normalized mcp_env_keys), NEVER to the separately-passed env_keys argument:
@@ -497,36 +508,61 @@ class MCPProcessPool:
 
     def get_or_start(
         self, slug: str, command: list[str],
+        *,
+        host_policy_decision: Any,
+        compatibility: Any,
         timeout: float = 10.0, env_keys: list[str] | None = None,
-        trust_level: str | None = None, entry: dict | None = None,
+        entry: dict | None = None,
         mcp_consent_callback=None,
     ) -> MCPServerProcess:
-        """Get an existing server or start a new one.
+        """Get a COMPATIBLE existing server or start a new one.
 
         Stage 3B-2b (D2): credentialed MCPs (``env_keys`` present) are EPHEMERAL — they are NEVER
         pooled/cached (they hold a live egress proxy + injected secret env). A fresh server is
         started for this call only; the caller (``run_mcp``) ALWAYS stops it afterwards.
-        Non-credentialed MCPs keep the existing pool behaviour."""
+
+        F1: a NON-credentialed healthy cache hit is reused ONLY when its full
+        :class:`MCPProcessCompatibility` (boundary + trust + launch identity +
+        sandbox profile) equals this call's ``compatibility`` — the slug alone is
+        not identity (install/upgrade/reinstall/reseal/trust-refresh can change
+        command/version/artifact/trust/profile under the same slug). Any mismatch
+        (or a legacy process with no compatibility) ⇒ the cached process is
+        removed from the pool FIRST (never reused for a tool call), stopped
+        best-effort, and a fresh process is started under the current decision.
+        The new entry is published + marked active ONLY after a successful start;
+        a failed start leaves no usable pool entry (fail-closed)."""
         with self._lock:
+            trust_level = host_policy_decision.trust_level
             if env_keys:
                 server = MCPServerProcess(slug, command, trust_level=trust_level, entry=entry,
                                           mcp_consent_callback=mcp_consent_callback)
-                server.start(timeout=timeout, env_keys=env_keys)  # NOT stored in the pool
+                server.start(timeout=timeout, env_keys=env_keys,  # NOT stored in the pool
+                             _host_policy_decision=host_policy_decision)
+                server.compatibility = compatibility
                 return server
 
             server = self._servers.get(slug)
-            if server and server.health_check():
-                return server
+            if server and server.health_check() and server.compatibility == compatibility:
+                return server  # healthy + full-identity match ⇒ reuse
 
-            # Clean up dead server
-            if server:
-                server.stop()
+            if server is not None:
+                # Remove BEFORE stop/start so the old process can never be handed
+                # out for a tool call, even if stop() fails.
+                self._servers.pop(slug, None)
+                if server.compatibility is not None and server.compatibility != compatibility:
+                    logger.debug("Restarting cached MCP process because its execution profile changed.")
+                try:
+                    server.stop()
+                except Exception:
+                    logger.debug("Failed to stop incompatible MCP process for %s", slug, exc_info=True)
 
-            server = MCPServerProcess(slug, command, trust_level=trust_level, entry=entry,
-                                      mcp_consent_callback=mcp_consent_callback)
-            server.start(timeout=timeout, env_keys=env_keys)
-            self._servers[slug] = server
-            return server
+            new_server = MCPServerProcess(slug, command, trust_level=trust_level, entry=entry,
+                                          mcp_consent_callback=mcp_consent_callback)
+            new_server.start(timeout=timeout, env_keys=env_keys,
+                             _host_policy_decision=host_policy_decision)
+            new_server.compatibility = compatibility     # mark active only after success
+            self._servers[slug] = new_server             # publish only after success
+            return new_server
 
     def stop_all(self) -> None:
         """Stop all managed servers."""
@@ -620,6 +656,7 @@ def run_mcp(
     slug: str,
     tool_name: str | None,
     *,
+    _host_policy_decision: Any,
     timeout: float = 30.0,
     entry: dict,
     mcp_consent_callback=None,
@@ -639,6 +676,24 @@ def run_mcp(
     server = None
     ephemeral = False  # 3B-2b/D2: credentialed servers are ephemeral; torn down in finally
     try:
+        # F1: host-trust decision is OWNED by run_tool and passed in immutably —
+        # run_mcp never re-reads host_trust_policy. Refuse a missing/entry-
+        # mismatched decision before any pool access or process start.
+        from agentnode_sdk.runtimes.mcp_launch import build_mcp_launch_plan
+        from agentnode_sdk.sandbox.policy import HostTrustPolicyDecision
+        if not isinstance(_host_policy_decision, HostTrustPolicyDecision):
+            return RunToolResult(
+                success=False,
+                error=f"run_mcp requires a host-trust policy decision for '{slug}'; none was provided.",
+                mode_used="mcp",
+            )
+        if _host_policy_decision.trust_level != (entry.get("trust_level") or ""):
+            return RunToolResult(
+                success=False,
+                error="host-trust policy decision does not match entry trust level",
+                mode_used="mcp",
+            )
+
         command = entry.get("mcp_command")
         if not command:
             return RunToolResult(
@@ -663,8 +718,11 @@ def run_mcp(
 
         pool = _get_global_pool()
         ephemeral = bool(env_keys)  # D2: credentialed MCPs are never pooled
+        plan = build_mcp_launch_plan(slug, entry, _host_policy_decision)
         server = pool.get_or_start(
-            slug, command, env_keys=env_keys, trust_level=entry.get("trust_level"),
+            slug, command, env_keys=env_keys,
+            host_policy_decision=_host_policy_decision,
+            compatibility=plan.compatibility,
             entry=entry, mcp_consent_callback=mcp_consent_callback,
         )
 

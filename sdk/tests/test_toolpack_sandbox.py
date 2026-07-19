@@ -20,7 +20,8 @@ from unittest import mock
 import pytest
 
 from agentnode_sdk import installer
-from agentnode_sdk.runtimes.python_runner import _resolve_container_target, run_python
+from agentnode_sdk.runtimes.python_runner import _resolve_container_target
+from tests.hostpolicy import run_python
 from agentnode_sdk.sandbox import sandbox_volume_name, set_default_backend
 from agentnode_sdk.sandbox.backend import SandboxBackend
 from agentnode_sdk.sandbox.container_backend import ContainerBackend

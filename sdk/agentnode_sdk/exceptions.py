@@ -44,6 +44,20 @@ class LockfileFormatError(AgentNodeError):
     pass
 
 
+class ConfigurationError(AgentNodeError):
+    """Local AgentNode configuration is invalid in a way that must FAIL CLOSED.
+
+    Distinct from :class:`ValidationError` (which is bound to the HTTP-422 /
+    registry-manifest path): this is a *local* config fault — e.g. an
+    unrecognized / empty / null / wrong-typed ``sandbox.host_trust_policy`` value
+    that reached a routing decision. The raw offending value is NEVER placed in
+    the message (it is not needed and could carry noise); only the safe allowed
+    set is surfaced. The top-level CLI handler translates it to a traceback-free
+    ``Error: [code] message`` + exit 1.
+    """
+    pass
+
+
 class AgentNodeToolError(Exception):
     """Base error for tool execution failures.
 

@@ -15,11 +15,21 @@ from unittest import mock
 import pytest
 
 from agentnode_sdk.models import RunToolResult
-from agentnode_sdk.runtimes.agent_runner import run_agent
+from agentnode_sdk.runtimes.agent_runner import run_agent as _real_run_agent
 from agentnode_sdk.runtimes.agent_sandbox import _agent_sandbox_enabled, run_agent_sandboxed
 from agentnode_sdk.sandbox import sandbox_volume_name
 from agentnode_sdk.sandbox.agent_session import FakeSession
 from agentnode_sdk.sandbox.types import SandboxAvailability
+
+
+def run_agent(slug, *, entry, _host_policy_decision=None, **kw):
+    """F1: mirror run_tool — read the (possibly monkeypatched) host_trust_policy,
+    build the decision, and pass it in. run_agent no longer reads the policy."""
+    if _host_policy_decision is None:
+        from agentnode_sdk.config import host_trust_policy
+        from tests.hostpolicy import decision
+        _host_policy_decision = decision(entry.get("trust_level"), host_trust_policy())
+    return _real_run_agent(slug, entry=entry, _host_policy_decision=_host_policy_decision, **kw)
 
 
 def _agent_entry(**overrides):
