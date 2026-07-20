@@ -713,7 +713,10 @@ def _audit_structure_event(reason: str, slug: str | None) -> None:
         pass
 
 
-def mutate_lockfile(apply, *, path: Path | None = None, audit_slug: str | None = None) -> None:
+def mutate_lockfile(
+    apply, *, path: Path | None = None, audit_slug: str | None = None,
+    durable: bool = False,
+) -> None:
     """Central, structure-safe lockfile mutation — the single writer path.
 
     Order (all under one ``file_lock``): mutation-strict read -> pre-mutation
@@ -723,6 +726,10 @@ def mutate_lockfile(apply, *, path: Path | None = None, audit_slug: str | None =
     transactional no-op — NOTHING is written, resealed, restamped, or audited.
     Refuses (raises, no write) a corrupt / mismatch / invalid existing lockfile.
     No partial state ever reaches disk.
+
+    ``durable=True`` (A1-M1 lock transaction only) fsyncs the write. The
+    per-lockfile ``file_lock`` here is the INNER lock — never held across a pip
+    call; the A1-M1 environment lock is the OUTER lock (see ``_env_lock``).
     """
     from agentnode_sdk._fileutil import atomic_write_json, file_lock
     from agentnode_sdk.lock_integrity import seal_structure
@@ -740,7 +747,7 @@ def mutate_lockfile(apply, *, path: Path | None = None, audit_slug: str | None =
             return
         sealed = seal_structure(data)                  # last; raises if any entry invalid
         sealed["updated_at"] = datetime.now(timezone.utc).isoformat()
-        atomic_write_json(lf, sealed)
+        atomic_write_json(lf, sealed, durable=durable)
         did_write = True
     if did_write and migrating:
         _audit_structure_event("structure_digest_migration", audit_slug)
@@ -750,6 +757,8 @@ def update_lockfile(
     slug: str,
     entry: dict[str, Any],
     path: Path | None = None,
+    *,
+    durable: bool = False,
 ) -> None:
     """Write or update a package entry in agentnode.lock (structure-safe)."""
     from agentnode_sdk.lock_integrity import seal_entry
@@ -758,10 +767,12 @@ def update_lockfile(
         data["packages"][slug] = seal_entry(entry)   # seal the changed entry (idempotent)
         return True                                   # an upsert always changes the set
 
-    mutate_lockfile(_apply, path=path, audit_slug=slug)
+    mutate_lockfile(_apply, path=path, audit_slug=slug, durable=durable)
 
 
-def remove_from_lockfile(slug: str, path: Path | None = None) -> dict | None:
+def remove_from_lockfile(
+    slug: str, path: Path | None = None, *, durable: bool = False
+) -> dict | None:
     """Remove *slug* from agentnode.lock (structure-safe). Returns the removed
     entry (for post-removal cleanup) or None. The digest is rebuilt over the
     post-removal set."""
@@ -773,7 +784,7 @@ def remove_from_lockfile(slug: str, path: Path | None = None) -> dict | None:
         removed["entry"] = data["packages"].pop(slug)
         return True
 
-    mutate_lockfile(_apply, path=path, audit_slug=slug)
+    mutate_lockfile(_apply, path=path, audit_slug=slug, durable=durable)
     return removed.get("entry")
 
 
@@ -784,6 +795,356 @@ def check_installed(slug: str, version: str, path: Path | None = None) -> str:
     if not pkg:
         return "missing"
     return "same" if pkg.get("version") == version else "different"
+
+
+# ---------------------------------------------------------------------------
+# Agent-Exec A1-M1: host-agent install transaction (locally sealed distribution
+# metadata + current-entry transaction). Build-wheel-first → import-free wheel
+# validation → environment lock → CAS + current-lockfile cross-slug ownership +
+# name-change fail-closed → durable pre-pip quarantine → controlled two-step pip →
+# target-interpreter post-verify → durable sealed commit.
+#
+# HONEST BOUNDARY (comment + PR report): the environment lock serializes INSTALLERS,
+# not agent EXECUTIONS. The quarantine touches only the CURRENT entry in the CURRENT
+# lockfile — another lockfile may keep dispatching an agent into the same environment
+# during a pip mutation, and an already-gated call remains possible. Environment-wide
+# runtime quarantine and cross-lockfile ownership are A1-Enforcement scope, NOT M1.
+# ---------------------------------------------------------------------------
+
+_AGENT_UNAVAILABLE_MSG = (
+    "Installation state may have changed. The agent is unavailable until it is "
+    "reinstalled."
+)
+
+_CONCURRENT_MSG = (
+    "Installation could not be completed: the agent entry was changed by a "
+    "concurrent lockfile update."
+)
+
+
+class _CASConflict(Exception):
+    """The slug diverged from the pre-build baseline (a newer install superseded us)."""
+
+
+class _OwnershipConflict(Exception):
+    """Another current-lockfile agent owns the same distribution or import top-level."""
+
+
+class _NameChange(Exception):
+    """The agent's pip distribution name changed on upgrade (no implicit migration)."""
+
+
+class _AgentTransactionAbort(Exception):
+    """A pre-env-mutation abort carrying a specific, safe operator message."""
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
+
+
+class _ForeignEntryPresent(Exception):
+    """The slug was (re)inserted by another writer between quarantine and commit —
+    the commit must NOT overwrite it."""
+
+
+class _IndeterminateLockState(RuntimeError):
+    """The final lock state could not be confirmed (neither the intended entry nor a
+    confirmed-absent slug). Never claimed as 'absent', never a success."""
+
+
+def _capture_cas_baseline(slug: str, path: Path) -> tuple[bool, str | None]:
+    """Read the slug's baseline state (mutation-strict) BEFORE the build.
+
+    Returns ``(absent, integrity_hash)``. Raises :class:`LockfileFormatError` on a
+    corrupt lockfile (fail-closed pre-build, old entry untouched).
+    """
+    data = read_lockfile_strict(path)
+    if data is None or slug not in data.get("packages", {}):
+        return True, None
+    entry = data["packages"][slug]
+    integ = entry.get("_integrity") if isinstance(entry, dict) else None
+    return False, (integ.get("hash") if isinstance(integ, dict) else None)
+
+
+def _stored_matches_expected(data: Any, slug: str, expected: dict, expected_hash: str) -> bool:
+    """Pure predicate: the lockfile *data* holds EXACTLY the expected sealed entry
+    for *slug* (valid structure + entry integrity, matching integrity hash, the
+    python_distribution pair, and full sealed-field equality)."""
+    from agentnode_sdk.lock_integrity import verify_entry, verify_structure
+
+    stored = data["packages"].get(slug) if isinstance(data, dict) and isinstance(
+        data.get("packages"), dict
+    ) else None
+    return bool(
+        isinstance(stored, dict)
+        and verify_structure(data) == "verified"
+        and verify_entry(slug, stored).status == "verified"
+        and stored.get("_integrity", {}).get("hash") == expected_hash
+        and stored.get("python_distribution") == expected.get("python_distribution")
+        and stored.get("python_distribution_version")
+        == expected.get("python_distribution_version")
+        and stored == expected
+    )
+
+
+def _entry_is_exact(current: Any, expected: dict, expected_hash: str) -> bool:
+    """True iff *current* is EXACTLY our expected sealed entry — the integrity hash
+    AND full sealed-dict equality (never a single-field match)."""
+    return bool(
+        isinstance(current, dict)
+        and current.get("_integrity", {}).get("hash") == expected_hash
+        and current == expected
+    )
+
+
+def _recover_to_absent(slug: str, path: Path, expected: dict, expected_hash: str) -> None:
+    """Atomic compare-and-remove of OUR OWN expected entry — never a foreign entry.
+
+    The ownership decision AND the removal happen inside ONE ``mutate_lockfile``
+    callback (single lockfile lock), so no writer can slip a foreign entry in
+    between a check and a remove. Returns only when the slug is confirmed absent
+    (was already absent, or we removed our exact entry). Raises
+    :class:`_ForeignEntryPresent` when the slug holds another writer's entry (left
+    untouched). Raises :class:`_IndeterminateLockState` when the state cannot be
+    mutation-strict determined, or when the slug reappears after our removal.
+    """
+    decision: dict[str, str] = {}
+
+    def _apply(data: dict) -> bool:
+        current = data["packages"].get(slug)
+        if current is None:
+            decision["state"] = "absent"
+            return False                              # no-op — nothing to remove
+        if _entry_is_exact(current, expected, expected_hash):
+            data["packages"].pop(slug)               # remove ONLY our exact entry
+            decision["state"] = "removed"
+            return True
+        decision["state"] = "foreign"                # someone else's entry — leave it
+        return False
+
+    try:
+        mutate_lockfile(_apply, path=path, audit_slug=slug, durable=True)
+    except Exception as exc:
+        raise _IndeterminateLockState(
+            "A1-M1 indeterminate lock state: recovery could not read or mutate the lockfile."
+        ) from exc
+
+    state = decision.get("state")
+    if state == "foreign":
+        raise _ForeignEntryPresent()
+    if state not in ("absent", "removed"):
+        raise _IndeterminateLockState(
+            "A1-M1 indeterminate lock state: recovery outcome could not be determined."
+        )
+    # Subsequent absence confirmation (the ownership DECISION above was atomic; this
+    # only verifies). A reappeared slug is a foreign re-insert — leave it, don't remove.
+    try:
+        confirm = read_lockfile_strict(path)
+    except Exception as exc:
+        raise _IndeterminateLockState(
+            "A1-M1 indeterminate lock state: absence could not be confirmed."
+        ) from exc
+    if confirm is not None and slug in confirm.get("packages", {}):
+        raise _IndeterminateLockState(
+            "A1-M1 indeterminate lock state: the agent slug reappeared after removal."
+        )
+
+
+def _finalize_recovery(
+    slug: str, path: Path, expected: dict, expected_hash: str, *, cause: BaseException | None
+) -> None:
+    """Run the atomic compare-and-remove recovery, then ALWAYS raise. A foreign
+    entry maps to a concurrent-update failure (never a removal); a confirmed-absent
+    slug maps to the neutral unavailable message; an indeterminate state propagates."""
+    try:
+        _recover_to_absent(slug, path, expected, expected_hash)
+    except _ForeignEntryPresent:
+        raise RuntimeError(_CONCURRENT_MSG) from cause
+    # _IndeterminateLockState (RuntimeError) propagates unchanged.
+    raise RuntimeError(_AGENT_UNAVAILABLE_MSG) from cause
+
+
+def _commit_agent_entry(slug: str, lock_entry: dict, path: Path) -> None:
+    """Durable, sealed final commit bound to the EXACT expected entry.
+
+    Contract (Blocker 1): pre-seal the exact expected entry; upsert ONLY while the
+    slug is still absent (never overwrite a foreign re-insert); after the write
+    mutation-strict confirm the stored entry equals the exact expected sealed entry
+    (structure + entry integrity + ``_integrity.hash`` + the ``python_distribution``
+    pair + full sealed-field equality). Any failure drives the slug to absent (never
+    restores the old entry); if absence itself cannot be confirmed the state is
+    reported as indeterminate — no success, no false 'absent' claim, no swallowing.
+    """
+    from agentnode_sdk.lock_integrity import seal_entry
+
+    expected = seal_entry(lock_entry)                     # the exact sealed entry
+    expected_hash = expected["_integrity"]["hash"]
+
+    def _commit_apply(data: dict) -> bool:
+        if slug in data["packages"]:
+            raise _ForeignEntryPresent()                 # do NOT overwrite a foreign entry
+        data["packages"][slug] = dict(expected)          # write the EXACT expected entry
+        return True
+
+    try:
+        mutate_lockfile(_commit_apply, path=path, audit_slug=slug, durable=True)
+    except _ForeignEntryPresent:
+        # a foreign entry was already present at commit — never overwrote it and must
+        # never remove it; report the concurrent update, leave the foreign entry.
+        raise RuntimeError(_CONCURRENT_MSG)
+    except Exception as exc:                              # write/durability/structure failure
+        _finalize_recovery(slug, path, expected, expected_hash, cause=exc)  # always raises
+
+    # Mutation-strict confirmation that the EXACT expected entry landed.
+    if _stored_matches_expected(read_lockfile_strict(path), slug, expected, expected_hash):
+        return
+    _finalize_recovery(slug, path, expected, expected_hash, cause=None)     # always raises
+
+
+def _install_agent_host_transaction(
+    slug: str,
+    *,
+    lock_entry: dict,
+    package_dir: Path,
+    target_python: str,
+    policy: str,
+) -> None:
+    """Run the A1-M1 host-agent install transaction. Self-committing: on success the
+    sealed entry (with the two locally-observed distribution fields) is durably
+    written; on any failure the old entry is never restored."""
+    from agentnode_sdk import _agent_pip as ap
+    from agentnode_sdk import _env_lock as envlock
+    from agentnode_sdk import _wheel_meta as wm
+    from agentnode_sdk.lock_integrity import validate_python_distribution_fields
+
+    entrypoint = lock_entry.get("entrypoint") or ""
+    lf = _lockfile_path()
+
+    # (1) CAS baseline BEFORE the build (first foreign code runs at build).
+    baseline_absent, baseline_hash = _capture_cas_baseline(slug, lf)
+
+    dest = Path(tempfile.mkdtemp(prefix="agentnode-wheel-"))
+    env_mutating = False
+    try:
+        # (2) entrypoint top-level (string-only; pre-build fail-closed).
+        top = wm.top_level_from_entrypoint(entrypoint)
+        # (3) ONE frozen controlled environment drives the config check, the build,
+        #     BOTH pip steps, the target-interpreter probes and post-verify — the
+        #     build must never re-inherit an unmanaged os.environ. Env identity +
+        #     config-redirect refusal + install-scheme (no user-site fallback into a
+        #     non-writable/other root) all run BEFORE the build, so a misconfigured or
+        #     non-writable target refuses cleanly without running the PEP-517 backend.
+        env = ap.controlled_pip_env()
+        ident = envlock.resolve_env_identity(target_python, env=env)
+        ap.assert_target_contract(target_python, env)
+        ap.assert_install_scheme(target_python, env)
+        # (4) build-wheel-first (controlled env) + (5) import-free validation.
+        wheel = wm.build_wheel(target_python, package_dir, dest, env=env)
+        wid = wm.validate_wheel(wheel, top)
+        # (6) consistency hash captured before pip hand-off.
+        pre_hash = wm.wheel_consistency_hash(wheel)
+
+        with envlock.env_lock(ident.env_id):
+            # (8) CAS re-check + cross-slug ownership + name-change + quarantine,
+            #     all on the fresh mutation-strict read under the inner file_lock.
+            def _quarantine_apply(data: dict) -> bool:
+                pkgs = data["packages"]
+                current = pkgs.get(slug)
+                cur_hash = None
+                if isinstance(current, dict):
+                    integ = current.get("_integrity")
+                    cur_hash = integ.get("hash") if isinstance(integ, dict) else None
+                if baseline_absent:
+                    if current is not None:
+                        raise _CASConflict()
+                elif current is None or cur_hash != baseline_hash:
+                    raise _CASConflict()
+                if isinstance(current, dict):
+                    prev_dist = current.get("python_distribution")
+                    if prev_dist is not None and prev_dist != wid.distribution:
+                        raise _NameChange()
+                for oslug, oe in pkgs.items():
+                    if oslug == slug or not isinstance(oe, dict):
+                        continue
+                    if oe.get("package_type") != "agent":
+                        continue
+                    if wid.distribution and oe.get("python_distribution") == wid.distribution:
+                        raise _OwnershipConflict()
+                    oep = oe.get("entrypoint") or ""
+                    if oep:
+                        try:
+                            if wm.top_level_from_entrypoint(oep) == top:
+                                raise _OwnershipConflict()
+                        except wm.WheelValidationError:
+                            pass
+                if current is None:
+                    return False  # new slug: already absent — nothing to write
+                pkgs.pop(slug)
+                return True
+
+            try:
+                mutate_lockfile(_quarantine_apply, path=lf, audit_slug=slug, durable=True)
+            except _CASConflict:
+                raise _AgentTransactionAbort(
+                    "The agent was modified by another install; the stale build was "
+                    "not applied."
+                )
+            except _NameChange:
+                raise _AgentTransactionAbort(
+                    "The agent's Python distribution name changed; automatic "
+                    "migration is not supported."
+                )
+            except _OwnershipConflict:
+                raise _AgentTransactionAbort(
+                    "The installed Python distribution or import namespace is already "
+                    "owned by another agent."
+                )
+            except (_AgentTransactionAbort, RuntimeError):
+                raise
+            except Exception as exc:  # write/durability failure — don't start pip, no restore
+                raise _AgentTransactionAbort(_AGENT_UNAVAILABLE_MSG) from exc
+
+            # (9) confirm the slug is absent (mutation-strict) before any pip.
+            confirm = read_lockfile_strict(lf)
+            if confirm is not None and slug in confirm.get("packages", {}):
+                raise _AgentTransactionAbort(_AGENT_UNAVAILABLE_MSG)
+
+            # (10) the validated wheel must be unchanged up to the pip hand-off.
+            if wm.wheel_consistency_hash(wheel) != pre_hash:
+                raise RuntimeError(_AGENT_UNAVAILABLE_MSG)
+
+            # From here the shared environment is mutated → every failure is neutral.
+            env_mutating = True
+            ap.pip_install_wheel(target_python, wheel, env)
+            ap.post_verify(
+                target_python,
+                expected_name=wid.distribution,
+                expected_version=wid.version,
+                expected_top_level=top,
+                allowed_roots=[ident.purelib, ident.platlib],
+                env=env,
+            )
+
+            # (11) durable, sealed commit with the two locally-observed fields.
+            lock_entry["build_mode"] = "host"
+            lock_entry["effective_host_trust_policy_at_install"] = policy
+            lock_entry["pinnable"] = True
+            lock_entry["python_distribution"] = wid.distribution
+            lock_entry["python_distribution_version"] = wid.version
+            validate_python_distribution_fields(lock_entry)
+            _commit_agent_entry(slug, lock_entry, lf)
+    except (wm.WheelValidationError, ap.AgentPipError) as exc:
+        # Pre-quarantine build/metadata/target errors keep the old entry and may be
+        # specific; once the environment is mutating, translate to the neutral msg.
+        if env_mutating:
+            raise RuntimeError(_AGENT_UNAVAILABLE_MSG) from exc
+        raise RuntimeError(exc.message) from exc
+    except envlock.EnvironmentResolutionError as exc:
+        raise RuntimeError("The target Python environment could not be resolved.") from exc
+    except _AgentTransactionAbort as exc:
+        raise RuntimeError(exc.message) from exc
+    finally:
+        shutil.rmtree(dest, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1044,9 +1405,23 @@ def install_package(
         from agentnode_sdk.config import host_trust_policy
         from agentnode_sdk.sandbox.policy import host_allowed_tiers
         policy = host_trust_policy()
+        committed = False
         if (trust_level or "").lower() in host_allowed_tiers(policy):
-            pip_install(python, package_dir, verbose=verbose)
-            lock_entry["build_mode"] = "host"
+            if package_type == "agent":
+                # A1-M1: host agents use the build-wheel-first, environment-locked,
+                # CAS-guarded, durable transaction — which self-commits the sealed
+                # entry (incl. the two locally-observed distribution fields).
+                _install_agent_host_transaction(
+                    slug,
+                    lock_entry=lock_entry,
+                    package_dir=package_dir,
+                    target_python=python,
+                    policy=policy,
+                )
+                committed = True
+            else:
+                pip_install(python, package_dir, verbose=verbose)
+                lock_entry["build_mode"] = "host"
         else:
             sandbox_volume = _container_build_into_volume(
                 slug, version, package_dir, f"sha256:{local_hash}",
@@ -1054,16 +1429,19 @@ def install_package(
             lock_entry["sandboxed"] = True
             lock_entry["sandbox_volume"] = sandbox_volume
             lock_entry["build_mode"] = "sandbox_volume"
+
         # MUTABLE metadata (NOT sealed): lets the doctor tell "host-built under an
         # older/looser policy" apart from "sandboxed", without guessing. Toolpacks
         # always build from the pinned artifact, so they are always pinnable.
-        lock_entry["effective_host_trust_policy_at_install"] = policy
-        lock_entry["pinnable"] = True
+        # (The agent transaction sets these + commits internally.)
+        if not committed:
+            lock_entry["effective_host_trust_policy_at_install"] = policy
+            lock_entry["pinnable"] = True
 
-        # Step 8: seal + write lockfile (only after a successful install)
-        from agentnode_sdk.lock_integrity import seal_entry
-        lock_entry = seal_entry(lock_entry)
-        update_lockfile(slug, lock_entry)
+            # Step 8: seal + write lockfile (only after a successful install)
+            from agentnode_sdk.lock_integrity import seal_entry
+            lock_entry = seal_entry(lock_entry)
+            update_lockfile(slug, lock_entry)
 
         result: dict[str, Any] = {
             "slug": slug,

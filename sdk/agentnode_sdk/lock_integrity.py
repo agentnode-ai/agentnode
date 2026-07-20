@@ -69,6 +69,14 @@ CANONICAL_FIELDS = (
     # sealed so a tampered lockfile cannot widen or swap the credential set. Appended
     # at the end — entries WITHOUT the field hash identically (backward-compatible).
     "env_requirements",
+    # Agent-Exec A1-M1: the LOCALLY OBSERVED, locally sealed installed Python
+    # distribution identity (pip distribution name + version) — agent entries only.
+    # NOT publisher-signed and NOT a deterministic function of the source; sealed so
+    # a tampered lockfile cannot swap the recorded distribution identity. Appended at
+    # the end so entries WITHOUT these fields hash identically (backward-compatible;
+    # _build_canonical omits absent fields). Distinct from the ANP entry["version"].
+    "python_distribution",
+    "python_distribution_version",
 )
 
 CANONICAL_FIELDS_V2 = CANONICAL_FIELDS + ("_signatures",)
@@ -98,6 +106,8 @@ SENSITIVE_FIELDS: dict[str, str] = {
     "mcp_preinstall_command": "MCP preinstall command changed",
     "mcp_allowed_domains": "MCP egress allowlist changed",
     "env_requirements": "Declared credential requirements changed",
+    "python_distribution": "Installed Python distribution identity changed",
+    "python_distribution_version": "Installed Python distribution version changed",
 }
 
 PERMISSION_ESCALATIONS: dict[str, tuple[str, set[str]]] = {
@@ -251,6 +261,71 @@ def detect_sensitive_changes(
             ))
 
     return changes
+
+
+# ---------------------------------------------------------------------------
+# A1-M1 sealed-field pair invariant (python_distribution*) — write-time gate.
+#
+# The two locally-observed distribution-identity fields are AGENT-ONLY and must
+# appear as a coherent pair (both or neither). A legacy agent entry without them
+# stays readable / sealed / runnable; a partial or mistyped pair is refused. This
+# is a WRITE/format gate (M1 install + lock-format validation), never invented from
+# the environment at reseal (`_build_canonical` omits absent fields, so reseal of a
+# legacy entry never gains them).
+# ---------------------------------------------------------------------------
+
+_PEP503_SEP = re.compile(r"[-_.]+")
+
+
+class PythonDistributionFieldError(Exception):
+    """The ``python_distribution`` / ``python_distribution_version`` pair invariant
+    was violated (wrong package_type, only one present, empty/non-canonical value)."""
+
+
+def validate_python_distribution_fields(entry: dict) -> None:
+    """Enforce the A1-M1 sealed-field pair invariant on a lock *entry* (read-only).
+
+    - both fields absent → allowed (legacy agent / any non-agent entry);
+    - present → ``package_type`` must be ``"agent"``, BOTH must be present, each a
+      non-empty string, the name PEP-503 canonical and the version PEP-440 canonical.
+
+    Raises :class:`PythonDistributionFieldError` on any violation. Never mutates.
+    """
+    if not isinstance(entry, dict):
+        raise PythonDistributionFieldError("entry is not an object")
+    has_name = "python_distribution" in entry
+    has_ver = "python_distribution_version" in entry
+    if not has_name and not has_ver:
+        return  # both absent — legacy agent or non-agent entry — allowed
+    if entry.get("package_type") != "agent":
+        raise PythonDistributionFieldError(
+            "python_distribution fields are only valid on an agent entry"
+        )
+    if has_name != has_ver:
+        raise PythonDistributionFieldError(
+            "python_distribution and python_distribution_version must both be "
+            "present or both absent"
+        )
+    name = entry.get("python_distribution")
+    ver = entry.get("python_distribution_version")
+    if not isinstance(name, str) or not name.strip():
+        raise PythonDistributionFieldError("python_distribution must be a non-empty string")
+    if not isinstance(ver, str) or not ver.strip():
+        raise PythonDistributionFieldError(
+            "python_distribution_version must be a non-empty string"
+        )
+    if _PEP503_SEP.sub("-", name).lower() != name:
+        raise PythonDistributionFieldError("python_distribution is not PEP-503 canonical")
+    from packaging.version import InvalidVersion, Version
+    try:
+        if str(Version(ver)) != ver:
+            raise PythonDistributionFieldError(
+                "python_distribution_version is not a canonical version"
+            )
+    except InvalidVersion:
+        raise PythonDistributionFieldError(
+            "python_distribution_version is not a valid version"
+        )
 
 
 # ===========================================================================
