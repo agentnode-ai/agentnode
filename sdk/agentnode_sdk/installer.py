@@ -816,6 +816,11 @@ _AGENT_UNAVAILABLE_MSG = (
     "reinstalled."
 )
 
+_CONCURRENT_MSG = (
+    "Installation could not be completed: the agent entry was changed by a "
+    "concurrent lockfile update."
+)
+
 
 class _CASConflict(Exception):
     """The slug diverged from the pre-build baseline (a newer install superseded us)."""
@@ -882,26 +887,81 @@ def _stored_matches_expected(data: Any, slug: str, expected: dict, expected_hash
     )
 
 
-def _recover_to_absent(slug: str, path: Path) -> None:
-    """Drive *slug* to absent after a failed commit — never restore, never swallow.
+def _entry_is_exact(current: Any, expected: dict, expected_hash: str) -> bool:
+    """True iff *current* is EXACTLY our expected sealed entry — the integrity hash
+    AND full sealed-dict equality (never a single-field match)."""
+    return bool(
+        isinstance(current, dict)
+        and current.get("_integrity", {}).get("hash") == expected_hash
+        and current == expected
+    )
 
-    Raises :class:`_IndeterminateLockState` if absence cannot be mutation-strict
-    confirmed. The caller must NOT then claim the entry is absent or return success.
+
+def _recover_to_absent(slug: str, path: Path, expected: dict, expected_hash: str) -> None:
+    """Atomic compare-and-remove of OUR OWN expected entry — never a foreign entry.
+
+    The ownership decision AND the removal happen inside ONE ``mutate_lockfile``
+    callback (single lockfile lock), so no writer can slip a foreign entry in
+    between a check and a remove. Returns only when the slug is confirmed absent
+    (was already absent, or we removed our exact entry). Raises
+    :class:`_ForeignEntryPresent` when the slug holds another writer's entry (left
+    untouched). Raises :class:`_IndeterminateLockState` when the state cannot be
+    mutation-strict determined, or when the slug reappears after our removal.
     """
+    decision: dict[str, str] = {}
+
+    def _apply(data: dict) -> bool:
+        current = data["packages"].get(slug)
+        if current is None:
+            decision["state"] = "absent"
+            return False                              # no-op — nothing to remove
+        if _entry_is_exact(current, expected, expected_hash):
+            data["packages"].pop(slug)               # remove ONLY our exact entry
+            decision["state"] = "removed"
+            return True
+        decision["state"] = "foreign"                # someone else's entry — leave it
+        return False
+
     try:
-        data = read_lockfile_strict(path)
-        if data is not None and slug in data.get("packages", {}):
-            remove_from_lockfile(slug, path=path, durable=True)
-        confirm = read_lockfile_strict(path)
-        still_present = confirm is not None and slug in confirm.get("packages", {})
+        mutate_lockfile(_apply, path=path, audit_slug=slug, durable=True)
     except Exception as exc:
         raise _IndeterminateLockState(
-            "A1-M1 indeterminate lock state: could not confirm the agent entry is absent."
+            "A1-M1 indeterminate lock state: recovery could not read or mutate the lockfile."
         ) from exc
-    if still_present:
+
+    state = decision.get("state")
+    if state == "foreign":
+        raise _ForeignEntryPresent()
+    if state not in ("absent", "removed"):
         raise _IndeterminateLockState(
-            "A1-M1 indeterminate lock state: the agent entry could not be removed."
+            "A1-M1 indeterminate lock state: recovery outcome could not be determined."
         )
+    # Subsequent absence confirmation (the ownership DECISION above was atomic; this
+    # only verifies). A reappeared slug is a foreign re-insert — leave it, don't remove.
+    try:
+        confirm = read_lockfile_strict(path)
+    except Exception as exc:
+        raise _IndeterminateLockState(
+            "A1-M1 indeterminate lock state: absence could not be confirmed."
+        ) from exc
+    if confirm is not None and slug in confirm.get("packages", {}):
+        raise _IndeterminateLockState(
+            "A1-M1 indeterminate lock state: the agent slug reappeared after removal."
+        )
+
+
+def _finalize_recovery(
+    slug: str, path: Path, expected: dict, expected_hash: str, *, cause: BaseException | None
+) -> None:
+    """Run the atomic compare-and-remove recovery, then ALWAYS raise. A foreign
+    entry maps to a concurrent-update failure (never a removal); a confirmed-absent
+    slug maps to the neutral unavailable message; an indeterminate state propagates."""
+    try:
+        _recover_to_absent(slug, path, expected, expected_hash)
+    except _ForeignEntryPresent:
+        raise RuntimeError(_CONCURRENT_MSG) from cause
+    # _IndeterminateLockState (RuntimeError) propagates unchanged.
+    raise RuntimeError(_AGENT_UNAVAILABLE_MSG) from cause
 
 
 def _commit_agent_entry(slug: str, lock_entry: dict, path: Path) -> None:
@@ -929,17 +989,16 @@ def _commit_agent_entry(slug: str, lock_entry: dict, path: Path) -> None:
     try:
         mutate_lockfile(_commit_apply, path=path, audit_slug=slug, durable=True)
     except _ForeignEntryPresent:
-        # a foreign entry appeared between quarantine and commit — never overwrite it,
-        # never claim success; leave the foreign entry untouched.
-        raise RuntimeError(_AGENT_UNAVAILABLE_MSG)
+        # a foreign entry was already present at commit — never overwrote it and must
+        # never remove it; report the concurrent update, leave the foreign entry.
+        raise RuntimeError(_CONCURRENT_MSG)
     except Exception as exc:                              # write/durability/structure failure
-        _recover_to_absent(slug, path)                   # raises indeterminate if unconfirmed
-        raise RuntimeError(_AGENT_UNAVAILABLE_MSG) from exc
+        _finalize_recovery(slug, path, expected, expected_hash, cause=exc)  # always raises
 
     # Mutation-strict confirmation that the EXACT expected entry landed.
-    if not _stored_matches_expected(read_lockfile_strict(path), slug, expected, expected_hash):
-        _recover_to_absent(slug, path)
-        raise RuntimeError(_AGENT_UNAVAILABLE_MSG)
+    if _stored_matches_expected(read_lockfile_strict(path), slug, expected, expected_hash):
+        return
+    _finalize_recovery(slug, path, expected, expected_hash, cause=None)     # always raises
 
 
 def _install_agent_host_transaction(

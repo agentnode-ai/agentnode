@@ -93,41 +93,89 @@ def test_commit_exact_success(lockpath):
 
 
 def test_commit_refuses_foreign_entry_no_overwrite(lockpath):
-    # a foreign, valid entry is already present for the slug
+    # a foreign, valid entry is already present for the slug at commit time
     installer.update_lockfile("m1-agent", _agent_entry(
         entrypoint="foreign.agent:run", python_distribution="foreign-agent"),
         path=lockpath)
-    with pytest.raises(RuntimeError, match="unavailable until it is reinstalled"):
+    with pytest.raises(RuntimeError, match="concurrent lockfile update"):
         installer._commit_agent_entry("m1-agent", _agent_entry(), lockpath)
-    # foreign entry NOT overwritten
+    # foreign entry neither overwritten NOR removed
     stored = installer.read_lockfile(lockpath)["packages"]["m1-agent"]
     assert stored["python_distribution"] == "foreign-agent"
 
 
-def test_recover_to_absent_removes(lockpath):
+# ---- atomic compare-and-remove recovery (never removes a foreign entry) ----
+
+def _expected():
+    exp = li.seal_entry(_agent_entry())
+    return exp, exp["_integrity"]["hash"]
+
+
+def test_entry_is_exact_requires_hash_and_equality():
+    expected, h = _expected()
+    assert installer._entry_is_exact(expected, expected, h) is True
+    tampered = dict(expected)
+    tampered["extra"] = "x"                       # same _integrity hash, different dict
+    assert installer._entry_is_exact(tampered, expected, h) is False
+    assert installer._entry_is_exact(expected, expected, "0" * 64) is False  # wrong hash
+
+
+def test_recovery_removes_our_exact_entry(lockpath):
+    expected, h = _expected()
     installer.update_lockfile("m1-agent", _agent_entry(), path=lockpath)
-    installer._recover_to_absent("m1-agent", lockpath)
+    installer._recover_to_absent("m1-agent", lockpath, expected, h)
     assert "m1-agent" not in installer.read_lockfile(lockpath)["packages"]
 
 
-def test_recover_to_absent_indeterminate_when_not_removed(lockpath, monkeypatch):
+def test_recovery_leaves_foreign_entry(lockpath):
+    expected, h = _expected()
+    installer.update_lockfile("m1-agent", _agent_entry(
+        entrypoint="foreign.agent:run", python_distribution="foreign-agent"), path=lockpath)
+    with pytest.raises(installer._ForeignEntryPresent):
+        installer._recover_to_absent("m1-agent", lockpath, expected, h)
+    # the foreign entry is untouched
+    stored = installer.read_lockfile(lockpath)["packages"]["m1-agent"]
+    assert stored["python_distribution"] == "foreign-agent"
+
+
+def test_recovery_absent_is_idempotent(lockpath):
+    expected, h = _expected()
+    installer._recover_to_absent("m1-agent", lockpath, expected, h)  # no entry present
+    assert "m1-agent" not in installer.read_lockfile(lockpath)["packages"]
+
+
+def test_recovery_mutation_failure_is_indeterminate(lockpath, monkeypatch):
+    expected, h = _expected()
     installer.update_lockfile("m1-agent", _agent_entry(), path=lockpath)
-    # simulate a remove that does not actually remove the entry
-    monkeypatch.setattr(installer, "remove_from_lockfile", lambda *a, **k: None)
+    monkeypatch.setattr(installer, "mutate_lockfile",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
     with pytest.raises(installer._IndeterminateLockState):
-        installer._recover_to_absent("m1-agent", lockpath)
+        installer._recover_to_absent("m1-agent", lockpath, expected, h)
 
 
-def test_recover_to_absent_indeterminate_on_read_failure(lockpath, monkeypatch):
-    installer.update_lockfile("m1-agent", _agent_entry(), path=lockpath)
-    from agentnode_sdk.exceptions import LockfileFormatError
+def test_recover_path_has_no_separate_check_then_remove():
+    # §4: the ownership decision + removal must be ONE atomic mutate_lockfile
+    # callback — never a read_lockfile_strict()+remove_from_lockfile() ownership pair.
+    import inspect
+    src = inspect.getsource(installer._recover_to_absent)
+    assert "remove_from_lockfile" not in src
 
-    def boom(*a, **k):
-        raise LockfileFormatError("x", "unreadable")
 
-    monkeypatch.setattr(installer, "read_lockfile_strict", boom)
-    with pytest.raises(installer._IndeterminateLockState):
-        installer._recover_to_absent("m1-agent", lockpath)
+def test_foreign_entry_after_commit_not_removed(lockpath, monkeypatch):
+    """Our exact entry is committed; a concurrent writer replaces the slug before the
+    final re-read → exact-match fails → the foreign entry is neither removed nor
+    overwritten, and the install does NOT report success."""
+    foreign = _agent_entry(entrypoint="foreign.agent:run", python_distribution="foreign-agent")
+
+    def racing(data, slug, expected, expected_hash):
+        installer.update_lockfile(slug, foreign, path=lockpath)  # concurrent replace
+        return False
+
+    monkeypatch.setattr(installer, "_stored_matches_expected", racing)
+    with pytest.raises(RuntimeError, match="concurrent lockfile update"):
+        installer._commit_agent_entry("m1-agent", _agent_entry(), lockpath)
+    stored = installer.read_lockfile(lockpath)["packages"]["m1-agent"]
+    assert stored["python_distribution"] == "foreign-agent"  # untouched
 
 
 # ---------------------------------------------------------------------------

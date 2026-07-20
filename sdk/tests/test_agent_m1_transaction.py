@@ -337,10 +337,10 @@ def test_foreign_reinsert_before_commit_refused(tmp_path, isolated_lock, target_
 
     monkeypatch.setattr(ap, "post_verify", inject_foreign)
     src = _write_agent_source(tmp_path / "a")
-    with pytest.raises(RuntimeError, match="unavailable until it is reinstalled"):
+    with pytest.raises(RuntimeError, match="concurrent lockfile update"):
         _run("m1-agent", src, target_python)
     stored = installer.read_lockfile(isolated_lock)["packages"]["m1-agent"]
-    assert stored["python_distribution"] == "foreign-agent"  # not overwritten
+    assert stored["python_distribution"] == "foreign-agent"  # neither overwritten nor removed
 
 
 # ---------------------------------------------------------------------------
