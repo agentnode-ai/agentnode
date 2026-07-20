@@ -24,7 +24,19 @@ import pytest
 
 from agentnode_sdk.models import RunToolResult
 from agentnode_sdk.runtimes import agent_runner
-from agentnode_sdk.runtimes.agent_runner import run_agent
+from agentnode_sdk.runtimes.agent_runner import run_agent as _real_run_agent
+
+
+def run_agent(slug, *, entry, _host_policy_decision=None, **kw):
+    """F1: mirror run_tool — read the (monkeypatched) host_trust_policy and build
+    the immutable decision passed to run_agent (which no longer reads the policy).
+    Only VALID policies reach run_agent's D1 now; invalid policies are denied at
+    run_tool (sandbox_policy_check), covered in test_host_policy_snapshot."""
+    if _host_policy_decision is None:
+        from agentnode_sdk.config import host_trust_policy
+        from tests.hostpolicy import decision
+        _host_policy_decision = decision(entry.get("trust_level"), host_trust_policy())
+    return _real_run_agent(slug, entry=entry, _host_policy_decision=_host_policy_decision, **kw)
 
 
 def _agent_entry(trust_level="trusted", isolation=None, entrypoint="test_module:agent_func", **overrides):
@@ -267,24 +279,10 @@ class TestPolicyValues:
         assert b["extra"]["policy_recognized"] is True
         assert b["reason"] == "host_execution_selected"
 
-    # Reachable unrecognized values are strings (host_trust_policy() -> str). A
-    # non-string crashes the PRE-EXISTING requires_sandbox_for_policy routing call
-    # before D1 runs — that is not D1's concern (candidate for the fail-closed
-    # policy slice), so it is deliberately not exercised here.
-    @pytest.mark.parametrize("policy", ["weird_value", "unknown_policy", ""])
-    def test_unknown_policy_host_fallback_made_visible(self, monkeypatch, policy):
-        """D1 does NOT change the fail-open routing for unrecognized policy values
-        (a host-tier agent still runs on the host), but it makes that fallback
-        explicit: policy_recognized=False, host_trust_policy='unknown' (no raw
-        value leaked), reason='unrecognized_policy_host_fallback'."""
-        h, r = self._boundary(monkeypatch, policy=policy)
-        assert r.success is True  # routing unchanged: still host
-        b = h.boundary_audits[0]
-        assert b["extra"]["policy_recognized"] is False
-        assert b["extra"]["host_trust_policy"] == "unknown"
-        assert b["extra"]["routing_reason"] == "unrecognized_policy_host_fallback"
-        # the raw unrecognized value is never carried into the audit fields
-        assert policy == "" or str(policy) not in json.dumps(b["extra"])
+    # F1: unrecognized/invalid host_trust_policy values NEVER reach run_agent's D1
+    # anymore — they are denied at the run_tool owner (sandbox_policy_check), so
+    # run_agent always receives a VALID, recognized decision. That fail-closed
+    # visibility is covered in test_host_policy_snapshot.py.
 
 
 # ---------------------------------------------------------------------------

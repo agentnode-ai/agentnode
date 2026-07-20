@@ -67,7 +67,7 @@ def _entry(**overrides):
 
 
 def test_run_blocks_on_missing_required_env(monkeypatch):
-    from agentnode_sdk.runtimes.python_runner import run_python
+    from tests.hostpolicy import run_python
 
     monkeypatch.delenv("NEEDED_KEY", raising=False)
     res = run_python("cred-pack", None, entry=_entry())
@@ -77,7 +77,7 @@ def test_run_blocks_on_missing_required_env(monkeypatch):
 
 
 def test_run_gate_applies_to_host_trust_too(monkeypatch):
-    from agentnode_sdk.runtimes.python_runner import run_python
+    from tests.hostpolicy import run_python
 
     monkeypatch.delenv("NEEDED_KEY", raising=False)
     res = run_python("cred-pack", None, entry=_entry(trust_level="trusted"))
@@ -86,7 +86,7 @@ def test_run_gate_applies_to_host_trust_too(monkeypatch):
 
 
 def test_optional_missing_does_not_block(monkeypatch):
-    from agentnode_sdk.runtimes.python_runner import run_python
+    from tests.hostpolicy import run_python
 
     monkeypatch.delenv("OPT_KEY", raising=False)
     entry = _entry(env_requirements=[{"name": "OPT_KEY", "required": False}])
@@ -97,7 +97,7 @@ def test_optional_missing_does_not_block(monkeypatch):
 
 
 def test_present_required_env_passes_gate(monkeypatch):
-    from agentnode_sdk.runtimes.python_runner import run_python
+    from tests.hostpolicy import run_python
 
     monkeypatch.setenv("NEEDED_KEY", "some-value")
     res = run_python("cred-pack", None, entry=_entry())

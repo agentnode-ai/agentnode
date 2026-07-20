@@ -1297,6 +1297,7 @@ def run_agent(
     slug: str,
     *,
     entry: dict,
+    _host_policy_decision: Any,
     goal: str | None = None,
     timeout: float | None = None,
     llm: Any | None = None,
@@ -1349,24 +1350,42 @@ def run_agent(
     #  - community (verified/unverified): the opt-in agent-sandbox FLAG governs. Flag
     #    OFF (default) ⇒ skipped ⇒ unchanged (the gate below refuses them); flag ON ⇒
     #    sandbox-or-fail-closed (never host).
-    #  - host tiers (trusted/curated): sandbox.host_trust_policy governs — curated_only
-    #    sandboxes trusted, none sandboxes trusted+curated. Under 'default' this is
-    #    False for both, so they fall through to the host path exactly as before.
-    # Kept SEPARATE on purpose: a single requires_sandbox_for_policy() would return
-    # True for community under 'default' and route them to the sandbox with the flag
-    # OFF — silently changing today's refuse-by-default behaviour.
-    from agentnode_sdk.config import host_trust_policy
+    #  - host tiers (trusted/curated): the host-trust decision (from run_tool's
+    #    snapshot) governs — curated_only sandboxes trusted, none sandboxes both.
+    #    Under 'default' the decision is host for both (unchanged).
+    # Kept SEPARATE on purpose: folding community into the host-policy decision would
+    # route community to the sandbox under 'default' with the flag OFF — silently
+    # changing today's refuse-by-default behaviour.
     from agentnode_sdk.runtimes.agent_sandbox import _agent_sandbox_enabled, run_agent_sandboxed
-    from agentnode_sdk.sandbox.policy import requires_sandbox_for_policy
+    from agentnode_sdk.sandbox.policy import HostTrustPolicyDecision
+    # F1: the host-trust policy decision is OWNED by run_tool (the single caller),
+    # read+validated ONCE per top-level call and passed in immutably — run_agent
+    # never re-reads host_trust_policy. Refuse (before any import/side effect) a
+    # missing or entry-mismatched decision; no config fallback, no re-derivation.
+    if not isinstance(_host_policy_decision, HostTrustPolicyDecision):
+        return RunToolResult(
+            success=False,
+            error="internal: run_agent requires a host-trust policy decision",
+            mode_used="agent",
+            run_id=run_id,
+        )
+    if _host_policy_decision.trust_level != (entry.get("trust_level") or ""):
+        return RunToolResult(
+            success=False,
+            error="internal: host-trust policy decision does not match entry trust level",
+            mode_used="agent",
+            run_id=run_id,
+        )
     _community = trust_level in ("verified", "unverified")
     _host_tier = trust_level in ("trusted", "curated")
-    # Evaluate the production routing decision ONCE and keep the facts, so the D1
-    # observability below reflects exactly this decision (no second policy pass).
+    # Community-flag semantics (agent_sandbox.enabled) stay SEPARATE from the host-
+    # trust policy decision: the flag governs community tiers, the decision governs
+    # host tiers. No second requires_sandbox_for_policy / policy read here.
     _sandbox_enabled = _agent_sandbox_enabled()
-    _resolved_policy = host_trust_policy()
-    _policy_recognized = _resolved_policy in ("default", "curated_only", "none")
+    _resolved_policy = _host_policy_decision.policy
+    _policy_recognized = _host_policy_decision.policy_recognized
     _sandbox_required = (_sandbox_enabled and _community) or (
-        _host_tier and requires_sandbox_for_policy(trust_level, _resolved_policy)
+        _host_tier and _host_policy_decision.sandbox_required
     )
     if _sandbox_required:
         return run_agent_sandboxed(slug, entry, agent_config, goal=goal, run_id=run_id, **kwargs)

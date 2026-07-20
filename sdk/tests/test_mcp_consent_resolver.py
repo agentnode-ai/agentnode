@@ -12,7 +12,6 @@ import pytest
 
 from agentnode_sdk.runtimes import mcp_consent_store as store
 from agentnode_sdk.runtimes.mcp_consent import (
-    CredentialedMcpRefused,
     build_consent_identity,
     build_identity_from_entry,
     consent_key,
@@ -162,8 +161,12 @@ def test_credentialed_mcp_still_runtime_refused(monkeypatch):
                    "mcp_allowed_domains": ["api.github.com"]},
             mcp_consent_callback=cb,
         )
-        with pytest.raises(CredentialedMcpRefused):
-            proc.start(env_keys=["GITHUB_TOKEN"])
+        from agentnode_sdk.sandbox.types import SandboxRequiredError
+        from tests.hostpolicy import decision, plan
+        dec = decision("verified")
+        # F1 amendment: non-preinstalled credentialed MCP refused fail-closed at plan build.
+        with pytest.raises(SandboxRequiredError, match="not preinstalled"):
+            proc.start(env_keys=["GITHUB_TOKEN"], _host_policy_decision=dec, launch_plan=plan("gh-mcp", dec))
         # 3B-2b: a credentialed but NON-preinstalled MCP is refused BEFORE consent — so no
         # container is launched and the consent callback is never invoked.
         assert launched == []

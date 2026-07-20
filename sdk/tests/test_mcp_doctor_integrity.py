@@ -19,6 +19,7 @@ def _mcp_entry(**over) -> dict:
     e = {
         "version": "0.1.0",
         "runtime": "mcp",
+        "trust_level": "curated",  # host MCP: doctor start-check runs without a sandbox/preinstall
         "mcp_command": ["npx", "-y", "test-server@1.0.0"],
         "mcp_env_keys": [],
         "tools": [{"name": "t"}],

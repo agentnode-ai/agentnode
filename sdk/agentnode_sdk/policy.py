@@ -544,7 +544,7 @@ _VALID_EVENTS = frozenset({
     "run_tool", "runtime_run", "client_install", "mcp_run",
     "agent_run", "agent_execution_boundary", "remote_run",
     "guard_check", "guard_rate_limit", "guard_confirmation",
-    "lock_seal", "lock_integrity_check",
+    "lock_seal", "lock_integrity_check", "sandbox_policy_check",
 })
 
 

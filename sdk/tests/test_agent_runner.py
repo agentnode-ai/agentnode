@@ -32,9 +32,18 @@ from agentnode_sdk.runtimes.agent_runner import (
     _resolve_input_mapping,
     _resolve_value,
     mark_untrusted_tool_output,
-    run_agent,
+    run_agent as _real_run_agent,
 )
 from agentnode_sdk.models import RunToolResult
+from tests.hostpolicy import decision as _decision
+
+
+def run_agent(slug, *, entry, _host_policy_decision=None, **kw):
+    """F1: inject the owner-supplied host-trust decision (default policy) unless a
+    test passes one explicitly. run_agent no longer reads host_trust_policy."""
+    if _host_policy_decision is None:
+        _host_policy_decision = _decision(entry.get("trust_level"))
+    return _real_run_agent(slug, entry=entry, _host_policy_decision=_host_policy_decision, **kw)
 
 
 @pytest.fixture(autouse=True)

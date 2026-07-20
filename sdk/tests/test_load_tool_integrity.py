@@ -16,6 +16,7 @@ import pytest
 
 from agentnode_sdk import load_tool
 from agentnode_sdk.exceptions import LockfileFormatError
+from tests.hostpolicy import decision as _dec  # noqa: E402  (F1 test helper)
 from agentnode_sdk.installer import LOCKFILE_VERSION
 from agentnode_sdk.lock_integrity import LockIntegrityDenied, seal_entry, seal_structure
 
@@ -503,7 +504,7 @@ class TestRunPythonRequiresGatedEntry:
         monkeypatch.setattr(pr, "_run_container",
                             lambda *a, **k: (counters.__setitem__("container", counters["container"] + 1),
                                              (None, None, False))[1])
-        res = pr.run_python("a-pack", None, mode=mode, entry=bad)
+        res = pr.run_python("a-pack", None, mode=mode, entry=bad, _host_policy_decision=_dec(None))
         assert res.success is False and res.mode_used == "no_entry"
         assert counters == {"load": 0, "popen": 0, "container": 0}   # no reader / import / spawn / container
 
@@ -534,7 +535,7 @@ class TestGatedPathsNoReader:
             def communicate(self, input=None, timeout=None):
                 return json.dumps({"ok": True, "result": {"r": 1}}), ""
         monkeypatch.setattr(pr.subprocess, "Popen", lambda *a, **k: _P())
-        res = pr.run_python("a-pack", None, mode=mode, entry=_sealed())   # trusted → host
+        res = pr.run_python("a-pack", None, mode=mode, entry=_sealed(), _host_policy_decision=_dec("trusted"))   # trusted → host
         assert res.success is True
 
     def test_container_dispatch_no_read(self, monkeypatch):
@@ -547,7 +548,7 @@ class TestGatedPathsNoReader:
             return {"ok": True}, None, False
         monkeypatch.setattr(pr, "_run_container", _spy_container)
         entry = _sealed(trust_level="unverified")             # community → sandbox/container dispatch
-        res = pr.run_python("a-pack", None, mode="auto", entry=entry)
+        res = pr.run_python("a-pack", None, mode="auto", entry=entry, _host_policy_decision=_dec("unverified"))
         assert res.success is True and got["entry"] is entry  # container got the gated entry, no read
 
 

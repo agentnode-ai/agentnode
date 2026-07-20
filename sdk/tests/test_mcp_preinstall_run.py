@@ -199,8 +199,10 @@ def _sealed(entry):
 
 
 def _start(monkeypatch, entry, env_keys=None):
+    from tests.hostpolicy import decision, plan
+    dec = decision("verified")
     server = MCPServerProcess(SLUG, NPX_CMD, trust_level="verified", entry=entry)
-    server.start(env_keys=env_keys)
+    server.start(env_keys=env_keys, _host_policy_decision=dec, launch_plan=plan(SLUG, dec, entry))
     return server
 
 
@@ -249,7 +251,10 @@ def test_integrity_mismatch_refused_no_start(monkeypatch):
     _patch_inspect(monkeypatch)
     entry = _sealed(_good_entry(permissions={"network_level": "none"}))
     entry["mcp_sandbox_volume"] = "agentnode-mcp-tampered"   # break the seal post-hoc
-    with pytest.raises(PreinstallError):
+    # F1 amendment: an invalid preinstall descriptor (tampered volume) is caught at
+    # PLAN BUILD (validate_preinstall_fields) and refused fail-closed with a safe message.
+    from agentnode_sdk.sandbox.types import SandboxRequiredError
+    with pytest.raises(SandboxRequiredError, match="Invalid MCP preinstall"):
         _start(monkeypatch, entry)
     assert _FakePopen.instances == []                        # MCP never started
 

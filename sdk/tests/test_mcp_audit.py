@@ -146,13 +146,14 @@ class TestMcpRunnerAuditIntegration:
 
     def test_success_path_audits(self, tmp_path):
         """Successful run_mcp() emits mcp_run audit."""
-        from agentnode_sdk.runtimes.mcp_runner import run_mcp
+        from tests.hostpolicy import run_mcp
 
         mock_server = mock.MagicMock()
         mock_server.call_tool.return_value = {"content": [{"text": "ok"}]}
         mock_server.health_check.return_value = True
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["python", "-m", "fake_server"],
             "tools": [{"name": "search"}],
             "permissions": {},
@@ -177,13 +178,14 @@ class TestMcpRunnerAuditIntegration:
 
     def test_timeout_path_audits(self, tmp_path):
         """TimeoutError in run_mcp() emits mcp_run audit with error class."""
-        from agentnode_sdk.runtimes.mcp_runner import run_mcp
+        from tests.hostpolicy import run_mcp
 
         mock_server = mock.MagicMock()
         mock_server.call_tool.side_effect = TimeoutError("read timeout")
         mock_server.health_check.return_value = True
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["python", "-m", "fake_server"],
             "tools": [{"name": "search"}],
             "permissions": {},
@@ -208,9 +210,10 @@ class TestMcpRunnerAuditIntegration:
 
     def test_exception_path_audits(self, tmp_path):
         """Generic exception in run_mcp() emits mcp_run audit."""
-        from agentnode_sdk.runtimes.mcp_runner import run_mcp
+        from tests.hostpolicy import run_mcp
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["python", "-m", "fake_server"],
             "tools": [{"name": "search"}],
             "permissions": {},
@@ -234,9 +237,10 @@ class TestMcpRunnerAuditIntegration:
 
     def test_guard_deny_no_mcp_run_audit(self, tmp_path):
         """Guard deny does NOT write mcp_run — it's already audited as guard_check."""
-        from agentnode_sdk.runtimes.mcp_runner import run_mcp
+        from tests.hostpolicy import run_mcp
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["python", "-m", "fake_server"],
             "tools": [{"name": "search"}],
             "permissions": {},
@@ -263,7 +267,7 @@ class TestMcpRunnerAuditIntegration:
 
     def test_no_command_no_mcp_run_audit(self, tmp_path):
         """Missing mcp_command is a config error, not an execution — no mcp_run audit."""
-        from agentnode_sdk.runtimes.mcp_runner import run_mcp
+        from tests.hostpolicy import run_mcp
 
         entry = {"tools": [{"name": "search"}], "permissions": {}}
         result = run_mcp("test-mcp-pack", "search", timeout=5.0, entry=entry)
@@ -279,11 +283,12 @@ class TestMcpEnvKeys:
 
     def test_missing_env_keys_returns_clear_error(self, tmp_path, monkeypatch):
         """Missing declared env vars produce a clear error naming the keys."""
-        from agentnode_sdk.runtimes.mcp_runner import run_mcp
+        from tests.hostpolicy import run_mcp
 
         monkeypatch.delenv("BRAVE_API_KEY", raising=False)
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["npx", "-y", "fake-server"],
             "mcp_env_keys": ["BRAVE_API_KEY"],
             "tools": [{"name": "search"}],
@@ -297,12 +302,13 @@ class TestMcpEnvKeys:
 
     def test_multiple_missing_env_keys(self, tmp_path, monkeypatch):
         """Multiple missing env vars are all listed."""
-        from agentnode_sdk.runtimes.mcp_runner import run_mcp
+        from tests.hostpolicy import run_mcp
 
         monkeypatch.delenv("KEY_A", raising=False)
         monkeypatch.delenv("KEY_B", raising=False)
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["npx", "-y", "fake-server"],
             "mcp_env_keys": ["KEY_A", "KEY_B"],
             "tools": [{"name": "query"}],
@@ -316,7 +322,7 @@ class TestMcpEnvKeys:
 
     def test_env_keys_set_passes_through(self, tmp_path, monkeypatch):
         """When all env_keys are set, run_mcp proceeds (mocks the server)."""
-        from agentnode_sdk.runtimes.mcp_runner import run_mcp
+        from tests.hostpolicy import run_mcp
 
         monkeypatch.setenv("BRAVE_API_KEY", "test-key-123")
 
@@ -325,6 +331,7 @@ class TestMcpEnvKeys:
         mock_server.health_check.return_value = True
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["npx", "-y", "fake-server"],
             "mcp_env_keys": ["BRAVE_API_KEY"],
             "tools": [{"name": "search"}],
@@ -344,13 +351,14 @@ class TestMcpEnvKeys:
 
     def test_empty_env_keys_no_error(self, tmp_path):
         """Empty env_keys list does not block execution."""
-        from agentnode_sdk.runtimes.mcp_runner import run_mcp
+        from tests.hostpolicy import run_mcp
 
         mock_server = mock.MagicMock()
         mock_server.call_tool.return_value = {"content": [{"text": "ok"}]}
         mock_server.health_check.return_value = True
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["npx", "-y", "fake-server"],
             "mcp_env_keys": [],
             "tools": [{"name": "search"}],

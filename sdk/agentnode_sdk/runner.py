@@ -167,11 +167,29 @@ def run_tool(
     # real image — otherwise availability flips to True with no routing and
     # community code would silently run on the host (the host bridge we deliberately
     # keep closed under "community code runs isolated or not at all").
+    # F1: ONE validated host-trust policy snapshot per top-level call, owned here.
+    # Read at the SAME non-skill gate as before, from the already-gated + trust-
+    # refreshed entry — so skills (and any policy-free path) stay untouched. Invalid
+    # policy → fail-closed deny (config_error) with exactly one sandbox_policy_check
+    # deny audit, BEFORE dispatch / import / sandbox start / MCP pool access. The
+    # immutable decision is threaded to the concrete runner; no downstream re-read.
+    host_policy_decision = None
     if entry.get("package_type") != "skill":
-        from agentnode_sdk.sandbox import enforce_sandbox_policy, SandboxRequiredError
+        from agentnode_sdk.config import read_host_trust_policy_snapshot
+        from agentnode_sdk.exceptions import ConfigurationError
+        from agentnode_sdk.sandbox import SandboxRequiredError, enforce_sandbox_policy
         try:
-            enforce_sandbox_policy(
-                entry.get("trust_level"), runtime_hint=entry.get("runtime", "")
+            _policy_snapshot = read_host_trust_policy_snapshot()
+        except ConfigurationError as ce:
+            _audit_sandbox_policy_denied(entry.get("trust_level"), slug, _runtime_kind(entry))
+            return RunToolResult(
+                success=False, error=ce.message, mode_used="config_error"
+            )
+        try:
+            host_policy_decision = enforce_sandbox_policy(
+                entry.get("trust_level"),
+                host_policy=_policy_snapshot,
+                runtime_hint=entry.get("runtime", ""),
             )
         except SandboxRequiredError as e:
             return RunToolResult(
@@ -310,7 +328,7 @@ def run_tool(
     # not run_tool()'s timeout parameter.
     if entry.get("package_type") == "agent":
         from agentnode_sdk.runtimes.agent_runner import run_agent
-        res = run_agent(slug, entry=entry, **kwargs)
+        res = run_agent(slug, entry=entry, _host_policy_decision=host_policy_decision, **kwargs)
         res.policy = policy_info
         _audit_runtime_run(slug, tool_name, "agent", res, entry)
         return res
@@ -333,14 +351,16 @@ def run_tool(
         # (grant-or-refuse, fail-closed).
         res = run_python(slug, tool_name, mode=mode, timeout=timeout,
                          entry=entry, lockfile_path=lockfile_path,
-                         consent_callback=mcp_consent_callback, **kwargs)
+                         consent_callback=mcp_consent_callback,
+                         _host_policy_decision=host_policy_decision, **kwargs)
     elif runtime == "mcp":
         from agentnode_sdk.runtimes.mcp_runner import run_mcp
         # Stage 3B-2b: thread the DEDICATED consent callback (NOT the guard bool callback) so the
         # credentialed live path can prompt (TTY) or honor a stored grant. None ⇒ non-TTY (resolver
         # then requires a valid stored grant; otherwise fail-closed).
         res = run_mcp(slug, tool_name, timeout=timeout, entry=entry,
-                      mcp_consent_callback=mcp_consent_callback, **kwargs)
+                      mcp_consent_callback=mcp_consent_callback,
+                      _host_policy_decision=host_policy_decision, **kwargs)
     elif runtime == "remote":
         from agentnode_sdk.runtimes.remote_runner import run_remote
         res = run_remote(slug, tool_name, timeout=timeout, entry=entry, **kwargs)
@@ -354,6 +374,39 @@ def run_tool(
     res.policy = policy_info
     _audit_runtime_run(slug, tool_name, runtime, res, entry)
     return res
+
+
+def _runtime_kind(entry: dict) -> str:
+    """The policy-relevant runtime kind for a non-skill entry (agent|python|mcp|
+    remote|...). Used only to label the sandbox_policy_check audit."""
+    if entry.get("package_type") == "agent":
+        return "agent"
+    return entry.get("runtime", "python")
+
+
+def _audit_sandbox_policy_denied(trust_level: str | None, slug: str, runtime_kind: str) -> None:
+    """F1: exactly one best-effort deny audit for an invalid host_trust_policy,
+    emitted by the snapshot owner BEFORE any dispatch/import/sandbox-start/pool
+    access. Safe fields only — never the raw config value. Never crashes the
+    caller and never changes the deny."""
+    try:
+        audit_decision(
+            PolicyResult(
+                action="deny",
+                reason="invalid_host_trust_policy",
+                source="sandbox_policy",
+            ),
+            "sandbox_policy_check",
+            slug,
+            trust_level=trust_level,
+            extra={
+                "policy_recognized": False,
+                "execution_boundary": "none",
+                "runtime_kind": runtime_kind,
+            },
+        )
+    except Exception:
+        logger.debug("Failed to audit sandbox policy denial: %s", slug, exc_info=True)
 
 
 def _audit_runtime_run(

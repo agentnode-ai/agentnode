@@ -30,6 +30,7 @@ def mcp_lockfile(tmp_path, monkeypatch):
         "mcp-test": {
             "version": "0.1.0",
             "runtime": "mcp",
+            "trust_level": "curated",  # host MCP: doctor start-check runs without a sandbox/preinstall
             "mcp_command": ["npx", "-y", "test-mcp-server@1.0.0"],
             "mcp_env_keys": ["TEST_API_KEY"],
             "tools": [{"name": "test_tool"}],
@@ -150,7 +151,7 @@ def test_all_pass_with_start(mcp_lockfile, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Ready to run" in out
     MockCls.assert_called_once_with(
-        "mcp-test", ["npx", "-y", "test-mcp-server@1.0.0"], trust_level=None
+        "mcp-test", ["npx", "-y", "test-mcp-server@1.0.0"], trust_level="curated"
     )
     mock_server.start.assert_called_once()
     mock_server.stop.assert_called_once()

@@ -192,6 +192,7 @@ def run_python(
     slug: str,
     tool_name: str | None,
     *,
+    _host_policy_decision: Any,
     mode: str = "auto",
     timeout: float = 30.0,
     entry: dict | None = None,
@@ -219,9 +220,8 @@ def run_python(
     # isolation for community code. curated/trusted fall through to the host path.
     # Missing/None/unknown trust → sandbox-required (never host), mirroring the
     # runner.run_tool gate and policy.requires_sandbox.
-    from agentnode_sdk.config import host_trust_policy
     from agentnode_sdk.sandbox import SandboxRequiredError
-    from agentnode_sdk.sandbox.policy import requires_sandbox_for_policy
+    from agentnode_sdk.sandbox.policy import HostTrustPolicyDecision
     from agentnode_sdk.runtimes.toolpack_credentials import (
         missing_env_message,
         missing_required_env,
@@ -241,6 +241,23 @@ def run_python(
             mode_used="no_entry",
         )
 
+    # F1: the host-trust policy decision is OWNED by run_tool and passed in
+    # immutably — run_python never re-reads host_trust_policy. Refuse (before
+    # credentials, mode, import, subprocess, or container) a missing or entry-
+    # mismatched decision; no config fallback, no re-derivation.
+    if not isinstance(_host_policy_decision, HostTrustPolicyDecision):
+        return RunToolResult(
+            success=False,
+            error=f"run_python requires a host-trust policy decision for '{slug}'; none was provided.",
+            mode_used="no_entry",
+        )
+    if _host_policy_decision.trust_level != (entry.get("trust_level") or ""):
+        return RunToolResult(
+            success=False,
+            error="host-trust policy decision does not match entry trust level",
+            mode_used="no_entry",
+        )
+
     # Mode/trust decisions use THIS gated entry only — never a second lockfile read.
     dispatch_trust = entry.get("trust_level")
 
@@ -255,10 +272,11 @@ def run_python(
             error=missing_env_message(slug, _missing_creds),
             mode_used="credentials_missing",
         )
-    # host-trust policy: "default" = curated/trusted on host (today); "curated_only"
-    # / "none" route trusted (and curated) into the sandbox instead. Evaluated here,
+    # host-trust policy: "default" = curated/trusted on host; "curated_only"/"none"
+    # route trusted (and curated) into the sandbox. The decision was made ONCE by
+    # the owner from the same gated entry — consumed here, never recomputed —
     # BEFORE mode resolution, so an explicit mode='direct' can never bypass it.
-    if requires_sandbox_for_policy(dispatch_trust, host_trust_policy()):
+    if _host_policy_decision.sandbox_required:
         t0 = time.monotonic()
         try:
             result, error, timed_out = _run_container(

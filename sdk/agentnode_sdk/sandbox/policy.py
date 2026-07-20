@@ -8,12 +8,56 @@ run path calls.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from typing import Literal
 
 from agentnode_sdk.sandbox.backend import SandboxBackend
 from agentnode_sdk.sandbox.container_backend import ContainerBackend
 from agentnode_sdk.sandbox.types import SandboxAvailability, SandboxRequiredError
 
 logger = logging.getLogger("agentnode.sandbox")
+
+
+@dataclass(frozen=True)
+class HostTrustPolicyDecision:
+    """Immutable host-trust routing decision for ONE top-level execution.
+
+    Produced ONLY by :func:`enforce_sandbox_policy` from an already-read, canonical
+    host_trust_policy snapshot. Downstream runners consume it verbatim — they never
+    re-read the policy, re-run :func:`requires_sandbox_for_policy`, re-implement the
+    trust matrix, or reconstruct the boundary from a fresh config state.
+
+    ``__post_init__`` binds the fields into a CONSISTENT, factory-shaped unit: an
+    invalid policy, or a ``sandbox_required`` / ``execution_boundary`` that does not
+    match ``requires_sandbox_for_policy(trust_level, policy)``, or an unrecognized
+    policy, is rejected at construction (``ValueError``). This is the single
+    invariant check — downstream never recomputes the matrix — so a directly
+    constructed, contradictory decision (e.g. policy="none" but sandbox_required=
+    False) can never reach a runner and bypass the sandbox requirement.
+    """
+    policy: str
+    trust_level: str
+    sandbox_required: bool
+    execution_boundary: Literal["host", "sandbox"]
+    policy_recognized: bool = True
+
+    def __post_init__(self) -> None:
+        if self.policy not in ("default", "curated_only", "none"):
+            raise ValueError(f"invalid host_trust_policy decision: policy={self.policy!r}")
+        expected_required = requires_sandbox_for_policy(self.trust_level, self.policy)
+        if self.sandbox_required != expected_required:
+            raise ValueError(
+                "inconsistent host_trust_policy decision: sandbox_required does not "
+                "match the trust/policy matrix"
+            )
+        expected_boundary = "sandbox" if self.sandbox_required else "host"
+        if self.execution_boundary != expected_boundary:
+            raise ValueError(
+                "inconsistent host_trust_policy decision: execution_boundary does not "
+                "match sandbox_required"
+            )
+        if self.policy_recognized is not True:
+            raise ValueError("host_trust_policy decision must have policy_recognized=True")
 
 # curated/system: AgentNode-owned, may run on the host.
 _HOST_ALLOWED_TIERS = {"curated"}
@@ -137,31 +181,45 @@ def require_sandbox_for_tier(
 def enforce_sandbox_policy(
     trust_level: str | None,
     *,
+    host_policy: str,
     runtime_hint: str = "",
     backend: SandboxBackend | None = None,
-) -> None:
-    """Live wrapper for the run path. Probes the cached default backend only for
-    sandbox-required tiers (host-allowed/tolerated tiers short-circuit without a
-    runtime probe). Raises SandboxRequiredError on fail-closed."""
-    tier = (trust_level or "").lower()
-    if tier in _HOST_ALLOWED_TIERS or tier in _HOST_TOLERATED_TIERS:
-        # A normally-host tier (curated/trusted) that the ACTIVE host-trust policy
-        # sandboxes needs a runtime here — fail-closed early with a policy-specific
-        # message instead of deferring to the container path. Under "default" this is
-        # False for curated/trusted, so the legacy path below is byte-for-byte unchanged.
-        from agentnode_sdk.config import host_trust_policy
-        policy = host_trust_policy()
-        if requires_sandbox_for_policy(trust_level, policy):
-            be = backend or get_default_backend()
-            avail = be.check_available()
-            if not avail.available:
+) -> HostTrustPolicyDecision:
+    """Live gate for the run path. Takes an ALREADY-READ, canonical host-trust
+    policy snapshot (``host_policy``) — it performs NO config read of its own.
+
+    Computes the sandbox requirement ONCE from ``(trust_level, host_policy)`` and,
+    for sandbox-required tiers, probes runtime availability (fail-closed:
+    ``SandboxRequiredError`` when none). Host-allowed/tolerated tiers that run on
+    the host short-circuit without a probe (and keep the trusted-transition
+    warning). Returns the immutable :class:`HostTrustPolicyDecision` the owner
+    threads to the concrete runner — nothing downstream recomputes it.
+    """
+    sandbox_required = requires_sandbox_for_policy(trust_level, host_policy)
+    if sandbox_required:
+        be = backend or get_default_backend()
+        avail = be.check_available()
+        if not avail.available:
+            tier = (trust_level or "").lower()
+            if tier in _HOST_ALLOWED_TIERS or tier in _HOST_TOLERATED_TIERS:
                 raise SandboxRequiredError(
                     f"'{tier}' package must run sandboxed under "
-                    f"sandbox.host_trust_policy={policy} but no container runtime is "
+                    f"sandbox.host_trust_policy={host_policy} but no container runtime is "
                     f"available. {avail.reason or 'No runtime detected'}."
                 )
-            return
-        require_sandbox_for_tier(trust_level, _UNAVAILABLE)  # delegates (handles warning)
-        return
-    be = backend or get_default_backend()
-    require_sandbox_for_tier(trust_level, be.check_available())
+            raise SandboxRequiredError(
+                "Community package execution requires a container runtime (Docker or "
+                f"Podman). {avail.reason or 'None detected'} — refusing to run "
+                "untrusted code on the host."
+            )
+    else:
+        # Host-allowed/tolerated tier running on the host: preserve the trusted
+        # transition warning (require_sandbox_for_tier warns for _HOST_TOLERATED,
+        # returns silently for _HOST_ALLOWED; never raises for these tiers).
+        require_sandbox_for_tier(trust_level, _UNAVAILABLE)
+    return HostTrustPolicyDecision(
+        policy=host_policy,
+        trust_level=(trust_level or ""),
+        sandbox_required=sandbox_required,
+        execution_boundary="sandbox" if sandbox_required else "host",
+    )

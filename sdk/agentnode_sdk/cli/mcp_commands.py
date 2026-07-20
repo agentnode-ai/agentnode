@@ -214,6 +214,28 @@ def cmd_mcp_doctor(
 
     record("runtime", True, "mcp")
 
+    # --- 2b. Host-trust policy snapshot (F1) ---
+    # The doctor OWNS its host-trust snapshot for the direct (non-run_tool) MCP
+    # start. Read+validate ONCE here — an invalid sandbox.host_trust_policy fails
+    # closed with a dedicated 'policy' check + exactly one sandbox_policy_check
+    # deny audit, BEFORE any Node/npx/process/network probe or server start.
+    from agentnode_sdk.config import read_host_trust_policy_snapshot
+    from agentnode_sdk.exceptions import ConfigurationError
+    try:
+        policy_snapshot = read_host_trust_policy_snapshot()
+    except ConfigurationError:
+        from agentnode_sdk.runner import _audit_sandbox_policy_denied
+        _audit_sandbox_policy_denied(entry.get("trust_level"), slug, "mcp")
+        record(
+            "policy", False, "invalid sandbox.host_trust_policy",
+            "agentnode config set sandbox.host_trust_policy <default|curated_only|none>",
+        )
+        if json_output:
+            print(json.dumps({"slug": slug, "checks": checks, "ready": False}, indent=2))
+        else:
+            _render_human(slug, version, checks, failed)
+        return 1
+
     # --- 3. Node.js available ---
     node_path = shutil.which("node")
     if node_path is None:
@@ -261,12 +283,21 @@ def cmd_mcp_doctor(
             record("start", False, "no mcp_command in lockfile")
         else:
             try:
-                from agentnode_sdk.runtimes.mcp_runner import MCPServerProcess, _mcp_env
-                # Pass trust_level so the doctor path is enforced/routed at start()
-                # (closes the run_tool-gate bypass: community MCPs are sandboxed or
-                # fail-closed, never started directly on the host).
+                from agentnode_sdk.runtimes.mcp_launch import build_mcp_launch_plan
+                from agentnode_sdk.runtimes.mcp_runner import MCPServerProcess
+                from agentnode_sdk.sandbox import enforce_sandbox_policy
+                # Build the routing decision from the doctor's own validated snapshot
+                # (community MCPs are sandboxed or fail-closed, never started directly
+                # on the host). A no-runtime SandboxRequiredError is caught below as a
+                # start failure, exactly as before.
                 server = MCPServerProcess(slug, mcp_command, trust_level=entry.get("trust_level"))
-                server.start(timeout=15, env_keys=env_keys)
+                decision = enforce_sandbox_policy(entry.get("trust_level"), host_policy=policy_snapshot)
+                backend_kind = None
+                if decision.execution_boundary == "sandbox":
+                    from agentnode_sdk.sandbox import get_default_backend
+                    backend_kind = get_default_backend().check_available().backend or None
+                plan = build_mcp_launch_plan(slug, entry, decision, backend_kind=backend_kind)
+                server.start(timeout=15, env_keys=env_keys, _host_policy_decision=decision, launch_plan=plan)
                 server.stop()
                 record("start", True, "server starts and handshake passed")
             except Exception as e:
