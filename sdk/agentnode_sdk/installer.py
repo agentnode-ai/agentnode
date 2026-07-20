@@ -905,16 +905,17 @@ def _install_agent_host_transaction(
     try:
         # (2) entrypoint top-level (string-only; pre-build fail-closed).
         top = wm.top_level_from_entrypoint(entrypoint)
-        # (3) build-wheel-first + (4) import-free validation (pre-quarantine).
-        wheel = wm.build_wheel(target_python, package_dir, dest)
-        wid = wm.validate_wheel(wheel, top)
-        # (5) consistency hash captured before pip hand-off.
-        pre_hash = wm.wheel_consistency_hash(wheel)
-        # (6) target environment identity (import-free).
+        # (3) target environment identity + controlled pip env + config-redirect
+        #     refusal — BEFORE the build, so a misconfigured install target refuses
+        #     cleanly without running the PEP-517 backend (foreign code) at all.
         ident = envlock.resolve_env_identity(target_python)
-        # (7) controlled pip env + config-redirect refusal (pre-quarantine).
         env = ap.controlled_pip_env()
         ap.assert_target_contract(target_python, env)
+        # (4) build-wheel-first + (5) import-free validation (pre-quarantine).
+        wheel = wm.build_wheel(target_python, package_dir, dest)
+        wid = wm.validate_wheel(wheel, top)
+        # (6) consistency hash captured before pip hand-off.
+        pre_hash = wm.wheel_consistency_hash(wheel)
 
         with envlock.env_lock(ident.env_id):
             # (8) CAS re-check + cross-slug ownership + name-change + quarantine,
