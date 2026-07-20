@@ -150,10 +150,11 @@ def test_mcp_starts_in_container_real():
     and completes the initialize handshake."""
     from agentnode_sdk.runtimes.mcp_runner import MCPServerProcess
 
-    from tests.hostpolicy import decision
+    from tests.hostpolicy import decision, plan
+    dec = decision("verified")
     server = MCPServerProcess("e2e-mcp", ["python", "-c", _MCP_STUB], trust_level="verified")
     try:
-        server.start(_host_policy_decision=decision("verified"))  # container + JSON-RPC handshake
+        server.start(_host_policy_decision=dec, launch_plan=plan("e2e-mcp", dec))  # container + JSON-RPC
         assert server._container_name and server._container_name.startswith("agentnode-mcp-")
     finally:
         server.stop()

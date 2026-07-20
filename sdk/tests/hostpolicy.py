@@ -22,6 +22,12 @@ def decision(trust_level: str | None, policy: str = "default") -> HostTrustPolic
     )
 
 
+def plan(slug, decision_obj, entry=None, backend_kind="docker"):
+    """Build the MCPLaunchPlan the pool/start now require (F1 amendment)."""
+    from agentnode_sdk.runtimes.mcp_launch import build_mcp_launch_plan
+    return build_mcp_launch_plan(slug, entry or {}, decision_obj, backend_kind=backend_kind)
+
+
 def run_agent(slug, *, entry, _host_policy_decision=None, **kw):
     """Wrapped run_agent that injects the owner-supplied decision (default policy)."""
     from agentnode_sdk.runtimes.agent_runner import run_agent as _r

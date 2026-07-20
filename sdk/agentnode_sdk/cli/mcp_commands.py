@@ -283,6 +283,7 @@ def cmd_mcp_doctor(
             record("start", False, "no mcp_command in lockfile")
         else:
             try:
+                from agentnode_sdk.runtimes.mcp_launch import build_mcp_launch_plan
                 from agentnode_sdk.runtimes.mcp_runner import MCPServerProcess
                 from agentnode_sdk.sandbox import enforce_sandbox_policy
                 # Build the routing decision from the doctor's own validated snapshot
@@ -291,7 +292,12 @@ def cmd_mcp_doctor(
                 # start failure, exactly as before.
                 server = MCPServerProcess(slug, mcp_command, trust_level=entry.get("trust_level"))
                 decision = enforce_sandbox_policy(entry.get("trust_level"), host_policy=policy_snapshot)
-                server.start(timeout=15, env_keys=env_keys, _host_policy_decision=decision)
+                backend_kind = None
+                if decision.execution_boundary == "sandbox":
+                    from agentnode_sdk.sandbox import get_default_backend
+                    backend_kind = get_default_backend().check_available().backend or None
+                plan = build_mcp_launch_plan(slug, entry, decision, backend_kind=backend_kind)
+                server.start(timeout=15, env_keys=env_keys, _host_policy_decision=decision, launch_plan=plan)
                 server.stop()
                 record("start", True, "server starts and handshake passed")
             except Exception as e:

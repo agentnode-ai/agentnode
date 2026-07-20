@@ -199,9 +199,10 @@ def _sealed(entry):
 
 
 def _start(monkeypatch, entry, env_keys=None):
-    from tests.hostpolicy import decision
+    from tests.hostpolicy import decision, plan
+    dec = decision("verified")
     server = MCPServerProcess(SLUG, NPX_CMD, trust_level="verified", entry=entry)
-    server.start(env_keys=env_keys, _host_policy_decision=decision("verified"))
+    server.start(env_keys=env_keys, _host_policy_decision=dec, launch_plan=plan(SLUG, dec, entry))
     return server
 
 

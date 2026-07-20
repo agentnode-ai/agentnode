@@ -1,27 +1,28 @@
 """Import-neutral MCP process launch identity + compatibility fingerprints (F1).
 
-Pure data + deterministic fingerprints used to decide whether a POOLED
-(non-credentialed) MCP process may be reused. Reuse requires not only the same
-host/sandbox boundary but the full non-sensitive launch identity — command/argv,
-package version, artifact_hash, trust level, transport, env-key NAMES — and, for
-a sandbox process, the profile (image digest, network mode, sealed egress
-domains, mounts). A slug is NOT a stable identity: install/upgrade/reinstall/
-reseal/trust-refresh can change command/version/artifact/trust/profile under the
-same slug while a healthy pooled process keeps running.
+The immutable :class:`MCPLaunchPlan` is built ONCE (pure, side-effect-free) from
+the gated entry + host-trust decision and then drives BOTH the compatibility check
+and the actual process start — so the fingerprint is provably the same definition
+that is launched (no separate re-derivation in ``start()``). It carries the ACTUAL
+per-boundary command (host: ``mcp_command``; sandbox: the validated preinstall
+command — NOT ``mcp_command``), and, for a sandbox process, the full non-sensitive
+profile (image digest, backend kind, network mode, sealed egress domains, volume/
+mounts, profile version).
 
-This is NOT runtime artifact verification (A3): ``artifact_hash`` is used only as
-an identity value; the installed files are never re-hashed here, and disk
-integrity is not proven. A3 (re-verify host files / bind ``module.__file__`` /
-shadowing) stays a separate future arc.
+Reuse of a pooled (non-credentialed) MCP requires full compatibility equality:
+slug alone is not identity — install/upgrade/reinstall/reseal/trust-refresh can
+change command/version/artifact/trust/profile under the same slug.
 
-No side effects: building a plan/fingerprint starts no process/container, writes
-no volume, creates no egress resource, and reads no lockfile or config. Physical
-resources are created only later, after the pool decides to (re)start.
+NOT runtime artifact verification (A3): ``artifact_hash`` is an identity value
+only (never re-hashed here); disk integrity / ``module.__file__`` binding /
+shadowing stay a separate A3 arc.
 
-Determinism: fingerprints use a versioned canonical JSON payload (sorted keys,
-explicit separators) + SHA-256 — never ``hash()``/``repr()``/unordered sets/
-object addresses/env values. Order-sensitive data (argv) keeps its order;
-semantically unordered data (domains, env-key names) is canonically sorted.
+No side effects: building a plan starts no process/container, writes no volume,
+creates no egress resource, and reads no lockfile or config (the resolved backend
+KIND is passed in by the owner). Determinism: fingerprints use a versioned
+canonical JSON payload (sorted keys, explicit separators) + SHA-256 — never
+``hash()``/``repr()``/unordered sets/object addresses/env values. Argv keeps its
+order; domains and env-key names are canonically sorted.
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 COMPATIBILITY_VERSION = 1
+SANDBOX_PROFILE_VERSION = 1  # bump to force restarts when constant hardening changes
 
 
 @dataclass(frozen=True)
@@ -45,11 +47,22 @@ class MCPProcessCompatibility:
 
 @dataclass(frozen=True)
 class MCPLaunchPlan:
-    """Immutable launch plan built ONCE from the gated entry + policy decision, used
-    for BOTH the compatibility check and (on start) the actual launch."""
+    """Immutable launch plan: built ONCE, drives BOTH the compatibility check and the
+    actual start. ``start()`` consumes these fields for pooled MCPs — it does not
+    re-resolve command/boundary/backend/network/domains/mounts/image/volume from the
+    entry, config, or defaults."""
     slug: str
-    command: tuple[str, ...]
+    boundary: Literal["host", "sandbox"]
+    command: tuple[str, ...]           # the ACTUAL command start runs
     env_key_names: tuple[str, ...]
+    # sandbox-only (None/empty on host):
+    network: str                       # "none" | "egress" (sandbox); "" (host)
+    allowed_domains: tuple[str, ...]
+    volume: str | None
+    artifact_hash: str | None
+    manager: str | None
+    image_digest: str | None
+    backend_kind: str | None
     compatibility: MCPProcessCompatibility
 
 
@@ -70,50 +83,66 @@ def _declared_egress_domains(entry: dict) -> tuple[str, ...]:
     return tuple(sorted(sealed))
 
 
-def build_mcp_launch_plan(slug: str, entry: dict, decision: Any) -> MCPLaunchPlan:
-    """PURE: build the immutable launch plan + full compatibility from the SAME
-    gated entry and the host-trust ``decision``. No I/O, no probe, no resource
-    creation. ``decision`` is a ``HostTrustPolicyDecision`` (boundary + trust)."""
+def _resolve_sandbox_identity(slug: str, entry: dict):
+    """Pure: the ACTUAL sandbox command/volume/artifact/manager start will use.
+
+    Preinstalled MCPs run the validated ``mcp_preinstall_command`` from the sealed
+    ``/install`` volume — NOT ``mcp_command``. Non-preinstalled community MCPs are
+    refused at start (never pooled); their identity here is a harmless fallback."""
+    try:
+        from agentnode_sdk.sandbox.mcp_preinstall import (
+            has_preinstall_intent,
+            validate_preinstall_fields,
+        )
+        if has_preinstall_intent(entry):
+            pspec = validate_preinstall_fields(slug, entry.get("version"), entry)
+            return tuple(pspec.command), pspec.volume, pspec.artifact_hash, pspec.manager
+    except Exception:
+        pass
+    return tuple(entry.get("mcp_command") or []), None, entry.get("artifact_hash"), None
+
+
+def build_mcp_launch_plan(slug: str, entry: dict, decision: Any,
+                          *, backend_kind: str | None = None) -> MCPLaunchPlan:
+    """PURE: build the immutable launch plan (+ compatibility) from the SAME gated
+    entry + decision (+ owner-resolved backend kind for sandbox). No I/O, no probe,
+    no resource creation. ``decision`` is a ``HostTrustPolicyDecision``."""
     entry = entry or {}
-    boundary = decision.execution_boundary  # "host" | "sandbox"
-    command = tuple(entry.get("mcp_command") or [])
+    boundary = decision.execution_boundary
     env_key_names = tuple(sorted(entry.get("mcp_env_keys") or []))
 
-    launch_fp = _canonical_sha256({
-        "v": COMPATIBILITY_VERSION,
-        "slug": slug,
-        "runtime_kind": "mcp",
-        "transport": "stdio",
-        "command": list(command),               # order-sensitive
-        "version": entry.get("version"),
-        "artifact_hash": entry.get("artifact_hash"),  # identity value only (not re-hashed)
-        "env_key_names": list(env_key_names),   # canonically sorted; NAMES only, never values
-    })
-
-    sandbox_fp: str | None = None
-    if boundary == "sandbox":
-        from agentnode_sdk.sandbox import sandbox_volume_name
-        from agentnode_sdk.sandbox.container_backend import _BASE_IMAGE
-        domains = _declared_egress_domains(entry)
-        volume = sandbox_volume_name(slug, entry.get("version"), entry.get("artifact_hash"))
-        # image digest + hardened flags are constant per SDK version (they never
-        # discriminate two calls in one process); backend (docker/podman) is
-        # intentionally excluded because determining it needs a runtime probe and
-        # the plan build must stay side-effect-free. The variable sandbox identity
-        # (image, network, domains, volume/mounts) is captured here.
-        sandbox_fp = _canonical_sha256({
-            "v": COMPATIBILITY_VERSION,
-            "image_digest": _BASE_IMAGE,
-            "network": "egress" if domains else "none",
-            "allowed_domains": list(domains),   # canonically sorted
-            "mounts": [[volume, "/install", "ro"]],
+    if boundary == "host":
+        command = tuple(entry.get("mcp_command") or [])
+        launch_fp = _canonical_sha256({
+            "v": COMPATIBILITY_VERSION, "slug": slug, "runtime_kind": "mcp",
+            "transport": "stdio", "boundary": "host",
+            "command": list(command), "version": entry.get("version"),
+            "artifact_hash": entry.get("artifact_hash"),
+            "env_key_names": list(env_key_names),
         })
+        compat = MCPProcessCompatibility("host", decision.trust_level, "mcp", launch_fp, None)
+        return MCPLaunchPlan(slug, "host", command, env_key_names, "", (), None,
+                             entry.get("artifact_hash"), None, None, None, compat)
 
-    compat = MCPProcessCompatibility(
-        execution_boundary=boundary,
-        trust_level=decision.trust_level,
-        runtime_kind="mcp",
-        launch_fingerprint=launch_fp,
-        sandbox_profile_fingerprint=sandbox_fp,
-    )
-    return MCPLaunchPlan(slug=slug, command=command, env_key_names=env_key_names, compatibility=compat)
+    # sandbox
+    from agentnode_sdk.sandbox.container_backend import _BASE_IMAGE
+    command, volume, artifact_hash, manager = _resolve_sandbox_identity(slug, entry)
+    domains = _declared_egress_domains(entry)
+    network = "egress" if domains else "none"
+    launch_fp = _canonical_sha256({
+        "v": COMPATIBILITY_VERSION, "slug": slug, "runtime_kind": "mcp",
+        "transport": "stdio", "boundary": "sandbox",
+        "command": list(command), "version": entry.get("version"),
+        "artifact_hash": artifact_hash, "env_key_names": list(env_key_names),
+    })
+    sandbox_fp = _canonical_sha256({
+        "profile_version": SANDBOX_PROFILE_VERSION,
+        "image_digest": _BASE_IMAGE,
+        "backend_kind": backend_kind,
+        "network": network,
+        "allowed_domains": list(domains),
+        "mounts": [[volume, "/install", "ro"]],
+    })
+    compat = MCPProcessCompatibility("sandbox", decision.trust_level, "mcp", launch_fp, sandbox_fp)
+    return MCPLaunchPlan(slug, "sandbox", command, env_key_names, network, domains,
+                         volume, artifact_hash, manager, _BASE_IMAGE, backend_kind, compat)

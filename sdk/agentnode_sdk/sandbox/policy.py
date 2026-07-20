@@ -26,12 +26,38 @@ class HostTrustPolicyDecision:
     host_trust_policy snapshot. Downstream runners consume it verbatim — they never
     re-read the policy, re-run :func:`requires_sandbox_for_policy`, re-implement the
     trust matrix, or reconstruct the boundary from a fresh config state.
+
+    ``__post_init__`` binds the fields into a CONSISTENT, factory-shaped unit: an
+    invalid policy, or a ``sandbox_required`` / ``execution_boundary`` that does not
+    match ``requires_sandbox_for_policy(trust_level, policy)``, or an unrecognized
+    policy, is rejected at construction (``ValueError``). This is the single
+    invariant check — downstream never recomputes the matrix — so a directly
+    constructed, contradictory decision (e.g. policy="none" but sandbox_required=
+    False) can never reach a runner and bypass the sandbox requirement.
     """
     policy: str
     trust_level: str
     sandbox_required: bool
     execution_boundary: Literal["host", "sandbox"]
     policy_recognized: bool = True
+
+    def __post_init__(self) -> None:
+        if self.policy not in ("default", "curated_only", "none"):
+            raise ValueError(f"invalid host_trust_policy decision: policy={self.policy!r}")
+        expected_required = requires_sandbox_for_policy(self.trust_level, self.policy)
+        if self.sandbox_required != expected_required:
+            raise ValueError(
+                "inconsistent host_trust_policy decision: sandbox_required does not "
+                "match the trust/policy matrix"
+            )
+        expected_boundary = "sandbox" if self.sandbox_required else "host"
+        if self.execution_boundary != expected_boundary:
+            raise ValueError(
+                "inconsistent host_trust_policy decision: execution_boundary does not "
+                "match sandbox_required"
+            )
+        if self.policy_recognized is not True:
+            raise ValueError("host_trust_policy decision must have policy_recognized=True")
 
 # curated/system: AgentNode-owned, may run on the host.
 _HOST_ALLOWED_TIERS = {"curated"}

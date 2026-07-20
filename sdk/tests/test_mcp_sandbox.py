@@ -18,7 +18,7 @@ import pytest
 
 from agentnode_sdk.runtimes import mcp_runner
 from agentnode_sdk.runtimes.mcp_runner import MCPServerProcess
-from tests.hostpolicy import decision
+from tests.hostpolicy import decision, plan
 from agentnode_sdk.sandbox import SandboxRequiredError, set_default_backend
 from agentnode_sdk.sandbox.backend import SandboxBackend
 from agentnode_sdk.sandbox.container_backend import ContainerBackend
@@ -88,7 +88,7 @@ def test_non_preinstalled_community_mcp_refused(monkeypatch):
     runtime fetch (npx/uvx) — now REFUSED fail-closed, never containerized with open network."""
     _use_available_container(monkeypatch)
     with pytest.raises(SandboxRequiredError, match="not preinstalled"):
-        MCPServerProcess("some-mcp", MCP_CMD, trust_level="verified").start(_host_policy_decision=decision("verified"))
+        MCPServerProcess("some-mcp", MCP_CMD, trust_level="verified").start(_host_policy_decision=decision("verified"), launch_plan=plan("m", decision("verified")))
     assert _FakePopen.instances == []            # never launched
 
 
@@ -97,7 +97,7 @@ def test_direct_construction_non_preinstalled_refused_not_host(monkeypatch):
     host, never open network)."""
     _use_available_container(monkeypatch)
     with pytest.raises(SandboxRequiredError):
-        MCPServerProcess("doctor-mcp", MCP_CMD, trust_level="verified").start(_host_policy_decision=decision("verified"))
+        MCPServerProcess("doctor-mcp", MCP_CMD, trust_level="verified").start(_host_policy_decision=decision("verified"), launch_plan=plan("m", decision("verified")))
     assert _FakePopen.instances == []
 
 
@@ -105,14 +105,14 @@ def test_missing_trust_level_non_preinstalled_refused(monkeypatch):
     """No trust_level + non-preinstalled -> refused (sandbox-required, never host, never open)."""
     _use_available_container(monkeypatch)
     with pytest.raises(SandboxRequiredError):
-        MCPServerProcess("unknown-mcp", MCP_CMD).start(_host_policy_decision=decision(None))  # no trust_level
+        MCPServerProcess("unknown-mcp", MCP_CMD).start(_host_policy_decision=decision(None), launch_plan=plan("m", decision(None)))  # no trust_level
     assert _FakePopen.instances == []
 
 
 def test_missing_trust_level_blocked_when_unavailable(monkeypatch):
     _use_unavailable(monkeypatch)
     with pytest.raises(SandboxRequiredError):
-        MCPServerProcess("unknown-mcp", MCP_CMD).start(_host_policy_decision=decision(None))  # no trust_level
+        MCPServerProcess("unknown-mcp", MCP_CMD).start(_host_policy_decision=decision(None), launch_plan=plan("m", decision(None)))  # no trust_level
     assert _FakePopen.instances == []  # never launched
 
 
@@ -120,7 +120,7 @@ def test_community_mcp_with_env_keys_is_blocked(monkeypatch):
     _use_available_container(monkeypatch)
     server = MCPServerProcess("secret-mcp", MCP_CMD, trust_level="verified")
     with pytest.raises(RuntimeError, match="credentials|secret"):
-        server.start(_host_policy_decision=decision("verified"), env_keys=["OPENAI_API_KEY"])
+        server.start(_host_policy_decision=decision("verified"), launch_plan=plan("m", decision("verified")), env_keys=["OPENAI_API_KEY"])
     assert _FakePopen.instances == []  # never launched with secrets
 
 
@@ -142,7 +142,7 @@ def test_community_mcp_with_env_keys_refusal_is_precise_and_safe(monkeypatch):
     # No entry ⇒ not preinstalled ⇒ refused at the very first gate (before consent/egress/secret).
     server = MCPServerProcess("secret-mcp", MCP_CMD, trust_level="verified")
     with pytest.raises(CredentialedMcpRefused) as ei:
-        server.start(_host_policy_decision=decision("verified"), env_keys=["OPENAI_API_KEY"])
+        server.start(_host_policy_decision=decision("verified"), launch_plan=plan("m", decision("verified")), env_keys=["OPENAI_API_KEY"])
 
     assert ei.value.reason == "credentialed_requires_preinstall"
     msg = str(ei.value)
@@ -154,7 +154,7 @@ def test_community_mcp_with_env_keys_refusal_is_precise_and_safe(monkeypatch):
 def test_no_runtime_is_fail_closed(monkeypatch):
     _use_unavailable(monkeypatch)
     with pytest.raises(SandboxRequiredError):
-        MCPServerProcess("some-mcp", MCP_CMD, trust_level="verified").start(_host_policy_decision=decision("verified"))
+        MCPServerProcess("some-mcp", MCP_CMD, trust_level="verified").start(_host_policy_decision=decision("verified"), launch_plan=plan("m", decision("verified")))
     assert _FakePopen.instances == []
 
 
@@ -163,7 +163,7 @@ def test_no_runtime_is_fail_closed(monkeypatch):
 def test_curated_mcp_runs_on_host(monkeypatch):
     """curated stays on the host path (existing _mcp_env + raw command)."""
     monkeypatch.setenv("HOME", "/home/realuser")
-    MCPServerProcess("curated-mcp", MCP_CMD, trust_level="curated").start(_host_policy_decision=decision("curated"))
+    MCPServerProcess("curated-mcp", MCP_CMD, trust_level="curated").start(_host_policy_decision=decision("curated"), launch_plan=plan("m", decision("curated"), {"mcp_command": list(MCP_CMD)}))
     argv = _FakePopen.instances[-1].args
     assert argv == MCP_CMD                        # raw command, not docker
     assert argv[0] != "docker"

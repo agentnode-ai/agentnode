@@ -8,6 +8,8 @@ and static guards that no downstream runner re-reads host_trust_policy.
 """
 from __future__ import annotations
 
+import io
+import json
 import types
 
 import pytest
@@ -18,6 +20,8 @@ from agentnode_sdk.runtimes.mcp_launch import (
     MCPProcessCompatibility,
     build_mcp_launch_plan,
 )
+from agentnode_sdk.sandbox.policy import HostTrustPolicyDecision
+from agentnode_sdk.sandbox.types import SandboxRequiredError
 from tests.hostpolicy import decision
 
 
@@ -219,8 +223,9 @@ class _FakeProc:
         _FakeProc._ids[0] += 1
         self.pid = _FakeProc._ids[0]
 
-    def start(self, timeout=10.0, env_keys=None, *, _host_policy_decision):
+    def start(self, timeout=10.0, env_keys=None, *, _host_policy_decision, launch_plan):
         self.start_calls += 1
+        self.last_plan = launch_plan
 
     def health_check(self):
         return self._alive
@@ -228,6 +233,11 @@ class _FakeProc:
     def stop(self):
         self.stop_calls += 1
         self._alive = False
+
+
+def _fake_plan(compat):
+    return types.SimpleNamespace(compatibility=compat, boundary=compat.execution_boundary,
+                                 command=("cmd",))
 
 
 @pytest.fixture
@@ -239,7 +249,7 @@ def pool(monkeypatch):
 
 def _get(pool, compat, trust="trusted", env_keys=None):
     return pool.get_or_start("m", ["cmd"], host_policy_decision=decision(trust),
-                             compatibility=compat, env_keys=env_keys)
+                             launch_plan=_fake_plan(compat), env_keys=env_keys)
 
 
 class TestPoolCompatibility:
@@ -289,14 +299,44 @@ class TestPoolCompatibility:
         from agentnode_sdk.runtimes import mcp_runner
 
         class _BoomProc(_FakeProc):
-            def start(self, timeout=10.0, env_keys=None, *, _host_policy_decision):
+            def start(self, timeout=10.0, env_keys=None, *, _host_policy_decision, launch_plan):
                 raise RuntimeError("start failed")
         monkeypatch.setattr(mcp_runner, "MCPServerProcess", _BoomProc)
         p = mcp_runner.MCPProcessPool()
         with pytest.raises(RuntimeError):
             p.get_or_start("m", ["cmd"], host_policy_decision=decision("trusted"),
-                           compatibility=_compat())
+                           launch_plan=_fake_plan(_compat()))
         assert "m" not in p._servers                     # no usable entry after failed start
+
+    # --- Blocker 1: stop failure must be fail-closed (no parallel processes) ---
+    def test_incompatible_stop_not_confirmed_fails_closed(self, pool):
+        s1 = _get(pool, _compat(boundary="host"))
+        # stop() runs but the process does NOT terminate (still healthy)
+        s1.stop = lambda: setattr(s1, "stop_calls", s1.stop_calls + 1)
+        before = _FakeProc._ids[0]
+        with pytest.raises(SandboxRequiredError):
+            _get(pool, _compat(boundary="sandbox", sbx="P1"))
+        assert _FakeProc._ids[0] == before      # NO replacement process constructed
+        assert "m" not in pool._servers         # pool empty for the slug
+        assert s1.start_calls == 1              # old never restarted/reused
+
+    def test_incompatible_stop_raises_fails_closed(self, pool):
+        s1 = _get(pool, _compat(boundary="host"))
+        def _boom():
+            raise RuntimeError("stop failed")
+        s1.stop = _boom
+        before = _FakeProc._ids[0]
+        with pytest.raises(RuntimeError):
+            _get(pool, _compat(boundary="sandbox", sbx="P1"))
+        assert _FakeProc._ids[0] == before and "m" not in pool._servers
+
+    # --- Blocker 2: the SAME launch-plan object is threaded to start ---
+    def test_launch_plan_object_threaded_to_start(self, pool):
+        lp = _fake_plan(_compat())
+        s = pool.get_or_start("m", ["cmd"], host_policy_decision=decision("trusted"),
+                              launch_plan=lp)
+        assert s.last_plan is lp                # exact object identity at start
+        assert s.compatibility is lp.compatibility
 
 
 # ---------------------------------------------------------------------------
@@ -312,3 +352,100 @@ def test_no_host_trust_policy_reads_in_downstream_runners():
         assert "host_trust_policy(" not in src, f"{mod} still reads host_trust_policy()"
         assert "import host_trust_policy" not in src, f"{mod} still imports host_trust_policy"
         assert "requires_sandbox_for_policy(" not in src, f"{mod} re-runs the policy matrix"
+
+
+# ---------------------------------------------------------------------------
+# 6. Blocker 3 — decision invariants (factory-shaped, tamper-resistant)
+# ---------------------------------------------------------------------------
+
+class TestDecisionInvariants:
+    def test_valid_decision_from_enforce_accepted(self):
+        d = decision("trusted", "curated_only")   # trusted+curated_only ⇒ sandbox
+        assert d.sandbox_required is True and d.execution_boundary == "sandbox"
+
+    @pytest.mark.parametrize("kwargs", [
+        {"policy": "weird", "trust_level": "trusted", "sandbox_required": False, "execution_boundary": "host"},
+        {"policy": "none", "trust_level": "trusted", "sandbox_required": False, "execution_boundary": "host"},
+        {"policy": "default", "trust_level": "trusted", "sandbox_required": True, "execution_boundary": "host"},
+        {"policy": "default", "trust_level": "trusted", "sandbox_required": True, "execution_boundary": "sandbox"},
+        {"policy": "default", "trust_level": "trusted", "sandbox_required": False, "execution_boundary": "host", "policy_recognized": False},
+    ])
+    def test_contradictory_decision_rejected(self, kwargs):
+        with pytest.raises(ValueError):
+            HostTrustPolicyDecision(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# 7. Blocker 4 — backend + profile version bound into the sandbox fingerprint
+# ---------------------------------------------------------------------------
+
+class TestBackendBinding:
+    _ENTRY = {"trust_level": "unverified", "mcp_command": ["npx", "m"],
+              "version": "1", "artifact_hash": "sha256:aaa"}
+
+    def test_backend_kind_changes_sandbox_fingerprint(self):
+        d = decision("unverified")  # sandbox
+        docker = build_mcp_launch_plan("m", self._ENTRY, d, backend_kind="docker")
+        podman = build_mcp_launch_plan("m", self._ENTRY, d, backend_kind="podman")
+        assert docker.compatibility != podman.compatibility          # ⇒ pool restart
+        assert docker.compatibility.launch_fingerprint == podman.compatibility.launch_fingerprint
+
+    def test_same_backend_reuses(self):
+        d = decision("unverified")
+        a = build_mcp_launch_plan("m", self._ENTRY, d, backend_kind="docker")
+        b = build_mcp_launch_plan("m", self._ENTRY, d, backend_kind="docker")
+        assert a.compatibility == b.compatibility
+
+
+# ---------------------------------------------------------------------------
+# 8. Blocker 2 — the launch plan (not a re-derivation) drives the real start
+# ---------------------------------------------------------------------------
+
+def test_launch_plan_command_drives_real_host_start(monkeypatch):
+    from agentnode_sdk.runtimes import mcp_runner
+
+    launched = {}
+
+    class _P:
+        def __init__(self, args, **k):
+            launched["argv"] = args
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO(
+                json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}) + "\n")
+            self.stderr = io.StringIO()
+            self._alive = True
+
+        def poll(self):
+            return None if self._alive else 0
+
+        def wait(self, timeout=None):
+            self._alive = False
+            return 0
+
+        def kill(self):
+            self._alive = False
+
+    monkeypatch.setattr(mcp_runner.subprocess, "Popen", _P)
+    entry = {"trust_level": "curated", "mcp_command": ["node", "server.js"],
+             "version": "1", "artifact_hash": "h"}
+    d = decision("curated")  # host
+    plan = build_mcp_launch_plan("m", entry, d)
+    # construct with a DELIBERATELY WRONG self.command — start must use plan.command
+    proc = mcp_runner.MCPServerProcess("m", ["WRONG", "CMD"], trust_level="curated", entry=entry)
+    proc.start(_host_policy_decision=d, launch_plan=plan)
+    try:
+        assert launched["argv"] == ["node", "server.js"]          # started == plan.command
+        assert list(plan.command) == launched["argv"]             # == fingerprint input
+    finally:
+        proc.stop()
+
+
+def test_start_refuses_plan_boundary_mismatch(monkeypatch):
+    from agentnode_sdk.runtimes import mcp_runner
+    entry = {"trust_level": "curated", "mcp_command": ["node"], "version": "1", "artifact_hash": "h"}
+    d = decision("curated")  # host
+    sandbox_plan = build_mcp_launch_plan("m", {**entry, "trust_level": "unverified"},
+                                         decision("unverified"))  # sandbox plan
+    proc = mcp_runner.MCPServerProcess("m", ["node"], trust_level="curated", entry=entry)
+    with pytest.raises(RuntimeError):
+        proc.start(_host_policy_decision=d, launch_plan=sandbox_plan)  # boundary mismatch

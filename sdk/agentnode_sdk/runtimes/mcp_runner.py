@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from agentnode_sdk.models import RunToolResult
 from agentnode_sdk.policy import PolicyResult, audit_decision
+from agentnode_sdk.sandbox.types import SandboxRequiredError
 
 logger = __import__("logging").getLogger("agentnode.mcp_runner")
 
@@ -62,14 +63,19 @@ class MCPServerProcess:
         env_keys: list[str] | None = None,
         *,
         _host_policy_decision: Any,
+        launch_plan: Any,
     ) -> None:
         """Start the MCP server subprocess.
 
         F1: the host/sandbox routing is taken from the immutable
         ``_host_policy_decision`` made ONCE by the owner (``run_tool`` or
         ``cmd_mcp_doctor``) — start() reads no config and re-runs no policy. The
-        real runtime availability is still re-probed on the sandbox path
-        (fail-closed if it vanished); the policy is never recomputed. Community/
+        launch definition (command, network, domains, volume, backend) is taken
+        from the SAME immutable ``launch_plan`` that produced the compatibility
+        fingerprint — so the started process is provably the fingerprinted one; it
+        is NOT re-resolved here from entry/config/defaults. The real runtime
+        availability is still re-probed on the sandbox path (fail-closed if it
+        vanished); the policy and launch identity are never recomputed. Community/
         unverified tiers ⇒ container; curated ⇒ host; trusted ⇒ host (transition).
         """
         from agentnode_sdk.sandbox import get_default_backend
@@ -80,6 +86,9 @@ class MCPServerProcess:
             raise RuntimeError("MCP start requires a host-trust policy decision")
         if _host_policy_decision.trust_level != (self.trust_level or ""):
             raise RuntimeError("host-trust policy decision does not match MCP trust level")
+        # Launch plan is mandatory and must match this call's boundary; no fallback.
+        if launch_plan is None or launch_plan.boundary != _host_policy_decision.execution_boundary:
+            raise RuntimeError("MCP start requires a launch plan matching the routing boundary")
 
         # Windows: CREATE_NEW_PROCESS_GROUP for clean shutdown
         kwargs: dict[str, Any] = {}
@@ -115,7 +124,9 @@ class MCPServerProcess:
                 # descriptor- AND content-bound sealed volume. FAIL-CLOSED: any problem
                 # raises; there is NO fallback to the registry-fetch (npx/uvx) mcp_command
                 # path, no key, no auto-created/rebuilt volume, no permissive network.
-                spec = self._preinstalled_spec(backend, name)
+                # F1: the ProcessSpec is built from the launch_plan (same object that
+                # produced the fingerprint), not a separate re-derivation.
+                spec = self._preinstalled_spec(backend, name, launch_plan)
             else:
                 # MCP net-isolation (Fallback C): a non-preinstalled community MCP would have to
                 # fetch at runtime (npx/uvx) with an OPEN network — the exact path we refuse. A
@@ -148,8 +159,10 @@ class MCPServerProcess:
                              if credentialed else None)
                 logger.info("MCP '%s' started sandboxed via %s", self.slug, self._runtime)
             else:
-                # Host path: curated (allowed) / trusted (transition). Existing behaviour.
-                launch = self.command
+                # Host path: curated (allowed) / trusted (transition). The command is
+                # the launch_plan's (== entry.mcp_command for host) — the same value
+                # the fingerprint was built from.
+                launch = list(launch_plan.command)
                 popen_env = _mcp_env(env_keys)
 
             self._process = subprocess.Popen(
@@ -245,39 +258,40 @@ class MCPServerProcess:
         return ({"NODE_PATH": "/install/lib/node_modules"} if pspec.manager == "npm"
                 else {"PYTHONPATH": "/install"})
 
-    def _preinstalled_spec(self, backend, name: str):
+    def _preinstalled_spec(self, backend, name: str, plan):
         """Stage 4B (non-credentialed): verify the sealed volume (a–e) then build the hardened
-        ProcessSpec — RO /install, clean HOME, minimal module-resolution env only, NO secret.
+        ProcessSpec FROM THE LAUNCH PLAN — RO /install, clean HOME, minimal module-resolution
+        env only, NO secret.
 
-        Network (MCP net-isolation, Fallback C): a valid sealed ``mcp_allowed_domains`` ⇒ reuse
-        the (secret-free) egress-allowlist proxy (network=none + dual-homed CONNECT proxy, domains
-        only); otherwise ``network="none"``. NEVER an open ``network="default"`` — a community MCP
-        is isolated or allowlisted, never open."""
-        from agentnode_sdk.sandbox.domain_policy import (
-            DomainPolicyError,
-            canonicalize_allowed_domains,
-        )
-        from agentnode_sdk.sandbox.types import MountSpec, ProcessSpec
+        F1: command, network, sealed domains, and volume/mounts come from ``plan`` (the same
+        immutable object that produced the compatibility fingerprint), NOT a separate
+        re-derivation from the entry — so the started process is provably the fingerprinted
+        one. The side-effectful verification (volume inspect + content↔hash) still runs, on the
+        planned volume; and the backend KIND must match the planned one (fail-closed if the
+        host's runtime changed since the plan was built). NEVER an open network — a community
+        MCP is isolated or allowlisted, never open."""
+        from agentnode_sdk.sandbox.types import MountSpec, ProcessSpec, SandboxRequiredError
 
-        pspec = self._verify_preinstall(backend)
-        mounts = [MountSpec(src=pspec.volume, dst="/install", read_only=True)]
-        env = self._install_env(pspec)
-
-        # Sealed egress allowlist? Reuse the (secret-free) egress proxy for the declared domains.
-        # Invalid/empty ⇒ () ⇒ fully network-isolated (never open); no proxy is started.
-        try:
-            sealed = canonicalize_allowed_domains(
-                (self.entry or {}).get("mcp_allowed_domains") or []
+        actual_kind = backend.check_available().backend or "docker"
+        if plan.backend_kind is not None and plan.backend_kind != actual_kind:
+            raise SandboxRequiredError(
+                f"MCP '{self.slug}' sandbox backend changed since planning "
+                f"({plan.backend_kind} -> {actual_kind}); refusing to start with a runtime "
+                "different from the fingerprinted one."
             )
-        except (DomainPolicyError, ValueError):
-            sealed = ()
-        if sealed:
+        self._verify_preinstall(backend)  # side-effectful verify on the planned volume
+
+        mounts = [MountSpec(src=plan.volume, dst="/install", read_only=True)]
+        env = ({"NODE_PATH": "/install/lib/node_modules"} if plan.manager == "npm"
+               else {"PYTHONPATH": "/install"})
+
+        if plan.network == "egress" and plan.allowed_domains:
             from agentnode_sdk.sandbox.egress import start_egress_proxy
-            handle = start_egress_proxy(list(sealed))
+            handle = start_egress_proxy(list(plan.allowed_domains))
             self._egress_handle = handle
             try:
                 return ProcessSpec(
-                    command=list(pspec.command), network="egress", egress=handle.spec,
+                    command=list(plan.command), network="egress", egress=handle.spec,
                     clean_home=True, interactive=True, env=env, mounts=mounts, name=name,
                 )
             except BaseException:
@@ -286,7 +300,7 @@ class MCPServerProcess:
 
         # No declared domains ⇒ fully network-isolated (never open).
         return ProcessSpec(
-            command=list(pspec.command), network="none", clean_home=True, interactive=True,
+            command=list(plan.command), network="none", clean_home=True, interactive=True,
             env=env, mounts=mounts, name=name,
         )
 
@@ -510,7 +524,7 @@ class MCPProcessPool:
         self, slug: str, command: list[str],
         *,
         host_policy_decision: Any,
-        compatibility: Any,
+        launch_plan: Any,
         timeout: float = 10.0, env_keys: list[str] | None = None,
         entry: dict | None = None,
         mcp_consent_callback=None,
@@ -531,13 +545,14 @@ class MCPProcessPool:
         best-effort, and a fresh process is started under the current decision.
         The new entry is published + marked active ONLY after a successful start;
         a failed start leaves no usable pool entry (fail-closed)."""
+        compatibility = launch_plan.compatibility
         with self._lock:
             trust_level = host_policy_decision.trust_level
             if env_keys:
                 server = MCPServerProcess(slug, command, trust_level=trust_level, entry=entry,
                                           mcp_consent_callback=mcp_consent_callback)
                 server.start(timeout=timeout, env_keys=env_keys,  # NOT stored in the pool
-                             _host_policy_decision=host_policy_decision)
+                             _host_policy_decision=host_policy_decision, launch_plan=launch_plan)
                 server.compatibility = compatibility
                 return server
 
@@ -546,20 +561,25 @@ class MCPProcessPool:
                 return server  # healthy + full-identity match ⇒ reuse
 
             if server is not None:
-                # Remove BEFORE stop/start so the old process can never be handed
-                # out for a tool call, even if stop() fails.
+                # Remove from the pool FIRST so the old process can never be handed
+                # out for a tool call. Then require a CONFIRMED termination before
+                # starting any replacement — FAIL-CLOSED: a stop() that raises (it
+                # propagates, pool already empty) or a process still alive afterwards
+                # must NOT leave the old process running alongside a new one.
                 self._servers.pop(slug, None)
                 if server.compatibility is not None and server.compatibility != compatibility:
                     logger.debug("Restarting cached MCP process because its execution profile changed.")
-                try:
-                    server.stop()
-                except Exception:
-                    logger.debug("Failed to stop incompatible MCP process for %s", slug, exc_info=True)
+                server.stop()
+                if server.health_check():
+                    raise SandboxRequiredError(
+                        f"refusing to start a replacement MCP process for '{slug}': the "
+                        "incompatible cached process did not terminate (fail-closed)."
+                    )
 
             new_server = MCPServerProcess(slug, command, trust_level=trust_level, entry=entry,
                                           mcp_consent_callback=mcp_consent_callback)
             new_server.start(timeout=timeout, env_keys=env_keys,
-                             _host_policy_decision=host_policy_decision)
+                             _host_policy_decision=host_policy_decision, launch_plan=launch_plan)
             new_server.compatibility = compatibility     # mark active only after success
             self._servers[slug] = new_server             # publish only after success
             return new_server
@@ -718,11 +738,17 @@ def run_mcp(
 
         pool = _get_global_pool()
         ephemeral = bool(env_keys)  # D2: credentialed MCPs are never pooled
-        plan = build_mcp_launch_plan(slug, entry, _host_policy_decision)
+        # Resolve the backend KIND ONCE (sandbox only) so the plan's fingerprint and
+        # the actual start use the same runtime; a read-only probe, no resource creation.
+        backend_kind = None
+        if _host_policy_decision.execution_boundary == "sandbox":
+            from agentnode_sdk.sandbox import get_default_backend
+            backend_kind = get_default_backend().check_available().backend or None
+        plan = build_mcp_launch_plan(slug, entry, _host_policy_decision, backend_kind=backend_kind)
         server = pool.get_or_start(
             slug, command, env_keys=env_keys,
             host_policy_decision=_host_policy_decision,
-            compatibility=plan.compatibility,
+            launch_plan=plan,
             entry=entry, mcp_consent_callback=mcp_consent_callback,
         )
 

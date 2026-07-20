@@ -21,7 +21,7 @@ from agentnode_sdk.sandbox.backend import SandboxBackend
 from agentnode_sdk.sandbox.container_backend import ContainerBackend
 from agentnode_sdk.sandbox.policy import enforce_sandbox_policy
 from agentnode_sdk.sandbox.types import SandboxAvailability
-from tests.hostpolicy import decision
+from tests.hostpolicy import decision, plan
 
 MCP_CMD = ["npx", "-y", "@scope/some-mcp@1.2.3"]
 
@@ -151,14 +151,14 @@ def test_default_trusted_mcp_runs_on_host(monkeypatch):
     _container_available(monkeypatch)
     _set_policy(monkeypatch, "default")
     monkeypatch.setenv("HOME", "/home/realuser")
-    MCPServerProcess("m", MCP_CMD, trust_level="trusted").start(_host_policy_decision=decision("trusted", "default"))
+    MCPServerProcess("m", MCP_CMD, trust_level="trusted").start(_host_policy_decision=decision("trusted", "default"), launch_plan=plan("m", decision("trusted", "default"), {"mcp_command": list(MCP_CMD)}))
     assert _FakePopen.instances[-1].args == MCP_CMD          # raw command on host — today's behavior
 
 
 def test_default_curated_mcp_runs_on_host(monkeypatch):
     _container_available(monkeypatch)
     _set_policy(monkeypatch, "default")
-    MCPServerProcess("m", MCP_CMD, trust_level="curated").start(_host_policy_decision=decision("curated", "default"))
+    MCPServerProcess("m", MCP_CMD, trust_level="curated").start(_host_policy_decision=decision("curated", "default"), launch_plan=plan("m", decision("curated", "default"), {"mcp_command": list(MCP_CMD)}))
     assert _FakePopen.instances[-1].args == MCP_CMD          # regression
 
 
@@ -167,7 +167,7 @@ def test_curated_only_trusted_mcp_is_sandboxed(monkeypatch):
     _set_policy(monkeypatch, "curated_only")
     # trusted now routes into the container path; a non-preinstalled npx MCP is refused (0.17)
     with pytest.raises(SandboxRequiredError, match="not preinstalled"):
-        MCPServerProcess("m", MCP_CMD, trust_level="trusted").start(_host_policy_decision=decision("trusted", "curated_only"))
+        MCPServerProcess("m", MCP_CMD, trust_level="trusted").start(_host_policy_decision=decision("trusted", "curated_only"), launch_plan=plan("m", decision("trusted", "curated_only")))
     assert _FakePopen.instances == []                        # never launched on host
 
 
@@ -175,7 +175,7 @@ def test_none_curated_mcp_is_sandboxed(monkeypatch):
     _container_available(monkeypatch)
     _set_policy(monkeypatch, "none")
     with pytest.raises(SandboxRequiredError):
-        MCPServerProcess("m", MCP_CMD, trust_level="curated").start(_host_policy_decision=decision("curated", "none"))
+        MCPServerProcess("m", MCP_CMD, trust_level="curated").start(_host_policy_decision=decision("curated", "none"), launch_plan=plan("m", decision("curated", "none")))
     assert _FakePopen.instances == []
 
 
@@ -207,4 +207,4 @@ def test_curated_only_mcp_refusal_names_the_policy(monkeypatch):
     _container_available(monkeypatch)
     _set_policy(monkeypatch, "curated_only")
     with pytest.raises(SandboxRequiredError, match="host_trust_policy=curated_only"):
-        MCPServerProcess("m", MCP_CMD, trust_level="trusted").start(_host_policy_decision=decision("trusted", "curated_only"))
+        MCPServerProcess("m", MCP_CMD, trust_level="trusted").start(_host_policy_decision=decision("trusted", "curated_only"), launch_plan=plan("m", decision("trusted", "curated_only")))
