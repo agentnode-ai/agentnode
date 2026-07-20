@@ -122,7 +122,9 @@ def top_level_from_entrypoint(entrypoint: str) -> str:
 # Build-wheel-first (§5)
 # ---------------------------------------------------------------------------
 
-def build_wheel(target_python: str, source_dir: Path, dest_dir: Path) -> Path:
+def build_wheel(
+    target_python: str, source_dir: Path, dest_dir: Path, *, env: dict | None = None
+) -> Path:
     """Build exactly one wheel from a verified source tree into an EMPTY dest dir.
 
     Runs ``<target_python> -m pip wheel --no-deps --no-cache-dir --wheel-dir
@@ -130,6 +132,10 @@ def build_wheel(target_python: str, source_dir: Path, dest_dir: Path) -> Path:
     exactly one regular ``.whl`` afterwards (no symlink, fully inside ``dest_dir``,
     never selected by an unvalidated filename). The caller owns ``dest_dir`` and
     cleans it in ``finally``.
+
+    ``env`` (the SINGLE frozen controlled environment) drives the build too — the
+    build MUST NOT re-inherit an unmanaged ``os.environ`` with ``PIP_TARGET`` /
+    ``PIP_PREFIX`` / user-site overrides. ``None`` inherits (metadata-only callers).
 
     Build boundary — the build runs BEFORE quarantine. A cooperative PEP-517
     backend does not perform a normal site-packages install (``pip wheel`` targets
@@ -147,7 +153,7 @@ def build_wheel(target_python: str, source_dir: Path, dest_dir: Path) -> Path:
         str(source_dir),
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=WHEEL_BUILD_TIMEOUT)
+        proc = subprocess.run(cmd, capture_output=True, timeout=WHEEL_BUILD_TIMEOUT, env=env)
     except subprocess.TimeoutExpired:
         raise WheelValidationError("wheel_build_failed", "Wheel build failed")
     if proc.returncode != 0:

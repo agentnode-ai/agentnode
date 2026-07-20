@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from agentnode_sdk import _agent_pip as ap
+from agentnode_sdk import _wheel_meta as wm
 from agentnode_sdk import installer
 from agentnode_sdk import lock_integrity as li
 from tests.agent_m1_helpers import make_target_venv, pip_python
@@ -313,8 +314,78 @@ def test_same_version_different_bytes_reinstalled(tmp_path, isolated_lock, targe
     assert got1.stdout.strip() == "v1"
     # rebuild SAME version with different bytes, reinstall (upgrade path)
     src2 = _write_agent_source(tmp_path / "b", marker="v2")
-    installer.update_lockfile  # noqa: keep import warm
     _run("m1-agent", src2, target_python, lock_entry=_lock_entry())
     got2 = subprocess.run([target_python, "-c", "import m1agent.agent as a; print(a.MARKER)"],
                           capture_output=True, text=True)
     assert got2.stdout.strip() == "v2"  # force-reinstall applied the exact new bytes
+
+
+# ---------------------------------------------------------------------------
+# Amendment — Blocker 1: foreign re-insert between quarantine and commit
+# ---------------------------------------------------------------------------
+
+def test_foreign_reinsert_before_commit_refused(tmp_path, isolated_lock, target_python, monkeypatch):
+    """A concurrent writer inserts a foreign entry for the slug after quarantine but
+    before commit (injected via post_verify) → commit refuses, foreign entry kept."""
+    foreign = _lock_entry(entrypoint="foreign.agent:run",
+                          python_distribution="foreign-agent",
+                          python_distribution_version="9.9.9")
+
+    def inject_foreign(*a, **k):
+        installer.update_lockfile("m1-agent", foreign, path=isolated_lock)
+        return ap.PostVerifyResult("m1-agent", "1.0.0")
+
+    monkeypatch.setattr(ap, "post_verify", inject_foreign)
+    src = _write_agent_source(tmp_path / "a")
+    with pytest.raises(RuntimeError, match="unavailable until it is reinstalled"):
+        _run("m1-agent", src, target_python)
+    stored = installer.read_lockfile(isolated_lock)["packages"]["m1-agent"]
+    assert stored["python_distribution"] == "foreign-agent"  # not overwritten
+
+
+# ---------------------------------------------------------------------------
+# Amendment — Blocker 2: build_wheel receives the controlled env, not os.environ
+# ---------------------------------------------------------------------------
+
+def test_transaction_build_receives_controlled_env(tmp_path, isolated_lock,
+                                                   target_python, monkeypatch):
+    monkeypatch.setenv("PIP_TARGET", "/somewhere")
+    monkeypatch.setenv("PIP_PREFIX", "/pre")
+    monkeypatch.setenv("PYTHONUSERBASE", "/ub")
+    real_build = wm.build_wheel
+    captured = {}
+
+    def spy_build(target, src, dest, *, env=None):
+        captured["env"] = env
+        return real_build(target, src, dest, env=env)
+
+    monkeypatch.setattr(wm, "build_wheel", spy_build)
+    src = _write_agent_source(tmp_path / "a")
+    _run("m1-agent", src, target_python)
+    env = captured["env"]
+    assert env is not None
+    assert "PIP_TARGET" not in env and "PIP_PREFIX" not in env and "PYTHONUSERBASE" not in env
+    assert env["PYTHONNOUSERSITE"] == "1" and env["PIP_USER"] == "0"
+
+
+# ---------------------------------------------------------------------------
+# Amendment — Blocker 3: install-scheme failure refuses pre-quarantine
+# ---------------------------------------------------------------------------
+
+def test_transaction_refused_when_install_scheme_fails(tmp_path, isolated_lock,
+                                                       target_python, monkeypatch):
+    installer.update_lockfile("m1-agent", _lock_entry(
+        python_distribution="m1-agent", python_distribution_version="1.0.0"),
+        path=isolated_lock)
+    before = installer.read_lockfile(isolated_lock)["packages"]["m1-agent"]["_integrity"]["hash"]
+    monkeypatch.setattr(ap, "assert_install_scheme",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            ap.AgentPipError("install_scheme", "Install target could not be established")))
+    called = []
+    monkeypatch.setattr(ap, "pip_install_wheel", lambda *a, **k: called.append(1))
+    src = _write_agent_source(tmp_path / "a")
+    with pytest.raises(RuntimeError, match="target could not be established"):
+        _run("m1-agent", src, target_python)
+    assert called == []  # pip never started (pre-quarantine refusal)
+    after = installer.read_lockfile(isolated_lock)["packages"]["m1-agent"]["_integrity"]["hash"]
+    assert before == after  # old entry intact

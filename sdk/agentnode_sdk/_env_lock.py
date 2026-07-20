@@ -69,12 +69,16 @@ def _canon(path: str | None) -> str | None:
     return os.path.normcase(os.path.realpath(path))
 
 
-def resolve_env_identity(target_python: str) -> EnvIdentity:
-    """Interrogate *target_python* import-free and return its canonical identity."""
+def resolve_env_identity(target_python: str, *, env: dict | None = None) -> EnvIdentity:
+    """Interrogate *target_python* import-free and return its canonical identity.
+
+    ``env`` is the SINGLE frozen controlled environment (same snapshot used for the
+    config check, build, install and post-verify). ``None`` inherits.
+    """
     try:
         proc = subprocess.run(
             [target_python, "-c", _PROBE],
-            capture_output=True, timeout=_PROBE_TIMEOUT,
+            capture_output=True, timeout=_PROBE_TIMEOUT, env=env,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         raise EnvironmentResolutionError("target interpreter probe failed") from exc

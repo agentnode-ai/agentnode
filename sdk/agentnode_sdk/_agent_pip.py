@@ -91,6 +91,69 @@ def assert_target_contract(target_python: str, env: dict[str, str]) -> None:
             raise AgentPipError("target_contract", "Install target could not be established")
 
 
+# Import-free probe of the effective install SCHEME in the target interpreter.
+# Mirrors pip's own writability test (create+delete a temp file). Reports raw
+# observations; the parent decides.
+_INSTALL_SCHEME_PROBE = r'''
+import sys, sysconfig, site, os, json, tempfile
+purelib = sysconfig.get_path("purelib")
+platlib = sysconfig.get_path("platlib")
+in_venv = (sys.prefix != getattr(sys, "base_prefix", sys.prefix)) or hasattr(sys, "real_prefix")
+def writable(d):
+    if not d or not os.path.isdir(d):
+        return False
+    try:
+        f = tempfile.NamedTemporaryFile(dir=d, prefix=".anwrite-", delete=True)
+        f.close()
+        return True
+    except OSError:
+        return False
+try:
+    user_site = site.getusersitepackages()
+except Exception:
+    user_site = None
+print(json.dumps({
+    "purelib": purelib, "platlib": platlib, "in_venv": in_venv,
+    "purelib_writable": writable(purelib), "platlib_writable": writable(platlib),
+    "user_site": user_site,
+    "pythonnousersite": os.environ.get("PYTHONNOUSERSITE"),
+    "pip_user": os.environ.get("PIP_USER"),
+}))
+'''
+
+
+def _install_scheme_ok(probe: dict) -> bool:
+    """Pure decision: pip will write ONLY into an allowed, writable purelib/platlib.
+
+    Both install roots must be writable. If they are not, pip would either error or
+    (absent our ``PIP_USER=0``) default to a user-site install — a root the
+    environment lock does not cover. We therefore refuse BEFORE quarantine. A venv
+    (writable site) and a system interpreter with a writable site both pass; a
+    non-writable system site is refused.
+    """
+    return bool(probe.get("purelib_writable")) and bool(probe.get("platlib_writable"))
+
+
+def assert_install_scheme(target_python: str, env: dict[str, str]) -> None:
+    """Refuse (pre-quarantine) if pip would not install cleanly into a writable
+    purelib/platlib under the controlled env (no automatic user-site fallback)."""
+    try:
+        proc = subprocess.run(
+            [target_python, "-c", _INSTALL_SCHEME_PROBE],
+            capture_output=True, timeout=_CONFIG_TIMEOUT, env=env,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise AgentPipError("install_scheme", "Install target could not be established") from exc
+    if proc.returncode != 0:
+        raise AgentPipError("install_scheme", "Install target could not be established")
+    try:
+        probe = json.loads(proc.stdout.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise AgentPipError("install_scheme", "Install target could not be established") from exc
+    if not _install_scheme_ok(probe):
+        raise AgentPipError("install_scheme", "Install target could not be established")
+
+
 def _run_pip(args: list[str], env: dict[str, str], code: str) -> None:
     try:
         proc = subprocess.run(args, capture_output=True, timeout=_PIP_TIMEOUT, env=env)

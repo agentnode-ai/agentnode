@@ -837,6 +837,16 @@ class _AgentTransactionAbort(Exception):
         super().__init__(message)
 
 
+class _ForeignEntryPresent(Exception):
+    """The slug was (re)inserted by another writer between quarantine and commit —
+    the commit must NOT overwrite it."""
+
+
+class _IndeterminateLockState(RuntimeError):
+    """The final lock state could not be confirmed (neither the intended entry nor a
+    confirmed-absent slug). Never claimed as 'absent', never a success."""
+
+
 def _capture_cas_baseline(slug: str, path: Path) -> tuple[bool, str | None]:
     """Read the slug's baseline state (mutation-strict) BEFORE the build.
 
@@ -851,30 +861,84 @@ def _capture_cas_baseline(slug: str, path: Path) -> tuple[bool, str | None]:
     return False, (integ.get("hash") if isinstance(integ, dict) else None)
 
 
-def _commit_agent_entry(slug: str, lock_entry: dict, path: Path) -> None:
-    """Durable, sealed final commit + mutation-strict confirmation.
+def _stored_matches_expected(data: Any, slug: str, expected: dict, expected_hash: str) -> bool:
+    """Pure predicate: the lockfile *data* holds EXACTLY the expected sealed entry
+    for *slug* (valid structure + entry integrity, matching integrity hash, the
+    python_distribution pair, and full sealed-field equality)."""
+    from agentnode_sdk.lock_integrity import verify_entry, verify_structure
 
-    On ANY commit failure the old entry is NEVER restored; the entry is driven to
-    ``absent`` (agent unavailable until reinstall) per the M1 crash contract.
+    stored = data["packages"].get(slug) if isinstance(data, dict) and isinstance(
+        data.get("packages"), dict
+    ) else None
+    return bool(
+        isinstance(stored, dict)
+        and verify_structure(data) == "verified"
+        and verify_entry(slug, stored).status == "verified"
+        and stored.get("_integrity", {}).get("hash") == expected_hash
+        and stored.get("python_distribution") == expected.get("python_distribution")
+        and stored.get("python_distribution_version")
+        == expected.get("python_distribution_version")
+        and stored == expected
+    )
+
+
+def _recover_to_absent(slug: str, path: Path) -> None:
+    """Drive *slug* to absent after a failed commit — never restore, never swallow.
+
+    Raises :class:`_IndeterminateLockState` if absence cannot be mutation-strict
+    confirmed. The caller must NOT then claim the entry is absent or return success.
     """
-    from agentnode_sdk.lock_integrity import verify_entry
+    try:
+        data = read_lockfile_strict(path)
+        if data is not None and slug in data.get("packages", {}):
+            remove_from_lockfile(slug, path=path, durable=True)
+        confirm = read_lockfile_strict(path)
+        still_present = confirm is not None and slug in confirm.get("packages", {})
+    except Exception as exc:
+        raise _IndeterminateLockState(
+            "A1-M1 indeterminate lock state: could not confirm the agent entry is absent."
+        ) from exc
+    if still_present:
+        raise _IndeterminateLockState(
+            "A1-M1 indeterminate lock state: the agent entry could not be removed."
+        )
+
+
+def _commit_agent_entry(slug: str, lock_entry: dict, path: Path) -> None:
+    """Durable, sealed final commit bound to the EXACT expected entry.
+
+    Contract (Blocker 1): pre-seal the exact expected entry; upsert ONLY while the
+    slug is still absent (never overwrite a foreign re-insert); after the write
+    mutation-strict confirm the stored entry equals the exact expected sealed entry
+    (structure + entry integrity + ``_integrity.hash`` + the ``python_distribution``
+    pair + full sealed-field equality). Any failure drives the slug to absent (never
+    restores the old entry); if absence itself cannot be confirmed the state is
+    reported as indeterminate — no success, no false 'absent' claim, no swallowing.
+    """
+    from agentnode_sdk.lock_integrity import seal_entry
+
+    expected = seal_entry(lock_entry)                     # the exact sealed entry
+    expected_hash = expected["_integrity"]["hash"]
+
+    def _commit_apply(data: dict) -> bool:
+        if slug in data["packages"]:
+            raise _ForeignEntryPresent()                 # do NOT overwrite a foreign entry
+        data["packages"][slug] = dict(expected)          # write the EXACT expected entry
+        return True
 
     try:
-        update_lockfile(slug, lock_entry, path=path, durable=True)
-    except Exception as exc:  # durability/seal/structure/write failure — reach 'absent'
-        try:
-            data = read_lockfile_strict(path)
-            if data is not None and slug in data.get("packages", {}):
-                remove_from_lockfile(slug, path=path, durable=True)
-        except Exception:
-            pass
+        mutate_lockfile(_commit_apply, path=path, audit_slug=slug, durable=True)
+    except _ForeignEntryPresent:
+        # a foreign entry appeared between quarantine and commit — never overwrite it,
+        # never claim success; leave the foreign entry untouched.
+        raise RuntimeError(_AGENT_UNAVAILABLE_MSG)
+    except Exception as exc:                              # write/durability/structure failure
+        _recover_to_absent(slug, path)                   # raises indeterminate if unconfirmed
         raise RuntimeError(_AGENT_UNAVAILABLE_MSG) from exc
-    data = read_lockfile_strict(path)
-    if (
-        data is None
-        or slug not in data.get("packages", {})
-        or verify_entry(slug, data["packages"][slug]).status != "verified"
-    ):
+
+    # Mutation-strict confirmation that the EXACT expected entry landed.
+    if not _stored_matches_expected(read_lockfile_strict(path), slug, expected, expected_hash):
+        _recover_to_absent(slug, path)
         raise RuntimeError(_AGENT_UNAVAILABLE_MSG)
 
 
@@ -905,14 +969,18 @@ def _install_agent_host_transaction(
     try:
         # (2) entrypoint top-level (string-only; pre-build fail-closed).
         top = wm.top_level_from_entrypoint(entrypoint)
-        # (3) target environment identity + controlled pip env + config-redirect
-        #     refusal — BEFORE the build, so a misconfigured install target refuses
-        #     cleanly without running the PEP-517 backend (foreign code) at all.
-        ident = envlock.resolve_env_identity(target_python)
+        # (3) ONE frozen controlled environment drives the config check, the build,
+        #     BOTH pip steps, the target-interpreter probes and post-verify — the
+        #     build must never re-inherit an unmanaged os.environ. Env identity +
+        #     config-redirect refusal + install-scheme (no user-site fallback into a
+        #     non-writable/other root) all run BEFORE the build, so a misconfigured or
+        #     non-writable target refuses cleanly without running the PEP-517 backend.
         env = ap.controlled_pip_env()
+        ident = envlock.resolve_env_identity(target_python, env=env)
         ap.assert_target_contract(target_python, env)
-        # (4) build-wheel-first + (5) import-free validation (pre-quarantine).
-        wheel = wm.build_wheel(target_python, package_dir, dest)
+        ap.assert_install_scheme(target_python, env)
+        # (4) build-wheel-first (controlled env) + (5) import-free validation.
+        wheel = wm.build_wheel(target_python, package_dir, dest, env=env)
         wid = wm.validate_wheel(wheel, top)
         # (6) consistency hash captured before pip hand-off.
         pre_hash = wm.wheel_consistency_hash(wheel)
