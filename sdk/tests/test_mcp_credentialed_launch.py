@@ -28,10 +28,10 @@ from agentnode_sdk.runtimes.mcp_runner import MCPServerProcess
 from agentnode_sdk.sandbox import set_default_backend
 from agentnode_sdk.sandbox.container_backend import ContainerBackend, mcp_sandbox_volume_name
 from agentnode_sdk.sandbox.types import EgressSpec, SandboxAvailability, SandboxRequiredError
-from tests.hostpolicy import decision as _dec, plan as _plan
+from tests.hostpolicy import decision as _dec, plan as _plan, preinstalled_entry as _pre
 
 _VDEC = _dec("verified")
-_VPLAN = _plan("some-mcp", _VDEC)
+_VPLAN = _plan("some-mcp", _VDEC, _pre("some-mcp"))
 HEX = "a" * 64
 SLUG = "some-mcp"
 MCP_VERSION = "1.0"

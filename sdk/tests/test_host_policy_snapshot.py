@@ -22,7 +22,7 @@ from agentnode_sdk.runtimes.mcp_launch import (
 )
 from agentnode_sdk.sandbox.policy import HostTrustPolicyDecision
 from agentnode_sdk.sandbox.types import SandboxRequiredError
-from tests.hostpolicy import decision
+from tests.hostpolicy import decision, preinstalled_entry
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +195,7 @@ class TestLaunchPlan:
 
     def test_host_has_no_sandbox_profile_sandbox_does(self):
         host = build_mcp_launch_plan("m", {**self._ENTRY, "trust_level": "curated"}, decision("curated", "default"))
-        sbx = build_mcp_launch_plan("m", {**self._ENTRY, "trust_level": "unverified"}, decision("unverified", "default"))
+        sbx = build_mcp_launch_plan("m", preinstalled_entry("m"), decision("unverified", "default"))
         assert host.compatibility.sandbox_profile_fingerprint is None
         assert sbx.compatibility.sandbox_profile_fingerprint is not None
 
@@ -380,8 +380,7 @@ class TestDecisionInvariants:
 # ---------------------------------------------------------------------------
 
 class TestBackendBinding:
-    _ENTRY = {"trust_level": "unverified", "mcp_command": ["npx", "m"],
-              "version": "1", "artifact_hash": "sha256:aaa"}
+    _ENTRY = preinstalled_entry("m")
 
     def test_backend_kind_changes_sandbox_fingerprint(self):
         d = decision("unverified")  # sandbox
@@ -444,8 +443,63 @@ def test_start_refuses_plan_boundary_mismatch(monkeypatch):
     from agentnode_sdk.runtimes import mcp_runner
     entry = {"trust_level": "curated", "mcp_command": ["node"], "version": "1", "artifact_hash": "h"}
     d = decision("curated")  # host
-    sandbox_plan = build_mcp_launch_plan("m", {**entry, "trust_level": "unverified"},
+    sandbox_plan = build_mcp_launch_plan("m", preinstalled_entry("m"),
                                          decision("unverified"))  # sandbox plan
     proc = mcp_runner.MCPServerProcess("m", ["node"], trust_level="curated", entry=entry)
     with pytest.raises(RuntimeError):
         proc.start(_host_policy_decision=d, launch_plan=sandbox_plan)  # boundary mismatch
+
+
+# ---------------------------------------------------------------------------
+# 9. Blocker (amendment 2) — sandbox launch identity is FAIL-CLOSED at plan build
+# ---------------------------------------------------------------------------
+
+class TestSandboxIdentityFailClosed:
+    def test_no_preinstall_intent_refused_at_build(self):
+        # a sandbox decision + a non-preinstalled entry (even WITH mcp_command) is
+        # refused at plan build — never an mcp_command fallback, no plan object.
+        entry = {"trust_level": "unverified", "mcp_command": ["npx", "-y", "evil"],
+                 "version": "1", "artifact_hash": "sha256:aaa"}
+        with pytest.raises(SandboxRequiredError, match="not preinstalled"):
+            build_mcp_launch_plan("m", entry, decision("unverified"))
+
+    @pytest.mark.parametrize("mutate", [
+        {"version": None},
+        {"mcp_preinstall": {"manager": "npm", "package": "pkg", "version": "1.0.0",
+                            "artifact_hash": "not-a-hash"}},
+        {"mcp_preinstall": {"manager": "evil", "package": "pkg", "version": "1.0.0",
+                            "artifact_hash": "sha256:" + "a" * 64}},
+        {"mcp_preinstall_command": ["node", "/etc/passwd"]},        # outside /install
+        {"mcp_sandbox_volume": "wrong-volume-name"},                 # descriptor mismatch
+    ])
+    def test_invalid_preinstall_fields_refused_no_fallback(self, mutate):
+        entry = {**preinstalled_entry("m"), **mutate}
+        with pytest.raises(SandboxRequiredError):
+            build_mcp_launch_plan("m", entry, decision("unverified"))
+
+    def test_unexpected_validator_error_not_swallowed(self, monkeypatch):
+        import agentnode_sdk.runtimes.mcp_launch as ml
+
+        def _boom(*a, **k):
+            raise ValueError("unexpected validator failure")
+        monkeypatch.setattr("agentnode_sdk.sandbox.mcp_preinstall.validate_preinstall_fields", _boom)
+        with pytest.raises(ValueError):                              # NOT swallowed, NOT a fallback
+            ml.build_mcp_launch_plan("m", preinstalled_entry("m"), decision("unverified"))
+
+    def test_valid_sandbox_identity_matches_pspec(self):
+        from agentnode_sdk.sandbox.mcp_preinstall import validate_preinstall_fields
+        entry = preinstalled_entry("m")
+        pspec = validate_preinstall_fields("m", entry["version"], entry)
+        plan = build_mcp_launch_plan("m", entry, decision("unverified"))
+        assert plan.command == tuple(pspec.command)                 # sandbox command == validated
+        assert plan.volume == pspec.volume
+        assert plan.artifact_hash == pspec.artifact_hash and plan.manager == pspec.manager
+
+    def test_static_guard_no_fallback_or_swallow(self):
+        import inspect
+        import agentnode_sdk.runtimes.mcp_launch as ml
+        src = inspect.getsource(ml._resolve_sandbox_identity)
+        # split off the docstring so its wording can't false-positive
+        body = src.split('"""')[-1]
+        assert "except Exception" not in body           # no broad swallow
+        assert "mcp_command" not in body                 # no host-like fallback from entry

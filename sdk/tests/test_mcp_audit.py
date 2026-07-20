@@ -153,6 +153,7 @@ class TestMcpRunnerAuditIntegration:
         mock_server.health_check.return_value = True
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["python", "-m", "fake_server"],
             "tools": [{"name": "search"}],
             "permissions": {},
@@ -184,6 +185,7 @@ class TestMcpRunnerAuditIntegration:
         mock_server.health_check.return_value = True
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["python", "-m", "fake_server"],
             "tools": [{"name": "search"}],
             "permissions": {},
@@ -211,6 +213,7 @@ class TestMcpRunnerAuditIntegration:
         from tests.hostpolicy import run_mcp
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["python", "-m", "fake_server"],
             "tools": [{"name": "search"}],
             "permissions": {},
@@ -237,6 +240,7 @@ class TestMcpRunnerAuditIntegration:
         from tests.hostpolicy import run_mcp
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["python", "-m", "fake_server"],
             "tools": [{"name": "search"}],
             "permissions": {},
@@ -284,6 +288,7 @@ class TestMcpEnvKeys:
         monkeypatch.delenv("BRAVE_API_KEY", raising=False)
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["npx", "-y", "fake-server"],
             "mcp_env_keys": ["BRAVE_API_KEY"],
             "tools": [{"name": "search"}],
@@ -303,6 +308,7 @@ class TestMcpEnvKeys:
         monkeypatch.delenv("KEY_B", raising=False)
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["npx", "-y", "fake-server"],
             "mcp_env_keys": ["KEY_A", "KEY_B"],
             "tools": [{"name": "query"}],
@@ -325,6 +331,7 @@ class TestMcpEnvKeys:
         mock_server.health_check.return_value = True
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["npx", "-y", "fake-server"],
             "mcp_env_keys": ["BRAVE_API_KEY"],
             "tools": [{"name": "search"}],
@@ -351,6 +358,7 @@ class TestMcpEnvKeys:
         mock_server.health_check.return_value = True
 
         entry = {
+            "trust_level": "curated",
             "mcp_command": ["npx", "-y", "fake-server"],
             "mcp_env_keys": [],
             "tools": [{"name": "search"}],

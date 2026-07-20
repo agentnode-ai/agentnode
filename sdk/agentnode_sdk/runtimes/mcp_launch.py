@@ -84,22 +84,38 @@ def _declared_egress_domains(entry: dict) -> tuple[str, ...]:
 
 
 def _resolve_sandbox_identity(slug: str, entry: dict):
-    """Pure: the ACTUAL sandbox command/volume/artifact/manager start will use.
+    """Pure, FAIL-CLOSED: the VALIDATED sandbox launch identity (command/volume/
+    artifact_hash/manager) that ``start()`` will actually run.
 
-    Preinstalled MCPs run the validated ``mcp_preinstall_command`` from the sealed
-    ``/install`` volume — NOT ``mcp_command``. Non-preinstalled community MCPs are
-    refused at start (never pooled); their identity here is a harmless fallback."""
-    try:
-        from agentnode_sdk.sandbox.mcp_preinstall import (
-            has_preinstall_intent,
-            validate_preinstall_fields,
+    A sandbox MCP WITHOUT preinstall intent, or with an INVALID preinstall
+    definition, is REFUSED HERE (at plan build, before any pool access or start) —
+    NEVER a host-like ``mcp_command`` fallback, NEVER None-reduced fields, NEVER a
+    swallowed error. Only validated preinstall values (the ``mcp_preinstall_command``
+    from the sealed ``/install`` volume — NOT ``mcp_command``) flow into the
+    fingerprint, the plan, the ProcessSpec, and the real start."""
+    from agentnode_sdk.sandbox.mcp_preinstall import (
+        PreinstallError,
+        has_preinstall_intent,
+        validate_preinstall_fields,
+    )
+    from agentnode_sdk.sandbox.types import SandboxRequiredError
+
+    if not has_preinstall_intent(entry):
+        raise SandboxRequiredError(
+            f"MCP '{slug}' is not preinstalled — cannot run sandboxed. Reinstall it "
+            "pinned (exact mcp_install version); unpinnable (floating npx/uvx) MCPs "
+            "are refused."
         )
-        if has_preinstall_intent(entry):
-            pspec = validate_preinstall_fields(slug, entry.get("version"), entry)
-            return tuple(pspec.command), pspec.volume, pspec.artifact_hash, pspec.manager
-    except Exception:
-        pass
-    return tuple(entry.get("mcp_command") or []), None, entry.get("artifact_hash"), None
+    try:
+        pspec = validate_preinstall_fields(slug, entry.get("version"), entry)
+    except PreinstallError as exc:
+        # Known validation/format error → safe translation (NO raw paths / command /
+        # hash / domains / mounts). An UNEXPECTED error is NOT caught here — it
+        # propagates and fails closed upward (never a fallback, never a plan).
+        raise SandboxRequiredError(
+            "Invalid MCP preinstall configuration. Execution was denied before start."
+        ) from exc
+    return tuple(pspec.command), pspec.volume, pspec.artifact_hash, pspec.manager
 
 
 def build_mcp_launch_plan(slug: str, entry: dict, decision: Any,

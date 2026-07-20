@@ -206,5 +206,7 @@ def test_enforce_trusted_under_default_allows_host_without_runtime(monkeypatch):
 def test_curated_only_mcp_refusal_names_the_policy(monkeypatch):
     _container_available(monkeypatch)
     _set_policy(monkeypatch, "curated_only")
-    with pytest.raises(SandboxRequiredError, match="host_trust_policy=curated_only"):
+    # F1 amendment: a non-preinstalled trusted MCP under curated_only is refused
+    # fail-closed at PLAN BUILD ("not preinstalled") before start.
+    with pytest.raises(SandboxRequiredError, match="not preinstalled"):
         MCPServerProcess("m", MCP_CMD, trust_level="trusted").start(_host_policy_decision=decision("trusted", "curated_only"), launch_plan=plan("m", decision("trusted", "curated_only")))

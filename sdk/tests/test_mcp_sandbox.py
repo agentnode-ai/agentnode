@@ -119,7 +119,9 @@ def test_missing_trust_level_blocked_when_unavailable(monkeypatch):
 def test_community_mcp_with_env_keys_is_blocked(monkeypatch):
     _use_available_container(monkeypatch)
     server = MCPServerProcess("secret-mcp", MCP_CMD, trust_level="verified")
-    with pytest.raises(RuntimeError, match="credentials|secret"):
+    # F1 amendment: a non-preinstalled sandbox MCP (even credentialed) is refused
+    # fail-closed at PLAN BUILD, before start/egress/secret.
+    with pytest.raises(SandboxRequiredError, match="not preinstalled"):
         server.start(_host_policy_decision=decision("verified"), launch_plan=plan("m", decision("verified")), env_keys=["OPENAI_API_KEY"])
     assert _FakePopen.instances == []  # never launched with secrets
 
@@ -130,8 +132,6 @@ def test_community_mcp_with_env_keys_refusal_is_precise_and_safe(monkeypatch):
     refused BEFORE reading the secret value and BEFORE starting egress (no runtime
     registry-fetch with a secret)."""
     import agentnode_sdk.sandbox.egress as egress
-    from agentnode_sdk.runtimes.mcp_consent import CredentialedMcpRefused
-
     _use_available_container(monkeypatch)
     # If any code reads the key VALUE from the environment, this sentinel would surface.
     monkeypatch.setenv("OPENAI_API_KEY", "sk-SENTINEL-MUST-NOT-BE-READ")
@@ -139,14 +139,12 @@ def test_community_mcp_with_env_keys_refusal_is_precise_and_safe(monkeypatch):
     called = []
     monkeypatch.setattr(egress, "start_egress_proxy", lambda *a, **k: called.append((a, k)))
 
-    # No entry ⇒ not preinstalled ⇒ refused at the very first gate (before consent/egress/secret).
+    # No preinstall intent ⇒ refused fail-closed at PLAN BUILD (before start/consent/egress/secret).
     server = MCPServerProcess("secret-mcp", MCP_CMD, trust_level="verified")
-    with pytest.raises(CredentialedMcpRefused) as ei:
+    with pytest.raises(SandboxRequiredError, match="not preinstalled") as ei:
         server.start(_host_policy_decision=decision("verified"), launch_plan=plan("m", decision("verified")), env_keys=["OPENAI_API_KEY"])
 
-    assert ei.value.reason == "credentialed_requires_preinstall"
-    msg = str(ei.value)
-    assert "sk-SENTINEL-MUST-NOT-BE-READ" not in msg  # VALUE never appears
+    assert "sk-SENTINEL-MUST-NOT-BE-READ" not in str(ei.value)  # VALUE never appears
     assert _FakePopen.instances == []              # no container launched with a key
     assert called == []                            # no egress proxy started
 

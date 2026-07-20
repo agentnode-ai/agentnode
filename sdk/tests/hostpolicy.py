@@ -28,6 +28,30 @@ def plan(slug, decision_obj, entry=None, backend_kind="docker"):
     return build_mcp_launch_plan(slug, entry or {}, decision_obj, backend_kind=backend_kind)
 
 
+def preinstalled_entry(slug="m", version="1.0", manager="npm", package="pkg",
+                       pkg_version="1.0.0", ahash="sha256:" + "a" * 64,
+                       command=None, domains=(), env_keys=(), trust_level="unverified"):
+    """A VALID sandbox preinstall entry (validate_preinstall_fields passes) so a
+    sandbox launch plan can be built. A sandbox plan can no longer be built from a
+    non-preinstalled entry — that is fail-closed at plan build."""
+    from agentnode_sdk.sandbox.container_backend import mcp_sandbox_volume_name
+    cmd = command or (["node", "/install/bin/x"] if manager == "npm" else ["python", "/install/x.py"])
+    e = {
+        "trust_level": trust_level,
+        "version": version,
+        "mcp_preinstalled": True,
+        "mcp_preinstall": {"manager": manager, "package": package,
+                           "version": pkg_version, "artifact_hash": ahash},
+        "mcp_sandbox_volume": mcp_sandbox_volume_name(slug, version, manager, package, pkg_version),
+        "mcp_preinstall_command": list(cmd),
+    }
+    if env_keys:
+        e["mcp_env_keys"] = list(env_keys)
+    if domains:
+        e["mcp_allowed_domains"] = list(domains)
+    return e
+
+
 def run_agent(slug, *, entry, _host_policy_decision=None, **kw):
     """Wrapped run_agent that injects the owner-supplied decision (default policy)."""
     from agentnode_sdk.runtimes.agent_runner import run_agent as _r
