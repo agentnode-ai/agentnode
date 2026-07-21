@@ -147,13 +147,6 @@ class TicketExhausted(RuntimeError):
     code = "environment_lock_ticket_exhausted"
 
 
-class FdCloseError(RuntimeError):
-    """A lock FD was untracked but its ``os.close`` failed — the FD state is
-    indeterminate; NOT a confirmed release (never claim the lock was safely freed)."""
-
-    code = "environment_lock_fd_close_failed"
-
-
 class InternalStateError(RuntimeError):
     """An internal invariant was violated (e.g. an unsafe-transition depth underflow) —
     fail-closed rather than silently mis-classify a later fork as safe."""
@@ -192,6 +185,12 @@ _fork_guard = threading.RLock()
 _unsafe_tls = threading.local()
 _fork_was_unsafe = False
 _FORK_DURING_LOCK_TRANSITION = 137
+# An indeterminate os.close of a lock-relevant FD is process-fatal: the FD is already
+# untracked, so if it is in fact still open+locked a later fork could inherit an unknown
+# env lock. os._exit lets the OS close every FD, runs no further Python/agent/installer
+# code, and never emits a false release. NOT recoverable (an unlock error is; a close
+# error is not — the lock state is unknown).
+_FD_CLOSE_INDETERMINATE_EXIT = 138
 
 
 def _enter_unsafe() -> None:
@@ -250,8 +249,8 @@ def _open_tracked(path: Path, flags: int, mode: int = 0o600) -> int:
             if fd >= 0 and fd not in _all_lock_fds:
                 try:
                     os.close(fd)            # opened but not tracked → close directly
-                except OSError:
-                    pass
+                except BaseException:
+                    os._exit(_FD_CLOSE_INDETERMINATE_EXIT)   # indeterminate lock-file fd
             raise
         finally:
             _exit_unsafe()                  # exactly one exit per enter, all paths
@@ -270,9 +269,12 @@ def _close_tracked_lock_fd(fd: int, *, unlock: bool) -> None:
 
     CLOSE CONTRACT: once the FD is untracked, ``os.close`` is attempted UNCONDITIONALLY
     — an unlock or hook error must NOT skip the close (which would leak an open, possibly
-    still-locked, no-longer-tracked FD, leaking the env lock even without a fork). The
-    earlier (unlock/hook) error is re-raised; if only the close fails → ``FdCloseError``
-    (an indeterminate FD state, never a confirmed release)."""
+    still-locked, no-longer-tracked FD, leaking the env lock even without a fork). An
+    unlock/hook error is RECOVERABLE — but only if the close then CONFIRMS the handle is
+    gone: it is re-raised after a successful close. If ``os.close`` itself fails, the
+    lock state is INDETERMINATE (the FD is already untracked and may still be open+locked)
+    → process-fatal ``os._exit`` immediately; no second close, no false release, no return
+    into normal code, no chance for a later fork to inherit the unknown lock."""
     if fd < 0:
         return
     err: BaseException | None = None
@@ -286,14 +288,11 @@ def _close_tracked_lock_fd(fd: int, *, unlock: bool) -> None:
                 if unlock:
                     _unlock(fd)
             except BaseException as exc:
-                err = exc
-            finally:
-                try:
-                    os.close(fd)
-                except BaseException as close_exc:
-                    if err is None:         # earlier error wins; else surface the close
-                        err = FdCloseError("environment lock fd close failed")
-                        err.__cause__ = close_exc
+                err = exc            # recoverable ONLY if the close below confirms
+            try:
+                os.close(fd)
+            except BaseException:
+                os._exit(_FD_CLOSE_INDETERMINATE_EXIT)   # indeterminate → process-fatal
         finally:
             _exit_unsafe()
     if err is not None:
@@ -655,8 +654,10 @@ def _after_fork_child() -> None:
     for fd in list(_all_lock_fds):
         try:
             os.close(fd)
-        except OSError:
-            pass
+        except BaseException:
+            # the child cannot close an inherited lock FD → it would keep the parent's
+            # lock alive: fail-stop rather than run agent code holding an unknown lock.
+            os._exit(_FD_CLOSE_INDETERMINATE_EXIT)
     _all_lock_fds.clear()
     _local_readers.clear()
     _thread_local.depths = {}
@@ -694,14 +695,23 @@ def env_read_lock(env_id: str, timeout: float = DEFAULT_ACQUIRE_TIMEOUT):
             if depths[env_id] <= 0:
                 depths.pop(env_id, None)
         return
-    with _acquire(env_id, "r", timeout):   # outermost reader — take the interprocess ticket
-        depths[env_id] = 1
-        _register_local_reader(env_id)     # process-wide (for the write refusal)
-        try:
-            yield
-        finally:
+    registered = False
+    try:
+        with _acquire(env_id, "r", timeout):   # outermost reader — take the interprocess ticket
+            depths[env_id] = 1
+            _register_local_reader(env_id)     # process-wide (for the write refusal)
+            registered = True
+            try:
+                yield
+            finally:
+                depths.pop(env_id, None)
+    finally:
+        # Reached only AFTER _acquire.__exit__ has fully released the interprocess ticket
+        # (a successful close, or os._exit on an indeterminate one). The local reader
+        # MUST stay registered until the OS reader has ended — otherwise a same-process
+        # writer could pass the read→write refusal while our OS ticket is still active.
+        if registered:
             _unregister_local_reader(env_id)
-            depths.pop(env_id, None)
 
 
 @contextmanager

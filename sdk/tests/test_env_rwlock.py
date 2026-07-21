@@ -993,50 +993,102 @@ def test_release_hook_fault_still_closes_fd(env):
         pass
 
 
-def test_close_tracked_fd_close_fault_raises_fdcloseerror(tmp_path):
-    # os.close of a lock fd fails → FdCloseError (indeterminate); the fd is untracked
-    # (never re-added), the depth stays balanced. The test-double really closes first,
-    # so no fd leaks in the test process.
-    p = tmp_path / "x.lock"
-    fd = rw._open_tracked(p, os.O_RDWR | os.O_CREAT)
-    assert fd in rw._all_lock_fds
-    real_close = rw.os.close
+def _spawn_closefail(env, pattern, prefix, unlock_fail=False):
+    child_env = {**os.environ, "RWLOCK_CLOSEFAIL": pattern}
+    if unlock_fail:
+        child_env["RWLOCK_UNLOCKFAIL"] = "1"
+    return subprocess.Popen(
+        [sys.executable, WORKER, REPO_ROOT, env["config"], env["id"],
+         "closefail-read", str(env["mk"] / prefix)],
+        env=child_env,
+    )
 
-    def close_op(f):
-        real_close(f)                                  # really release the handle first
-        raise OSError("close boom")                    # then report the failure
 
-    rw.os.close = close_op
+FAILSTOP = rw._FD_CLOSE_INDETERMINATE_EXIT  # 138
+
+
+def test_closefail_mutex_failstops(env):
+    # an indeterminate close of the queue-mutex FD → process exit 138 DURING acquire
+    # (before the body); afterwards another process can still take the queue-mutex.
+    p = _spawn_closefail(env, "mutex", "cf_mutex")
+    assert p.wait(timeout=30) == FAILSTOP
+    assert not (env["mk"] / "cf_mutex.acq").exists()   # fail-stop before the body
+    with rw.env_write_lock(env["id"], timeout=10):     # mutex usable again (OS freed it)
+        pass
+
+
+def test_closefail_ticket_failstops(env):
+    # an indeterminate close of the reader's OWN ticket FD (at release) → exit 138 AFTER
+    # the body ran; the OS then frees the lock so a later writer can enter.
+    p = _spawn_closefail(env, "ticket", "cf_ticket")
+    assert p.wait(timeout=30) == FAILSTOP
+    assert (env["mk"] / "cf_ticket.acq").exists()      # body ran (fault at release)
+    assert not (env["mk"] / "cf_ticket.rel").exists()  # never reached a clean release
+    with rw.env_write_lock(env["id"], timeout=10):
+        pass
+
+
+def test_closefail_probe_failstops(env):
+    # with a pre-existing orphan, the reader probes it during admission; an indeterminate
+    # close of the PROBE FD → exit 138 during acquire (before the body).
+    crash = _spawn(env, "crash-read", "cf_orphan")
+    crash.wait(timeout=30)
+    assert _wait_file(env["mk"] / "cf_orphan.acq", 10)  # orphan ticket now present
+    p = _spawn_closefail(env, "probe", "cf_probe")
+    assert p.wait(timeout=30) == FAILSTOP
+    assert not (env["mk"] / "cf_probe.acq").exists()    # fail-stop during the probe
+    with rw.env_write_lock(env["id"], timeout=10):      # orphan + probe FD freed by the OS
+        pass
+
+
+def test_closefail_plus_unlockfail_failstops(env):
+    # unlock AND close both fail → the close (indeterminate) has security priority: the
+    # process exits 138; no unlock error is unwound into normal code (no other exit code).
+    p = _spawn_closefail(env, "ticket", "cf_both", unlock_fail=True)
+    assert p.wait(timeout=30) == FAILSTOP
+    assert not (env["mk"] / "cf_both.rel").exists()
+    with rw.env_write_lock(env["id"], timeout=10):
+        pass
+
+
+def test_reader_registry_released_after_ticket_close(env):
+    # Blocker 2: the local reader stays registered until the interprocess ticket close is
+    # confirmed — a same-process writer during that window is REFUSED, not queued.
+    import threading
+    paused = threading.Event()
+    go = threading.Event()
+    fired = {"done": False}
+
+    def hook():
+        if fired["done"]:
+            return
+        fired["done"] = True                            # one-shot: the FIRST release close
+        paused.set()                                    # (the ticket, per _cleanup_ticket)
+        go.wait(10)
+
+    result = {}
+
+    def reader():
+        with rw.env_read_lock(env["id"]):
+            rw._before_close_hook = hook                # arm only for the RELEASE close
+        rw._before_close_hook = None
+
+    ta = threading.Thread(target=reader)
+    ta.start()
+    assert paused.wait(10)                              # paused at the ticket close
     try:
-        with pytest.raises(rw.FdCloseError):
-            rw._close_tracked_lock_fd(fd, unlock=True)
+        with rw.env_write_lock(env["id"], timeout=2):  # reader still registered → refused
+            pass
+        result["refused"] = False
+    except rw.ReadToWriteUpgradeForbidden:
+        result["refused"] = True
     finally:
-        rw.os.close = real_close
-    assert fd not in rw._all_lock_fds                  # untracked, never re-added
-    assert getattr(rw._unsafe_tls, "d", 0) == 0
-
-
-def test_close_fault_preserves_earlier_unlock_error(tmp_path):
-    # if BOTH unlock and close fail, the earlier (unlock) error wins — but close still ran.
-    p = tmp_path / "y.lock"
-    fd = rw._open_tracked(p, os.O_RDWR | os.O_CREAT)
-    real_unlock, real_close = rw._unlock, rw.os.close
-    closed = {"done": False}
-
-    def close_op(f):
-        closed["done"] = True
-        real_close(f)
-        raise OSError("close boom")
-
-    rw._unlock = _raise(ValueError("unlock first"))
-    rw.os.close = close_op
-    try:
-        with pytest.raises(ValueError):                # unlock error wins…
-            rw._close_tracked_lock_fd(fd, unlock=True)
-    finally:
-        rw._unlock, rw.os.close = real_unlock, real_close
-    assert closed["done"]                              # …yet the close still ran
-    assert fd not in rw._all_lock_fds
+        go.set()
+        ta.join(10)
+        rw._before_close_hook = None
+    assert result["refused"] is True
+    with rw.env_write_lock(env["id"], timeout=10):      # after close+unregister → allowed
+        pass
 
 
 def test_exit_unsafe_underflow_fails_closed():
