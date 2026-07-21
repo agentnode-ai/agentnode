@@ -43,6 +43,11 @@ from pathlib import Path
 _POLL = 0.005
 _ADMIT_POLL = 0.01
 DEFAULT_ACQUIRE_TIMEOUT = 300.0
+# On a SUCCESSFUL release the acquisition deadline is typically long past (the
+# protected section ran a while), so cleanup uses a short internal budget to unlink
+# our own ticket instead — avoiding a dead-orphan on every long run — while never
+# blocking the caller for long.
+_CLEANUP_BUDGET = 5.0
 
 # One consistent value range for the counter regex, the ticket-name width, and the
 # exhaustion bound: max allocatable ticket = 10**18 - 1 (18 nines), which always fits
@@ -143,17 +148,17 @@ _local_readers: dict[str, int] = {}
 # a parent's ticket lock would keep the interprocess lock alive after the parent
 # releases → a writer would block forever. The fork handler closes them in the child.
 _fd_lock = threading.Lock()
-_open_ticket_fds: set[int] = set()
+_all_lock_fds: set[int] = set()
 
 
 def _track_fd(fd: int) -> None:
     with _fd_lock:
-        _open_ticket_fds.add(fd)
+        _all_lock_fds.add(fd)
 
 
 def _untrack_fd(fd: int) -> None:
     with _fd_lock:
-        _open_ticket_fds.discard(fd)
+        _all_lock_fds.discard(fd)
 
 
 def _register_local_reader(env_id: str) -> None:
@@ -189,6 +194,7 @@ def _env_dir(env_id: str) -> Path:
 def _queue_mutex(env_dir: Path, deadline: float, ttype: str):
     path = env_dir / "queue-mutex.lock"
     fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
+    _track_fd(fd)   # track BEFORE locking so a fork never leaves a locked, untracked FD
     try:
         while not _try_lock(fd):
             if time.monotonic() >= deadline:
@@ -199,23 +205,48 @@ def _queue_mutex(env_dir: Path, deadline: float, ttype: str):
         finally:
             _unlock(fd)
     finally:
+        _untrack_fd(fd)
         os.close(fd)
 
 
 # ---------------------------------------------------------------------------
 # Counter (strict + durable + rollback-checked) — all under the queue-mutex.
 # ---------------------------------------------------------------------------
-def _read_counter(env_dir: Path) -> int:
-    cpath = env_dir / "counter"
+_MARKER_CONTENT = "1"
+
+
+def _valid_marker(env_dir: Path) -> bool:
+    """True if a VALID ``initialized`` marker exists, False if absent, FAIL-CLOSED on a
+    non-regular/symlinked/malformed marker (checked without following a symlink)."""
+    mpath = env_dir / "initialized"
     try:
-        raw = cpath.read_text(encoding="ascii")
+        st = os.lstat(str(mpath))
     except FileNotFoundError:
-        # Distinguish a never-initialized dir from a counter DELETED after init: an
-        # ``initialized`` marker (written on first reservation) means a counter once
-        # existed, so a missing counter is corruption — never a silent reset to 0.
-        if (env_dir / "initialized").exists():
-            raise CounterStateError("counter missing after initialization")
-        return 0
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        raise QueueStateError("initialized marker is not a regular file")
+    try:
+        raw = mpath.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise CounterStateError("initialized marker unreadable") from exc
+    if raw != _MARKER_CONTENT:
+        raise CounterStateError("initialized marker has unexpected content")
+    return True
+
+
+def _counter_exists_regular(env_dir: Path) -> bool:
+    try:
+        st = os.lstat(str(env_dir / "counter"))
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        raise CounterStateError("counter is not a regular file")
+    return True
+
+
+def _read_counter_value(env_dir: Path) -> int:
+    try:
+        raw = (env_dir / "counter").read_text(encoding="ascii")
     except (OSError, UnicodeDecodeError) as exc:
         raise CounterStateError("counter unreadable / not ASCII") from exc
     if len(raw) > 24 or _COUNTER_RE.match(raw) is None:
@@ -228,11 +259,9 @@ def _write_counter_durable(env_dir: Path, value: int) -> None:
     atomic_write_json(env_dir / "counter", value, durable=True)  # json.dumps(int) == the digits
 
 
-def _ensure_initialized(env_dir: Path) -> None:
-    marker = env_dir / "initialized"
-    if not marker.exists():
-        from agentnode_sdk._fileutil import atomic_write_json
-        atomic_write_json(marker, 1, durable=True)
+def _write_marker_durable(env_dir: Path) -> None:
+    from agentnode_sdk._fileutil import atomic_write_json
+    atomic_write_json(env_dir / "initialized", int(_MARKER_CONTENT), durable=True)
 
 
 def _scan_tickets(qdir: Path) -> list[tuple[int, str, Path]]:
@@ -267,16 +296,31 @@ def _max_visible_ticket(env_dir: Path) -> int:
 
 
 def _reserve_ticket(env_dir: Path, ttype: str) -> int:
-    """Under the queue-mutex: strict counter read → rollback check vs the highest
-    visible ticket → exhaustion check → durable counter write → new ticket number."""
-    counter = _read_counter(env_dir)
+    """Under the queue-mutex: MARKER-FIRST init → strict counter read → rollback check
+    → exhaustion check → durable counter write → new ticket number.
+
+    Init contract: a valid ``initialized`` marker means a counter MUST exist (missing →
+    fail-closed, never a silent reset). If no marker, the dir must be pristine (no
+    counter, empty queue) and we write the marker DURABLE *before* the counter — a
+    crash between the two leaves a marker-without-counter → fail-closed on the next
+    acquire (availability loss is safer than ticket reuse)."""
+    if _valid_marker(env_dir):
+        if not _counter_exists_regular(env_dir):
+            raise CounterStateError("counter missing after initialization")
+        counter = _read_counter_value(env_dir)
+    else:
+        if _counter_exists_regular(env_dir):
+            raise CounterStateError("counter present without an initialization marker")
+        if _max_visible_ticket(env_dir) != 0:
+            raise QueueStateError("queue entries without an initialization marker")
+        _write_marker_durable(env_dir)               # marker FIRST
+        counter = 0
     if counter < _max_visible_ticket(env_dir):
         raise CounterRollbackError("counter is below the highest visible ticket")
     if counter >= _MAX_TICKET:                       # next would exceed the range
         raise TicketExhausted("ticket space exhausted")  # no counter change, no token
     nxt = counter + 1
     _write_counter_durable(env_dir, nxt)
-    _ensure_initialized(env_dir)     # mark the dir initialized (counter loss → fail-closed)
     return nxt
 
 
@@ -308,15 +352,19 @@ def _is_live(tpath: Path) -> bool:
         return False
     except OSError:
         return True
+    _track_fd(fd)   # the probe may briefly hold the orphan's lock — fork-visible
     try:
         if _try_lock(fd):
             _unlock(fd)
+            _untrack_fd(fd)
             os.close(fd)
             _safe_unlink(tpath)     # under the mutex → no concurrent observer
             return False
+        _untrack_fd(fd)
         os.close(fd)
         return True
     except OSError:
+        _untrack_fd(fd)
         try:
             os.close(fd)
         except OSError:
@@ -340,11 +388,18 @@ def _blocked(env_dir: Path, my_n: int, ttype: str) -> bool:
 # ---------------------------------------------------------------------------
 # Acquire / release
 # ---------------------------------------------------------------------------
-def _cleanup_ticket(env_dir: Path, fd: int, ticket_path: Path | None, deadline: float) -> None:
-    """Release + remove OUR OWN ticket, bounded by the ORIGINAL total deadline (never
-    a fresh budget). Always leaves the token DEAD (unlocked) first; unlinks only under
-    the queue-mutex. If the deadline is already past, do NOT acquire another blocking
-    mutex — leave the DEAD token as a safely-cleanable orphan for the next scanner."""
+def _cleanup_ticket(
+    env_dir: Path, fd: int, ticket_path: Path | None, deadline: float, acquired: bool
+) -> None:
+    """Release + remove OUR OWN ticket. Always leaves the token DEAD (unlocked) first;
+    unlinks only under the queue-mutex.
+
+    - On a SUCCESSFUL release (``acquired``) the original deadline is typically past,
+      so use a SHORT internal cleanup budget to unlink (avoids leaving a dead orphan on
+      every long run) without blocking the caller for long.
+    - On a FAILED/timed-out acquisition, use the ORIGINAL deadline: if it is already
+      past, do NOT acquire another blocking mutex — leave the DEAD token as a
+      safely-cleanable orphan for the next scanner."""
     if fd >= 0:
         _untrack_fd(fd)
         _unlock(fd)
@@ -352,11 +407,14 @@ def _cleanup_ticket(env_dir: Path, fd: int, ticket_path: Path | None, deadline: 
             os.close(fd)             # token now dead (a scanner would classify it dead)
         except OSError:
             pass
-    if ticket_path is None or time.monotonic() >= deadline:
-        return                        # no new time budget after the total deadline
+    if ticket_path is None:
+        return
+    cleanup_deadline = time.monotonic() + _CLEANUP_BUDGET if acquired else deadline
+    if time.monotonic() >= cleanup_deadline:
+        return                        # leave the DEAD token for the next scanner
     try:
-        with _queue_mutex(env_dir, deadline, "r"):
-            _safe_unlink(ticket_path)     # unlink only under the mutex
+        with _queue_mutex(env_dir, cleanup_deadline, "r"):
+            _safe_unlink(ticket_path)
     except EnvironmentLockTimeout:
         pass  # leave the DEAD token for the next scanner (safe)
 
@@ -372,14 +430,15 @@ def _acquire(env_id: str, ttype: str, timeout: float):
     env_dir = _env_dir(env_id)
     fd = -1
     ticket_path: Path | None = None
+    acquired = False
     try:
         with _queue_mutex(env_dir, deadline, ttype):
             n = _reserve_ticket(env_dir, ttype)
             ticket_path = env_dir / "queue" / f"{n:020d}.{ttype}.{uuid.uuid4().hex}.lock"
             fd = os.open(str(ticket_path), os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+            _track_fd(fd)   # track BEFORE locking (no locked-but-untracked fork window)
             if not _try_lock(fd):
                 raise RuntimeError("could not lock a freshly created ticket")
-            _track_fd(fd)   # so a forked child can close this inherited lock FD
         while True:
             with _queue_mutex(env_dir, deadline, ttype):
                 if not _blocked(env_dir, n, ttype):
@@ -387,9 +446,10 @@ def _acquire(env_id: str, ttype: str, timeout: float):
             if time.monotonic() >= deadline:
                 raise EnvironmentLockTimeout(ttype)
             time.sleep(_ADMIT_POLL)
+        acquired = True
         yield
     finally:
-        _cleanup_ticket(env_dir, fd, ticket_path, deadline)
+        _cleanup_ticket(env_dir, fd, ticket_path, deadline, acquired)
 
 
 # ---------------------------------------------------------------------------
@@ -410,20 +470,27 @@ def _depths() -> dict[str, int]:
 
 
 def _reset_after_fork() -> None:
-    # A forked child must not inherit the parent's ticket LOCKS or its in-memory
-    # registries (the design spawns; this is belt-and-suspenders). We CLOSE every
-    # inherited ticket FD so the child stops extending the parent's shared open-file-
-    # description locks (else a writer would block after the parent releases). We do
-    # NOT unlink queue entries — they belong to the parent. Runs single-threaded in
-    # the child; access the sets WITHOUT the (possibly fork-inherited-locked) mutexes.
-    for fd in list(_open_ticket_fds):
+    # A forked child must not inherit the parent's OS LOCKS or its in-memory state.
+    # 1) CLOSE every inherited lock FD — queue-mutex, ticket, and orphan-probe FDs are
+    #    all tracked in _all_lock_fds, so a child stops extending ANY parent lock via a
+    #    shared open-file-description (otherwise a forked child that outlives the parent
+    #    could keep the queue-mutex or a reader ticket locked forever). We do NOT unlink
+    #    queue entries — they belong to the parent.
+    # 2) REPLACE the process-local Python mutexes with fresh ones — a mutex held by
+    #    another thread at fork time would remain locked forever in the child (its owner
+    #    thread does not exist there). The handler must never ACQUIRE a possibly-locked
+    #    inherited mutex; it runs single-threaded, so it touches the sets directly.
+    global _local_lock, _fd_lock
+    for fd in list(_all_lock_fds):
         try:
             os.close(fd)
         except OSError:
             pass
-    _open_ticket_fds.clear()
+    _all_lock_fds.clear()
     _local_readers.clear()
     _thread_local.depths = {}
+    _local_lock = threading.Lock()
+    _fd_lock = threading.Lock()
 
 
 if hasattr(os, "register_at_fork"):

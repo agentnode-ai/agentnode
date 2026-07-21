@@ -18,6 +18,10 @@ WORKER = str(Path(__file__).resolve().parent / "rwlock_worker.py")
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path))
+    # Isolate the process-global registries between tests (all share one process).
+    rw._local_readers.clear()
+    rw._all_lock_fds.clear()
+    rw._depths().clear()
     return {"config": str(tmp_path), "id": "testenv", "mk": tmp_path}
 
 
@@ -262,8 +266,9 @@ def test_malformed_queue_entry_fail_closed(env):
 
 def test_ticket_gap_does_not_block(env):
     # simulate a crash after a durable counter bump but before token publication:
-    # counter=5, no ticket files → the next participant gets 6 and is not blocked.
-    _lockdir(env).mkdir(parents=True, exist_ok=True)
+    # marker present, counter=5, no ticket files → next participant gets 6, not blocked.
+    with rw.env_read_lock(env["id"]):     # init marker + counter
+        pass
     (_lockdir(env) / "counter").write_text("5")
     t0 = time.monotonic()
     with rw.env_read_lock(env["id"], timeout=5):
@@ -336,7 +341,8 @@ def test_timeout_cleanup_no_new_budget(env):
 
 
 def test_ticket_exhaustion_fail_closed(env):
-    _lockdir(env).mkdir(parents=True, exist_ok=True)
+    with rw.env_read_lock(env["id"]):              # init marker + counter
+        pass
     (_lockdir(env) / "counter").write_text(str(rw._MAX_TICKET - 1))
     with rw.env_read_lock(env["id"]):              # reserves _MAX_TICKET — ok
         pass
@@ -467,25 +473,184 @@ def test_never_initialized_starts_at_zero(env):
     assert (_lockdir(env) / "initialized").exists()
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX-only")
-def test_fork_child_drops_inherited_ticket_fd(env):
-    # Parent holds a reader (an open, tracked ticket FD). After fork the child's
-    # after_in_child handler must have CLOSED the inherited FD and cleared the
-    # registries so the child never keeps the parent's interprocess lock alive.
-    with rw.env_read_lock(env["id"]):
-        assert len(rw._open_ticket_fds) >= 1
-        r, w = os.pipe()
+def test_long_run_success_release_no_orphan(env):
+    # A successful context whose protected section outlives the ACQUISITION deadline
+    # must still clean up its own ticket (Blocker 5 — short cleanup budget on success),
+    # not leave a dead orphan on every long run.
+    with rw.env_read_lock(env["id"], timeout=0.5):
+        time.sleep(0.9)                     # exceed the acquisition deadline while held
+    qdir = _lockdir(env) / "queue"
+    assert (list(qdir.iterdir()) if qdir.exists() else []) == []
+
+
+def test_marker_present_counter_absent_fail_closed(env):
+    with rw.env_read_lock(env["id"]):       # init marker + counter
+        pass
+    (_lockdir(env) / "counter").unlink()     # counter gone, marker remains
+    with pytest.raises(rw.CounterStateError):
+        with rw.env_read_lock(env["id"]):
+            pass
+
+
+def test_counter_without_marker_fail_closed(env):
+    _lockdir(env).mkdir(parents=True, exist_ok=True)
+    (_lockdir(env) / "counter").write_text("3")   # counter, no marker
+    with pytest.raises(rw.CounterStateError):
+        with rw.env_read_lock(env["id"]):
+            pass
+
+
+def test_queue_entry_without_marker_fail_closed(env):
+    qdir = _lockdir(env) / "queue"
+    qdir.mkdir(parents=True, exist_ok=True)
+    (qdir / f"{1:020d}.r.{'a' * 32}.lock").write_text("")   # queue entry, no marker
+    with pytest.raises(rw.QueueStateError):
+        with rw.env_read_lock(env["id"]):
+            pass
+
+
+@pytest.mark.parametrize("kind", ["dir", "badcontent"])
+def test_marker_malformed_fail_closed(env, kind):
+    _lockdir(env).mkdir(parents=True, exist_ok=True)
+    marker = _lockdir(env) / "initialized"
+    if kind == "dir":
+        marker.mkdir()
+    else:
+        marker.write_text("2")               # unexpected content
+    with pytest.raises((rw.QueueStateError, rw.CounterStateError)):
+        with rw.env_read_lock(env["id"]):
+            pass
+
+
+def _boom_on(real, target):
+    # fail os.replace only when writing a specific destination file (robust to
+    # unrelated os.replace calls elsewhere in the shared test process).
+    def f(src, dst, *a, **k):
+        if os.path.basename(str(dst)) == target:
+            raise OSError(f"{target} write fault")
+        return real(src, dst, *a, **k)
+    return f
+
+
+def test_marker_write_fault_leaves_dir_pristine(env):
+    import agentnode_sdk._fileutil as fu
+    real = fu.os.replace
+    fu.os.replace = _boom_on(real, "initialized")
+    try:
+        with pytest.raises(OSError):
+            with rw.env_read_lock(env["id"]):
+                pass
+    finally:
+        fu.os.replace = real                              # restore ONLY os.replace
+    assert not (_lockdir(env) / "initialized").exists()   # pristine — nothing published
+    assert not (_lockdir(env) / "counter").exists()
+    with rw.env_read_lock(env["id"]):                     # clean retry initializes
+        pass
+    assert int((_lockdir(env) / "counter").read_text()) == 1
+
+
+def test_marker_then_counter_crash_fail_closed(env):
+    import agentnode_sdk._fileutil as fu
+    real = fu.os.replace
+    fu.os.replace = _boom_on(real, "counter")
+    try:
+        with pytest.raises(OSError):
+            with rw.env_read_lock(env["id"]):
+                pass
+    finally:
+        fu.os.replace = real
+    assert (_lockdir(env) / "initialized").exists()       # marker published
+    assert not (_lockdir(env) / "counter").exists()       # counter not
+    with pytest.raises(rw.CounterStateError):             # fail-closed, no silent reset
+        with rw.env_read_lock(env["id"]):
+            pass
+
+
+# ---------------------------------------------------------------------------
+# POSIX fork safety (skip on Windows; run in the eventual Linux CI). These prove
+# a LIVING forked child does not extend the parent's inherited OS locks.
+# ---------------------------------------------------------------------------
+def _fork_child_stays_alive_then_parent_releases(env, hold_ctx):
+    alive_r, alive_w = os.pipe()
+    exit_r, exit_w = os.pipe()
+    with hold_ctx:
         pid = os.fork()
-        if pid == 0:                                       # child
-            ok = (len(rw._open_ticket_fds) == 0 and rw._local_readers == {}
-                  and rw._depths() == {})
-            os.write(w, b"1" if ok else b"0")
+        if pid == 0:                                       # child: do NOT acquire; live
+            os.close(alive_r)
+            os.close(exit_w)
+            os.write(alive_w, b"a")
+            os.read(exit_r, 1)                             # stay alive until told
             os._exit(0)
-        os.close(w)
-        seen = os.read(r, 1)
+        os.close(alive_w)
+        os.close(exit_r)
+        assert os.read(alive_r, 1) == b"a"                 # child up while we hold
+    return pid, alive_r, exit_w
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX only")
+def test_fork_living_child_does_not_extend_reader(env):
+    pid, alive_r, exit_w = _fork_child_stays_alive_then_parent_releases(
+        env, rw.env_read_lock(env["id"]))
+    entered = False
+    try:
+        with rw.env_write_lock(env["id"], timeout=10):     # must enter while child lives
+            entered = True
+    finally:
+        os.write(exit_w, b"x")
         os.waitpid(pid, 0)
-        os.close(r)
-        assert seen == b"1"
+        for fd in (alive_r, exit_w):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    assert entered, "living forked child extended the parent's reader lock"
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX only")
+def test_fork_living_child_does_not_hold_queue_mutex(env):
+    env_dir = rw._env_dir(env["id"])
+    pid, alive_r, exit_w = _fork_child_stays_alive_then_parent_releases(
+        env, rw._queue_mutex(env_dir, time.monotonic() + 60, "r"))
+    try:
+        with rw.env_read_lock(env["id"], timeout=10):      # needs the mutex → must work
+            pass
+    finally:
+        os.write(exit_w, b"x")
+        os.waitpid(pid, 0)
+        for fd in (alive_r, exit_w):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX only")
+def test_fork_child_own_reader_blocks_writer(env):
+    ready_r, ready_w = os.pipe()
+    exit_r, exit_w = os.pipe()
+    pid = os.fork()
+    if pid == 0:                                            # child acquires its OWN reader
+        os.close(ready_r)
+        os.close(exit_w)
+        with rw.env_read_lock(env["id"]):
+            os.write(ready_w, b"a")
+            os.read(exit_r, 1)
+        os._exit(0)
+    os.close(ready_w)
+    os.close(exit_r)
+    assert os.read(ready_r, 1) == b"a"
+    with pytest.raises(rw.EnvironmentLockTimeout):          # blocked while child reads
+        with rw.env_write_lock(env["id"], timeout=1.5):
+            pass
+    os.write(exit_w, b"x")
+    os.waitpid(pid, 0)
+    with rw.env_write_lock(env["id"], timeout=10):          # enters after child releases
+        pass
+    for fd in (ready_r, exit_w):
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def test_writer_bounded_admission_under_reader_stream(env):
