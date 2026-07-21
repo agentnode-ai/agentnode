@@ -684,14 +684,18 @@ def _fault_marker_phase(phase):
     fu.os.fsync = mk(fu.os.fsync, "fsync")
     fu.os.replace = mk(fu.os.replace, "replace")
     fu._fsync_dir = mk(fu._fsync_dir, "dirsync")
+    saved_mkstemp = fu.tempfile.mkstemp
+    fu.tempfile.mkstemp = mk(fu.tempfile.mkstemp, "tempopen")
     try:
         yield
     finally:
         fu.atomic_write_json, fu.os.write, fu.os.fsync, fu.os.replace, fu._fsync_dir = saved
+        fu.tempfile.mkstemp = saved_mkstemp
 
 
 @pytest.mark.parametrize("phase,marker_after", [
-    ("write", False), ("fsync", False), ("replace", False), ("dirsync", True),
+    ("tempopen", False), ("write", False), ("fsync", False),
+    ("replace", False), ("dirsync", True),
 ])
 def test_marker_durable_fault_matrix(env, phase, marker_after):
     with _fault_marker_phase(phase):
@@ -759,6 +763,147 @@ def test_release_short_cleanup_when_mutex_busy(env):
     assert elapsed < 1.0, f"successful release blocked too long ({elapsed:.2f}s)"
     with rw.env_read_lock(env["id"]):                 # next scanner removes any orphan
         pass
+
+
+def test_marker_partial_write_no_ticket_reuse(env):
+    # a short write to the marker temp (returns 0 bytes, no exception) → empty/partial
+    # marker; the primitive must NEVER silently reset (reuse ticket 1) afterwards.
+    import agentnode_sdk._fileutil as fu
+    real_awj, real_write = fu.atomic_write_json, fu.os.write
+    flag = {"on": False}
+
+    def awj(path, data, **k):
+        if os.path.basename(str(path)) == "initialized":
+            flag["on"] = True
+            try:
+                return real_awj(path, data, **k)
+            finally:
+                flag["on"] = False
+        return real_awj(path, data, **k)
+
+    def short_write(fd, data):
+        return real_write(fd, data[:0]) if flag["on"] else real_write(fd, data)
+
+    fu.atomic_write_json, fu.os.write = awj, short_write
+    try:
+        # the acquire may succeed (empty marker) or fail — either is acceptable
+        with contextlib.suppress(Exception):
+            with rw.env_read_lock(env["id"]):
+                pass
+    finally:
+        fu.atomic_write_json, fu.os.write = real_awj, real_write
+    # whatever happened, the env must not silently reset to ticket 1: either it is
+    # pristine (clean) or it is fail-closed on the next acquire.
+    try:
+        with rw.env_read_lock(env["id"]):
+            pass
+        # succeeded → marker+counter now consistent, monotone (never a partial marker)
+        assert (_lockdir(env) / "initialized").read_text().strip() == "1"
+        assert int((_lockdir(env) / "counter").read_text()) >= 1
+    except rw.CounterStateError:
+        pass  # fail-closed is the safe alternative — no reuse
+
+
+def test_marker_temp_cleanup_fail_harmless(env):
+    import agentnode_sdk._fileutil as fu
+    real_awj, real_replace, real_unlink = (
+        fu.atomic_write_json, fu.os.replace, fu.os.unlink)
+    flag = {"on": False}
+
+    def awj(path, data, **k):
+        if os.path.basename(str(path)) == "initialized":
+            flag["on"] = True
+            try:
+                return real_awj(path, data, **k)
+            finally:
+                flag["on"] = False
+        return real_awj(path, data, **k)
+
+    fu.atomic_write_json = awj
+    fu.os.replace = lambda *a, **k: (_ for _ in ()).throw(OSError("x")) if flag["on"] else real_replace(*a, **k)
+    fu.os.unlink = lambda *a, **k: (_ for _ in ()).throw(OSError("y")) if flag["on"] else real_unlink(*a, **k)
+    try:
+        with pytest.raises(OSError):
+            with rw.env_read_lock(env["id"]):
+                pass
+    finally:
+        fu.atomic_write_json, fu.os.replace, fu.os.unlink = real_awj, real_replace, real_unlink
+    # a leftover .initialized_*.tmp is NOT a valid marker and does not brick init
+    assert not (_lockdir(env) / "initialized").exists()
+    assert not (_lockdir(env) / "counter").exists()
+    with rw.env_read_lock(env["id"]):                     # clean retry initializes
+        pass
+    assert int((_lockdir(env) / "counter").read_text()) == 1
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX only")
+def test_fork_guard_reentrant_same_thread(env):
+    # A fork raised in the SAME thread that holds the fork guard (RLock) must not
+    # deadlock, and the child must inherit no lock FDs.
+    env_dir = rw._env_dir(env["id"])
+    result = {}
+
+    def hook():
+        pid = os.fork()
+        if pid == 0:                                      # child
+            os._exit(0 if len(rw._all_lock_fds) == 0 else 3)
+        _, status = os.waitpid(pid, 0)
+        result["exit"] = os.waitstatus_to_exitcode(status)
+
+    rw._after_track_hook = hook
+    try:
+        with rw._queue_mutex(env_dir, time.monotonic() + 30, "r"):
+            pass
+    finally:
+        rw._after_track_hook = None
+    assert result["exit"] == 0                            # no deadlock; child had 0 lock FDs
+    with rw.env_read_lock(env["id"]):                     # parent still usable
+        pass
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX only")
+def test_fork_blocked_during_untrack_close(env):
+    # A fork during the RELEASE (between untrack and close) must be blocked by the guard.
+    import threading
+    in_hook = threading.Event()
+    release = threading.Event()
+    forked = threading.Event()
+    fired = {"done": False}
+
+    def hook():
+        if fired["done"]:
+            return
+        fired["done"] = True
+        in_hook.set()
+        release.wait(10)                                  # pause inside _close_tracked_lock_fd
+
+    rw._before_close_hook = hook
+
+    def releaser():
+        with rw.env_read_lock(env["id"]):
+            pass
+
+    ta = threading.Thread(target=releaser)
+    ta.start()
+    assert in_hook.wait(10)                               # paused mid-close (guard held)
+
+    def do_fork():
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0)
+        os.waitpid(pid, 0)
+        forked.set()
+
+    tb = threading.Thread(target=do_fork)
+    tb.start()
+    try:
+        assert not forked.wait(1.0)                       # fork blocked during untrack→close
+        release.set()
+        assert forked.wait(10)                            # proceeds once close completes
+    finally:
+        rw._before_close_hook = None
+        ta.join(10)
+        tb.join(10)
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX only")

@@ -161,11 +161,14 @@ _local_readers: dict[str, int] = {}
 _fd_lock = threading.Lock()
 _all_lock_fds: set[int] = set()
 
-# Fork barrier: every open→track transition of a to-be-locked FD runs under this
-# guard, and the fork ``before`` handler acquires it — so a fork can never interleave
-# BETWEEN os.open() and _track_fd() (which would leave the child a shared, untracked
-# open-file-description that its handler could not close, defeating crash-safety).
-_fork_guard = threading.Lock()
+# Fork barrier: every open→track and untrack→close transition of a lock FD runs under
+# this guard, and the fork ``before`` handler acquires it — so a fork can never
+# interleave inside those transitions (which would leave the child a shared,
+# untracked open-file-description its handler could not close, defeating crash-safety).
+# An RLock (not a plain Lock) is REQUIRED: a fork raised in the SAME thread while it
+# holds the guard (a signal handler / hook / future callback) would otherwise make the
+# ``before`` handler re-acquire and self-deadlock.
+_fork_guard = threading.RLock()
 
 
 def _track_fd(fd: int) -> None:
@@ -178,9 +181,11 @@ def _untrack_fd(fd: int) -> None:
         _all_lock_fds.discard(fd)
 
 
-# Optional test hook: called (if set) INSIDE the fork guard, after open+track, before
-# the guard is released — lets a test attempt a concurrent fork and prove it blocks.
+# Optional test hooks: called (if set) INSIDE the fork guard — after open+track, and
+# after untrack (before close) — so a test can attempt a concurrent fork and prove it
+# blocks during both the open-side and release-side transitions.
 _after_track_hook = None
+_before_close_hook = None
 
 
 def _open_tracked(path: Path, flags: int, mode: int = 0o600) -> int:
@@ -197,6 +202,26 @@ def _open_tracked(path: Path, flags: int, mode: int = 0o600) -> int:
         if _after_track_hook is not None:
             _after_track_hook()
         return fd
+
+
+def _close_tracked_lock_fd(fd: int, *, unlock: bool) -> None:
+    """Untrack → (optionally) unlock → close a lock FD ATOMICALLY w.r.t. fork (under
+    the fork guard). This closes the release-side window: a fork must never interleave
+    between untrack and close, which would leave the child a still-open, no-longer-
+    tracked (thus un-closable) inherited lock FD. This is the ONLY place a tracked lock
+    FD is untracked+closed — no direct _untrack_fd()+os.close() elsewhere."""
+    if fd < 0:
+        return
+    with _fork_guard:
+        _untrack_fd(fd)          # untrack before close is safe: the guard blocks forks
+        if _before_close_hook is not None:
+            _before_close_hook()
+        if unlock:
+            _unlock(fd)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def _register_local_reader(env_id: str) -> None:
@@ -254,18 +279,16 @@ def _queue_mutex(env_dir: Path, deadline: float, ttype: str):
     path = env_dir / "queue-mutex.lock"
     _reject_redirected(path)   # static symlink/reparse on the mutex would split domains
     fd = _open_tracked(path, os.O_RDWR | os.O_CREAT)   # open+track atomic w.r.t. fork
+    locked = False
     try:
         while not _try_lock(fd):
             if time.monotonic() >= deadline:
                 raise EnvironmentLockTimeout(ttype)
             time.sleep(_POLL)
-        try:
-            yield
-        finally:
-            _unlock(fd)
+        locked = True
+        yield
     finally:
-        _untrack_fd(fd)
-        os.close(fd)
+        _close_tracked_lock_fd(fd, unlock=locked)      # untrack→unlock→close atomically
 
 
 # ---------------------------------------------------------------------------
@@ -413,20 +436,13 @@ def _is_live(tpath: Path) -> bool:
         return True
     try:
         if _try_lock(fd):
-            _unlock(fd)
-            _untrack_fd(fd)
-            os.close(fd)
+            _close_tracked_lock_fd(fd, unlock=True)   # dead → untrack→unlock→close atomically
             _safe_unlink(tpath)     # under the mutex → no concurrent observer
             return False
-        _untrack_fd(fd)
-        os.close(fd)
+        _close_tracked_lock_fd(fd, unlock=False)      # live → not ours to unlock
         return True
     except OSError:
-        _untrack_fd(fd)
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+        _close_tracked_lock_fd(fd, unlock=False)
         return True
 
 
@@ -459,12 +475,7 @@ def _cleanup_ticket(
       past, do NOT acquire another blocking mutex — leave the DEAD token as a
       safely-cleanable orphan for the next scanner."""
     if fd >= 0:
-        _untrack_fd(fd)
-        _unlock(fd)
-        try:
-            os.close(fd)             # token now dead (a scanner would classify it dead)
-        except OSError:
-            pass
+        _close_tracked_lock_fd(fd, unlock=True)   # untrack→unlock→close atomically; token dead
     if ticket_path is None:
         return
     cleanup_deadline = time.monotonic() + _CLEANUP_BUDGET if acquired else deadline
@@ -554,7 +565,7 @@ def _after_fork_child() -> None:
     _thread_local.depths = {}
     _local_lock = threading.Lock()
     _fd_lock = threading.Lock()
-    _fork_guard = threading.Lock()
+    _fork_guard = threading.RLock()
 
 
 if hasattr(os, "register_at_fork"):
