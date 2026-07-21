@@ -147,6 +147,20 @@ class TicketExhausted(RuntimeError):
     code = "environment_lock_ticket_exhausted"
 
 
+class FdCloseError(RuntimeError):
+    """A lock FD was untracked but its ``os.close`` failed — the FD state is
+    indeterminate; NOT a confirmed release (never claim the lock was safely freed)."""
+
+    code = "environment_lock_fd_close_failed"
+
+
+class InternalStateError(RuntimeError):
+    """An internal invariant was violated (e.g. an unsafe-transition depth underflow) —
+    fail-closed rather than silently mis-classify a later fork as safe."""
+
+    code = "environment_lock_internal_state_error"
+
+
 # ---------------------------------------------------------------------------
 # Process-wide reader registry (with the interprocess lock this also covers the
 # same-process cross-thread upgrade case).
@@ -185,7 +199,13 @@ def _enter_unsafe() -> None:
 
 
 def _exit_unsafe() -> None:
-    _unsafe_tls.d = getattr(_unsafe_tls, "d", 0) - 1
+    # Strict: never leave a NEGATIVE depth — a later _enter_unsafe would bring it back to
+    # 0 and mis-classify a genuinely-unsafe fork as safe. Clamp to 0 AND surface the bug.
+    d = getattr(_unsafe_tls, "d", 0)
+    if d <= 0:
+        _unsafe_tls.d = 0
+        raise InternalStateError("unsafe-transition depth underflow")
+    _unsafe_tls.d = d - 1
 
 
 def _in_unsafe() -> bool:
@@ -219,24 +239,22 @@ def _open_tracked(path: Path, flags: int, mode: int = 0o600) -> int:
     cross-thread fork waits on the guard. The blocking lock attempt happens AFTER this
     returns (in the SAFE, tracked state)."""
     with _fork_guard:
-        _enter_unsafe()
+        _enter_unsafe()                     # UNSAFE begins BEFORE os.open — a fork during
+        fd = -1                             # the syscall itself must also fail-stop
         try:
             fd = os.open(str(path), flags, mode)
-        except BaseException:
-            _exit_unsafe()
-            raise
-        try:
             if _after_open_hook is not None:
                 _after_open_hook()          # UNSAFE: opened, not yet tracked
             _track_fd(fd)
         except BaseException:
-            try:
-                os.close(fd)                # opened, not tracked → close directly
-            except OSError:
-                pass
-            _exit_unsafe()
+            if fd >= 0 and fd not in _all_lock_fds:
+                try:
+                    os.close(fd)            # opened but not tracked → close directly
+                except OSError:
+                    pass
             raise
-        _exit_unsafe()                      # tracked → SAFE now
+        finally:
+            _exit_unsafe()                  # exactly one exit per enter, all paths
         if _after_track_hook is not None:
             _after_track_hook()             # SAFE: tracked
         return fd
@@ -248,23 +266,38 @@ def _close_tracked_lock_fd(fd: int, *, unlock: bool) -> None:
     between untrack and close, which would leave the child a still-open, no-longer-
     tracked (thus un-closable) inherited lock FD. This is the ONLY place a tracked lock
     FD is untracked+closed — no direct _untrack_fd()+os.close() elsewhere. The
-    untrack→close step is an UNSAFE transition (same-thread fork → child fail-stop)."""
+    untrack→close step is an UNSAFE transition (same-thread fork → child fail-stop).
+
+    CLOSE CONTRACT: once the FD is untracked, ``os.close`` is attempted UNCONDITIONALLY
+    — an unlock or hook error must NOT skip the close (which would leak an open, possibly
+    still-locked, no-longer-tracked FD, leaking the env lock even without a fork). The
+    earlier (unlock/hook) error is re-raised; if only the close fails → ``FdCloseError``
+    (an indeterminate FD state, never a confirmed release)."""
     if fd < 0:
         return
+    err: BaseException | None = None
     with _fork_guard:
         _enter_unsafe()
         try:
-            _untrack_fd(fd)      # untrack before close is safe: the guard blocks forks
-            if _before_close_hook is not None:
-                _before_close_hook()        # UNSAFE: untracked, not yet closed
-            if unlock:
-                _unlock(fd)
+            _untrack_fd(fd)      # from here on, close MUST follow no matter what
             try:
-                os.close(fd)
-            except OSError:
-                pass
+                if _before_close_hook is not None:
+                    _before_close_hook()    # UNSAFE: untracked, not yet closed
+                if unlock:
+                    _unlock(fd)
+            except BaseException as exc:
+                err = exc
+            finally:
+                try:
+                    os.close(fd)
+                except BaseException as close_exc:
+                    if err is None:         # earlier error wins; else surface the close
+                        err = FdCloseError("environment lock fd close failed")
+                        err.__cause__ = close_exc
         finally:
             _exit_unsafe()
+    if err is not None:
+        raise err
 
 
 def _register_local_reader(env_id: str) -> None:

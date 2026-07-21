@@ -23,6 +23,7 @@ def env(tmp_path, monkeypatch):
     rw._local_readers.clear()
     rw._all_lock_fds.clear()
     rw._depths().clear()
+    rw._unsafe_tls.d = 0
     return {"config": str(tmp_path), "id": "testenv", "mk": tmp_path}
 
 
@@ -952,6 +953,179 @@ def test_marker_temp_cleanup_fail_harmless(env):
     with rw.env_read_lock(env["id"]):                     # clean retry initializes
         pass
     assert int((_lockdir(env) / "counter").read_text()) == 1
+
+
+def _raise(exc):
+    def f(*a, **k):
+        raise exc
+    return f
+
+
+def test_release_unlock_fault_still_closes_fd(env):
+    # _unlock throws during release → os.close MUST still run so the env lock is not
+    # leaked; the error surfaces; a later WRITE lock (needs all readers freed) succeeds.
+    real_unlock = rw._unlock
+    rw._unlock = _raise(OSError("unlock boom"))
+    try:
+        with pytest.raises(OSError):
+            with rw.env_read_lock(env["id"]):
+                pass
+    finally:
+        rw._unlock = real_unlock
+    assert rw._all_lock_fds == set()                   # nothing tracked/leaked
+    assert getattr(rw._unsafe_tls, "d", 0) == 0        # depth balanced
+    with rw.env_write_lock(env["id"], timeout=10):     # proves the read fd's lock was freed
+        pass
+
+
+def test_release_hook_fault_still_closes_fd(env):
+    # a _before_close_hook error must not skip the close either.
+    rw._before_close_hook = _raise(RuntimeError("hook boom"))
+    try:
+        with pytest.raises(RuntimeError):
+            with rw.env_read_lock(env["id"]):
+                pass
+    finally:
+        rw._before_close_hook = None
+    assert rw._all_lock_fds == set()
+    assert getattr(rw._unsafe_tls, "d", 0) == 0
+    with rw.env_write_lock(env["id"], timeout=10):
+        pass
+
+
+def test_close_tracked_fd_close_fault_raises_fdcloseerror(tmp_path):
+    # os.close of a lock fd fails → FdCloseError (indeterminate); the fd is untracked
+    # (never re-added), the depth stays balanced. The test-double really closes first,
+    # so no fd leaks in the test process.
+    p = tmp_path / "x.lock"
+    fd = rw._open_tracked(p, os.O_RDWR | os.O_CREAT)
+    assert fd in rw._all_lock_fds
+    real_close = rw.os.close
+
+    def close_op(f):
+        real_close(f)                                  # really release the handle first
+        raise OSError("close boom")                    # then report the failure
+
+    rw.os.close = close_op
+    try:
+        with pytest.raises(rw.FdCloseError):
+            rw._close_tracked_lock_fd(fd, unlock=True)
+    finally:
+        rw.os.close = real_close
+    assert fd not in rw._all_lock_fds                  # untracked, never re-added
+    assert getattr(rw._unsafe_tls, "d", 0) == 0
+
+
+def test_close_fault_preserves_earlier_unlock_error(tmp_path):
+    # if BOTH unlock and close fail, the earlier (unlock) error wins — but close still ran.
+    p = tmp_path / "y.lock"
+    fd = rw._open_tracked(p, os.O_RDWR | os.O_CREAT)
+    real_unlock, real_close = rw._unlock, rw.os.close
+    closed = {"done": False}
+
+    def close_op(f):
+        closed["done"] = True
+        real_close(f)
+        raise OSError("close boom")
+
+    rw._unlock = _raise(ValueError("unlock first"))
+    rw.os.close = close_op
+    try:
+        with pytest.raises(ValueError):                # unlock error wins…
+            rw._close_tracked_lock_fd(fd, unlock=True)
+    finally:
+        rw._unlock, rw.os.close = real_unlock, real_close
+    assert closed["done"]                              # …yet the close still ran
+    assert fd not in rw._all_lock_fds
+
+
+def test_exit_unsafe_underflow_fails_closed():
+    rw._unsafe_tls.d = 0
+    try:
+        with pytest.raises(rw.InternalStateError):
+            rw._exit_unsafe()
+        assert getattr(rw._unsafe_tls, "d", 0) == 0    # clamped, never negative
+    finally:
+        rw._unsafe_tls.d = 0
+
+
+def test_unsafe_depth_balanced_on_open_faults(env, tmp_path):
+    def depth():
+        return getattr(rw._unsafe_tls, "d", 0)
+
+    real_open = rw.os.open
+    rw.os.open = _raise(OSError("open boom"))
+    try:
+        with pytest.raises(OSError):
+            rw._open_tracked(tmp_path / "a", os.O_RDWR | os.O_CREAT)
+    finally:
+        rw.os.open = real_open
+    assert depth() == 0                                # os.open fault → balanced
+
+    real_track = rw._track_fd
+    rw._track_fd = _raise(RuntimeError("track boom"))
+    try:
+        with pytest.raises(RuntimeError):
+            rw._open_tracked(tmp_path / "b", os.O_RDWR | os.O_CREAT)
+    finally:
+        rw._track_fd = real_track
+    assert depth() == 0                                # _track_fd fault → balanced
+
+    rw._after_open_hook = _raise(RuntimeError("open-hook boom"))
+    try:
+        with pytest.raises(RuntimeError):
+            rw._open_tracked(tmp_path / "c", os.O_RDWR | os.O_CREAT)
+    finally:
+        rw._after_open_hook = None
+    assert depth() == 0                                # open-hook fault → balanced
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX only")
+def test_fork_blocked_during_faulty_release(env):
+    # a release whose hook throws still holds the fork guard until the close; a
+    # concurrent fork stays blocked until the fd is closed, then proceeds.
+    import threading
+    in_hook = threading.Event()
+    release = threading.Event()
+    forked = threading.Event()
+    fired = {"done": False}
+
+    def hook():
+        if fired["done"]:
+            return
+        fired["done"] = True
+        in_hook.set()
+        release.wait(10)
+        raise RuntimeError("hook boom after pause")
+
+    rw._before_close_hook = hook
+
+    def releaser():
+        with contextlib.suppress(RuntimeError):
+            with rw.env_read_lock(env["id"]):
+                pass
+
+    ta = threading.Thread(target=releaser)
+    ta.start()
+    assert in_hook.wait(10)
+
+    def do_fork():
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0)
+        os.waitpid(pid, 0)
+        forked.set()
+
+    tb = threading.Thread(target=do_fork)
+    tb.start()
+    try:
+        assert not forked.wait(1.0)                    # blocked through the faulty release
+        release.set()
+        assert forked.wait(10)                         # proceeds after close completes
+    finally:
+        rw._before_close_hook = None
+        ta.join(10)
+        tb.join(10)
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX only")
