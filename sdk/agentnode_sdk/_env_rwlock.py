@@ -138,6 +138,23 @@ class TicketExhausted(RuntimeError):
 _local_lock = threading.Lock()
 _local_readers: dict[str, int] = {}
 
+# All ticket FDs currently held by THIS process. On POSIX ``fork`` these FDs are
+# duplicated into the child (a shared open-file-description), so a child that inherits
+# a parent's ticket lock would keep the interprocess lock alive after the parent
+# releases → a writer would block forever. The fork handler closes them in the child.
+_fd_lock = threading.Lock()
+_open_ticket_fds: set[int] = set()
+
+
+def _track_fd(fd: int) -> None:
+    with _fd_lock:
+        _open_ticket_fds.add(fd)
+
+
+def _untrack_fd(fd: int) -> None:
+    with _fd_lock:
+        _open_ticket_fds.discard(fd)
+
 
 def _register_local_reader(env_id: str) -> None:
     with _local_lock:
@@ -193,6 +210,11 @@ def _read_counter(env_dir: Path) -> int:
     try:
         raw = cpath.read_text(encoding="ascii")
     except FileNotFoundError:
+        # Distinguish a never-initialized dir from a counter DELETED after init: an
+        # ``initialized`` marker (written on first reservation) means a counter once
+        # existed, so a missing counter is corruption — never a silent reset to 0.
+        if (env_dir / "initialized").exists():
+            raise CounterStateError("counter missing after initialization")
         return 0
     except (OSError, UnicodeDecodeError) as exc:
         raise CounterStateError("counter unreadable / not ASCII") from exc
@@ -206,9 +228,21 @@ def _write_counter_durable(env_dir: Path, value: int) -> None:
     atomic_write_json(env_dir / "counter", value, durable=True)  # json.dumps(int) == the digits
 
 
-def _iter_tickets(qdir: Path):
-    """Yield ``(num, type, path)`` for every queue entry, FAIL-CLOSED on a malformed
-    name or a non-regular file. Runs only under the queue-mutex."""
+def _ensure_initialized(env_dir: Path) -> None:
+    marker = env_dir / "initialized"
+    if not marker.exists():
+        from agentnode_sdk._fileutil import atomic_write_json
+        atomic_write_json(marker, 1, durable=True)
+
+
+def _scan_tickets(qdir: Path) -> list[tuple[int, str, Path]]:
+    """Return ``(num, type, path)`` for every queue entry, FAIL-CLOSED on a malformed
+    name, a non-regular file, OR a DUPLICATE numeric ticket number. A duplicate number
+    (any type/uuid, live or orphan) would let equal-numbered participants ignore each
+    other and break FIFO exclusivity — so it is refused, never resolved by picking a
+    winner. Runs only under the queue-mutex."""
+    out: list[tuple[int, str, Path]] = []
+    seen: set[int] = set()
     for name in os.listdir(qdir):
         m = _TICKET_RE.match(name)
         if m is None:
@@ -220,15 +254,16 @@ def _iter_tickets(qdir: Path):
             continue
         if not stat.S_ISREG(st.st_mode):        # reject symlink/junction/dir/etc.
             raise QueueStateError("non-regular queue entry")
-        yield int(m.group(1)), m.group(2), p
+        num = int(m.group(1))
+        if num in seen:
+            raise QueueStateError("duplicate ticket number")
+        seen.add(num)
+        out.append((num, m.group(2), p))
+    return out
 
 
 def _max_visible_ticket(env_dir: Path) -> int:
-    hi = 0
-    for num, _t, _p in _iter_tickets(env_dir / "queue"):
-        if num > hi:
-            hi = num
-    return hi
+    return max((num for num, _t, _p in _scan_tickets(env_dir / "queue")), default=0)
 
 
 def _reserve_ticket(env_dir: Path, ttype: str) -> int:
@@ -241,6 +276,7 @@ def _reserve_ticket(env_dir: Path, ttype: str) -> int:
         raise TicketExhausted("ticket space exhausted")  # no counter change, no token
     nxt = counter + 1
     _write_counter_durable(env_dir, nxt)
+    _ensure_initialized(env_dir)     # mark the dir initialized (counter loss → fail-closed)
     return nxt
 
 
@@ -291,7 +327,7 @@ def _is_live(tpath: Path) -> bool:
 def _blocked(env_dir: Path, my_n: int, ttype: str) -> bool:
     """Under the queue-mutex: is any lower LIVE ticket a blocker for me?
     writer → any lower live participant blocks; reader → only a lower live writer."""
-    for num, otype, path in _iter_tickets(env_dir / "queue"):
+    for num, otype, path in _scan_tickets(env_dir / "queue"):
         if num >= my_n:
             continue
         if not _is_live(path):
@@ -310,6 +346,7 @@ def _cleanup_ticket(env_dir: Path, fd: int, ticket_path: Path | None, deadline: 
     the queue-mutex. If the deadline is already past, do NOT acquire another blocking
     mutex — leave the DEAD token as a safely-cleanable orphan for the next scanner."""
     if fd >= 0:
+        _untrack_fd(fd)
         _unlock(fd)
         try:
             os.close(fd)             # token now dead (a scanner would classify it dead)
@@ -342,6 +379,7 @@ def _acquire(env_id: str, ttype: str, timeout: float):
             fd = os.open(str(ticket_path), os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
             if not _try_lock(fd):
                 raise RuntimeError("could not lock a freshly created ticket")
+            _track_fd(fd)   # so a forked child can close this inherited lock FD
         while True:
             with _queue_mutex(env_dir, deadline, ttype):
                 if not _blocked(env_dir, n, ttype):
@@ -372,9 +410,18 @@ def _depths() -> dict[str, int]:
 
 
 def _reset_after_fork() -> None:
-    # A forked child must NOT inherit a seemingly-valid parent nesting depth or
-    # reader registration (the design spawns; this is belt-and-suspenders). spawn
-    # starts fresh by construction.
+    # A forked child must not inherit the parent's ticket LOCKS or its in-memory
+    # registries (the design spawns; this is belt-and-suspenders). We CLOSE every
+    # inherited ticket FD so the child stops extending the parent's shared open-file-
+    # description locks (else a writer would block after the parent releases). We do
+    # NOT unlink queue entries — they belong to the parent. Runs single-threaded in
+    # the child; access the sets WITHOUT the (possibly fork-inherited-locked) mutexes.
+    for fd in list(_open_ticket_fds):
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    _open_ticket_fds.clear()
     _local_readers.clear()
     _thread_local.depths = {}
 

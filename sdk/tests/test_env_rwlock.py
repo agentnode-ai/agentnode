@@ -391,6 +391,103 @@ def test_malformed_queue_entry_fail_closed_unit(env, name):
         rw._max_visible_ticket(_lockdir(env))
 
 
+def test_process_reader_registry_count(env):
+    eid = env["id"]
+    assert rw._local_readers.get(eid, 0) == 0
+    with rw.env_read_lock(eid):
+        assert rw._local_readers.get(eid, 0) == 1          # outer
+        with rw.env_read_lock(eid):
+            assert rw._local_readers.get(eid, 0) == 1      # nested — still exactly 1
+        assert rw._local_readers.get(eid, 0) == 1          # inner release — still 1
+    assert rw._local_readers.get(eid, 0) == 0              # outer release — 0
+
+
+def test_registry_cleaned_after_exception(env, monkeypatch):
+    eid = env["id"]
+    # force _blocked to raise during admission → registry must not leak
+    monkeypatch.setattr(rw, "_reserve_ticket",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    with pytest.raises(RuntimeError):
+        with rw.env_read_lock(eid):
+            pass
+    assert rw._local_readers.get(eid, 0) == 0
+    assert rw._depths().get(eid, 0) == 0
+
+
+def test_duplicate_ticket_number_fail_closed(env):
+    qdir = _lockdir(env) / "queue"
+    qdir.mkdir(parents=True, exist_ok=True)
+    (qdir / f"{5:020d}.r.{'a' * 32}.lock").write_text("")
+    (qdir / f"{5:020d}.w.{'b' * 32}.lock").write_text("")   # same numeric ticket
+    with pytest.raises(rw.QueueStateError):
+        rw._max_visible_ticket(_lockdir(env))
+    with pytest.raises(rw.QueueStateError):                 # admission fail-closes too
+        with rw.env_read_lock(env["id"]):
+            pass
+
+
+@pytest.mark.parametrize("target,expect_new", [
+    ("write", False), ("fsync", False), ("replace", False), ("_fsync_dir", True),
+])
+def test_durable_counter_fault_matrix(env, monkeypatch, target, expect_new):
+    with rw.env_read_lock(env["id"]):                      # counter -> 1
+        pass
+    import agentnode_sdk._fileutil as fu
+
+    def boom(*a, **k):
+        raise OSError("injected durable fault")
+
+    if target == "_fsync_dir":
+        monkeypatch.setattr(fu, "_fsync_dir", boom)        # fails AFTER the replace
+    else:
+        monkeypatch.setattr(fu.os, target, boom)
+    with pytest.raises(OSError):
+        with rw.env_read_lock(env["id"]):
+            pass
+    monkeypatch.undo()
+    val = (_lockdir(env) / "counter").read_text().strip()
+    assert val.isdigit()                                   # never empty/partial/non-canonical
+    assert int(val) == (2 if expect_new else 1)            # fully-new or fully-old
+    assert [p for p in _lockdir(env).iterdir() if p.name.startswith(".counter")] == []  # no temp
+
+
+def test_missing_counter_after_init_fail_closed(env):
+    with rw.env_read_lock(env["id"]):                      # init: counter + marker
+        pass
+    (_lockdir(env) / "counter").unlink()                   # deleted AFTER initialization
+    with pytest.raises(rw.CounterStateError):
+        with rw.env_read_lock(env["id"]):
+            pass
+
+
+def test_never_initialized_starts_at_zero(env):
+    with rw.env_read_lock(env["id"]):
+        pass
+    assert int((_lockdir(env) / "counter").read_text()) == 1
+    assert (_lockdir(env) / "initialized").exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX-only")
+def test_fork_child_drops_inherited_ticket_fd(env):
+    # Parent holds a reader (an open, tracked ticket FD). After fork the child's
+    # after_in_child handler must have CLOSED the inherited FD and cleared the
+    # registries so the child never keeps the parent's interprocess lock alive.
+    with rw.env_read_lock(env["id"]):
+        assert len(rw._open_ticket_fds) >= 1
+        r, w = os.pipe()
+        pid = os.fork()
+        if pid == 0:                                       # child
+            ok = (len(rw._open_ticket_fds) == 0 and rw._local_readers == {}
+                  and rw._depths() == {})
+            os.write(w, b"1" if ok else b"0")
+            os._exit(0)
+        os.close(w)
+        seen = os.read(r, 1)
+        os.waitpid(pid, 0)
+        os.close(r)
+        assert seen == b"1"
+
+
 def test_writer_bounded_admission_under_reader_stream(env):
     # A continuous stream of short readers must not starve a waiting writer.
     stop = env["mk"] / "stop_stream"
