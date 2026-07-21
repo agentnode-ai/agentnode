@@ -204,6 +204,83 @@ def test_acquire_timeout_and_ticket_cleanup(env):
     w.wait(10)
 
 
+def _lockdir(env):
+    return env["mk"] / "locks" / f"rw-{env['id']}"
+
+
+def test_release_no_ticket_leak(env):
+    with rw.env_read_lock(env["id"]):
+        pass
+    with rw.env_write_lock(env["id"]):
+        pass
+    qdir = _lockdir(env) / "queue"
+    assert (list(qdir.iterdir()) if qdir.exists() else []) == []
+
+
+def test_all_queue_mutation_under_mutex_source_scan():
+    import inspect
+
+    from agentnode_sdk import _env_rwlock as m
+    clean = inspect.getsource(m._cleanup_ticket)
+    # the only unlink of our own ticket happens inside the queue-mutex block
+    assert clean.index("_safe_unlink(ticket_path)") > clean.index("_queue_mutex(")
+    acq = inspect.getsource(m._acquire)
+    assert "_reserve_ticket(" in acq and "_blocked(" in acq
+    # _blocked / _reserve_ticket appear only after a `with _queue_mutex(` in _acquire
+    for call in ("_reserve_ticket(", "_blocked("):
+        assert acq.index(call) > acq.index("with _queue_mutex(")
+
+
+def test_counter_rollback_fail_closed(env):
+    # a live reader holds ticket 1 (counter == 1); force the counter BELOW it
+    r = _spawn(env, "read", "rb", hold=30)
+    try:
+        assert _wait_file(env["mk"] / "rb.acq", 10)
+        (_lockdir(env) / "counter").write_text("0")     # rollback below visible ticket 1
+        with pytest.raises(rw.CounterRollbackError):
+            with rw.env_read_lock(env["id"]):
+                pass
+    finally:
+        _release(env, "rb")
+        r.wait(10)
+
+
+def test_malformed_queue_entry_fail_closed(env):
+    (_lockdir(env) / "queue").mkdir(parents=True, exist_ok=True)
+    (_lockdir(env) / "queue" / "garbage.txt").write_text("x")   # not a ticket name
+    with pytest.raises(rw.QueueStateError):
+        with rw.env_read_lock(env["id"]):
+            pass
+
+
+def test_ticket_gap_does_not_block(env):
+    # simulate a crash after a durable counter bump but before token publication:
+    # counter=5, no ticket files → the next participant gets 6 and is not blocked.
+    _lockdir(env).mkdir(parents=True, exist_ok=True)
+    (_lockdir(env) / "counter").write_text("5")
+    t0 = time.monotonic()
+    with rw.env_read_lock(env["id"], timeout=5):
+        pass
+    assert time.monotonic() - t0 < 3
+    assert int((_lockdir(env) / "counter").read_text()) == 6
+
+
+def test_three_readers_concurrent(env):
+    r1 = _spawn(env, "read", "g1", hold=30)
+    r2 = _spawn(env, "read", "g2", hold=30)
+    r3 = _spawn(env, "read", "g3", hold=30)
+    try:
+        # all three must be able to hold simultaneously
+        assert _wait_file(env["mk"] / "g1.acq", 10)
+        assert _wait_file(env["mk"] / "g2.acq", 10)
+        assert _wait_file(env["mk"] / "g3.acq", 10)
+    finally:
+        for p in ("g1", "g2", "g3"):
+            _release(env, p)
+        for r in (r1, r2, r3):
+            r.wait(10)
+
+
 def test_writer_bounded_admission_under_reader_stream(env):
     # A continuous stream of short readers must not starve a waiting writer.
     stop = env["mk"] / "stop_stream"

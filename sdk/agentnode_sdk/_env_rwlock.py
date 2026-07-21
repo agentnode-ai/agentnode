@@ -2,36 +2,37 @@
 (Agent-Exec A1-E-Lock).
 
 Readers = host-agent dispatch/execution; the single writer = an install into the
-shared interpreter. Keyed by ``env_id`` (the same identity M1 uses,
-``_env_lock.resolve_env_identity``), so every participant resolving one interpreter
-serializes correctly regardless of which CWD-relative lockfile drove it.
+shared interpreter. Keyed by ``env_id`` (the identity M1 uses).
 
-Design — a crash-safe FIFO ticket queue (provable bounded writer progress):
+Design — a crash-safe FIFO ticket queue with provable bounded writer progress:
 
-* A monotone **ticket** is allocated under a short exclusive ``queue-mutex``.
-* Each participant creates ``queue/<ticket>.<r|w>.<uuid>.lock`` and holds an
-  **exclusive OS lock on it** — that held lock *is* the liveness proof.
-* Service order is strictly ascending ticket. A **reader** proceeds when no
-  **writer** with a lower live ticket exists (readers with consecutive tickets run
-  concurrently). A **writer** proceeds when **no** participant with a lower live
-  ticket exists. So once a writer holds ticket N, every later reader takes a ticket
-  > N and cannot overtake it — the writer waits only for the finite set of live
-  tickets < N. No starvation.
-* **Orphans** (crashed participants) are detected *purely by lock-acquirability*: a
-  ticket whose exclusive lock can be taken has no live holder → it is removed. No
-  PID and no time heuristic. Registration (create+lock) and every scan/cleanup run
-  under the ``queue-mutex``, so a ticket seen during a scan is always either locked
-  (live) or a genuine orphan.
-* **Same-process read→write is refused** (``read_to_write_upgrade_forbidden``): if any
-  thread in this process holds a reader for the env, acquiring a writer raises rather
-  than deadlocking.
+* A monotone **ticket** is allocated under a short exclusive ``queue-mutex``; the
+  counter is durable (atomic + fsync via ``_fileutil.atomic_write_json``) and
+  **fail-closed** on any corruption or **rollback** below the highest visible ticket
+  (never reset, never reused).
+* Each participant creates ``queue/<020d ticket>.<r|w>.<uuid>.lock`` and holds an
+  exclusive OS lock on it — that held lock *is* the liveness proof.
+* Service order is strictly ascending ticket. A **reader** proceeds when no lower
+  LIVE writer exists (readers run concurrently); a **writer** proceeds when no lower
+  live participant exists. Once a writer holds ticket N, later readers (> N) cannot
+  overtake it → the writer waits only for the finite set of live tickets < N.
+* **Orphans** (crashed holders) are detected purely by lock-acquirability — no PID,
+  no time heuristic. Registration, scans and ALL cleanup run under the queue-mutex,
+  so a scanned ticket is always locked-live or a genuine orphan, and a malformed /
+  non-regular queue entry is **fail-closed** (never silently skipped).
+* A **single monotone total deadline** bounds the entire acquisition (mutex waits +
+  admission); no sub-step starts a fresh deadline.
+* **Same-process read→write is refused** (``ReadToWriteUpgradeForbidden``) before any
+  blocking OS-lock operation.
 
-The lock is advisory and released automatically by the OS on process exit, so a
-crash never leaks the lock — only (harmless) orphan files, cleaned on the next scan.
+Advisory OS locks auto-release on process exit, so a crash never leaks the lock —
+only harmless orphan files, cleaned on the next scan.
 """
 from __future__ import annotations
 
 import os
+import re
+import stat
 import sys
 import threading
 import time
@@ -39,11 +40,16 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-_POLL = 0.005          # queue-mutex acquire backoff
-_ADMIT_POLL = 0.01     # admission re-scan backoff
+_POLL = 0.005
+_ADMIT_POLL = 0.01
+_CLEANUP_MUTEX_TIMEOUT = 10.0
+DEFAULT_ACQUIRE_TIMEOUT = 300.0
+
+_TICKET_RE = re.compile(r"^(\d{20})\.([rw])\.([0-9a-f]{32})\.lock$")
+_COUNTER_RE = re.compile(r"^(0|[1-9][0-9]{0,17})\n?$")  # canonical, bounded, no leading zeros
 
 # ---------------------------------------------------------------------------
-# Platform per-file exclusive OS locks: blocking(loop) + non-blocking try-lock.
+# Platform per-file exclusive OS locks: non-blocking try-lock + unlock.
 # ---------------------------------------------------------------------------
 if sys.platform == "win32":
     import msvcrt
@@ -85,7 +91,7 @@ class ReadToWriteUpgradeForbidden(RuntimeError):
 
 
 class EnvironmentLockTimeout(RuntimeError):
-    """A read/write acquisition exceeded its total (monotone) deadline."""
+    """A read/write acquisition exceeded its single monotone total deadline."""
 
     def __init__(self, ttype: str):
         self.code = (
@@ -101,14 +107,22 @@ class CounterStateError(RuntimeError):
     code = "environment_lock_counter_corrupt"
 
 
-# Default total acquisition deadline (waiting to ACQUIRE, not holding). A read waits
-# only while an install is in progress; a write waits for readers to drain.
-DEFAULT_ACQUIRE_TIMEOUT = 300.0
+class CounterRollbackError(RuntimeError):
+    """The counter is below the highest visible ticket (rollback) — fail-closed."""
+
+    code = "environment_lock_counter_rollback"
+
+
+class QueueStateError(RuntimeError):
+    """A malformed / non-regular entry exists in the controlled queue dir —
+    fail-closed (never silently skipped, which could hide an earlier participant)."""
+
+    code = "environment_lock_queue_corrupt"
 
 
 # ---------------------------------------------------------------------------
-# Process-wide reader registry (interprocess lock + this in-process guard together
-# cover the same-process cross-thread upgrade case).
+# Process-wide reader registry (with the interprocess lock this also covers the
+# same-process cross-thread upgrade case).
 # ---------------------------------------------------------------------------
 _local_lock = threading.Lock()
 _local_readers: dict[str, int] = {}
@@ -134,19 +148,17 @@ def _local_reader_active(env_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Paths
+# Paths + queue-mutex (bounded by the caller's single total deadline)
 # ---------------------------------------------------------------------------
 def _env_dir(env_id: str) -> Path:
     from agentnode_sdk.config import config_dir
     d = config_dir() / "locks" / f"rw-{env_id}"
-    d.mkdir(parents=True, exist_ok=True)
+    (d / "queue").mkdir(parents=True, exist_ok=True)
     return d
 
 
 @contextmanager
 def _queue_mutex(env_dir: Path, deadline: float, ttype: str):
-    """Short exclusive mutex guarding ticket allocation + queue scans/cleanup.
-    Honours the caller's TOTAL acquisition deadline (not per-iteration)."""
     path = env_dir / "queue-mutex.lock"
     fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -162,47 +174,79 @@ def _queue_mutex(env_dir: Path, deadline: float, ttype: str):
         os.close(fd)
 
 
-def _next_ticket(env_dir: Path) -> int:
-    """Allocate the next monotone ticket. Durable + crash-consistent (atomic
-    temp+replace, fsync). A corrupted/tampered counter is FAIL-CLOSED (never reset
-    to 0 → never reuses a ticket number a live participant may still hold)."""
+# ---------------------------------------------------------------------------
+# Counter (strict + durable + rollback-checked) — all under the queue-mutex.
+# ---------------------------------------------------------------------------
+def _read_counter(env_dir: Path) -> int:
     cpath = env_dir / "counter"
     try:
-        raw = cpath.read_text()
+        raw = cpath.read_text(encoding="ascii")
     except FileNotFoundError:
-        n = 0
-    else:
-        raw = raw.strip()
-        if not raw.isdigit():                         # empty/partial/tampered → fail-closed
-            raise CounterStateError("ticket counter is not a plain non-negative integer")
-        n = int(raw)
-    nxt = n + 1
-    tmp = env_dir / f"counter.{uuid.uuid4().hex}.tmp"
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        os.write(fd, str(nxt).encode("ascii"))
-        os.fsync(fd)                                  # durable bytes
-    finally:
-        os.close(fd)
-    os.replace(str(tmp), str(cpath))                  # atomic: never a partial counter
+        return 0
+    except (OSError, UnicodeDecodeError) as exc:
+        raise CounterStateError("counter unreadable / not ASCII") from exc
+    if len(raw) > 24 or _COUNTER_RE.match(raw) is None:
+        raise CounterStateError("counter is not a canonical non-negative integer")
+    return int(raw.strip())
+
+
+def _write_counter_durable(env_dir: Path, value: int) -> None:
+    from agentnode_sdk._fileutil import atomic_write_json
+    atomic_write_json(env_dir / "counter", value, durable=True)  # json.dumps(int) == the digits
+
+
+def _iter_tickets(qdir: Path):
+    """Yield ``(num, type, path)`` for every queue entry, FAIL-CLOSED on a malformed
+    name or a non-regular file. Runs only under the queue-mutex."""
+    for name in os.listdir(qdir):
+        m = _TICKET_RE.match(name)
+        if m is None:
+            raise QueueStateError("malformed queue entry name")
+        p = qdir / name
+        try:
+            st = os.lstat(str(p))
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(st.st_mode):        # reject symlink/junction/dir/etc.
+            raise QueueStateError("non-regular queue entry")
+        yield int(m.group(1)), m.group(2), p
+
+
+def _max_visible_ticket(env_dir: Path) -> int:
+    hi = 0
+    for num, _t, _p in _iter_tickets(env_dir / "queue"):
+        if num > hi:
+            hi = num
+    return hi
+
+
+def _reserve_ticket(env_dir: Path, ttype: str) -> int:
+    """Under the queue-mutex: strict counter read → rollback check vs the highest
+    visible ticket → durable counter write → return the new ticket number."""
+    counter = _read_counter(env_dir)
+    if counter < _max_visible_ticket(env_dir):
+        raise CounterRollbackError("counter is below the highest visible ticket")
+    nxt = counter + 1
+    _write_counter_durable(env_dir, nxt)
     return nxt
 
 
-def _parse_ticket(name: str) -> tuple[int, str] | None:
-    # "<020d ticket>.<r|w>.<uuid>.lock"
-    parts = name.split(".")
-    if len(parts) < 4 or parts[-1] != "lock" or parts[1] not in ("r", "w"):
-        return None
+# ---------------------------------------------------------------------------
+# Liveness / orphan classification (under the queue-mutex)
+# ---------------------------------------------------------------------------
+def _safe_unlink(p: Path) -> None:
     try:
-        return int(parts[0]), parts[1]
-    except ValueError:
-        return None
+        os.unlink(str(p))
+    except OSError:
+        pass
 
 
 def _is_live(tpath: Path) -> bool:
     """Under the queue-mutex: True if the ticket has a live holder. A dead ticket's
-    lock is acquirable → we remove it and report not-live. Fail-safe: on any error,
-    treat as live (never wrongly admit past a possibly-live lower ticket)."""
+    lock is acquirable → remove it (close before unlink for Windows; the queue-mutex
+    guarantees no concurrent scanner in the close→unlink window). Fail-safe: on any
+    unexpected error, treat as live (never wrongly admit past a possibly-live lower
+    ticket)."""
     try:
         fd = os.open(str(tpath), os.O_RDWR)
     except FileNotFoundError:
@@ -210,13 +254,10 @@ def _is_live(tpath: Path) -> bool:
     except OSError:
         return True
     try:
-        if _try_lock(fd):          # acquired → no live holder → orphan
+        if _try_lock(fd):
             _unlock(fd)
             os.close(fd)
-            try:
-                os.unlink(str(tpath))
-            except OSError:
-                pass
+            _safe_unlink(tpath)     # under the mutex → no concurrent observer
             return False
         os.close(fd)
         return True
@@ -231,19 +272,37 @@ def _is_live(tpath: Path) -> bool:
 def _blocked(env_dir: Path, my_n: int, ttype: str) -> bool:
     """Under the queue-mutex: is any lower LIVE ticket a blocker for me?
     writer → any lower live participant blocks; reader → only a lower live writer."""
-    qdir = env_dir / "queue"
-    for name in os.listdir(qdir):
-        parsed = _parse_ticket(name)
-        if parsed is None:
-            continue
-        num, otype = parsed
+    for num, otype, path in _iter_tickets(env_dir / "queue"):
         if num >= my_n:
             continue
-        if not _is_live(qdir / name):
+        if not _is_live(path):
             continue
         if ttype == "w" or otype == "w":
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Acquire / release
+# ---------------------------------------------------------------------------
+def _cleanup_ticket(env_dir: Path, fd: int, ticket_path: Path | None) -> None:
+    """Release + remove OUR OWN ticket (unique uuid path). Always leaves the token
+    DEAD (unlocked) first, then unlinks under the queue-mutex (best-effort, short
+    bound). A leftover DEAD token is harmless — the next scanner removes it under its
+    own mutex — so a failed unlink is never a safety problem."""
+    if fd >= 0:
+        _unlock(fd)
+        try:
+            os.close(fd)             # token now dead (a scanner would classify it dead)
+        except OSError:
+            pass
+    if ticket_path is None:
+        return
+    try:
+        with _queue_mutex(env_dir, time.monotonic() + _CLEANUP_MUTEX_TIMEOUT, "r"):
+            _safe_unlink(ticket_path)     # unlink only under the mutex
+    except EnvironmentLockTimeout:
+        pass  # leave the DEAD token for the next scanner (safe)
 
 
 @contextmanager
@@ -253,26 +312,21 @@ def _acquire(env_id: str, ttype: str, timeout: float):
         raise ReadToWriteUpgradeForbidden(
             "cannot acquire the environment write-lock while this process holds a reader"
         )
-    # One monotone total deadline for the ENTIRE acquisition (mutex + admission).
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + timeout   # single monotone total deadline
     env_dir = _env_dir(env_id)
-    (env_dir / "queue").mkdir(parents=True, exist_ok=True)
-    tok = uuid.uuid4().hex
     fd = -1
     ticket_path: Path | None = None
     registered_local = False
     try:
         with _queue_mutex(env_dir, deadline, ttype):
-            n = _next_ticket(env_dir)
-            ticket_path = env_dir / "queue" / f"{n:020d}.{ttype}.{tok}.lock"
+            n = _reserve_ticket(env_dir, ttype)
+            ticket_path = env_dir / "queue" / f"{n:020d}.{ttype}.{uuid.uuid4().hex}.lock"
             fd = os.open(str(ticket_path), os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
-            if not _try_lock(fd):  # a fresh exclusive file must be lockable
+            if not _try_lock(fd):
                 raise RuntimeError("could not lock a freshly created ticket")
         if ttype == "r":
             _register_local_reader(env_id)
             registered_local = True
-        # Admission: wait until no blocking lower live ticket remains, bounded by the
-        # single total deadline (never reset per iteration).
         while True:
             with _queue_mutex(env_dir, deadline, ttype):
                 if not _blocked(env_dir, n, ttype):
@@ -282,21 +336,9 @@ def _acquire(env_id: str, ttype: str, timeout: float):
             time.sleep(_ADMIT_POLL)
         yield
     finally:
-        # Always release the local-reader registration + our own ticket artifacts,
-        # even on timeout / exception (no reader leak, no ticket leak).
         if registered_local:
             _unregister_local_reader(env_id)
-        if fd >= 0:
-            _unlock(fd)
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        if ticket_path is not None:
-            try:
-                os.unlink(str(ticket_path))
-            except OSError:
-                pass
+        _cleanup_ticket(env_dir, fd, ticket_path)
 
 
 @contextmanager
