@@ -765,11 +765,132 @@ def test_release_short_cleanup_when_mutex_busy(env):
         pass
 
 
-def test_marker_partial_write_no_ticket_reuse(env):
-    # a short write to the marker temp (returns 0 bytes, no exception) → empty/partial
-    # marker; the primitive must NEVER silently reset (reuse ticket 1) afterwards.
+def _patch_write(target, op):
+    # install ``op`` as os.write only while a durable atomic_write_json to ``target`` is
+    # in progress; returns a restore(). ``op(real_write, fd, data)`` -> bytes written.
     import agentnode_sdk._fileutil as fu
     real_awj, real_write = fu.atomic_write_json, fu.os.write
+    flag = {"on": False}
+
+    def awj(path, data, **k):
+        if os.path.basename(str(path)) == target:
+            flag["on"] = True
+            try:
+                return real_awj(path, data, **k)
+            finally:
+                flag["on"] = False
+        return real_awj(path, data, **k)
+
+    fu.atomic_write_json = awj
+    fu.os.write = lambda fd, data: (op(real_write, fd, data) if flag["on"]
+                                    else real_write(fd, data))
+
+    def restore():
+        fu.atomic_write_json, fu.os.write = real_awj, real_write
+
+    return restore
+
+
+# ---- Variant A: atomic_write_json full-write loop (root fix) ----
+
+def test_atomic_write_completes_short_writes(tmp_path):
+    # os.write that writes only 1 byte at a time (progress) → the loop still writes ALL
+    import agentnode_sdk._fileutil as fu
+    real_write = fu.os.write
+    fu.os.write = lambda fd, data: real_write(fd, data[:1])   # 1 byte per call, forever
+    try:
+        fu.atomic_write_json(tmp_path / "f", {"a": 12345, "b": "xyz"}, durable=True)
+    finally:
+        fu.os.write = real_write
+    import json
+    assert json.loads((tmp_path / "f").read_text()) == {"a": 12345, "b": "xyz"}
+
+
+def test_atomic_write_zero_progress_raises_old_intact(tmp_path):
+    import agentnode_sdk._fileutil as fu
+    f = tmp_path / "f"
+    fu.atomic_write_json(f, {"old": True}, durable=True)      # pre-existing content
+    real_write = fu.os.write
+    fu.os.write = lambda fd, data: 0                          # never makes progress
+    try:
+        with pytest.raises(OSError):
+            fu.atomic_write_json(f, {"new": True}, durable=True)
+    finally:
+        fu.os.write = real_write
+    import json
+    assert json.loads(f.read_text()) == {"old": True}        # old content intact
+    assert [p for p in tmp_path.iterdir() if p.name.startswith(".f")] == []  # no temp left
+
+
+# ---- zero-progress write end-to-end (Variant A fail-closed) ----
+
+def test_marker_zero_write_fails_and_pristine(env):
+    restore = _patch_write("initialized", lambda rw_, fd, data: 0)
+    entered = False
+    try:
+        with pytest.raises(OSError):
+            with rw.env_read_lock(env["id"]):
+                entered = True
+    finally:
+        restore()
+    assert not entered                                     # protected body NOT entered
+    assert not (_lockdir(env) / "initialized").exists()    # pristine
+    assert not (_lockdir(env) / "counter").exists()
+    assert rw._max_visible_ticket(_lockdir(env)) == 0      # no ticket published
+
+
+def test_counter_zero_write_fails_and_counter_intact(env):
+    # marker valid, counter seeded to a multi-digit value; a zero-progress counter write
+    # must NOT corrupt the persisted counter (no rollback → no future ticket reuse).
+    _lockdir(env).mkdir(parents=True, exist_ok=True)
+    (_lockdir(env) / "initialized").write_text(rw._MARKER_CONTENT)
+    (_lockdir(env) / "counter").write_text("41")           # → next ticket would be 42
+    restore = _patch_write("counter", lambda rw_, fd, data: 0)
+    entered = False
+    try:
+        with pytest.raises(OSError):
+            with rw.env_read_lock(env["id"]):
+                entered = True
+    finally:
+        restore()
+    assert not entered
+    assert (_lockdir(env) / "counter").read_text().strip() == "41"  # unchanged, no rollback
+    assert rw._max_visible_ticket(_lockdir(env)) == 0              # no ticket published
+
+
+# ---- Variant B: post-write readback catches a truncated persist ----
+
+def test_counter_readback_catches_truncated_persist(env):
+    # even if a truncated-but-parseable counter somehow LANDS (e.g. fs-level truncation),
+    # the readback fails THIS acquire before any token — not merely the next one.
+    import agentnode_sdk._fileutil as fu
+    _lockdir(env).mkdir(parents=True, exist_ok=True)
+    (_lockdir(env) / "initialized").write_text(rw._MARKER_CONTENT)
+    (_lockdir(env) / "counter").write_text("41")
+    real_awj = fu.atomic_write_json
+
+    def awj(path, data, **k):
+        if os.path.basename(str(path)) == "counter":
+            return real_awj(path, 4, **k)                  # persist wrong (truncated) value
+        return real_awj(path, data, **k)
+
+    fu.atomic_write_json = awj
+    entered = False
+    try:
+        with pytest.raises(rw.CounterStateError):
+            with rw.env_read_lock(env["id"]):
+                entered = True
+    finally:
+        fu.atomic_write_json = real_awj
+    assert not entered
+    assert rw._max_visible_ticket(_lockdir(env)) == 0      # no ticket published
+
+
+def test_marker_close_fault_pristine(env):
+    # os.close of the marker temp fails (before replace) → no marker, no counter,
+    # pristine; a clean retry initializes.
+    import agentnode_sdk._fileutil as fu
+    real_awj, real_close = fu.atomic_write_json, fu.os.close
     flag = {"on": False}
 
     def awj(path, data, **k):
@@ -781,27 +902,24 @@ def test_marker_partial_write_no_ticket_reuse(env):
                 flag["on"] = False
         return real_awj(path, data, **k)
 
-    def short_write(fd, data):
-        return real_write(fd, data[:0]) if flag["on"] else real_write(fd, data)
+    def close_op(fd):
+        if flag["on"]:
+            real_close(fd)                                 # really close, then fail loudly
+            raise OSError("close fault")
+        return real_close(fd)
 
-    fu.atomic_write_json, fu.os.write = awj, short_write
+    fu.atomic_write_json, fu.os.close = awj, close_op
     try:
-        # the acquire may succeed (empty marker) or fail — either is acceptable
-        with contextlib.suppress(Exception):
+        with pytest.raises(OSError):
             with rw.env_read_lock(env["id"]):
                 pass
     finally:
-        fu.atomic_write_json, fu.os.write = real_awj, real_write
-    # whatever happened, the env must not silently reset to ticket 1: either it is
-    # pristine (clean) or it is fail-closed on the next acquire.
-    try:
-        with rw.env_read_lock(env["id"]):
-            pass
-        # succeeded → marker+counter now consistent, monotone (never a partial marker)
-        assert (_lockdir(env) / "initialized").read_text().strip() == "1"
-        assert int((_lockdir(env) / "counter").read_text()) >= 1
-    except rw.CounterStateError:
-        pass  # fail-closed is the safe alternative — no reuse
+        fu.atomic_write_json, fu.os.close = real_awj, real_close
+    assert not (_lockdir(env) / "initialized").exists()    # not published
+    assert not (_lockdir(env) / "counter").exists()
+    with rw.env_read_lock(env["id"]):                      # clean retry initializes
+        pass
+    assert int((_lockdir(env) / "counter").read_text()) == 1
 
 
 def test_marker_temp_cleanup_fail_harmless(env):
@@ -858,6 +976,59 @@ def test_fork_guard_reentrant_same_thread(env):
         rw._after_track_hook = None
     assert result["exit"] == 0                            # no deadlock; child had 0 lock FDs
     with rw.env_read_lock(env["id"]):                     # parent still usable
+        pass
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX only")
+def test_fork_between_open_and_track_child_failstops(env):
+    # A same-thread fork in the UNSAFE window (opened, not yet tracked) → the child may
+    # hold an un-trackable inherited FD → it MUST fail-stop (os._exit), not continue.
+    env_dir = rw._env_dir(env["id"])
+    result = {}
+
+    def hook():
+        pid = os.fork()
+        if pid == 0:
+            os._exit(99)                                  # must NOT run: child fail-stops first
+        _, status = os.waitpid(pid, 0)
+        result["exit"] = os.waitstatus_to_exitcode(status)
+
+    rw._after_open_hook = hook
+    try:
+        with rw._queue_mutex(env_dir, time.monotonic() + 30, "r"):
+            pass
+    finally:
+        rw._after_open_hook = None
+    assert result["exit"] == rw._FORK_DURING_LOCK_TRANSITION
+    with rw.env_read_lock(env["id"]):                     # parent unaffected
+        pass
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX only")
+def test_fork_between_untrack_and_close_child_failstops(env):
+    # A same-thread fork in the UNSAFE release window (untracked, not yet closed) → the
+    # child holds an un-trackable inherited FD → it MUST fail-stop.
+    result = {}
+    fired = {"done": False}
+
+    def hook():
+        if fired["done"]:
+            return
+        fired["done"] = True
+        pid = os.fork()
+        if pid == 0:
+            os._exit(99)
+        _, status = os.waitpid(pid, 0)
+        result["exit"] = os.waitstatus_to_exitcode(status)
+
+    rw._before_close_hook = hook
+    try:
+        with rw.env_read_lock(env["id"]):
+            pass
+    finally:
+        rw._before_close_hook = None
+    assert result["exit"] == rw._FORK_DURING_LOCK_TRANSITION
+    with rw.env_read_lock(env["id"]):                     # parent unaffected
         pass
 
 

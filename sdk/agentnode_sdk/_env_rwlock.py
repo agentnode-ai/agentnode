@@ -170,6 +170,27 @@ _all_lock_fds: set[int] = set()
 # ``before`` handler re-acquire and self-deadlock.
 _fork_guard = threading.RLock()
 
+# An RLock stops the same-thread self-deadlock but lets a same-thread fork PROCEED. If
+# that fork lands DURING an unsafe FD transition (os.open→track, or untrack→close) the
+# child may hold an inherited, not-yet/-no-longer-tracked lock FD it cannot identify.
+# We therefore mark those transitions per-thread; a fork during one → the child
+# fail-stops via os._exit (the OS then closes every inherited FD, releasing any lock).
+_unsafe_tls = threading.local()
+_fork_was_unsafe = False
+_FORK_DURING_LOCK_TRANSITION = 137
+
+
+def _enter_unsafe() -> None:
+    _unsafe_tls.d = getattr(_unsafe_tls, "d", 0) + 1
+
+
+def _exit_unsafe() -> None:
+    _unsafe_tls.d = getattr(_unsafe_tls, "d", 0) - 1
+
+
+def _in_unsafe() -> bool:
+    return getattr(_unsafe_tls, "d", 0) > 0
+
 
 def _track_fd(fd: int) -> None:
     with _fd_lock:
@@ -181,9 +202,11 @@ def _untrack_fd(fd: int) -> None:
         _all_lock_fds.discard(fd)
 
 
-# Optional test hooks: called (if set) INSIDE the fork guard — after open+track, and
-# after untrack (before close) — so a test can attempt a concurrent fork and prove it
-# blocks during both the open-side and release-side transitions.
+# Optional test hooks: called (if set) INSIDE the fork guard. _after_open_hook fires
+# in the UNSAFE window (opened, not yet tracked); _after_track_hook in the SAFE window
+# (tracked); _before_close_hook in the UNSAFE window (untracked, not yet closed) — so a
+# test can attempt a concurrent fork at each point and prove the contract.
+_after_open_hook = None
 _after_track_hook = None
 _before_close_hook = None
 
@@ -191,16 +214,31 @@ _before_close_hook = None
 def _open_tracked(path: Path, flags: int, mode: int = 0o600) -> int:
     """Open a lock file and register its FD ATOMICALLY w.r.t. fork (under the fork
     guard), so the child's after-fork handler is guaranteed to know — and close —
-    every inherited lock FD. The blocking lock attempt happens AFTER this returns."""
+    every inherited lock FD. The open→track step is an UNSAFE transition (the FD is
+    open but not yet tracked): a same-thread fork there makes the child fail-stop; a
+    cross-thread fork waits on the guard. The blocking lock attempt happens AFTER this
+    returns (in the SAFE, tracked state)."""
     with _fork_guard:
-        fd = os.open(str(path), flags, mode)
+        _enter_unsafe()
         try:
+            fd = os.open(str(path), flags, mode)
+        except BaseException:
+            _exit_unsafe()
+            raise
+        try:
+            if _after_open_hook is not None:
+                _after_open_hook()          # UNSAFE: opened, not yet tracked
             _track_fd(fd)
         except BaseException:
-            os.close(fd)
+            try:
+                os.close(fd)                # opened, not tracked → close directly
+            except OSError:
+                pass
+            _exit_unsafe()
             raise
+        _exit_unsafe()                      # tracked → SAFE now
         if _after_track_hook is not None:
-            _after_track_hook()
+            _after_track_hook()             # SAFE: tracked
         return fd
 
 
@@ -209,19 +247,24 @@ def _close_tracked_lock_fd(fd: int, *, unlock: bool) -> None:
     the fork guard). This closes the release-side window: a fork must never interleave
     between untrack and close, which would leave the child a still-open, no-longer-
     tracked (thus un-closable) inherited lock FD. This is the ONLY place a tracked lock
-    FD is untracked+closed — no direct _untrack_fd()+os.close() elsewhere."""
+    FD is untracked+closed — no direct _untrack_fd()+os.close() elsewhere. The
+    untrack→close step is an UNSAFE transition (same-thread fork → child fail-stop)."""
     if fd < 0:
         return
     with _fork_guard:
-        _untrack_fd(fd)          # untrack before close is safe: the guard blocks forks
-        if _before_close_hook is not None:
-            _before_close_hook()
-        if unlock:
-            _unlock(fd)
+        _enter_unsafe()
         try:
-            os.close(fd)
-        except OSError:
-            pass
+            _untrack_fd(fd)      # untrack before close is safe: the guard blocks forks
+            if _before_close_hook is not None:
+                _before_close_hook()        # UNSAFE: untracked, not yet closed
+            if unlock:
+                _unlock(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        finally:
+            _exit_unsafe()
 
 
 def _register_local_reader(env_id: str) -> None:
@@ -294,7 +337,9 @@ def _queue_mutex(env_dir: Path, deadline: float, ttype: str):
 # ---------------------------------------------------------------------------
 # Counter (strict + durable + rollback-checked) — all under the queue-mutex.
 # ---------------------------------------------------------------------------
-_MARKER_CONTENT = "1"
+# Multi-digit so a partial (short) marker write is ALWAYS detectable on readback — no
+# proper prefix of it is itself a valid marker (unlike a single "1").
+_MARKER_CONTENT = "424242"
 
 
 def _valid_marker(env_dir: Path) -> bool:
@@ -396,6 +441,9 @@ def _reserve_ticket(env_dir: Path, ttype: str) -> int:
         if _max_visible_ticket(env_dir) != 0:
             raise QueueStateError("queue entries without an initialization marker")
         _write_marker_durable(env_dir)               # marker FIRST
+        if not _valid_marker(env_dir):               # READBACK: a partial/short write
+            raise CounterStateError(                 # must fail THIS acquire, not merely
+                "initialized marker not intact after durable write")  # the next one
         counter = 0
     if counter < _max_visible_ticket(env_dir):
         raise CounterRollbackError("counter is below the highest visible ticket")
@@ -403,6 +451,9 @@ def _reserve_ticket(env_dir: Path, ttype: str) -> int:
         raise TicketExhausted("ticket space exhausted")  # no counter change, no token
     nxt = counter + 1
     _write_counter_durable(env_dir, nxt)
+    if _read_counter_value(env_dir) != nxt:          # READBACK: a partial counter write
+        raise CounterStateError(                     # fails THIS acquire before any token
+            "counter not intact after durable write")
     return nxt
 
 
@@ -538,17 +589,30 @@ def _depths() -> dict[str, int]:
 
 
 def _before_fork() -> None:
-    # Block the fork until any in-progress open→track transition completes, so the
-    # child sees a fully-tracked FD set (no locked-but-untracked inherited FD).
+    # A CROSS-thread fork blocks here until any in-progress open→track / untrack→close
+    # transition completes (the guard is held throughout) → the child sees a consistent,
+    # fully-tracked FD set. A SAME-thread fork (signal/hook/callback) re-acquires the
+    # RLock without deadlocking, but may land mid-transition; record that so the child
+    # can fail-stop (it may hold a locked-but-untracked inherited FD it cannot identify).
+    global _fork_was_unsafe
     _fork_guard.acquire()
+    _fork_was_unsafe = _in_unsafe()
 
 
 def _after_fork_parent() -> None:
+    global _fork_was_unsafe
+    _fork_was_unsafe = False
     _fork_guard.release()
 
 
 def _after_fork_child() -> None:
-    # Runs single-threaded in the child. The inherited _fork_guard is LOCKED (held by
+    # Runs single-threaded in the child. If the fork landed during an unsafe FD
+    # transition, the child may hold an inherited, un-trackable open lock FD it cannot
+    # find in _all_lock_fds → fail-stop immediately; os._exit lets the OS close EVERY
+    # inherited FD, releasing any lock. No Python/agent code may continue in this state.
+    if _fork_was_unsafe:
+        os._exit(_FORK_DURING_LOCK_TRANSITION)
+    # Safe fork (outside any transition): the inherited _fork_guard is LOCKED (held by
     # _before_fork); never try to release/acquire it — just replace it. Same for the
     # other process-local mutexes (a mutex held by another thread at fork time would
     # stay locked forever here). CLOSE every inherited lock FD (queue-mutex, ticket,
@@ -563,6 +627,7 @@ def _after_fork_child() -> None:
     _all_lock_fds.clear()
     _local_readers.clear()
     _thread_local.depths = {}
+    _unsafe_tls.d = 0
     _local_lock = threading.Lock()
     _fd_lock = threading.Lock()
     _fork_guard = threading.RLock()
