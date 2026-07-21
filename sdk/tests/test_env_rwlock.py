@@ -1,6 +1,7 @@
 """A1-E-Lock: FIFO-ticket inter-process reader/writer lock."""
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -196,10 +197,16 @@ def test_acquire_timeout_and_ticket_cleanup(env):
             pass
     assert ei.value.code == "environment_read_lock_timeout"
     assert time.monotonic() - t0 >= 0.9           # honoured the total deadline
-    # our reader ticket was cleaned up on timeout (no leftover .r. ticket leaks)
+    # On an expired-deadline timeout the token is left as a DEAD orphan (Blocker 2 —
+    # no new time budget to unlink): any leftover .r. token must be unlocked/dead.
     qdir = env["mk"] / "locks" / f"rw-{env['id']}" / "queue"
-    readers = [p for p in qdir.iterdir() if ".r." in p.name] if qdir.exists() else []
-    assert readers == []
+    for p in (p for p in qdir.iterdir() if ".r." in p.name) if qdir.exists() else []:
+        fd = os.open(str(p), os.O_RDWR)
+        try:
+            assert rw._try_lock(fd), "leftover reader token is still locked (not dead)"
+            rw._unlock(fd)
+        finally:
+            os.close(fd)
     _release(env, "tw")
     w.wait(10)
 
@@ -279,6 +286,109 @@ def test_three_readers_concurrent(env):
             _release(env, p)
         for r in (r1, r2, r3):
             r.wait(10)
+
+
+def test_nested_reader_no_deadlock_behind_writer(env):
+    import threading
+    inner_ok = threading.Event()
+    released = threading.Event()
+
+    def holder():
+        with rw.env_read_lock(env["id"]):          # R1 outermost
+            time.sleep(0.6)                         # let the writer register + wait
+            with rw.env_read_lock(env["id"]):       # nested R3 — must enter immediately
+                inner_ok.set()
+        released.set()
+
+    t = threading.Thread(target=holder)
+    t.start()
+    time.sleep(0.2)
+    w = _spawn(env, "write", "nd_w", hold=0.2)     # registers a ticket after R1, waits
+    assert inner_ok.wait(10), "nested reader deadlocked behind the writer"
+    assert released.wait(10)
+    assert _wait_file(env["mk"] / "nd_w.acq", 10)  # writer enters after the outer release
+    w.wait(10)
+    t.join(10)
+
+
+def test_nested_reader_takes_no_new_ticket(env):
+    with rw.env_read_lock(env["id"]):
+        qdir = _lockdir(env) / "queue"
+        before = len(list(qdir.iterdir()))
+        with rw.env_read_lock(env["id"]):
+            assert len(list(qdir.iterdir())) == before   # no new interprocess ticket
+
+
+def test_timeout_cleanup_no_new_budget(env):
+    w = _spawn(env, "write", "cd_w", hold=1.5)
+    assert _wait_file(env["mk"] / "cd_w.acq", 10)
+    t0 = time.monotonic()
+    with pytest.raises(rw.EnvironmentLockTimeout):
+        with rw.env_read_lock(env["id"], timeout=0.4):
+            pass
+    assert time.monotonic() - t0 < 2.0             # returned ~at the deadline (no +10s)
+    _release(env, "cd_w")
+    w.wait(10)
+    with rw.env_read_lock(env["id"]):              # next scanner removes any dead orphan
+        pass
+    qdir = _lockdir(env) / "queue"
+    assert (list(qdir.iterdir()) if qdir.exists() else []) == []
+
+
+def test_ticket_exhaustion_fail_closed(env):
+    _lockdir(env).mkdir(parents=True, exist_ok=True)
+    (_lockdir(env) / "counter").write_text(str(rw._MAX_TICKET - 1))
+    with rw.env_read_lock(env["id"]):              # reserves _MAX_TICKET — ok
+        pass
+    assert int((_lockdir(env) / "counter").read_text()) == rw._MAX_TICKET
+    (_lockdir(env) / "counter").write_text(str(rw._MAX_TICKET))
+    with pytest.raises(rw.TicketExhausted):
+        with rw.env_read_lock(env["id"]):
+            pass
+    assert int((_lockdir(env) / "counter").read_text()) == rw._MAX_TICKET  # unchanged
+    qdir = _lockdir(env) / "queue"
+    assert (list(qdir.iterdir()) if qdir.exists() else []) == []           # no token
+
+
+def test_counter_write_fault_keeps_old_value(env, monkeypatch):
+    with rw.env_read_lock(env["id"]):              # counter -> 1
+        pass
+    import agentnode_sdk._fileutil as fu
+
+    def boom(*a, **k):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(fu.os, "replace", boom)    # fault during the durable counter write
+    with pytest.raises(OSError):
+        with rw.env_read_lock(env["id"]):
+            pass
+    monkeypatch.undo()
+    assert int((_lockdir(env) / "counter").read_text()) == 1               # fully old
+    leftover = [p for p in _lockdir(env).iterdir() if p.name.startswith(".counter")]
+    assert leftover == []                                                  # no partial temp
+
+
+def test_max_visible_ticket_numeric_not_lexical(env):
+    qdir = _lockdir(env) / "queue"
+    qdir.mkdir(parents=True, exist_ok=True)
+    for n in (2, 9, 10, 100):
+        (qdir / f"{n:020d}.r.{'a' * 32}.lock").write_text("")
+    assert rw._max_visible_ticket(_lockdir(env)) == 100     # not "9" > "100"
+
+
+@pytest.mark.parametrize("name", [
+    "bogus", "5.r.abc.lock", "0000000000000000000a.r." + "a" * 32 + ".lock",
+    "-0000000000000000005.r." + "a" * 32 + ".lock",
+    "00000000000000000005.x." + "a" * 32 + ".lock",
+    "00000000000000000005.r." + "a" * 30 + ".lock",   # wrong uuid length
+    "00000000000000000005.r." + "a" * 32,             # missing .lock
+])
+def test_malformed_queue_entry_fail_closed_unit(env, name):
+    qdir = _lockdir(env) / "queue"
+    qdir.mkdir(parents=True, exist_ok=True)
+    (qdir / name).write_text("")
+    with pytest.raises(rw.QueueStateError):
+        rw._max_visible_ticket(_lockdir(env))
 
 
 def test_writer_bounded_admission_under_reader_stream(env):
