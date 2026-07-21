@@ -27,6 +27,15 @@ Design — a crash-safe FIFO ticket queue with provable bounded writer progress:
 
 Advisory OS locks auto-release on process exit, so a crash never leaks the lock —
 only harmless orphan files, cleaned on the next scan.
+
+THREAT MODEL (symlinks / reparse points): this primitive fail-closes on a STATICALLY
+present symlink/reparse point at the env dir, queue dir, queue-mutex, counter, and
+marker (a redirected mutex could otherwise split participants into different sync
+domains). It does NOT claim to be race-safe against *deliberate same-user* filesystem
+manipulation: a check→open TOCTOU window remains, and defending a same-OS-user
+attacker is out of scope for A1-E-Lock (that is the sandbox's job). Ordinary
+non-regular files are rejected; a hostile same-user swap between check and open is a
+documented, accepted limitation.
 """
 from __future__ import annotations
 
@@ -44,10 +53,12 @@ _POLL = 0.005
 _ADMIT_POLL = 0.01
 DEFAULT_ACQUIRE_TIMEOUT = 300.0
 # On a SUCCESSFUL release the acquisition deadline is typically long past (the
-# protected section ran a while), so cleanup uses a short internal budget to unlink
-# our own ticket instead — avoiding a dead-orphan on every long run — while never
-# blocking the caller for long.
-_CLEANUP_BUDGET = 5.0
+# protected section ran a while), so cleanup uses a VERY short internal budget to
+# unlink our own ticket — avoiding a dead-orphan on every long run — without adding a
+# multi-second tail latency to a normal agent end. If the queue-mutex is not available
+# within this budget, the caller returns immediately and leaves a dead orphan for the
+# next scanner.
+_CLEANUP_BUDGET = 0.2
 
 # One consistent value range for the counter regex, the ticket-name width, and the
 # exhaustion bound: max allocatable ticket = 10**18 - 1 (18 nines), which always fits
@@ -150,6 +161,12 @@ _local_readers: dict[str, int] = {}
 _fd_lock = threading.Lock()
 _all_lock_fds: set[int] = set()
 
+# Fork barrier: every open→track transition of a to-be-locked FD runs under this
+# guard, and the fork ``before`` handler acquires it — so a fork can never interleave
+# BETWEEN os.open() and _track_fd() (which would leave the child a shared, untracked
+# open-file-description that its handler could not close, defeating crash-safety).
+_fork_guard = threading.Lock()
+
 
 def _track_fd(fd: int) -> None:
     with _fd_lock:
@@ -159,6 +176,27 @@ def _track_fd(fd: int) -> None:
 def _untrack_fd(fd: int) -> None:
     with _fd_lock:
         _all_lock_fds.discard(fd)
+
+
+# Optional test hook: called (if set) INSIDE the fork guard, after open+track, before
+# the guard is released — lets a test attempt a concurrent fork and prove it blocks.
+_after_track_hook = None
+
+
+def _open_tracked(path: Path, flags: int, mode: int = 0o600) -> int:
+    """Open a lock file and register its FD ATOMICALLY w.r.t. fork (under the fork
+    guard), so the child's after-fork handler is guaranteed to know — and close —
+    every inherited lock FD. The blocking lock attempt happens AFTER this returns."""
+    with _fork_guard:
+        fd = os.open(str(path), flags, mode)
+        try:
+            _track_fd(fd)
+        except BaseException:
+            os.close(fd)
+            raise
+        if _after_track_hook is not None:
+            _after_track_hook()
+        return fd
 
 
 def _register_local_reader(env_id: str) -> None:
@@ -183,18 +221,39 @@ def _local_reader_active(env_id: str) -> bool:
 # ---------------------------------------------------------------------------
 # Paths + queue-mutex (bounded by the caller's single total deadline)
 # ---------------------------------------------------------------------------
+def _reject_redirected(path: Path) -> None:
+    """Fail-closed if *path* is a statically-present symlink / reparse point. A
+    redirected env dir, queue dir, or queue-mutex could split participants into
+    different synchronisation domains. THREAT-MODEL LIMIT: this is a STATIC check; the
+    check→open window is NOT race-safe against deliberate same-user filesystem
+    manipulation (see the module docstring)."""
+    try:
+        st = os.lstat(str(path))
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(st.st_mode):
+        raise QueueStateError("lock path is a symlink")
+    if os.name == "nt" and (
+        getattr(st, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    ):
+        raise QueueStateError("lock path is a reparse point")
+
+
 def _env_dir(env_id: str) -> Path:
     from agentnode_sdk.config import config_dir
     d = config_dir() / "locks" / f"rw-{env_id}"
+    _reject_redirected(d)                       # a redirected env lock dir → fail-closed
     (d / "queue").mkdir(parents=True, exist_ok=True)
+    _reject_redirected(d / "queue")
     return d
 
 
 @contextmanager
 def _queue_mutex(env_dir: Path, deadline: float, ttype: str):
     path = env_dir / "queue-mutex.lock"
-    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
-    _track_fd(fd)   # track BEFORE locking so a fork never leaves a locked, untracked FD
+    _reject_redirected(path)   # static symlink/reparse on the mutex would split domains
+    fd = _open_tracked(path, os.O_RDWR | os.O_CREAT)   # open+track atomic w.r.t. fork
     try:
         while not _try_lock(fd):
             if time.monotonic() >= deadline:
@@ -347,12 +406,11 @@ def _is_live(tpath: Path) -> bool:
     filesystem manipulation outside the lock protocol. Fail-safe: on any unexpected
     error, treat as live (never wrongly admit past a possibly-live lower ticket)."""
     try:
-        fd = os.open(str(tpath), os.O_RDWR)
+        fd = _open_tracked(tpath, os.O_RDWR)   # open+track atomic w.r.t. fork
     except FileNotFoundError:
         return False
     except OSError:
         return True
-    _track_fd(fd)   # the probe may briefly hold the orphan's lock — fork-visible
     try:
         if _try_lock(fd):
             _unlock(fd)
@@ -435,8 +493,7 @@ def _acquire(env_id: str, ttype: str, timeout: float):
         with _queue_mutex(env_dir, deadline, ttype):
             n = _reserve_ticket(env_dir, ttype)
             ticket_path = env_dir / "queue" / f"{n:020d}.{ttype}.{uuid.uuid4().hex}.lock"
-            fd = os.open(str(ticket_path), os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
-            _track_fd(fd)   # track BEFORE locking (no locked-but-untracked fork window)
+            fd = _open_tracked(ticket_path, os.O_RDWR | os.O_CREAT | os.O_EXCL)
             if not _try_lock(fd):
                 raise RuntimeError("could not lock a freshly created ticket")
         while True:
@@ -469,18 +526,24 @@ def _depths() -> dict[str, int]:
     return d
 
 
-def _reset_after_fork() -> None:
-    # A forked child must not inherit the parent's OS LOCKS or its in-memory state.
-    # 1) CLOSE every inherited lock FD — queue-mutex, ticket, and orphan-probe FDs are
-    #    all tracked in _all_lock_fds, so a child stops extending ANY parent lock via a
-    #    shared open-file-description (otherwise a forked child that outlives the parent
-    #    could keep the queue-mutex or a reader ticket locked forever). We do NOT unlink
-    #    queue entries — they belong to the parent.
-    # 2) REPLACE the process-local Python mutexes with fresh ones — a mutex held by
-    #    another thread at fork time would remain locked forever in the child (its owner
-    #    thread does not exist there). The handler must never ACQUIRE a possibly-locked
-    #    inherited mutex; it runs single-threaded, so it touches the sets directly.
-    global _local_lock, _fd_lock
+def _before_fork() -> None:
+    # Block the fork until any in-progress open→track transition completes, so the
+    # child sees a fully-tracked FD set (no locked-but-untracked inherited FD).
+    _fork_guard.acquire()
+
+
+def _after_fork_parent() -> None:
+    _fork_guard.release()
+
+
+def _after_fork_child() -> None:
+    # Runs single-threaded in the child. The inherited _fork_guard is LOCKED (held by
+    # _before_fork); never try to release/acquire it — just replace it. Same for the
+    # other process-local mutexes (a mutex held by another thread at fork time would
+    # stay locked forever here). CLOSE every inherited lock FD (queue-mutex, ticket,
+    # orphan-probe are all tracked) so the child stops extending any parent lock via a
+    # shared open-file-description; do NOT unlink queue entries (they are the parent's).
+    global _local_lock, _fd_lock, _fork_guard
     for fd in list(_all_lock_fds):
         try:
             os.close(fd)
@@ -491,10 +554,15 @@ def _reset_after_fork() -> None:
     _thread_local.depths = {}
     _local_lock = threading.Lock()
     _fd_lock = threading.Lock()
+    _fork_guard = threading.Lock()
 
 
 if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_reset_after_fork)
+    os.register_at_fork(
+        before=_before_fork,
+        after_in_parent=_after_fork_parent,
+        after_in_child=_after_fork_child,
+    )
 
 
 @contextmanager

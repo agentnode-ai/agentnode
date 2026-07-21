@@ -1,6 +1,7 @@
 """A1-E-Lock: FIFO-ticket inter-process reader/writer lock."""
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -651,6 +652,153 @@ def test_fork_child_own_reader_blocks_writer(env):
             os.close(fd)
         except OSError:
             pass
+
+
+@contextlib.contextmanager
+def _fault_marker_phase(phase):
+    # Inject a fault at a specific atomic_write_json phase, but ONLY during the MARKER
+    # write (scoped via a flag set around the marker's atomic_write_json call).
+    import agentnode_sdk._fileutil as fu
+    saved = (fu.atomic_write_json, fu.os.write, fu.os.fsync, fu.os.replace, fu._fsync_dir)
+    real_awj = fu.atomic_write_json
+    flag = {"on": False}
+
+    def awj(path, data, **k):
+        if os.path.basename(str(path)) == "initialized":
+            flag["on"] = True
+            try:
+                return real_awj(path, data, **k)
+            finally:
+                flag["on"] = False
+        return real_awj(path, data, **k)
+
+    def mk(realop, name):
+        def op(*a, **k):
+            if flag["on"] and name == phase:
+                raise OSError(f"{name} fault")
+            return realop(*a, **k)
+        return op
+
+    fu.atomic_write_json = awj
+    fu.os.write = mk(fu.os.write, "write")
+    fu.os.fsync = mk(fu.os.fsync, "fsync")
+    fu.os.replace = mk(fu.os.replace, "replace")
+    fu._fsync_dir = mk(fu._fsync_dir, "dirsync")
+    try:
+        yield
+    finally:
+        fu.atomic_write_json, fu.os.write, fu.os.fsync, fu.os.replace, fu._fsync_dir = saved
+
+
+@pytest.mark.parametrize("phase,marker_after", [
+    ("write", False), ("fsync", False), ("replace", False), ("dirsync", True),
+])
+def test_marker_durable_fault_matrix(env, phase, marker_after):
+    with _fault_marker_phase(phase):
+        with pytest.raises(OSError):
+            with rw.env_read_lock(env["id"]):
+                pass
+    assert (_lockdir(env) / "initialized").exists() is marker_after
+    assert not (_lockdir(env) / "counter").exists()
+    assert [p for p in _lockdir(env).iterdir() if p.name.startswith(".initialized")] == []
+    if marker_after:                                  # marker published, counter not
+        with pytest.raises(rw.CounterStateError):     # → fail-closed, no silent reset
+            with rw.env_read_lock(env["id"]):
+                pass
+    else:                                             # pristine → clean retry inits
+        with rw.env_read_lock(env["id"]):
+            pass
+        assert int((_lockdir(env) / "counter").read_text()) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+@pytest.mark.parametrize("where", ["env", "queue", "mutex"])
+def test_redirected_lock_path_fail_closed(env, tmp_path, where):
+    lockdir = _lockdir(env)
+    if where == "env":
+        lockdir.parent.mkdir(parents=True, exist_ok=True)
+        real = tmp_path / "real_env"
+        real.mkdir()
+        os.symlink(real, lockdir)
+    elif where == "queue":
+        lockdir.mkdir(parents=True, exist_ok=True)
+        real = tmp_path / "real_q"
+        real.mkdir()
+        os.symlink(real, lockdir / "queue")
+    else:
+        (lockdir / "queue").mkdir(parents=True, exist_ok=True)
+        real = tmp_path / "real_m"
+        real.write_text("")
+        os.symlink(real, lockdir / "queue-mutex.lock")
+    with pytest.raises(rw.QueueStateError):
+        with rw.env_read_lock(env["id"]):
+            pass
+
+
+def test_release_short_cleanup_when_mutex_busy(env):
+    import threading
+    env_dir = rw._env_dir(env["id"])
+    stop = threading.Event()
+    held = threading.Event()
+
+    def hog():
+        with rw._queue_mutex(env_dir, time.monotonic() + 30, "r"):
+            held.set()
+            stop.wait(10)
+
+    cm = rw.env_read_lock(env["id"])
+    cm.__enter__()
+    th = threading.Thread(target=hog)
+    th.start()
+    assert held.wait(10)                              # queue-mutex now busy
+    t0 = time.monotonic()
+    cm.__exit__(None, None, None)                     # release: cleanup can't get mutex
+    elapsed = time.monotonic() - t0
+    stop.set()
+    th.join(10)
+    assert elapsed < 1.0, f"successful release blocked too long ({elapsed:.2f}s)"
+    with rw.env_read_lock(env["id"]):                 # next scanner removes any orphan
+        pass
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX only")
+def test_fork_guard_blocks_fork_during_open_track(env):
+    import threading
+    in_hook = threading.Event()
+    release = threading.Event()
+    forked = threading.Event()
+    env_dir = rw._env_dir(env["id"])
+
+    def hook():
+        in_hook.set()
+        release.wait(10)                              # pause INSIDE the fork guard
+
+    def open_section():
+        rw._after_track_hook = hook
+        try:
+            with rw._queue_mutex(env_dir, time.monotonic() + 30, "r"):
+                pass
+        finally:
+            rw._after_track_hook = None
+
+    ta = threading.Thread(target=open_section)
+    ta.start()
+    assert in_hook.wait(10)                           # thread A paused inside the guard
+
+    def do_fork():
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0)
+        os.waitpid(pid, 0)
+        forked.set()
+
+    tb = threading.Thread(target=do_fork)
+    tb.start()
+    assert not forked.wait(1.0)                       # fork BLOCKED by the guard
+    release.set()                                     # let A finish open+track
+    assert forked.wait(10)                            # fork now proceeds
+    ta.join(10)
+    tb.join(10)
 
 
 def test_writer_bounded_admission_under_reader_stream(env):
