@@ -81,6 +81,30 @@ class ReadToWriteUpgradeForbidden(RuntimeError):
     """A writer was requested from a process that already holds a reader for the
     same environment — refused (never a blocking upgrade / deadlock)."""
 
+    code = "read_to_write_upgrade_forbidden"
+
+
+class EnvironmentLockTimeout(RuntimeError):
+    """A read/write acquisition exceeded its total (monotone) deadline."""
+
+    def __init__(self, ttype: str):
+        self.code = (
+            "environment_write_lock_timeout" if ttype == "w"
+            else "environment_read_lock_timeout"
+        )
+        super().__init__(self.code)
+
+
+class CounterStateError(RuntimeError):
+    """The ticket counter is corrupted/tampered — fail-closed (never reused)."""
+
+    code = "environment_lock_counter_corrupt"
+
+
+# Default total acquisition deadline (waiting to ACQUIRE, not holding). A read waits
+# only while an install is in progress; a write waits for readers to drain.
+DEFAULT_ACQUIRE_TIMEOUT = 300.0
+
 
 # ---------------------------------------------------------------------------
 # Process-wide reader registry (interprocess lock + this in-process guard together
@@ -120,12 +144,15 @@ def _env_dir(env_id: str) -> Path:
 
 
 @contextmanager
-def _queue_mutex(env_dir: Path):
-    """Short exclusive mutex guarding ticket allocation + queue scans/cleanup."""
+def _queue_mutex(env_dir: Path, deadline: float, ttype: str):
+    """Short exclusive mutex guarding ticket allocation + queue scans/cleanup.
+    Honours the caller's TOTAL acquisition deadline (not per-iteration)."""
     path = env_dir / "queue-mutex.lock"
     fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
     try:
         while not _try_lock(fd):
+            if time.monotonic() >= deadline:
+                raise EnvironmentLockTimeout(ttype)
             time.sleep(_POLL)
         try:
             yield
@@ -136,14 +163,29 @@ def _queue_mutex(env_dir: Path):
 
 
 def _next_ticket(env_dir: Path) -> int:
+    """Allocate the next monotone ticket. Durable + crash-consistent (atomic
+    temp+replace, fsync). A corrupted/tampered counter is FAIL-CLOSED (never reset
+    to 0 → never reuses a ticket number a live participant may still hold)."""
     cpath = env_dir / "counter"
     try:
-        n = int(cpath.read_text() or "0")
-    except (FileNotFoundError, ValueError):
+        raw = cpath.read_text()
+    except FileNotFoundError:
         n = 0
-    n += 1
-    cpath.write_text(str(n))
-    return n
+    else:
+        raw = raw.strip()
+        if not raw.isdigit():                         # empty/partial/tampered → fail-closed
+            raise CounterStateError("ticket counter is not a plain non-negative integer")
+        n = int(raw)
+    nxt = n + 1
+    tmp = env_dir / f"counter.{uuid.uuid4().hex}.tmp"
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, str(nxt).encode("ascii"))
+        os.fsync(fd)                                  # durable bytes
+    finally:
+        os.close(fd)
+    os.replace(str(tmp), str(cpath))                  # atomic: never a partial counter
+    return nxt
 
 
 def _parse_ticket(name: str) -> tuple[int, str] | None:
@@ -205,11 +247,14 @@ def _blocked(env_dir: Path, my_n: int, ttype: str) -> bool:
 
 
 @contextmanager
-def _acquire(env_id: str, ttype: str):
+def _acquire(env_id: str, ttype: str, timeout: float):
+    # Same-process read->write is refused BEFORE any blocking OS-lock operation.
     if ttype == "w" and _local_reader_active(env_id):
         raise ReadToWriteUpgradeForbidden(
             "cannot acquire the environment write-lock while this process holds a reader"
         )
+    # One monotone total deadline for the ENTIRE acquisition (mutex + admission).
+    deadline = time.monotonic() + timeout
     env_dir = _env_dir(env_id)
     (env_dir / "queue").mkdir(parents=True, exist_ok=True)
     tok = uuid.uuid4().hex
@@ -217,7 +262,7 @@ def _acquire(env_id: str, ttype: str):
     ticket_path: Path | None = None
     registered_local = False
     try:
-        with _queue_mutex(env_dir):
+        with _queue_mutex(env_dir, deadline, ttype):
             n = _next_ticket(env_dir)
             ticket_path = env_dir / "queue" / f"{n:020d}.{ttype}.{tok}.lock"
             fd = os.open(str(ticket_path), os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
@@ -226,14 +271,19 @@ def _acquire(env_id: str, ttype: str):
         if ttype == "r":
             _register_local_reader(env_id)
             registered_local = True
-        # Admission: wait until no blocking lower live ticket remains.
+        # Admission: wait until no blocking lower live ticket remains, bounded by the
+        # single total deadline (never reset per iteration).
         while True:
-            with _queue_mutex(env_dir):
+            with _queue_mutex(env_dir, deadline, ttype):
                 if not _blocked(env_dir, n, ttype):
                     break
+            if time.monotonic() >= deadline:
+                raise EnvironmentLockTimeout(ttype)
             time.sleep(_ADMIT_POLL)
         yield
     finally:
+        # Always release the local-reader registration + our own ticket artifacts,
+        # even on timeout / exception (no reader leak, no ticket leak).
         if registered_local:
             _unregister_local_reader(env_id)
         if fd >= 0:
@@ -250,16 +300,18 @@ def _acquire(env_id: str, ttype: str):
 
 
 @contextmanager
-def env_read_lock(env_id: str):
+def env_read_lock(env_id: str, timeout: float = DEFAULT_ACQUIRE_TIMEOUT):
     """Acquire the shared (reader) side for one host-agent execution. Held for the
-    entire protected section; released on exit. Reentrant across readers."""
-    with _acquire(env_id, "r"):
+    entire protected section; released on exit. Reentrant across readers. Raises
+    :class:`EnvironmentLockTimeout` if acquisition exceeds *timeout*."""
+    with _acquire(env_id, "r", timeout):
         yield
 
 
 @contextmanager
-def env_write_lock(env_id: str):
+def env_write_lock(env_id: str, timeout: float = DEFAULT_ACQUIRE_TIMEOUT):
     """Acquire the exclusive (writer) side for one install into the environment.
-    Refused (``ReadToWriteUpgradeForbidden``) if this process holds a reader."""
-    with _acquire(env_id, "w"):
+    Refused (``ReadToWriteUpgradeForbidden``) if this process holds a reader. Raises
+    :class:`EnvironmentLockTimeout` if acquisition exceeds *timeout*."""
+    with _acquire(env_id, "w", timeout):
         yield

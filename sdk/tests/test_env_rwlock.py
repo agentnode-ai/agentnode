@@ -168,6 +168,42 @@ def test_no_overtake_writer_before_later_reader(env):
     r2.wait(10)
 
 
+def test_corrupt_counter_fail_closed(env):
+    with rw.env_read_lock(env["id"]):
+        pass  # creates the counter
+    counter = env["mk"] / "locks" / f"rw-{env['id']}" / "counter"
+    counter.write_text("not-a-number")            # tamper / partial-write simulation
+    with pytest.raises(rw.CounterStateError):
+        with rw.env_read_lock(env["id"]):
+            pass
+
+
+def test_counter_is_a_plain_integer_after_use(env):
+    for _ in range(3):
+        with rw.env_read_lock(env["id"]):
+            pass
+    counter = env["mk"] / "locks" / f"rw-{env['id']}" / "counter"
+    assert counter.read_text().strip().isdigit()
+    assert int(counter.read_text()) == 3          # monotone, durable, atomic
+
+
+def test_acquire_timeout_and_ticket_cleanup(env):
+    w = _spawn(env, "write", "tw", hold=10)
+    assert _wait_file(env["mk"] / "tw.acq", 10)
+    t0 = time.monotonic()
+    with pytest.raises(rw.EnvironmentLockTimeout) as ei:
+        with rw.env_read_lock(env["id"], timeout=1.0):
+            pass
+    assert ei.value.code == "environment_read_lock_timeout"
+    assert time.monotonic() - t0 >= 0.9           # honoured the total deadline
+    # our reader ticket was cleaned up on timeout (no leftover .r. ticket leaks)
+    qdir = env["mk"] / "locks" / f"rw-{env['id']}" / "queue"
+    readers = [p for p in qdir.iterdir() if ".r." in p.name] if qdir.exists() else []
+    assert readers == []
+    _release(env, "tw")
+    w.wait(10)
+
+
 def test_writer_bounded_admission_under_reader_stream(env):
     # A continuous stream of short readers must not starve a waiting writer.
     stop = env["mk"] / "stop_stream"
