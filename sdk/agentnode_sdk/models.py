@@ -203,6 +203,10 @@ class RunToolResult:
     timed_out: bool = False
     run_id: str | None = None
     policy: dict | None = None
+    # Optional stable, machine-readable failure code, separate from the human-readable
+    # ``error`` message and from ``mode_used`` (the actual execution mode). Backward-
+    # compatible: default None; existing constructors are unchanged.
+    error_code: str | None = None
 
     def to_dict(self) -> dict:
         d: dict[str, Any] = {
@@ -215,6 +219,8 @@ class RunToolResult:
             d["result"] = self.result
         if self.error:
             d["error"] = self.error
+        if self.error_code:
+            d["error_code"] = self.error_code
         if self.run_id:
             d["run_id"] = self.run_id
         if self.policy:

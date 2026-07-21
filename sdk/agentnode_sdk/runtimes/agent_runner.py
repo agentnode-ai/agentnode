@@ -30,10 +30,7 @@ v0.6 additions:
 """
 from __future__ import annotations
 
-import importlib
 import logging
-import multiprocessing
-import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -1336,15 +1333,12 @@ def run_agent(
         )
 
     # --- 2. Agent-specific policy: trust >= trusted ---
-    # SECURITY INVARIANT (audit 2026-06): an agent's OWN entrypoint code runs on
-    # the HOST — in a thread (_execute_with_timeout) or a child process
-    # (_execute_with_process) — NOT inside SandboxBackend. The exec-sandbox bow
-    # (P0.0-P0.3) isolates the agent's *tool calls* (they re-enter run_tool's
-    # gate), but NOT the agent's own orchestration code. So `trust >= trusted` is
-    # the ONLY thing keeping community/unverified agent code off the host. Do NOT
-    # lower this gate without first routing agent execution through SandboxBackend,
-    # or community code runs unsandboxed (reintroducing the RCE class the sandbox
-    # bow closed). Locked by test_agent_runner's execution-vector regression test.
+    # SECURITY INVARIANT (A1-E-Lock L2, Weg B): running an agent's OWN entrypoint
+    # (foreign code) on the HOST is STRUCTURALLY fail-closed — the host executor was
+    # removed (see the chokepoint below). Community/unverified agents route to the
+    # sandbox (or are denied) above; trusted/curated host agents hit the
+    # host_agent_execution_unsupported chokepoint. Do NOT re-introduce host entrypoint
+    # execution without a verified kernel-enforced isolation boundary (Weg A).
     trust_level = entry.get("trust_level", "unverified")
     # Two SEPARATE sandbox-routing mechanisms:
     #  - community (verified/unverified): the opt-in agent-sandbox FLAG governs. Flag
@@ -1406,261 +1400,25 @@ def run_agent(
             run_id=run_id,
         )
 
-    # --- 3. Build configuration from agent section ---
+    # --- 3. Only the timeout is needed here (sequential uses it); host entrypoint
+    # execution is fail-closed below and needs no further config. ---
     limits = agent_config.get("limits") or {}
-    max_iterations = limits.get("max_iterations", 12)
-    max_tool_calls = limits.get("max_tool_calls", 40)
-    max_runtime_seconds = limits.get("max_runtime_seconds", 180)
-    effective_timeout = timeout if timeout is not None else max_runtime_seconds
+    effective_timeout = timeout if timeout is not None else limits.get("max_runtime_seconds", 180)
 
-    tool_access = agent_config.get("tool_access") or {}
-    # None = unrestricted (no tool_access section or no allowed_packages key)
-    # []   = no tool access (explicit empty list, e.g. llm_only tier)
-    allowed_packages = tool_access.get("allowed_packages")
-
-    termination = agent_config.get("termination") or {}
-    stop_on_consecutive_errors = termination.get("stop_on_consecutive_errors", 3)
-
-    # Error handling / retry config from manifest
-    error_handling = agent_config.get("error_handling") or {}
-    retry_raw = error_handling.get("retry") or {}
-    retry_config = RetryConfig(
-        max_retries=retry_raw.get("max_retries", 2),
-        backoff_base=retry_raw.get("backoff_base", 1.0),
-        backoff_max=retry_raw.get("backoff_max", 10.0),
-        enabled=retry_raw.get("enabled", True),
-    )
-
-    effective_goal = goal or agent_config.get("goal", "")
-
-    # --- 4. Sequential orchestration dispatch ---
+    # --- 4. Sequential orchestration dispatch (declared tool steps, each re-gated via
+    # run_tool — imports no foreign host entrypoint). ---
     orchestration = agent_config.get("orchestration")
     if isinstance(orchestration, dict) and orchestration.get("mode") == "sequential":
         return _run_sequential(slug, agent_config, kwargs, effective_timeout, run_id=run_id, run_log=run_log)
 
-    # --- 4a'. Host-execution observability (Agent-Exec D1) ---
-    # The production routing above confirmed the UNSANDBOXED HOST route for this
-    # entrypoint agent. Before any foreign agent code is imported/initialised, emit
-    # exactly one warning + one best-effort pre-import audit that surface this fact.
-    # This is OBSERVABILITY ONLY: it does not re-route, allow, deny, or isolate.
-    # Sequential agents returned above (they import no foreign host code).
-    _isolation_cfg = agent_config.get("isolation", "thread")
-    _effective_isolation = "process" if _isolation_cfg == "process" else "thread"
-    _routing_reason = (
-        "unrecognized_policy_host_fallback"
-        if (_host_tier and not _policy_recognized)
-        else "host_execution_selected"
-    )
-    _emit_host_execution_observability(
-        slug=slug,
-        trust_level=trust_level,
-        host_trust_policy=(_resolved_policy if _policy_recognized else "unknown"),
-        isolation=_effective_isolation,
-        sandbox_required=_sandbox_required,
-        sandbox_enabled=_sandbox_enabled,
-        routing_reason=_routing_reason,
-        policy_recognized=_policy_recognized,
-        run_id=run_id,
-    )
-
-    # --- 4b. Eager dependency installation ---
-    if allowed_packages:
-        _eager_install_deps(allowed_packages, run_log)
-
-    # --- 5. Entrypoint validation (not needed for sequential) ---
-    entrypoint = agent_config.get("entrypoint", "")
-    if not entrypoint:
-        return RunToolResult(
-            success=False,
-            error=f"Agent '{slug}' has no entrypoint defined.",
-            mode_used="agent",
-            run_id=run_id,
-        )
-
-    # --- 6. Build AgentContext ---
-    system_prompt = agent_config.get("system_prompt")
-
-    # Auto-detect LLM from environment if not provided and agent needs one
-    effective_llm = llm
-    if effective_llm is None:
-        llm_config = agent_config.get("llm") or {}
-        tier = agent_config.get("tier", "")
-        needs_llm = llm_config.get("required", False) or tier == "llm_only"
-        if needs_llm:
-            effective_llm = _auto_detect_llm(slug)
-            if effective_llm is None:
-                logger.warning(
-                    "Agent '%s' requires LLM (tier=%s) but no LLM provider "
-                    "found. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.",
-                    slug, tier,
-                )
-
-    context = AgentContext(
-        goal=effective_goal,
-        allowed_packages=allowed_packages,
-        max_tool_calls=max_tool_calls,
-        max_iterations=max_iterations,
-        stop_on_consecutive_errors=stop_on_consecutive_errors,
-        _agent_slug=slug,
-        _run_id=run_id,
-        _run_log=run_log,
-        llm=effective_llm,
-        system_prompt=system_prompt,
-        retry_config=retry_config,
-    )
-
-    # --- 7. Load entrypoint ---
-    try:
-        func = _load_agent_entrypoint(slug, entrypoint)
-    except Exception as exc:
-        elapsed = (time.monotonic() - t0) * 1000
-        _audit_agent_run(slug, success=False, reason=f"load_failed: {exc}", run_id=run_id)
-        run_log.run_end(success=False, duration_ms=elapsed, error=str(exc))
-        return RunToolResult(
-            success=False,
-            error=f"Failed to load agent entrypoint: {exc}",
-            mode_used="agent",
-            duration_ms=round(elapsed, 1),
-            run_id=run_id,
-        )
-
-    # --- 8. Execute ---
-    isolation = agent_config.get("isolation", "thread")
-
-    tier = agent_config.get("tier", "")
-    run_log.run_start(
-        slug, effective_goal,
-        max_tool_calls=max_tool_calls,
-        max_iterations=max_iterations,
-        timeout=effective_timeout,
-        isolation=isolation,
-        tier=tier,
-        has_llm=llm is not None,
-    )
-
-    logger.info(
-        "agent_run: slug=%s run_id=%s goal=%r timeout=%.1fs max_tools=%d max_iter=%d isolation=%s tier=%s has_llm=%s",
-        slug, run_id, effective_goal[:80], effective_timeout,
-        max_tool_calls, max_iterations, isolation, tier, llm is not None,
-    )
-
-    run_result: RunToolResult
-    try:
-        if isolation == "process":
-            result = _execute_with_process(
-                func, context, kwargs,
-                timeout=effective_timeout,
-            )
-        else:
-            result = _execute_with_timeout(
-                func, context, kwargs,
-                timeout=effective_timeout,
-            )
-        elapsed = (time.monotonic() - t0) * 1000
-
-        _audit_agent_run(
-            slug, success=True,
-            tool_calls=context.tool_calls_made,
-            iterations=context.iteration,
-            run_id=run_id,
-        )
-        run_log.run_end(success=True, duration_ms=elapsed)
-
-        run_result = RunToolResult(
-            success=True,
-            result=result,
-            mode_used="agent",
-            duration_ms=round(elapsed, 1),
-            run_id=run_id,
-        )
-
-    except AgentLimitExceeded as exc:
-        elapsed = (time.monotonic() - t0) * 1000
-        _audit_agent_run(
-            slug, success=False, reason=str(exc),
-            tool_calls=context.tool_calls_made,
-            iterations=context.iteration,
-            run_id=run_id,
-        )
-        run_log.run_end(success=False, duration_ms=elapsed, error=str(exc))
-        run_result = RunToolResult(
-            success=False,
-            error=str(exc),
-            mode_used="agent",
-            duration_ms=round(elapsed, 1),
-            run_id=run_id,
-        )
-
-    except AgentTerminated as exc:
-        elapsed = (time.monotonic() - t0) * 1000
-        _audit_agent_run(
-            slug, success=False, reason=str(exc),
-            tool_calls=context.tool_calls_made,
-            iterations=context.iteration,
-            run_id=run_id,
-        )
-        run_log.run_end(success=False, duration_ms=elapsed, error=str(exc))
-        run_result = RunToolResult(
-            success=False,
-            error=str(exc),
-            mode_used="agent",
-            duration_ms=round(elapsed, 1),
-            run_id=run_id,
-        )
-
-    except _TimeoutReached:
-        elapsed = (time.monotonic() - t0) * 1000
-        _audit_agent_run(
-            slug, success=False, reason="timeout",
-            tool_calls=context.tool_calls_made,
-            iterations=context.iteration,
-            run_id=run_id,
-        )
-        run_log.run_end(success=False, duration_ms=elapsed, error="timeout")
-        run_result = RunToolResult(
-            success=False,
-            error=(
-                f"Agent '{slug}' timed out after {effective_timeout}s "
-                f"({context.tool_calls_made} tool calls made)"
-            ),
-            mode_used="agent",
-            duration_ms=round(elapsed, 1),
-            timed_out=True,
-            run_id=run_id,
-        )
-
-    except PermissionError as exc:
-        elapsed = (time.monotonic() - t0) * 1000
-        _audit_agent_run(
-            slug, success=False, reason=str(exc),
-            tool_calls=context.tool_calls_made,
-            run_id=run_id,
-        )
-        run_log.run_end(success=False, duration_ms=elapsed, error=str(exc))
-        run_result = RunToolResult(
-            success=False,
-            error=str(exc),
-            mode_used="agent",
-            duration_ms=round(elapsed, 1),
-            run_id=run_id,
-        )
-
-    except Exception as exc:
-        elapsed = (time.monotonic() - t0) * 1000
-        _audit_agent_run(
-            slug, success=False,
-            reason=f"{type(exc).__name__}: {exc}",
-            tool_calls=context.tool_calls_made,
-            run_id=run_id,
-        )
-        run_log.run_end(success=False, duration_ms=elapsed, error=str(exc))
-        run_result = RunToolResult(
-            success=False,
-            error=f"{type(exc).__name__}: {exc}",
-            mode_used="agent",
-            duration_ms=round(elapsed, 1),
-            run_id=run_id,
-        )
+    # --- Host-agent ENTRYPOINT execution is STRUCTURALLY FAIL-CLOSED (A1-E-Lock L2, Weg B) ---
+    # We reach here ONLY via the host route (deny + sandbox were routed above): a
+    # trusted/curated agent that would run its OWN entrypoint (foreign code) on the host.
+    # This slice provides no verified process-isolation boundary for that, so it refuses
+    # HERE — before any observability side effect, eager install, entrypoint import,
+    # process spawn, environment reader, or agent/tool/LLM context. Sandbox and deny
+    # agents never reach this point (see the routing above and test_agent_host_unsupported).
+    run_result = _host_agent_unsupported(slug, run_id, run_log, t0)
 
     # Run log retention cleanup (once per agent run, non-blocking)
     try:
@@ -1675,313 +1433,55 @@ def run_agent(
 # Helpers
 # ---------------------------------------------------------------------------
 
-class _TimeoutReached(Exception):
-    """Internal: raised when agent execution exceeds max_runtime_seconds."""
-    pass
-
-
-def _load_agent_entrypoint(slug: str, entrypoint: str):
-    """Load the agent function from module.path:function format.
-
-    Raises:
-        ValueError: If entrypoint format is invalid.
-        ImportError: If module cannot be imported.
-        AttributeError: If function does not exist in the module.
-        TypeError: If the attribute is not callable.
-    """
-    if ":" not in entrypoint:
-        raise ValueError(
-            f"Agent entrypoint must be module.path:function format "
-            f"(got '{entrypoint}')"
-        )
-
-    module_path, func_name = entrypoint.rsplit(":", 1)
-
+def _host_agent_unsupported(slug, run_id, run_log, t0) -> RunToolResult:
+    """Translate the SINGLE structural chokepoint (``refuse_host_agent_execution``) into a
+    ``RunToolResult`` at this one outer boundary — reaching no import, spawn, environment
+    reader, or agent/tool/LLM context. The stable code goes in ``error_code`` (NOT
+    ``mode_used``); audit + run-log record a FAILURE with the code (never a success)."""
+    from agentnode_sdk.exceptions import (
+        HostAgentExecutionUnsupported, refuse_host_agent_execution)
     try:
-        module = importlib.import_module(module_path)
-    except ImportError as exc:
-        raise ImportError(
-            f"Cannot import agent module '{module_path}': {exc}"
-        ) from exc
-
-    func = getattr(module, func_name, None)
-    if func is None:
-        raise AttributeError(
-            f"Agent module '{module_path}' has no function '{func_name}'"
-        )
-
-    if not callable(func):
-        raise TypeError(
-            f"Agent entrypoint '{entrypoint}' is not callable"
-        )
-
-    return func
+        refuse_host_agent_execution()          # single source of the code + message
+        raise AssertionError("unreachable")    # refuse_* never returns
+    except HostAgentExecutionUnsupported as exc:
+        elapsed = (time.monotonic() - t0) * 1000
+        _audit_agent_run(slug, success=False, reason=exc.code, run_id=run_id)
+        run_log.run_end(success=False, duration_ms=elapsed, error=exc.code)
+        return RunToolResult(success=False, error=exc.message, error_code=exc.code,
+                             mode_used="agent", duration_ms=round(elapsed, 1),
+                             run_id=run_id)
 
 
-def _execute_with_timeout(
-    func,
-    context: AgentContext,
-    kwargs: dict,
+def _audit_agent_run(
+    slug: str,
     *,
-    timeout: float,
-) -> Any:
-    """Run the agent function with a hard timeout (thread-based).
-
-    Uses a daemon thread so the main thread is not blocked past the
-    timeout. If the agent exceeds the timeout, _TimeoutReached is raised.
-    The daemon thread continues until it finishes or the process exits.
-    """
-    result_box: list[Any] = [None]
-    error_box: list[BaseException | None] = [None]
-
-    def _run():
-        try:
-            result_box[0] = func(context, **kwargs)
-        except BaseException as exc:
-            error_box[0] = exc
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-    thread.join(timeout=timeout)
-
-    if thread.is_alive():
-        raise _TimeoutReached()
-
-    if error_box[0] is not None:
-        raise error_box[0]
-
-    return result_box[0]
-
-
-class _ProxyAgentContext:
-    """Picklable proxy for AgentContext that communicates via IPC queues.
-
-    The child process gets this instead of the real AgentContext.
-    Tool calls, LLM calls, and iteration tracking are forwarded
-    to the parent process which holds the real AgentContext.
-    """
-
-    def __init__(
-        self,
-        *,
-        goal: str,
-        system_prompt: str | None,
-        allowed_packages: list[str] | None,
-        max_tool_calls: int,
-        max_iterations: int,
-        agent_slug: str,
-        request_queue: multiprocessing.Queue,
-        response_queue: multiprocessing.Queue,
-    ):
-        self._goal = goal
-        self._system_prompt = system_prompt
-        self._allowed_packages = allowed_packages
-        self._max_tool_calls = max_tool_calls
-        self._max_iterations = max_iterations
-        self._agent_slug = agent_slug
-        self._request_q = request_queue
-        self._response_q = response_queue
-        self._iteration = 0
-
-    @property
-    def goal(self) -> str:
-        return self._goal
-
-    @property
-    def system_prompt(self) -> str | None:
-        return self._system_prompt
-
-    @property
-    def allowed_packages(self) -> list[str] | None:
-        return list(self._allowed_packages) if self._allowed_packages is not None else None
-
-    @property
-    def iteration(self) -> int:
-        return self._iteration
-
-    def _send_request(self, msg: dict) -> dict:
-        self._request_q.put(msg)
-        return self._response_q.get(timeout=300)
-
-    def run_tool(self, slug: str, tool_name: str | None = None, **kwargs: Any) -> RunToolResult:
-        resp = self._send_request({
-            "type": "run_tool",
-            "slug": slug,
-            "tool_name": tool_name,
-            "kwargs": kwargs,
-        })
-        if resp.get("type") == "error":
-            exc_type = resp.get("exc_type", "RuntimeError")
-            if exc_type == "PermissionError":
-                raise PermissionError(resp["message"])
-            if exc_type == "AgentLimitExceeded":
-                raise AgentLimitExceeded(resp["message"])
-            if exc_type == "AgentTerminated":
-                raise AgentTerminated(resp["message"])
-            raise RuntimeError(resp["message"])
-        return RunToolResult(
-            success=resp.get("success", False),
-            result=resp.get("result"),
-            error=resp.get("error"),
-            mode_used=resp.get("mode_used", "proxy"),
-        )
-
-    def try_tool(self, slug: str, tool_name: str | None = None, **kwargs: Any) -> RunToolResult | None:
-        try:
-            return self.run_tool(slug, tool_name, **kwargs)
-        except (PermissionError, AgentLimitExceeded):
-            return None
-
-    def next_iteration(self) -> None:
-        resp = self._send_request({"type": "next_iteration"})
-        if resp.get("type") == "error":
-            raise AgentLimitExceeded(resp["message"])
-        self._iteration = resp.get("iteration", self._iteration + 1)
-
-    def is_tool_available(self, slug: str) -> bool:
-        resp = self._send_request({"type": "is_tool_available", "slug": slug})
-        return resp.get("available", False)
-
-
-def _ipc_parent_loop(
-    context: AgentContext,
-    request_queue: multiprocessing.Queue,
-    response_queue: multiprocessing.Queue,
-    stop_event: threading.Event,
+    success: bool,
+    reason: str = "",
+    tool_calls: int = 0,
+    iterations: int = 0,
+    run_id: str | None = None,
 ) -> None:
-    """Parent-side IPC loop: receive requests from child, dispatch to real AgentContext."""
-    while not stop_event.is_set():
-        try:
-            msg = request_queue.get(timeout=1.0)
-        except Exception:
-            continue
-
-        msg_type = msg.get("type", "")
-        try:
-            if msg_type == "run_tool":
-                result = context.run_tool(
-                    msg["slug"], msg.get("tool_name"),
-                    **msg.get("kwargs", {}),
-                )
-                response_queue.put({
-                    "type": "result",
-                    "success": result.success,
-                    "result": result.result,
-                    "error": result.error,
-                    "mode_used": result.mode_used,
-                })
-            elif msg_type == "next_iteration":
-                context.next_iteration()
-                response_queue.put({
-                    "type": "ok",
-                    "iteration": context.iteration,
-                })
-            elif msg_type == "is_tool_available":
-                response_queue.put({
-                    "type": "ok",
-                    "available": context.is_tool_available(msg["slug"]),
-                })
-            else:
-                response_queue.put({
-                    "type": "error",
-                    "message": f"Unknown IPC message type: {msg_type}",
-                })
-        except (PermissionError, AgentLimitExceeded, AgentTerminated) as exc:
-            response_queue.put({
-                "type": "error",
-                "exc_type": type(exc).__name__,
-                "message": str(exc),
-            })
-        except Exception as exc:
-            response_queue.put({
-                "type": "error",
-                "exc_type": "RuntimeError",
-                "message": str(exc),
-            })
-
-
-def _child_worker(
-    func,
-    proxy_context: _ProxyAgentContext,
-    kwargs: dict,
-    result_queue: multiprocessing.Queue,
-) -> None:
-    """Child process entry point — runs the agent function with the proxy context."""
+    """Audit an agent run. Never crashes the caller."""
     try:
-        result = func(proxy_context, **kwargs)
-        result_queue.put(("ok", result))
-    except BaseException as exc:
-        result_queue.put(("error", str(exc)))
+        result = PolicyResult(
+            action="allow" if success else "deny",
+            reason=reason or ("agent_completed" if success else "agent_failed"),
+            source="agent_runner",
+        )
+        audit_decision(
+            result, "agent_run", slug,
+            tool_name=None,
+            trust_level=None,
+            run_id=run_id,
+        )
+    except Exception:
+        logger.debug("Failed to audit agent run: %s", slug, exc_info=True)
 
 
-def _execute_with_process(
-    func,
-    context: AgentContext,
-    kwargs: dict,
-    *,
-    timeout: float,
-    grace_period: float = 5.0,
-) -> Any:
-    """Run the agent function in a separate process with full IPC.
-
-    Architecture:
-    - Parent holds the real AgentContext and handles tool calls
-    - Child gets a ProxyAgentContext that forwards calls via queues
-    - Parent runs an IPC loop in a thread to service child requests
-    - Child runs the agent function and puts the result in result_queue
-    """
-    request_queue: multiprocessing.Queue = multiprocessing.Queue()
-    response_queue: multiprocessing.Queue = multiprocessing.Queue()
-    result_queue: multiprocessing.Queue = multiprocessing.Queue()
-
-    proxy = _ProxyAgentContext(
-        goal=context.goal,
-        system_prompt=context.system_prompt,
-        allowed_packages=context.allowed_packages,
-        max_tool_calls=context.max_tool_calls,
-        max_iterations=context.max_iterations,
-        agent_slug=context._agent_slug,
-        request_queue=request_queue,
-        response_queue=response_queue,
-    )
-
-    stop_event = threading.Event()
-    ipc_thread = threading.Thread(
-        target=_ipc_parent_loop,
-        args=(context, request_queue, response_queue, stop_event),
-        daemon=True,
-    )
-    ipc_thread.start()
-
-    proc = multiprocessing.Process(
-        target=_child_worker,
-        args=(func, proxy, kwargs, result_queue),
-        daemon=True,
-    )
-    proc.start()
-    proc.join(timeout=timeout)
-
-    stop_event.set()
-
-    if proc.is_alive():
-        proc.terminate()
-        proc.join(timeout=grace_period)
-        if proc.is_alive():
-            proc.kill()
-            proc.join(timeout=2)
-        raise _TimeoutReached()
-
-    ipc_thread.join(timeout=2)
-
-    if result_queue.empty():
-        raise RuntimeError("Agent process ended without producing a result")
-
-    status, payload = result_queue.get_nowait()
-    if status == "error":
-        raise RuntimeError(payload)
-    return payload
-
-
+# NOTE (A1-E-Lock L2, Weg B): host-agent entrypoint execution is fail-closed BEFORE any
+# call to _eager_install_deps, so it is unreachable in the host path. Its removal is a
+# separate Layer-3 (installer / write-choke-point) concern intentionally NOT in this
+# Layer-2 commit — the function below is preserved BYTE-IDENTICAL to its baseline.
 def _eager_install_deps(
     allowed_packages: list[str],
     run_log: RunLog | None = None,
@@ -2018,116 +1518,6 @@ def _eager_install_deps(
 
     if run_log:
         run_log._write("eager_install_end", slugs=missing)
-
-
-def _emit_host_execution_observability(
-    *,
-    slug: str,
-    trust_level: str,
-    host_trust_policy: str,
-    isolation: str,
-    sandbox_required: bool,
-    sandbox_enabled: bool,
-    routing_reason: str,
-    policy_recognized: bool,
-    run_id: str | None = None,
-) -> None:
-    """Agent-Exec D1 — pre-import observability for an unsandboxed HOST agent run.
-
-    OBSERVABILITY ONLY. This is NOT an RCE mitigation: it reduces no host
-    capability, isolates no import-time code, verifies no runtime artifact, and
-    makes no allow/deny/routing decision. It only surfaces the ALREADY-MADE
-    production routing decision (host route) before any foreign agent code is
-    imported, so the run is visible and auditable.
-
-    Contract: exactly one warning + one best-effort audit per host run. Both are
-    wrapped so that neither a pathological logging handler nor an audit-backend
-    failure can convert the already-allowed run into a denial or emit a second
-    event — observability is not a gate. Only trust/boundary/isolation
-    facts are carried — never goal, kwargs, entrypoint, module, paths, env,
-    secrets, hashes, signatures, or tool results.
-    """
-    # 1. Exactly one host-execution warning (before the import). Best-effort: a
-    #    pathological logging handler that raises in emit must never convert the
-    #    already-allowed host run into a failure — observability is not a gate.
-    #
-    # The remediation is TRUST-SPECIFIC and must match the real routing matrix:
-    # host_trust_policy="curated_only" sandboxes trusted but NOT curated; only
-    # "none" sandboxes curated. AGENTNODE_AGENT_SANDBOX routes only community tiers,
-    # so it is NOT a remediation for a trusted/curated host route and is not offered.
-    if trust_level == "curated":
-        remediation = (
-            "To require sandbox execution for curated agents, set "
-            "sandbox.host_trust_policy to none."
-        )
-    else:  # trusted — the only other trust level that reaches the host route here
-        remediation = (
-            "To require sandbox execution for trusted agents, set "
-            "sandbox.host_trust_policy to curated_only or none."
-        )
-    try:
-        logger.warning(
-            "Agent '%s' will execute UNSANDBOXED on the host "
-            "(trust=%s, isolation=%s). Agent code can access host resources "
-            "(filesystem, network, environment, subprocesses) directly; tool gates do "
-            "not constrain the agent's own code, and the on-disk code is not re-verified "
-            "against the lockfile at start. %s",
-            slug, trust_level, isolation, remediation,
-        )
-    except Exception:
-        pass
-    # 2. Exactly one best-effort pre-import audit. Never raises, never re-routes.
-    try:
-        result = PolicyResult(
-            action="allow",
-            reason=routing_reason,
-            source="agent_runner",
-        )
-        audit_decision(
-            result, "agent_execution_boundary", slug,
-            trust_level=trust_level,
-            run_id=run_id,
-            extra={
-                "host_trust_policy": host_trust_policy,
-                "execution_boundary": "host",
-                "isolation": isolation,
-                "sandbox_required": sandbox_required,
-                "sandbox_enabled": sandbox_enabled,
-                "routing_reason": routing_reason,
-                "policy_recognized": policy_recognized,
-            },
-        )
-    except Exception:
-        try:
-            logger.debug("Failed to audit host execution boundary: %s", slug, exc_info=True)
-        except Exception:
-            pass
-
-
-def _audit_agent_run(
-    slug: str,
-    *,
-    success: bool,
-    reason: str = "",
-    tool_calls: int = 0,
-    iterations: int = 0,
-    run_id: str | None = None,
-) -> None:
-    """Audit an agent run. Never crashes the caller."""
-    try:
-        result = PolicyResult(
-            action="allow" if success else "deny",
-            reason=reason or ("agent_completed" if success else "agent_failed"),
-            source="agent_runner",
-        )
-        audit_decision(
-            result, "agent_run", slug,
-            tool_name=None,
-            trust_level=None,
-            run_id=run_id,
-        )
-    except Exception:
-        logger.debug("Failed to audit agent run: %s", slug, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
