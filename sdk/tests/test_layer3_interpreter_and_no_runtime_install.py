@@ -12,71 +12,89 @@ import pytest
 
 from agentnode_sdk.installer import (
     InterpreterResolutionError,
-    _canonical_interpreter,
+    _normalize_interpreter_launch_path,
     resolve_python,
 )
 
 
-def _realpath(p):
-    return str(Path(p).resolve())
+def _norm(p):
+    """The launch-path normalisation the interpreter contract now guarantees: absolute +
+    lexically normalised, WITHOUT physically resolving (no realpath / Path.resolve)."""
+    return os.path.abspath(os.path.normpath(p))
 
 
 # ---------------------------------------------------------------------------
-# 1. Interpreter resolution contract
+# 1. Interpreter resolution contract — a venv-preserving LAUNCH path
+#    (absolute + lexically normalised; the final symlink is NOT physically resolved)
 # ---------------------------------------------------------------------------
 
-def test_no_arg_is_canonical_sys_executable():
-    assert resolve_python() == _realpath(sys.executable)
+def test_no_arg_preserves_normalized_sys_executable_launch_path():
+    got = resolve_python()
+    assert got == _norm(sys.executable)          # normalised launch path, NOT a realpath
+    assert os.path.isabs(got)
 
 
-def test_no_arg_ignores_venv_and_path(monkeypatch):
-    # Blocker 2: NO $VIRTUAL_ENV / .venv / PATH fallback for the no-arg path.
-    here = resolve_python()
-    monkeypatch.setenv("VIRTUAL_ENV", "C:/does-not-exist-venv" if sys.platform == "win32"
-                       else "/does-not-exist-venv")
-    monkeypatch.chdir(Path(__file__).parent)   # a dir with no ./.venv
-    assert resolve_python() == here
+def test_no_arg_ignores_venv_path_and_dotvenv(monkeypatch, tmp_path):
+    # NO $VIRTUAL_ENV / ./.venv / PATH fallback for the no-arg path: the start point is ONLY
+    # sys.executable (normalised), whatever the environment claims.
+    expected = _norm(sys.executable)
+    (tmp_path / ".venv" / ("Scripts" if os.name == "nt" else "bin")).mkdir(parents=True)
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / ".venv"))
+    monkeypatch.setenv("PATH", str(tmp_path / "decoy"))    # only a decoy dir on PATH
+    monkeypatch.chdir(tmp_path)                            # a CWD that owns a ./.venv
+    assert resolve_python() == expected
 
 
 def test_explicit_absolute_path_used_verbatim():
-    target = _realpath(sys.executable)
+    # An explicit absolute launch path is returned normalised (and symlink-preserving) — never
+    # re-pointed to another interpreter.
+    target = _norm(sys.executable)
     assert resolve_python(target) == target
 
 
 def test_explicit_priority_over_sys_executable(monkeypatch):
-    # Blocker 1 (the exact bug): an explicit interpreter must win over sys.executable.
-    real = _realpath(sys.executable)
+    # An explicit interpreter must win over sys.executable.
+    target = _norm(sys.executable)
     monkeypatch.setattr(sys, "executable", "C:/some/other/pythonA.exe"
                         if sys.platform == "win32" else "/some/other/pythonA")
-    assert resolve_python(real) == real            # explicit wins → not the (fake) sys.executable
+    assert resolve_python(target) == target        # explicit wins → not the (fake) sys.executable
 
 
-def test_explicit_relative_path(tmp_path, monkeypatch):
-    # a relative path is resolved from the CWD
-    real = Path(sys.executable).resolve()
-    link_dir = tmp_path / "d"
-    link_dir.mkdir()
+def test_explicit_relative_path_bound_to_cwd(tmp_path, monkeypatch):
+    # A relative explicit path is bound against the CWD AT CALL TIME, then lexically normalised
+    # (no realpath) — it resolves to the same absolute launch path the interpreter lives at.
+    launch = _norm(sys.executable)
     monkeypatch.chdir(tmp_path)
-    rel = os.path.join("d", "..", real.name)       # d/../python(.exe) — resolves near cwd? no
-    # Use a genuinely relative reference to the real interpreter's directory:
-    rel = os.path.relpath(str(real), str(tmp_path))
-    assert resolve_python(rel) == str(real)
+    rel = os.path.relpath(launch, str(tmp_path))   # a genuine relative path (has a separator)
+    assert resolve_python(rel) == launch
 
 
-def test_explicit_bare_name_resolves_to_abs(monkeypatch):
-    name = "python" if shutil.which("python") else "python3"
-    if not shutil.which(name):
-        pytest.skip("no python on PATH")
-    r = resolve_python(name)
-    assert os.path.isabs(r)
-    assert r == _realpath(shutil.which(name))
+def test_bare_command_uses_which_without_realpath(monkeypatch):
+    # A bare NAME (no path component) is resolved via shutil.which() only, then normalised
+    # WITHOUT realpath. An explicit PATH (with a separator) must NOT go through which().
+    calls = []
+    real_which = shutil.which
+
+    def _which(name, *a, **k):
+        calls.append(name)
+        return sys.executable if name == "python-custom" else real_which(name, *a, **k)
+
+    monkeypatch.setattr(shutil, "which", _which)
+    got = resolve_python("python-custom")
+    assert got == _norm(sys.executable)            # which() result, normalised, no realpath
+    assert calls == ["python-custom"]              # a bare name → which()
+
+    calls.clear()
+    target = _norm(sys.executable)
+    assert resolve_python(target) == target
+    assert calls == []                             # a path (has a separator) never calls which()
 
 
 @pytest.mark.parametrize("bad", ["/no/such/interp", "definitely-not-a-real-cmd-xyz", ""])
 def test_invalid_target_fail_closed(bad):
     if bad == "":
-        # empty explicit falls through to the no-arg (sys.executable) path
-        assert resolve_python(bad) == _realpath(sys.executable)
+        # A falsy explicit target falls through to the no-arg (sys.executable) launch path.
+        assert resolve_python(bad) == _norm(sys.executable)
         return
     with pytest.raises(InterpreterResolutionError) as e:
         resolve_python(bad)
@@ -87,17 +105,43 @@ def test_error_code_is_stable():
     assert InterpreterResolutionError.code == "interpreter_not_resolvable"
 
 
-def test_canonical_interpreter_rejects_non_python(tmp_path):
+def test_interpreter_launch_path_rejects_non_python(tmp_path):
+    # The launch-path normaliser fail-closes (None) on everything that is not an executable
+    # Python 3 launcher — never a silent fallback to some other interpreter.
+    assert _normalize_interpreter_launch_path(None) is None       # missing path
+    assert _normalize_interpreter_launch_path("") is None
+    d = tmp_path / "adir"
+    d.mkdir()
+    assert _normalize_interpreter_launch_path(str(d)) is None      # a directory, not a file
     f = tmp_path / "notpython.txt"
     f.write_text("x")
-    assert _canonical_interpreter(str(f)) is None
+    assert _normalize_interpreter_launch_path(str(f)) is None      # existing non-Python file
+    assert _normalize_interpreter_launch_path(                     # nonexistent → no fallback
+        str(tmp_path / "missing" / "python")) is None
+    accepted = _normalize_interpreter_launch_path(sys.executable)  # a real launcher is accepted
+    assert accepted == _norm(sys.executable)
+
+
+def test_explicit_symlink_path_normalized_not_resolved(tmp_path):
+    # New-contract focused proof: an explicit EXISTING symlink launcher is lexically normalised
+    # but NOT physically resolved to its target. POSIX only (Windows symlinks need privileges);
+    # the full venv-launcher behaviour is covered in test_install_hardening /
+    # test_layer3_installer_concurrency.
+    if sys.platform == "win32":
+        pytest.skip("POSIX symlink semantics (Windows symlinks need privileges)")
+    target = _norm(sys.executable)
+    link = tmp_path / "py-link"
+    os.symlink(target, link)
+    got = resolve_python(str(link))
+    assert got == _norm(str(link))                 # the symlink launch path, lexically normalised
+    assert got != target                           # NOT physically resolved to the target
 
 
 def test_two_interpreters_distinct_env_ids():
     from agentnode_sdk._env_lock import resolve_env_identity
     other = shutil.which("python") or shutil.which("python3")
     a = resolve_python()
-    if not other or _realpath(other) == a:
+    if not other or resolve_python(other) == a:
         pytest.skip("no second distinct interpreter available")
     b = resolve_python(other)
     assert resolve_env_identity(a).env_id != resolve_env_identity(b).env_id
