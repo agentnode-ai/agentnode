@@ -92,6 +92,41 @@ def _spawn_toolpack(script: Path, cfg: Path, lf: Path, events: Path, slug: str,
     )
 
 
+# A host-toolpack install whose pip stub writes a ready-marker FROM INSIDE the write-locked
+# mutation section (pip runs under the chokepoint's env write-lock), then blocks on a shared
+# release signal (bounded). Both ready-markers existing at once proves both workers are
+# concurrently inside their own env-id's write-locked section.
+_TOOLPACK_BARRIER_WORKER = textwrap.dedent(
+    """
+    import os, sys, time
+    os.environ["AGENTNODE_CONFIG"] = sys.argv[1]
+    os.environ["AGENTNODE_LOCKFILE"] = sys.argv[2]
+    sys.path.insert(0, sys.argv[3])
+    from pathlib import Path
+    from agentnode_sdk import installer
+    slug, target = sys.argv[4], sys.argv[5]
+    pkg, ready_marker, release_signal = Path(sys.argv[6]), sys.argv[7], sys.argv[8]
+    installer.download_artifact = lambda *a, **k: None
+    installer.verify_hash = lambda *a, **k: "abc123def456"
+    installer.extract_archive = lambda *a, **k: pkg
+    def _pip(python, package_dir, verbose=False):
+        # Reached ONLY while this worker holds the env write-lock for ITS env_id.
+        Path(ready_marker).write_text("ready")
+        deadline = time.monotonic() + 30          # bounded: never hang if the parent dies
+        while not Path(release_signal).exists():
+            if time.monotonic() > deadline:
+                raise RuntimeError("release signal not received within 30s")
+            time.sleep(0.02)
+    installer.pip_install = _pip
+    installer.install_package(
+        slug=slug, version="1.0", artifact_url="x",
+        artifact_hash="sha256:abc123def456", entrypoint="pk.tool",
+        trust_level="trusted", target_python=target,
+    )
+    """
+)
+
+
 @pytest.fixture
 def worker_script(tmp_path):
     s = tmp_path / "toolpack_worker.py"
@@ -137,22 +172,103 @@ def test_same_lockfile_same_env_serialize(tmp_path, worker_script):
     assert _max_concurrency(intervals) == 1
 
 
-def test_two_real_venvs_overlap(tmp_path, worker_script):
-    script, pkg = worker_script
-    cfg = tmp_path / "cfg"
-    events = tmp_path / "events.txt"
-    events.write_text("")
+def test_two_real_venvs_concurrent_mutation_sections(tmp_path):
+    """Deterministic proof that two REAL, DISTINCT target environments run their write-locked
+    mutation sections concurrently (not serialized). First the two venvs are shown to resolve
+    to DIFFERENT env_ids; then a barrier INSIDE each worker's pip section (held under that
+    worker's env write-lock) proves both are inside their section at the same time. A
+    serialization regression makes only one worker reach its barrier → we fail FAST (bounded),
+    never on the minutes-long env-lock timeout."""
+    import time
+
+    from agentnode_sdk._env_lock import resolve_env_identity
+
     base = pip_python()
     venv_a = make_target_venv(base, tmp_path / "venvA")
     venv_b = make_target_venv(base, tmp_path / "venvB")
-    # Distinct interpreters → distinct env_ids → the mutating sections may run concurrently.
-    pa = _spawn_toolpack(script, cfg, tmp_path / "a.lock", events, "pka", venv_a, pkg)
-    pb = _spawn_toolpack(script, cfg, tmp_path / "b.lock", events, "pkb", venv_b, pkg)
-    assert pa.wait(timeout=180) == 0
-    assert pb.wait(timeout=180) == 0
-    intervals = _parse_intervals(events)
-    assert len(intervals) == 2
-    assert _max_concurrency(intervals) == 2     # demonstrable overlap (different env_ids)
+
+    # (1) The two venvs MUST resolve to DISTINCT environment identities — else a "no overlap"
+    # result would be correct serialization, not the bug we exclude. Fail with full diagnostics.
+    ea = resolve_env_identity(venv_a)
+    eb = resolve_env_identity(venv_b)
+    if ea.env_id == eb.env_id:
+        pytest.fail(
+            "the two venvs resolved to the SAME environment identity, so serialization would "
+            "be correct and this test is inconclusive:\n"
+            f"  A python={venv_a}\n    purelib={ea.purelib}\n    platlib={ea.platlib}\n"
+            f"    env_id={ea.env_id}\n"
+            f"  B python={venv_b}\n    purelib={eb.purelib}\n    platlib={eb.platlib}\n"
+            f"    env_id={eb.env_id}")
+
+    worker = tmp_path / "barrier_worker.py"
+    worker.write_text(_TOOLPACK_BARRIER_WORKER, encoding="utf-8")
+    cfg = tmp_path / "cfg"
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "setup.py").write_text("x")
+    ready_a, ready_b = tmp_path / "ready_a", tmp_path / "ready_b"
+    release = tmp_path / "release"
+
+    def _spawn(lf_name, slug, target, ready):
+        return subprocess.Popen(
+            [sys.executable, str(worker), str(cfg), str(tmp_path / lf_name), _REPO, slug,
+             target, str(pkg), str(ready), str(release)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    pa = _spawn("a.lock", "pka", venv_a, ready_a)
+    pb = _spawn("b.lock", "pkb", venv_b, ready_b)
+
+    def _drain(p):
+        try:
+            o, e = p.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            o, e = p.communicate()
+        return p.returncode, o.decode()[-1500:], e.decode()[-1500:]
+
+    def _fail(msg):
+        release.write_text("go")                 # unblock any waiting worker so it exits fast
+        ra, oa, era = _drain(pa)
+        rb, ob, erb = _drain(pb)
+        pytest.fail(
+            f"{msg}\n"
+            f"  A env_id={ea.env_id} purelib={ea.purelib} platlib={ea.platlib}\n"
+            f"    ready={'yes' if ready_a.exists() else 'no'} exit={ra}\n"
+            f"    stdout={oa!r}\n    stderr={era!r}\n"
+            f"  B env_id={eb.env_id} purelib={eb.purelib} platlib={eb.platlib}\n"
+            f"    ready={'yes' if ready_b.exists() else 'no'} exit={rb}\n"
+            f"    stdout={ob!r}\n    stderr={erb!r}")
+
+    try:
+        # (2)+(3) Bounded wait for BOTH ready-markers. Each is written from INSIDE that worker's
+        # write-locked pip section, so both present at once proves concurrency. If a worker
+        # exits before reaching pip, or the deadline passes, fail FAST with diagnostics.
+        deadline = time.monotonic() + 60
+        while not (ready_a.exists() and ready_b.exists()):
+            for p in (pa, pb):
+                if p.poll() is not None:
+                    _fail("A worker exited before entering its mutation section.")
+            if time.monotonic() > deadline:
+                _fail("Both distinct target environments did not enter their mutation "
+                      "sections concurrently.")
+            time.sleep(0.05)
+
+        # Both markers present NOW → both distinct envs are concurrently write-locked.
+        assert ready_a.exists() and ready_b.exists()
+        release.write_text("go")
+        ra, _, era = _drain(pa)
+        rb, _, erb = _drain(pb)
+        assert ra == 0, era
+        assert rb == 0, erb
+    finally:
+        release.write_text("go")
+        for p in (pa, pb):
+            if p.poll() is None:
+                p.kill()
+            try:
+                p.communicate(timeout=10)
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------

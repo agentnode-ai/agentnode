@@ -95,11 +95,39 @@ def test_missing_artifact_hash_blocked(monkeypatch, tmp_path):
     assert pip_calls == []
 
 
-def test_resolve_python_prefers_sys_executable():
-    """0.11.1 bugfix: the host build must target the interpreter actually running
-    AgentNode, so `agentnode install` + `agentnode run` use the SAME Python. In a
-    pipx / unactivated venv, $VIRTUAL_ENV is unset and `python` on PATH is a
-    DIFFERENT interpreter — the pack would install into the wrong env and the run
-    couldn't import it. resolve_python() must return sys.executable."""
+def test_resolve_python_prefers_sys_executable(monkeypatch, tmp_path):
+    """0.11.1 + A1-E-Lock L3: the host build must target the interpreter actually running
+    AgentNode, so `agentnode install` + `agentnode run` use the SAME Python. With no explicit
+    target, resolve_python() returns ONLY the CANONICAL realpath of ``sys.executable`` — never
+    a $VIRTUAL_ENV / .venv / `python` / `python3` / PATH fallback (which could lock a different
+    env-id). A symlinked interpreter (e.g. Linux ``.../bin/python`` -> ``.../bin/python3.11``)
+    resolves to its canonical target; the value is absolute + canonical."""
     import sys
-    assert installer.resolve_python() == sys.executable
+    from pathlib import Path
+
+    expected = str(Path(sys.executable).resolve(strict=True))
+    # A bogus $VIRTUAL_ENV and a cwd without a ./.venv must NOT change the result.
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "not-a-venv"))
+    monkeypatch.chdir(tmp_path)
+    got = installer.resolve_python()
+    assert got == expected                  # canonical realpath of sys.executable, no fallback
+    assert Path(got).is_absolute()
+
+
+def test_resolve_python_symlink_resolves_to_canonical_same_env_id(tmp_path):
+    """POSIX: an explicit symlinked interpreter resolves to its canonical target, and the
+    symlink and its target yield the SAME environment identity (so the env-lock key is stable
+    regardless of which interpreter name was used)."""
+    import os
+    import sys
+    from pathlib import Path
+
+    if sys.platform == "win32":
+        pytest.skip("POSIX symlink semantics (Windows symlinks need privileges)")
+    real = str(Path(sys.executable).resolve(strict=True))
+    link = tmp_path / "python-link"
+    os.symlink(real, link)
+    assert installer.resolve_python(str(link)) == real   # explicit symlink → canonical target
+
+    from agentnode_sdk._env_lock import resolve_env_identity
+    assert resolve_env_identity(str(link)).env_id == resolve_env_identity(real).env_id
