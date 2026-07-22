@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -309,53 +309,32 @@ def _find_installed_slug(capability: str) -> str | None:
 def _install_for_capability(
     capability: str,
 ) -> tuple[str | None, bool, str | None]:
-    """Install a package for a capability using the standard client route.
+    """SUGGEST a package for a missing capability — NEVER install it (A1-E-Lock L3: no
+    installation during a running plan). The planner may detect a gap and propose an
+    explicit out-of-band install, but must not call ``client.install`` itself. A catalog
+    ``resolve`` (read-only) is used only to name the suggested package.
 
-    Respects auto_upgrade_policy, install_confirmation, trust policy.
-    Returns (slug, was_installed, reason).
-    reason is None on success, a human-readable explanation on failure.
-    """
-    from agentnode_sdk.config import load_config
-
-    cfg = load_config()
-
-    if cfg.get("auto_upgrade_policy") == "off":
-        return None, False, (
-            "Auto-install disabled (auto_upgrade_policy: off). "
-            f"Install manually: agentnode install <package-for-{capability}>"
-        )
-
+    Returns (slug, was_installed, reason). ``was_installed`` is ALWAYS False; ``reason`` is
+    a stable, human-readable install suggestion (or a not-found explanation)."""
     try:
         from agentnode_sdk.client import AgentNodeClient
 
         client = AgentNodeClient()
         try:
-            resolve_result = client.resolve([capability])
-            if not resolve_result.results:
-                return None, False, (
-                    f"No package found in catalog for capability: {capability}"
-                )
-
-            best = resolve_result.results[0]
-            trust_min = cfg.get("trust", {}).get("minimum_trust_level", "verified")
-
-            install_result = client.install(
-                best.slug,
-                require_verified=trust_min in ("verified", "trusted", "curated"),
-                require_trusted=trust_min in ("trusted", "curated"),
-            )
-
-            if install_result.installed:
-                return install_result.slug, True, None
-
-            return None, False, (
-                f"Install blocked: {install_result.message}. "
-                f"Install manually: agentnode install {best.slug}"
-            )
+            resolve_result = client.resolve([capability])       # read-only catalog lookup
         finally:
             client.close()
     except Exception as e:
-        return None, False, f"Install failed: {e}"
+        return None, False, f"Capability lookup failed: {e}"
+
+    if not resolve_result.results:
+        return None, False, f"No package found in catalog for capability: {capability}"
+
+    best = resolve_result.results[0]
+    return None, False, (
+        f"Capability '{capability}' is not installed and is NOT auto-installed during a "
+        f"run. Install it explicitly: agentnode install {best.slug}"
+    )
 
 
 def plan_and_run(task: str, *, dry_run: bool = False) -> PlanResult:

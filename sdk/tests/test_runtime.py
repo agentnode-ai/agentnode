@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from agentnode_sdk.runtime import (
     AgentNodeRuntime,
@@ -288,11 +286,13 @@ class TestHandleRouting:
         assert result["success"] is True
 
     def test_routes_install(self):
+        # routing to _handle_install still works; L3 makes it fail-closed (disabled)
         mock_client = MagicMock()
-        mock_client.install.return_value = _mock_install_result()
         rt = _make_runtime(client=mock_client)
         result = rt.handle("agentnode_install", {"slug": "test-pack"})
-        assert result["success"] is True
+        assert result["success"] is False
+        assert result["error"]["code"] == "runtime_install_disabled"
+        mock_client.install.assert_not_called()
 
     @patch("agentnode_sdk.runtime.read_lockfile")
     def test_routes_run(self, mock_lf):
@@ -481,46 +481,21 @@ class TestHandleSearch:
 # ---------------------------------------------------------------------------
 
 class TestHandleInstall:
-    def test_delegates_to_client(self):
+    # A1-E-Lock L3: runtime/agent-initiated installation is DISABLED. A not-installed
+    # package → runtime_install_disabled; client.install is NEVER called.
+    def test_not_installed_is_runtime_install_disabled(self):
         mock_client = MagicMock()
-        mock_client.install.return_value = _mock_install_result()
         rt = _make_runtime(client=mock_client)
-
         result = rt.handle("agentnode_install", {"slug": "test-pack"})
-        assert result["success"] is True
-        assert result["result"]["slug"] == "test-pack"
-        mock_client.install.assert_called_once()
-
-    def test_trust_flows_through_verified(self):
-        mock_client = MagicMock()
-        mock_client.install.return_value = _mock_install_result()
-        rt = _make_runtime(client=mock_client, minimum_trust_level="verified")
-
-        rt.handle("agentnode_install", {"slug": "test-pack"})
-        _, kwargs = mock_client.install.call_args
-        assert kwargs["require_verified"] is True
-        assert kwargs["require_trusted"] is False
-
-    def test_trust_flows_through_trusted(self):
-        mock_client = MagicMock()
-        mock_client.install.return_value = _mock_install_result()
-        rt = _make_runtime(client=mock_client, minimum_trust_level="trusted")
-
-        rt.handle("agentnode_install", {"slug": "test-pack"})
-        _, kwargs = mock_client.install.call_args
-        assert kwargs["require_trusted"] is True
-        assert kwargs["require_verified"] is False
-
-    def test_install_failed(self):
-        mock_client = MagicMock()
-        mock_client.install.return_value = _mock_install_result(
-            installed=False, message="Trust check failed"
-        )
-        rt = _make_runtime(client=mock_client)
-
-        result = rt.handle("agentnode_install", {"slug": "bad-pack"})
         assert result["success"] is False
-        assert result["error"]["code"] == "install_failed"
+        assert result["error"]["code"] == "runtime_install_disabled"
+        mock_client.install.assert_not_called()
+
+    def test_never_calls_client_install(self):
+        mock_client = MagicMock()
+        rt = _make_runtime(client=mock_client, minimum_trust_level="trusted")
+        rt.handle("agentnode_install", {"slug": "bad-pack"})
+        mock_client.install.assert_not_called()
 
     def test_missing_slug(self):
         rt = _make_runtime()
@@ -799,14 +774,17 @@ class TestErrorHandling:
         assert result["success"] is False
         assert result["error"]["code"] == "loop_error"
 
-    def test_handle_network_error_readable(self):
+    def test_install_disabled_no_client_call_no_network_error(self):
+        # L3: agentnode_install never reaches the client, so a client network error
+        # cannot occur on this path — it fail-closes with the stable disabled code.
         mock_client = MagicMock()
         mock_client.install.side_effect = ConnectionError("Connection refused")
         rt = _make_runtime(client=mock_client)
 
         result = rt.handle("agentnode_install", {"slug": "test"})
         assert result["success"] is False
-        assert "Connection refused" in result["error"]["message"]
+        assert result["error"]["code"] == "runtime_install_disabled"
+        mock_client.install.assert_not_called()
 
     def test_all_results_json_serializable(self):
         """All handle() results must be JSON-serializable."""

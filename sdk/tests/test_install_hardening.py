@@ -21,7 +21,7 @@ def _mock_io(monkeypatch, tmp_path, pip_calls):
     monkeypatch.setattr(installer, "download_artifact", lambda *a, **k: None)
     monkeypatch.setattr(installer, "verify_hash", lambda *a, **k: "abc123")
     monkeypatch.setattr(installer, "extract_archive", lambda *a, **k: pkg_dir)
-    monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+    monkeypatch.setattr(installer, "resolve_python", lambda *a, **k: "python")
     monkeypatch.setattr(installer, "pip_install", lambda *a, **k: pip_calls.append(1))
     return pkg_dir
 

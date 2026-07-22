@@ -192,6 +192,7 @@ class TestAgentContextAllowlist:
             runner, "run_tool",
             lambda *a, **kw: RunToolResult(success=True, result="ok"),
         )
+        monkeypatch.setattr(AgentContext, "_ensure_installed", lambda self, slug: True)
         ctx = _make_context(allowed_packages=None)
         # Should NOT raise PermissionError — None allowlist allows all
         result = ctx.run_tool("any-pack")
@@ -1255,6 +1256,12 @@ class TestCircuitBreaker:
 # ---------------------------------------------------------------------------
 
 class TestRunToolRetry:
+    @pytest.fixture(autouse=True)
+    def _pkg_installed(self, monkeypatch):
+        # These test tool-call MECHANICS assuming the tool is installed; L3's presence
+        # gate would otherwise short-circuit to missing_dependency.
+        monkeypatch.setattr(AgentContext, "_ensure_installed", lambda self, slug: True)
+
     def test_transparent_retry_on_failure(self, monkeypatch):
         from agentnode_sdk import runner
         call_count = 0
@@ -1342,6 +1349,10 @@ class TestRunToolRetry:
 # ---------------------------------------------------------------------------
 
 class TestExplicitHelpers:
+    @pytest.fixture(autouse=True)
+    def _pkg_installed(self, monkeypatch):
+        monkeypatch.setattr(AgentContext, "_ensure_installed", lambda self, slug: True)
+
     def test_run_tool_with_retry(self, monkeypatch):
         from agentnode_sdk import runner
         call_count = 0
@@ -1411,63 +1422,24 @@ class TestExplicitHelpers:
 # _ensure_installed — auto_upgrade_policy guard
 # ---------------------------------------------------------------------------
 
-class TestEnsureInstalledPolicy:
-    def test_auto_install_blocked_by_policy_off(self, monkeypatch):
-        """auto_upgrade_policy=off prevents auto-install of missing packages."""
+class TestEnsureInstalledPresenceOnly:
+    # A1-E-Lock L3: _ensure_installed is presence-only — NO auto-install, ever.
+    def test_missing_returns_false_no_install(self, monkeypatch):
         ctx = _make_context(allowed_packages=["missing-pack"])
-        monkeypatch.setattr(
-            "agentnode_sdk.installer.read_lockfile",
-            lambda: {"packages": {}},
-        )
-        monkeypatch.setattr(
-            "agentnode_sdk.config.load_config",
-            lambda: {"auto_upgrade_policy": "off"},
-        )
-        result = ctx._ensure_installed("missing-pack")
-        assert result is False
+        monkeypatch.setattr("agentnode_sdk.installer.read_lockfile",
+                            lambda: {"packages": {}})
 
-    def test_auto_install_allowed_by_policy_safe(self, monkeypatch):
-        """auto_upgrade_policy=safe allows the existing install path."""
-        ctx = _make_context(allowed_packages=["new-pack"])
-        # Mock lockfile: package NOT present
-        monkeypatch.setattr(
-            "agentnode_sdk.installer.read_lockfile",
-            lambda: {"packages": {}},
-        )
-        # Mock config: auto_upgrade_policy=safe (default)
-        monkeypatch.setattr(
-            "agentnode_sdk.config.load_config",
-            lambda: {"auto_upgrade_policy": "safe"},
-        )
-        # Mock client.install to succeed
-        class _FakeResult:
-            installed = True
-            version = "1.0.0"
-            message = ""
-        class _FakeClient:
-            def install(self, slug):
-                return _FakeResult()
-        monkeypatch.setattr(
-            "agentnode_sdk.client.AgentNodeClient",
-            _FakeClient,
-        )
-        result = ctx._ensure_installed("new-pack")
-        assert result is True
+        class _NoClient:
+            def install(self, *a, **k):
+                raise AssertionError("client.install must not be called")
+        monkeypatch.setattr("agentnode_sdk.client.AgentNodeClient", _NoClient)
+        assert ctx._ensure_installed("missing-pack") is False
 
-    def test_already_installed_skips_policy_check(self, monkeypatch):
-        """Package already in lockfile returns True without checking policy."""
+    def test_present_returns_true(self, monkeypatch):
         ctx = _make_context(allowed_packages=["existing-pack"])
-        monkeypatch.setattr(
-            "agentnode_sdk.installer.read_lockfile",
-            lambda: {"packages": {"existing-pack": {"version": "1.0.0"}}},
-        )
-        # load_config should NOT be called — if it is, blow up
-        monkeypatch.setattr(
-            "agentnode_sdk.config.load_config",
-            lambda: (_ for _ in ()).throw(AssertionError("load_config should not be called")),
-        )
-        result = ctx._ensure_installed("existing-pack")
-        assert result is True
+        monkeypatch.setattr("agentnode_sdk.installer.read_lockfile",
+                            lambda: {"packages": {"existing-pack": {"version": "1.0.0"}}})
+        assert ctx._ensure_installed("existing-pack") is True
 
 
 # ---------------------------------------------------------------------------

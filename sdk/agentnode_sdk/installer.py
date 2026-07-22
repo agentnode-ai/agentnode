@@ -16,13 +16,16 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from agentnode_sdk.exceptions import LockfileFormatError
+from agentnode_sdk.exceptions import AgentNodeError, LockfileFormatError
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -43,62 +46,229 @@ PIP_TIMEOUT = 120
 # Python interpreter resolution (Spec §13.3)
 # ---------------------------------------------------------------------------
 
-def resolve_python() -> str:
-    """Find a usable Python 3 interpreter for the host package build.
+class InterpreterResolutionError(AgentNodeError):
+    """The target Python interpreter could not be uniquely, canonically resolved —
+    fail-closed (no env-lock, no host mutation). The env-lock identity is derived from
+    the interpreter, so a non-canonical / ambiguous interpreter must never proceed.
 
-    Resolution order:
-    0. ``sys.executable`` — the interpreter actually running AgentNode, so a host
-       build (``agentnode install``) installs into the SAME environment that
-       ``agentnode run`` later imports from. This fixes pipx / unactivated-venv
-       installs, where ``$VIRTUAL_ENV`` is unset and ``python`` on PATH is a
-       DIFFERENT interpreter (the package would install into the wrong env and
-       ``agentnode run`` would fail to import it).
-    1. $VIRTUAL_ENV/bin/python (or Scripts/python.exe on Windows)
-    2. .venv/bin/python in cwd
-    3. python3 on PATH
-    4. python on PATH
+    It is an ``AgentNodeError`` so the stable ``code`` (``interpreter_not_resolvable``)
+    surfaces structurally: raised in the host-mutation branch, it propagates uncaught
+    through ``install_package`` and ``client.install`` and is rendered traceback-free by
+    the CLI top-level handler as ``Error: [interpreter_not_resolvable] <message>``."""
+
+    code = "interpreter_not_resolvable"
+
+    def __init__(
+        self,
+        message: str = "The target Python interpreter could not be canonically resolved.",
+    ):
+        super().__init__(self.code, message)
+
+
+class EnvironmentIdentityChanged(AgentNodeError):
+    """The target environment's identity changed between the moment it was resolved and
+    the moment the environment write-lock was acquired (interpreter replaced / install
+    roots moved). Fail-closed under the lock BEFORE any mutation — an install bound to
+    the old identity must never mutate a different environment. Stable ``code`` surfaces
+    traceback-free through the CLI."""
+
+    code = "environment_identity_changed"
+
+    def __init__(self, message: str = "The target Python environment changed during install."):
+        super().__init__(self.code, message)
+
+
+class PreparedInstallStale(AgentNodeError):
+    """The artifact prepared before the write-lock no longer matches the stabilised state
+    observed under the lock (the built wheel changed on disk, or its digest no longer
+    matches the prepared digest). Fail-closed BEFORE any new pip/quarantine mutation — no
+    automatic rebuild inside the write-lock. Stable ``code`` surfaces traceback-free."""
+
+    code = "prepared_install_stale"
+
+    def __init__(self, message: str = "The prepared install artifact is stale; reinstall."):
+        super().__init__(self.code, message)
+
+
+class PreparedInstallInvalid(AgentNodeError):
+    """The lock entry bound at Phase A is not a canonically-serializable authorization: it
+    contains a value that is not a JSON-safe type (only None / bool / int / finite float /
+    str / list / dict-with-string-keys are permitted). Fail-closed BEFORE the environment
+    lock — a non-canonical authorization is never silently coerced (no ``default=str``)."""
+
+    code = "prepared_install_invalid"
+
+    def __init__(self, message: str = "The install authorization is not canonically serializable."):
+        super().__init__(self.code, message)
+
+
+# The infrastructure-failure code for the environment write-lock (counter / ticket /
+# queue-mutex / OS-lock / directory failure). The timeout / read->write-upgrade / nested
+# codes are single-sourced on the corresponding ``_env_rwlock`` exception ``.code``.
+ENVIRONMENT_WRITE_LOCK_FAILED = "environment_write_lock_failed"
+
+
+class EnvironmentWriteLockError(AgentNodeError):
+    """A structured, fail-closed environment write-lock error surfaced UNIFORMLY for both
+    host routes (agent + toolpack). Raised only during acquisition — BEFORE any host
+    mutation — so it never leaves the environment half-changed. Stable ``code`` (one of
+    ``environment_write_lock_timeout`` / ``read_to_write_upgrade_forbidden`` /
+    ``environment_write_lock_nested`` / ``environment_write_lock_failed``) surfaces
+    traceback-free through install_package / client.install / CLI / doctor."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(code, message)
+
+
+class ToolpackPublishFailed(AgentNodeError):
+    """A host toolpack's pip build+install SUCCEEDED but the lockfile publish then failed:
+    the environment is changed while no matching lockfile entry exists. Fail-closed and
+    REPARABLE — the package is on the host but unrecorded, so re-running the install (pip
+    is idempotent for the same version) records it. Raised under the write-lock; the lock
+    is released only after this defined state is surfaced (never silently)."""
+
+    code = "toolpack_publish_failed"
+
+    def __init__(
+        self,
+        message: str = (
+            "The package was installed but the lockfile could not be updated. Re-run "
+            "the install to record it."
+        ),
+    ):
+        super().__init__(self.code, message)
+
+
+class ToolpackCommitConflict(AgentNodeError):
+    """After a host toolpack's pip step, the final compare-and-add commit found the slug
+    already (re)published by ANOTHER path (a container install, an install into a different
+    target environment, or any path not serialized by THIS environment write-lock). The
+    concurrent entry is NEVER overwritten and NEVER removed; no success is reported. Because
+    pip may already have changed the target environment, explicit cleanup or reinstallation
+    may be required."""
+
+    code = "toolpack_commit_conflict_after_pip"
+
+    def __init__(
+        self,
+        message: str = (
+            "Another install recorded this package concurrently; the target environment may "
+            "have been changed. The concurrent entry was left intact — reinstall to reconcile."
+        ),
+    ):
+        super().__init__(self.code, message)
+
+
+class ToolpackPreparationStale(AgentNodeError):
+    """Between the START of this host-toolpack install (when its same-slug baseline was
+    bound, BEFORE the lengthy download/extract) and acquiring the environment write-lock,
+    the slug's lockfile state changed — a NEWER install of the same package completed
+    concurrently. Fail-closed BEFORE any mutation (no quarantine, no pip): the newer entry
+    is left byte-identical. This is distinct from a post-pip commit conflict because the
+    environment has NOT been touched yet."""
+
+    code = "toolpack_preparation_stale"
+
+    def __init__(
+        self,
+        message: str = (
+            "This install was superseded by a newer install of the same package during its "
+            "preparation; nothing was changed. Re-run the install if it is still wanted."
+        ),
+    ):
+        super().__init__(self.code, message)
+
+
+class InstallStartSnapshotInvalid(AgentNodeError):
+    """The install-start snapshot passed into ``install_package`` is inconsistent with the
+    call (a different slug, or a missing/ill-formed field). Fail-closed BEFORE any mutation —
+    a snapshot that does not authorize THIS exact install is never silently re-captured."""
+
+    code = "install_start_snapshot_invalid"
+
+    def __init__(self, message: str = "The install-start snapshot does not match this install."):
+        super().__init__(self.code, message)
+
+
+class HostPolicyChangedDuringInstall(AgentNodeError):
+    """The active host-trust policy changed between the START of this install (when the route
+    was decided from the bound snapshot) and the first host mutation under the environment
+    write-lock. Fail-closed (no quarantine, no pip, no publish): a policy change requires a
+    NEW install — an operation is never silently redirected host↔container mid-flight."""
+
+    code = "host_policy_changed_during_install"
+
+    def __init__(
+        self,
+        message: str = (
+            "The host-trust policy changed during this install; nothing was changed. Re-run "
+            "the install under the current policy."
+        ),
+    ):
+        super().__init__(self.code, message)
+
+
+# One single monotone total budget bounds the environment write-lock acquisition. On
+# timeout NOTHING is mutated (the lock is not held → no recovery, quarantine, pip, verify,
+# lockfile write, or foreign-state cleanup runs).
+ENV_WRITE_LOCK_TIMEOUT = 300.0
+
+
+def _canonical_interpreter(path: str | None) -> str | None:
+    """The SINGLE canonical interpreter definition (used by resolve_python, the env
+    write-lock chokepoint, M1, and the toolpack path). Resolve *path* to an ABSOLUTE,
+    canonical (symlink-followed, strict-existing) path that is a REGULAR FILE and a
+    Python 3 interpreter — else None. NEVER a bare program name. The returned string is
+    exactly what is passed to BOTH pip and ``resolve_env_identity()`` — one normalisation,
+    not two."""
+    if not path:
+        return None
+    try:
+        p = Path(path).resolve(strict=True)      # strict → raises if it does not exist
+    except (OSError, RuntimeError):
+        return None
+    if not p.is_file():                          # regular file (symlink already followed)
+        return None
+    s = str(p)
+    if not _is_python3(s):                        # must actually be a Python 3 executable
+        return None
+    return s
+
+
+def resolve_python(explicit: str | None = None) -> str:
+    """Return the ABSOLUTE, canonical path of the target Python 3 interpreter — NEVER a
+    bare name. Fail-closed (``InterpreterResolutionError``, code ``interpreter_not_resolvable``)
+    when it cannot be resolved. This value is load-bearing for the environment write-lock
+    identity, so there is exactly ONE definition of the target interpreter.
+
+    - An EXPLICIT target has UNCONDITIONAL priority (evaluated before sys.executable):
+        * an absolute/relative PATH → resolved + canonicalised + verified;
+        * a bare program name (e.g. ``python``) → ``shutil.which`` → canonical path.
+    - NO explicit target → ONLY the canonical ``sys.executable`` (the interpreter actually
+      running AgentNode). There is deliberately NO $VIRTUAL_ENV / ./.venv / PATH fallback:
+      such a fallback could select a DIFFERENT environment than the one we run in and lock
+      the wrong env-id. If sys.executable is unusable → fail-closed.
     """
-    is_windows = sys.platform == "win32"
+    if explicit:
+        import shutil
+        is_path = (os.path.isabs(explicit) or os.sep in explicit
+                   or (os.altsep and os.altsep in explicit))
+        if is_path:
+            resolved = _canonical_interpreter(explicit)          # abs / rel path
+        else:
+            found = shutil.which(explicit)                       # bare program name
+            resolved = _canonical_interpreter(found) if found else None
+        if resolved:
+            return resolved
+        raise InterpreterResolutionError(
+            f"explicit target interpreter could not be resolved to a canonical "
+            f"Python 3: {explicit!r}")
 
-    # 0. The interpreter actually running AgentNode — guarantees install and run
-    #    use the same Python. Most reliable; prefer it over PATH/venv heuristics.
-    if sys.executable and os.path.isfile(sys.executable):
-        return sys.executable
-
-    # 1. Active virtual environment
-    venv = os.environ.get("VIRTUAL_ENV")
-    if venv:
-        bin_path = (
-            os.path.join(venv, "Scripts", "python.exe")
-            if is_windows
-            else os.path.join(venv, "bin", "python")
-        )
-        if os.path.isfile(bin_path) and _is_python3(bin_path):
-            return bin_path
-
-    # 2. Local .venv
-    local_venv = (
-        os.path.join(os.getcwd(), ".venv", "Scripts", "python.exe")
-        if is_windows
-        else os.path.join(os.getcwd(), ".venv", "bin", "python")
-    )
-    if os.path.isfile(local_venv) and _is_python3(local_venv):
-        return local_venv
-
-    # 3. python3 on PATH
-    py3 = _try_python("python3")
-    if py3:
-        return py3
-
-    # 4. python on PATH
-    py = _try_python("python")
-    if py:
-        return py
-
-    raise RuntimeError(
-        "No Python 3 interpreter found. "
-        "Activate a virtual environment or ensure python3 is on PATH."
-    )
+    resolved = _canonical_interpreter(sys.executable)
+    if resolved:
+        return resolved
+    raise InterpreterResolutionError(
+        "sys.executable is not a resolvable canonical Python 3 interpreter")
 
 
 def _is_python3(path: str) -> bool:
@@ -109,18 +279,6 @@ def _is_python3(path: str) -> bool:
         return out.startswith("Python 3.")
     except Exception:
         return False
-
-
-def _try_python(cmd: str) -> str | None:
-    try:
-        out = subprocess.check_output(
-            [cmd, "--version"], stderr=subprocess.STDOUT, timeout=5
-        ).decode().strip()
-        if out.startswith("Python 3."):
-            return cmd
-    except Exception:
-        pass
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -821,6 +979,11 @@ _CONCURRENT_MSG = (
     "concurrent lockfile update."
 )
 
+_TOOLPACK_UNAVAILABLE_MSG = (
+    "Installation state may have changed. The toolpack is unavailable until it is "
+    "reinstalled."
+)
+
 
 class _CASConflict(Exception):
     """The slug diverged from the pre-build baseline (a newer install superseded us)."""
@@ -852,6 +1015,11 @@ class _IndeterminateLockState(RuntimeError):
     confirmed-absent slug). Never claimed as 'absent', never a success."""
 
 
+class _ToolpackCommitConflict(Exception):
+    """Internal signal: the toolpack final compare-and-add found the slug already present
+    (a concurrent publish). Translated to the stable ``ToolpackCommitConflict``."""
+
+
 def _capture_cas_baseline(slug: str, path: Path) -> tuple[bool, str | None]:
     """Read the slug's baseline state (mutation-strict) BEFORE the build.
 
@@ -864,6 +1032,88 @@ def _capture_cas_baseline(slug: str, path: Path) -> tuple[bool, str | None]:
     entry = data["packages"][slug]
     integ = entry.get("_integrity") if isinstance(entry, dict) else None
     return False, (integ.get("hash") if isinstance(integ, dict) else None)
+
+
+def _same_slug_matches_baseline(current: Any, baseline_absent: bool,
+                                baseline_hash: str | None) -> bool:
+    """True iff the CURRENT same-slug entry still matches the baseline captured at the start
+    of the install (before the lengthy preparation). Baseline-absent → must still be absent;
+    baseline-present-with-hash-H → must still be present with integrity hash H."""
+    if baseline_absent:
+        return current is None
+    if not isinstance(current, dict):
+        return False
+    integ = current.get("_integrity")
+    return isinstance(integ, dict) and integ.get("hash") == baseline_hash
+
+
+@dataclass(frozen=True)
+class _InstallStartSnapshot:
+    """The ONE context bound at the EARLIEST start of a slug install — before registry /
+    catalog resolution, version selection, download, extraction, or build. It anchors the
+    whole operation so a concurrently-completed newer install cannot be adopted as this
+    operation's baseline, and so the lockfile path and host-trust policy cannot drift from
+    process-global state (``AGENTNODE_LOCKFILE`` / CWD / config) mid-transaction.
+
+    Captured by the client at the top of ``AgentNodeClient.install`` (and threaded through the
+    CLI / doctor funnels); direct/legacy callers of ``install_package`` without one get it
+    captured at entry. ``lockfile_path`` is absolute (bound to the start-time CWD)."""
+    slug: str
+    lockfile_path: Path               # absolute — bound once, reused by every phase
+    baseline_absent: bool
+    baseline_integrity_hash: str | None
+    host_policy_snapshot: str
+
+
+def capture_install_start_snapshot(slug: str) -> _InstallStartSnapshot:
+    """Bind the same-slug start state ONCE, at the earliest point of an install operation:
+    the absolute lockfile path, the host-trust policy, and the same-slug CAS baseline. Must
+    be called BEFORE any registry resolution / version selection / download."""
+    from agentnode_sdk.config import host_trust_policy
+
+    lf = Path(_lockfile_path()).absolute()          # anchor to the start-time CWD (no re-drift)
+    policy = host_trust_policy()
+    baseline_absent, baseline_hash = _capture_cas_baseline(slug, lf)
+    return _InstallStartSnapshot(
+        slug=slug,
+        lockfile_path=lf,
+        baseline_absent=baseline_absent,
+        baseline_integrity_hash=baseline_hash,
+        host_policy_snapshot=policy,
+    )
+
+
+def _bind_or_capture_install_snapshot(
+    start_snapshot: _InstallStartSnapshot | None, slug: str,
+) -> _InstallStartSnapshot:
+    """Use the caller-provided snapshot (validated, never silently re-captured) or, for a
+    direct/legacy call without one, capture it at entry. A snapshot for a DIFFERENT slug, or
+    one with a missing/ill-formed field, is fail-closed (:class:`InstallStartSnapshotInvalid`)."""
+    if start_snapshot is None:
+        return capture_install_start_snapshot(slug)
+    if not isinstance(start_snapshot, _InstallStartSnapshot):
+        raise InstallStartSnapshotInvalid("not an install-start snapshot")
+    if (
+        start_snapshot.slug != slug
+        or not isinstance(start_snapshot.lockfile_path, Path)
+        or not start_snapshot.lockfile_path.is_absolute()
+        or not isinstance(start_snapshot.host_policy_snapshot, str)
+        or not start_snapshot.host_policy_snapshot
+        or not isinstance(start_snapshot.baseline_absent, bool)
+    ):
+        raise InstallStartSnapshotInvalid()
+    return start_snapshot
+
+
+def _assert_host_policy_unchanged(snapshot_policy: str) -> None:
+    """Fail-closed (:class:`HostPolicyChangedDuringInstall`) unless the CURRENT host-trust
+    policy still equals the one bound at the start of the install. Called under the
+    environment write-lock, BEFORE the first host mutation — a policy change requires a new
+    install (no silent host↔container redirect)."""
+    from agentnode_sdk.config import host_trust_policy
+
+    if host_trust_policy() != snapshot_policy:
+        raise HostPolicyChangedDuringInstall()
 
 
 def _stored_matches_expected(data: Any, slug: str, expected: dict, expected_hash: str) -> bool:
@@ -1001,6 +1251,555 @@ def _commit_agent_entry(slug: str, lock_entry: dict, path: Path) -> None:
     _finalize_recovery(slug, path, expected, expected_hash, cause=None)     # always raises
 
 
+def _commit_toolpack_entry(slug: str, lock_entry: dict, path: Path) -> None:
+    """Durable, atomic compare-and-ADD final commit for a host toolpack. Seal the entry and
+    insert it ONLY while the slug is still absent (exactly as the pre-pip quarantine left it)
+    — NEVER overwrite / remove a concurrent entry published by another path (a container
+    install, an install into a different target environment, or any path not serialized by
+    THIS environment write-lock) while pip ran.
+
+    Concurrent entry present → :class:`ToolpackCommitConflict` (no success, foreign entry
+    left byte-identical). A write/durability failure → mutation-strict readback: accept ONLY
+    if the exact sealed entry landed; a foreign entry → conflict; nothing → the reparable
+    :class:`ToolpackPublishFailed`. Unlike the agent commit, a toolpack conflict NEVER drives
+    the slug to absent — that would remove the concurrent winner's entry."""
+    from agentnode_sdk.lock_integrity import seal_entry
+
+    expected = seal_entry(lock_entry)                     # the exact sealed entry
+    expected_hash = expected["_integrity"]["hash"]
+
+    def _commit_apply(data: dict) -> bool:
+        if data["packages"].get(slug) is not None:
+            raise _ToolpackCommitConflict()              # do NOT overwrite a concurrent entry
+        data["packages"][slug] = dict(expected)          # compare-and-add while still absent
+        return True
+
+    try:
+        mutate_lockfile(_commit_apply, path=path, audit_slug=slug, durable=True)
+    except _ToolpackCommitConflict:
+        raise ToolpackCommitConflict()
+    except Exception as exc:                              # write/durability failure
+        # A possible partial replace happened. Read back mutation-strict and accept ONLY our
+        # exact sealed entry; never blindly re-write, never overwrite a foreign entry.
+        stored = (read_lockfile_strict(path) or {}).get("packages", {}).get(slug)
+        if _entry_is_exact(stored, expected, expected_hash):
+            return                                       # our entry durably landed → committed
+        if stored is not None:
+            raise ToolpackCommitConflict() from exc      # a foreign entry is present
+        raise ToolpackPublishFailed() from exc           # unrecorded → reparable
+
+    # Mutation-strict confirmation that the EXACT expected entry landed (defence against a
+    # replace slipping between the durable write and this read).
+    stored = (read_lockfile_strict(path) or {}).get("packages", {}).get(slug)
+    if _entry_is_exact(stored, expected, expected_hash):
+        return
+    if stored is not None:
+        raise ToolpackCommitConflict()                   # replaced post-write — never overwrite
+    raise ToolpackPublishFailed()                        # our entry not recorded → reparable
+
+
+@contextmanager
+def _host_env_write_lock(
+    expected_identity,
+    canonical_python: str,
+    *,
+    env: dict | None = None,
+    timeout: float = ENV_WRITE_LOCK_TIMEOUT,
+):
+    """THE single authorizing production place for host-environment write-locking.
+
+    Acquires exactly ONE environment write-lock (keyed by the resolved env identity),
+    then RE-RESOLVES the identity under the lock and fails-closed on any change
+    (:class:`EnvironmentIdentityChanged`) BEFORE yielding — an install bound to the old
+    identity never mutates a different environment. Container / MCP / skill installs never
+    call this (they perform no host-Python mutation).
+
+    It yields the :class:`~agentnode_sdk._env_rwlock.EnvironmentWriteGuard` — the opaque,
+    thread-bound proof the mutation helper verifies before touching the host.
+
+    Every ACQUISITION error is translated to a uniform structured
+    :class:`EnvironmentWriteLockError` (same contract for agent and toolpack): timeout,
+    read->write upgrade, nested-write, and any lock-infrastructure failure (counter /
+    ticket / queue-mutex / OS-lock). These are raised BEFORE the body runs → no mutation.
+
+    LOCK ORDER (fixed, deadlock-free): this ``env_write_lock`` is the OUTER lock; the
+    short per-lockfile ``file_lock`` inside ``mutate_lockfile`` / ``update_lockfile`` is
+    the INNER lock. Never acquire them in the reverse order, and never wait on the
+    env-write-lock while holding a file_lock."""
+    from agentnode_sdk import _env_lock as envlock
+    from agentnode_sdk import _env_rwlock as rw
+
+    # --- Acquisition phase: translate EVERY lock error to a stable structured code. ---
+    cm = rw.env_write_lock(expected_identity.env_id, timeout=timeout)
+    try:
+        guard = cm.__enter__()
+    except rw.EnvironmentLockTimeout as e:
+        raise EnvironmentWriteLockError(
+            e.code, "Timed out acquiring the environment write-lock; no changes were made."
+        ) from e
+    except rw.ReadToWriteUpgradeForbidden as e:
+        raise EnvironmentWriteLockError(
+            e.code, "Cannot install while this process holds an environment reader."
+        ) from e
+    except rw.NestedEnvironmentWriteForbidden as e:
+        raise EnvironmentWriteLockError(
+            e.code, "This process already holds the environment write-lock."
+        ) from e
+    except (rw.CounterStateError, rw.CounterRollbackError, rw.QueueStateError,
+            rw.TicketExhausted, rw.InternalStateError, OSError) as e:
+        raise EnvironmentWriteLockError(
+            ENVIRONMENT_WRITE_LOCK_FAILED,
+            "The environment write-lock could not be established; no changes were made.",
+        ) from e
+
+    # --- Under the lock: identity recheck, then hand to the body; ALWAYS release. ---
+    try:
+        current = envlock.resolve_env_identity(canonical_python, env=env)
+        if current != expected_identity:
+            raise EnvironmentIdentityChanged()
+        yield guard
+    finally:
+        cm.__exit__(None, None, None)   # release the ticket + local writer record
+
+
+def _assert_json_safe(value: Any) -> None:
+    """Recursively fail-closed (``PreparedInstallInvalid``) unless *value* is built only from
+    JSON-safe types: None, bool, int, finite float, str, list, and dict with string keys.
+    (``bool`` is a subclass of ``int`` — both are permitted.) NEVER coerces an unexpected
+    object to a string; that is exactly the silent behaviour ``default=str`` would hide."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return
+    if isinstance(value, list):
+        for v in value:
+            _assert_json_safe(v)
+        return
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if not isinstance(k, str):
+                raise PreparedInstallInvalid("lock entry has a non-string mapping key")
+            _assert_json_safe(v)
+        return
+    raise PreparedInstallInvalid(
+        f"lock entry contains a non-JSON value of type {type(value).__name__}"
+    )
+
+
+def _canonical_lock_entry_bytes(entry: dict) -> bytes:
+    """Validate the entry is JSON-safe (strict types) then serialize it canonically — sorted
+    keys, compact separators, ASCII, no NaN/Inf, and crucially NO ``default=str``. The exact
+    bytes are the immutable authorization stored in the prepared struct."""
+    _assert_json_safe(entry)
+    try:
+        text = json.dumps(
+            entry,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise PreparedInstallInvalid("lock entry is not canonically serializable") from exc
+    return text.encode("ascii")
+
+
+@dataclass(frozen=True)
+class _PreparedAgentInstall:
+    """Immutable result of Phase A — every fact Phase B authorizes its mutation with, bound
+    BEFORE the environment write-lock and never re-derived in a deeper helper.
+
+    The authorization is stored as IMMUTABLE canonical JSON ``bytes`` (not a mutable dict):
+    there is no second mutable snapshot window in which another thread or a stray reference
+    could change the mapping between the digest check and the commit. ``commit_entry()``
+    rebuilds a fresh object from those exact Phase-A bytes every time. ``controlled_env_items``
+    is an immutable sorted key/value tuple (Phase B rebuilds a fresh env dict)."""
+    slug: str
+    lockfile_path: Path
+    baseline_absent: bool
+    baseline_hash: str | None
+    top: str
+    controlled_env_items: tuple       # immutable sorted (key, value) pairs
+    canonical_python: str
+    expected_env_identity: Any        # _env_lock.EnvIdentity (frozen)
+    wheel: Path
+    wheel_sha256: str
+    distribution: str                 # wid.distribution (string)
+    distribution_version: str         # wid.version (string)
+    entrypoint: str                   # sealed entrypoint (string)
+    artifact_hash: str
+    publisher_slug: str | None
+    version: str
+    lock_entry_canonical_json: bytes  # IMMUTABLE canonical bytes — the sole authorization
+    authorization_digest: str         # canonical digest over the bytes + bound primitives
+    policy: str
+    dest: Path                        # tempdir owning the built wheel (caller cleans it)
+
+    def controlled_env(self) -> dict:
+        """A FRESH mutable env dict rebuilt from the immutable stored pairs."""
+        return dict(self.controlled_env_items)
+
+    def lock_entry(self) -> dict:
+        """A FRESH dict decoded from the immutable Phase-A bytes (read-only inspection)."""
+        return json.loads(self.lock_entry_canonical_json)
+
+    def commit_entry(self) -> dict:
+        """A FRESH object rebuilt from the exact immutable Phase-A bytes — never a copy of a
+        mutable in-memory snapshot, so the committed entry always equals the Phase-A bytes."""
+        return json.loads(self.lock_entry_canonical_json)
+
+
+def _prepared_authorization_digest(
+    *,
+    slug: str,
+    version: str,
+    artifact_hash: str,
+    publisher_slug: str | None,
+    distribution: str,
+    distribution_version: str,
+    entrypoint: str,
+    wheel_sha256: str,
+    env_id: str,
+    top: str,
+    lock_entry_canonical_json: bytes,
+) -> str:
+    """A canonical SHA-256 over every authorizing primitive PLUS the immutable entry bytes.
+    Strict serialization (no ``default=str``); the primitives are all str/None."""
+    header = json.dumps(
+        {
+            "slug": slug,
+            "version": version,
+            "artifact_hash": artifact_hash,
+            "publisher_slug": publisher_slug,
+            "distribution": distribution,
+            "distribution_version": distribution_version,
+            "entrypoint": entrypoint,
+            "wheel_sha256": wheel_sha256,
+            "env_id": env_id,
+            "top": top,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    return hashlib.sha256(header + b"\0" + lock_entry_canonical_json).hexdigest()
+
+
+def _recompute_prepared_digest(p: _PreparedAgentInstall) -> str:
+    return _prepared_authorization_digest(
+        slug=p.slug,
+        version=p.version,
+        artifact_hash=p.artifact_hash,
+        publisher_slug=p.publisher_slug,
+        distribution=p.distribution,
+        distribution_version=p.distribution_version,
+        entrypoint=p.entrypoint,
+        wheel_sha256=p.wheel_sha256,
+        env_id=p.expected_env_identity.env_id,
+        top=p.top,
+        lock_entry_canonical_json=p.lock_entry_canonical_json,
+    )
+
+
+def _verify_host_write_guard(guard: Any, env_id: str) -> None:
+    """Fail-closed unless *guard* is the genuine, still-active write guard for *env_id*,
+    held on the CURRENT thread. Rejects: no guard, wrong type, wrong environment, a
+    different thread, an expired/released guard, and a self-constructed equal-looking token
+    (the registry token is compared by identity, so a forgery cannot match)."""
+    from agentnode_sdk import _env_rwlock as rw
+
+    if not isinstance(guard, rw.EnvironmentWriteGuard):
+        raise RuntimeError("internal: prepared install requires an environment write guard")
+    if guard.env_id != env_id:
+        raise RuntimeError("internal: write guard is for a different environment")
+    if guard.owner_thread_id != threading.get_ident():
+        raise RuntimeError("internal: write guard used off its owner thread")
+    if not rw._writer_held_with(env_id, guard.token):
+        raise RuntimeError("internal: write guard does not correspond to a HELD write-lock")
+
+
+def _check_agent_cas_ownership(pkgs: dict, p: _PreparedAgentInstall, wm) -> Any:
+    """Same-slug CAS + name-change + cross-slug ownership — RAISING, NO mutation. Used both
+    read-only (preflight) and INSIDE the atomic quarantine mutator (race-closing re-check).
+    Returns the current same-slug entry (or None)."""
+    current = pkgs.get(p.slug)
+    cur_hash = None
+    if isinstance(current, dict):
+        integ = current.get("_integrity")
+        cur_hash = integ.get("hash") if isinstance(integ, dict) else None
+    if p.baseline_absent:
+        if current is not None:
+            raise _CASConflict()
+    elif current is None or cur_hash != p.baseline_hash:
+        raise _CASConflict()
+    if isinstance(current, dict):
+        prev_dist = current.get("python_distribution")
+        if prev_dist is not None and prev_dist != p.distribution:
+            raise _NameChange()
+    for oslug, oe in pkgs.items():
+        if oslug == p.slug or not isinstance(oe, dict):
+            continue
+        if oe.get("package_type") != "agent":
+            continue
+        if p.distribution and oe.get("python_distribution") == p.distribution:
+            raise _OwnershipConflict()
+        oep = oe.get("entrypoint") or ""
+        if oep:
+            try:
+                if wm.top_level_from_entrypoint(oep) == p.top:
+                    raise _OwnershipConflict()
+            except wm.WheelValidationError:
+                pass
+    return current
+
+
+def _verify_prepared_bindings(p: _PreparedAgentInstall) -> None:
+    """The authorizing entry (decoded fresh from the immutable Phase-A bytes) must still bind
+    the same entry/artifact/publisher/version/entrypoint values as the prepared primitives (a
+    second guard beyond the digest)."""
+    e = p.lock_entry()
+    if (
+        e.get("version") != p.version
+        or e.get("artifact_hash") != p.artifact_hash
+        or (e.get("publisher_slug") or None) != (p.publisher_slug or None)
+        or (e.get("entrypoint") or "") != p.entrypoint
+    ):
+        raise PreparedInstallStale("prepared authorization bindings no longer match")
+
+
+def _prepare_agent_install_without_host_mutation(
+    slug: str,
+    *,
+    lock_entry: dict,
+    package_dir: Path,
+    canonical_python: str,
+    policy: str,
+    prepared_baseline: tuple[bool, str | None] | None = None,
+    lockfile_path: Path | None = None,
+) -> _PreparedAgentInstall:
+    """Phase A: build + validate the agent wheel and bind every authorizing fact into a
+    deeply-immutable prepared struct WITHOUT mutating the host environment, WITHOUT holding
+    the environment write-lock, and WITHOUT persisting the lockfile. The only lockfile touch
+    is the short mutation-strict CAS-baseline READ, which is fully released before this
+    returns — so the caller acquires the env write-lock with no sidecar lock held.
+
+    ``prepared_baseline`` + ``lockfile_path`` (from the install-start snapshot) anchor the CAS
+    and the lockfile path to the START of the operation; ``None`` → captured/resolved here
+    (direct callers with no download phase)."""
+    from agentnode_sdk import _agent_pip as ap
+    from agentnode_sdk import _env_lock as envlock
+    from agentnode_sdk import _wheel_meta as wm
+
+    entrypoint = lock_entry.get("entrypoint") or ""
+    lf = lockfile_path if lockfile_path is not None else _lockfile_path()
+
+    # (1) CAS baseline anchored to the START of the operation (bound before download when
+    # available; otherwise captured here, before the build).
+    baseline_absent, baseline_hash = (
+        prepared_baseline if prepared_baseline is not None
+        else _capture_cas_baseline(slug, lf)
+    )
+
+    dest = Path(tempfile.mkdtemp(prefix="agentnode-wheel-"))
+    try:
+        # (2) entrypoint top-level (string-only; pre-build fail-closed).
+        top = wm.top_level_from_entrypoint(entrypoint)
+        # (3) ONE frozen controlled environment drives the config check, the build, BOTH
+        #     pip steps, the target-interpreter probes and post-verify. Env identity +
+        #     config-redirect refusal + install-scheme all run BEFORE the build, so a
+        #     misconfigured / non-writable target refuses without running the backend.
+        env = ap.controlled_pip_env()
+        ident = envlock.resolve_env_identity(canonical_python, env=env)
+        ap.assert_target_contract(canonical_python, env)
+        ap.assert_install_scheme(canonical_python, env)
+        # (4) build-wheel-first (controlled env) + (5) import-free validation.
+        wheel = wm.build_wheel(canonical_python, package_dir, dest, env=env)
+        wid = wm.validate_wheel(wheel, top)
+        # (6) consistency digest captured before the pip hand-off.
+        pre_hash = wm.wheel_consistency_hash(wheel)
+    except BaseException:
+        # Phase A failed → no prepared struct will exist to clean the tempdir; clean here.
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+
+    # Freeze the authorizing entry into IMMUTABLE canonical bytes (strict JSON types,
+    # fail-closed on anything else — no silent stringification). There is no mutable
+    # snapshot after this, so the commit can only ever reproduce these exact Phase-A bytes.
+    canonical_json = _canonical_lock_entry_bytes(lock_entry)
+    frozen = json.loads(canonical_json)      # read authorizing primitives from the bytes
+    digest = _prepared_authorization_digest(
+        slug=slug,
+        version=frozen.get("version") or "",
+        artifact_hash=frozen.get("artifact_hash") or "",
+        publisher_slug=frozen.get("publisher_slug"),
+        distribution=wid.distribution,
+        distribution_version=wid.version,
+        entrypoint=entrypoint,
+        wheel_sha256=pre_hash,
+        env_id=ident.env_id,
+        top=top,
+        lock_entry_canonical_json=canonical_json,
+    )
+    return _PreparedAgentInstall(
+        slug=slug,
+        lockfile_path=lf,
+        baseline_absent=baseline_absent,
+        baseline_hash=baseline_hash,
+        top=top,
+        controlled_env_items=tuple(sorted(env.items())),
+        canonical_python=canonical_python,
+        expected_env_identity=ident,
+        wheel=wheel,
+        wheel_sha256=pre_hash,
+        distribution=wid.distribution,
+        distribution_version=wid.version,
+        entrypoint=entrypoint,
+        artifact_hash=frozen.get("artifact_hash") or "",
+        publisher_slug=frozen.get("publisher_slug"),
+        version=frozen.get("version") or "",
+        lock_entry_canonical_json=canonical_json,
+        authorization_digest=digest,
+        policy=policy,
+        dest=dest,
+    )
+
+
+def _install_agent_prepared_under_env_write_lock(
+    prepared: _PreparedAgentInstall, guard: Any,
+) -> None:
+    """Phase B — the caller-owned host mutation. Acquires NO environment lock; it MUST run
+    inside the caller's ``env_write_lock``, proven by the thread-bound *guard*. Strict order
+    under that lock — NO lockfile mutation happens until every revalidation has passed:
+
+      0. verify the write guard (type, env, owner thread, HELD state, exact token);
+      1. prepared internal integrity (authorization digest unchanged);
+      2/3. read-only classification of the current lockfile state (recovery of a prior
+           aborted op is subsumed by the CAS-guarded atomic quarantine below — the durable-
+           quarantine model leaves a valid CAS baseline either way, so no restore here);
+      4. mutation-strict re-read;
+      5. read-only same-slug CAS + name-change + cross-slug ownership preflight (RAISE, no
+         mutation);
+      6. prepared wheel present + regular file;
+      7. recompute wheel digest and compare;
+      8. entry/artifact/publisher/version/entrypoint binding checks;
+      9. ONLY THEN apply the quarantine atomically — RE-CHECKING CAS + ownership INSIDE the
+         mutator to close the preflight->mutation race;
+      10. confirm absent → pip → post-verify → durable sealed commit (fresh deep copy).
+
+    A tampered/deleted wheel or a mutated prepared struct fails-closed as
+    :class:`PreparedInstallStale` BEFORE any quarantine — the prior entry stays byte-
+    identical and pip never runs. Once the environment is mutating every failure is neutral
+    (never restores an old entry)."""
+    from agentnode_sdk import _agent_pip as ap
+    from agentnode_sdk import _wheel_meta as wm
+    from agentnode_sdk.lock_integrity import validate_python_distribution_fields
+
+    p = prepared
+    ident = p.expected_env_identity
+    lf = p.lockfile_path
+
+    # (0) GUARD — we MUST run under THIS write-lock, on the owner thread, HELD, exact token.
+    _verify_host_write_guard(guard, ident.env_id)
+
+    # (0b) POLICY — the host-trust policy bound at the operation's start must be unchanged
+    # (no silent host↔container redirect mid-install). Under the lock, before any mutation.
+    _assert_host_policy_unchanged(p.policy)
+
+    # (1) Prepared internal integrity: the prepared struct must be unchanged since Phase A.
+    if _recompute_prepared_digest(p) != p.authorization_digest:
+        raise PreparedInstallStale("the prepared install was modified in memory")
+
+    # (2/3/4) Read-only classify + mutation-strict re-read (recovery subsumed by CAS below).
+    data = read_lockfile_strict(lf)
+    pkgs = data.get("packages", {}) if isinstance(data, dict) else {}
+
+    # (5) READ-ONLY preflight: CAS + name-change + ownership — RAISE, NO mutation.
+    try:
+        _check_agent_cas_ownership(pkgs, p, wm)
+    except _CASConflict:
+        raise _AgentTransactionAbort(
+            "The agent was modified by another install; the stale build was not applied."
+        )
+    except _NameChange:
+        raise _AgentTransactionAbort(
+            "The agent's Python distribution name changed; automatic migration is not "
+            "supported."
+        )
+    except _OwnershipConflict:
+        raise _AgentTransactionAbort(
+            "The installed Python distribution or import namespace is already owned by "
+            "another agent."
+        )
+
+    # (6) wheel present + regular file, (7) digest unchanged, (8) bindings intact.
+    if not p.wheel.is_file():
+        raise PreparedInstallStale("the prepared wheel is missing")
+    if wm.wheel_consistency_hash(p.wheel) != p.wheel_sha256:
+        raise PreparedInstallStale("the prepared wheel changed on disk")
+    _verify_prepared_bindings(p)
+
+    # --- Every revalidation passed with NO mutation. Only now may we quarantine. ---
+
+    # (9) ATOMIC quarantine — RE-CHECK CAS + ownership INSIDE the mutator (closes the
+    #     read-only-preflight -> mutation race), then pop the slug.
+    def _quarantine_apply(d: dict) -> bool:
+        current = _check_agent_cas_ownership(d["packages"], p, wm)
+        if current is None:
+            return False  # new slug: already absent — nothing to write
+        d["packages"].pop(p.slug)
+        return True
+
+    try:
+        mutate_lockfile(_quarantine_apply, path=lf, audit_slug=p.slug, durable=True)
+    except _CASConflict:
+        raise _AgentTransactionAbort(
+            "The agent was modified by another install; the stale build was not applied."
+        )
+    except _NameChange:
+        raise _AgentTransactionAbort(
+            "The agent's Python distribution name changed; automatic migration is not "
+            "supported."
+        )
+    except _OwnershipConflict:
+        raise _AgentTransactionAbort(
+            "The installed Python distribution or import namespace is already owned by "
+            "another agent."
+        )
+    except (_AgentTransactionAbort, RuntimeError):
+        raise
+    except Exception as exc:  # write/durability failure — don't start pip, no restore
+        raise _AgentTransactionAbort(_AGENT_UNAVAILABLE_MSG) from exc
+
+    # confirm the slug is absent (mutation-strict) after quarantine.
+    confirm = read_lockfile_strict(lf)
+    if confirm is not None and p.slug in confirm.get("packages", {}):
+        raise _AgentTransactionAbort(_AGENT_UNAVAILABLE_MSG)
+
+    # (10) From here the shared environment is mutated → every failure is neutral.
+    env = p.controlled_env()
+    try:
+        ap.pip_install_wheel(p.canonical_python, p.wheel, env)
+        ap.post_verify(
+            p.canonical_python,
+            expected_name=p.distribution,
+            expected_version=p.distribution_version,
+            expected_top_level=p.top,
+            allowed_roots=[ident.purelib, ident.platlib],
+            env=env,
+        )
+    except ap.AgentPipError as exc:
+        raise RuntimeError(_AGENT_UNAVAILABLE_MSG) from exc
+
+    # durable, sealed commit from a FRESH deep copy (the snapshot is never mutated).
+    entry = p.commit_entry()
+    entry["build_mode"] = "host"
+    entry["effective_host_trust_policy_at_install"] = p.policy
+    entry["pinnable"] = True
+    entry["python_distribution"] = p.distribution
+    entry["python_distribution_version"] = p.distribution_version
+    validate_python_distribution_fields(entry)
+    _commit_agent_entry(p.slug, entry, lf)
+
+
 def _install_agent_host_transaction(
     slug: str,
     *,
@@ -1008,143 +1807,184 @@ def _install_agent_host_transaction(
     package_dir: Path,
     target_python: str,
     policy: str,
+    prepared_baseline: tuple[bool, str | None] | None = None,
+    lockfile_path: Path | None = None,
 ) -> None:
-    """Run the A1-M1 host-agent install transaction. Self-committing: on success the
-    sealed entry (with the two locally-observed distribution fields) is durably
-    written; on any failure the old entry is never restored."""
+    """The A1-M1 host-agent install — the agent HOST chokepoint. Phase A builds + binds the
+    wheel with NO host mutation and NO lock; then exactly ONE environment write-lock is
+    acquired (identity re-checked under it) and Phase B performs the caller-owned mutation.
+    Self-committing on success; the old entry is never restored on failure.
+
+    ``target_python`` is the already-canonical interpreter chosen by the caller — it is NOT
+    re-resolved here (single resolution). ``prepared_baseline`` + ``lockfile_path`` are the
+    same-slug CAS baseline and absolute lockfile path bound by ``install_package`` at the
+    operation's START (anchoring the CAS + path); ``None`` → captured/resolved in Phase A
+    (direct callers with no download phase, e.g. the M1 tests). ``policy`` is the bound
+    host-trust policy, re-confirmed under the lock in Phase B."""
     from agentnode_sdk import _agent_pip as ap
     from agentnode_sdk import _env_lock as envlock
     from agentnode_sdk import _wheel_meta as wm
-    from agentnode_sdk.lock_integrity import validate_python_distribution_fields
 
-    entrypoint = lock_entry.get("entrypoint") or ""
-    lf = _lockfile_path()
-
-    # (1) CAS baseline BEFORE the build (first foreign code runs at build).
-    baseline_absent, baseline_hash = _capture_cas_baseline(slug, lf)
-
-    dest = Path(tempfile.mkdtemp(prefix="agentnode-wheel-"))
-    env_mutating = False
+    prepared: _PreparedAgentInstall | None = None
     try:
-        # (2) entrypoint top-level (string-only; pre-build fail-closed).
-        top = wm.top_level_from_entrypoint(entrypoint)
-        # (3) ONE frozen controlled environment drives the config check, the build,
-        #     BOTH pip steps, the target-interpreter probes and post-verify — the
-        #     build must never re-inherit an unmanaged os.environ. Env identity +
-        #     config-redirect refusal + install-scheme (no user-site fallback into a
-        #     non-writable/other root) all run BEFORE the build, so a misconfigured or
-        #     non-writable target refuses cleanly without running the PEP-517 backend.
-        env = ap.controlled_pip_env()
-        ident = envlock.resolve_env_identity(target_python, env=env)
-        ap.assert_target_contract(target_python, env)
-        ap.assert_install_scheme(target_python, env)
-        # (4) build-wheel-first (controlled env) + (5) import-free validation.
-        wheel = wm.build_wheel(target_python, package_dir, dest, env=env)
-        wid = wm.validate_wheel(wheel, top)
-        # (6) consistency hash captured before pip hand-off.
-        pre_hash = wm.wheel_consistency_hash(wheel)
-
-        with envlock.env_lock(ident.env_id):
-            # (8) CAS re-check + cross-slug ownership + name-change + quarantine,
-            #     all on the fresh mutation-strict read under the inner file_lock.
-            def _quarantine_apply(data: dict) -> bool:
-                pkgs = data["packages"]
-                current = pkgs.get(slug)
-                cur_hash = None
-                if isinstance(current, dict):
-                    integ = current.get("_integrity")
-                    cur_hash = integ.get("hash") if isinstance(integ, dict) else None
-                if baseline_absent:
-                    if current is not None:
-                        raise _CASConflict()
-                elif current is None or cur_hash != baseline_hash:
-                    raise _CASConflict()
-                if isinstance(current, dict):
-                    prev_dist = current.get("python_distribution")
-                    if prev_dist is not None and prev_dist != wid.distribution:
-                        raise _NameChange()
-                for oslug, oe in pkgs.items():
-                    if oslug == slug or not isinstance(oe, dict):
-                        continue
-                    if oe.get("package_type") != "agent":
-                        continue
-                    if wid.distribution and oe.get("python_distribution") == wid.distribution:
-                        raise _OwnershipConflict()
-                    oep = oe.get("entrypoint") or ""
-                    if oep:
-                        try:
-                            if wm.top_level_from_entrypoint(oep) == top:
-                                raise _OwnershipConflict()
-                        except wm.WheelValidationError:
-                            pass
-                if current is None:
-                    return False  # new slug: already absent — nothing to write
-                pkgs.pop(slug)
-                return True
-
-            try:
-                mutate_lockfile(_quarantine_apply, path=lf, audit_slug=slug, durable=True)
-            except _CASConflict:
-                raise _AgentTransactionAbort(
-                    "The agent was modified by another install; the stale build was "
-                    "not applied."
-                )
-            except _NameChange:
-                raise _AgentTransactionAbort(
-                    "The agent's Python distribution name changed; automatic "
-                    "migration is not supported."
-                )
-            except _OwnershipConflict:
-                raise _AgentTransactionAbort(
-                    "The installed Python distribution or import namespace is already "
-                    "owned by another agent."
-                )
-            except (_AgentTransactionAbort, RuntimeError):
-                raise
-            except Exception as exc:  # write/durability failure — don't start pip, no restore
-                raise _AgentTransactionAbort(_AGENT_UNAVAILABLE_MSG) from exc
-
-            # (9) confirm the slug is absent (mutation-strict) before any pip.
-            confirm = read_lockfile_strict(lf)
-            if confirm is not None and slug in confirm.get("packages", {}):
-                raise _AgentTransactionAbort(_AGENT_UNAVAILABLE_MSG)
-
-            # (10) the validated wheel must be unchanged up to the pip hand-off.
-            if wm.wheel_consistency_hash(wheel) != pre_hash:
-                raise RuntimeError(_AGENT_UNAVAILABLE_MSG)
-
-            # From here the shared environment is mutated → every failure is neutral.
-            env_mutating = True
-            ap.pip_install_wheel(target_python, wheel, env)
-            ap.post_verify(
-                target_python,
-                expected_name=wid.distribution,
-                expected_version=wid.version,
-                expected_top_level=top,
-                allowed_roots=[ident.purelib, ident.platlib],
-                env=env,
-            )
-
-            # (11) durable, sealed commit with the two locally-observed fields.
-            lock_entry["build_mode"] = "host"
-            lock_entry["effective_host_trust_policy_at_install"] = policy
-            lock_entry["pinnable"] = True
-            lock_entry["python_distribution"] = wid.distribution
-            lock_entry["python_distribution_version"] = wid.version
-            validate_python_distribution_fields(lock_entry)
-            _commit_agent_entry(slug, lock_entry, lf)
+        prepared = _prepare_agent_install_without_host_mutation(
+            slug,
+            lock_entry=lock_entry,
+            package_dir=package_dir,
+            canonical_python=target_python,
+            policy=policy,
+            prepared_baseline=prepared_baseline,
+            lockfile_path=lockfile_path,
+        )
+        with _host_env_write_lock(
+            prepared.expected_env_identity,
+            prepared.canonical_python,
+            env=prepared.controlled_env(),
+        ) as guard:
+            _install_agent_prepared_under_env_write_lock(prepared, guard)
     except (wm.WheelValidationError, ap.AgentPipError) as exc:
-        # Pre-quarantine build/metadata/target errors keep the old entry and may be
-        # specific; once the environment is mutating, translate to the neutral msg.
-        if env_mutating:
-            raise RuntimeError(_AGENT_UNAVAILABLE_MSG) from exc
+        # Only Phase-A (pre-mutation) build/metadata/target errors reach here and may be
+        # specific; the mutating section (Phase B) already translates AgentPipError to the
+        # neutral message, so a mutating AgentPipError never surfaces here.
         raise RuntimeError(exc.message) from exc
     except envlock.EnvironmentResolutionError as exc:
         raise RuntimeError("The target Python environment could not be resolved.") from exc
     except _AgentTransactionAbort as exc:
         raise RuntimeError(exc.message) from exc
     finally:
-        shutil.rmtree(dest, ignore_errors=True)
+        if prepared is not None:
+            shutil.rmtree(prepared.dest, ignore_errors=True)
+
+
+def _install_toolpack_prepared_under_env_write_lock(
+    slug: str,
+    *,
+    lock_entry: dict,
+    package_dir: Path,
+    canonical_python: str,
+    policy: str,
+    verbose: bool,
+    expected_identity: Any,
+    guard: Any,
+    baseline_absent: bool,
+    baseline_hash: str | None,
+    lockfile_path: Path,
+) -> None:
+    """Host-toolpack mutation under the caller's env write-lock (guard-verified), with THREE
+    distinct concurrency boundaries against the same-slug lockfile entry:
+
+      1. PREPARATION-CAS (read-only): the current entry must STILL match the baseline bound at
+         the START of the operation (BEFORE download) — else a newer install of the same
+         package completed during our preparation → :class:`ToolpackPreparationStale` with NO
+         mutation (the newer entry is left byte-identical).
+      2. ATOMIC QUARANTINE-CAS: the SAME baseline is re-checked INSIDE the durable pop mutator
+         (closes the preflight→quarantine race), then the old entry is removed — so after pip
+         (possibly) changes the environment there is never an old, still-valid, executable
+         entry. A brand-new slug (still absent) needs no quarantine write.
+      3. FINAL COMPARE-AND-ADD (see ``_commit_toolpack_entry``): after pip, insert only while
+         still absent — never overwrite an entry another path published during pip.
+
+    Any failure AFTER the quarantine leaves the slug durably ABSENT (never restore the old
+    entry); an explicit reinstall is required."""
+    _verify_host_write_guard(guard, expected_identity.env_id)
+    # The host-trust policy bound at the operation's start must be unchanged (no silent
+    # host↔container redirect); under the lock, before any mutation.
+    _assert_host_policy_unchanged(policy)
+    lf = lockfile_path      # the BOUND absolute path — no re-resolution of _lockfile_path()
+
+    # (1) PREPARATION-CAS (read-only, under the lock): still bound to the operation's start.
+    data = read_lockfile_strict(lf)
+    current = (data.get("packages", {}) if isinstance(data, dict) else {}).get(slug)
+    if not _same_slug_matches_baseline(current, baseline_absent, baseline_hash):
+        raise ToolpackPreparationStale()   # newer entry published during prep → no mutation
+
+    # (2) DURABLE atomic pre-pip quarantine: re-check the SAME (pre-download) baseline INSIDE
+    # the mutator (closes the preflight→quarantine race), then remove the old entry.
+    def _quarantine(d: dict) -> bool:
+        cur = d["packages"].get(slug)
+        if not _same_slug_matches_baseline(cur, baseline_absent, baseline_hash):
+            raise _CASConflict()
+        if cur is None:
+            return False
+        d["packages"].pop(slug)
+        return True
+
+    try:
+        mutate_lockfile(_quarantine, path=lf, audit_slug=slug, durable=True)
+    except _CASConflict:
+        raise _AgentTransactionAbort(
+            "The toolpack was modified by another install; the install was not applied."
+        )
+    except (_AgentTransactionAbort, RuntimeError):
+        raise
+    except Exception as exc:  # write/durability failure — old entry not removed, no pip
+        raise _AgentTransactionAbort(_TOOLPACK_UNAVAILABLE_MSG) from exc
+
+    # Confirm the old entry is durably gone before touching the environment.
+    confirm = read_lockfile_strict(lf)
+    if confirm is not None and slug in confirm.get("packages", {}):
+        raise _AgentTransactionAbort(_TOOLPACK_UNAVAILABLE_MSG)
+
+    # From here pip may mutate the environment. Any failure leaves the slug ABSENT (the old
+    # entry has already been durably quarantined — it can never run against the changed env).
+    pip_install(canonical_python, package_dir, verbose=verbose)   # raises on failure → absent
+
+    # Publish the NEW entry as an ATOMIC compare-and-ADD (NOT a plain overwrite): while pip
+    # ran, another path (container / different target env / any non-serialized route) may
+    # have published this slug. The final commit inserts our entry ONLY if the slug is still
+    # absent; a concurrent entry → ToolpackCommitConflict (never overwritten). A durability
+    # failure with our entry unrecorded → the reparable ToolpackPublishFailed. Both leave the
+    # old entry (already durably quarantined) absent — never restored.
+    lock_entry["build_mode"] = "host"
+    lock_entry["effective_host_trust_policy_at_install"] = policy
+    lock_entry["pinnable"] = True
+    _commit_toolpack_entry(slug, lock_entry, lf)
+
+
+def _install_toolpack_host_transaction(
+    slug: str,
+    *,
+    lock_entry: dict,
+    package_dir: Path,
+    target_python: str,
+    policy: str,
+    verbose: bool,
+    prepared_baseline: tuple[bool, str | None] | None = None,
+    lockfile_path: Path | None = None,
+) -> None:
+    """The host-toolpack HOST chokepoint: resolve the target env identity, acquire exactly
+    ONE environment write-lock (identity re-checked under it), and run the durable-quarantine
+    toolpack transaction. ``target_python`` is already canonical (single resolution).
+
+    ``prepared_baseline`` + ``lockfile_path`` are the same-slug CAS baseline and absolute
+    lockfile path bound by ``install_package`` at the operation's START (anchor the
+    preparation-CAS + path). ``None`` → captured/resolved here (direct callers with no
+    download phase). ``policy`` is re-confirmed under the lock before any mutation."""
+    from agentnode_sdk._env_lock import resolve_env_identity
+
+    lf = lockfile_path if lockfile_path is not None else _lockfile_path()
+    expected_identity = resolve_env_identity(target_python)
+    baseline_absent, baseline_hash = (
+        prepared_baseline if prepared_baseline is not None
+        else _capture_cas_baseline(slug, lf)
+    )
+    try:
+        with _host_env_write_lock(expected_identity, target_python) as guard:
+            _install_toolpack_prepared_under_env_write_lock(
+                slug,
+                lock_entry=lock_entry,
+                package_dir=package_dir,
+                canonical_python=target_python,
+                policy=policy,
+                verbose=verbose,
+                expected_identity=expected_identity,
+                guard=guard,
+                baseline_absent=baseline_absent,
+                baseline_hash=baseline_hash,
+                lockfile_path=lf,
+            )
+    except _AgentTransactionAbort as exc:
+        raise RuntimeError(exc.message) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1240,6 +2080,18 @@ def install_package(
     # Toolpack runtime credentials: [{name, required, description}] — names
     # only, never values. Sealed into the lockfile for runtime UX + gating.
     env_requirements: list[dict] | None = None,
+    # A1-E-Lock L3: OPTIONAL explicit target interpreter for the HOST-mutation routes
+    # (host-agent / host-toolpack). None → the canonical ``sys.executable``. Public callers
+    # without an interpreter choice pass None; the internal / direct installer path passes
+    # a specific interpreter so two venvs can be addressed and the environment write-lock
+    # is genuinely keyed by the TARGET, not by the calling process. Ignored on
+    # container / MCP / skill routes (they perform no host-Python mutation).
+    target_python: str | Path | None = None,
+    # A1-E-Lock L3: the install-start snapshot bound by the caller (the client) at the
+    # EARLIEST start of the operation — before registry resolution / version selection. It
+    # anchors the same-slug baseline, the lockfile path, and the host-trust policy. Direct /
+    # legacy callers pass None → captured at entry (still before download).
+    start_snapshot: _InstallStartSnapshot | None = None,
 ) -> dict[str, Any]:
     """Execute the full local install flow (mirrors CLI §13.4).
 
@@ -1325,6 +2177,18 @@ def install_package(
             key_status=key_status,
         )
 
+    # A1-E-Lock L3 — bind (or validate) the install-start SNAPSHOT. Its same-slug baseline,
+    # absolute lockfile path, and host-trust policy were captured at the EARLIEST start of the
+    # operation (before registry resolution / version selection, and before the download/build
+    # below). All host-mutation phases use THESE bound values — never a fresh read of the
+    # process-global lockfile path / policy — so a concurrently-completed newer install cannot
+    # be adopted as this operation's baseline and path/policy cannot drift mid-transaction.
+    snapshot = _bind_or_capture_install_snapshot(start_snapshot, slug)
+    bound_lockfile = snapshot.lockfile_path
+    bound_policy = snapshot.host_policy_snapshot
+    host_baseline: tuple[bool, str | None] = (
+        snapshot.baseline_absent, snapshot.baseline_integrity_hash)
+
     # P0.0/P0.3: building a package runs its setup.py / PEP-517 hooks as arbitrary
     # code. curated/trusted may build natively on the host (vetted tiers); every
     # other tier (community/unverified/unknown) is built INSIDE the container into a
@@ -1354,8 +2218,9 @@ def install_package(
         # Step 5: Verify entrypoint (non-fatal)
         _verify_entrypoint(package_dir, entrypoint)
 
-        # Step 6: Resolve Python
-        python = resolve_python()
+        # NOTE (A1-E-Lock L3): the target interpreter is resolved ONLY on the actual
+        # host-mutation route (below), never here — a container/MCP/skill install must
+        # not fail-close on an unusable sys.executable when it never touches host Python.
 
         # Build the lock entry and verify the publisher signature BEFORE pip.
         # pip executes the package's build hooks, so every crypto/trust gate must
@@ -1398,30 +2263,40 @@ def install_package(
             lock_entry["_signatures"] = signatures
         _verify_publisher_signature(slug, lock_entry, key_status=key_status)
 
-        # Step 7: build — only reached after every gate (hash + signature) passed.
-        # Host-allowed tiers (per the active host-trust policy) build natively on the
-        # host; every other tier is built INSIDE the container into a deterministic
-        # volume (fail-closed if no runtime — never a host build for community code).
-        from agentnode_sdk.config import host_trust_policy
+        # Step 7: build — only reached after every gate (hash + signature) passed. The route
+        # (host vs container) is decided from the BOUND snapshot policy, not a fresh read — an
+        # operation is never silently redirected host↔container by a mid-flight policy change.
         from agentnode_sdk.sandbox.policy import host_allowed_tiers
-        policy = host_trust_policy()
-        committed = False
-        if (trust_level or "").lower() in host_allowed_tiers(policy):
+
+        if (trust_level or "").lower() in host_allowed_tiers(bound_policy):
+            # HOST mutation route ONLY: resolve the canonical target interpreter here
+            # (single resolution; container / MCP / skill never reach this). Agent AND
+            # toolpack each run a durable-quarantine transaction under exactly ONE env
+            # write-lock, so a failure after pip never leaves an old executable entry. The
+            # BOUND lockfile path + policy are threaded through (no re-resolution); the policy
+            # is re-confirmed under the lock before the first mutation.
+            canonical_python = resolve_python(target_python)
             if package_type == "agent":
-                # A1-M1: host agents use the build-wheel-first, environment-locked,
-                # CAS-guarded, durable transaction — which self-commits the sealed
-                # entry (incl. the two locally-observed distribution fields).
                 _install_agent_host_transaction(
                     slug,
                     lock_entry=lock_entry,
                     package_dir=package_dir,
-                    target_python=python,
-                    policy=policy,
+                    target_python=canonical_python,
+                    policy=bound_policy,
+                    prepared_baseline=host_baseline,
+                    lockfile_path=bound_lockfile,
                 )
-                committed = True
             else:
-                pip_install(python, package_dir, verbose=verbose)
-                lock_entry["build_mode"] = "host"
+                _install_toolpack_host_transaction(
+                    slug,
+                    lock_entry=lock_entry,
+                    package_dir=package_dir,
+                    target_python=canonical_python,
+                    policy=bound_policy,
+                    verbose=verbose,
+                    prepared_baseline=host_baseline,
+                    lockfile_path=bound_lockfile,
+                )
         else:
             sandbox_volume = _container_build_into_volume(
                 slug, version, package_dir, f"sha256:{local_hash}",
@@ -1429,19 +2304,14 @@ def install_package(
             lock_entry["sandboxed"] = True
             lock_entry["sandbox_volume"] = sandbox_volume
             lock_entry["build_mode"] = "sandbox_volume"
-
-        # MUTABLE metadata (NOT sealed): lets the doctor tell "host-built under an
-        # older/looser policy" apart from "sandboxed", without guessing. Toolpacks
-        # always build from the pinned artifact, so they are always pinnable.
-        # (The agent transaction sets these + commits internally.)
-        if not committed:
-            lock_entry["effective_host_trust_policy_at_install"] = policy
+            # Container build performs NO host-Python mutation → no environment write-lock;
+            # publish under the BOUND lockfile path with the BOUND policy metadata. MUTABLE
+            # metadata (NOT sealed) lets the doctor tell a host build from a sandboxed one;
+            # containers build from the pinned artifact, so they are pinnable.
+            lock_entry["effective_host_trust_policy_at_install"] = bound_policy
             lock_entry["pinnable"] = True
-
-            # Step 8: seal + write lockfile (only after a successful install)
             from agentnode_sdk.lock_integrity import seal_entry
-            lock_entry = seal_entry(lock_entry)
-            update_lockfile(slug, lock_entry)
+            update_lockfile(slug, seal_entry(lock_entry), path=bound_lockfile)
 
         result: dict[str, Any] = {
             "slug": slug,

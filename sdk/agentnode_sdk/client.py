@@ -602,6 +602,14 @@ class AgentNodeClient:
         Steps: API metadata → download artifact → verify hash →
         extract → pip install → update lockfile.
         """
+        # A1-E-Lock L3: bind the install-start snapshot at the EARLIEST point of the
+        # operation — BEFORE any registry resolution / version selection below — so a
+        # concurrently-completed newer install of this slug cannot be adopted as this
+        # operation's baseline, and so the lockfile path + host-trust policy are bound once
+        # and cannot drift from process-global state. Threaded unchanged into install_package.
+        from agentnode_sdk.installer import capture_install_start_snapshot
+        start_snapshot = capture_install_start_snapshot(slug)
+
         # 1. Get install metadata (read-only, no side effects)
         meta = self.get_install_metadata(slug, version)
 
@@ -669,7 +677,7 @@ class AgentNodeClient:
                 version=meta.version,
                 installed=False,
                 already_installed=False,
-                message=f"Policy check failed: internal error. Install denied.",
+                message="Policy check failed: internal error. Install denied.",
                 trust_level=trust_level,
                 verification_tier=verification_tier,
             )
@@ -800,6 +808,7 @@ class AgentNodeClient:
             mcp_install=mcp_install,
             mcp_allowed_domains=mcp_allowed_domains,
             env_requirements=meta.env_requirements or None,
+            start_snapshot=start_snapshot,
         )
 
         return InstallResult(

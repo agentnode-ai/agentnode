@@ -80,8 +80,30 @@ def _mock_install_io(monkeypatch, tmp_path, pip_calls):
     monkeypatch.setattr(installer, "download_artifact", lambda *a, **k: None)
     monkeypatch.setattr(installer, "verify_hash", lambda *a, **k: "abc123def456")
     monkeypatch.setattr(installer, "extract_archive", lambda *a, **k: pkg_dir)
-    monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+    monkeypatch.setattr(installer, "resolve_python", lambda *a, **k: "python")
     monkeypatch.setattr(installer, "pip_install", lambda *a, **k: pip_calls.append(1))
+    # These routing tests are about host-vs-container, not the environment write-lock.
+    # The global subprocess.run mock below would otherwise break the host chokepoint's
+    # identity probe, so neutralise the chokepoint here (its real behaviour is covered by
+    # test_lock_integrity, the M1 suite, and the dedicated env-write-lock tests).
+    import contextlib
+
+    class _Ident:
+        env_id = "test-env-id"
+        purelib = "/pl"
+        platlib = "/plat"
+
+    @contextlib.contextmanager
+    def _noop_host_lock(expected_identity, canonical_python, *, env=None, timeout=None):
+        yield expected_identity
+
+    monkeypatch.setattr("agentnode_sdk._env_lock.resolve_env_identity",
+                        lambda *a, **k: _Ident())
+    monkeypatch.setattr(installer, "_host_env_write_lock", _noop_host_lock)
+    # The neutralised lock yields a fake identity (not a real held guard); the durable
+    # toolpack transaction verifies the guard, so neutralise that check too for these
+    # routing tests (real guard verification is covered by the env-write-lock core tests).
+    monkeypatch.setattr(installer, "_verify_host_write_guard", lambda *a, **k: None)
     # volume rm (best-effort cleanup before build) — no real docker
     monkeypatch.setattr(installer.subprocess, "run",
                         lambda *a, **k: mock.Mock(returncode=0, stdout=b"", stderr=b""))

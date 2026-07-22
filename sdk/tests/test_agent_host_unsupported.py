@@ -214,7 +214,9 @@ def test_no_side_effects_on_host_path(monkeypatch):
     monkeypatch.setattr(multiprocessing, "Process", trip("Process"))
     monkeypatch.setattr(ar, "AgentContext", trip("AgentContext"))
     monkeypatch.setattr(ar, "_auto_detect_llm", trip("auto_detect_llm"))
-    monkeypatch.setattr(ar, "_eager_install_deps", trip("eager_install"))
+    # (_eager_install_deps was removed entirely by the Layer-3 runtime-install
+    #  deactivation — a strictly stronger guarantee than tripwiring it; see
+    #  test_layer3_interpreter_and_no_runtime_install.test_eager_install_deps_removed.)
     import agentnode_sdk._env_rwlock as rw
     monkeypatch.setattr(rw, "env_read_lock", trip("env_read_lock"))
     import agentnode_sdk.client as _client

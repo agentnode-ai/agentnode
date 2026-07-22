@@ -60,6 +60,13 @@ class ConfigurationError(AgentNodeError):
 
 HOST_AGENT_EXECUTION_UNSUPPORTED = "host_agent_execution_unsupported"
 
+# A1-E-Lock L3: stable machine error codes for the runtime-install fail-closed
+# contract. Each code has exactly ONE defining constant (imported wherever it is
+# surfaced), never a re-typed literal. (``interpreter_not_resolvable`` is defined
+# once as ``installer.InterpreterResolutionError.code``.)
+MISSING_DEPENDENCY = "missing_dependency"
+RUNTIME_INSTALL_DISABLED = "runtime_install_disabled"
+
 HOST_AGENT_UNSUPPORTED_MESSAGE = (
     "Host-agent execution is disabled in this SDK slice: there is no verified process-"
     "isolation boundary for running an agent's entrypoint on the host."

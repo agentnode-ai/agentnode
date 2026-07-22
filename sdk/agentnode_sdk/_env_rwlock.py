@@ -47,6 +47,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 _POLL = 0.005
@@ -108,6 +109,15 @@ class ReadToWriteUpgradeForbidden(RuntimeError):
     same environment — refused (never a blocking upgrade / deadlock)."""
 
     code = "read_to_write_upgrade_forbidden"
+
+
+class NestedEnvironmentWriteForbidden(RuntimeError):
+    """A writer was requested from a process that ALREADY holds the writer for the same
+    environment — refused with a defined nested-state error before any blocking OS-lock
+    operation. A second (higher) ticket would queue behind this process's own lower live
+    ticket and self-deadlock until the deadline; refusing is fail-closed (no mutation)."""
+
+    code = "environment_write_lock_nested"
 
 
 class EnvironmentLockTimeout(RuntimeError):
@@ -316,6 +326,88 @@ def _unregister_local_reader(env_id: str) -> None:
 def _local_reader_active(env_id: str) -> bool:
     with _local_lock:
         return _local_readers.get(env_id, 0) > 0
+
+
+# ---------------------------------------------------------------------------
+# Process-wide WRITER state machine: NONE -> PENDING -> HELD -> NONE.
+#
+# The local reservation (NONE -> PENDING) is made ATOMICALLY *before* any blocking or
+# persistent acquisition step (queue dir, ticket counter, ticket file, queue-mutex,
+# OS lock). This closes the same-process race the old "register after acquire" design
+# left open: without it, a second thread could pass a "free" check and create a SECOND
+# interprocess ticket that then queues behind this process's own lower live ticket and
+# waits to the deadline. With PENDING set first, a second writer of the same process is
+# refused IMMEDIATELY (it sees PENDING or HELD) — no second ticket, no timeout.
+#
+# Each record carries the owner thread id and an OPAQUE token. The token is a fresh
+# object() that cannot be reconstructed from outside — a caller-owned mutation helper
+# proves it runs under THIS write-lock by presenting the exact same token from the owner
+# thread while the state is HELD (see EnvironmentWriteGuard).
+_local_writers: dict[str, dict] = {}   # env_id -> {"state": "pending"|"held", "thread": int, "token": object}
+
+
+@dataclass(frozen=True)
+class EnvironmentWriteGuard:
+    """Opaque proof that its holder runs under the environment write-lock for ``env_id``
+    on ``owner_thread_id``. ``token`` is the registry's internal object — it cannot be
+    forged (identity ``is`` comparison), so a self-constructed guard with an equal-looking
+    token is rejected. Yielded by :func:`env_write_lock`; verified by the mutation helper."""
+    env_id: str
+    owner_thread_id: int
+    token: object
+
+
+def _reserve_local_writer_pending(env_id: str) -> object:
+    """NONE -> PENDING, atomically, BEFORE any blocking/persistent acquisition step.
+    Refuses (``NestedEnvironmentWriteForbidden``) if this process already holds OR is
+    acquiring the writer for *env_id*. Returns the opaque token."""
+    tid = threading.get_ident()
+    token = object()
+    with _local_lock:
+        if env_id in _local_writers:
+            raise NestedEnvironmentWriteForbidden(
+                "cannot acquire the environment write-lock while this process already "
+                "holds or is acquiring it"
+            )
+        _local_writers[env_id] = {"state": "pending", "thread": tid, "token": token}
+    return token
+
+
+def _promote_local_writer_held(env_id: str, token: object) -> None:
+    """PENDING -> HELD after the interprocess writer has been genuinely acquired."""
+    with _local_lock:
+        rec = _local_writers.get(env_id)
+        if rec is None or rec["token"] is not token:
+            raise InternalStateError("writer reservation lost/replaced before promotion")
+        rec["state"] = "held"
+
+
+def _release_local_writer(env_id: str, token: object) -> None:
+    """Remove OUR record (PENDING or HELD). Idempotent; only removes our own token."""
+    with _local_lock:
+        rec = _local_writers.get(env_id)
+        if rec is not None and rec["token"] is token:
+            _local_writers.pop(env_id, None)
+
+
+def _local_writer_active(env_id: str) -> bool:
+    """True if this process holds OR is acquiring the writer for *env_id* (PENDING/HELD)."""
+    with _local_lock:
+        return env_id in _local_writers
+
+
+def _writer_held_with(env_id: str, token: object) -> bool:
+    """True iff this process HOLDS (state == held) the writer for *env_id* with EXACTLY
+    this token, and the caller runs on the owner thread. The predicate a mutation helper
+    uses to authorize itself — never a bare boolean, never env_id alone."""
+    with _local_lock:
+        rec = _local_writers.get(env_id)
+        return bool(
+            rec is not None
+            and rec["state"] == "held"
+            and rec["token"] is token
+            and rec["thread"] == threading.get_ident()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -573,11 +665,10 @@ def _cleanup_ticket(
 
 @contextmanager
 def _acquire(env_id: str, ttype: str, timeout: float):
-    # Same-process read->write is refused BEFORE any blocking OS-lock operation.
-    if ttype == "w" and _local_reader_active(env_id):
-        raise ReadToWriteUpgradeForbidden(
-            "cannot acquire the environment write-lock while this process holds a reader"
-        )
+    # For writers, the same-process read->write refusal and the NONE->PENDING reservation
+    # (which also refuses a nested writer) are done by ``env_write_lock`` BEFORE this — so
+    # by the time we reach the first blocking step, a nested/upgrade request has already
+    # been refused. Readers take no local reservation here.
     deadline = time.monotonic() + timeout   # single monotone total deadline
     env_dir = _env_dir(env_id)
     fd = -1
@@ -660,6 +751,7 @@ def _after_fork_child() -> None:
             os._exit(_FD_CLOSE_INDETERMINATE_EXIT)
     _all_lock_fds.clear()
     _local_readers.clear()
+    _local_writers.clear()
     _thread_local.depths = {}
     _unsafe_tls.d = 0
     _local_lock = threading.Lock()
@@ -716,8 +808,24 @@ def env_read_lock(env_id: str, timeout: float = DEFAULT_ACQUIRE_TIMEOUT):
 
 @contextmanager
 def env_write_lock(env_id: str, timeout: float = DEFAULT_ACQUIRE_TIMEOUT):
-    """Acquire the exclusive (writer) side for one install into the environment.
-    Refused (``ReadToWriteUpgradeForbidden``) if this process holds a reader. Raises
-    :class:`EnvironmentLockTimeout` if acquisition exceeds *timeout*."""
-    with _acquire(env_id, "w", timeout):
-        yield
+    """Acquire the exclusive (writer) side for one install into the environment and yield
+    an :class:`EnvironmentWriteGuard`.
+
+    BEFORE any blocking/persistent step: refuse a read->write upgrade
+    (:class:`ReadToWriteUpgradeForbidden`) and reserve the local writer atomically
+    (NONE -> PENDING) — a nested same-process writer is refused here
+    (:class:`NestedEnvironmentWriteForbidden`) with no second ticket and no wait. After
+    the interprocess writer is genuinely acquired the state is promoted PENDING -> HELD and
+    the guard is yielded; on ANY exit path (success, timeout, ticket/counter error, body
+    error) the record is removed. Raises :class:`EnvironmentLockTimeout` on timeout."""
+    if _local_reader_active(env_id):
+        raise ReadToWriteUpgradeForbidden(
+            "cannot acquire the environment write-lock while this process holds a reader"
+        )
+    token = _reserve_local_writer_pending(env_id)   # NONE -> PENDING (atomic, pre-blocking)
+    try:
+        with _acquire(env_id, "w", timeout):
+            _promote_local_writer_held(env_id, token)   # PENDING -> HELD
+            yield EnvironmentWriteGuard(env_id, threading.get_ident(), token)
+    finally:
+        _release_local_writer(env_id, token)            # PENDING or HELD -> NONE

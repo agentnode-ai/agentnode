@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agentnode_sdk.exceptions import RUNTIME_INSTALL_DISABLED
 from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.models import PromptArgumentSpec, PromptSpec, ResourceSpec
 from agentnode_sdk.policy import check_run as _policy_check_run
@@ -1278,54 +1279,20 @@ class AgentNodeRuntime:
                 },
             )
 
-        # Policy check deferred to client.install() which has real metadata
-        # (trust_level, permissions from API). We only audit the install
-        # intent here. The actual check_install() runs in client.install()
-        # with real data — see BD-10, PHASE-A.
-
-        require_trusted = self._minimum_trust_level in ("trusted", "curated")
-        require_verified = self._minimum_trust_level == "verified"
-        install_result = self._client.install(
-            slug,
-            require_trusted=require_trusted,
-            require_verified=require_verified,
-        )
-
-        if not install_result.installed:
-            return ToolResult(
-                success=False,
-                error=ToolError(
-                    code="install_failed",
-                    message=install_result.message,
-                ),
-            )
-
-        # Post-check for curated minimum (client only enforces trusted+)
-        if (
-            self._minimum_trust_level == "curated"
-            and install_result.trust_level
-            and not _trust_meets_minimum(install_result.trust_level, "curated")
-        ):
-            return ToolResult(
-                success=False,
-                error=ToolError(
-                    code="trust_blocked",
-                    message=(
-                        f"Package '{slug}' has trust_level='{install_result.trust_level}' "
-                        f"but policy requires '{self._minimum_trust_level}'. "
-                        "Cannot install automatically. Inform the user about the trust requirement."
-                    ),
-                ),
-            )
-
+        # A1-E-Lock L3: agent-/runtime-initiated installation is DISABLED. A missing
+        # package is NOT installed during a run — installation is an explicit out-of-band
+        # operation that goes through the central environment write-lock. This path never
+        # calls client.install / pip / the installer.
         return ToolResult(
-            success=True,
-            result={
-                "slug": install_result.slug,
-                "version": install_result.version,
-                "message": install_result.message,
-                "trust_level": install_result.trust_level,
-            },
+            success=False,
+            error=ToolError(
+                code=RUNTIME_INSTALL_DISABLED,
+                message=(
+                    f"Package '{slug}' is not installed. Runtime/agent-initiated "
+                    f"installation is disabled — install it explicitly out of band: "
+                    f"agentnode install {slug}"
+                ),
+            ),
         )
 
     def _handle_run(self, args: dict) -> ToolResult:

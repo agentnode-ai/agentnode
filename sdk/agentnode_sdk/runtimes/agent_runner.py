@@ -36,6 +36,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from agentnode_sdk.exceptions import MISSING_DEPENDENCY
 from agentnode_sdk.models import RunToolResult
 from agentnode_sdk.policy import PolicyResult, _trust_meets_minimum, audit_decision
 from agentnode_sdk.run_log import RunLog, cleanup_old_runs
@@ -962,41 +963,18 @@ class AgentContext:
     # --- Auto-install (lazy) ---
 
     def _ensure_installed(self, slug: str) -> bool:
-        """Check if a package is in the lockfile; if not, auto-install it.
-
-        Returns True if the package is available (already installed or
-        successfully auto-installed), False if auto-install failed or
-        blocked by auto_upgrade_policy=off.
-        """
+        """Presence check ONLY (A1-E-Lock L3): a missing package is a controlled
+        missing-dependency failure — there is NO auto-install during a run. Installation
+        is an explicit, out-of-band operation (agentnode install / client.install), which
+        goes through the central environment write-lock. Returns True iff *slug* is in the
+        lockfile; False otherwise (no pip, no lockfile change, no client.install)."""
         from agentnode_sdk.installer import read_lockfile
-        lockfile = read_lockfile()
-        if slug in lockfile.get("packages", {}):
+        if slug in read_lockfile().get("packages", {}):
             return True
-
-        from agentnode_sdk.config import load_config
-        cfg = load_config()
-        if cfg.get("auto_upgrade_policy") == "off":
-            logger.warning("auto_install blocked: auto_upgrade_policy=off for %s", slug)
-            if self._run_log:
-                self._run_log._write("auto_install_blocked", slug=slug, reason="auto_upgrade_policy=off")
-            return False
-
-        logger.info("auto_install: %s not in lockfile, attempting install", slug)
+        logger.warning("missing dependency (no runtime auto-install): %s", slug)
         if self._run_log:
-            self._run_log._write("auto_install", slug=slug)
-
-        try:
-            from agentnode_sdk.client import AgentNodeClient
-            client = AgentNodeClient()
-            result = client.install(slug)
-            if result.installed:
-                logger.info("auto_install: %s@%s installed successfully", slug, result.version)
-                return True
-            logger.warning("auto_install: %s failed: %s", slug, result.message)
-            return False
-        except Exception as exc:
-            logger.warning("auto_install: %s failed with exception: %s", slug, exc)
-            return False
+            self._run_log._write(MISSING_DEPENDENCY, slug=slug)
+        return False
 
     # --- Core tool dispatch (internal) ---
 
@@ -1007,7 +985,15 @@ class AgentContext:
         **kwargs: Any,
     ) -> RunToolResult:
         """Single tool dispatch — no retry, no circuit breaker. Used by public methods."""
-        self._ensure_installed(slug)
+        # A1-E-Lock L3: a missing package is a stable, controlled missing-dependency
+        # failure — NO auto-install during a run. Return a clear error_code rather than
+        # falling through to an opaque tool failure.
+        if not self._ensure_installed(slug):
+            return RunToolResult(
+                success=False, mode_used="agent",
+                error_code=MISSING_DEPENDENCY,
+                error=(f"Package '{slug}' is not installed. It is NOT auto-installed "
+                       f"during a run — install it explicitly: agentnode install {slug}"))
 
         t0 = time.monotonic()
         from agentnode_sdk.runner import run_tool
@@ -1476,48 +1462,6 @@ def _audit_agent_run(
         )
     except Exception:
         logger.debug("Failed to audit agent run: %s", slug, exc_info=True)
-
-
-# NOTE (A1-E-Lock L2, Weg B): host-agent entrypoint execution is fail-closed BEFORE any
-# call to _eager_install_deps, so it is unreachable in the host path. Its removal is a
-# separate Layer-3 (installer / write-choke-point) concern intentionally NOT in this
-# Layer-2 commit — the function below is preserved BYTE-IDENTICAL to its baseline.
-def _eager_install_deps(
-    allowed_packages: list[str],
-    run_log: RunLog | None = None,
-) -> None:
-    """Pre-install all declared tool dependencies before agent execution."""
-    from agentnode_sdk.installer import read_lockfile
-    lockfile = read_lockfile()
-    installed_slugs = set(lockfile.get("packages", {}).keys())
-    missing = [s for s in allowed_packages if s not in installed_slugs]
-
-    if not missing:
-        return
-
-    logger.info("eager_install: %d dependencies to install: %s", len(missing), missing)
-    if run_log:
-        run_log._write("eager_install_start", slugs=missing)
-
-    try:
-        from agentnode_sdk.client import AgentNodeClient
-        client = AgentNodeClient()
-    except Exception as exc:
-        logger.warning("eager_install: cannot create client: %s", exc)
-        return
-
-    for slug in missing:
-        try:
-            result = client.install(slug)
-            if result.installed:
-                logger.info("eager_install: %s@%s installed", slug, result.version)
-            else:
-                logger.warning("eager_install: %s failed: %s", slug, result.message)
-        except Exception as exc:
-            logger.warning("eager_install: %s failed: %s", slug, exc)
-
-    if run_log:
-        run_log._write("eager_install_end", slugs=missing)
 
 
 # ---------------------------------------------------------------------------
