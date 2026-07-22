@@ -52,7 +52,13 @@ def atomic_write_json(
         suffix=".tmp",
     )
     try:
-        os.write(fd, content.encode("utf-8"))
+        payload = content.encode("utf-8")
+        written = 0
+        while written < len(payload):          # os.write may write fewer bytes than
+            n = os.write(fd, payload[written:])  # asked (e.g. near ENOSPC/EINTR); loop
+            if n <= 0:                         # so we NEVER persist a truncated file
+                raise OSError("short write: no progress writing temp file")
+            written += n
         if durable:
             os.fsync(fd)                       # file bytes durable before replace
         os.close(fd)

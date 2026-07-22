@@ -17,7 +17,6 @@ from agentnode_sdk.planner import (
     ExecutionPlan,
     PlanResult,
     StepResult,
-    MAX_STEPS,
 )
 from agentnode_sdk.models import RunToolResult
 
@@ -301,25 +300,34 @@ def test_plan_and_run_stops_on_failure(tmp_path):
 
 
 def test_plan_and_run_no_package_shows_reason(tmp_path):
-    """When no package is installed and auto-install is off, show clear reason."""
+    """A1-E-Lock L3: no auto-install during a plan. A missing capability with no catalog
+    match → clear, non-installing failure reason."""
     lock_file = tmp_path / "agentnode.lock"
     lock_file.write_text(json.dumps({"version": "0.1", "packages": {}}))
     os.environ["AGENTNODE_LOCKFILE"] = str(lock_file)
 
     cfg_file = tmp_path / "config.json"
-    cfg_file.write_text(json.dumps({"version": "0.1", "auto_upgrade_policy": "off"}))
+    cfg_file.write_text(json.dumps({"version": "0.1"}))
     os.environ["AGENTNODE_CONFIG"] = str(cfg_file)
 
-    result = plan_and_run("search for AI news")
+    empty = MagicMock()
+    empty.results = []
+    mock_client = MagicMock()
+    mock_client.resolve.return_value = empty
+    mock_client.close = MagicMock()
+
+    with patch("agentnode_sdk.client.AgentNodeClient", return_value=mock_client):
+        result = plan_and_run("search for AI news")
 
     assert result.success is False
     assert len(result.steps) == 1
-    assert "auto_upgrade_policy: off" in result.steps[0].error
-    assert "Install manually" in result.steps[0].error
+    assert "No package found" in result.steps[0].error
+    mock_client.install.assert_not_called()   # NEVER installs during a plan
 
 
-def test_plan_and_run_install_blocked_shows_reason(tmp_path):
-    """When resolve finds a package but install is blocked, show the reason."""
+def test_plan_and_run_suggests_explicit_install_never_installs(tmp_path):
+    """L3: the planner may name a package (via read-only resolve) but must SUGGEST an
+    explicit install — never call client.install itself."""
     lock_file = tmp_path / "agentnode.lock"
     lock_file.write_text(json.dumps({"version": "0.1", "packages": {}}))
     os.environ["AGENTNODE_LOCKFILE"] = str(lock_file)
@@ -330,22 +338,16 @@ def test_plan_and_run_install_blocked_shows_reason(tmp_path):
 
     mock_resolve = MagicMock()
     mock_resolve.results = [MagicMock(slug="search-pack")]
-
-    mock_install = MagicMock()
-    mock_install.installed = False
-    mock_install.message = "Trust level too low"
-
     mock_client = MagicMock()
     mock_client.resolve.return_value = mock_resolve
-    mock_client.install.return_value = mock_install
     mock_client.close = MagicMock()
 
     with patch("agentnode_sdk.client.AgentNodeClient", return_value=mock_client):
         result = plan_and_run("search for AI news")
 
     assert result.success is False
-    assert "Trust level too low" in result.steps[0].error
     assert "agentnode install search-pack" in result.steps[0].error
+    mock_client.install.assert_not_called()   # suggest-only, never installs
 
 
 # --- CLI guardrails ---

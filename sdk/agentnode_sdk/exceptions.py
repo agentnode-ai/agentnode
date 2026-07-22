@@ -58,6 +58,40 @@ class ConfigurationError(AgentNodeError):
     pass
 
 
+HOST_AGENT_EXECUTION_UNSUPPORTED = "host_agent_execution_unsupported"
+
+# A1-E-Lock L3: stable machine error codes for the runtime-install fail-closed
+# contract. Each code has exactly ONE defining constant (imported wherever it is
+# surfaced), never a re-typed literal. (``interpreter_not_resolvable`` is defined
+# once as ``installer.InterpreterResolutionError.code``.)
+MISSING_DEPENDENCY = "missing_dependency"
+RUNTIME_INSTALL_DISABLED = "runtime_install_disabled"
+
+HOST_AGENT_UNSUPPORTED_MESSAGE = (
+    "Host-agent execution is disabled in this SDK slice: there is no verified process-"
+    "isolation boundary for running an agent's entrypoint on the host."
+)
+
+
+class HostAgentExecutionUnsupported(AgentNodeError):
+    """Running a host/community agent's OWN entrypoint (foreign code) on the host safely
+    requires a verified, kernel-enforced isolation boundary this SDK slice does NOT
+    provide. Rather than ship a partially-secured executor, host-agent OS-process
+    execution is STRUCTURALLY fail-closed: there is no enable flag, env var, config, or
+    monkeypatch that turns it on. This is the SINGLE source of the stable code + message;
+    every host-agent execution request raises it (the public run path translates it to a
+    ``RunToolResult`` with ``error_code`` at one outer boundary)."""
+
+    def __init__(self, message: str = HOST_AGENT_UNSUPPORTED_MESSAGE):
+        super().__init__(HOST_AGENT_EXECUTION_UNSUPPORTED, message)
+
+
+def refuse_host_agent_execution():
+    """The single structural chokepoint. ALWAYS raises before any import / spawn / Job /
+    environment reader / IPC could run — there is no code path that returns instead."""
+    raise HostAgentExecutionUnsupported()
+
+
 class AgentNodeToolError(Exception):
     """Base error for tool execution failures.
 

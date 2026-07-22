@@ -196,8 +196,16 @@ def test_quarantine_write_failure_does_not_start_pip(tmp_path, isolated_lock,
     monkeypatch.setattr(installer, "_capture_cas_baseline",
                         lambda s, p: (False, before))
     import agentnode_sdk._fileutil as fu
-    monkeypatch.setattr(fu, "atomic_write_json",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    _orig_awj = fu.atomic_write_json
+
+    def _fail_lockfile_write(path, *a, **k):
+        # Fail only the LOCKFILE (quarantine) write — the environment write-lock's own
+        # durable FIFO counter/marker (under AGENTNODE_CONFIG/locks) must still work, so
+        # this exercises the true quarantine-write failure, not a lock-infra failure.
+        if "agentnode.lock" in str(path):
+            raise OSError("disk full")
+        return _orig_awj(path, *a, **k)
+    monkeypatch.setattr(fu, "atomic_write_json", _fail_lockfile_write)
     called = []
     monkeypatch.setattr(ap, "pip_install_wheel", lambda *a, **k: called.append(1))
     src = _write_agent_source(tmp_path / "a")

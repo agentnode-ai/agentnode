@@ -19,10 +19,6 @@ from agentnode_sdk.lock_integrity import (
     CANONICAL_FIELDS_V3,
     CANONICAL_VERSION,
     MUTABLE_FIELDS,
-    PERMISSION_ESCALATIONS,
-    SENSITIVE_FIELDS,
-    IntegrityResult,
-    SensitiveChange,
     _build_canonical,
     _detect_canonical_version,
     compute_integrity,
@@ -660,7 +656,6 @@ class TestInstallerIntegrity:
         """install_package() writes _integrity to lockfile entry."""
         from agentnode_sdk import installer
 
-        tar = self.tmp_path / "pkg.tar.gz"
         pkg_dir = self.tmp_path / "extracted" / "my-pack"
         pkg_dir.mkdir(parents=True)
         (pkg_dir / "my_pack").mkdir()
@@ -669,7 +664,7 @@ class TestInstallerIntegrity:
         monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
         monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "abc123")
         monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
-        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "resolve_python", lambda *a, **k: "python")
         monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
 
         result = installer.install_package(
@@ -698,7 +693,7 @@ class TestInstallerIntegrity:
         monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
         monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "def456")
         monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
-        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "resolve_python", lambda *a, **k: "python")
         monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
 
         installer.install_package(
@@ -750,7 +745,7 @@ class TestInstallerIntegrity:
         monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
         monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "ghi789")
         monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
-        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "resolve_python", lambda *a, **k: "python")
         monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
 
         installer.install_package(
@@ -773,7 +768,7 @@ class TestInstallerIntegrity:
     def test_skill_install_creates_integrity(self, monkeypatch):
         """_install_skill() writes _integrity."""
         from agentnode_sdk import installer
-        import tarfile, io
+        import tarfile
 
         skill_dir = self.tmp_path / "skill-src"
         skill_dir.mkdir()
@@ -810,7 +805,6 @@ class TestInstallerIntegrity:
     def test_reinstall_recomputes_integrity(self, monkeypatch):
         """Upgrading a package recomputes _integrity with new canonical values."""
         from agentnode_sdk import installer
-        from agentnode_sdk.installer import update_lockfile
 
         pkg_dir = self.tmp_path / "extracted" / "my-pack"
         pkg_dir.mkdir(parents=True)
@@ -818,7 +812,7 @@ class TestInstallerIntegrity:
         monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
         monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "v1hash")
         monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
-        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "resolve_python", lambda *a, **k: "python")
         monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
 
         installer.install_package(
@@ -1086,7 +1080,7 @@ class TestInstallerSignatureVerification:
         monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
         monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "abc123def456")
         monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
-        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "resolve_python", lambda *a, **k: "python")
         monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
 
     def _make_valid_signatures(self, slug, **overrides):
@@ -1271,7 +1265,6 @@ class TestInstallerSignatureVerification:
         self._mock_install(monkeypatch)
         from agentnode_sdk.installer import install_package
         from agentnode_sdk.signing_key import generate_ed25519_keypair
-        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
         sigs = self._make_valid_signatures("test-pack")
         _, other_pub = generate_ed25519_keypair()
@@ -1522,7 +1515,7 @@ class TestInstallerPublisherSlug:
         monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
         monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "abc123def456")
         monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
-        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "resolve_python", lambda *a, **k: "python")
         monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
 
     def test_publisher_slug_stored_at_entry_level(self, monkeypatch):
@@ -1671,7 +1664,7 @@ class TestInstallerKeyStatusRevocation:
         monkeypatch.setattr(installer, "download_artifact", lambda *a, **kw: None)
         monkeypatch.setattr(installer, "verify_hash", lambda *a, **kw: "abc123def456")
         monkeypatch.setattr(installer, "extract_archive", lambda *a, **kw: pkg_dir)
-        monkeypatch.setattr(installer, "resolve_python", lambda: "python")
+        monkeypatch.setattr(installer, "resolve_python", lambda *a, **k: "python")
         monkeypatch.setattr(installer, "pip_install", lambda *a, **kw: None)
 
     def test_revoked_key_blocks_install(self, monkeypatch):

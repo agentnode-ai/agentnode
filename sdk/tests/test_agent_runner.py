@@ -13,7 +13,6 @@ Covers:
 - PR 7: conditional orchestration steps (when expressions)
 """
 import json
-import sys
 import textwrap
 
 import pytest
@@ -21,13 +20,11 @@ import pytest
 from agentnode_sdk.runtimes.agent_runner import (
     AgentContext,
     AgentLimitExceeded,
-    AgentTerminated,
     LLMResult,
     RetryConfig,
     ToolContext,
     _CircuitBreaker,
     _evaluate_condition,
-    _load_agent_entrypoint,
     _parse_tool_reference,
     _resolve_input_mapping,
     _resolve_value,
@@ -195,6 +192,7 @@ class TestAgentContextAllowlist:
             runner, "run_tool",
             lambda *a, **kw: RunToolResult(success=True, result="ok"),
         )
+        monkeypatch.setattr(AgentContext, "_ensure_installed", lambda self, slug: True)
         ctx = _make_context(allowed_packages=None)
         # Should NOT raise PermissionError — None allowlist allows all
         result = ctx.run_tool("any-pack")
@@ -282,19 +280,15 @@ class TestRunAgentValidation:
         assert result.success is False
         assert "no valid 'agent' section" in result.error
 
-    def test_missing_entrypoint(self):
-        entry = _agent_entry()
-        entry["agent"]["entrypoint"] = ""
-        result = run_agent("test-agent", entry=entry)
-        assert result.success is False
-        assert "no entrypoint" in result.error
-
-    def test_invalid_entrypoint_format(self):
-        entry = _agent_entry()
-        entry["agent"]["entrypoint"] = "no_colon_here"
-        result = run_agent("test-agent", entry=entry)
-        assert result.success is False
-        assert "module.path:function" in result.error
+    def test_entrypoint_not_even_inspected_host_unsupported(self):
+        # Weg B: a trusted host agent is refused BEFORE the entrypoint is inspected —
+        # whether it is empty or malformed, the result is the same stable code.
+        for ep in ("", "no_colon_here"):
+            entry = _agent_entry()
+            entry["agent"]["entrypoint"] = ep
+            result = run_agent("test-agent", entry=entry)
+            assert result.success is False
+            assert result.error_code == "host_agent_execution_unsupported"
 
     def test_mode_used_is_agent(self):
         entry = _agent_entry()
@@ -337,12 +331,11 @@ class TestRunAgentTrustPolicy:
 # ---------------------------------------------------------------------------
 # run_agent() — execution-vector invariant (0.11.1 hardening, audit 2026-06)
 # ---------------------------------------------------------------------------
-# An agent's OWN entrypoint code runs on the HOST (thread _execute_with_timeout /
-# process _execute_with_process), NOT through SandboxBackend. The exec-sandbox
-# bow does NOT cover the agent's own code. So `trust >= trusted` at the gate
-# (agent_runner.py ~1248) is a SECURITY INVARIANT: lowering it would run
-# community/unverified agent code unsandboxed on the host. These tests lock the
-# gate against silent regressions — any non-(trusted|curated) level, including an
+# A1-E-Lock L2, Weg B: an agent's OWN entrypoint is NEVER run on the host anymore —
+# the host executor is removed and trusted/curated host agents hit the
+# host_agent_execution_unsupported chokepoint. Community/unverified levels are still
+# refused BEFORE that (sandbox route or trust-level error). These tests lock the gate
+# against silent regressions — any non-(trusted|curated) level, including an
 # unrecognized or missing one, must be refused with a trust-level error.
 
 class TestRunAgentExecutionVectorInvariant:
@@ -365,171 +358,13 @@ class TestRunAgentExecutionVectorInvariant:
 # run_agent() — execution
 # ---------------------------------------------------------------------------
 
-class TestRunAgentExecution:
-    def test_successful_agent(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_success", """
-            def run(context, **kwargs):
-                return {"answer": f"Goal: {context.goal}"}
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_success.core:run"
-        entry["agent"]["goal"] = "Answer questions"
-
-        result = run_agent("test-agent", entry=entry)
-
-        assert result.success is True
-        assert result.result == {"answer": "Goal: Answer questions"}
-        assert result.mode_used == "agent"
-        assert result.duration_ms > 0
-
-    def test_goal_override(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_goal", """
-            def run(context, **kwargs):
-                return context.goal
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_goal.core:run"
-        entry["agent"]["goal"] = "Original"
-
-        result = run_agent("test-agent", entry=entry, goal="Overridden")
-
-        assert result.success is True
-        assert result.result == "Overridden"
-
-    def test_kwargs_passed_to_agent(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_kwargs", """
-            def run(context, topic=None, **kwargs):
-                return f"Researching {topic}"
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_kwargs.core:run"
-
-        result = run_agent("test-agent", entry=entry, topic="AI safety")
-
-        assert result.success is True
-        assert result.result == "Researching AI safety"
-
-    def test_agent_exception_returns_error(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_crash", """
-            def run(context, **kwargs):
-                raise ValueError("Something broke")
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_crash.core:run"
-
-        result = run_agent("test-agent", entry=entry)
-
-        assert result.success is False
-        assert "ValueError" in result.error
-        assert "Something broke" in result.error
-        assert result.mode_used == "agent"
-
-    def test_agent_returns_none(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_none", """
-            def run(context, **kwargs):
-                return None
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_none.core:run"
-
-        result = run_agent("test-agent", entry=entry)
-
-        assert result.success is True
-        assert result.result is None
-
-
 # ---------------------------------------------------------------------------
 # run_agent() — timeout
 # ---------------------------------------------------------------------------
 
-class TestRunAgentTimeout:
-    def test_agent_timeout(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_slow", """
-            import time
-            def run(context, **kwargs):
-                time.sleep(10)
-                return "should not reach"
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_slow.core:run"
-        entry["agent"]["limits"]["max_runtime_seconds"] = 1
-
-        result = run_agent("test-agent", entry=entry)
-
-        assert result.success is False
-        assert result.timed_out is True
-        assert "timed out" in result.error
-        assert result.mode_used == "agent"
-
-    def test_timeout_override(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_slow2", """
-            import time
-            def run(context, **kwargs):
-                time.sleep(10)
-                return "should not reach"
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_slow2.core:run"
-        entry["agent"]["limits"]["max_runtime_seconds"] = 300  # Very long
-
-        # Override with short timeout
-        result = run_agent("test-agent", entry=entry, timeout=1)
-
-        assert result.success is False
-        assert result.timed_out is True
-
-    def test_fast_agent_completes_within_timeout(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_fast", """
-            def run(context, **kwargs):
-                return "done"
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_fast.core:run"
-        entry["agent"]["limits"]["max_runtime_seconds"] = 30
-
-        result = run_agent("test-agent", entry=entry)
-
-        assert result.success is True
-        assert result.timed_out is False
-
-
 # ---------------------------------------------------------------------------
 # run_agent() — allowlist enforcement (S4) through execution
 # ---------------------------------------------------------------------------
-
-class TestRunAgentAllowlistExecution:
-    def test_unauthorized_tool_raises_permission_error(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_unauth", """
-            def run(context, **kwargs):
-                return context.run_tool("evil-pack", "steal_data")
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_unauth.core:run"
-        entry["agent"]["tool_access"]["allowed_packages"] = ["safe-pack"]
-
-        result = run_agent("test-agent", entry=entry)
-
-        assert result.success is False
-        assert "not allowed" in result.error or "PermissionError" in result.error
-
 
 # ---------------------------------------------------------------------------
 # run_agent() — default limits
@@ -561,61 +396,11 @@ class TestRunAgentDefaults:
 # run_agent() — iteration limit via context
 # ---------------------------------------------------------------------------
 
-class TestRunAgentIterationLimit:
-    def test_iteration_limit_stops_agent(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_loop", """
-            def run(context, **kwargs):
-                results = []
-                for i in range(100):
-                    context.next_iteration()
-                    results.append(i)
-                return results
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_loop.core:run"
-        entry["agent"]["limits"]["max_iterations"] = 3
-
-        result = run_agent("test-agent", entry=entry)
-
-        assert result.success is False
-        assert "max_iterations" in result.error
-
-
-# ---------------------------------------------------------------------------
-# _load_agent_entrypoint()
-# ---------------------------------------------------------------------------
-
-class TestLoadAgentEntrypoint:
-    def test_invalid_format_no_colon(self):
-        with pytest.raises(ValueError, match="module.path:function"):
-            _load_agent_entrypoint("test", "invalid_format")
-
-    def test_nonexistent_module(self):
-        with pytest.raises(ImportError):
-            _load_agent_entrypoint("test", "totally_nonexistent_xyz.mod:func")
-
-    def test_nonexistent_function(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_nofunc", "x = 1")
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        with pytest.raises(AttributeError, match="no function"):
-            _load_agent_entrypoint("test", "agent_nofunc.core:nonexistent")
-
-    def test_not_callable(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_notcall", "my_var = 42")
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        with pytest.raises(TypeError, match="not callable"):
-            _load_agent_entrypoint("test", "agent_notcall.core:my_var")
-
-    def test_valid_entrypoint_loads(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_valid", "def my_func(): pass")
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        func = _load_agent_entrypoint("test", "agent_valid.core:my_func")
-        assert callable(func)
+# NOTE (A1-E-Lock L2, Weg B): host-agent ENTRYPOINT execution is structurally
+# fail-closed — _load_agent_entrypoint and the thread/process host executors were
+# removed. Their former unit tests are gone; the Weg-B contract (a trusted/curated host
+# agent → host_agent_execution_unsupported, with no import/spawn/reader) is covered by
+# tests/test_agent_host_unsupported.py.
 
 
 # ---------------------------------------------------------------------------
@@ -625,38 +410,6 @@ class TestLoadAgentEntrypoint:
 class TestRunnerAgentDispatch:
     """Verify that runner.run_tool routes package_type=agent to run_agent."""
 
-    def test_agent_dispatched_via_run_tool(self, monkeypatch, tmp_path):
-        """run_tool with package_type=agent should use agent runner."""
-        from agentnode_sdk import runner
-
-        _write_agent_module(tmp_path, "agent_dispatch", """
-            def run(context, **kwargs):
-                return "dispatched"
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_dispatch.core:run"
-
-        # Inject the entry via the single fail-closed runtime read seam.
-        import agentnode_sdk.runtime_integrity as _ri
-        monkeypatch.setattr(_ri, "read_lockfile_strict",
-                            lambda path=None: {"lockfile_version": "0.1", "updated_at": "",
-                                               "packages": {"test-agent": entry}})
-
-        # Mock check_run to allow
-        from agentnode_sdk.policy import PolicyResult
-        monkeypatch.setattr(
-            runner, "check_run",
-            lambda *a, **kw: PolicyResult(action="allow", reason="test", source="test"),
-        )
-        monkeypatch.setattr(runner, "audit_decision", lambda *a, **kw: None)
-
-        result = runner.run_tool("test-agent")
-
-        assert result.success is True
-        assert result.result == "dispatched"
-        assert result.mode_used == "agent"
 
     def test_upgrade_still_rejected(self, monkeypatch):
         """package_type=upgrade should still be rejected, not routed to agent."""
@@ -677,33 +430,6 @@ class TestRunnerAgentDispatch:
 # ---------------------------------------------------------------------------
 # AgentContext — tool call limit through execution
 # ---------------------------------------------------------------------------
-
-class TestAgentToolCallLimit:
-    def test_tool_call_limit_in_agent(self, monkeypatch, tmp_path):
-        """Agent that tries to make too many tool calls gets stopped."""
-        _write_agent_module(tmp_path, "agent_greedy", """
-            def run(context, **kwargs):
-                for i in range(100):
-                    try:
-                        context.run_tool("csv-analyzer-pack", "analyze")
-                    except Exception as e:
-                        if "max_tool_calls" in str(e):
-                            raise
-                        # Other errors (like missing lockfile) are expected in tests
-                        pass
-                return "should not reach"
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_greedy.core:run"
-        entry["agent"]["limits"]["max_tool_calls"] = 3
-
-        result = run_agent("test-agent", entry=entry)
-
-        assert result.success is False
-        assert "max_tool_calls" in result.error
-
 
 # ===========================================================================
 # PR 7: Sequential Orchestration
@@ -1079,23 +805,6 @@ class TestSequentialStepNaming:
 # ===========================================================================
 
 class TestRunId:
-    def test_run_agent_returns_run_id(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_rid", """
-            def run(context, **kwargs):
-                return context.run_id
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_rid.core:run"
-
-        result = run_agent("rid-agent", entry=entry)
-
-        assert result.run_id is not None
-        assert len(result.run_id) == 36  # UUID4 format
-        assert result.success is True
-        # The agent sees its own run_id via context
-        assert result.result == result.run_id
 
     def test_run_id_is_unique_per_run(self, monkeypatch, tmp_path):
         _write_agent_module(tmp_path, "agent_rid2", """
@@ -1140,38 +849,6 @@ class TestRunId:
 # ===========================================================================
 # PR 4: process-based agent isolation
 # ===========================================================================
-
-class TestProcessIsolation:
-    def test_thread_isolation_default(self, monkeypatch, tmp_path):
-        """Default isolation is thread-based."""
-        _write_agent_module(tmp_path, "agent_thread_iso", """
-            def run(context, **kwargs):
-                return "thread-ok"
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_thread_iso.core:run"
-        # No isolation field → defaults to "thread"
-
-        result = run_agent("thread-agent", entry=entry)
-        assert result.success is True
-
-    def test_explicit_thread_isolation(self, monkeypatch, tmp_path):
-        _write_agent_module(tmp_path, "agent_thread_ex", """
-            def run(context, **kwargs):
-                return "thread"
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_thread_ex.core:run"
-        entry["agent"]["isolation"] = "thread"
-
-        result = run_agent("thread-ex", entry=entry)
-        assert result.success is True
-        assert result.result == "thread"
-
 
 # ===========================================================================
 # PR 7: Conditional orchestration steps
@@ -1535,75 +1212,6 @@ class TestAllowedToolContext:
 # ---------------------------------------------------------------------------
 
 
-class TestRunAgentLLMBinding:
-    def test_llm_passed_to_context(self, tmp_path, monkeypatch):
-        """run_agent passes llm and system_prompt to AgentContext."""
-        code = """\
-            def agent_func(context, **kwargs):
-                return {
-                    "has_llm": context.llm is not None,
-                    "has_system_prompt": context.system_prompt is not None,
-                    "system_prompt_value": context.system_prompt,
-                    "done": True,
-                }
-        """
-        _write_agent_module(tmp_path, "llm_bind_test", code)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        def mock_llm(messages, **kwargs):
-            return "hello"
-
-        entry = _agent_entry()
-        entry["agent"]["entrypoint"] = "llm_bind_test.core:agent_func"
-        entry["agent"]["system_prompt"] = "Be helpful"
-
-        result = run_agent("llm-bind", entry=entry, llm=mock_llm)
-        assert result.success is True
-        assert result.result["has_llm"] is True
-        assert result.result["has_system_prompt"] is True
-        assert result.result["system_prompt_value"] == "Be helpful"
-
-    def test_no_llm_still_works_for_tool_agents(self, tmp_path, monkeypatch):
-        """Agents that don't use call_llm work fine without LLM binding."""
-        code = """\
-            def agent_func(context, **kwargs):
-                return {"result": "no llm needed", "done": True}
-        """
-        _write_agent_module(tmp_path, "no_llm_test", code)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        entry = _agent_entry()
-        entry["agent"]["entrypoint"] = "no_llm_test.core:agent_func"
-
-        result = run_agent("no-llm", entry=entry)
-        assert result.success is True
-        assert result.result["done"] is True
-
-    def test_llm_only_agent_calls_llm(self, tmp_path, monkeypatch):
-        """LLM-only agent can use call_llm_text() via bound LLM."""
-        code = """\
-            def agent_func(context, **kwargs):
-                text = context.call_llm_text([
-                    {"role": "user", "content": "hello"}
-                ])
-                return {"response": text, "done": True}
-        """
-        _write_agent_module(tmp_path, "llm_only_test", code)
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        def mock_llm(messages, **kwargs):
-            return "LLM says hi"
-
-        entry = _agent_entry()
-        entry["agent"]["entrypoint"] = "llm_only_test.core:agent_func"
-        entry["agent"]["tier"] = "llm_only"
-        entry["agent"]["system_prompt"] = "You are a helper."
-
-        result = run_agent("llm-only", entry=entry, llm=mock_llm)
-        assert result.success is True
-        assert result.result["response"] == "LLM says hi"
-
-
 # ---------------------------------------------------------------------------
 # Circuit Breaker
 # ---------------------------------------------------------------------------
@@ -1648,6 +1256,12 @@ class TestCircuitBreaker:
 # ---------------------------------------------------------------------------
 
 class TestRunToolRetry:
+    @pytest.fixture(autouse=True)
+    def _pkg_installed(self, monkeypatch):
+        # These test tool-call MECHANICS assuming the tool is installed; L3's presence
+        # gate would otherwise short-circuit to missing_dependency.
+        monkeypatch.setattr(AgentContext, "_ensure_installed", lambda self, slug: True)
+
     def test_transparent_retry_on_failure(self, monkeypatch):
         from agentnode_sdk import runner
         call_count = 0
@@ -1698,7 +1312,7 @@ class TestRunToolRetry:
             allowed_packages=None,
             retry_config=RetryConfig(max_retries=5, backoff_base=0.01),
         )
-        result = ctx.run_tool("some-pack", retry=False)
+        ctx.run_tool("some-pack", retry=False)
         assert call_count == 1
 
     def test_retry_respects_tool_limit(self, monkeypatch):
@@ -1735,6 +1349,10 @@ class TestRunToolRetry:
 # ---------------------------------------------------------------------------
 
 class TestExplicitHelpers:
+    @pytest.fixture(autouse=True)
+    def _pkg_installed(self, monkeypatch):
+        monkeypatch.setattr(AgentContext, "_ensure_installed", lambda self, slug: True)
+
     def test_run_tool_with_retry(self, monkeypatch):
         from agentnode_sdk import runner
         call_count = 0
@@ -1804,63 +1422,24 @@ class TestExplicitHelpers:
 # _ensure_installed — auto_upgrade_policy guard
 # ---------------------------------------------------------------------------
 
-class TestEnsureInstalledPolicy:
-    def test_auto_install_blocked_by_policy_off(self, monkeypatch):
-        """auto_upgrade_policy=off prevents auto-install of missing packages."""
+class TestEnsureInstalledPresenceOnly:
+    # A1-E-Lock L3: _ensure_installed is presence-only — NO auto-install, ever.
+    def test_missing_returns_false_no_install(self, monkeypatch):
         ctx = _make_context(allowed_packages=["missing-pack"])
-        monkeypatch.setattr(
-            "agentnode_sdk.installer.read_lockfile",
-            lambda: {"packages": {}},
-        )
-        monkeypatch.setattr(
-            "agentnode_sdk.config.load_config",
-            lambda: {"auto_upgrade_policy": "off"},
-        )
-        result = ctx._ensure_installed("missing-pack")
-        assert result is False
+        monkeypatch.setattr("agentnode_sdk.installer.read_lockfile",
+                            lambda: {"packages": {}})
 
-    def test_auto_install_allowed_by_policy_safe(self, monkeypatch):
-        """auto_upgrade_policy=safe allows the existing install path."""
-        ctx = _make_context(allowed_packages=["new-pack"])
-        # Mock lockfile: package NOT present
-        monkeypatch.setattr(
-            "agentnode_sdk.installer.read_lockfile",
-            lambda: {"packages": {}},
-        )
-        # Mock config: auto_upgrade_policy=safe (default)
-        monkeypatch.setattr(
-            "agentnode_sdk.config.load_config",
-            lambda: {"auto_upgrade_policy": "safe"},
-        )
-        # Mock client.install to succeed
-        class _FakeResult:
-            installed = True
-            version = "1.0.0"
-            message = ""
-        class _FakeClient:
-            def install(self, slug):
-                return _FakeResult()
-        monkeypatch.setattr(
-            "agentnode_sdk.client.AgentNodeClient",
-            _FakeClient,
-        )
-        result = ctx._ensure_installed("new-pack")
-        assert result is True
+        class _NoClient:
+            def install(self, *a, **k):
+                raise AssertionError("client.install must not be called")
+        monkeypatch.setattr("agentnode_sdk.client.AgentNodeClient", _NoClient)
+        assert ctx._ensure_installed("missing-pack") is False
 
-    def test_already_installed_skips_policy_check(self, monkeypatch):
-        """Package already in lockfile returns True without checking policy."""
+    def test_present_returns_true(self, monkeypatch):
         ctx = _make_context(allowed_packages=["existing-pack"])
-        monkeypatch.setattr(
-            "agentnode_sdk.installer.read_lockfile",
-            lambda: {"packages": {"existing-pack": {"version": "1.0.0"}}},
-        )
-        # load_config should NOT be called — if it is, blow up
-        monkeypatch.setattr(
-            "agentnode_sdk.config.load_config",
-            lambda: (_ for _ in ()).throw(AssertionError("load_config should not be called")),
-        )
-        result = ctx._ensure_installed("existing-pack")
-        assert result is True
+        monkeypatch.setattr("agentnode_sdk.installer.read_lockfile",
+                            lambda: {"packages": {"existing-pack": {"version": "1.0.0"}}})
+        assert ctx._ensure_installed("existing-pack") is True
 
 
 # ---------------------------------------------------------------------------
@@ -1939,17 +1518,26 @@ class TestAgentExecutionBoundary:
                 offenders.append(str(p.relative_to(root)))
         assert offenders == [], f"run_agent() called outside runner.py: {offenders}"
 
-    def test_private_agent_exec_has_no_external_callers(self):
-        """The host-exec primitives must stay private to agent_runner.py."""
+    def test_host_executor_symbols_absent_from_production(self):
+        """Weg B: the host executor + spawn/worker prototype symbols must NOT appear
+        anywhere in the installed production tree (they were removed, not gated)."""
         root, files = _agentnode_sources()
-        names = ["_execute_with_timeout", "_execute_with_process", "_load_agent_entrypoint"]
+        names = [
+            "_execute_with_timeout", "_execute_with_process", "_load_agent_entrypoint",
+            "_child_worker", "_ProxyAgentContext", "_ipc_parent_loop",
+            "_supervisor_main", "_worker_main", "_WindowsJob", "InvocationSpec",
+            "_HOST_AGENT_EXEC_ENABLED", "host_agent_exec_enabled",
+        ]
         offenders = []
         for p in files:
-            if p.name == "agent_runner.py":
-                continue
             txt = p.read_text(encoding="utf-8")
             offenders += [f"{p.relative_to(root)}:{n}" for n in names if n in txt]
-        assert offenders == [], f"private agent-exec referenced outside agent_runner.py: {offenders}"
+        assert offenders == [], f"removed host-executor symbol still in production: {offenders}"
+
+    def test_agent_exec_prototype_module_deleted(self):
+        """The prototype _agent_exec executor module must be gone (not importable)."""
+        with pytest.raises(ModuleNotFoundError):
+            __import__("agentnode_sdk.runtimes._agent_exec")
 
     def test_runner_routes_agent_packages_to_run_agent(self):
         """runner.run_tool dispatches package_type=='agent' into the gated run_agent."""
@@ -1974,20 +1562,3 @@ class TestAgentExecutionBoundary:
         assert result.success is False
         assert "trust level" in (result.error or "")
 
-    def test_trusted_agent_sees_host_env(self, monkeypatch, tmp_path):
-        """CHARACTERIZATION (documents current boundary, not a new behaviour):
-        a trusted agent's orchestration code runs on the host and sees the host
-        os.environ. If env filtering is ever added, that is a conscious change and
-        this test must change with it."""
-        _write_agent_module(tmp_path, "agent_env", """
-            import os
-            def run(context, **kwargs):
-                return {"saw_sentinel": os.environ.get("AGENTNODE_BOUNDARY_SENTINEL")}
-        """)
-        monkeypatch.syspath_prepend(str(tmp_path))
-        monkeypatch.setenv("AGENTNODE_BOUNDARY_SENTINEL", "host-secret-xyz")
-        entry = _agent_entry(trust_level="trusted")
-        entry["agent"]["entrypoint"] = "agent_env.core:run"
-        result = run_agent("test-agent", entry=entry)
-        assert result.success is True
-        assert result.result == {"saw_sentinel": "host-secret-xyz"}

@@ -1,14 +1,9 @@
 """Integration tests for policy hooks in runner, runtime, MCP, and client."""
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
 from unittest import mock
 
-import pytest
 
-from agentnode_sdk.policy import PolicyResult
 
 
 # ---------------------------------------------------------------------------
@@ -164,30 +159,24 @@ class TestRuntimePolicyIntegration:
                     assert result["success"] is False
                     assert result["error"]["code"] == "policy_prompt"
 
-    def test_handle_install_delegates_policy_to_client(self):
-        """runtime._handle_install defers policy check to client.install().
-
-        The runtime doesn't have package metadata (trust, permissions) before
-        calling the API, so it delegates the real check_install to the client
-        layer which has actual metadata from the API response.
+    def test_handle_install_is_runtime_install_disabled(self):
+        """A1-E-Lock L3: runtime/agent-initiated installation is DISABLED. The runtime
+        never calls client.install during a run — a missing package is a controlled,
+        fail-closed ``runtime_install_disabled`` result; installation is an explicit,
+        out-of-band operation that goes through the central environment write-lock.
         """
         from agentnode_sdk import runtime as rt_mod
 
         lockfile = {"packages": {}}  # not installed
         mock_client = mock.MagicMock()
-        # client.install returns a denied result (simulating policy block)
-        mock_install = mock.MagicMock()
-        mock_install.installed = False
-        mock_install.message = "Trust level 'unverified' does not meet 'trusted' requirement."
-        mock_client.install.return_value = mock_install
 
         with mock.patch.object(rt_mod, "read_lockfile", return_value=lockfile):
             from agentnode_sdk.runtime import AgentNodeRuntime
             rt = AgentNodeRuntime(client=mock_client, minimum_trust_level="trusted")
             result = rt.handle("agentnode_install", {"slug": "new-pack"})
             assert result["success"] is False
-            assert result["error"]["code"] == "install_failed"
-            mock_client.install.assert_called_once()
+            assert result["error"]["code"] == "runtime_install_disabled"
+            mock_client.install.assert_not_called()   # NEVER installs during a run
 
     def test_client_install_policy_deny(self):
         """client.install() with deny policy → InstallResult(installed=False)."""
