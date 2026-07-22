@@ -202,28 +202,27 @@ def test_resolve_python_preserves_venv_launcher_symlink(tmp_path):
     assert os.path.normcase(str(tmp_path / "venvL")) in ident.purelib   # venv identity kept
 
 
-def test_resolve_python_running_under_venv_preserves_launcher(tmp_path):
-    """POSIX: WITHOUT an explicit target, an AgentNode process RUNNING under a venv resolves to
-    its OWN venv launcher (sys.executable), never the base realpath — so install/run stay in the
-    venv the user launched."""
+def test_no_arg_preserves_symlinked_sys_executable_launch_path(tmp_path, monkeypatch):
+    """POSIX: with NO explicit target, resolve_python()'s only start point is sys.executable —
+    and a SYMLINKED venv launcher there is preserved (absolute + lexically normalised), never
+    physically resolved to the base interpreter. sys.executable is SIMULATED via monkeypatch
+    here; the test does NOT spawn a full AgentNode process inside the venv (a bare venv has none
+    of the SDK's runtime deps). This isolates the no-argument launch-path contract itself."""
     import os
-    import subprocess
     import sys
-    from pathlib import Path
 
     if sys.platform == "win32":
         pytest.skip("POSIX venv launcher symlink semantics")
     from tests.agent_m1_helpers import make_target_venv, pip_python
 
-    base = pip_python()
-    venv_py = make_target_venv(base, tmp_path / "venvS")
-    if not os.path.islink(venv_py):
-        pytest.skip("this venv used copies, not a symlink; nothing to preserve")
-    repo = str(Path(__file__).resolve().parents[1])
-    code = ("import sys; sys.path.insert(0, %r);"
-            "from agentnode_sdk import installer; print(installer.resolve_python())" % repo)
-    out = subprocess.run([venv_py, "-c", code], capture_output=True, timeout=120)
-    assert out.returncode == 0, out.stderr.decode()[-2000:]
-    got = out.stdout.decode().strip()
-    assert got == os.path.abspath(os.path.normpath(venv_py))   # own venv launcher, not base
-    assert got != os.path.realpath(venv_py)
+    venv_python = make_target_venv(pip_python(), tmp_path / "venvS")
+    if not os.path.islink(venv_python):
+        pytest.skip("this venv implementation does not use a symlinked launcher")
+
+    expected = os.path.abspath(os.path.normpath(venv_python))
+    base_realpath = os.path.realpath(venv_python)
+    monkeypatch.setattr(sys, "executable", venv_python)      # SIMULATE running under the venv
+
+    resolved = installer.resolve_python()
+    assert resolved == expected                              # symlinked venv launcher preserved
+    assert resolved != base_realpath                         # NOT physically resolved to base
