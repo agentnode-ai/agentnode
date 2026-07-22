@@ -225,15 +225,27 @@ def test_two_real_venvs_concurrent_mutation_sections(tmp_path):
     venv_a = make_target_venv(base, tmp_path / "venvA")
     venv_b = make_target_venv(base, tmp_path / "venvB")
 
-    # (0) DISTINCT environment identities — else serialization is correct and this is moot.
-    ea = resolve_env_identity(venv_a)
-    eb = resolve_env_identity(venv_b)
-    if ea.env_id == eb.env_id:
+    # (0) DISTINCT environment identities AS THE INSTALLER RESOLVES THEM — i.e. after
+    # resolve_python(), which now PRESERVES each venv launcher. (Before the fix it physically
+    # resolved venvA/venvB to their SHARED base interpreter, collapsing both to one env_id and
+    # serializing them — the CI failure that exposed the bug.) Assert on the launch path the
+    # lock actually keys on, and prove the install roots really live in the respective venvs —
+    # not merely that two hashes differ.
+    launch_a = installer.resolve_python(venv_a)
+    launch_b = installer.resolve_python(venv_b)
+    ea = resolve_env_identity(launch_a)
+    eb = resolve_env_identity(launch_b)
+    a_root = os.path.normcase(str(tmp_path / "venvA"))
+    b_root = os.path.normcase(str(tmp_path / "venvB"))
+    if not (launch_a != launch_b and ea.env_id != eb.env_id
+            and ea.purelib != eb.purelib and ea.platlib != eb.platlib
+            and a_root in ea.purelib and b_root in eb.purelib):
         pytest.fail(
-            "the two venvs resolved to the SAME environment identity (inconclusive):\n"
-            f"  A python={venv_a}\n    purelib={ea.purelib}\n    platlib={ea.platlib}\n"
+            "the two venvs are not distinct target environments as the installer resolves "
+            "them (test premise broken):\n"
+            f"  A launch={launch_a}\n    purelib={ea.purelib}\n    platlib={ea.platlib}\n"
             f"    env_id={ea.env_id}\n"
-            f"  B python={venv_b}\n    purelib={eb.purelib}\n    platlib={eb.platlib}\n"
+            f"  B launch={launch_b}\n    purelib={eb.purelib}\n    platlib={eb.platlib}\n"
             f"    env_id={eb.env_id}")
 
     worker = tmp_path / "barrier_worker.py"
@@ -336,6 +348,102 @@ def test_two_real_venvs_concurrent_mutation_sections(tmp_path):
                 p.communicate(timeout=10)
             except Exception:
                 pass
+
+
+def test_two_venvs_are_distinct_environments(tmp_path):
+    """venv semantics: two venvs built from the SAME base interpreter are DISTINCT target
+    environments. resolve_python() PRESERVES each venv launcher (it does not physically
+    collapse them to the shared base), so their env_ids AND install roots differ and each
+    purelib/platlib lives in its own venv — the precondition the concurrency proof relies on."""
+    from agentnode_sdk._env_lock import resolve_env_identity
+
+    base = pip_python()
+    venv_a = make_target_venv(base, tmp_path / "venvA")
+    venv_b = make_target_venv(base, tmp_path / "venvB")
+    launch_a = installer.resolve_python(venv_a)
+    launch_b = installer.resolve_python(venv_b)
+    assert launch_a != launch_b
+    ea = resolve_env_identity(launch_a)
+    eb = resolve_env_identity(launch_b)
+    assert ea.env_id != eb.env_id
+    assert ea.purelib != eb.purelib
+    assert ea.platlib != eb.platlib
+    assert os.path.normcase(str(tmp_path / "venvA")) in ea.purelib
+    assert os.path.normcase(str(tmp_path / "venvB")) in eb.purelib
+
+
+def test_host_agent_install_pip_and_verify_receive_venv_launcher(tmp_path, monkeypatch):
+    """The SEVERE half of the bug: an explicit host install into venv A must drive pip,
+    post-verify AND the env-identity with the venv LAUNCHER — never the base interpreter
+    realpath. (Before the fix, resolve_python() physically resolved the launcher, so pip
+    installed into and post-verify inspected the BASE environment.)"""
+    from agentnode_sdk import _agent_pip as ap
+    from agentnode_sdk._env_lock import resolve_env_identity
+    from tests.test_agent_m1_transaction import _lock_entry, _write_agent_source
+
+    base = pip_python()
+    venv = make_target_venv(base, tmp_path / "venvA")
+    launch = installer.resolve_python(venv)
+    assert launch == os.path.abspath(os.path.normpath(venv))          # explicit target → launcher
+    ident = resolve_env_identity(launch)
+    assert os.path.normcase(str(tmp_path / "venvA")) in ident.purelib  # identity from launcher
+
+    src = _write_agent_source(tmp_path / "pkgsrc")                     # name m1-agent / top m1agent
+    monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path / "cfg"))
+    monkeypatch.setenv("AGENTNODE_LOCKFILE", str(tmp_path / "agentnode.lock"))
+
+    seen = {}
+    monkeypatch.setattr(ap, "pip_install_wheel",
+                        lambda target_python, *a, **k: seen.__setitem__("pip", target_python))
+    monkeypatch.setattr(ap, "post_verify",
+                        lambda target_python, *a, **k: seen.__setitem__("verify", target_python))
+
+    installer._install_agent_host_transaction(
+        "m1-agent",
+        lock_entry=_lock_entry(entrypoint="m1agent.agent:run"),
+        package_dir=src, target_python=launch, policy="default",
+    )
+    assert seen["pip"] == launch                       # pip got the venv launcher
+    assert seen["verify"] == launch                    # post-verify got the venv launcher
+    if os.path.islink(venv):                            # POSIX: prove it is NOT the base realpath
+        base_real = os.path.realpath(venv)
+        assert seen["pip"] != base_real
+        assert seen["verify"] != base_real
+
+
+def test_same_venv_two_launchers_same_env_id_and_serialize(tmp_path, worker_script):
+    """Same semantic environment via TWO different launcher PATHS (venv/bin/python and
+    venv/bin/python3): both resolve to the SAME env_id (the lock is keyed by the reported
+    environment, not by launcher path name), and two processes over the two launchers are
+    SERIALIZED — proving the lock is not merely separated per path string."""
+    if sys.platform == "win32":
+        pytest.skip("POSIX venvs expose both bin/python and bin/python3 launchers")
+    from agentnode_sdk._env_lock import resolve_env_identity
+
+    base = pip_python()
+    venv = make_target_venv(base, tmp_path / "venvX")                 # .../venvX/bin/python
+    launcher1 = venv
+    launcher2 = str(Path(venv).with_name("python3"))                  # .../venvX/bin/python3
+    if not os.path.exists(launcher2):
+        pytest.skip("this venv has no separate python3 launcher")
+    id1 = resolve_env_identity(installer.resolve_python(launcher1)).env_id
+    id2 = resolve_env_identity(installer.resolve_python(launcher2)).env_id
+    assert id1 == id2                        # same env → same id (NOT decided by path name)
+
+    # Two processes over the two DIFFERENT launcher paths must serialize (one env write-lock).
+    script, pkg = worker_script
+    cfg = tmp_path / "cfg"
+    events = tmp_path / "events.txt"
+    events.write_text("")
+    procs = [
+        _spawn_toolpack(script, cfg, tmp_path / "l1.lock", events, "pk1", launcher1, pkg),
+        _spawn_toolpack(script, cfg, tmp_path / "l2.lock", events, "pk2", launcher2, pkg),
+    ]
+    for p in procs:
+        assert p.wait(timeout=180) == 0
+    intervals = _parse_intervals(events)
+    assert len(intervals) == 2
+    assert _max_concurrency(intervals) == 1              # serialized by the env write-lock
 
 
 # ---------------------------------------------------------------------------

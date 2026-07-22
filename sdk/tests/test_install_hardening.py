@@ -98,36 +98,132 @@ def test_missing_artifact_hash_blocked(monkeypatch, tmp_path):
 def test_resolve_python_prefers_sys_executable(monkeypatch, tmp_path):
     """0.11.1 + A1-E-Lock L3: the host build must target the interpreter actually running
     AgentNode, so `agentnode install` + `agentnode run` use the SAME Python. With no explicit
-    target, resolve_python() returns ONLY the CANONICAL realpath of ``sys.executable`` — never
-    a $VIRTUAL_ENV / .venv / `python` / `python3` / PATH fallback (which could lock a different
-    env-id). A symlinked interpreter (e.g. Linux ``.../bin/python`` -> ``.../bin/python3.11``)
-    resolves to its canonical target; the value is absolute + canonical."""
-    import sys
-    from pathlib import Path
-
-    expected = str(Path(sys.executable).resolve(strict=True))
-    # A bogus $VIRTUAL_ENV and a cwd without a ./.venv must NOT change the result.
-    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "not-a-venv"))
-    monkeypatch.chdir(tmp_path)
-    got = installer.resolve_python()
-    assert got == expected                  # canonical realpath of sys.executable, no fallback
-    assert Path(got).is_absolute()
-
-
-def test_resolve_python_symlink_resolves_to_canonical_same_env_id(tmp_path):
-    """POSIX: an explicit symlinked interpreter resolves to its canonical target, and the
-    symlink and its target yield the SAME environment identity (so the env-lock key is stable
-    regardless of which interpreter name was used)."""
+    target, resolve_python() returns ONLY the absolute, lexically-normalised LAUNCH path of
+    ``sys.executable`` — venv-preserving (the final symlink is NOT physically resolved) and
+    with NO $VIRTUAL_ENV / .venv / `python` / `python3` / PATH fallback (which could lock a
+    different env-id). Preserving the launch path is what lets an explicit venv target hit
+    that venv instead of its shared base interpreter."""
     import os
     import sys
     from pathlib import Path
 
-    if sys.platform == "win32":
-        pytest.skip("POSIX symlink semantics (Windows symlinks need privileges)")
-    real = str(Path(sys.executable).resolve(strict=True))
-    link = tmp_path / "python-link"
-    os.symlink(real, link)
-    assert installer.resolve_python(str(link)) == real   # explicit symlink → canonical target
+    expected = os.path.abspath(os.path.normpath(sys.executable))   # normalised, NO realpath
+    # A bogus $VIRTUAL_ENV and a cwd without a ./.venv must NOT change the result.
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "not-a-venv"))
+    monkeypatch.chdir(tmp_path)
+    got = installer.resolve_python()
+    assert got == expected                  # normalised launch path of sys.executable
+    assert Path(got).is_absolute()
 
+
+def test_resolve_python_no_fallback_with_manipulated_env(monkeypatch, tmp_path):
+    """No-explicit-target resolution ignores PATH / VIRTUAL_ENV / CWD / ./.venv entirely — the
+    start point is ONLY sys.executable (normalised), so a hostile environment cannot redirect
+    the target interpreter."""
+    import os
+    import sys
+
+    expected = os.path.abspath(os.path.normpath(sys.executable))
+    fake = tmp_path / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+    fake.mkdir(parents=True)                            # a plausible ./.venv that MUST be ignored
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / ".venv"))
+    monkeypatch.setenv("PATH", str(fake))               # only the decoy on PATH
+    monkeypatch.chdir(tmp_path)
+    assert installer.resolve_python() == expected
+
+
+def test_resolve_python_bare_command_uses_which(monkeypatch):
+    """A bare program NAME (no path component) is resolved via shutil.which() only, then
+    normalised WITHOUT realpath."""
+    import os
+    import shutil
+    import sys
+
+    calls = []
+    real_which = shutil.which
+
+    def _which(name, *a, **k):
+        calls.append(name)
+        return sys.executable if name == "python-custom" else real_which(name, *a, **k)
+
+    monkeypatch.setattr(shutil, "which", _which)
+    got = installer.resolve_python("python-custom")
+    assert got == os.path.abspath(os.path.normpath(sys.executable))
+    assert calls == ["python-custom"]                   # a bare name → which()
+
+
+def test_resolve_python_relative_path_bound_to_cwd(tmp_path, monkeypatch):
+    """A RELATIVE explicit path is bound against the CWD AT CALL TIME (then normalised, symlink
+    preserved). A later CWD change does not retarget the already-returned path."""
+    import os
+
+    from tests.agent_m1_helpers import make_target_venv, pip_python
+
+    base = pip_python()
+    venv_py = make_target_venv(base, tmp_path / "venvR")
+    rel = os.path.relpath(venv_py, tmp_path)            # e.g. venvR/bin/python (has a separator)
+    monkeypatch.chdir(tmp_path)
+    got = installer.resolve_python(rel)                 # bound against tmp_path now
+    assert got == os.path.abspath(os.path.normpath(venv_py))
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(other)                            # later CWD change
+    assert got == os.path.abspath(os.path.normpath(venv_py))   # returned value is stable
+
+
+def test_resolve_python_missing_target_fail_closed(tmp_path):
+    """A non-existent explicit target fails closed (InterpreterResolutionError) BEFORE any lock
+    or mutation — never a silent fallback to another interpreter."""
+    with pytest.raises(installer.InterpreterResolutionError):
+        installer.resolve_python(str(tmp_path / "does-not-exist" / "python"))
+
+
+def test_resolve_python_preserves_venv_launcher_symlink(tmp_path):
+    """POSIX: an explicit venv launcher (venv/bin/python -> base) is returned AS the venv launch
+    path — NOT physically resolved to the base interpreter — and its environment identity stays
+    the venv's (purelib inside the venv). Replaces the old 'symlink resolves to canonical' test,
+    whose premise (a launcher symlink is semantically its target) is wrong for a venv."""
+    import os
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("POSIX venv launcher is a symlink; Windows copies the interpreter")
     from agentnode_sdk._env_lock import resolve_env_identity
-    assert resolve_env_identity(str(link)).env_id == resolve_env_identity(real).env_id
+    from tests.agent_m1_helpers import make_target_venv, pip_python
+
+    base = pip_python()
+    venv_py = make_target_venv(base, tmp_path / "venvL")
+    if not os.path.islink(venv_py):
+        pytest.skip("this venv used copies, not a symlink; nothing to preserve")
+    launch = installer.resolve_python(venv_py)
+    assert launch == os.path.abspath(os.path.normpath(venv_py))   # launcher preserved
+    assert launch != os.path.realpath(venv_py)                    # NOT collapsed to base
+    ident = resolve_env_identity(launch)
+    assert os.path.normcase(str(tmp_path / "venvL")) in ident.purelib   # venv identity kept
+
+
+def test_resolve_python_running_under_venv_preserves_launcher(tmp_path):
+    """POSIX: WITHOUT an explicit target, an AgentNode process RUNNING under a venv resolves to
+    its OWN venv launcher (sys.executable), never the base realpath — so install/run stay in the
+    venv the user launched."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    if sys.platform == "win32":
+        pytest.skip("POSIX venv launcher symlink semantics")
+    from tests.agent_m1_helpers import make_target_venv, pip_python
+
+    base = pip_python()
+    venv_py = make_target_venv(base, tmp_path / "venvS")
+    if not os.path.islink(venv_py):
+        pytest.skip("this venv used copies, not a symlink; nothing to preserve")
+    repo = str(Path(__file__).resolve().parents[1])
+    code = ("import sys; sys.path.insert(0, %r);"
+            "from agentnode_sdk import installer; print(installer.resolve_python())" % repo)
+    out = subprocess.run([venv_py, "-c", code], capture_output=True, timeout=120)
+    assert out.returncode == 0, out.stderr.decode()[-2000:]
+    got = out.stdout.decode().strip()
+    assert got == os.path.abspath(os.path.normpath(venv_py))   # own venv launcher, not base
+    assert got != os.path.realpath(venv_py)

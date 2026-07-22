@@ -214,61 +214,75 @@ class HostPolicyChangedDuringInstall(AgentNodeError):
 ENV_WRITE_LOCK_TIMEOUT = 300.0
 
 
-def _canonical_interpreter(path: str | None) -> str | None:
-    """The SINGLE canonical interpreter definition (used by resolve_python, the env
-    write-lock chokepoint, M1, and the toolpack path). Resolve *path* to an ABSOLUTE,
-    canonical (symlink-followed, strict-existing) path that is a REGULAR FILE and a
-    Python 3 interpreter — else None. NEVER a bare program name. The returned string is
-    exactly what is passed to BOTH pip and ``resolve_env_identity()`` — one normalisation,
-    not two."""
+def _normalize_interpreter_launch_path(path: str | None) -> str | None:
+    """The SINGLE interpreter-launch-path definition (used by resolve_python, and through it
+    the env write-lock identity, pip and post-verify). Return an ABSOLUTE, lexically-
+    normalised interpreter LAUNCH path with its FINAL SYMLINK PRESERVED — never a physically
+    resolved realpath, and never a bare program name — else None.
+
+    Why the final symlink is preserved: a POSIX venv launcher (``venv/bin/python`` → the base
+    interpreter) carries its environment through the launch path + the adjacent
+    ``pyvenv.cfg``. Physically resolving it to the base binary would DESTROY that binding —
+    pip would install into, and post-verify would inspect, the BASE environment instead of
+    the requested venv, and two independent venvs sharing one base binary would collapse to
+    one env-id. So we bind + normalise lexically only (expanduser, abspath against the current
+    CWD, normpath) and check the launch path exists and is an executable Python 3, WITHOUT
+    dereferencing its final symlink. Semantic identity is still derived by EXECUTING this
+    launch path in ``resolve_env_identity`` — two launchers of the SAME environment therefore
+    still resolve to the SAME env-id, while two genuinely different venvs do not."""
     if not path:
         return None
+    launch = os.path.abspath(os.path.normpath(os.path.expanduser(path)))
     try:
-        p = Path(path).resolve(strict=True)      # strict → raises if it does not exist
-    except (OSError, RuntimeError):
+        if not os.path.isfile(launch):           # exists + regular file (final symlink target)
+            return None
+    except OSError:
         return None
-    if not p.is_file():                          # regular file (symlink already followed)
+    if not _is_python3(launch):                   # must actually be an executable Python 3
         return None
-    s = str(p)
-    if not _is_python3(s):                        # must actually be a Python 3 executable
-        return None
-    return s
+    return launch
 
 
 def resolve_python(explicit: str | None = None) -> str:
-    """Return the ABSOLUTE, canonical path of the target Python 3 interpreter — NEVER a
+    """Return the ABSOLUTE, lexically-normalised LAUNCH path of the target Python 3
+    interpreter — venv-preserving (its final symlink is NOT physically resolved), and NEVER a
     bare name. Fail-closed (``InterpreterResolutionError``, code ``interpreter_not_resolvable``)
-    when it cannot be resolved. This value is load-bearing for the environment write-lock
-    identity, so there is exactly ONE definition of the target interpreter.
+    when it cannot be resolved. This value is load-bearing: the SAME launch path drives the
+    environment write-lock identity, pip and post-verify, so an explicit
+    ``target_python=/venv/bin/python`` actually targets THAT venv (not its shared base
+    interpreter).
 
     - An EXPLICIT target has UNCONDITIONAL priority (evaluated before sys.executable):
-        * an absolute/relative PATH → resolved + canonicalised + verified;
-        * a bare program name (e.g. ``python``) → ``shutil.which`` → canonical path.
-    - NO explicit target → ONLY the canonical ``sys.executable`` (the interpreter actually
-      running AgentNode). There is deliberately NO $VIRTUAL_ENV / ./.venv / PATH fallback:
-      such a fallback could select a DIFFERENT environment than the one we run in and lock
-      the wrong env-id. If sys.executable is unusable → fail-closed.
+        * a PATH (absolute or relative) → expanded, bound against the CURRENT CWD, lexically
+          normalised, existence/executability checked, FINAL SYMLINK PRESERVED;
+        * a bare program name (e.g. ``python-custom``) → ``shutil.which`` → the returned
+          launcher path, likewise normalised WITHOUT realpath.
+    - NO explicit target → ONLY ``sys.executable`` (the interpreter actually running
+      AgentNode), absolutised + normalised, symlink preserved. There is deliberately NO
+      $VIRTUAL_ENV / ./.venv / PATH fallback: such a fallback could select a DIFFERENT
+      environment than the one we run in and lock/build the wrong one. If sys.executable is
+      unusable → fail-closed.
     """
     if explicit:
         import shutil
         is_path = (os.path.isabs(explicit) or os.sep in explicit
                    or (os.altsep and os.altsep in explicit))
         if is_path:
-            resolved = _canonical_interpreter(explicit)          # abs / rel path
+            resolved = _normalize_interpreter_launch_path(explicit)      # abs / rel path
         else:
-            found = shutil.which(explicit)                       # bare program name
-            resolved = _canonical_interpreter(found) if found else None
+            found = shutil.which(explicit)                               # bare program name
+            resolved = _normalize_interpreter_launch_path(found) if found else None
         if resolved:
             return resolved
         raise InterpreterResolutionError(
-            f"explicit target interpreter could not be resolved to a canonical "
-            f"Python 3: {explicit!r}")
+            f"explicit target interpreter could not be resolved to an executable "
+            f"Python 3 launch path: {explicit!r}")
 
-    resolved = _canonical_interpreter(sys.executable)
+    resolved = _normalize_interpreter_launch_path(sys.executable)
     if resolved:
         return resolved
     raise InterpreterResolutionError(
-        "sys.executable is not a resolvable canonical Python 3 interpreter")
+        "sys.executable is not a resolvable executable Python 3 interpreter")
 
 
 def _is_python3(path: str) -> bool:
@@ -1815,8 +1829,9 @@ def _install_agent_host_transaction(
     acquired (identity re-checked under it) and Phase B performs the caller-owned mutation.
     Self-committing on success; the old entry is never restored on failure.
 
-    ``target_python`` is the already-canonical interpreter chosen by the caller — it is NOT
-    re-resolved here (single resolution). ``prepared_baseline`` + ``lockfile_path`` are the
+    ``target_python`` is the already-resolved interpreter LAUNCH PATH chosen by the caller
+    (venv-preserving; NOT physically canonicalised) — it is NOT re-resolved here (single
+    resolution). ``prepared_baseline`` + ``lockfile_path`` are the
     same-slug CAS baseline and absolute lockfile path bound by ``install_package`` at the
     operation's START (anchoring the CAS + path); ``None`` → captured/resolved in Phase A
     (direct callers with no download phase, e.g. the M1 tests). ``policy`` is the bound
@@ -1954,7 +1969,8 @@ def _install_toolpack_host_transaction(
 ) -> None:
     """The host-toolpack HOST chokepoint: resolve the target env identity, acquire exactly
     ONE environment write-lock (identity re-checked under it), and run the durable-quarantine
-    toolpack transaction. ``target_python`` is already canonical (single resolution).
+    toolpack transaction. ``target_python`` is the already-resolved interpreter launch path
+    (venv-preserving; single resolution — NOT physically canonicalised).
 
     ``prepared_baseline`` + ``lockfile_path`` are the same-slug CAS baseline and absolute
     lockfile path bound by ``install_package`` at the operation's START (anchor the
@@ -2269,19 +2285,19 @@ def install_package(
         from agentnode_sdk.sandbox.policy import host_allowed_tiers
 
         if (trust_level or "").lower() in host_allowed_tiers(bound_policy):
-            # HOST mutation route ONLY: resolve the canonical target interpreter here
-            # (single resolution; container / MCP / skill never reach this). Agent AND
-            # toolpack each run a durable-quarantine transaction under exactly ONE env
-            # write-lock, so a failure after pip never leaves an old executable entry. The
+            # HOST mutation route ONLY: resolve the target interpreter LAUNCH PATH here
+            # (venv-preserving; single resolution; container / MCP / skill never reach this).
+            # Agent AND toolpack each run a durable-quarantine transaction under exactly ONE
+            # env write-lock, so a failure after pip never leaves an old executable entry. The
             # BOUND lockfile path + policy are threaded through (no re-resolution); the policy
             # is re-confirmed under the lock before the first mutation.
-            canonical_python = resolve_python(target_python)
+            launch_python = resolve_python(target_python)
             if package_type == "agent":
                 _install_agent_host_transaction(
                     slug,
                     lock_entry=lock_entry,
                     package_dir=package_dir,
-                    target_python=canonical_python,
+                    target_python=launch_python,
                     policy=bound_policy,
                     prepared_baseline=host_baseline,
                     lockfile_path=bound_lockfile,
@@ -2291,7 +2307,7 @@ def install_package(
                     slug,
                     lock_entry=lock_entry,
                     package_dir=package_dir,
-                    target_python=canonical_python,
+                    target_python=launch_python,
                     policy=bound_policy,
                     verbose=verbose,
                     prepared_baseline=host_baseline,
