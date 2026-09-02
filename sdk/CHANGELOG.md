@@ -24,7 +24,7 @@ way you can feel.
   before that key existed.
 - **A community agent's own entrypoint can no longer be executed on the host.** The path
   was removed structurally rather than gated: every attempt raises
-  `HostAgentExecutionUnsupported` before any import or process spawn. Community agents
+  `HostAgentExecutionUnsupported` instead of executing the entrypoint. Community agents
   run in the sandbox with `network=none`, a read-only pack and a clean `HOME`, or they do
   not run.
 - **Lockfile integrity is enforced at run time.** Every execution path resolves
