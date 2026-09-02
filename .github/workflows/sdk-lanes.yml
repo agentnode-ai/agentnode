@@ -22,7 +22,7 @@ env:
   # not float: a floating checkout would exercise whatever main happens to hold rather than
   # the reviewed revision. FROZEN_INVENTORY.json is the collection of exactly this commit,
   # produced from a clean checkout of it and frozen before any lane executed.
-  FROZEN_REV: "edcffc48782a789e96cb17cf573ae07a3afea3af"
+  FROZEN_REV: "47ffd240ac50e73ab228d3af37a9423914d18f9b"
   # An explicitly pinned container runtime, verified after installation: a lane that silently
   # picked up whatever the runner image shipped would not be pinned. This value is OBSERVED,
   # not assumed — it is a Version: field read from the Docker noble stable Packages index,
