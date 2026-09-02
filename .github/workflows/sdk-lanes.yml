@@ -23,13 +23,18 @@ env:
   # the reviewed revision. FROZEN_INVENTORY.json is the collection of exactly this commit,
   # produced from a clean checkout of it and frozen before any lane executed.
   FROZEN_REV: "47ffd240ac50e73ab228d3af37a9423914d18f9b"
-  # An explicitly pinned container runtime, verified after installation: a lane that silently
-  # picked up whatever the runner image shipped would not be pinned. This value is OBSERVED,
-  # not assumed — it is a Version: field read from the Docker noble stable Packages index,
-  # present for BOTH docker-ce and docker-ce-cli. A previous fabricated value
-  # (5:27.3.1-1~ubuntu.24.04~noble) did not exist in that repository and the lane died at
-  # apt with "Version ... was not found" before any container test ran.
-  DOCKER_VERSION: "5:29.7.2-1~ubuntu.24.04~noble"
+  # The container runtime is pinned by SERVER VERSION and the pin is verified, so a runner
+  # image that changed Docker fails the lane instead of silently altering the boundary under
+  # test. Both values are OBSERVED, not assumed:
+  #   DOCKER_SERVER_VERSION — the Docker Server version the ubuntu-24.04 runner image ships,
+  #     read from the actions/runner-images manifest for image 20260823.283.
+  #   DOCKER_APT_VERSION    — the matching apt Version: field in the Docker noble stable
+  #     Packages index, used only if the runner's Docker does NOT match the pin.
+  # Two earlier attempts failed here and both are instructive: a fabricated version string
+  # (5:27.3.1-…) that does not exist in the repository, and a real version (5:29.7.2-…) that
+  # apt could not see because the Docker repository is not configured on the runner at all.
+  DOCKER_SERVER_VERSION: "28.0.4"
+  DOCKER_APT_VERSION: "5:28.0.4-1~ubuntu.24.04~noble"
   # Pinned by digest in sdk/agentnode_sdk/sandbox/container_backend.py — kept identical here.
   SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
   PIP_VERSION: "24.2"
@@ -206,23 +211,31 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12.7"
-      - name: Install and VERIFY the pinned container runtime
+      - name: Select and VERIFY the pinned container runtime
         run: |
           set -eu
-          sudo apt-get update
-          # If the pin is unavailable, print what the runner CAN see rather than failing
-          # silently — the previous failure gave no candidate list.
-          if ! apt-cache madison docker-ce | grep -qF "${DOCKER_VERSION}"; then
-            echo "pinned ${DOCKER_VERSION} is not available; docker-ce candidates are:"
-            apt-cache madison docker-ce | head -20
-            exit 1
+          got="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo none)"
+          echo "runner provides docker server: ${got}; pin is ${DOCKER_SERVER_VERSION}"
+          if [ "${got}" != "${DOCKER_SERVER_VERSION}" ]; then
+            echo "the runner's Docker is not the pinned version; installing it from the Docker repository"
+            sudo install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            sudo chmod a+r /etc/apt/keyrings/docker.gpg
+            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+            sudo apt-get update
+            if ! apt-cache madison docker-ce | grep -qF "${DOCKER_APT_VERSION}"; then
+              echo "pinned ${DOCKER_APT_VERSION} is not available; docker-ce candidates are:"
+              apt-cache madison docker-ce | head -20
+              exit 1
+            fi
+            sudo apt-get install -y --allow-downgrades "docker-ce=${DOCKER_APT_VERSION}" "docker-ce-cli=${DOCKER_APT_VERSION}"
+            sudo systemctl start docker
+            got="$(docker version --format '{{.Server.Version}}')"
           fi
-          sudo apt-get install -y --allow-downgrades "docker-ce=${DOCKER_VERSION}"             "docker-ce-cli=${DOCKER_VERSION}"
-          sudo systemctl start docker
-          got="$(docker version --format '{{.Server.Version}}')"
-          want="$(printf '%s' "${DOCKER_VERSION}" | sed -E 's/^[0-9]+://; s/-.*$//')"
-          echo "pinned=${want} running=${got}"
-          test "${got}" = "${want}" || { echo "runtime is not the pinned version"; exit 1; }
+          # The pin is asserted whichever path was taken: a drifting runtime fails the lane.
+          test "${got}" = "${DOCKER_SERVER_VERSION}" || {
+            echo "docker server is ${got}, pinned ${DOCKER_SERVER_VERSION}"; exit 1; }
+          echo "container runtime verified at the pinned version ${got}"
           docker info --format '{{.OSType}}/{{.Architecture}}'
       - name: Pull the pinned sandbox image by digest
         run: docker pull "${SANDBOX_IMAGE}"
