@@ -66,7 +66,8 @@ way you can feel.
 ### Added
 
 - `agentnode lock verify` also checks the **global structure digest**, not only
-  per-entry integrity, and reports `verified` / `missing` / `mismatch` per stage.
+  per-entry integrity, and reports the status of each stage separately
+  (`verified`, `missing`, `mismatch`, `invalid`, `unsupported`).
 - New error types on the public surface: `LockfileFormatError`, `ConfigurationError`,
   and `HostAgentExecutionUnsupported`, all subclasses of `AgentNodeError`.
 - Pre-import observability for host execution, with remediation text specific to the
