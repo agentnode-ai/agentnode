@@ -22,7 +22,7 @@ env:
   # not float: a floating checkout would exercise whatever main happens to hold rather than
   # the reviewed revision. FROZEN_INVENTORY.json is the collection of exactly this commit,
   # produced from a clean checkout of it and frozen before any lane executed.
-  FROZEN_REV: "47ffd240ac50e73ab228d3af37a9423914d18f9b"
+  FROZEN_REV: "0af2e831fb7fda9c9878a2f09c03be776988f282"
   # The container runtime is pinned by SERVER VERSION and the pin is verified, so a runner
   # image that changed Docker fails the lane instead of silently altering the boundary under
   # test. Both values are OBSERVED, not assumed:
