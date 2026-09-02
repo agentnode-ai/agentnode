@@ -305,16 +305,32 @@
     step: 1,
     place: null,
     files: new Set(["Invoices 2026"]),
-    consentGiven: false,
-    legacy: false,
+    consentFor: null,     // EM3A-IMPL-0001 / F-A3: consent is bound to WHERE it was given
+    legacy: false,        // armed for exactly one run
+    legacySpent: false,
     freeRunsLeft: 3
   };
+
+  // EM3A-IMPL-0001 / F-A5: a placement the situation cannot provide must not be choosable, and
+  // must never reach a screen that claims a protected run happened.
+  function available(place, e) {
+    if (place === "local") return e.local_ready && !e.mobile;
+    if (place === "managed") return e.managed_available && e.online;
+    if (place === "self_hosted") return Boolean(e.organisation_backend);
+    return false;
+  }
+  function whyUnavailable(place, e) {
+    if (place === "local") return e.mobile ? "Not possible on a phone" : "Not set up on this device yet";
+    if (place === "managed") return e.online ? "Not reachable right now" : "You are offline";
+    return "No server connected yet";
+  }
 
   const screen = document.getElementById("screen");
   const ctx = document.getElementById("ctx");
   const dbg = document.getElementById("dbg");
 
-  const env = () => Object.assign({}, SCENARIOS[state.scenario], { consent_ok: state.consentGiven });
+  const env = () => Object.assign({}, SCENARIOS[state.scenario],
+    { consent_ok: state.consentFor !== null && state.consentFor === state.place });
 
   const el = (tag, cls, txt) => {
     const n = document.createElement(tag);
@@ -361,7 +377,10 @@
     screen.appendChild(el("p", "help", "We have picked the safest option that works for you."));
 
     const recommended = d.placement;
-    if (!state.place) state.place = recommended;
+    if (!state.place || !available(state.place, env())) {
+      state.place = available(recommended, env()) ? recommended : null;
+      state.consentFor = null;
+    }
 
     const opts = el("div", "options");
     const choices = [
@@ -369,9 +388,13 @@
       ["local", "On this device", "Runs here, inside a protected area, separate from your files."],
       ["self_hosted", "Your own server", "Runs on a server you or your company control."]
     ];
+    const e = env();
     for (const [id, title, sub] of choices) {
+      const ok = available(id, e);
       const b = el("button", "opt");
       b.type = "button";
+      b.disabled = !ok;
+      if (!ok) { b.style.opacity = ".5"; b.style.cursor = "not-allowed"; }
       b.setAttribute("aria-pressed", String(state.place === id));
       const mark = el("span", "mark"); mark.setAttribute("aria-hidden", "true");
       const body = el("span");
@@ -380,15 +403,20 @@
         const r = el("span", "rec", "Recommended for you");
         body.appendChild(r);
       }
-      body.appendChild(el("small", null, sub));
+      body.appendChild(el("small", null, ok ? sub : whyUnavailable(id, e)));
       b.append(mark, body);
-      b.addEventListener("click", () => { state.place = id; render(); });
+      b.addEventListener("click", () => {
+        if (!ok) return;
+        if (state.place !== id) state.consentFor = null;   // consent does not travel
+        state.place = id;
+        render();
+      });
       opts.appendChild(b);
     }
     screen.appendChild(opts);
 
     const remote = state.place === "managed" || state.place === "self_hosted";
-    if (remote && !state.consentGiven) {
+    if (remote && state.consentFor !== state.place) {
       const c = el("div", "consent");
       c.appendChild(el("h3", null, "Before anything leaves this computer"));
       const dl = el("dl");
@@ -402,7 +430,7 @@
       c.appendChild(dl);
       const ok = el("button", "cta", "I agree — continue");
       ok.type = "button";
-      ok.addEventListener("click", () => { state.consentGiven = true; state.step = 2; render(); });
+      ok.addEventListener("click", () => { state.consentFor = state.place; state.step = 2; render(); });
       c.appendChild(ok);
       screen.appendChild(c);
       screen.appendChild(el("div", "spacer"));
@@ -412,7 +440,8 @@
     screen.appendChild(el("div", "spacer"));
     const next = el("button", "cta", "Continue");
     next.type = "button";
-    next.addEventListener("click", () => { state.step = 2; render(); });
+    next.disabled = !state.place || !available(state.place, env());
+    next.addEventListener("click", () => { if (!next.disabled) { state.step = 2; render(); } });
     screen.appendChild(next);
   }
 
@@ -454,7 +483,9 @@
     screen.appendChild(pips(3));
     screen.appendChild(el("h2", "q", "Working…"));
     const where = placeLabel(state.legacy ? "legacy_host" : (state.place || "managed"));
-    screen.appendChild(el("p", "help", "Running in the protected area · " + where));
+    screen.appendChild(el("p", "help", state.legacy
+      ? "Running UNPROTECTED, directly on this computer"
+      : "Running in the protected area · " + where));
     const bar = el("div", "bar"); const fill = el("i"); bar.appendChild(fill);
     screen.appendChild(bar);
     requestAnimationFrame(() => { fill.style.width = "100%"; });
@@ -470,6 +501,12 @@
     setTimeout(() => {
       if (state.step === 3) {
         if (state.place === "managed") state.freeRunsLeft = Math.max(0, state.freeRunsLeft - 1);
+        if (state.legacy) {          // the confirmation covered exactly this run
+          state.legacy = false;
+          state.legacySpent = true;
+          st.textContent = "Off again. That confirmation covered one run only.";
+          chk.disabled = false; chk.checked = false; btn.disabled = true;
+        }
         state.step = 4; render();
       }
     }, reduce ? 250 : 1500);
@@ -477,7 +514,8 @@
 
   function renderResult() {
     const wrap = el("div", "result");
-    const badge = el("span", "badge", "✓ Finished safely");
+    const badge = el("span", "badge", state.legacySpent ? "Finished — unprotected" : "✓ Finished safely");
+    if (state.legacySpent) { badge.style.background = "var(--risk-soft)"; badge.style.color = "var(--risk)"; }
     wrap.appendChild(badge);
     wrap.appendChild(el("h2", "q", "Here is your result"));
     const out = el("div", "out");
@@ -485,10 +523,10 @@
     out.appendChild(el("div", null, "12 invoices · 3 unpaid · €4,180 outstanding"));
     wrap.appendChild(out);
 
-    const where = placeLabel(state.legacy ? "legacy_host" : (state.place || "managed"));
-    const note = el("div", "banner " + (state.legacy ? "blocked" : "calm"));
-    note.appendChild(el("strong", null, state.legacy ? "This ran unprotected on your computer" : "Where this ran"));
-    note.appendChild(el("span", null, state.legacy
+    const where = placeLabel(state.legacySpent ? "legacy_host" : (state.place || "managed"));
+    const note = el("div", "banner " + (state.legacySpent ? "blocked" : "calm"));
+    note.appendChild(el("strong", null, state.legacySpent ? "This ran unprotected on your computer" : "Where this ran"));
+    note.appendChild(el("span", null, state.legacySpent
       ? "You turned that on yourself in advanced settings."
       : where + ". The agent never had access to anything you did not pick, and its workspace has been deleted."));
     wrap.appendChild(note);
@@ -496,7 +534,9 @@
     wrap.appendChild(el("div", "spacer"));
     const again = el("button", "cta", "Save the result");
     again.type = "button";
-    again.addEventListener("click", () => { state.step = 1; state.place = null; render(); });
+    again.addEventListener("click", () => {
+      state.step = 1; state.place = null; state.consentFor = null; state.legacySpent = false; render();
+    });
     wrap.appendChild(again);
     screen.appendChild(wrap);
   }
@@ -539,7 +579,7 @@
       ["ways out offered", d.kind === "refusal"
         ? String(d.actions.filter(a => ACTIONS[a].kind === "remediation").length) : "n/a"],
       ["consent needed", d.kind === "selection" ? String(d.consent_required) : "—"],
-      ["legacy host", state.legacy ? "ON (confirmed by hand)" : "unreachable from here"],
+      ["legacy host", state.legacy ? "armed for ONE run (confirmed by hand)" : "unreachable from here"],
       ["essential steps", "3"]
     ];
     for (const [k, v] of rows) {
@@ -564,7 +604,7 @@
   chk.addEventListener("change", () => { btn.disabled = !chk.checked; });
   btn.addEventListener("click", () => {
     state.legacy = true;
-    st.textContent = "On. Confirmed by hand, for this computer only.";
+    st.textContent = "Confirmed for the NEXT run only. It switches itself off afterwards.";
     btn.disabled = true; chk.checked = false; chk.disabled = true;
     render();
   });

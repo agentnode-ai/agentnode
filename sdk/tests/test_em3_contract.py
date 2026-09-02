@@ -97,7 +97,7 @@ class TestLegacyHostIsUnreachableFromAutomaticPaths:
 
     def test_the_token_cannot_be_constructed_directly(self):
         with pytest.raises(PermissionError, match="cannot be constructed directly"):
-            LegacyHostIntent(object(), "someone")
+            LegacyHostIntent(object(), "purpose", "someone", 0.0)
 
     def test_a_config_saying_default_still_never_selects_host(self):
         env = Environment(local_runtime_ready=True, config_host_trust_policy="default")
@@ -121,22 +121,64 @@ class TestLegacyHostIsUnreachableFromAutomaticPaths:
 
     def test_declining_the_confirmation_mints_nothing(self):
         with pytest.raises(PermissionError, match="not confirmed"):
-            mint_legacy_host_intent(lambda _warning: False, confirmed_by="user")
+            mint_legacy_host_intent(lambda _warning: False, purpose="run-1", confirmed_by="user")
 
     def test_a_non_interactive_caller_cannot_mint(self):
         with pytest.raises(PermissionError, match="interactive confirmation"):
-            mint_legacy_host_intent(None, confirmed_by="automatic")
+            mint_legacy_host_intent(None, purpose="run-1", confirmed_by="automatic")
 
     def test_the_confirmation_text_names_the_risk_in_plain_language(self):
         assert "elevated risk" in LEGACY_HOST_WARNING
         assert "directly on this computer" in LEGACY_HOST_WARNING
 
     def test_a_confirmed_token_selects_host_exactly_once(self):
-        intent = mint_legacy_host_intent(lambda _w: True, confirmed_by="user")
-        first = select_backend(Environment(local_runtime_ready=True), intent=intent)
+        intent = mint_legacy_host_intent(lambda _w: True, purpose="run-1", confirmed_by="user")
+        first = select_backend(Environment(local_runtime_ready=True), intent=intent, purpose="run-1")
         assert isinstance(first, Selection) and first.placement is Placement.LEGACY_HOST
-        with pytest.raises(PermissionError, match="already used"):
-            select_backend(Environment(local_runtime_ready=True), intent=intent)
+        with pytest.raises(PermissionError, match="already used|never issued"):
+            select_backend(Environment(local_runtime_ready=True), intent=intent, purpose="run-1")
+
+    # ---- the adversarial half. EM3A-IMPL-0001 / F-A2 found the first version forgeable.
+
+    def test_a_look_alike_object_is_not_a_confirmation(self):
+        """The original defect: anything with a spend() method selected host execution."""
+        class LooksLikeOne:
+            def spend(self):
+                return "token"
+        with pytest.raises(PermissionError, match="not a confirmation this gate issued"):
+            select_backend(Environment(), intent=LooksLikeOne(), purpose="run-1")
+
+    def test_a_subclass_is_not_a_confirmation_either(self):
+        class Sneaky(LegacyHostIntent):
+            def __init__(self):
+                pass
+        with pytest.raises(PermissionError, match="not a confirmation this gate issued"):
+            select_backend(Environment(), intent=Sneaky(), purpose="run-1")
+
+    def test_reaching_for_the_mint_key_does_not_help(self):
+        """Even holding the module-private key yields an unregistered handle, and the gate checks
+        the registry rather than the object."""
+        from agentnode_sdk.sandbox import contract as C
+        forged = C.LegacyHostIntent(C._MINT_KEY, "run-1", "attacker", 0.0)
+        with pytest.raises(PermissionError, match="already used, or was never issued"):
+            select_backend(Environment(), intent=forged, purpose="run-1")
+
+    def test_a_confirmation_cannot_be_spent_on_a_different_operation(self):
+        intent = mint_legacy_host_intent(lambda _w: True, purpose="settings-change",
+                                         confirmed_by="user")
+        with pytest.raises(PermissionError, match="given for 'settings-change'"):
+            select_backend(Environment(), intent=intent, purpose="run-1")
+
+    def test_a_confirmation_expires(self):
+        from agentnode_sdk.sandbox.contract import _consume_intent, INTENT_TTL_SECONDS
+        intent = mint_legacy_host_intent(lambda _w: True, purpose="run-1", confirmed_by="user",
+                                         now=0.0)
+        with pytest.raises(PermissionError, match="too old"):
+            _consume_intent(intent, "run-1", now=INTENT_TTL_SECONDS + 1)
+
+    def test_a_confirmation_must_name_what_it_confirms(self):
+        with pytest.raises(PermissionError, match="name the operation"):
+            mint_legacy_host_intent(lambda _w: True, purpose="", confirmed_by="user")
 
 
 # ---------------------------------------------------------------- E3: no silent cloud switch
@@ -169,6 +211,7 @@ class TestRemoteConsentIsBoundAndRevocable:
         {"region": "us"}, {"policy_version": "2"},
         {"data_classes": frozenset({"files", "screen"})},
         {"retention": Retention(diagnostics_hours=72)},
+        {"retention": Retention(workspace="keep_until_deleted_by_user")},
     ])
     def test_any_material_change_forces_a_fresh_consent(self, changed):
         stored = RemoteConsent(_binding(), granted_at="t0")
@@ -242,6 +285,23 @@ class TestALowerScopeMayOnlyNarrow:
                                 secrets=(SecretRef("GH_TOKEN"),))
         merged = merge_policies({Scope.USER: user, Scope.PACKAGE: package})
         assert merged.secrets[0].inject_hosts == frozenset({"api.github.com"})
+
+    def test_a_subclass_cannot_redefine_narrowing(self):
+        """EM3A-IMPL-0001 / F-A1: virtual dispatch let a subclass widen instead of narrow."""
+        class Widening(SandboxPolicy):
+            def _narrowed_by(self, lower):
+                return lower                      # would hand control to the untrusted side
+        user = SandboxPolicy(network=NetworkRules(True, frozenset({"api.example.com"})))
+        with pytest.raises(TypeError, match="not exactly SandboxPolicy"):
+            merge_policies({Scope.USER: Widening(), Scope.PACKAGE: user})
+
+    def test_a_forged_part_is_rejected_too(self):
+        class WideningLimits(Limits):
+            def _narrowed_by(self, other):
+                return self
+        bad = SandboxPolicy(limits=WideningLimits(cpu=64))
+        with pytest.raises(TypeError, match="where Limits is required"):
+            merge_policies({Scope.USER: SandboxPolicy(), Scope.PACKAGE: bad})
 
     def test_a_secret_never_carries_a_value(self):
         assert not hasattr(SecretRef("TOKEN"), "value")

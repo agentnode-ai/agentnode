@@ -18,7 +18,8 @@ that implement it are EM-3C and later.
 from __future__ import annotations
 
 import re
-import uuid
+import secrets
+import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Mapping, Sequence
@@ -172,7 +173,7 @@ class Limits:
     disk_mb: int = 512
     wall_clock_s: int = 180
 
-    def narrowed_by(self, other: "Limits") -> "Limits":
+    def _narrowed_by(self, other: "Limits") -> "Limits":
         return Limits(min(self.cpu, other.cpu), min(self.memory_mb, other.memory_mb),
                       min(self.processes, other.processes), min(self.disk_mb, other.disk_mb),
                       min(self.wall_clock_s, other.wall_clock_s))
@@ -185,7 +186,7 @@ class NetworkRules:
     enabled: bool = False
     allowed_destinations: frozenset[str] = frozenset()
 
-    def narrowed_by(self, other: "NetworkRules") -> "NetworkRules":
+    def _narrowed_by(self, other: "NetworkRules") -> "NetworkRules":
         return NetworkRules(self.enabled and other.enabled,
                             self.allowed_destinations & other.allowed_destinations)
 
@@ -210,7 +211,7 @@ class Retention:
     diagnostics_hours: int = 24
     audit_metadata_days: int = 30
 
-    def narrowed_by(self, other: "Retention") -> "Retention":
+    def _narrowed_by(self, other: "Retention") -> "Retention":
         return Retention(self.workspace,
                          min(self.diagnostics_hours, other.diagnostics_hours),
                          min(self.audit_metadata_days, other.audit_metadata_days))
@@ -225,25 +226,25 @@ class SandboxPolicy:
     retention: Retention = field(default_factory=Retention)
     required_assurance: AssuranceLevel = AssuranceLevel.OBSERVED
 
-    def narrowed_by(self, lower: "SandboxPolicy") -> "SandboxPolicy":
+    def _narrowed_by(self, lower: "SandboxPolicy") -> "SandboxPolicy":
         """Fold a LOWER-precedence policy in. It can tighten anything and loosen nothing.
 
         Injection targets are intersected with the egress allowlist here rather than validated
         later: a credential can only ever be injected into a connection the network policy already
         admits, so the two can never drift apart.
         """
-        net = self.network.narrowed_by(lower.network)
+        net = NetworkRules._narrowed_by(self.network, lower.network)
         secrets = tuple(
             replace(s, inject_hosts=frozenset(s.inject_hosts) & net.allowed_destinations)
             for s in self.secrets
             if s.name in {t.name for t in lower.secrets} or not lower.secrets
         )
         return SandboxPolicy(
-            limits=self.limits.narrowed_by(lower.limits),
+            limits=Limits._narrowed_by(self.limits, lower.limits),
             network=net,
             secrets=secrets,
             region=self.region,                     # only a higher scope sets a region
-            retention=self.retention.narrowed_by(lower.retention),
+            retention=Retention._narrowed_by(self.retention, lower.retention),
             # a lower scope may RAISE the assurance floor, never lower it
             required_assurance=max(self.required_assurance, lower.required_assurance,
                                    key=lambda a: [AssuranceLevel.SELF_REPORTED,
@@ -253,13 +254,36 @@ class SandboxPolicy:
 
 
 def merge_policies(scoped: Mapping[Scope, SandboxPolicy]) -> SandboxPolicy:
-    """Fold from the highest scope downwards, so every lower scope can only tighten."""
+    """Fold from the highest scope downwards, so every lower scope can only tighten.
+
+    Two things make this a boundary rather than an API convention:
+
+    * **exact types only.** A subclass could override ``_narrowed_by`` and widen instead of narrow,
+      so anything that is not exactly a :class:`SandboxPolicy` — and whose parts are not exactly the
+      expected types — is rejected rather than trusted. Untrusted lower-scope input arrives as data,
+      and data is what this accepts.
+    * **no virtual dispatch.** The fold calls the unbound functions explicitly, so even a subclass
+      that slipped past the check could not redirect the composition.
+    """
+    for scope, policy in scoped.items():
+        if type(policy) is not SandboxPolicy:
+            raise TypeError(
+                f"policy for scope {scope!r} is {type(policy).__name__}, not exactly SandboxPolicy; "
+                "a subclass could redefine narrowing and widen what a lower scope may do"
+            )
+        for part, expected in ((policy.limits, Limits), (policy.network, NetworkRules),
+                               (policy.retention, Retention)):
+            if type(part) is not expected:
+                raise TypeError(
+                    f"policy for scope {scope!r} carries a {type(part).__name__} where "
+                    f"{expected.__name__} is required"
+                )
     ordered = sorted(scoped.items(), key=lambda kv: kv[0], reverse=True)
     if not ordered:
         return SandboxPolicy()
     merged = ordered[0][1]
     for _scope, policy in ordered[1:]:
-        merged = merged.narrowed_by(policy)
+        merged = SandboxPolicy._narrowed_by(merged, policy)
     return merged
 
 
@@ -299,6 +323,9 @@ class RemoteConsent:
                 and wanted.data_classes <= b.data_classes
                 and b.region == wanted.region
                 and b.policy_version == wanted.policy_version
+                # the retention BASIS is a material term, not a number: changing when the
+                # workspace dies changes what was agreed to, so it must match exactly
+                and b.retention.workspace == wanted.retention.workspace
                 and wanted.retention.diagnostics_hours <= b.retention.diagnostics_hours
                 and wanted.retention.audit_metadata_days <= b.retention.audit_metadata_days)
 
@@ -308,39 +335,46 @@ class RemoteConsent:
 # --------------------------------------------------------------------------------------
 
 class LegacyHostIntent:
-    """Proof that a human deliberately confirmed host execution, for exactly one use.
+    """Proof that a human deliberately confirmed host execution, for exactly one bound operation.
 
-    The constructor is private on purpose. The only way to obtain one is
-    :func:`mint_legacy_host_intent`, which requires an interactive advanced-settings confirmation
-    callback. The automatic selector, onboarding and every fallback path never receive that callback,
-    so they hold no capability to construct, forge or borrow a token — the value ``default`` sitting
-    in a config file is not sufficient and never becomes sufficient by itself.
+    `EM3A-IMPL-0001` / F-A2 found the first version forgeable: it was a duck type, so any object with
+    a ``spend()`` method selected host execution, and the mint key was reachable on the module. The
+    capability now lives in a private registry the gate checks; an instance on its own proves nothing.
+
+    What a holder gets is a handle. What the gate verifies is that the handle's token is in the
+    registry, unspent, unexpired, and bound to the operation being attempted. Forging the object does
+    not put a token in the registry, and the registry is not reachable through the public surface.
     """
 
-    __slots__ = ("_token", "_confirmed_by", "_spent")
+    __slots__ = ("_token", "_purpose", "_confirmed_by", "_confirmed_at")
 
-    def __init__(self, _private: object, confirmed_by: str) -> None:
+    def __init__(self, _private: object, purpose: str, confirmed_by: str, confirmed_at: float) -> None:
         if _private is not _MINT_KEY:
             raise PermissionError(
-                "LegacyHostIntent cannot be constructed directly. It exists only to record a "
-                "deliberate human confirmation, and an automatic path must not be able to fabricate one."
+                "LegacyHostIntent cannot be constructed directly. It records a deliberate human "
+                "confirmation, and an automatic path must not be able to fabricate one."
             )
-        self._token = uuid.uuid4().hex
+        self._token = secrets.token_urlsafe(32)
+        self._purpose = purpose
         self._confirmed_by = confirmed_by
-        self._spent = False
+        self._confirmed_at = confirmed_at
+
+    @property
+    def purpose(self) -> str:
+        return self._purpose
 
     @property
     def confirmed_by(self) -> str:
         return self._confirmed_by
 
-    def spend(self) -> str:
-        if self._spent:
-            raise PermissionError("this confirmation was already used; host execution needs a fresh one")
-        self._spent = True
-        return self._token
+    @property
+    def confirmed_at(self) -> float:
+        return self._confirmed_at
 
 
 _MINT_KEY = object()
+_LIVE_INTENTS: dict[str, tuple[str, float]] = {}   # token -> (purpose, confirmed_at)
+INTENT_TTL_SECONDS = 300.0
 
 LEGACY_HOST_WARNING = (
     "Host execution with elevated risk: code from other people would run directly on this computer, "
@@ -348,18 +382,49 @@ LEGACY_HOST_WARNING = (
 )
 
 
-def mint_legacy_host_intent(confirm: Any, *, confirmed_by: str) -> LegacyHostIntent:
-    """Mint a single-use confirmation — only from an interactive advanced-settings flow.
+def mint_legacy_host_intent(confirm: Any, *, purpose: str, confirmed_by: str,
+                            now: float | None = None) -> LegacyHostIntent:
+    """Mint one confirmation, bound to one named operation, from an interactive flow only.
 
-    ``confirm`` must be a callable that shows :data:`LEGACY_HOST_WARNING` and returns ``True`` only
-    for an explicit human confirmation. A callable that ignores its argument and returns ``True``
-    would defeat the purpose, which is why no automatic path is ever given one.
+    ``purpose`` names the run or settings change being confirmed, so a confirmation for one thing
+    cannot be spent on another. ``confirm`` must be a callable that shows
+    :data:`LEGACY_HOST_WARNING` and returns ``True`` only for an explicit human confirmation.
+
+    The gate rejects anything that is not a registered, unspent, unexpired token, so an automatic
+    caller cannot get past it by imitating the object, by reaching for the mint key, or by keeping an
+    old handle around.
     """
     if not callable(confirm):
         raise PermissionError("an explicit interactive confirmation is required")
+    if not purpose:
+        raise PermissionError("a confirmation must name the operation it confirms")
     if confirm(LEGACY_HOST_WARNING) is not True:
         raise PermissionError("host execution was not confirmed")
-    return LegacyHostIntent(_MINT_KEY, confirmed_by)
+    stamp = time.monotonic() if now is None else now
+    intent = LegacyHostIntent(_MINT_KEY, purpose, confirmed_by, stamp)
+    _LIVE_INTENTS[intent._token] = (purpose, stamp)
+    return intent
+
+
+def _consume_intent(intent: object, purpose: str, now: float | None = None) -> None:
+    """Verify and burn a confirmation, or refuse. Everything unusual is a refusal, never a pass."""
+    if type(intent) is not LegacyHostIntent:
+        raise PermissionError(
+            "that is not a confirmation this gate issued; host execution needs a fresh confirmation "
+            "made by a person in advanced settings"
+        )
+    token = object.__getattribute__(intent, "_token")
+    entry = _LIVE_INTENTS.pop(token, None)
+    if entry is None:
+        raise PermissionError("this confirmation was already used, or was never issued")
+    bound_purpose, stamp = entry
+    if bound_purpose != purpose:
+        raise PermissionError(
+            f"this confirmation was given for {bound_purpose!r}, not for {purpose!r}"
+        )
+    elapsed = (time.monotonic() if now is None else now) - stamp
+    if elapsed > INTENT_TTL_SECONDS:
+        raise PermissionError("this confirmation is too old; confirm again if you still want this")
 
 
 # --------------------------------------------------------------------------------------
@@ -394,16 +459,16 @@ class Environment:
     config_host_trust_policy: str = "curated_only"   # may say "default"; on its own it selects nothing
 
 
-def select_backend(env: Environment, *, intent: LegacyHostIntent | None = None
-                   ) -> Selection | Refusal:
+def select_backend(env: Environment, *, intent: object | None = None,
+                   purpose: str = "") -> Selection | Refusal:
     """The one authoritative gate. Every path — automatic, onboarding, fallback, retry — comes here.
 
     Returns a :class:`Selection`, or a :class:`Refusal` that always carries a way out. It never
     returns ``None`` and never falls through to host execution.
     """
     if intent is not None:
-        intent.spend()
-        return Selection(Placement.LEGACY_HOST, "On this device, unprotected (legacy)")
+        _consume_intent(intent, purpose)
+        return Selection(Placement.LEGACY_HOST, "On this device, unprotected")
 
     if env.organisation_backend:
         return Selection(Placement.SELF_HOSTED, "Your organisation's server",
