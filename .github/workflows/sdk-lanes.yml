@@ -1,0 +1,192 @@
+name: SDK execution lanes (R6)
+
+# R6 of EM2-AC-REMEDIATION-DECISION-0001: two pinned Linux lanes plus an isolated
+# runtime-absent job. A lane is CLEAN only when its collection matches the frozen
+# inventory, there are zero failures and errors, every mandatory routing/refusal test
+# executed, and every optional-provider test either executed or skipped for the R5 reason.
+#
+# The container boundary is the product's security boundary and no workflow exercised it
+# before this one: every container E2E suite is gated behind an environment variable that
+# nothing set. The runtime-present lane sets them.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # The revision the lanes exercise. EM2-AC-REMEDIATION-DECISION-0001 requires the lanes to
+  # run "at the frozen revision", so the checkout is pinned rather than floating. c8a1c72 is
+  # the frozen revision of record; when the reviewed change is committed this must be
+  # re-pinned to the commit that carries it, otherwise the lanes exercise the baseline.
+  FROZEN_REV: "c8a1c72"
+  # An explicitly pinned container runtime, verified after installation: a lane that silently
+  # picked up whatever the runner image shipped would not be pinned.
+  DOCKER_VERSION: "5:27.3.1-1~ubuntu.24.04~noble"
+  # Pinned by digest in sdk/agentnode_sdk/sandbox/container_backend.py — kept identical here.
+  SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
+  PIP_VERSION: "24.2"
+  SETUPTOOLS_VERSION: "75.1.0"
+  WHEEL_VERSION: "0.44.0"
+
+jobs:
+  # ---------------------------------------------------------------- ordinary lane
+  # Provider credentials PRESENT, the three E2E flags UNSET. With both the module and the
+  # credential available the optional-provider matrix EXECUTES here; a case that still skips
+  # must name the precondition it lacks (R5). This is the lane that proves the provider
+  # contract rather than silently skipping past it.
+  lane-ordinary:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10.15", "3.11.10", "3.12.7"]
+    defaults:
+      run:
+        working-directory: sdk
+    env:
+      # The ordinary lane runs the optional-provider matrix, so it MUST have credentials:
+      # without them every provider case skips and the lane proves nothing about them. The
+      # three E2E flags stay unset here — that is what makes this the ordinary lane.
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REV }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Pin installer tooling
+        run: |
+          python -m pip install --upgrade "pip==${PIP_VERSION}" \
+            "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
+      - name: Install the SDK dev extra into a fresh environment
+        run: pip install -e ".[dev]"
+      - name: Install the optional providers this lane exercises
+        run: pip install "anthropic==0.39.0" "openai==1.54.3"
+      - name: Confirm the lane preconditions
+        run: |
+          set -eu
+          for v in AGENTNODE_SANDBOX_E2E AGENTNODE_AGENT_SANDBOX_E2E AGENTNODE_EGRESS_E2E; do
+            if [ -n "${!v:-}" ]; then echo "$v must be unset in the ordinary lane"; exit 1; fi
+          done
+          for v in OPENAI_API_KEY ANTHROPIC_API_KEY; do
+            if [ -z "${!v:-}" ]; then
+              echo "$v is required by the ordinary lane; configure it as a repository secret"
+              exit 1
+            fi
+          done
+          python -c "import importlib.util as u; assert u.find_spec('anthropic'); assert u.find_spec('openai'); print('optional providers importable')"
+      - name: Run against the frozen inventory
+        run: |
+          python -m pytest tests -q -p no:randomly \
+            -p tests.lanes.conftest_report --lane-report lane-report.json
+      - name: Verify the lane is clean
+        if: always()
+        run: |
+          python -m tests.lanes.freeze_inventory verify \
+            tests/lanes/FROZEN_INVENTORY.json lane-report.json ordinary
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lane-ordinary-${{ matrix.python-version }}
+          path: sdk/lane-report.json
+
+  # ---------------------------------------------------------------- runtime-present lane
+  # The first CI run in this repository that exercises the container boundary at all.
+  lane-runtime-present:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk
+    env:
+      AGENTNODE_SANDBOX_E2E: "1"
+      AGENTNODE_AGENT_SANDBOX_E2E: "1"
+      AGENTNODE_EGRESS_E2E: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REV }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+      - name: Install and VERIFY the pinned container runtime
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --allow-downgrades "docker-ce=${DOCKER_VERSION}"             "docker-ce-cli=${DOCKER_VERSION}"
+          sudo systemctl start docker
+          got="$(docker version --format '{{.Server.Version}}')"
+          want="$(printf '%s' "${DOCKER_VERSION}" | sed -E 's/^[0-9]+://; s/-.*$//')"
+          echo "pinned=${want} running=${got}"
+          test "${got}" = "${want}" || { echo "runtime is not the pinned version"; exit 1; }
+          docker info --format '{{.OSType}}/{{.Architecture}}'
+      - name: Pull the pinned sandbox image by digest
+        run: docker pull "${SANDBOX_IMAGE}"
+      - name: Pin installer tooling
+        run: |
+          python -m pip install --upgrade "pip==${PIP_VERSION}" \
+            "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
+      - run: pip install -e ".[dev]"
+      - name: Run against the frozen inventory
+        run: |
+          python -m pytest tests -q -p no:randomly \
+            -p tests.lanes.conftest_report --lane-report lane-report.json
+      - name: Verify the lane is clean
+        if: always()
+        run: |
+          python -m tests.lanes.freeze_inventory verify \
+            tests/lanes/FROZEN_INVENTORY.json lane-report.json runtime-present
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lane-runtime-present
+          path: sdk/lane-report.json
+
+  # ---------------------------------------------------------------- runtime-absent job
+  # Deliberately exposes no container runtime and no socket, so the R4 refusal test
+  # exercises the LIVE gate and real backend discovery rather than a substitute.
+  lane-runtime-absent:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REV }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+      - name: Remove every container runtime and socket from this job
+        run: |
+          set -eu
+          sudo systemctl stop docker.socket docker.service containerd || true
+          sudo rm -f /var/run/docker.sock /run/docker.sock || true
+          sudo rm -f "$(command -v docker || true)" "$(command -v podman || true)" || true
+          if command -v docker >/dev/null 2>&1; then echo "docker still discoverable"; exit 1; fi
+          if command -v podman >/dev/null 2>&1; then echo "podman still discoverable"; exit 1; fi
+          test ! -S /var/run/docker.sock
+          echo "runtime-absent confirmed"
+      - name: Pin installer tooling
+        run: |
+          python -m pip install --upgrade "pip==${PIP_VERSION}" \
+            "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
+      - run: pip install -e ".[dev]"
+      - name: The live-gate refusal must hold with no runtime present
+        run: |
+          python -m pytest tests/test_shipped_default_live_paths.py -q -p no:randomly \
+            -p tests.lanes.conftest_report --lane-report lane-report.json
+      - name: Verify the mandatory refusal executed
+        if: always()
+        run: |
+          python -m tests.lanes.freeze_inventory verify \
+            tests/lanes/FROZEN_INVENTORY.json lane-report.json runtime-absent
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lane-runtime-absent
+          path: sdk/lane-report.json

@@ -49,6 +49,7 @@ def _install_tp(**kw):
 # 1. Start-snapshot resolve window
 # ===========================================================================
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_start_snapshot_toolpack_existing_entry_replaced_after_snapshot(tmp_path, monkeypatch):
     """A binds its snapshot (baseline E1), then — during registry/version resolution — B
     publishes E2. install_package USES the bound snapshot baseline, so the preparation-CAS
@@ -66,6 +67,7 @@ def test_start_snapshot_toolpack_existing_entry_replaced_after_snapshot(tmp_path
     assert installer.read_lockfile(lf)["packages"]["tp"] == e2      # E2 untouched
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_start_snapshot_toolpack_absent_then_competitor_publishes(tmp_path, monkeypatch):
     pip = []
     lf = _mock_io(monkeypatch, tmp_path, pip)
@@ -78,6 +80,7 @@ def test_start_snapshot_toolpack_absent_then_competitor_publishes(tmp_path, monk
     assert installer.read_lockfile(lf)["packages"]["tp"] == e2
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_start_snapshot_agent_baseline_and_path_flow(tmp_path, monkeypatch):
     """The agent route receives the SNAPSHOT baseline + bound lockfile path (not a fresh read
     taken after a competitor published during resolution)."""
@@ -167,6 +170,7 @@ def test_effective_policy_matches_bound_snapshot(tmp_path, monkeypatch):
 # 3. Lockfile path bound once (env / CWD drift must not re-target)
 # ===========================================================================
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_lockfile_path_bound_env_var_change(tmp_path, monkeypatch):
     lfA = tmp_path / "A.lock"
     lfB = tmp_path / "B.lock"
@@ -186,6 +190,7 @@ def test_lockfile_path_bound_env_var_change(tmp_path, monkeypatch):
     assert not lfB.exists()                                        # B never touched
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_relative_lockfile_path_survives_cwd_change(tmp_path, monkeypatch):
     work = tmp_path / "work"
     work.mkdir()
@@ -223,6 +228,7 @@ def test_snapshot_for_a_different_slug_is_rejected(tmp_path, monkeypatch):
     assert pip == []
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_direct_call_without_snapshot_captures_at_entry(tmp_path, monkeypatch):
     """A legacy/direct install_package call (no snapshot) still binds one at entry."""
     pip = []

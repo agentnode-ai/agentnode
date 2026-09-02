@@ -639,6 +639,7 @@ class TestFieldClassification:
 # Installer integration — Phase 15.3
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 class TestInstallerIntegrity:
     """Verify install_package() and _install_skill() seal lockfile entries."""
 
@@ -1058,6 +1059,7 @@ def _real_sign_entry(slug, entry):
     }
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 class TestInstallerSignatureVerification:
     """Verify install_package() enforces publisher signatures."""
 
@@ -1493,6 +1495,7 @@ class TestCanonicalVersionV3:
 # Installer publisher_slug storage — Phase 16.6
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 class TestInstallerPublisherSlug:
     """Verify install_package() stores publisher_slug correctly."""
 
@@ -1646,6 +1649,7 @@ class TestInstallerPublisherSlug:
 # Install-time revocation deny (TG-2)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 class TestInstallerKeyStatusRevocation:
     """Verify install_package() blocks install when key_status is revoked."""
 

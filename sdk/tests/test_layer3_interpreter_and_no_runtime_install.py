@@ -288,6 +288,7 @@ def _tripwire_resolve_python(monkeypatch):
     return hits
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_host_toolpack_reaches_interpreter_resolution(monkeypatch, tmp_path):
     from agentnode_sdk import installer
     _mock_install_io(monkeypatch, tmp_path)
@@ -301,6 +302,7 @@ def test_host_toolpack_reaches_interpreter_resolution(monkeypatch, tmp_path):
     assert hits == [1]
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_host_agent_reaches_interpreter_resolution(monkeypatch, tmp_path):
     from agentnode_sdk import installer
     _mock_install_io(monkeypatch, tmp_path)
@@ -343,6 +345,7 @@ def test_skill_does_not_reach_interpreter_resolution(monkeypatch, tmp_path):
     assert hits == []
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_interpreter_error_surfaces_structurally_through_install_package(monkeypatch, tmp_path):
     """A host route with an unresolvable interpreter raises InterpreterResolutionError,
     which is an AgentNodeError carrying the stable code — so it propagates uncaught

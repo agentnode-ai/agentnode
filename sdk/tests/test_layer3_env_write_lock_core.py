@@ -292,6 +292,7 @@ def _held_prepared(tmp_path, monkeypatch, **kw):
         yield p, guard, pip_calls, before
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_wheel_tamper_is_stale_before_any_quarantine(tmp_path, monkeypatch):
     with _held_prepared(tmp_path, monkeypatch) as (p, guard, pip_calls, before):
         p.wheel.write_bytes(b"TAMPERED-DIFFERENT")     # changed after prepare
@@ -301,6 +302,7 @@ def test_wheel_tamper_is_stale_before_any_quarantine(tmp_path, monkeypatch):
         assert p.lockfile_path.read_bytes() == before   # entry byte-identical, NO quarantine
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_wheel_delete_is_stale_before_any_quarantine(tmp_path, monkeypatch):
     with _held_prepared(tmp_path, monkeypatch) as (p, guard, pip_calls, before):
         p.wheel.unlink()
@@ -310,6 +312,7 @@ def test_wheel_delete_is_stale_before_any_quarantine(tmp_path, monkeypatch):
         assert p.lockfile_path.read_bytes() == before
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_prepared_toctou_commit_uses_immutable_phase_a_bytes(tmp_path, monkeypatch):
     """Blocker-4: after the prepared authorization is checked, an external reference cannot
     change it. The frozen field holds immutable bytes (reassignment refused; a decoded copy
@@ -332,6 +335,7 @@ def test_prepared_toctou_commit_uses_immutable_phase_a_bytes(tmp_path, monkeypat
     assert committed["version"] == phase_a["version"] == "1.0.0"   # Phase-A bytes, not tampered
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_cas_conflict_preflight_no_quarantine_no_pip(tmp_path, monkeypatch):
     # baseline says the slug's hash is X, but the actual entry hash differs → CAS conflict in
     # the READ-ONLY preflight → abort with NO quarantine, entry intact, pip never started.
@@ -353,6 +357,7 @@ def test_cas_conflict_preflight_no_quarantine_no_pip(tmp_path, monkeypatch):
     assert lf.read_bytes() == before
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_preflight_to_quarantine_cas_race_refused(tmp_path, monkeypatch):
     """The read-only preflight passes, then a concurrent writer inserts the slug BEFORE the
     atomic quarantine mutator runs — the in-mutator CAS re-check refuses (no pip)."""
@@ -420,6 +425,7 @@ def test_host_chokepoint_translates_lock_errors(monkeypatch, raiser, expected_co
     assert isinstance(e.value, AgentNodeError)      # renders traceback-free at the CLI
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_toolpack_nested_write_surfaces_structured(tmp_path, monkeypatch):
     """A host TOOLPACK install whose target env is already write-locked by this process
     surfaces the SAME structured nested-write error (uniform agent/toolpack contract)."""
@@ -448,6 +454,7 @@ def test_toolpack_nested_write_surfaces_structured(tmp_path, monkeypatch):
 # 6. Toolpack post-pip publish-failure contract
 # ===========================================================================
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_toolpack_pip_ok_publish_fail_is_reparable(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTNODE_CONFIG", str(tmp_path / "cfg"))
     monkeypatch.setenv("AGENTNODE_LOCKFILE", str(tmp_path / "agentnode.lock"))
@@ -513,6 +520,7 @@ def _toolpack_io(monkeypatch, tmp_path):
     ("2.0", "sha256:abc123def456"),   # upgrade
     ("1.0", "sha256:abc123def456"),   # reinstall, same version, different bytes (E1 hash differs)
 ])
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_toolpack_upgrade_publish_fail_leaves_slug_absent(tmp_path, monkeypatch,
                                                           new_version, new_hash):
     """Blocker-1: an EXISTING toolpack entry is DURABLY quarantined before pip. If the publish
@@ -533,6 +541,7 @@ def test_toolpack_upgrade_publish_fail_leaves_slug_absent(tmp_path, monkeypatch,
     assert "tp" not in installer.read_lockfile(lf).get("packages", {})   # OLD entry GONE, absent
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_toolpack_cas_race_refused_no_pip(tmp_path, monkeypatch):
     """Toolpack preflight sees the slug absent, then a concurrent writer inserts it before the
     atomic quarantine — the in-mutator CAS re-check refuses and pip never runs."""
@@ -555,6 +564,7 @@ def test_toolpack_cas_race_refused_no_pip(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("preexisting", [False, True])
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_toolpack_final_cas_concurrent_publish_after_pip(tmp_path, monkeypatch, preexisting):
     """Blocker-1 core: while pip runs, ANOTHER path publishes the same slug. The final
     compare-and-add commit must refuse (toolpack_commit_conflict_after_pip) and leave the
@@ -674,6 +684,7 @@ def _install_tp(version="1.0"):
         artifact_hash="sha256:abc123def456", entrypoint="pk.tool", trust_level="trusted")
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_toolpack_preparation_stale_existing_entry_replaced(tmp_path, monkeypatch):
     """A binds baseline E1 → pauses in download → B publishes E2 → A acquires the writer →
     A must NOT quarantine/overwrite E2. Fail-closed toolpack_preparation_stale, E2 intact."""
@@ -689,6 +700,7 @@ def test_toolpack_preparation_stale_existing_entry_replaced(tmp_path, monkeypatc
     assert installer.read_lockfile(lf)["packages"]["tp"] == published["b"]   # E2 untouched
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_toolpack_preparation_stale_absent_then_competitor_publishes(tmp_path, monkeypatch):
     """Originally absent baseline; B publishes E2 during A's download → stale, E2 intact."""
     lf, pip_calls = _toolpack_io(monkeypatch, tmp_path)
@@ -701,6 +713,7 @@ def test_toolpack_preparation_stale_absent_then_competitor_publishes(tmp_path, m
     assert installer.read_lockfile(lf)["packages"]["tp"] == published["b"]
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_toolpack_preparation_stale_when_original_entry_removed(tmp_path, monkeypatch):
     """A binds baseline E1 (present); B REMOVES it during A's download → A must not proceed as
     a fresh install (the state no longer matches its bound baseline)."""
@@ -716,6 +729,7 @@ def test_toolpack_preparation_stale_when_original_entry_removed(tmp_path, monkey
     assert "tp" not in installer.read_lockfile(lf).get("packages", {})
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_toolpack_preparation_unchanged_baseline_proceeds(tmp_path, monkeypatch):
     """No concurrency: baseline matches under the lock → the install proceeds normally."""
     lf, pip_calls = _toolpack_io(monkeypatch, tmp_path)
@@ -726,6 +740,7 @@ def test_toolpack_preparation_unchanged_baseline_proceeds(tmp_path, monkeypatch)
     assert installer.read_lockfile(lf)["packages"]["tp"]["version"] == "1.0"   # A's new entry
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_agent_baseline_bound_before_download(tmp_path, monkeypatch):
     """install_package binds the AGENT same-slug baseline BEFORE the download and passes it to
     the transaction — so a competitor publishing during the download cannot be adopted as the
@@ -779,6 +794,7 @@ def _mock_host_io(monkeypatch, tmp_path):
     return pip
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_host_toolpack_acquires_exactly_one_write_lock(tmp_path, monkeypatch):
     import json
     pip = _mock_host_io(monkeypatch, tmp_path)

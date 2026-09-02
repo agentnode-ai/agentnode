@@ -463,7 +463,7 @@ def test_non_tty_writes_defaults(monkeypatch):
     assert run_wizard() == 0
     cfg = load_config()
     assert cfg["guard"] == _DEFAULT_GUARD_POLICY
-    assert cfg["sandbox"]["host_trust_policy"] == "default"
+    assert cfg["sandbox"]["host_trust_policy"] == "curated_only"   # shipped default (1B)
     assert cfg["permissions"]["code_execution"] == "sandboxed"
     assert cfg["trust"]["minimum_trust_level"] == "verified"
 

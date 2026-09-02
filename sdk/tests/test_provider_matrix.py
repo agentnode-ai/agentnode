@@ -28,6 +28,7 @@ Usage:
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import time
@@ -95,8 +96,20 @@ def _have_key(env_key: str) -> bool:
     return bool(os.environ.get(env_key))
 
 
-def _have_anthropic() -> bool:
-    """Check Anthropic key (env or Claude Code OAuth)."""
+def _anthropic_module_available() -> bool:
+    """Is the optional ``anthropic`` package importable?
+
+    R5 Route B (EM2-AC-REMEDIATION-DECISION-0001): an optional-provider test needs BOTH a usable
+    credential AND the module. The package is not declared in ``pyproject.toml``, so a machine that
+    resolves a Claude Code OAuth token but has no ``anthropic`` installed would otherwise satisfy a
+    credential-only guard, run the test, and fail at ``import anthropic``. Token discovery alone must
+    never turn a missing optional module into a failure or a collection error.
+    """
+    return importlib.util.find_spec("anthropic") is not None
+
+
+def _have_anthropic_credential() -> bool:
+    """Check Anthropic key only (env or Claude Code OAuth) — no module check."""
     if os.environ.get("ANTHROPIC_API_KEY"):
         return True
     creds_path = Path.home() / ".claude" / ".credentials.json"
@@ -111,6 +124,11 @@ def _have_anthropic() -> bool:
         except Exception:
             pass
     return False
+
+
+def _have_anthropic() -> bool:
+    """R5 Route B: usable credential AND importable module. Either one missing -> skip."""
+    return _have_anthropic_credential() and _anthropic_module_available()
 
 
 def _load_anthropic_token() -> str | None:

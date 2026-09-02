@@ -36,8 +36,17 @@ def _cfgdir(monkeypatch, tmp_path):
     return tmp_path
 
 
-def test_host_trust_policy_defaults_to_default(_cfgdir):
-    assert host_trust_policy() == "default"
+def test_host_trust_policy_defaults_to_curated_only(_cfgdir):
+    """The SHIPPED default is curated_only (EM-1 / EXEC-MODEL-SCOPE-0001, option 1B):
+    trusted third-party code is sandboxed; only curated runs on the host."""
+    assert host_trust_policy() == "curated_only"
+
+
+def test_shipped_default_config_pins_curated_only():
+    """The value a fresh install writes, asserted exactly. A change here is a
+    change to the security posture of every new installation."""
+    from agentnode_sdk.config import DEFAULTS
+    assert DEFAULTS["sandbox"]["host_trust_policy"] == "curated_only"
 
 
 def test_host_trust_policy_roundtrips_through_save_load(_cfgdir):

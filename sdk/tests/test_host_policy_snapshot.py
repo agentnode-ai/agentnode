@@ -47,9 +47,11 @@ class TestNormalize:
         assert value == "" or str(value) not in ei.value.message
         assert "default, curated_only, none" in ei.value.message
 
-    def test_snapshot_missing_key_is_default(self, monkeypatch):
+    def test_snapshot_missing_key_is_the_shipped_default(self, monkeypatch):
+        # EM-1 / EXEC-MODEL-SCOPE-0001 option 1B: the fallback for a missing key is
+        # the SHIPPED default, curated_only — never the more permissive "default".
         monkeypatch.setattr("agentnode_sdk.config.load_config", lambda: {})  # no sandbox key
-        assert read_host_trust_policy_snapshot() == "default"
+        assert read_host_trust_policy_snapshot() == "curated_only"
 
     def test_snapshot_explicit_null_is_invalid(self, monkeypatch):
         monkeypatch.setattr("agentnode_sdk.config.load_config",

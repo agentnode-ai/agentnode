@@ -11,6 +11,7 @@ env_write_lock), not just the lock primitive.
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import textwrap
@@ -83,8 +84,26 @@ _TOOLPACK_WORKER = textwrap.dedent(
 )
 
 
+def _seed_host_policy(cfg: Path, policy: str = "default") -> None:
+    """Pin ``sandbox.host_trust_policy`` in the config a SUBPROCESS will read.
+
+    The suite-wide mask in conftest patches the policy readers in-process only;
+    a spawned installer reads the config file and would otherwise see the SHIPPED
+    default (``curated_only``, EM-1 option 1B). These tests are about install
+    concurrency and the environment write-lock, not about routing, so they state
+    the policy they assume instead of inheriting whatever ships. Without this the
+    installer's fail-closed ``host_policy_changed_during_install`` guard fires,
+    because parent and child disagree.
+    """
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "config.json").write_text(
+        json.dumps({"sandbox": {"host_trust_policy": policy}}), encoding="utf-8"
+    )
+
+
 def _spawn_toolpack(script: Path, cfg: Path, lf: Path, events: Path, slug: str,
                     target: str, pkg: Path) -> subprocess.Popen:
+    _seed_host_policy(cfg)
     return subprocess.Popen(
         [sys.executable, str(script), str(cfg), str(lf), str(events), slug, target,
          _REPO, str(pkg)],
@@ -251,6 +270,7 @@ def test_two_real_venvs_concurrent_mutation_sections(tmp_path):
     worker = tmp_path / "barrier_worker.py"
     worker.write_text(_TOOLPACK_BARRIER_WORKER, encoding="utf-8")
     cfg = tmp_path / "cfg"
+    _seed_host_policy(cfg)
     pkg = tmp_path / "pkg"
     pkg.mkdir()
     (pkg / "setup.py").write_text("x")
@@ -372,6 +392,7 @@ def test_two_venvs_are_distinct_environments(tmp_path):
     assert os.path.normcase(str(tmp_path / "venvB")) in eb.purelib
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_host_agent_install_pip_and_verify_receive_venv_launcher(tmp_path, monkeypatch):
     """The SEVERE half of the bug: an explicit host install into venv A must drive pip,
     post-verify AND the env-identity with the venv LAUNCHER — never the base interpreter
@@ -486,6 +507,7 @@ def test_kill_mid_quarantine_recovers_under_same_lock(tmp_path):
     cfg = tmp_path / "cfg"
     lf = tmp_path / "agentnode.lock"
     marker = tmp_path / "marker.txt"
+    _seed_host_policy(cfg)
     os.environ["AGENTNODE_CONFIG"] = str(cfg)
     os.environ["AGENTNODE_LOCKFILE"] = str(lf)
     try:
@@ -575,6 +597,7 @@ def test_toolpack_kill_after_pip_before_publish_recovers(tmp_path, monkeypatch):
     env_marker = tmp_path / "env.marker"
     pip_done = tmp_path / "pip.done"
     publish_entered = tmp_path / "publish.entered"
+    _seed_host_policy(cfg)
     monkeypatch.setenv("AGENTNODE_CONFIG", str(cfg))    # inherited by the subprocess + used by B
     monkeypatch.setenv("AGENTNODE_LOCKFILE", str(lf))
 

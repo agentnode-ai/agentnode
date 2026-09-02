@@ -80,6 +80,35 @@ def _default_sandbox_available():
     set_default_backend(None)
 
 
+@pytest.fixture
+def legacy_default_policy(monkeypatch):
+    """Pin ``sandbox.host_trust_policy`` to the pre-EM-1 value ``default``.
+
+    **Not autouse.** Nothing is overridden unless a test explicitly requests it with
+    ``@pytest.mark.usefixtures("legacy_default_policy")``, so an unannotated test observes
+    the SHIPPED default, ``curated_only`` (EM-1 / EXEC-MODEL-SCOPE-0001, option 1B).
+
+    R3 Route A (EM2-AC-REMEDIATION-DECISION-0001) removed the earlier suite-wide autouse
+    mask precisely because a global override let coverage drift away from shipped
+    behaviour silently. Each remaining override is applied at its own test or class and is
+    justified there.
+
+    Who legitimately needs it: tests whose subject is the HOST install or dispatch
+    mechanics of a ``trusted`` package — install transactions, environment write-locks,
+    lockfile integrity, interpreter resolution, subprocess/direct dispatch. Under the
+    shipped default those packages route to the sandbox, so the host path under test is
+    never reached. The routing itself is covered by ``test_shipped_default_routing.py``.
+
+    In-process only: a spawned subprocess reads the config file, so a test that spawns one
+    must also seed the policy into that config (see ``_seed_host_policy`` in
+    ``test_layer3_installer_concurrency.py``).
+    """
+    monkeypatch.setattr("agentnode_sdk.config.host_trust_policy", lambda: "default")
+    monkeypatch.setattr(
+        "agentnode_sdk.config.read_host_trust_policy_snapshot", lambda: "default"
+    )
+
+
 @pytest.fixture(autouse=True)
 def _non_sensitive_test_env(monkeypatch):
     """H7a-v2: make the default test environment non-sensitive.

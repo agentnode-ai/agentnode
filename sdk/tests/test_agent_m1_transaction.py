@@ -88,6 +88,7 @@ def _run(slug, source, target, lock_entry=None):
 # Happy path
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_happy_path_commits_sealed_fields(tmp_path, isolated_lock, target_python):
     src = _write_agent_source(tmp_path / "a")
     _run("m1-agent", src, target_python)
@@ -104,6 +105,7 @@ def test_happy_path_commits_sealed_fields(tmp_path, isolated_lock, target_python
 # CAS (§10)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_cas_stale_build_aborts_without_touching_old_entry(tmp_path, isolated_lock,
                                                            target_python, monkeypatch):
     # existing entry present, but the captured baseline claims a different hash →
@@ -123,6 +125,7 @@ def test_cas_stale_build_aborts_without_touching_old_entry(tmp_path, isolated_lo
     assert before == after  # old entry intact
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_cas_expected_absent_but_appeared_aborts(tmp_path, isolated_lock,
                                                  target_python, monkeypatch):
     installer.update_lockfile("m1-agent", _lock_entry(), path=isolated_lock)
@@ -139,6 +142,7 @@ def test_cas_expected_absent_but_appeared_aborts(tmp_path, isolated_lock,
 # Cross-slug ownership + name-change (§11, §17)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_cross_slug_same_distribution_refused(tmp_path, isolated_lock,
                                               target_python, monkeypatch):
     # another agent already owns the distribution "m1-agent"
@@ -154,6 +158,7 @@ def test_cross_slug_same_distribution_refused(tmp_path, isolated_lock,
     assert called == []
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_cross_slug_same_top_level_refused(tmp_path, isolated_lock,
                                            target_python, monkeypatch):
     # another agent's sealed entrypoint has the same top-level "m1agent"
@@ -167,6 +172,7 @@ def test_cross_slug_same_top_level_refused(tmp_path, isolated_lock,
     assert called == []
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_distribution_name_change_refused(tmp_path, isolated_lock,
                                           target_python, monkeypatch):
     installer.update_lockfile("m1-agent", _lock_entry(
@@ -187,6 +193,7 @@ def test_distribution_name_change_refused(tmp_path, isolated_lock,
 # Quarantine crash + post-quarantine failure (§13, §18, §19)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_quarantine_write_failure_does_not_start_pip(tmp_path, isolated_lock,
                                                      target_python, monkeypatch):
     installer.update_lockfile("m1-agent", _lock_entry(
@@ -217,6 +224,7 @@ def test_quarantine_write_failure_does_not_start_pip(tmp_path, isolated_lock,
     assert before == after
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_post_verify_failure_leaves_entry_absent_no_restore(tmp_path, isolated_lock,
                                                             target_python, monkeypatch):
     installer.update_lockfile("m1-agent", _lock_entry(
@@ -236,6 +244,7 @@ def test_post_verify_failure_leaves_entry_absent_no_restore(tmp_path, isolated_l
     assert "m1-agent" not in data["packages"]
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_file_lock_not_held_across_pip(tmp_path, isolated_lock, target_python, monkeypatch):
     """During pip the per-lockfile file_lock must be free — a concurrent lockfile
     mutation from within the (patched) pip step must succeed, not deadlock."""
@@ -259,6 +268,7 @@ def test_file_lock_not_held_across_pip(tmp_path, isolated_lock, target_python, m
 # Cross-lockfile: HONEST non-guarantee (§20)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_cross_lockfile_entry_not_blocked(tmp_path, monkeypatch, target_python):
     """M1 quarantines only the current lockfile's entry. A second lockfile's entry
     for the same distribution/namespace remains present — M1 does NOT (and must not
@@ -313,6 +323,7 @@ def test_pip_env_neutralizes_redirect_vars(monkeypatch):
 # pip semantics (§15): same version, different wheel bytes → exact bytes installed
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_same_version_different_bytes_reinstalled(tmp_path, isolated_lock, target_python):
     src = _write_agent_source(tmp_path / "a", marker="v1")
     _run("m1-agent", src, target_python)
@@ -332,6 +343,7 @@ def test_same_version_different_bytes_reinstalled(tmp_path, isolated_lock, targe
 # Amendment — Blocker 1: foreign re-insert between quarantine and commit
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_foreign_reinsert_before_commit_refused(tmp_path, isolated_lock, target_python, monkeypatch):
     """A concurrent writer inserts a foreign entry for the slug after quarantine but
     before commit (injected via post_verify) → commit refuses, foreign entry kept."""
@@ -355,6 +367,7 @@ def test_foreign_reinsert_before_commit_refused(tmp_path, isolated_lock, target_
 # Amendment — Blocker 2: build_wheel receives the controlled env, not os.environ
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_transaction_build_receives_controlled_env(tmp_path, isolated_lock,
                                                    target_python, monkeypatch):
     monkeypatch.setenv("PIP_TARGET", "/somewhere")

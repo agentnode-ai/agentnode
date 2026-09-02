@@ -1,7 +1,13 @@
 """Agent execution runtime — ReAct-style agent loop.
 
-Executes package_type=agent packages by loading the agent entrypoint
-and providing it with a guarded AgentContext for tool access.
+Routes package_type=agent packages to their execution boundary and provides a
+guarded AgentContext for tool access. An agent's OWN entrypoint is never loaded
+here: community agents run inside the container, where the SDK-free in-container
+wrapper imports the entrypoint, and the host route for trusted/curated
+entrypoints is a structural refusal (``refuse_host_agent_execution``). The only
+host-side agent path is declarative sequential orchestration, which imports no
+foreign code and re-gates every declared step through ``runner.run_tool``.
+See docs/security/agent-execution-boundary.md for the full contract.
 
 Security invariants:
 - S4: Only explicit allowlist — no dynamic discovery, no delegation
@@ -12,7 +18,8 @@ Security invariants:
 v0.4 additions:
 - run_id (UUID4) per agent execution for correlation
 - Structured RunLog (JSONL) for observability
-- Process-based isolation with configurable fallback to threads
+- (superseded) process-based isolation with thread fallback — the host executor
+  was removed in A1-E-Lock L2; see docs/security/agent-execution-boundary.md
 - Conditional orchestration steps (when expressions)
 
 v0.5 additions:
