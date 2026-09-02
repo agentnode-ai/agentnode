@@ -1,0 +1,105 @@
+# Container-present smoke against the EXACT anchored release artefacts.
+#
+# RELEASE-FINAL-0240-0001 finding F-CONTAINER-ARTEFACT-SMOKE-MISSING: a green source-installed
+# lane does not establish that the distributed wheel behaves correctly on a container-present
+# host. This job rebuilds the artefacts from the anchored commit with the same method and
+# SOURCE_DATE_EPOCH, records their digests, uploads them, and then installs the WHEEL and runs
+# the smoke against the installed distribution only. Once these Linux digests are the recorded
+# release anchors, a hard stop gate is added here that refuses to continue on any mismatch.
+#
+# Everything here lives outside sdk/, so adding it cannot change the artefacts it verifies.
+name: Release artefact smoke (container-present)
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  artifact-smoke:
+    # Only for the release candidate branch; every other pull request skips it.
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'release/v0.24.0'
+    runs-on: ubuntu-24.04
+    env:
+      RC_COMMIT: "a394673a50f02f925672d15b6b4e525e803b843f"
+      WHEEL_SHA256: "f3f7f620c0c6f6d7d68bc3cfea1f004ca1d88b2abe6edad2e638190189856382"
+      SDIST_SHA256: "2263a532e7bbbf718a4d1e378af9876768c9fecb8439f243ccfd4ef78672e2a8"
+      SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
+      DOCKER_SERVER_VERSION: "28.0.4"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: The smoke runner comes from this pull request; the ARTEFACT comes from the anchor
+        run: |
+          set -euo pipefail
+          git cat-file -e "${RC_COMMIT}^{commit}"
+          echo "anchored release commit: ${RC_COMMIT}"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+
+      - name: Select and VERIFY the pinned container runtime
+        run: |
+          set -eu
+          got="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo none)"
+          echo "runner provides docker server: ${got}; pin is ${DOCKER_SERVER_VERSION}"
+          test "${got}" = "${DOCKER_SERVER_VERSION}" || {
+            echo "docker server is ${got}, pinned ${DOCKER_SERVER_VERSION}"; exit 1; }
+          echo "container runtime verified at the pinned version ${got}"
+          docker info --format '{{.OSType}}/{{.Architecture}}'
+
+      - name: Pull the pinned sandbox image by digest
+        run: docker pull "${SANDBOX_IMAGE}"
+
+      - name: Rebuild the artefacts from the anchored commit, exactly as they were built
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet build
+          mkdir -p /tmp/rcbuild
+          git archive --format=tar "${RC_COMMIT}:sdk" | tar -x -C /tmp/rcbuild
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct "${RC_COMMIT}")"
+          echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
+          cd /tmp/rcbuild && python -m build
+
+      - name: Record the built digests (the anchor gate is added once these are the anchors)
+        run: |
+          set -euo pipefail
+          cd /tmp/rcbuild/dist
+          sha256sum agentnode_sdk-0.24.0-py3-none-any.whl agentnode_sdk-0.24.0.tar.gz | tee /tmp/rcbuild/DIGESTS.txt
+          echo "recorded-wheel-anchor=${WHEEL_SHA256}"
+          echo "recorded-sdist-anchor=${SDIST_SHA256}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts-0.24.0
+          path: |
+            /tmp/rcbuild/dist/agentnode_sdk-0.24.0-py3-none-any.whl
+            /tmp/rcbuild/dist/agentnode_sdk-0.24.0.tar.gz
+            /tmp/rcbuild/DIGESTS.txt
+
+      - name: Install ONLY the wheel, in a clean environment
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/rcvenv
+          /tmp/rcvenv/bin/python -m pip install --quiet --upgrade pip
+          /tmp/rcvenv/bin/python -m pip install --quiet /tmp/rcbuild/dist/agentnode_sdk-0.24.0-py3-none-any.whl
+          /tmp/rcvenv/bin/python -c "import importlib.metadata as m; print('mcp resolved:', m.version('mcp'))"
+          /tmp/rcvenv/bin/agentnode --version
+
+      - name: Container-present smoke against the installed distribution
+        run: |
+          set -euo pipefail
+          cd /tmp                      # never run from the repository checkout
+          /tmp/rcvenv/bin/python "${GITHUB_WORKSPACE}/.github/release-artifact-smoke.py"
+
+      - name: The sdist installs and produces the same version
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/rcvenv_sdist
+          /tmp/rcvenv_sdist/bin/python -m pip install --quiet --upgrade pip
+          /tmp/rcvenv_sdist/bin/python -m pip install --quiet /tmp/rcbuild/dist/agentnode_sdk-0.24.0.tar.gz
+          test "$(/tmp/rcvenv_sdist/bin/agentnode --version)" = "agentnode 0.24.0"
+          echo "sdist install OK"
