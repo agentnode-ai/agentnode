@@ -44,6 +44,26 @@ export function anchorId(r: ChangelogRelease): string {
 
 export const RELEASES: ChangelogRelease[] = [
   {
+    version: "0.24.0",
+    date: "2026-09-02",
+    dateSource: "pypi",
+    title: "The container is the boundary",
+    summary:
+      "Third-party code that is merely trusted no longer runs on your host by default, a community agent's own entrypoint cannot run on the host at all, and the lockfile that decides what may run is integrity-checked at run time. This release also repairs a defect that breaks fresh installs of 0.23.0.",
+    highlights: [
+      "The shipped `sandbox.host_trust_policy` is now `curated_only`: only AgentNode-owned curated code runs on the host, trusted third-party toolpacks/MCPs/agents are sandboxed, and without a container runtime they are refused — never a silent host fallback. An on-disk setting always wins, so anyone who has run `agentnode setup` or `agentnode config set` keeps their value",
+      "Running a community agent's own entrypoint on the host was removed structurally, not gated: every attempt raises `HostAgentExecutionUnsupported` before any import or process spawn",
+      "Two-stage lockfile integrity (per-entry `_integrity` plus a global `structure_digest`) is enforced at run time: a valid legacy `agentnode.lock` is warned and still runs, `AGENTNODE_GUARD_STRICT=1` denies it, and a malformed one — duplicate keys, invalid JSON, no `lockfile_version` — now fails closed",
+      "Fixed: fresh installs of 0.23.0 were broken. `mcp>=1.0.0` was unbounded, so pip resolved mcp 2.x, which removed `mcp.server.fastmcp`, and `agentnode_sdk.mcp_server` failed at import. The dependency is now `mcp>=1.0.0,<2`",
+      "Fixed: MCP pre-installs no longer fail with `No space left on device` — both package-manager caches moved out of the sandbox's 16 MiB HOME into its own 512 MiB /tmp",
+      "Host Python environments are mutated under an inter-process lock, runtime-initiated installation is disabled, and installs run as a transaction with a content-addressed store and durable quarantine",
+    ],
+    breaking:
+      "The shipped host-trust default changes to curated_only, so a fresh install sandboxes or refuses trusted third-party code instead of running it on the host; community agents can no longer run their entrypoint on the host at all; and a malformed agentnode.lock now fails closed where it was previously tolerated.",
+    onPyPI: true,
+    hasTag: true,
+  },
+  {
     version: "platform-mcp-sandbox",
     kind: "platform",
     date: "2026-07-15",
