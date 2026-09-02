@@ -287,3 +287,245 @@ def test_mcp_preinstall_fails_closed_on_an_unusable_cache_path():
         assert rc != 0, "an unusable cache path did not fail the build"
     finally:
         subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True, timeout=60)
+
+
+# --- npm: the same three checks, for the OTHER supported manager branch ------
+#
+# EM2-NPM-EVIDENCE-0002, option 1. The final EM-2 review recorded one limitation: npm
+# cache placement rested on production-source inspection and a ProcessSpec assertion,
+# never on npm actually running in a container. These three close that gap and mirror
+# the uv trio above.
+#
+# A purely local npm fixture cannot reach the production path: `_container_build_mcp_volume`
+# installs `package@version` BY NAME from the registry and mounts no /src. The package
+# below is therefore an exact registry pin — the smallest dependency closure of the
+# candidates, with a bin and no preinstall/install/postinstall lifecycle script. Its
+# version lives in `tests/lanes/npm_e2e_pins.json`, not in constraints.txt, which is a
+# pip constraints file and cannot express an npm version.
+
+
+def _npm_pin() -> tuple[str, str, str]:
+    import json
+    from pathlib import Path
+
+    doc = json.loads(
+        (Path(__file__).parent / "lanes" / "npm_e2e_pins.json").read_text(encoding="utf-8")
+    )
+    pin = doc["pins"]["mcp_server"]
+    assert pin["manager"] == "npm", pin
+    return pin["package"], pin["version"], pin["bin"]
+
+
+def _host_npm_cache_state() -> tuple:
+    """A cheap fingerprint of the host's own npm cache, so the container build can be
+    shown not to have touched it."""
+    home = os.path.expanduser("~")
+    cache = os.path.join(home, ".npm")
+    if not os.path.isdir(cache):
+        return (False, None, None)
+    entries = tuple(sorted(os.listdir(cache)))
+    return (True, os.stat(cache).st_mtime_ns, entries)
+
+
+def test_npm_mcp_starts_in_container_real(monkeypatch):
+    """The npm branch of the PRODUCTION preinstall path: an exactly pinned registry
+    package is installed inside the container into a sealed volume, and the MCP it
+    provides really starts and completes the initialize handshake.
+
+    The ProcessSpec the production helper actually hands to the runtime is intercepted
+    on the way through, so what is asserted is the real one — not a reconstruction.
+    """
+    from agentnode_sdk import installer
+    from agentnode_sdk.lock_integrity import seal_entry
+    from agentnode_sdk.runtimes.mcp_launch import build_mcp_launch_plan
+    from agentnode_sdk.runtimes.mcp_runner import MCPServerProcess
+    from agentnode_sdk.sandbox import get_default_backend
+    from tests.hostpolicy import decision
+
+    package, pkg_version, expected_bin = _npm_pin()
+    slug, version = "e2e-npm-mcp", "1.0"
+
+    backend = get_default_backend()
+    captured: list = []
+    real_run_process = backend.run_process
+
+    def _capturing_run_process(spec, *a, **kw):
+        captured.append(spec)
+        return real_run_process(spec, *a, **kw)
+
+    monkeypatch.setattr(backend, "run_process", _capturing_run_process)
+
+    host_before = _host_npm_cache_state()
+    volume, artifact_hash, preinstall_command = installer._container_build_mcp_volume(
+        slug, version, "npm", package, pkg_version)
+    server = None
+    try:
+        # --- the intercepted production spec really runs npm install --------------
+        assert len(captured) == 1, captured
+        spec = captured[0]
+        script = " ".join(spec.command)
+        assert f"npm install -g --prefix /install '{package}@{pkg_version}'" in script, script
+        # it executed: the build returned a hash and an entrypoint, which only the
+        # post-install tree-hasher can produce
+        assert artifact_hash, "no artifact hash — the install did not run"
+
+        # --- the cache is redirected, HOME keeps its hardened 16 MiB default -------
+        assert spec.env["npm_config_cache"] == "/tmp/npm-cache", spec.env
+        assert spec.clean_home is True
+        assert "home_size" not in spec.limits, spec.limits
+        assert spec.limits.get("tmp_size") == "512m", spec.limits
+        argv = backend.wrap_command(spec)
+        assert "/sandbox-home:rw,size=16m" in argv, argv
+
+        # --- the only mount is the rw install volume; the cache is not mounted -----
+        assert [(m.dst, m.read_only) for m in spec.mounts] == [("/install", False)], spec.mounts
+
+        # --- the pinned package produced exactly the expected entrypoint ----------
+        assert preinstall_command == ["node", f"/install/bin/{expected_bin}"], preinstall_command
+
+        # --- and it starts, initializes and stays healthy in a real container -----
+        entry = seal_entry({
+            "trust_level": "verified",
+            "version": version,
+            "mcp_preinstalled": True,
+            "mcp_preinstall": {"manager": "npm", "package": package,
+                               "version": pkg_version, "artifact_hash": artifact_hash},
+            "mcp_sandbox_volume": volume,
+            "mcp_preinstall_command": list(preinstall_command),
+        })
+        dec = decision("verified")
+        plan = build_mcp_launch_plan(slug, entry, dec, backend_kind="docker")
+        assert plan.boundary == "sandbox", plan.boundary
+
+        server = MCPServerProcess(slug, list(preinstall_command),
+                                  trust_level="verified", entry=entry)
+        # start() performs the initialize request/response and raises if unanswered,
+        # so a start that returns IS a completed handshake.
+        server.start(_host_policy_decision=dec, launch_plan=plan)
+        assert server._container_name
+        assert server._container_name.startswith("agentnode-mcp-"), server._container_name
+        assert server.health_check() is True
+
+        # --- nothing of the host's own npm cache moved ---------------------------
+        assert _host_npm_cache_state() == host_before, "the host npm cache changed"
+    finally:
+        if server is not None:
+            try:
+                server.stop()
+            except Exception:
+                pass
+        _rm_volume(volume)
+
+
+def test_npm_preinstall_cache_lands_only_in_private_tmp():
+    """In-container observation of npm itself: the cache lands under /tmp/npm-cache on
+    the container's own tmpfs, `$HOME/.npm` never appears at all, HOME stays inside its
+    16 MiB budget, and nothing survives into the next sandbox.
+
+    The byte bound and the absence check are separate on purpose: a bound alone could
+    conceal a small npm cache written into HOME.
+    """
+    from agentnode_sdk.sandbox import get_default_backend
+    from agentnode_sdk.sandbox.types import MountSpec
+
+    package, pkg_version, _bin = _npm_pin()
+    backend = get_default_backend()
+    volume = "agentnode-e2e-npm-cacheprobe"
+    _rm_volume(volume)
+    probe = (
+        "set -e; "
+        f"npm install -g --prefix /install '{package}@{pkg_version}' 1>&2; "
+        'echo HOMEBYTES:$(du -sb "$HOME" 2>/dev/null | cut -f1); '
+        "echo NPMBYTES:$(du -sb /tmp/npm-cache 2>/dev/null | cut -f1 || echo 0); "
+        'echo HOMENPM:$(test -e "$HOME/.npm" && echo present || echo absent); '
+        "echo CACHEFS:$(stat -f -c %T /tmp/npm-cache); "
+        "echo CACHEMOUNTED:$(grep -c ' /tmp/npm-cache ' /proc/mounts || true)"
+    )
+    try:
+        spec = backend.build_process_spec(
+            ["sh", "-c", probe],
+            network="default",
+            mounts=[MountSpec(src=volume, dst="/install", read_only=False)],
+            env={"UV_CACHE_DIR": "/tmp/uv-cache", "npm_config_cache": "/tmp/npm-cache"},
+            limits={"tmp_size": "512m"},
+            clean_home=True,
+        )
+        rc, out, err = backend.run_process(spec, timeout=900)
+        assert rc == 0, f"npm probe failed ({rc}): {(err or out)[-1200:]}"
+
+        vals = {}
+        for line in (out or "").splitlines():
+            key, sep, val = line.partition(":")
+            if sep and key in ("HOMEBYTES", "NPMBYTES", "HOMENPM", "CACHEFS", "CACHEMOUNTED"):
+                vals[key] = val.strip()
+        assert {"HOMEBYTES", "NPMBYTES", "HOMENPM", "CACHEFS"} <= set(vals), out
+
+        # npm really cached, and it cached where the build points it
+        assert int(vals["NPMBYTES"]) > 100_000, vals
+        # $HOME/.npm is absolutely absent — not merely small
+        assert vals["HOMENPM"] == "absent", vals
+        # and HOME as a whole stayed inside its 16 MiB budget
+        assert int(vals["HOMEBYTES"]) < 16 * 1024 * 1024, vals
+        # the cache is on the container's own tmpfs, and is not a mount of anything
+        assert vals["CACHEFS"] == "tmpfs", vals
+        assert vals.get("CACHEMOUNTED", "0") == "0", vals
+    finally:
+        _rm_volume(volume)
+
+    # --- and it is not shared: a sentinel in one sandbox is invisible to the next ---
+    env = {"npm_config_cache": "/tmp/npm-cache"}
+    write = backend.build_process_spec(
+        ["sh", "-c", "mkdir -p /tmp/npm-cache && echo sentinel > /tmp/npm-cache/AGENTNODE_SENTINEL "
+                     "&& echo WROTE:$(cat /tmp/npm-cache/AGENTNODE_SENTINEL)"],
+        network="none", mounts=[], env=env, limits={"tmp_size": "512m"}, clean_home=True,
+    )
+    rc, out, err = backend.run_process(write, timeout=120)
+    assert rc == 0 and "WROTE:sentinel" in (out or ""), (rc, out, err)
+
+    read = backend.build_process_spec(
+        ["sh", "-c", "test -e /tmp/npm-cache/AGENTNODE_SENTINEL && echo LEAKED || echo ISOLATED"],
+        network="none", mounts=[], env=env, limits={"tmp_size": "512m"}, clean_home=True,
+    )
+    rc, out, err = backend.run_process(read, timeout=120)
+    assert rc == 0, (rc, out, err)
+    assert "ISOLATED" in (out or ""), f"the npm cache leaked between sandboxes: {out!r}"
+
+
+def test_npm_preinstall_fails_closed_on_an_unusable_cache_path(monkeypatch):
+    """With the npm cache pointed at an unwritable path, the PRODUCTION build must fail
+    and leave no sealed volume behind — never fall back to caching in HOME."""
+    from agentnode_sdk import installer
+    from agentnode_sdk.sandbox import get_default_backend
+    from agentnode_sdk.sandbox.container_backend import mcp_sandbox_volume_name
+
+    package, pkg_version, _bin = _npm_pin()
+    slug, version = "e2e-npm-cachefail", "1.0"
+    backend = get_default_backend()
+    bad = "/proc/definitely-not-writable"
+
+    # the path is demonstrably unwritable in this very image, not merely assumed to be
+    probe = backend.build_process_spec(
+        ["sh", "-c", f"mkdir -p {bad}"], network="none", clean_home=True)
+    rc, _o, _e = backend.run_process(probe, timeout=120)
+    assert rc != 0, f"{bad} turned out to be writable — the negative control is void"
+
+    real_build_spec = backend.build_process_spec
+
+    def _redirect_cache(command, **kw):
+        env = dict(kw.pop("env", None) or {})
+        if "npm_config_cache" in env:
+            env["npm_config_cache"] = bad
+        return real_build_spec(command, env=env, **kw)
+
+    monkeypatch.setattr(backend, "build_process_spec", _redirect_cache)
+
+    volume = mcp_sandbox_volume_name(slug, version, "npm", package, pkg_version)
+    try:
+        with pytest.raises(RuntimeError, match="MCP pre-install build failed"):
+            installer._container_build_mcp_volume(slug, version, "npm", package, pkg_version)
+        # nothing sealed: the volume the build would have produced does not exist
+        inspect = subprocess.run([_runtime(), "volume", "inspect", volume],
+                                 capture_output=True, timeout=60)
+        assert inspect.returncode != 0, f"a volume was left behind: {volume}"
+    finally:
+        _rm_volume(volume)

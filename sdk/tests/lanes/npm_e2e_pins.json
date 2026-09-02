@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "note": "Exact npm pins for the runtime-present container E2E tests. Kept separate from constraints.txt, which is a pip constraints file and cannot express an npm version. EM2-NPM-EVIDENCE-0002 required a dedicated repository-controlled pin record so the lane never resolves a floating npm version.",
+  "pins": {
+    "mcp_server": {
+      "manager": "npm",
+      "package": "@modelcontextprotocol/server-memory",
+      "version": "2026.8.31",
+      "bin": "mcp-server-memory",
+      "why": "smallest dependency closure of the candidates (one direct dependency), exposes a bin so the build can seal an entrypoint, and declares no preinstall/install/postinstall lifecycle script"
+    }
+  }
+}
