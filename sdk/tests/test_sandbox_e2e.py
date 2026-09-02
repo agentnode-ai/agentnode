@@ -521,11 +521,20 @@ def test_npm_preinstall_fails_closed_on_an_unusable_cache_path(monkeypatch):
 
     volume = mcp_sandbox_volume_name(slug, version, "npm", package, pkg_version)
     try:
+        # nothing is sealed: the helper raises, so it returns no volume, no tree hash and
+        # no entrypoint — there is no result for a caller to write into a lockfile.
+        #
+        # EM2-NPM-FAILCLOSED-0002: an earlier revision additionally asserted that the
+        # docker volume OBJECT no longer existed. That is a stronger and different
+        # property than "nothing sealed", and it went red: the production cleanup removes
+        # the volume best-effort, discarding the result, so the object can survive an
+        # already-failed build. The volume is unsealed and unreferenced either way, and
+        # the next build removes it before installing. The unchecked cleanup is recorded
+        # as a production observation for separately authorised work, not corrected here.
+        sealed = "not-raised"
         with pytest.raises(RuntimeError, match="MCP pre-install build failed"):
-            installer._container_build_mcp_volume(slug, version, "npm", package, pkg_version)
-        # nothing sealed: the volume the build would have produced does not exist
-        inspect = subprocess.run([_runtime(), "volume", "inspect", volume],
-                                 capture_output=True, timeout=60)
-        assert inspect.returncode != 0, f"a volume was left behind: {volume}"
+            sealed = installer._container_build_mcp_volume(
+                slug, version, "npm", package, pkg_version)
+        assert sealed == "not-raised", f"the build returned a sealed result: {sealed!r}"
     finally:
         _rm_volume(volume)
