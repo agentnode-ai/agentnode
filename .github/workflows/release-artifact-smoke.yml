@@ -22,8 +22,8 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       RC_COMMIT: "9653105ac27a40573014a195cffb392924f14bc0"
-      WHEEL_SHA256: "f3f7f620c0c6f6d7d68bc3cfea1f004ca1d88b2abe6edad2e638190189856382"
-      SDIST_SHA256: "2263a532e7bbbf718a4d1e378af9876768c9fecb8439f243ccfd4ef78672e2a8"
+      WHEEL_SHA256: "c64611edf14583a735c30eb59d338c8f113777a09a6c6559f99a4ad0bf48904c"
+      SDIST_SHA256: "e214b93406724df053c6015f8c02d4486f2c5b3db62e007ec0c5296b2b23c053"
       SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
       DOCKER_SERVER_VERSION: "28.0.4"
     steps:
@@ -64,13 +64,22 @@ jobs:
           echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
           cd /tmp/rcbuild && python -m build
 
-      - name: Record the built digests (the anchor gate is added once these are the anchors)
+      - name: STOP GATE — the built artefacts must equal the recorded release anchors
         run: |
           set -euo pipefail
           cd /tmp/rcbuild/dist
-          sha256sum agentnode_sdk-0.24.0-py3-none-any.whl agentnode_sdk-0.24.0.tar.gz | tee /tmp/rcbuild/DIGESTS.txt
-          echo "recorded-wheel-anchor=${WHEEL_SHA256}"
-          echo "recorded-sdist-anchor=${SDIST_SHA256}"
+          w="$(sha256sum agentnode_sdk-0.24.0-py3-none-any.whl | cut -d' ' -f1)"
+          s="$(sha256sum agentnode_sdk-0.24.0.tar.gz | cut -d' ' -f1)"
+          printf 'wheel  built %s
+wheel  anchor %s
+sdist  built %s
+sdist  anchor %s
+'                  "$w" "$WHEEL_SHA256" "$s" "$SDIST_SHA256"
+          test "$w" = "$WHEEL_SHA256"
+          test "$s" = "$SDIST_SHA256"
+          sha256sum agentnode_sdk-0.24.0-py3-none-any.whl agentnode_sdk-0.24.0.tar.gz > /tmp/rcbuild/DIGESTS.txt
+          echo "both artefacts are byte-identical to the release anchors — an INDEPENDENT rebuild"
+          echo "on a fresh runner reproduces them exactly."
 
       - uses: actions/upload-artifact@v4
         with:
