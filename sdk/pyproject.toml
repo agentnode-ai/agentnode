@@ -21,7 +21,11 @@ classifiers = [
 dependencies = [
     "httpx>=0.25",
     "pyyaml>=6.0",
-    "mcp>=1.0.0",
+    # v1-only: agentnode_sdk.mcp_server imports mcp.server.fastmcp, which mcp 2.x
+    # removed (renamed to mcp.server.mcpserver.MCPServer). An unbounded floor let a
+    # fresh install resolve mcp 2.x and fail at import. Supporting mcp 2.x is a
+    # migration, not a pin change, and is tracked as its own feature task.
+    "mcp>=1.0.0,<2",
     "cryptography>=41.0",
     "keyring>=24",
     "packaging>=21",
