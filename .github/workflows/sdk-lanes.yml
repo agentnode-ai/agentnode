@@ -17,11 +17,12 @@ on:
   workflow_dispatch:
 
 env:
-  # The revision the lanes exercise. EM2-AC-REMEDIATION-DECISION-0001 requires the lanes to
-  # run "at the frozen revision", so the checkout is pinned rather than floating. c8a1c72 is
-  # the frozen revision of record; when the reviewed change is committed this must be
-  # re-pinned to the commit that carries it, otherwise the lanes exercise the baseline.
-  FROZEN_REV: "c8a1c72"
+  # The revision the lanes exercise, pinned to the immutable commit that CARRIES the
+  # implementation under review (EM2-R1R6-IMPLEMENTATION-REVIEW-0011, F-V5). The lanes must
+  # not float: a floating checkout would exercise whatever main happens to hold rather than
+  # the reviewed revision. FROZEN_INVENTORY.json is the collection of exactly this commit,
+  # produced from a clean checkout of it and frozen before any lane executed.
+  FROZEN_REV: "00a07ff6a91f27c0e9f1558fd56653c26a55e1cd"
   # An explicitly pinned container runtime, verified after installation: a lane that silently
   # picked up whatever the runner image shipped would not be pinned.
   DOCKER_VERSION: "5:27.3.1-1~ubuntu.24.04~noble"
