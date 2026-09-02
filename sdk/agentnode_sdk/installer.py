@@ -687,7 +687,16 @@ def _container_build_mcp_volume(
         ["sh", "-c", script],
         network="default",
         mounts=[MountSpec(src=volume, dst="/install", read_only=False)],
-        env={},
+        # Both supported managers cache under $HOME by default — uv in
+        # $HOME/.cache/uv, npm in $HOME/.npm — and the sandbox HOME is a deliberately
+        # small 16 MiB tmpfs (container_backend: home_size default "16m"). Installing
+        # any package with a real dependency tree therefore exhausted it: the observed
+        # failure was uv writing /sandbox-home/.cache/uv/... "No space left on device".
+        # Point both caches at the 512 MiB /tmp tmpfs this build already asks for. The
+        # paths are inside the container's own /tmp, so nothing is shared between
+        # sandboxes, nothing touches a host cache, and no limit or mount grows.
+        # XDG_CACHE_HOME is deliberately not used: npm does not honour it.
+        env={"UV_CACHE_DIR": "/tmp/uv-cache", "npm_config_cache": "/tmp/npm-cache"},
         limits={"tmp_size": "512m"},
         clean_home=True,
     )

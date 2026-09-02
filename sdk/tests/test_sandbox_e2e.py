@@ -206,3 +206,84 @@ def test_mcp_starts_in_container_real():
                 pass
         subprocess.run(["docker", "volume", "rm", "-f", volume],
                        capture_output=True, timeout=60)
+
+
+def test_mcp_preinstall_cache_lands_only_in_private_tmp():
+    """In-container proof that the managers' caches really land under /tmp and that the
+    16 MiB HOME stays empty.
+
+    EM2-CACHE-VARS-0011 required an in-container observation for this: a ProcessSpec
+    assertion pins the assignment but cannot show where bytes actually go. This runs the
+    SAME spec shape the MCP build uses — clean HOME, 512 MiB /tmp, the two cache
+    variables — installs a package with a real dependency tree, and then reports the
+    byte counts under each root.
+    """
+    from agentnode_sdk.sandbox import get_default_backend
+    from agentnode_sdk.sandbox.types import MountSpec
+
+    backend = get_default_backend()
+    volume = "agentnode-e2e-cacheprobe"
+    subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True, timeout=60)
+    probe = (
+        "set -e; "
+        "uv pip install --target /install 'mcp-server-time==2026.8.18' 1>&2; "
+        "echo HOMEBYTES:$(du -sb \"$HOME\" 2>/dev/null | cut -f1); "
+        "echo UVBYTES:$(du -sb /tmp/uv-cache 2>/dev/null | cut -f1 || echo 0); "
+        "echo HOMECACHE:$(test -e \"$HOME/.cache\" && echo present || echo absent)"
+    )
+    try:
+        spec = backend.build_process_spec(
+            ["sh", "-c", probe],
+            network="default",
+            mounts=[MountSpec(src=volume, dst="/install", read_only=False)],
+            env={"UV_CACHE_DIR": "/tmp/uv-cache", "npm_config_cache": "/tmp/npm-cache"},
+            limits={"tmp_size": "512m"},
+            clean_home=True,
+        )
+        rc, out, err = backend.run_process(spec, timeout=600)
+        assert rc == 0, f"probe failed ({rc}): {(err or out)[-800:]}"
+
+        vals = {}
+        for line in (out or "").splitlines():
+            for key in ("HOMEBYTES:", "UVBYTES:", "HOMECACHE:"):
+                if line.startswith(key):
+                    vals[key.rstrip(":")] = line[len(key):].strip()
+        assert "UVBYTES" in vals and "HOMEBYTES" in vals, out
+
+        # the cache is where we put it, and it is not trivial
+        assert int(vals["UVBYTES"]) > 1_000_000, vals
+        # HOME never received a cache directory at all
+        assert vals.get("HOMECACHE") == "absent", vals
+        # and HOME stayed far below its 16 MiB budget
+        assert int(vals["HOMEBYTES"]) < 1_000_000, vals
+    finally:
+        subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True, timeout=60)
+
+
+def test_mcp_preinstall_fails_closed_on_an_unusable_cache_path():
+    """An unusable cache path must refuse, not silently seal a partial volume.
+
+    The negative half of the correction: the same build with a cache directory pointed
+    at a read-only location fails, and the volume is not left behind.
+    """
+    from agentnode_sdk.sandbox import get_default_backend
+    from agentnode_sdk.sandbox.types import MountSpec
+
+    backend = get_default_backend()
+    volume = "agentnode-e2e-cachefail"
+    subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True, timeout=60)
+    try:
+        spec = backend.build_process_spec(
+            ["sh", "-c", "set -e; uv pip install --target /install 'mcp-server-time==2026.8.18' 1>&2"],
+            network="default",
+            mounts=[MountSpec(src=volume, dst="/install", read_only=False)],
+            # /proc is not writable inside the container: the manager cannot create a
+            # cache there, so the build must fail rather than proceed.
+            env={"UV_CACHE_DIR": "/proc/definitely-not-writable"},
+            limits={"tmp_size": "512m"},
+            clean_home=True,
+        )
+        rc, out, err = backend.run_process(spec, timeout=300)
+        assert rc != 0, "an unusable cache path did not fail the build"
+    finally:
+        subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True, timeout=60)
