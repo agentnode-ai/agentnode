@@ -24,8 +24,12 @@ env:
   # produced from a clean checkout of it and frozen before any lane executed.
   FROZEN_REV: "edcffc48782a789e96cb17cf573ae07a3afea3af"
   # An explicitly pinned container runtime, verified after installation: a lane that silently
-  # picked up whatever the runner image shipped would not be pinned.
-  DOCKER_VERSION: "5:27.3.1-1~ubuntu.24.04~noble"
+  # picked up whatever the runner image shipped would not be pinned. This value is OBSERVED,
+  # not assumed — it is a Version: field read from the Docker noble stable Packages index,
+  # present for BOTH docker-ce and docker-ce-cli. A previous fabricated value
+  # (5:27.3.1-1~ubuntu.24.04~noble) did not exist in that repository and the lane died at
+  # apt with "Version ... was not found" before any container test ran.
+  DOCKER_VERSION: "5:29.7.2-1~ubuntu.24.04~noble"
   # Pinned by digest in sdk/agentnode_sdk/sandbox/container_backend.py — kept identical here.
   SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
   PIP_VERSION: "24.2"
@@ -69,8 +73,22 @@ jobs:
         run: |
           python -m pip install --upgrade "pip==${PIP_VERSION}" \
             "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
-      - name: Install the SDK dev extra into a fresh environment
-        run: pip install -e ".[dev]"
+      - name: Install the SDK dev extra under the frozen constraints
+        # The dev extra alone leaves transitive versions free. An unconstrained `mcp`
+        # resolved to 2.x on the runner, where FastMCP was renamed, and 23 tests failed on
+        # all three Pythons. tests/lanes/constraints.txt pins the versions of the
+        # environment that produced the accepted green run.
+        run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
+      - name: Record the resolved versions the lane will actually test against
+        run: |
+          python - <<'PY'
+          import importlib.metadata as md
+          for n in ("mcp", "pytest", "pytest-asyncio", "respx", "httpx", "pydantic"):
+              try:
+                  print("%-16s %s" % (n, md.version(n)))
+              except Exception:
+                  print("%-16s <absent>" % n)
+          PY
       - name: Install the optional providers this lane exercises
         run: pip install "anthropic==0.39.0" "openai==1.54.3"
       - name: Confirm the lane preconditions
@@ -192,6 +210,13 @@ jobs:
         run: |
           set -eu
           sudo apt-get update
+          # If the pin is unavailable, print what the runner CAN see rather than failing
+          # silently — the previous failure gave no candidate list.
+          if ! apt-cache madison docker-ce | grep -qF "${DOCKER_VERSION}"; then
+            echo "pinned ${DOCKER_VERSION} is not available; docker-ce candidates are:"
+            apt-cache madison docker-ce | head -20
+            exit 1
+          fi
           sudo apt-get install -y --allow-downgrades "docker-ce=${DOCKER_VERSION}"             "docker-ce-cli=${DOCKER_VERSION}"
           sudo systemctl start docker
           got="$(docker version --format '{{.Server.Version}}')"
@@ -205,7 +230,7 @@ jobs:
         run: |
           python -m pip install --upgrade "pip==${PIP_VERSION}" \
             "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
-      - run: pip install -e ".[dev]"
+      - run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
       - name: Run against the frozen inventory
         run: |
           python -m pytest tests -q -p no:randomly \
@@ -250,7 +275,7 @@ jobs:
         run: |
           python -m pip install --upgrade "pip==${PIP_VERSION}" \
             "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
-      - run: pip install -e ".[dev]"
+      - run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
       - name: The live-gate refusal must hold with no runtime present
         run: |
           python -m pytest tests/test_shipped_default_live_paths.py -q -p no:randomly \

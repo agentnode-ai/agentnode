@@ -1,0 +1,13 @@
+# Exact constraints for the EM2 lanes, taken from the environment that produced the
+# ACCEPTED green run at FROZEN_REV — read with importlib.metadata, not inferred from a
+# failed lane. `mcp` is the one that mattered: the lane resolved 2.x, where FastMCP was
+# renamed, and 23 tests in tests/test_mcp_server.py failed on all three Pythons.
+#
+# mcp 1.28.1 declares requires_python >=3.10 and ships a wheel, so it installs on each
+# lane Python (3.10.15, 3.11.10, 3.12.7).
+mcp==1.28.1
+pytest==9.1.1
+pytest-asyncio==1.4.0
+respx==0.23.1
+httpx==0.28.1
+pydantic==2.13.4
