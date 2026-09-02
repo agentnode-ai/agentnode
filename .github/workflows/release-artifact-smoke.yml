@@ -70,11 +70,10 @@ jobs:
           cd /tmp/rcbuild/dist
           w="$(sha256sum agentnode_sdk-0.24.0-py3-none-any.whl | cut -d' ' -f1)"
           s="$(sha256sum agentnode_sdk-0.24.0.tar.gz | cut -d' ' -f1)"
-          printf 'wheel  built %s
-wheel  anchor %s
-sdist  built %s
-sdist  anchor %s
-'                  "$w" "$WHEEL_SHA256" "$s" "$SDIST_SHA256"
+          echo "wheel  built  $w"
+          echo "wheel  anchor $WHEEL_SHA256"
+          echo "sdist  built  $s"
+          echo "sdist  anchor $SDIST_SHA256"
           test "$w" = "$WHEEL_SHA256"
           test "$s" = "$SDIST_SHA256"
           sha256sum agentnode_sdk-0.24.0-py3-none-any.whl agentnode_sdk-0.24.0.tar.gz > /tmp/rcbuild/DIGESTS.txt
