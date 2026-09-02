@@ -287,17 +287,17 @@ def _sandbox_screen(cfg: dict) -> tuple[str, bool]:
     print(bold("  Sandbox & host-trust policy"))
     print()
     print("  Community packages always run in an isolated container sandbox.")
-    print("  Trusted/curated packages run on the host under the default policy —")
-    print("  the host-trust policy can sandbox them too.")
+    print("  By default, trusted third-party packages are sandboxed too — only")
+    print("  AgentNode's own curated packages run directly on your host.")
     print()
 
     htp = _pick("Which trust tiers may run directly on your host?", [
         ("Default", "default"),
         ("Curated only", "curated_only"),
         ("None", "none"),
-    ], recommended=1, notes=[
-        "curated + trusted on host (today's behavior)",
-        "trusted is sandboxed; only curated on host",
+    ], recommended=2, notes=[
+        "curated + trusted on host (more permissive than the shipped default)",
+        "trusted is sandboxed; only curated on host (shipped default)",
         "everything sandboxed; nothing on the host",
     ])
     cfg["sandbox"]["host_trust_policy"] = htp

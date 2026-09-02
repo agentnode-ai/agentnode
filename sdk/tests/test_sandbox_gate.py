@@ -104,6 +104,7 @@ def test_curated_not_blocked_when_unavailable(tmp_path, monkeypatch):
     assert res.mode_used != "sandbox_unavailable"  # got past the sandbox gate
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_trusted_not_blocked_but_warns(tmp_path, monkeypatch, caplog):
     set_default_backend(_FakeBackend(available=False))
     _stub_check_run_deny(monkeypatch)

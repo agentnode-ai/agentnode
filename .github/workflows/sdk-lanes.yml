@@ -1,0 +1,311 @@
+name: SDK execution lanes (R6)
+
+# R6 of EM2-AC-REMEDIATION-DECISION-0001: two pinned Linux lanes plus an isolated
+# runtime-absent job. A lane is CLEAN only when its collection matches the frozen
+# inventory, there are zero failures and errors, every mandatory routing/refusal test
+# executed, and every optional-provider test either executed or skipped for the R5 reason.
+#
+# The container boundary is the product's security boundary and no workflow exercised it
+# before this one: every container E2E suite is gated behind an environment variable that
+# nothing set. The runtime-present lane sets them.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # The revision the lanes exercise, pinned to the immutable commit that CARRIES the
+  # implementation, the tests AND the matching inventory. The lanes must not float: a
+  # floating checkout would exercise whatever main happens to hold rather than the reviewed
+  # revision. FROZEN_INVENTORY.json is the collection of exactly this commit, produced from
+  # a clean checkout of it and frozen before any lane executed.
+  #
+  # The pin necessarily lives in a LATER commit than the one it names — a commit cannot
+  # contain its own hash — and the workflow that runs is taken from the pull request head,
+  # not from FROZEN_REV. An earlier attempt pinned the implementation commit while the
+  # corrected inventory sat one commit further on, so the lane checked out new tests against
+  # an old inventory and was correctly reported NOT CLEAN with six unknown node ids.
+  FROZEN_REV: "4c92f5817b8447c6c3ea2605ae91e9fe9243722d"
+  # The container runtime is pinned by SERVER VERSION and the pin is verified, so a runner
+  # image that changed Docker fails the lane instead of silently altering the boundary under
+  # test. Both values are OBSERVED, not assumed:
+  #   DOCKER_SERVER_VERSION — the Docker Server version the ubuntu-24.04 runner image ships,
+  #     read from the actions/runner-images manifest for image 20260823.283.
+  #   DOCKER_APT_VERSION    — the matching apt Version: field in the Docker noble stable
+  #     Packages index, used only if the runner's Docker does NOT match the pin.
+  # Two earlier attempts failed here and both are instructive: a fabricated version string
+  # (5:27.3.1-…) that does not exist in the repository, and a real version (5:29.7.2-…) that
+  # apt could not see because the Docker repository is not configured on the runner at all.
+  DOCKER_SERVER_VERSION: "28.0.4"
+  DOCKER_APT_VERSION: "5:28.0.4-1~ubuntu.24.04~noble"
+  # Pinned by digest in sdk/agentnode_sdk/sandbox/container_backend.py — kept identical here.
+  SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
+  PIP_VERSION: "24.2"
+  SETUPTOOLS_VERSION: "75.1.0"
+  WHEEL_VERSION: "0.44.0"
+
+jobs:
+  # ---------------------------------------------------------------- ordinary lane
+  # No provider credentials, the three E2E flags UNSET (EM2-CI-ROUTE-DECISION-0002, option A).
+  # This closure deliberately does not depend on paid external providers: the security gates
+  # — sandbox routing, the live refusal gate, the host-trust default — use no provider at all,
+  # and the provider-NEUTRAL contract is covered by 112 deterministic LLM tests that need
+  # neither network nor credential.
+  #
+  # The optional-provider packages are still installed, so a skip here is caused by the
+  # missing CREDENTIAL and not merely by a missing import. Those skips are not tolerated
+  # silently: the lane verifies POSITIVELY that every frozen optional-provider case either ran
+  # or skipped for the documented R5 reason, so a collection loss or a changed skip condition
+  # fails the lane instead of passing unnoticed.
+  #
+  # What this lane therefore does NOT establish: that real Anthropic or OpenAI integrations
+  # work. Live-provider validation is separate from this closure and must not be represented
+  # as covered by it.
+  lane-ordinary:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10.15", "3.11.10", "3.12.7"]
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REV }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Pin installer tooling
+        run: |
+          python -m pip install --upgrade "pip==${PIP_VERSION}" \
+            "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
+      - name: Install the SDK dev extra under the frozen constraints
+        # The dev extra alone leaves transitive versions free. An unconstrained `mcp`
+        # resolved to 2.x on the runner, where FastMCP was renamed, and 23 tests failed on
+        # all three Pythons. tests/lanes/constraints.txt pins the versions of the
+        # environment that produced the accepted green run.
+        run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
+      - name: Record the resolved versions the lane will actually test against
+        run: |
+          python - <<'PY'
+          import importlib.metadata as md
+          for n in ("mcp", "pytest", "pytest-asyncio", "respx", "httpx", "pydantic"):
+              try:
+                  print("%-16s %s" % (n, md.version(n)))
+              except Exception:
+                  print("%-16s <absent>" % n)
+          PY
+      - name: Install the optional providers this lane exercises
+        run: pip install "anthropic==0.39.0" "openai==1.54.3"
+      - name: Confirm the lane preconditions
+        run: |
+          set -eu
+          for v in AGENTNODE_SANDBOX_E2E AGENTNODE_AGENT_SANDBOX_E2E AGENTNODE_EGRESS_E2E; do
+            if [ -n "${!v:-}" ]; then echo "$v must be unset in the ordinary lane"; exit 1; fi
+          done
+          # Provider credentials are deliberately ABSENT here and their absence is not a lane
+          # failure: R5 makes it a clean-skip condition and the R6 clean-run definition accepts
+          # an R5-reason skip. The modules must be importable, so a skip is credential-caused.
+          for v in OPENAI_API_KEY ANTHROPIC_API_KEY; do
+            if [ -n "${!v:-}" ]; then
+              echo "$v is set; this closure runs without provider credentials by decision"
+              exit 1
+            fi
+          done
+          python -c "import importlib.util as u; assert u.find_spec('anthropic'); assert u.find_spec('openai'); print('optional providers importable, credentials absent')"
+      - name: Run against the frozen inventory
+        run: |
+          python -m pytest tests -q -p no:randomly \
+            -p tests.lanes.conftest_report --lane-report lane-report.json
+      - name: Verify the lane is clean
+        if: always()
+        run: |
+          python -m tests.lanes.freeze_inventory verify \
+            tests/lanes/FROZEN_INVENTORY.json lane-report.json ordinary
+      - name: Verify the optional-provider cases skipped for the documented R5 reason
+        if: always()
+        shell: python
+        run: |
+          # POSITIVE verification (EM2-CI-ROUTE-DECISION-0002, F-SKIP-REASON-MUST-BE-POSITIVE).
+          # Tolerating a skip would let a collection loss or a changed skip condition pass
+          # unnoticed. Two distinct obligations are checked:
+          #   (a) every frozen optional-provider case is accounted for BY NAME and either ran or
+          #       skipped naming the precondition it lacks;
+          #   (b) the ANTHROPIC-affected cases — the ones R5 governs — carry specifically the
+          #       documented R5 credential/module reason, and there is a non-zero number of them,
+          #       so the check cannot pass vacuously.
+          import json, sys
+          frozen = json.load(open("tests/lanes/FROZEN_INVENTORY.json", encoding="utf-8"))
+          report = json.load(open("lane-report.json", encoding="utf-8"))
+          outcomes, reasons = report["outcomes"], report.get("skip_reasons", {})
+          prefixes = tuple(frozen["optional_provider_prefixes"])
+          expected = [n for n in frozen["node_ids"] if n.startswith(prefixes)]
+          anthropic = [n for n in expected if "anthropic" in n.lower()]
+          # The exact reasons the two suites emit for an absent Anthropic credential.
+          R5_REASONS = ("needs BOTH a key", "No Anthropic API key")
+          # A skip outside the Anthropic set must still NAME its missing precondition.
+          NAMED = ("not set", "not available", "needs BOTH a key", "No Anthropic API key",
+                   "base_url", "BASE_URL", "set AGENTNODE")
+          problems, ran, skipped, r5 = [], 0, 0, 0
+          if not expected:
+              problems.append("the frozen inventory contains no optional-provider cases at all")
+          if not anthropic:
+              problems.append("no Anthropic-affected case in the frozen inventory; the R5 check "
+                              "would pass vacuously")
+          for n in expected:
+              o = outcomes.get(n)
+              if o is None:
+                  problems.append("frozen optional-provider case not collected: %s" % n)
+                  continue
+              if o in ("failed", "error"):
+                  problems.append("optional-provider case did not pass or skip: %s -> %s" % (n, o))
+                  continue
+              if o != "skipped":
+                  ran += 1
+                  continue
+              skipped += 1
+              reason = reasons.get(n, "")
+              if n in anthropic:
+                  if any(w in reason for w in R5_REASONS):
+                      r5 += 1
+                  else:
+                      problems.append("Anthropic case skipped WITHOUT the R5 reason: %s -> %r"
+                                      % (n, reason))
+              elif not any(w in reason for w in NAMED):
+                  problems.append("optional-provider skip names no precondition: %s -> %r"
+                                  % (n, reason))
+          print("frozen optional-provider cases : %d" % len(expected))
+          print("  ran                          : %d" % ran)
+          print("  skipped                      : %d" % skipped)
+          print("Anthropic-affected cases       : %d" % len(anthropic))
+          print("  skipped for the R5 reason    : %d" % r5)
+          if anthropic and r5 != len([n for n in anthropic if outcomes.get(n) == "skipped"]):
+              problems.append("not every skipped Anthropic case carried the R5 reason")
+          if problems:
+              print("NOT CLEAN")
+              for p in problems[:20]:
+                  print("  - " + p)
+              sys.exit(1)
+          print("CLEAN: every frozen optional-provider case is accounted for; every Anthropic "
+                "skip carries the documented R5 reason")
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lane-ordinary-${{ matrix.python-version }}
+          path: sdk/lane-report.json
+
+  # ---------------------------------------------------------------- runtime-present lane
+  # The first CI run in this repository that exercises the container boundary at all.
+  lane-runtime-present:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk
+    env:
+      AGENTNODE_SANDBOX_E2E: "1"
+      AGENTNODE_AGENT_SANDBOX_E2E: "1"
+      AGENTNODE_EGRESS_E2E: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REV }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+      - name: Select and VERIFY the pinned container runtime
+        run: |
+          set -eu
+          got="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo none)"
+          echo "runner provides docker server: ${got}; pin is ${DOCKER_SERVER_VERSION}"
+          if [ "${got}" != "${DOCKER_SERVER_VERSION}" ]; then
+            echo "the runner's Docker is not the pinned version; installing it from the Docker repository"
+            sudo install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            sudo chmod a+r /etc/apt/keyrings/docker.gpg
+            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+            sudo apt-get update
+            if ! apt-cache madison docker-ce | grep -qF "${DOCKER_APT_VERSION}"; then
+              echo "pinned ${DOCKER_APT_VERSION} is not available; docker-ce candidates are:"
+              apt-cache madison docker-ce | head -20
+              exit 1
+            fi
+            sudo apt-get install -y --allow-downgrades "docker-ce=${DOCKER_APT_VERSION}" "docker-ce-cli=${DOCKER_APT_VERSION}"
+            sudo systemctl start docker
+            got="$(docker version --format '{{.Server.Version}}')"
+          fi
+          # The pin is asserted whichever path was taken: a drifting runtime fails the lane.
+          test "${got}" = "${DOCKER_SERVER_VERSION}" || {
+            echo "docker server is ${got}, pinned ${DOCKER_SERVER_VERSION}"; exit 1; }
+          echo "container runtime verified at the pinned version ${got}"
+          docker info --format '{{.OSType}}/{{.Architecture}}'
+      - name: Pull the pinned sandbox image by digest
+        run: docker pull "${SANDBOX_IMAGE}"
+      - name: Pin installer tooling
+        run: |
+          python -m pip install --upgrade "pip==${PIP_VERSION}" \
+            "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
+      - run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
+      - name: Run against the frozen inventory
+        run: |
+          python -m pytest tests -q -p no:randomly \
+            -p tests.lanes.conftest_report --lane-report lane-report.json
+      - name: Verify the lane is clean
+        if: always()
+        run: |
+          python -m tests.lanes.freeze_inventory verify \
+            tests/lanes/FROZEN_INVENTORY.json lane-report.json runtime-present
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lane-runtime-present
+          path: sdk/lane-report.json
+
+  # ---------------------------------------------------------------- runtime-absent job
+  # Deliberately exposes no container runtime and no socket, so the R4 refusal test
+  # exercises the LIVE gate and real backend discovery rather than a substitute.
+  lane-runtime-absent:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REV }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+      - name: Remove every container runtime and socket from this job
+        run: |
+          set -eu
+          sudo systemctl stop docker.socket docker.service containerd || true
+          sudo rm -f /var/run/docker.sock /run/docker.sock || true
+          sudo rm -f "$(command -v docker || true)" "$(command -v podman || true)" || true
+          if command -v docker >/dev/null 2>&1; then echo "docker still discoverable"; exit 1; fi
+          if command -v podman >/dev/null 2>&1; then echo "podman still discoverable"; exit 1; fi
+          test ! -S /var/run/docker.sock
+          echo "runtime-absent confirmed"
+      - name: Pin installer tooling
+        run: |
+          python -m pip install --upgrade "pip==${PIP_VERSION}" \
+            "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
+      - run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
+      - name: The live-gate refusal must hold with no runtime present
+        run: |
+          python -m pytest tests/test_shipped_default_live_paths.py -q -p no:randomly \
+            -p tests.lanes.conftest_report --lane-report lane-report.json
+      - name: Verify the mandatory refusal executed
+        if: always()
+        run: |
+          python -m tests.lanes.freeze_inventory verify \
+            tests/lanes/FROZEN_INVENTORY.json lane-report.json runtime-absent
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lane-runtime-absent
+          path: sdk/lane-report.json

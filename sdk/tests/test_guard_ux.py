@@ -149,6 +149,7 @@ class TestFormatGuardDeny:
 # Test: confirmation_callback → user confirms → tool runs
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 class TestUserConfirmsToolRuns:
     @patch("agentnode_sdk.runtimes.python_runner._load_entrypoint_from_entry")
     def test_callback_yes_proceeds(self, mock_load, tmp_path):

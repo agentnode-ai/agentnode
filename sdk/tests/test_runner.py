@@ -147,6 +147,7 @@ class TestGetTrustLevel:
 # TestRunToolDirect
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 class TestRunToolDirect:
     @patch("agentnode_sdk.runtimes.python_runner._load_entrypoint_from_entry")
     def test_success(self, mock_load, tmp_path):
@@ -183,6 +184,7 @@ class TestRunToolDirect:
 # TestRunToolSubprocess
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 class TestRunToolSubprocess:
     def test_returns_result(self, tmp_path):
         """Full subprocess round-trip with a real child process.
@@ -265,6 +267,7 @@ class TestRunToolSubprocess:
 # TestRunToolAuto
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 class TestRunToolAuto:
     def test_curated_still_subprocess(self, tmp_path):
         """P0-06: curated trust no longer bypasses subprocess isolation."""
@@ -332,6 +335,7 @@ class TestRunToolKwargCollision:
 # TestSubprocessEdgeCases
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 class TestSubprocessEdgeCases:
     def test_crash_tool_doesnt_crash_host(self, tmp_path):
         """A tool that raises RuntimeError should not crash the host process."""

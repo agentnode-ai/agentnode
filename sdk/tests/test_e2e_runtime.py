@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import time
 from pathlib import Path
@@ -79,9 +80,18 @@ requires_openai = pytest.mark.skipif(
     not os.environ.get("OPENAI_API_KEY"),
     reason="OPENAI_API_KEY not set",
 )
+# R5 Route B (EM2-AC-REMEDIATION-DECISION-0001): an optional-provider test needs BOTH a usable
+# credential AND the importable module. `anthropic` is not declared in pyproject.toml, so a machine
+# that resolves a Claude Code OAuth token but has no `anthropic` installed would otherwise satisfy a
+# credential-only guard, run the test, and fail at `import anthropic`. Token discovery alone must
+# never turn a missing optional module into a failure or a collection/setup error.
+_anthropic_module = importlib.util.find_spec("anthropic") is not None
 requires_anthropic = pytest.mark.skipif(
-    _anthropic_token is None,
-    reason="No Anthropic API key (env or Claude Code OAuth)",
+    _anthropic_token is None or not _anthropic_module,
+    reason=(
+        "Anthropic optional provider unavailable: needs BOTH a key (env or Claude Code OAuth) "
+        "AND the 'anthropic' package"
+    ),
 )
 requires_local_execution = pytest.mark.skipif(
     not os.environ.get("AGENTNODE_E2E_LOCAL"),

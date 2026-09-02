@@ -53,7 +53,12 @@ DEFAULTS: dict[str, Any] = {
         "enabled": True,
     },
     "sandbox": {
-        "host_trust_policy": "default",
+        # EM-1 decision EXEC-MODEL-SCOPE-0001 (option 1B): the SHIPPED default is
+        # curated_only — trusted THIRD-PARTY tool packs and MCP servers run in the
+        # container or are refused fail-closed; only curated (AgentNode-owned) code
+        # is host-eligible. An existing config that already records a value keeps
+        # it: this changes what new installs get, never what a user chose.
+        "host_trust_policy": "curated_only",
     },
     "llm": {
         "default_provider": "openai",
@@ -107,7 +112,7 @@ CONFIG_DESCRIPTIONS: dict[str, str] = {
     "guard.compute": "Guard policy for tools that perform computation",
     "guard.unknown": "Guard policy for tools with unknown action type",
     "agent_sandbox.enabled": "Route community (verified/unverified) agents through the container sandbox",
-    "sandbox.host_trust_policy": "Which trust tiers may run directly on the host; the rest are sandboxed or fail-closed (default = curated+trusted on host; curated_only = trusted is sandboxed; none = everything is sandboxed)",
+    "sandbox.host_trust_policy": "Which trust tiers may run directly on the host; the rest are sandboxed or fail-closed. curated_only (SHIPPED DEFAULT) = only AgentNode-owned curated code on the host, trusted third-party is sandboxed; default = curated+trusted on host; none = everything is sandboxed",
     "llm.default_provider": "Which stored LLM credential to try first (vault resolution order)",
 }
 
@@ -206,12 +211,14 @@ def host_trust_policy() -> str:
 
     Live read used by the run/install paths; the pure decision table lives in
     ``sandbox.policy``. A missing key or unreadable config falls back to
-    ``"default"`` (today's behavior).
+    ``"curated_only"`` — the shipped default since the EM-1 decision. The fallback
+    matches ``DEFAULT_CONFIG`` on purpose: an unreadable config must not be more
+    permissive than a fresh install.
     """
     try:
         return get_value(load_config(), "sandbox.host_trust_policy")
     except KeyError:
-        return "default"
+        return "curated_only"
 
 
 def normalize_host_trust_policy(value: object) -> HostTrustPolicy:
@@ -253,7 +260,7 @@ def read_host_trust_policy_snapshot() -> HostTrustPolicy:
     try:
         raw: object = get_value(load_config(), "sandbox.host_trust_policy")
     except KeyError:
-        raw = "default"
+        raw = "curated_only"
     return normalize_host_trust_policy(raw)
 
 

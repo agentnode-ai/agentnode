@@ -178,6 +178,7 @@ def test_install_failclosed_when_no_runtime(monkeypatch, tmp_path):
     assert pip_calls == []
 
 
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_install_trusted_still_builds_on_host(monkeypatch, tmp_path):
     pip_calls: list[int] = []
     _mock_install_io(monkeypatch, tmp_path, pip_calls)

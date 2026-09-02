@@ -56,6 +56,7 @@ def test_nontrusted_toolpack_failclosed_when_no_sandbox(monkeypatch, tmp_path, t
 
 
 @pytest.mark.parametrize("tier", ["trusted", "curated"])
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_trusted_toolpack_builds(monkeypatch, tmp_path, tier):
     pip_calls = []
     _mock_io(monkeypatch, tmp_path, pip_calls)

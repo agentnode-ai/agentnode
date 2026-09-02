@@ -132,6 +132,7 @@ class TestFlag:
 # run_agent routing (flag OFF = unchanged; flag ON = community → sandbox)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_default_policy")
 class TestRouting:
     def test_explicit_off_community_refused_outright(self, monkeypatch):
         """With the flag explicitly disabled, community agents are refused at the

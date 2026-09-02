@@ -71,6 +71,7 @@ def _count_locks(monkeypatch):
 
 
 @respx.mock
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_client_install_host_toolpack_exactly_one_lock(tmp_path, monkeypatch, bypass_policy):
     _mock_endpoints("tp", trust="trusted")
     _mock_installer_io(monkeypatch, tmp_path)
@@ -94,6 +95,7 @@ def test_client_install_container_zero_locks(tmp_path, monkeypatch, bypass_polic
 
 
 @respx.mock
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_cli_install_host_exactly_one_lock(tmp_path, monkeypatch, bypass_policy):
     from agentnode_sdk.cli import commands
     _mock_endpoints("tp", trust="trusted")
@@ -105,6 +107,7 @@ def test_cli_install_host_exactly_one_lock(tmp_path, monkeypatch, bypass_policy)
 
 
 @respx.mock
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_doctor_fix_install_host_exactly_one_lock(tmp_path, monkeypatch, bypass_policy):
     # The exact call doctor --fix makes: AgentNodeClient().install(slug, require_*=...).
     _mock_endpoints("tp", trust="trusted")
@@ -117,6 +120,7 @@ def test_doctor_fix_install_host_exactly_one_lock(tmp_path, monkeypatch, bypass_
 
 
 @respx.mock
+@pytest.mark.usefixtures("legacy_default_policy")
 def test_client_binds_start_snapshot_before_registry_resolution(tmp_path, monkeypatch,
                                                                 bypass_policy):
     """The client captures the install-start snapshot at the TOP of install(), before the
