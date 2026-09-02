@@ -1,5 +1,21 @@
 # Changelog
 
+**This file is not the changelog. It is an archive.**
+
+The maintained changelog for every release is **[`sdk/CHANGELOG.md`](sdk/CHANGELOG.md)** — that is
+what a release updates, and what the published package carries. The reader-facing version lives at
+<https://agentnode.net/changelog>, and each release also gets a GitHub release under
+[Releases](https://github.com/agentnode-ai/agentnode/releases).
+
+This file stopped being updated after `v0.5.1` (2026-04-15) and is 19 releases behind; it is kept
+because the five entries below are early *platform* history that `sdk/CHANGELOG.md` never carried —
+its own history starts at `0.4.1`, and the `v0.5.1`/`v0.5.0` entries here describe different work
+than the SDK entries with the same numbers. Nothing new is added here.
+
+---
+
+## Archived platform history (up to 2026-04-15)
+
 ## v0.5.1 — Local Credentials (2026-04-15)
 
 Use GitHub, Slack, and other connector packages **without an AgentNode account**.
