@@ -34,10 +34,21 @@ env:
 
 jobs:
   # ---------------------------------------------------------------- ordinary lane
-  # Provider credentials PRESENT, the three E2E flags UNSET. With both the module and the
-  # credential available the optional-provider matrix EXECUTES here; a case that still skips
-  # must name the precondition it lacks (R5). This is the lane that proves the provider
-  # contract rather than silently skipping past it.
+  # No provider credentials, the three E2E flags UNSET (EM2-CI-ROUTE-DECISION-0002, option A).
+  # This closure deliberately does not depend on paid external providers: the security gates
+  # — sandbox routing, the live refusal gate, the host-trust default — use no provider at all,
+  # and the provider-NEUTRAL contract is covered by 112 deterministic LLM tests that need
+  # neither network nor credential.
+  #
+  # The optional-provider packages are still installed, so a skip here is caused by the
+  # missing CREDENTIAL and not merely by a missing import. Those skips are not tolerated
+  # silently: the lane verifies POSITIVELY that every frozen optional-provider case either ran
+  # or skipped for the documented R5 reason, so a collection loss or a changed skip condition
+  # fails the lane instead of passing unnoticed.
+  #
+  # What this lane therefore does NOT establish: that real Anthropic or OpenAI integrations
+  # work. Live-provider validation is separate from this closure and must not be represented
+  # as covered by it.
   lane-ordinary:
     runs-on: ubuntu-24.04
     strategy:
@@ -47,12 +58,6 @@ jobs:
     defaults:
       run:
         working-directory: sdk
-    env:
-      # The ordinary lane runs the optional-provider matrix, so it MUST have credentials:
-      # without them every provider case skips and the lane proves nothing about them. The
-      # three E2E flags stay unset here — that is what makes this the ordinary lane.
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,13 +79,16 @@ jobs:
           for v in AGENTNODE_SANDBOX_E2E AGENTNODE_AGENT_SANDBOX_E2E AGENTNODE_EGRESS_E2E; do
             if [ -n "${!v:-}" ]; then echo "$v must be unset in the ordinary lane"; exit 1; fi
           done
+          # Provider credentials are deliberately ABSENT here and their absence is not a lane
+          # failure: R5 makes it a clean-skip condition and the R6 clean-run definition accepts
+          # an R5-reason skip. The modules must be importable, so a skip is credential-caused.
           for v in OPENAI_API_KEY ANTHROPIC_API_KEY; do
-            if [ -z "${!v:-}" ]; then
-              echo "$v is required by the ordinary lane; configure it as a repository secret"
+            if [ -n "${!v:-}" ]; then
+              echo "$v is set; this closure runs without provider credentials by decision"
               exit 1
             fi
           done
-          python -c "import importlib.util as u; assert u.find_spec('anthropic'); assert u.find_spec('openai'); print('optional providers importable')"
+          python -c "import importlib.util as u; assert u.find_spec('anthropic'); assert u.find_spec('openai'); print('optional providers importable, credentials absent')"
       - name: Run against the frozen inventory
         run: |
           python -m pytest tests -q -p no:randomly \
@@ -90,6 +98,72 @@ jobs:
         run: |
           python -m tests.lanes.freeze_inventory verify \
             tests/lanes/FROZEN_INVENTORY.json lane-report.json ordinary
+      - name: Verify the optional-provider cases skipped for the documented R5 reason
+        if: always()
+        shell: python
+        run: |
+          # POSITIVE verification (EM2-CI-ROUTE-DECISION-0002, F-SKIP-REASON-MUST-BE-POSITIVE).
+          # Tolerating a skip would let a collection loss or a changed skip condition pass
+          # unnoticed. Two distinct obligations are checked:
+          #   (a) every frozen optional-provider case is accounted for BY NAME and either ran or
+          #       skipped naming the precondition it lacks;
+          #   (b) the ANTHROPIC-affected cases — the ones R5 governs — carry specifically the
+          #       documented R5 credential/module reason, and there is a non-zero number of them,
+          #       so the check cannot pass vacuously.
+          import json, sys
+          frozen = json.load(open("tests/lanes/FROZEN_INVENTORY.json", encoding="utf-8"))
+          report = json.load(open("lane-report.json", encoding="utf-8"))
+          outcomes, reasons = report["outcomes"], report.get("skip_reasons", {})
+          prefixes = tuple(frozen["optional_provider_prefixes"])
+          expected = [n for n in frozen["node_ids"] if n.startswith(prefixes)]
+          anthropic = [n for n in expected if "anthropic" in n.lower()]
+          # The exact reasons the two suites emit for an absent Anthropic credential.
+          R5_REASONS = ("needs BOTH a key", "No Anthropic API key")
+          # A skip outside the Anthropic set must still NAME its missing precondition.
+          NAMED = ("not set", "not available", "needs BOTH a key", "No Anthropic API key",
+                   "base_url", "BASE_URL", "set AGENTNODE")
+          problems, ran, skipped, r5 = [], 0, 0, 0
+          if not expected:
+              problems.append("the frozen inventory contains no optional-provider cases at all")
+          if not anthropic:
+              problems.append("no Anthropic-affected case in the frozen inventory; the R5 check "
+                              "would pass vacuously")
+          for n in expected:
+              o = outcomes.get(n)
+              if o is None:
+                  problems.append("frozen optional-provider case not collected: %s" % n)
+                  continue
+              if o in ("failed", "error"):
+                  problems.append("optional-provider case did not pass or skip: %s -> %s" % (n, o))
+                  continue
+              if o != "skipped":
+                  ran += 1
+                  continue
+              skipped += 1
+              reason = reasons.get(n, "")
+              if n in anthropic:
+                  if any(w in reason for w in R5_REASONS):
+                      r5 += 1
+                  else:
+                      problems.append("Anthropic case skipped WITHOUT the R5 reason: %s -> %r"
+                                      % (n, reason))
+              elif not any(w in reason for w in NAMED):
+                  problems.append("optional-provider skip names no precondition: %s -> %r"
+                                  % (n, reason))
+          print("frozen optional-provider cases : %d" % len(expected))
+          print("  ran                          : %d" % ran)
+          print("  skipped                      : %d" % skipped)
+          print("Anthropic-affected cases       : %d" % len(anthropic))
+          print("  skipped for the R5 reason    : %d" % r5)
+          if anthropic and r5 != len([n for n in anthropic if outcomes.get(n) == "skipped"]):
+              problems.append("not every skipped Anthropic case carried the R5 reason")
+          if problems:
+              print("NOT CLEAN")
+              for p in problems[:20]:
+                  print("  - " + p)
+              sys.exit(1)
+          print("CLEAN: every frozen optional-provider case is accounted for; every Anthropic "
+                "skip carries the documented R5 reason")
       - uses: actions/upload-artifact@v4
         if: always()
         with:
