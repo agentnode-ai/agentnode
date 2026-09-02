@@ -1,5 +1,124 @@
 # Changelog
 
+## 0.24.0 — The container is the boundary
+
+This release makes the execution boundary real rather than advisory. Third-party code
+that is merely *trusted* no longer runs on your host by default, a community agent's own
+entrypoint can no longer run on the host at all, and the lockfile that decides what may
+run is now integrity-checked at run time. It also repairs a defect that breaks fresh
+installs of 0.23.0.
+
+**Read the migration notes below before upgrading** — one shipped default changes in a
+way you can feel.
+
+### Changed — please read
+
+- **The shipped default `sandbox.host_trust_policy` is now `curated_only`** (was
+  `default`). Only `curated`, AgentNode-owned code runs directly on your host. **Trusted
+  third-party toolpacks, MCP servers and agents are sandboxed**, and if no container
+  runtime is available they are **refused** — there is never a silent fall back to host
+  execution. Your own setting is never overwritten: an on-disk value always wins, and
+  `~/.agentnode/config.json` already carries `sandbox.host_trust_policy` if you have
+  ever run `agentnode setup` or `agentnode config set` — the whole config is written
+  back. You pick up `curated_only` only if you have no config file, or one written
+  before that key existed.
+- **A community agent's own entrypoint can no longer be executed on the host.** The path
+  was removed structurally rather than gated: every attempt raises
+  `HostAgentExecutionUnsupported` instead of executing the entrypoint. Community agents
+  run in the sandbox with `network=none`, a read-only pack and a clean `HOME`, or they do
+  not run.
+- **Lockfile integrity is enforced at run time.** Every execution path resolves
+  `agentnode.lock` once, fail-closed, and evaluates two stages: the per-entry
+  `_integrity` field and a global `structure_digest` over the whole file. In the default
+  mode a legacy lockfile without those fields is **allowed with one migration warning**;
+  with `AGENTNODE_GUARD_STRICT=1` it is denied.
+- **`agentnode.lock` is parsed fail-closed.** A duplicate key, invalid JSON, an
+  unreadable file, a non-object model, or a missing/unsupported `lockfile_version` now
+  raises `LockfileFormatError` instead of being silently tolerated. The CLI prints a
+  single-line `Error: …` and exits non-zero rather than a traceback.
+- **Direct Mode passes the same gate.** `run_python`'s fail-soft fallback is gone:
+  `load_tool` and Direct Mode go through the integrity gate like every other path, and
+  the lockfile path is no longer passed into the child process.
+- **Host Python environments are mutated under an inter-process lock**, serialised by
+  target-environment identity, and **runtime-initiated installation is disabled** — a
+  run never installs into your environment behind your back.
+- **Installs are a transaction.** The wheel is built before anything is claimed, the
+  target environment is locked, artifacts go through a content-addressed store, failures
+  land in a durable quarantine, and recovery is an atomic compare-and-remove of our own
+  entry.
+- **The host-trust decision is taken once per run** from a single fail-closed snapshot
+  and is never recomputed downstream; a sandbox launch whose identity cannot be
+  established fails closed at plan-build time.
+
+### Fixed
+
+- **Fresh installs work again.** `agentnode-sdk` declared `mcp>=1.0.0` with no upper
+  bound, so a new install resolved mcp 2.x, which removed `mcp.server.fastmcp` — and
+  `agentnode_sdk.mcp_server` failed at import. The dependency is now `mcp>=1.0.0,<2`.
+  Support for mcp 2.x is a migration and will be its own release.
+- **MCP pre-installs no longer run out of disk.** The package managers cached inside the
+  sandbox's deliberately small 16 MiB `HOME`, so pre-installing any MCP server with a
+  real dependency tree failed with `No space left on device`. Both caches now live in the
+  sandbox's own 512 MiB `/tmp`; no mount, limit, or host path changed.
+- **`agentnode mcp verify` recognises PyPI `==` pins** the way it already recognised npm
+  `@` pins, so an exactly pinned PyPI MCP is no longer reported as unpinned.
+
+### Added
+
+- `agentnode lock verify` also checks the **global structure digest**, not only
+  per-entry integrity, and reports the status of each stage separately
+  (`verified`, `missing`, `mismatch`, `invalid`, `unsupported`).
+- New error types on the public surface: `LockfileFormatError`, `ConfigurationError`,
+  and `HostAgentExecutionUnsupported`, all subclasses of `AgentNodeError`.
+- Pre-import observability for host execution, with remediation text specific to the
+  trust tier that was refused.
+
+### Migration
+
+1. **Decide your host-trust policy.** Check what you are on:
+
+   ```
+   agentnode config get sandbox.host_trust_policy
+   ```
+
+   If it prints `default`, your config carries the key and nothing changes for you. With
+   no config file at all the answer is now `curated_only`. To keep the previous, more
+   permissive behaviour:
+
+   ```
+   agentnode config set sandbox.host_trust_policy default
+   ```
+
+   To adopt the new default explicitly, or to sandbox everything including curated code:
+
+   ```
+   agentnode config set sandbox.host_trust_policy curated_only
+   agentnode config set sandbox.host_trust_policy none
+   ```
+
+2. **Install a container runtime if you use trusted third-party packs.** Under
+   `curated_only`, trusted toolpacks and MCP servers need Docker or Podman. Without one
+   they are refused rather than run on the host. `agentnode doctor` tells you what is
+   missing.
+
+3. **Community agents that relied on host execution will stop.** There is no
+   configuration that re-enables running a community agent's entrypoint on the host. Tool
+   packs and MCP servers are unaffected by that specific removal.
+
+4. **A valid existing `agentnode.lock` keeps working.** `lockfile_version` is unchanged
+   at `0.1`. Entries without `_integrity` and a file without `structure_digest` are
+   *warned*, not rejected, in the default mode. Run `agentnode lock verify` to see the
+   status, and reinstall or re-seal at your convenience.
+
+5. **A malformed `agentnode.lock` now fails.** If your lockfile has duplicate keys,
+   invalid JSON, no `lockfile_version`, or is not a JSON object, it was tolerated before
+   and is refused now. `agentnode lock verify` names the problem; repair the file, or
+   remove it and reinstall your packages to regenerate it.
+
+6. **If you run with `AGENTNODE_GUARD_STRICT=1`**, note that strict mode now also denies
+   a lockfile whose structure digest is missing or mismatched. Re-seal before enabling
+   it in CI.
+
 ## 0.23.0 — Prove MCP package ownership from the terminal
 
 ### Added
