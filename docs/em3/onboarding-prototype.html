@@ -1,0 +1,574 @@
+<title>AgentNode — Secure start (EM-3A prototype)</title>
+<style>
+  /* ------------------------------------------------------------------ tokens
+     Palette is grounded in the subject: a *protected place*, not an alarm.
+     Security products default to dark grounds and warning colours; this one has
+     to make an ordinary person feel unhurried, so the ground is a cool paper and
+     the single accent is a deep sea green used only for "protected". The clay
+     tone appears exactly once, on the legacy host warning, so it keeps its
+     meaning. Neutrals carry a teal bias so they read as chosen, not inherited. */
+  :root {
+    --paper:      #F2F5F4;
+    --surface:    #FFFFFF;
+    --surface-2:  #E9EEEC;
+    --ink:        #14201D;
+    --ink-muted:  #576763;
+    --line:       #D6DEDB;
+    --accent:     #0E6B5A;
+    --accent-ink: #FFFFFF;
+    --accent-soft:#DCEBE6;
+    --risk:       #9A4E2B;
+    --risk-soft:  #F6E7DF;
+    --shadow:     0 1px 2px rgba(20,32,29,.06), 0 8px 24px rgba(20,32,29,.07);
+    --radius:     14px;
+    --step:       clamp(1rem, .75rem + .6vw, 1.25rem);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0E1413;
+      --surface:    #171F1D;
+      --surface-2:  #202A28;
+      --ink:        #E7EDEB;
+      --ink-muted:  #9AAAA5;
+      --line:       #2A3634;
+      --accent:     #4FBFA5;
+      --accent-ink: #06201A;
+      --accent-soft:#16302B;
+      --risk:       #E0996F;
+      --risk-soft:  #33221A;
+      --shadow:     0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:#0E1413; --surface:#171F1D; --surface-2:#202A28; --ink:#E7EDEB;
+    --ink-muted:#9AAAA5; --line:#2A3634; --accent:#4FBFA5; --accent-ink:#06201A;
+    --accent-soft:#16302B; --risk:#E0996F; --risk-soft:#33221A;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, "Segoe UI Variable Text", "Segoe UI",
+                 -apple-system, "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace; }
+
+  /* ------------------------------------------------------------------ shell */
+  .shell {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: clamp(20px, 4vw, 48px) clamp(16px, 4vw, 32px) 64px;
+    display: grid;
+    gap: clamp(20px, 3vw, 36px);
+    grid-template-columns: 1fr;
+  }
+  @media (min-width: 980px) { .shell { grid-template-columns: minmax(0,1fr) 420px; align-items: start; } }
+
+  .masthead { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 16px 28px; align-items: baseline; }
+  .masthead h1 { font-size: clamp(1.35rem, 1.1rem + 1vw, 1.9rem); margin: 0; letter-spacing: -.015em; text-wrap: balance; }
+  .masthead p { margin: 0; color: var(--ink-muted); max-width: 62ch; }
+  .tag {
+    font-size: .72rem; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--accent); background: var(--accent-soft);
+    border-radius: 999px; padding: 4px 11px; white-space: nowrap;
+  }
+
+  /* ------------------------------------------------------------------ device */
+  .stage { display: flex; justify-content: center; }
+  .device {
+    width: 100%; max-width: 430px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 26px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    min-height: 620px;
+  }
+  .device-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 18px; border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex: none; }
+  .device-bar strong { font-size: .9rem; font-weight: 600; }
+  .device-bar span { margin-left: auto; font-size: .74rem; color: var(--ink-muted); }
+
+  .screen { padding: clamp(18px, 4vw, 26px); display: flex; flex-direction: column; gap: 18px; flex: 1; }
+  .stepline { display: flex; gap: 6px; align-items: center; }
+  .pip { height: 4px; flex: 1; border-radius: 2px; background: var(--surface-2); }
+  .pip[data-on="1"] { background: var(--accent); }
+  .stepline em { font-style: normal; font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-muted); flex: none; margin-left: 6px; }
+
+  h2.q { font-size: 1.32rem; line-height: 1.25; margin: 0; letter-spacing: -.015em; text-wrap: balance; }
+  p.help { margin: 0; color: var(--ink-muted); font-size: .93rem; }
+
+  .options { display: flex; flex-direction: column; gap: 10px; }
+  .opt {
+    display: flex; gap: 12px; align-items: flex-start; width: 100%; text-align: left;
+    padding: 14px 15px; border-radius: var(--radius);
+    border: 1.5px solid var(--line); background: var(--surface);
+    color: inherit; font: inherit; cursor: pointer;
+  }
+  .opt:hover { border-color: var(--accent); }
+  .opt[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+  .opt .mark { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--line); flex: none; margin-top: 3px; display: grid; place-items: center; }
+  .opt[aria-pressed="true"] .mark { border-color: var(--accent); background: var(--accent); }
+  .opt[aria-pressed="true"] .mark::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-ink); }
+  .opt b { display: block; font-weight: 600; font-size: .97rem; }
+  .opt small { color: var(--ink-muted); font-size: .84rem; }
+  .opt .rec { font-size: .7rem; letter-spacing: .07em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+
+  .files { display: flex; flex-direction: column; gap: 8px; }
+  .file { display: flex; gap: 11px; align-items: center; padding: 11px 13px; border: 1.5px solid var(--line); border-radius: 11px; background: var(--surface); cursor: pointer; font: inherit; color: inherit; text-align: left; width: 100%; }
+  .file[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+  .file .box { width: 17px; height: 17px; border: 1.5px solid var(--line); border-radius: 5px; flex: none; display: grid; place-items: center; font-size: .7rem; color: var(--accent-ink); }
+  .file[aria-pressed="true"] .box { background: var(--accent); border-color: var(--accent); }
+  .file[aria-pressed="true"] .box::after { content: "✓"; }
+
+  .consent { border: 1.5px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius); padding: 15px; display: flex; flex-direction: column; gap: 10px; }
+  .consent h3 { margin: 0; font-size: .97rem; }
+  .consent dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; font-size: .87rem; }
+  .consent dt { color: var(--ink-muted); }
+  .consent dd { margin: 0; }
+
+  .spacer { flex: 1; }
+  .cta {
+    display: block; width: 100%; padding: 15px 18px; border: none; border-radius: var(--radius);
+    background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 650; font-size: 1rem;
+    cursor: pointer;
+  }
+  .cta[disabled] { opacity: .45; cursor: not-allowed; }
+  .ghost { background: none; border: 1.5px solid var(--line); color: inherit; }
+  .linkish { background: none; border: none; color: var(--ink-muted); font: inherit; text-decoration: underline; cursor: pointer; padding: 6px; align-self: center; }
+
+  .banner { border-radius: var(--radius); padding: 15px; display: flex; flex-direction: column; gap: 8px; }
+  .banner.blocked { background: var(--risk-soft); border: 1.5px solid var(--risk); }
+  .banner.blocked strong { color: var(--risk); }
+  .banner.calm { background: var(--surface-2); border: 1.5px solid var(--line); }
+
+  .result { display: flex; flex-direction: column; gap: 14px; }
+  .badge { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 6px 13px; font-size: .82rem; font-weight: 650; }
+  .out { background: var(--surface-2); border-radius: 11px; padding: 14px; font-size: .9rem; }
+
+  .bar { height: 5px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .9s linear; }
+  @media (prefers-reduced-motion: reduce) { .bar i { transition: none; } }
+
+  /* ------------------------------------------------------------------ side */
+  .side { display: flex; flex-direction: column; gap: 14px; }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 17px; box-shadow: var(--shadow); }
+  .panel h3 { margin: 0 0 4px; font-size: .78rem; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-muted); }
+  .panel p { margin: 0; font-size: .88rem; color: var(--ink-muted); }
+  fieldset { border: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+  legend { padding: 0; font-size: .78rem; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-muted); margin-bottom: 8px; }
+  .radio { display: flex; gap: 10px; align-items: baseline; font-size: .9rem; cursor: pointer; }
+  .radio input { accent-color: var(--accent); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: .82rem; margin-top: 10px; }
+  .kv dt { color: var(--ink-muted); }
+  .kv dd { margin: 0; }
+  .kv dd.mono { font-size: .78rem; }
+  details.adv summary { cursor: pointer; font-size: .88rem; font-weight: 600; }
+  details.adv[open] summary { margin-bottom: 10px; }
+  .risknote { background: var(--risk-soft); border: 1.5px solid var(--risk); border-radius: 11px; padding: 12px; font-size: .85rem; display: flex; flex-direction: column; gap: 9px; }
+  .risknote strong { color: var(--risk); }
+  .check { display: flex; gap: 9px; align-items: flex-start; font-size: .85rem; }
+  .check input { margin-top: 4px; accent-color: var(--risk); }
+
+  :where(button, summary, input, [tabindex]):focus-visible {
+    outline: 2.5px solid var(--accent); outline-offset: 2px; border-radius: 6px;
+  }
+  .sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  footer { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 18px; color: var(--ink-muted); font-size: .84rem; }
+  footer p { margin: 0 0 6px; max-width: 78ch; }
+</style>
+
+<div class="shell">
+  <header class="masthead">
+    <span class="tag">EM-3A prototype</span>
+    <h1>Secure start</h1>
+    <p>The onboarding a person actually sees. Every decision below is taken by the same rules as the
+      sandbox contract, so this is a working prototype rather than a picture of one.</p>
+  </header>
+
+  <main class="stage">
+    <div class="device">
+      <div class="device-bar">
+        <span class="dot" aria-hidden="true"></span>
+        <strong>AgentNode</strong>
+        <span id="ctx">Ready</span>
+      </div>
+      <div class="screen" id="screen" aria-live="polite"></div>
+    </div>
+  </main>
+
+  <aside class="side">
+    <div class="panel">
+      <fieldset>
+        <legend>Try it as</legend>
+        <label class="radio"><input type="radio" name="sc" value="ready" checked><span><b>Someone whose computer is already set up</b><br><small>secure execution present</small></span></label>
+        <label class="radio"><input type="radio" name="sc" value="fresh"><span><b>Someone on a brand-new laptop</b><br><small>nothing set up yet</small></span></label>
+        <label class="radio"><input type="radio" name="sc" value="phone"><span><b>Someone on a phone</b></span></label>
+        <label class="radio"><input type="radio" name="sc" value="org"><span><b>Someone at a company</b><br><small>their employer runs a server</small></span></label>
+        <label class="radio"><input type="radio" name="sc" value="offline"><span><b>Someone offline, nothing set up</b></span></label>
+        <label class="radio"><input type="radio" name="sc" value="nowhere"><span><b>Nothing available at all</b></span></label>
+      </fieldset>
+      <p style="margin-top:12px">These switches are for you, not for the person being tested. They change the
+        situation the prototype finds itself in.</p>
+    </div>
+
+    <div class="panel">
+      <details class="adv">
+        <summary>What the system decided</summary>
+        <dl class="kv" id="dbg"></dl>
+        <p style="margin-top:12px">Mirrors <span class="mono">select_backend()</span> in
+          <span class="mono">sandbox/contract.py</span>. A refusal that reaches this screen without a
+          usable next step is a contract violation, not a design mistake.</p>
+      </details>
+    </div>
+
+    <div class="panel">
+      <details class="adv">
+        <summary>Advanced settings</summary>
+        <div class="risknote" style="margin-top:10px">
+          <strong>Host execution with elevated risk</strong>
+          <span>Code from other people would run directly on this computer, outside the protected area.
+            Only continue if you know exactly what you are running.</span>
+          <label class="check"><input type="checkbox" id="legacyChk">
+            <span>I understand and want to turn this on anyway.</span></label>
+          <button class="cta ghost" id="legacyBtn" disabled>Turn on unprotected execution</button>
+          <span id="legacyState" style="color:var(--ink-muted)">Off. Nothing on the normal path can turn this on.</span>
+        </div>
+      </details>
+    </div>
+  </aside>
+
+  <footer>
+    <p><strong>What this prototype is for.</strong> It exists to be walked through by ten non-technical
+      people against the fixed protocol in the EM-3 scope: one sentence of instruction, no help, no
+      documentation, and two questions afterwards about where the code ran.</p>
+    <p>No agent runs here and nothing is sent anywhere. The words "Docker", "container", "MicroVM" and
+      "egress" appear nowhere on the person's side of the screen — only in this note and in the panel
+      you can fold away.</p>
+  </footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // The same rules as sandbox/contract.py::select_backend. Kept deliberately close to the Python so
+  // a reader can check one against the other: same order, same names, same refusal codes.
+  const ACTIONS = {
+    use_managed:           { label: "Use the AgentNode Sandbox", kind: "remediation" },
+    install_local_runtime: { label: "Set up secure execution on this device", kind: "remediation" },
+    connect_own_server:    { label: "Connect your own server", kind: "remediation" },
+    retry_when_online:     { label: "Try again when you are back online", kind: "remediation" },
+    learn_more:            { label: "What does this mean?", kind: "informational" }
+  };
+
+  function selectBackend(env) {
+    if (env.organisation_backend)
+      return { kind: "selection", placement: "self_hosted", human: "Your organisation's server",
+               consent_required: !env.consent_ok };
+    if (env.local_ready && !env.mobile)
+      return { kind: "selection", placement: "local", human: "On this device", consent_required: false };
+    if (env.managed_available && env.online)
+      return { kind: "selection", placement: "managed", human: "AgentNode Sandbox",
+               consent_required: !env.consent_ok };
+    if (!env.online)
+      return { kind: "refusal", code: "offline_no_secure_placement",
+               reason: "You are offline, and secure execution on this device is not set up yet. Nothing was run.",
+               actions: ["install_local_runtime", "retry_when_online", "learn_more"] };
+    return { kind: "refusal", code: "no_secure_placement",
+             reason: "There is no safe place to run this yet. Nothing was run on your computer.",
+             actions: ["use_managed", "install_local_runtime", "connect_own_server", "learn_more"] };
+  }
+
+  const SCENARIOS = {
+    ready:   { local_ready: true,  mobile: false, organisation_backend: null,  managed_available: true,  online: true  },
+    fresh:   { local_ready: false, mobile: false, organisation_backend: null,  managed_available: true,  online: true  },
+    phone:   { local_ready: false, mobile: true,  organisation_backend: null,  managed_available: true,  online: true  },
+    org:     { local_ready: false, mobile: false, organisation_backend: "sandbox.acme.example", managed_available: true, online: true },
+    offline: { local_ready: false, mobile: false, organisation_backend: null,  managed_available: true,  online: false },
+    nowhere: { local_ready: false, mobile: false, organisation_backend: null,  managed_available: false, online: true  }
+  };
+
+  const state = {
+    scenario: "ready",
+    step: 1,
+    place: null,
+    files: new Set(["Invoices 2026"]),
+    consentGiven: false,
+    legacy: false,
+    freeRunsLeft: 3
+  };
+
+  const screen = document.getElementById("screen");
+  const ctx = document.getElementById("ctx");
+  const dbg = document.getElementById("dbg");
+
+  const env = () => Object.assign({}, SCENARIOS[state.scenario], { consent_ok: state.consentGiven });
+
+  const el = (tag, cls, txt) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (txt != null) n.textContent = txt;
+    return n;
+  };
+
+  function placeLabel(p) {
+    return { local: "On this device", managed: "AgentNode Sandbox",
+             self_hosted: "Your organisation's server", legacy_host: "On this device, unprotected" }[p];
+  }
+
+  function render() {
+    const d = selectBackend(env());
+    screen.replaceChildren();
+    ctx.textContent = state.step === 4 ? "Finished" : "Step " + Math.min(state.step, 3) + " of 3";
+
+    if (d.kind === "refusal" && state.step < 4) { renderRefusal(d); }
+    else if (state.step === 1) { renderStep1(d); }
+    else if (state.step === 2) { renderStep2(); }
+    else if (state.step === 3) { renderRunning(); }
+    else { renderResult(); }
+
+    renderDebug(d);
+  }
+
+  function pips(n) {
+    const row = el("div", "stepline");
+    for (let i = 1; i <= 3; i++) {
+      const p = el("span", "pip");
+      p.dataset.on = i <= n ? "1" : "0";
+      row.appendChild(p);
+    }
+    row.appendChild(el("em", null, "Step " + n + " of 3"));
+    return row;
+  }
+
+  // ---- Step 1: where. The consent lives INSIDE this step, so choosing the sandbox
+  // stays one decision and managed onboarding stays at three essential steps.
+  function renderStep1(d) {
+    screen.appendChild(pips(1));
+    screen.appendChild(el("h2", "q", "Where should the agent work?"));
+    screen.appendChild(el("p", "help", "We have picked the safest option that works for you."));
+
+    const recommended = d.placement;
+    if (!state.place) state.place = recommended;
+
+    const opts = el("div", "options");
+    const choices = [
+      ["managed", "AgentNode Sandbox", "Runs on our protected computers. Nothing is installed here."],
+      ["local", "On this device", "Runs here, inside a protected area, separate from your files."],
+      ["self_hosted", "Your own server", "Runs on a server you or your company control."]
+    ];
+    for (const [id, title, sub] of choices) {
+      const b = el("button", "opt");
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(state.place === id));
+      const mark = el("span", "mark"); mark.setAttribute("aria-hidden", "true");
+      const body = el("span");
+      body.appendChild(el("b", null, title));
+      if (id === recommended) {
+        const r = el("span", "rec", "Recommended for you");
+        body.appendChild(r);
+      }
+      body.appendChild(el("small", null, sub));
+      b.append(mark, body);
+      b.addEventListener("click", () => { state.place = id; render(); });
+      opts.appendChild(b);
+    }
+    screen.appendChild(opts);
+
+    const remote = state.place === "managed" || state.place === "self_hosted";
+    if (remote && !state.consentGiven) {
+      const c = el("div", "consent");
+      c.appendChild(el("h3", null, "Before anything leaves this computer"));
+      const dl = el("dl");
+      const rows = [
+        ["What is sent", "Only the files you pick in the next step"],
+        ["Where", state.place === "managed" ? "Europe (preselected for you)" : "sandbox.acme.example"],
+        ["Kept for", "Deleted as soon as you have the result"],
+        ["Cost", state.freeRunsLeft + " free runs left · no card needed"]
+      ];
+      for (const [k, v] of rows) { dl.appendChild(el("dt", null, k)); dl.appendChild(el("dd", null, v)); }
+      c.appendChild(dl);
+      const ok = el("button", "cta", "I agree — continue");
+      ok.type = "button";
+      ok.addEventListener("click", () => { state.consentGiven = true; state.step = 2; render(); });
+      c.appendChild(ok);
+      screen.appendChild(c);
+      screen.appendChild(el("div", "spacer"));
+      return;
+    }
+
+    screen.appendChild(el("div", "spacer"));
+    const next = el("button", "cta", "Continue");
+    next.type = "button";
+    next.addEventListener("click", () => { state.step = 2; render(); });
+    screen.appendChild(next);
+  }
+
+  // ---- Step 2: which data
+  function renderStep2() {
+    screen.appendChild(pips(2));
+    screen.appendChild(el("h2", "q", "Which files may the agent use?"));
+    screen.appendChild(el("p", "help", "It cannot see anything you do not pick here."));
+
+    const list = el("div", "files");
+    for (const name of ["Invoices 2026", "Holiday photos", "Tax folder"]) {
+      const b = el("button", "file");
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(state.files.has(name)));
+      const box = el("span", "box"); box.setAttribute("aria-hidden", "true");
+      b.append(box, el("span", null, name));
+      b.addEventListener("click", () => {
+        state.files.has(name) ? state.files.delete(name) : state.files.add(name);
+        render();
+      });
+      list.appendChild(b);
+    }
+    screen.appendChild(list);
+    screen.appendChild(el("div", "spacer"));
+
+    const go = el("button", "cta", "Start safely");
+    go.type = "button";
+    go.disabled = state.files.size === 0;
+    go.addEventListener("click", () => { state.step = 3; render(); startRun(); });
+    screen.appendChild(go);
+
+    const back = el("button", "linkish", "Go back");
+    back.type = "button";
+    back.addEventListener("click", () => { state.step = 1; render(); });
+    screen.appendChild(back);
+  }
+
+  function renderRunning() {
+    screen.appendChild(pips(3));
+    screen.appendChild(el("h2", "q", "Working…"));
+    const where = placeLabel(state.legacy ? "legacy_host" : (state.place || "managed"));
+    screen.appendChild(el("p", "help", "Running in the protected area · " + where));
+    const bar = el("div", "bar"); const fill = el("i"); bar.appendChild(fill);
+    screen.appendChild(bar);
+    requestAnimationFrame(() => { fill.style.width = "100%"; });
+    screen.appendChild(el("div", "spacer"));
+    const stop = el("button", "cta ghost", "Stop");
+    stop.type = "button";
+    stop.addEventListener("click", () => { state.step = 2; render(); });
+    screen.appendChild(stop);
+  }
+
+  function startRun() {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setTimeout(() => {
+      if (state.step === 3) {
+        if (state.place === "managed") state.freeRunsLeft = Math.max(0, state.freeRunsLeft - 1);
+        state.step = 4; render();
+      }
+    }, reduce ? 250 : 1500);
+  }
+
+  function renderResult() {
+    const wrap = el("div", "result");
+    const badge = el("span", "badge", "✓ Finished safely");
+    wrap.appendChild(badge);
+    wrap.appendChild(el("h2", "q", "Here is your result"));
+    const out = el("div", "out");
+    out.appendChild(el("div", null, "Summary of “" + [...state.files][0] + "”"));
+    out.appendChild(el("div", null, "12 invoices · 3 unpaid · €4,180 outstanding"));
+    wrap.appendChild(out);
+
+    const where = placeLabel(state.legacy ? "legacy_host" : (state.place || "managed"));
+    const note = el("div", "banner " + (state.legacy ? "blocked" : "calm"));
+    note.appendChild(el("strong", null, state.legacy ? "This ran unprotected on your computer" : "Where this ran"));
+    note.appendChild(el("span", null, state.legacy
+      ? "You turned that on yourself in advanced settings."
+      : where + ". The agent never had access to anything you did not pick, and its workspace has been deleted."));
+    wrap.appendChild(note);
+
+    wrap.appendChild(el("div", "spacer"));
+    const again = el("button", "cta", "Save the result");
+    again.type = "button";
+    again.addEventListener("click", () => { state.step = 1; state.place = null; render(); });
+    wrap.appendChild(again);
+    screen.appendChild(wrap);
+  }
+
+  // ---- The refusal screen. Never a dead end, never a "run it anyway" button.
+  function renderRefusal(d) {
+    screen.appendChild(pips(1));
+    const b = el("div", "banner blocked");
+    b.appendChild(el("strong", null, "Nothing was run"));
+    b.appendChild(el("span", null, d.reason));
+    screen.appendChild(b);
+    screen.appendChild(el("h2", "q", "Here is what you can do"));
+
+    for (const id of d.actions) {
+      const a = ACTIONS[id];
+      const btn = el("button", a.kind === "remediation" ? "cta" : "linkish", a.label);
+      btn.type = "button";
+      btn.style.marginBottom = a.kind === "remediation" ? "8px" : "0";
+      btn.addEventListener("click", () => {
+        if (id === "use_managed") { state.scenario = "fresh"; state.place = "managed";
+          document.querySelector('input[name="sc"][value="fresh"]').checked = true; state.step = 1; }
+        else if (id === "install_local_runtime") { state.scenario = "ready"; state.place = "local";
+          document.querySelector('input[name="sc"][value="ready"]').checked = true; state.step = 1; }
+        else if (id === "connect_own_server") { state.scenario = "org"; state.place = "self_hosted";
+          document.querySelector('input[name="sc"][value="org"]').checked = true; state.step = 1; }
+        else if (id === "retry_when_online") { state.scenario = "fresh";
+          document.querySelector('input[name="sc"][value="fresh"]').checked = true; state.step = 1; }
+        render();
+      });
+      screen.appendChild(btn);
+    }
+  }
+
+  function renderDebug(d) {
+    dbg.replaceChildren();
+    const rows = [
+      ["outcome", d.kind],
+      ["placement", d.kind === "selection" ? d.placement : "—"],
+      ["refusal code", d.kind === "refusal" ? d.code : "—"],
+      ["ways out offered", d.kind === "refusal"
+        ? String(d.actions.filter(a => ACTIONS[a].kind === "remediation").length) : "n/a"],
+      ["consent needed", d.kind === "selection" ? String(d.consent_required) : "—"],
+      ["legacy host", state.legacy ? "ON (confirmed by hand)" : "unreachable from here"],
+      ["essential steps", "3"]
+    ];
+    for (const [k, v] of rows) {
+      dbg.appendChild(el("dt", null, k));
+      dbg.appendChild(el("dd", "mono", v));
+    }
+  }
+
+  // ---- scenario switches
+  for (const r of document.querySelectorAll('input[name="sc"]')) {
+    r.addEventListener("change", () => {
+      state.scenario = r.value;
+      state.step = 1; state.place = null; state.consentGiven = false;
+      render();
+    });
+  }
+
+  // ---- the legacy mode: two deliberate acts, and it never touches the normal path
+  const chk = document.getElementById("legacyChk");
+  const btn = document.getElementById("legacyBtn");
+  const st = document.getElementById("legacyState");
+  chk.addEventListener("change", () => { btn.disabled = !chk.checked; });
+  btn.addEventListener("click", () => {
+    state.legacy = true;
+    st.textContent = "On. Confirmed by hand, for this computer only.";
+    btn.disabled = true; chk.checked = false; chk.disabled = true;
+    render();
+  });
+
+  render();
+})();
+</script>
