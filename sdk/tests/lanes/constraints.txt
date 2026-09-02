@@ -6,6 +6,11 @@
 # mcp 1.28.1 declares requires_python >=3.10 and ships a wheel, so it installs on each
 # lane Python (3.10.15, 3.11.10, 3.12.7).
 mcp==1.28.1
+# EM2-E2E-FIXTURE-0002 option B: the real-container E2E test preinstalls this pinned
+# stdio MCP server so the sealed-volume path is exercised end to end AND the initialize
+# handshake can actually be answered. mcp==1.28.1 alone cannot: its only console script
+# is the Typer CLI mcp.cli:app.
+mcp-server-time==2026.8.18
 pytest==9.1.1
 pytest-asyncio==1.4.0
 respx==0.23.1

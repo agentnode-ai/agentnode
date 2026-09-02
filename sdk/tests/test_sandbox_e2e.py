@@ -146,15 +146,63 @@ _MCP_STUB = textwrap.dedent("""
 
 
 def test_mcp_starts_in_container_real():
-    """A verified MCP (minimal python stdio stub) really starts in the container
-    and completes the initialize handshake."""
-    from agentnode_sdk.runtimes.mcp_runner import MCPServerProcess
+    """A pinned, genuinely PREINSTALLED MCP server really starts in the container and
+    completes the initialize handshake.
 
-    from tests.hostpolicy import decision, plan
-    dec = decision("verified")
-    server = MCPServerProcess("e2e-mcp", ["python", "-c", _MCP_STUB], trust_level="verified")
+    EM2-E2E-FIXTURE-0002 option B. The earlier version of this test passed a floating
+    command with no preinstall fields, which `build_mcp_launch_plan` refuses by design —
+    a non-preinstalled MCP would have to fetch at runtime with an open network. That
+    refusal is correct and is asserted through the public routing path in
+    `test_shipped_default_live_paths.py`; it is not duplicated here.
+
+    The volume is built by the PRODUCTION preinstall path, so the entry carries real
+    preinstall intent and the entrypoint is the console script that path selects.
+    `mcp-server-time` is pinned exactly because `mcp` itself exposes only a Typer CLI,
+    which cannot answer an initialize request.
+    """
+    from agentnode_sdk import installer
+    from agentnode_sdk.lock_integrity import seal_entry
+    from agentnode_sdk.runtimes.mcp_launch import build_mcp_launch_plan
+    from agentnode_sdk.runtimes.mcp_runner import MCPServerProcess
+    from tests.hostpolicy import decision
+
+    slug, version = "e2e-mcp", "1.0"
+    manager, package, pkg_version = "pypi", "mcp-server-time", "2026.8.18"
+
+    volume, artifact_hash, preinstall_command = installer._container_build_mcp_volume(
+        slug, version, manager, package, pkg_version)
+    server = None
     try:
-        server.start(_host_policy_decision=dec, launch_plan=plan("e2e-mcp", dec))  # container + JSON-RPC
-        assert server._container_name and server._container_name.startswith("agentnode-mcp-")
+        entry = seal_entry({
+            "trust_level": "verified",
+            "version": version,
+            "mcp_preinstalled": True,
+            "mcp_preinstall": {"manager": manager, "package": package,
+                               "version": pkg_version, "artifact_hash": artifact_hash},
+            "mcp_sandbox_volume": volume,
+            "mcp_preinstall_command": list(preinstall_command),
+        })
+        dec = decision("verified")
+        plan = build_mcp_launch_plan(slug, entry, dec, backend_kind="docker")
+        assert plan.boundary == "sandbox", plan.boundary
+
+        server = MCPServerProcess(slug, list(preinstall_command),
+                                  trust_level="verified", entry=entry)
+        # start() performs the initialize request/response itself and raises
+        # RuntimeError("... failed to initialize") if the server does not answer, so a
+        # start that returns IS a completed handshake. The post-conditions below make
+        # that observable rather than implicit.
+        server.start(_host_policy_decision=dec, launch_plan=plan)   # container + JSON-RPC
+
+        assert server._container_name
+        assert server._container_name.startswith("agentnode-mcp-"), server._container_name
+        # the server survived the handshake and is still the live process in the container
+        assert server.health_check() is True
     finally:
-        server.stop()
+        if server is not None:
+            try:
+                server.stop()
+            except Exception:
+                pass
+        subprocess.run(["docker", "volume", "rm", "-f", volume],
+                       capture_output=True, timeout=60)
