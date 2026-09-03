@@ -45,11 +45,14 @@ fail confusingly.
 
 ## Where this stands today
 
-**Planned.** Nothing in the current code substitutes a credential.
+**The broker is planned.** Nothing in the current code substitutes a credential at a proxy.
 
-What does exist: an MCP server can be told the *name* of an environment variable rather than having
-the value put on its command line — and even that path is marked inert in the source, with no live
-caller. So today, in practice, nothing is passed.
+What does exist, and is live in both runners: a package can be told the *name* of an environment
+variable rather than having the value put on a command line — the container runtime reads the value.
+It is reached only through gates: a preinstalled and sealed package, recorded consent, and a sealed
+list of destinations, with the network restricted to that list for the same run. A failed gate
+refuses the run rather than relaxing it. What has not happened is an end-to-end exercise of that path
+outside unit tests, so the availability table marks it available but untested.
 
 The safe thing to do meanwhile is the boring thing: do not give keys to packages you have not read.
 

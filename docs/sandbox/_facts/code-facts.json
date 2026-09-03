@@ -194,7 +194,11 @@
   },
   "generated_from": "sdk/agentnode_sdk source, read not imported",
   "sandbox_runtime": {
-    "egress_is_inert": true,
+    "agent_session_has_wall_clock": false,
+    "egress_live_callers": [
+      "runtimes/mcp_runner.py",
+      "runtimes/python_runner.py"
+    ],
     "hardening_flags": [
       "--cap-drop=ALL",
       "--cpus",
@@ -208,6 +212,12 @@
       "--user"
     ],
     "image_is_placeholder": false,
+    "network_mode_flags": {
+      "default": "no --network flag at all: an open network",
+      "egress": "--network <a pre-created internal network>; no handle raises instead",
+      "none": "--network none",
+      "restricted": "--network bridge"
+    },
     "network_modes": [
       "none",
       "restricted",
@@ -219,7 +229,13 @@
       "docker",
       "podman"
     ],
-    "secret_passthrough_is_inert": true
+    "secret_passthrough_live_callers": [
+      "runtimes/mcp_runner.py",
+      "runtimes/python_runner.py"
+    ],
+    "single_call_timeout_seconds": 120.0,
+    "source_docstring_still_says_egress_is_inert": true,
+    "source_docstring_still_says_passthrough_is_inert": true
   },
   "sdk_version": "0.24.0",
   "wired_in": {

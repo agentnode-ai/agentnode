@@ -193,6 +193,21 @@
       "summary": "no run — this row is a source fact, read out of the SDK by extract_facts.py",
       "platform": null,
       "assertions": []
+    },
+    "linux_egress_topology": {
+      "summary": "ubuntu-24.04: the Stage-0A bypass matrix run inside a container on the internal network",
+      "platform": "ubuntu-24.04 (GitHub Actions)",
+      "assertions": [
+        {
+          "kind": "pytest",
+          "node_id": "tests/test_egress_e2e.py::test_egress_e2e_matrix",
+          "outcome": "passed",
+          "run_id": "33633469871",
+          "lane": "lane-runtime-present",
+          "raw_record": "ci-lane-record.txt",
+          "note": "creates the internal network and the dual-homed proxy for real, then from inside the container tries direct connections to two public addresses and a resolved host, an unproxied request, an allowed host through the proxy and a host that is not on the allowlist; collected but skipped in lane-ordinary"
+        }
+      ]
     }
   }
 }

@@ -18,7 +18,8 @@ Inside that workspace the program gets only what it needs:
 
 * a copy of its own files, which it **cannot change**;
 * a small scratch area that is **thrown away** when it finishes;
-* **no network at all**, unless the package declared where it needs to connect and you allowed it;
+* **no network at all** — unless the package declared, when you installed it, exactly which sites it
+  needs and you agreed to them; then it can reach those and nothing else;
 * **none of your files**, unless you picked them;
 * **none of your passwords or keys**.
 

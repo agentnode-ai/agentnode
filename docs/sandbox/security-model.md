@@ -47,17 +47,29 @@ better than nothing, not equivalent to a separate machine.
 
 ## The network
 
-Default is `none`. A sandboxed process gets no network unless a package declared where it needs to
-reach and that was allowed.
+**The default is no network at all.** A tool pack or an MCP server that declared nothing runs with
+`--network none`: no name resolution, no connections, nothing.
 
-There is a restricted mode in the source that routes traffic through a proxy on an isolated network.
-**It is not finished** — the argv is built, the network and proxy are not created, and the source
-says so. It is marked experimental in [availability](availability.md) and you should not plan
-against it.
+**One exception exists and it is real.** Where an install sealed a list of destinations and consent
+was recorded, the run joins an *internal* network — one with no route to your machine or to the
+internet — and the only way out is a proxy that accepts exactly the sealed names. That is a
+topological boundary rather than a setting the program could ignore: there is no route to walk out
+of. Two run paths use it, the MCP runner and the tool-pack runner, and
+[the availability table](availability.md) records the end-to-end test that runs the bypass matrix
+from inside such a container.
 
-**The limit worth knowing in advance:** a proxy that allows connections by hostname decides from a
-name the client supplied, without opening the encrypted traffic. Techniques such as domain fronting
-can therefore reach a host that was not on the list. Terminating the encryption at the proxy is what
+If the machinery cannot be created, the run **raises rather than falling back to an open network**.
+
+*A naming trap worth knowing:* the mode called `restricted` in the source restricts nothing — it
+emits an ordinary bridge network. Nothing selects it, and the mode that does the work is the one
+called `egress`. The generated table lists what each mode actually emits, because the names do not
+say it.
+
+**The limit worth knowing in advance:** the proxy allows a connection by the hostname the client
+asked for, and it does check that the name resolves to a public address before connecting. What it
+cannot do without opening the encrypted traffic is verify that the host on the other end is the one
+the name promised. Techniques such as domain fronting can therefore reach a host that was not on the
+list, and a permitted name that resolves to somewhere else takes the traffic with it. Terminating the encryption at the proxy is what
 closes that, and doing so means the proxy can read the traffic — a real trade-off, planned for the
 managed service where the certificate authority would be ours, and not something to switch on
 casually.
@@ -66,9 +78,12 @@ casually.
 
 The rule is: **the process running other people's code should never hold your key.**
 
-Today, an MCP server can be given the *name* of an environment variable to receive, never the value
-on the command line. Even that path is marked inert in the source — there is no live caller — so in
-practice nothing is passed today.
+Today, an MCP server or a tool pack can be given the *name* of an environment variable, never the
+value on a command line: the container runtime reads the value itself. That path is live in both
+runners, and it is gated — it needs a preinstalled, sealed package, recorded consent and a sealed
+list of destinations. Any gate that fails refuses the run; none of them opens it. Nothing here has
+been exercised end to end outside unit tests, which is why
+[the availability table](availability.md) marks it available but untested rather than tested.
 
 The planned shape is a broker: the sandbox sees a meaningless placeholder, and a proxy swaps in the
 real value only for a host that was explicitly allowed. The sandbox never holds the secret, so a
@@ -101,7 +116,9 @@ It is an outdated compatibility setting.
 
 * It does not claim a container is a virtual machine.
 * It does not claim the policy layer contains anything.
-* It does not claim the restricted network or the credential broker work today.
+* It does not claim the credential broker exists — nothing substitutes a credential at a proxy.
+* It does not claim the mode named `restricted` restricts anything. It does not.
+* It does not claim the destination-limited network has been exercised anywhere but Linux CI.
 * It does not claim any of this has been tested outside Linux continuous integration.
 * It does not claim a non-technical person can set it up — that test has not been run.
 

@@ -19,7 +19,7 @@ Fast, cheap, no separate machine.
 you.
 
 That is what AgentNode uses today: pinned by digest, read-only root filesystem, all capabilities
-dropped, no new privileges, non-root user, limits on memory, processes and time, no network by
+dropped, no new privileges, non-root user, limits on memory and processes, no network by
 default, and never a mounted runtime socket — mounting one would hand over the host and end the
 discussion.
 

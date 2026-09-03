@@ -47,8 +47,8 @@ from the lane reports that the run uploaded, not from a summary anybody typed.
 | **Community agents run in a container** | ✅ available, tested | `runtimes/agent_sandbox.py` with network='none' and a read-only /pack mount | ubuntu-24.04: a community agent executed inside the sandbox.<br>`tests/test_agent_sandbox_e2e.py::test_agent_sandbox_e2e` → passed (run 33633469871) |
 | **A community agent's own entrypoint on the host** | ⛔ removed | `exceptions.py`: refused: HostAgentExecutionUnsupported | no run — this row is a source fact, read out of the SDK by extract_facts.py |
 | **Refusal when no runtime exists** | ✅ available, tested | `lane-runtime-absent` removes docker, podman and the socket, verifies they are gone, and asserts the refusal; also observed by hand on Windows | ubuntu-24.04 with docker, podman and the socket removed from the job: the refusal, not a fallback.<br>`tests/test_shipped_default_live_paths.py::TestLiveGateRefusesWhenNoRuntimeExists::test_real_discovery_finds_no_runtime` → passed (run 33633469871)<br>`tests/test_shipped_default_live_paths.py::TestLiveGateRefusesWhenNoRuntimeExists::test_the_gate_itself_also_refuses` → passed (run 33633469871)<br>`tests/test_shipped_default_live_paths.py::TestLiveGateRefusesWhenNoRuntimeExists::test_trusted_is_refused_through_the_public_routing_entrypoint` → passed (run 33633469871)<br>`tests/test_shipped_default_live_paths.py::TestLiveGateRefusesWhenNoRuntimeExists::test_curated_still_runs_on_the_host_without_a_runtime` → passed (run 33633469871)<br>`Windows 11 with no container runtime installed: run_tool on a trusted pack returned success=False, mode_used=sandbox_unavailable` → observed (run manual-2026-09-02) |
-| **Limiting which sites a sandboxed program may reach** | ⚗️ experimental | the restricted-network mode builds the command line but never creates the network or the relay it needs — the source says so in as many words (`sandbox_runtime.egress_is_inert`) | nothing has run this here |
-| **Secrets passed to an MCP by name only** | ⚗️ experimental | implemented, allowed only together with the restricted-network mode, and marked inert in the source with no live caller (`sandbox_runtime.secret_passthrough_is_inert`) | nothing has run this here |
+| **A sandboxed program reaching only the sites its install sealed** | ✅ available, tested | the `egress` mode joins an internal network with no route out except a proxy that allows exactly the sealed names; two run paths call it (`runtimes/mcp_runner.py`, `runtimes/python_runner.py`), and the end-to-end test runs the bypass matrix from inside the container. Reached only where an install sealed an allowlist and consent was recorded — everything else is refused, not opened | ubuntu-24.04: the Stage-0A bypass matrix run inside a container on the internal network.<br>`tests/test_egress_e2e.py::test_egress_e2e_matrix` → passed (run 33633469871) |
+| **Secrets reaching an MCP or tool pack by name only** | 🟡 available, not tested here | the same two run paths pass consented names rather than values (`runtimes/mcp_runner.py`, `runtimes/python_runner.py`), gated behind consent and a sealed allowlist; no end-to-end run of that path is recorded here | nothing has run this here |
 | **Credential broker with a sentinel value** | 🔭 planned | nothing in the code substitutes a credential at a proxy | nothing has run this here |
 | **Conformance suite for a backend** | 🔭 planned | `wired_in.conformance_suite_exists` is False | no run — this row is a source fact, read out of the SDK by extract_facts.py |
 | **The EM-3 selection contract** | 🔭 planned | on this branch the module is not present on main; it is under review in pull request #115, so it decides nothing yet | nothing has run this here |
@@ -62,6 +62,30 @@ ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae
 ```
 
 It is started with `--cap-drop=ALL`, `--cpus`, `--memory`, `--network`, `--pids-limit`, `--read-only`, `--rm`, `--security-opt=no-new-privileges`, `--tmpfs`, `--user`.
+
+## What each network mode actually does
+
+The mode names are not self-explanatory, so here is what each one puts on the command line:
+
+| mode | what it emits |
+|---|---|
+| `default` | no --network flag at all: an open network |
+| `egress` | --network <a pre-created internal network>; no handle raises instead |
+| `none` | --network none |
+| `restricted` | --network bridge |
+
+Two of those deserve a sentence. **`restricted` restricts nothing today** — it emits an ordinary
+bridge network, and no run path selects it. The mode that does restrict is `egress`, which has no
+usable form without a real internal network and proxy: without them it raises instead of emitting an
+open network.
+
+## The one time limit there is
+
+A single call is killed after **120 seconds**.
+A long-lived agent session has no such clock
+(`sandbox_runtime.agent_session_has_wall_clock` is False):
+it has per-message receive timeouts, which is not the same thing. Anything written here about "time
+limits" means that one number and nothing more.
 
 ## What is switched on when you install it
 

@@ -196,19 +196,102 @@ def check_jargon(pages: list[Path]) -> None:
                                 f"(expected something like {gloss!r})")
 
 
-def check_claims(pages: list[Path]) -> None:
-    """Anything the matrix calls planned must not be written as available."""
-    planned = ("AgentNode Sandbox", "self-hosted", "your own server", "managed")
+def matrix_rows() -> list:
+    """(row name, status) as the generated matrix states them."""
+    out = []
+    for line in (DOCS / "availability.md").read_text(encoding="utf-8").splitlines():
+        m = re.match(r"\|\s*\*\*(.+?)\*\*\s*\|\s*\S+\s*([a-z, ]+?)\s*\|", line)
+        if m:
+            out.append((m.group(1), m.group(2).strip()))
+    return out
+
+
+def check_facts_consistency(pages: list) -> None:
+    """A page may not call a capability unfinished while the facts show something calling it.
+
+    `SANDBOX-DOCS-0003`: the pages said the destination-limited network was inert and had no live
+    caller. That was read out of a docstring written at an earlier stage; two run paths call it.
+    The prose, the extracted facts and the matrix all agreed with each other and all three were
+    wrong together, which is precisely what a check between them cannot catch and this one can.
+    """
+    dead = ("inert", "no live caller", "never creates the network", "nothing is passed today")
+    subjects = ("network", "egress", "proxy", "secret", "credential", "passthrough")
+    live = {"network": FACTS["sandbox_runtime"]["egress_live_callers"],
+            "secret": FACTS["sandbox_runtime"]["secret_passthrough_live_callers"]}
+    if not any(live.values()):
+        return
+    for page in pages:
+        for line in page.read_text(encoding="utf-8").splitlines():
+            low = line.lower()
+            if any(d in low for d in dead) and any(s in low for s in subjects):
+                fail(page.name, "calls a capability unfinished that the code facts show being "
+                                f"called: {line.strip()[:90]!r}")
+
+
+def selftest_facts_consistency() -> int:
+    """Two planted sentences, both of which the check above must reject."""
+    import tempfile
+    before = len(problems)
+    with tempfile.TemporaryDirectory() as td:
+        bad = Path(td) / "selftest.md"
+        bad.write_text("The egress network is inert." + chr(10)
+                       + "Secrets by name have no live caller." + chr(10), encoding="utf-8")
+        check_facts_consistency([bad])
+    caught = len(problems) - before
+    del problems[before:]
+    return caught
+
+
+# Words a page may use for a row the matrix calls planned or removed. The row names are generated,
+# so the guarded vocabulary follows the matrix instead of being maintained beside it.
+ALIASES = {
+    "Your own sandbox server": ("self-hosted", "your own server", "own sandbox server"),
+    "AgentNode Sandbox (managed)": ("agentnode sandbox", "managed service", "managed sandbox"),
+    "Phone or tablet": ("phone", "tablet"),
+    "Credential broker with a sentinel value": ("credential broker", "sentinel"),
+    "Conformance suite for a backend": ("conformance suite",),
+    "The EM-3 selection contract": ("selection contract",),
+}
+
+
+def unavailable_phrases() -> list:
+    """Every phrase that names something the matrix says does not exist today."""
+    out = []
+    for name, status in matrix_rows():
+        if not status.startswith(("planned", "removed")):
+            continue
+        out.append(name.lower())
+        out += list(ALIASES.get(name, ()))
+    if not out:
+        fail("_checks/check_docs.py",
+             "no row is planned or removed, so this check now guards nothing — either the matrix "
+             "changed or it was not regenerated")
+    return out
+
+
+def check_claims(pages: list, phrases: list) -> None:
+    """Anything the matrix calls planned or removed must not be written as available."""
     promise = re.compile(r"\b(you can now|available today|get started now|start now|book|"
                          r"sign up)\b", re.I)
     for page in pages:
-        text = page.read_text(encoding="utf-8")
-        for line in text.splitlines():
-            if promise.search(line) and any(p.lower() in line.lower() for p in planned):
+        for line in page.read_text(encoding="utf-8").splitlines():
+            if promise.search(line) and any(x in line.lower() for x in phrases):
                 if "planned" in line.lower() or "not " in line.lower():
                     continue
                 fail(page.name, f"writes a planned thing as available: {line.strip()[:90]!r}")
 
+
+def selftest_claims(phrases: list) -> int:
+    import tempfile
+    before = len(problems)
+    with tempfile.TemporaryDirectory() as td:
+        bad = Path(td) / "selftest.md"
+        bad.write_text("You can now use your own sandbox server." + chr(10)
+                       + "The managed service is available today." + chr(10), encoding="utf-8")
+        check_claims([bad], phrases)
+    caught = len(problems) - before
+    del problems[before:]
+    return caught
 
 def main() -> int:
     pages = sorted(p for p in DOCS.glob("*.md"))
@@ -223,7 +306,15 @@ def main() -> int:
     check_links(pages)
     check_drift()
     check_jargon(pages)
-    check_claims(pages + blog)
+    phrases = unavailable_phrases()
+    if selftest_claims(phrases) != 2:
+        fail("_checks/check_docs.py",
+             "the planned-claims check did not reject two planted sentences")
+    check_claims(pages + blog, phrases)
+    check_facts_consistency(pages + blog)
+    if selftest_facts_consistency() != 2:
+        fail("_checks/check_docs.py",
+             "the facts-consistency check did not reject two planted sentences")
 
     print(f"  checked {len(pages)} documentation pages and {len(blog)} blog drafts "
           f"against {len(known)} real commands")

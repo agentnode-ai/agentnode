@@ -22,9 +22,11 @@ reach your things, and **if it cannot do that, it does not run the program at al
 ## What "somewhere else" means
 
 A sealed workspace on your own computer. Inside it, the program gets its own files read-only, a
-scratch area that is deleted afterwards, no network unless it declared where it needs to go, and
+scratch area that is deleted afterwards, no network at all unless its install sealed the sites it
+needs and you agreed to them, and
 none of your documents unless you picked them. It runs as a non-privileged user, on a filesystem it
-cannot write to, with limits on memory, processes and time.
+cannot write to, with limits on memory and processes, and a call that will not finish is killed
+after two minutes.
 
 What it does not get: your home folder, your browser profile, your keys.
 
@@ -62,5 +64,5 @@ And it has only been tested on Linux. It is built not to care which operating sy
 that expectation is not a result — so the table says "not tested here" for Windows and macOS rather
 than claiming a green tick nobody earned.
 
-**Try it:** [Set up the local sandbox](../../sandbox/setup-local.md) — free, about ten minutes,
-mostly waiting for a download.
+**Try it:** [Set up the local sandbox](../../sandbox/setup-local.md) — free, six steps, one of which is a
+download. How long that takes we have not measured on anyone but ourselves.

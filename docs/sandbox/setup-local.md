@@ -1,6 +1,11 @@
 # Set up the local sandbox
 
-*For everyone. About ten minutes, most of it waiting for a download.*
+*For everyone. Six steps, one of which is a download of a few hundred megabytes.*
+
+> **How long it takes, honestly:** we do not know. Our own guess is roughly ten minutes on a normal
+> connection, most of it waiting for that download — but nobody outside the project has been timed
+> doing this, so treat that as our estimate and not as your experience. What is written below is
+> what each step is and what you should see when it worked.
 
 You install one program once. After that AgentNode finds it by itself and you never think about it
 again.

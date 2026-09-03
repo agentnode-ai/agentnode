@@ -168,12 +168,18 @@ CAPABILITIES = [
     ("Refusal when no runtime exists", AVAILABLE_TESTED,
      "`lane-runtime-absent` removes docker, podman and the socket, verifies they are gone, and "
      "asserts the refusal; also observed by hand on Windows", "runtime_absent_refusal"),
-    ("Limiting which sites a sandboxed program may reach", EXPERIMENTAL,
-     "the restricted-network mode builds the command line but never creates the network or the "
-     "relay it needs — the source says so in as many words (`sandbox_runtime.egress_is_inert`)", "none"),
-    ("Secrets passed to an MCP by name only", EXPERIMENTAL,
-     "implemented, allowed only together with the restricted-network mode, and marked inert in the "
-     "source with no live caller (`sandbox_runtime.secret_passthrough_is_inert`)", "none"),
+    ("A sandboxed program reaching only the sites its install sealed", AVAILABLE_TESTED,
+     "the `egress` mode joins an internal network with no route out except a proxy that allows "
+     "exactly the sealed names; two run paths call it "
+     f"({', '.join('`' + c + '`' for c in FACTS['sandbox_runtime']['egress_live_callers'])}), and "
+     "the end-to-end test runs the bypass matrix from inside the container. Reached only where an "
+     "install sealed an allowlist and consent was recorded — everything else is refused, not opened",
+     "linux_egress_topology"),
+    ("Secrets reaching an MCP or tool pack by name only", AVAILABLE_UNTESTED,
+     "the same two run paths pass consented names rather than values "
+     f"({', '.join('`' + c + '`' for c in FACTS['sandbox_runtime']['secret_passthrough_live_callers'])}), "
+     "gated behind consent and a sealed allowlist; no end-to-end run of that path is recorded here",
+     "none"),
     ("Credential broker with a sentinel value", PLANNED,
      "nothing in the code substitutes a credential at a proxy", "none"),
     ("Conformance suite for a backend", PLANNED,
@@ -259,6 +265,27 @@ The image is pinned by digest, so "the sandbox image" is one exact image and not
 ```
 
 It is started with `{'`, `'.join(f['sandbox_runtime']['hardening_flags'])}`.
+
+## What each network mode actually does
+
+The mode names are not self-explanatory, so here is what each one puts on the command line:
+
+| mode | what it emits |
+|---|---|
+{chr(10).join(f"| `{k}` | {v} |" for k, v in sorted(f['sandbox_runtime']['network_mode_flags'].items()))}
+
+Two of those deserve a sentence. **`restricted` restricts nothing today** — it emits an ordinary
+bridge network, and no run path selects it. The mode that does restrict is `egress`, which has no
+usable form without a real internal network and proxy: without them it raises instead of emitting an
+open network.
+
+## The one time limit there is
+
+A single call is killed after **{f['sandbox_runtime']['single_call_timeout_seconds']:.0f} seconds**.
+A long-lived agent session has no such clock
+(`sandbox_runtime.agent_session_has_wall_clock` is {f['sandbox_runtime']['agent_session_has_wall_clock']}):
+it has per-message receive timeouts, which is not the same thing. Anything written here about "time
+limits" means that one number and nothing more.
 
 ## What is switched on when you install it
 

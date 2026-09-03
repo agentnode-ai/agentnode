@@ -70,9 +70,63 @@ def sandbox_runtime() -> dict:
                                                               "--pids", "--memory", "--cpus", "--network",
                                                               "--read-only", "--tmpfs"))],
         "network_modes": ["none", "restricted", "default", "egress"],
-        "egress_is_inert": "does NOT create the network" in types or "INERTLY" in types,
-        "secret_passthrough_is_inert": "INERT in 3B-2a" in types,
+        # What each mode ACTUALLY puts on the argv, read out of wrap_command. The names are not
+        # self-explanatory: "restricted" emits an ordinary bridge network today.
+        "network_mode_flags": _network_mode_flags(cb),
+        # SANDBOX-DOCS-0003: these two were read off adjectives in a docstring ("INERT", "does NOT
+        # create the network"). Those sentences describe the stage the file was written in, and the
+        # product moved on without rewriting them -- so the facts said inert while two run paths
+        # called the machinery. A comment is not a fact. Both are now derived from the call graph,
+        # and what the source SAYS is kept beside it so the disagreement stays visible.
+        "egress_live_callers": _callers_of("start_egress_proxy"),
+        "secret_passthrough_live_callers": _callers_of("env_passthrough="),
+        "source_docstring_still_says_egress_is_inert":
+            "does NOT create the network" in types or "INERTLY" in types,
+        "source_docstring_still_says_passthrough_is_inert": "INERT in 3B-2a" in types,
+        # A single call is killed after this many seconds; the long-lived agent session has no
+        # equivalent wall clock, only per-message receive timeouts.
+        "single_call_timeout_seconds": _default_timeout(cb),
+        "agent_session_has_wall_clock": "wall" in read("sandbox/agent_session.py").lower(),
     }
+
+
+def _network_mode_flags(cb: str) -> dict:
+    """mode -> the network argument wrap_command emits for it, read from the source."""
+    out = {}
+    for mode in ("none", "restricted"):
+        i = cb.find('spec.network == "%s"' % mode)
+        seg = cb[i:i + 220] if i >= 0 else ""
+        m = re.search(r'"--network", "(\w+)"', seg)
+        out[mode] = "--network " + m.group(1) if m else "unknown"
+    out["egress"] = ("--network <a pre-created internal network>; no handle raises instead"
+                     if 'argv += ["--network", eg.network_name]' in cb else "unknown")
+    out["default"] = ("no --network flag at all: an open network"
+                      if 'spec.network == "default"' in cb else "unknown")
+    return out
+
+
+def _callers_of(needle: str) -> list:
+    """Product modules that use `needle`, excluding the module defining it and the tests.
+
+    This is the difference between "the code exists" and "something calls it".
+    """
+    hits = []
+    for py in sorted(SDK.rglob("*.py")):
+        rel = str(py.relative_to(SDK)).replace(chr(92), "/")
+        if rel.startswith("tests/") or rel == "sandbox/egress.py":
+            continue
+        for line in py.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if needle in s and not s.startswith("#") and "def " not in s:
+                hits.append(rel)
+                break
+    return hits
+
+
+def _default_timeout(cb: str):
+    i = cb.find("def run_process(")
+    m = re.search(r"timeout: float = ([0-9.]+)", cb[i:i + 600]) if i >= 0 else None
+    return float(m.group(1)) if m else None
 
 
 def what_is_wired_in() -> dict:
