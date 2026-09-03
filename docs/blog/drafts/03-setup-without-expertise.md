@@ -1,7 +1,7 @@
 <!--
 DRAFT — not published. Written against AgentNode SDK 0.24.0.
 Availability claims come from docs/sandbox/availability.md, which is generated from the source.
-Do not publish without re-running docs/sandbox/_checks/check_docs.py.
+The availability statements are checked by docs/sandbox/_checks/check_docs.py.
 -->
 
 # Setting up a local sandbox without knowing what a container is

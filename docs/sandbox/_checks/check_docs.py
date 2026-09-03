@@ -68,20 +68,66 @@ def known_commands() -> set[str]:
 
 
 def check_commands(pages: list[Path], known: set[str]) -> None:
+    """Validate the COMPLETE command path, not merely a known prefix.
+
+    `SANDBOX-DOCS-0001` / F-D1-001: the first version broke out of its loop as soon as any known
+    prefix matched, so `agentnode sandbox invent` passed because `agentnode sandbox` exists. Now a
+    command is valid only if every word of it is consumed by a real command, with the sole exception
+    of placeholder arguments, which look like <this> or ARE the value in a `config set` example.
+    """
+    placeholder = re.compile(r"^(<[^>]+>|[A-Z_]{2,}|[a-z_]+\.[a-z_.]+|curated_only|default|none)$")
     for page in pages:
         text = page.read_text(encoding="utf-8")
-        for raw in re.findall(r"agentnode [a-z][a-z0-9 _-]*", text):
-            cmd = " ".join(w for w in raw.split() if not w.startswith("-"))
-            cmd = re.sub(r"\s+(list|get|set|the|a|an|is|does|it|and|or|to|from|on|in)$", "", cmd).strip()
-            if cmd in known or cmd == "agentnode":
-                continue
-            # allow one trailing placeholder word, e.g. `agentnode config set <key> <value>`
-            parts = cmd.split()
-            for n in range(len(parts), 1, -1):
-                if " ".join(parts[:n]) in known:
+        for raw in re.findall(r"agentnode(?: [a-z][A-Za-z0-9_.<>-]*)+", text):
+            words = [w for w in raw.split() if not w.startswith("-")]
+            # the longest real command that is a prefix of this line
+            best = 0
+            for n in range(len(words), 0, -1):
+                if " ".join(words[:n]) in known:
+                    best = n
                     break
-            else:
-                fail(page.name, f"names a command that does not exist: {cmd!r}")
+            if best == 0:
+                if words == ["agentnode"]:
+                    continue
+                fail(page.name, f"names a command that does not exist: {' '.join(words)!r}")
+                continue
+            leftover = words[best:]
+            # trailing prose is fine — documentation is prose. Trailing WORDS THAT LOOK LIKE
+            # SUBCOMMANDS are not, because that is exactly how an invented command reads.
+            for extra in leftover:
+                if placeholder.match(extra):
+                    continue
+                if " ".join(words[:best] + [extra]) in known:
+                    continue
+                if extra in ALLOWED_PROSE:
+                    break
+                fail(page.name, f"names a command that does not exist: "
+                                f"{' '.join(words[:best] + [extra])!r}")
+                break
+
+
+ALLOWED_PROSE = {
+    "and", "or", "the", "a", "an", "is", "it", "to", "from", "on", "in", "then", "does", "changes",
+    "tells", "gives", "prints", "says", "already", "for", "with", "that", "which", "if", "when",
+    "you", "your", "we", "will", "would", "can", "may", "should", "must", "of", "as", "at", "by",
+}
+
+
+def selftest_command_checker(known: set[str]) -> None:
+    """A checker nobody has seen fail is a checker nobody should trust."""
+    import tempfile
+    before = len(problems)
+    with tempfile.TemporaryDirectory() as td:
+        bad = Path(td) / "selftest.md"
+        bad.write_text("Run `agentnode sandbox invent` and `agentnode notacommand`." + chr(10),
+                       encoding="utf-8")
+        check_commands([bad], known)
+    caught = len(problems) - before
+    del problems[before:]
+    if caught != 2:
+        fail("_checks/check_docs.py",
+             f"the command checker did not reject two known-broken commands (caught {caught}); "
+             "its clean result on the real pages would mean nothing")
 
 
 def check_links(pages: list[Path]) -> None:
@@ -146,6 +192,7 @@ def main() -> int:
     blog = sorted(BLOG.glob("*.md")) if BLOG.exists() else []
     known = known_commands()
 
+    selftest_command_checker(known)
     check_commands(pages + blog, known)
     check_links(pages)
     check_drift()

@@ -58,13 +58,27 @@ Either works. Mixing them is what causes the confusing case.
 
 ## Linux
 
-Install Docker or Podman with your distribution's package manager — the packages are usually called
-`docker.io` or `docker-ce`, and `podman`. Your distribution's own instructions are better than
-anything we could copy here, and copying installation commands into documentation is how people end
-up pasting the wrong thing into a terminal.
+**Prefer Podman if you have the choice.** It runs without a background service owned by root, so
+the setup below does not ask you to widen anything:
 
-With Docker you normally need to be in the `docker` group to use it without `sudo`. Your
-distribution documents that too.
+```
+sudo apt install podman        # Debian, Ubuntu
+sudo dnf install podman        # Fedora, RHEL
+```
+
+AgentNode finds Podman by itself and needs nothing further.
+
+> ### If you use Docker instead, read this first
+>
+> To use Docker without `sudo`, the usual advice is to add yourself to the `docker` group. **That
+> is equivalent to giving yourself administrator rights on the machine, permanently.** Anyone who
+> can talk to the Docker service can start a container that has the whole disk mounted. It is not a
+> convenience setting; it is a privilege change, and on a shared or work machine it may not be
+> yours to make.
+>
+> If you accept that, your distribution documents the exact step. If you would rather not, either
+> use Podman above, or run AgentNode with `sudo` for the commands that need the sandbox — slower,
+> and it changes nothing about who can do what.
 
 Then:
 
@@ -93,9 +107,9 @@ meet:
 | What it says | What it means | What to do |
 |---|---|---|
 | no Docker or Podman found | nothing is installed, or it is not on the `PATH` this AgentNode can see | install one, or start AgentNode from the same place the runtime lives — see the WSL2 note above |
-| found but its daemon is not reachable | it is installed but not running | start Docker Desktop, or your service manager's docker service |
+| found but its daemon is not reachable | it is installed but not running | start Docker Desktop; on Linux with systemd: `sudo systemctl start docker` (or `podman.socket`) |
 | pinned sandbox image is not present | the sealed workspace image has not been downloaded | `agentnode sandbox pull` |
-| this SDK build has no pinned sandbox image | you are on a build where the image was never activated | update AgentNode |
+| this SDK build has no pinned sandbox image | you are on a build where the image was never activated | `pip install --upgrade agentnode-sdk` |
 
 More cases, with explanations: [Troubleshooting](troubleshooting.md).
 

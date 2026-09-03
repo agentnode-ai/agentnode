@@ -1,7 +1,7 @@
 <!--
 DRAFT — not published. Written against AgentNode SDK 0.24.0.
 Availability claims come from docs/sandbox/availability.md, which is generated from the source.
-Do not publish without re-running docs/sandbox/_checks/check_docs.py.
+The availability statements are checked by docs/sandbox/_checks/check_docs.py.
 -->
 
 # Container, microVM, remote sandbox: what the words mean
@@ -47,8 +47,8 @@ Hence three words, used carefully:
 * **observed** — a conformance suite measured it, signed, bound to a backend identity and version;
 * **attested** — hardware attestation or an independent audit backs it.
 
-"Certified" is not in that list, and is not used anywhere, because without an independent
-certification it would be a claim nobody made.
+Those three are the whole list. There is no fourth, and in particular nothing asserting an outside
+body has examined anything — because none has.
 
 ## What to take away
 

@@ -41,12 +41,14 @@ Three words, and no others:
 * **observed** — the suite measured it, in a signed report bound to a backend identity and version.
 * **attested** — hardware attestation or an independent audit backs it.
 
-**"Certified" is not available.** Without an independent certification the word would be a claim
-nobody made, so it is not in the vocabulary at all.
+**Those three are the whole vocabulary.** There is no fourth word, and in particular no word
+asserting an outside body has examined anything — because none has. A stronger word would be a
+claim nobody made.
 
 A suite cannot prove an operator does not read data out of band, nor that a hypervisor boundary is
 operated correctly. `observed` means what it says: these properties were measured. It does not mean
-the operator is trustworthy — that stays a judgement you make about who runs the machine.
+the operator is trustworthy — that stays a judgement you make about who runs the machine, and no
+report from us can make it for you.
 
 ## Identity, versions, updates
 

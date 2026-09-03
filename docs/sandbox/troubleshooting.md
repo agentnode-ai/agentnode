@@ -49,10 +49,14 @@ to an AgentNode started from Windows, and the other way round. Start both from t
 
 **In plain words.** It is installed but not running.
 
-**What to do.** Start Docker Desktop and wait until it reports its engine running. On Linux, start
-the service the way your distribution does. On Windows this message also appears when WSL2 or
-Hyper-V is switched off, or when hardware virtualization is disabled in the BIOS — the doctor names
-those cases in the same line, because they look identical from the outside.
+**What to do.**
+
+* **Windows and macOS:** start Docker Desktop and wait until it reports its engine running.
+* **Linux, systemd (most distributions):** `sudo systemctl start docker` — or
+  `systemctl --user start podman.socket` if you use Podman.
+* **Windows, and it still fails:** this same message appears when WSL2 or Hyper-V is switched off,
+  or when hardware virtualization is disabled in the BIOS. Docker Desktop's own installer offers to
+  switch the first two on; the third is a setting in your computer's firmware.
 
 ---
 
@@ -76,8 +80,15 @@ A one-off download.
 **In plain words.** You are running a build of AgentNode where the sandbox image was never
 activated. Nothing you do locally fixes it.
 
-**What to do.** Update AgentNode. Until then it refuses to run other people's code, which is the
-correct behaviour and not a fault you can configure away.
+**What to do.**
+
+```
+pip install --upgrade agentnode-sdk
+agentnode sandbox doctor
+```
+
+Until you do, it refuses to run other people's code, which is the correct behaviour and not a fault
+you can configure away.
 
 ---
 
@@ -85,8 +96,14 @@ correct behaviour and not a fault you can configure away.
 
 **In plain words.** The sealed workspace ran out of room while unpacking.
 
-**What to do.** Update to 0.24.0 or later. This was a real defect — the package managers wrote their
-caches into a deliberately tiny area — and it is fixed.
+**What to do.**
+
+```
+pip install --upgrade agentnode-sdk
+```
+
+This was a real defect — the package managers wrote their caches into a deliberately tiny area —
+and it is fixed in 0.24.0.
 
 ---
 

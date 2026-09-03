@@ -1,0 +1,47 @@
+{
+  "_comment": [
+    "Recorded execution results. A row in availability.md may only claim 'available, tested' when its",
+    "evidence key resolves here to at least one recorded run. SANDBOX-DOCS-0001 / F-D2: the generator",
+    "previously hard-coded that status, so it could assert a test nobody had run.",
+    "Each entry names the workflow run, the job, its conclusion, and the file in the review package",
+    "that carries the raw record."
+  ],
+  "linux_ci": {
+    "platform": "ubuntu-24.04 (GitHub Actions)",
+    "runs": [
+      {
+        "run_id": "33633469871",
+        "workflow": "SDK execution lanes (R6)",
+        "jobs": {
+          "lane-ordinary (3.10.15)": "success",
+          "lane-ordinary (3.11.10)": "success",
+          "lane-ordinary (3.12.7)": "success",
+          "lane-runtime-present": "success",
+          "lane-runtime-absent": "success"
+        },
+        "what_it_exercised": "the full suite with the container E2E flags set, Docker verified at the pinned 28.0.4, the sandbox image pulled by digest, and a real MCP server started in a container",
+        "raw_record": "ci-lane-record.txt"
+      },
+      {
+        "run_id": "33654001890",
+        "workflow": "Release artefact smoke (container-present)",
+        "jobs": {"artifact-smoke": "success"},
+        "what_it_exercised": "the installed wheel, not the source tree: a real container running as uid 1000 on a read-only root filesystem, the hardening flags on the argv, and the production MCP pre-install path building a sealed volume and completing an initialize handshake",
+        "raw_record": "ci-lane-record.txt"
+      }
+    ]
+  },
+  "windows_dev": {
+    "platform": "Windows 11, the maintainer's machine",
+    "runs": [
+      {
+        "run_id": "manual-2026-09-02",
+        "workflow": "manual",
+        "jobs": {"runtime-absent refusal": "observed"},
+        "what_it_exercised": "with no container runtime installed, run_tool on a trusted pack returned success=False, mode_used=sandbox_unavailable, with a plain-language reason. The refusal path only — nothing on this machine has ever started a sandbox.",
+        "raw_record": "ci-lane-record.txt"
+      }
+    ]
+  },
+  "none": {"platform": null, "runs": []}
+}

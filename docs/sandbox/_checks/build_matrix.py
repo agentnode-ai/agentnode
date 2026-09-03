@@ -21,6 +21,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 FACTS = json.loads((HERE.parent / "_facts" / "code-facts.json").read_text(encoding="utf-8"))
+TESTS = json.loads((HERE.parent / "_facts" / "test-evidence.json").read_text(encoding="utf-8"))
 OUT = HERE.parent / "availability.md"
 
 AVAILABLE_TESTED = "available, tested"
@@ -29,6 +30,21 @@ EXPERIMENTAL = "experimental"
 PLANNED = "planned"
 
 MARK = {AVAILABLE_TESTED: "✅", AVAILABLE_UNTESTED: "🟡", EXPERIMENTAL: "⚗️", PLANNED: "🔭"}
+
+# SANDBOX-DOCS-0001 / F-D2: "tested" must be derived, not asserted. A row claiming AVAILABLE_TESTED
+# is refused at generation time unless its evidence key resolves to a recorded run in
+# _facts/test-evidence.json, so the generator cannot emit a status whose evidence is absent.
+def _recorded_runs(key: str) -> list:
+    return TESTS.get(key, {}).get("runs", [])
+
+
+def _require_evidence(name: str, status: str, key: str) -> None:
+    if status == AVAILABLE_TESTED and not _recorded_runs(key):
+        raise SystemExit(
+            f"refusing to generate: {name!r} claims '{AVAILABLE_TESTED}' but evidence key {key!r} "
+            f"has no recorded run in _facts/test-evidence.json"
+        )
+
 
 # What has actually been executed, and where. Nothing is marked tested without a named source.
 EVIDENCE = {
@@ -110,8 +126,12 @@ def rows(items, kind: str) -> str:
             _what, status, why, ev = rest
         else:
             status, why, ev = rest
+        _require_evidence(name, status, ev)
         mark = MARK.get(status, "🚫")
-        out.append(f"| **{name}** | {mark} {status} | {why} | {EVIDENCE[ev]} |")
+        runs = _recorded_runs(ev)
+        cite = (EVIDENCE[ev] + " — run "
+                + ", ".join(r["run_id"] for r in runs)) if runs else EVIDENCE[ev]
+        out.append(f"| **{name}** | {mark} {status} | {why} | {cite} |")
     return "\n".join(out)
 
 
