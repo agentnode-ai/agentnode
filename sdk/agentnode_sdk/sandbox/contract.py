@@ -126,6 +126,15 @@ class Refusal:
     reason: str                        # plain language, shown to the person
     actions: tuple[Action, ...]
 
+    def __init_subclass__(cls, **kw):  # noqa: D105
+        # EM3A-IMPL-0003 / F-A1: __post_init__ is virtual, so a subclass could override it and
+        # construct a dead-end refusal. There is no legitimate reason to subclass this type, and
+        # forbidding it removes the only route around the check.
+        raise TypeError(
+            "Refusal is final: subclassing it would allow overriding the check that a refusal "
+            "always carries an executable way out."
+        )
+
     def __post_init__(self) -> None:
         if not self.reason.strip():
             raise ValueError("a refusal must carry a plain-language reason")
@@ -148,6 +157,9 @@ class Blocked:
     reason: str
     safe_exit: Action = field(default=None)  # set in __post_init__ to the registered exit
     escalation: Action = CONTACT_SUPPORT
+
+    def __init_subclass__(cls, **kw):  # noqa: D105
+        raise TypeError("Blocked is final, for the same reason Refusal is.")
 
     def __post_init__(self) -> None:
         if not self.reason.strip():

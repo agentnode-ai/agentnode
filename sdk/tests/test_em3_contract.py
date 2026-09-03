@@ -45,6 +45,19 @@ from agentnode_sdk.sandbox.contract import (
 class TestEveryRefusalHasAWayOut:
     """§3.3 / F-E2-OPTIONAL-REMEDIATION — cardinality zero must be unrepresentable."""
 
+    def test_a_refusal_cannot_be_subclassed_around(self):
+        """EM3A-IMPL-0003 / F-A1: __post_init__ is virtual, so a subclass was the way around it."""
+        with pytest.raises(TypeError, match="Refusal is final"):
+            class Sneaky(Refusal):
+                def __post_init__(self):
+                    pass
+
+    def test_blocked_cannot_be_subclassed_around_either(self):
+        with pytest.raises(TypeError, match="Blocked is final"):
+            class SneakyBlocked(Blocked):
+                def __post_init__(self):
+                    pass
+
     def test_a_home_made_action_labelled_remediation_does_not_count(self):
         """EM3A-IMPL-0002 / F-A1: the invariant proved a label, not a way out."""
         pretend = Action("teleport", "Do something nobody implemented", ActionKind.REMEDIATION)
