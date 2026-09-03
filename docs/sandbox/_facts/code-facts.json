@@ -1,0 +1,236 @@
+{
+  "cli": {
+    "auth_sub": [
+      "set",
+      "list",
+      "remove",
+      "status",
+      "test"
+    ],
+    "cap_sub": [
+      "show"
+    ],
+    "config_sub": [
+      "list",
+      "get",
+      "set"
+    ],
+    "guard_sub": [
+      "policy",
+      "status",
+      "set",
+      "unset",
+      "check",
+      "reset"
+    ],
+    "lock_sub": [
+      "seal",
+      "verify"
+    ],
+    "mcp_own_sub": [
+      "challenge",
+      "verify"
+    ],
+    "mcp_sub": [
+      "doctor",
+      "verify",
+      "status",
+      "submit",
+      "revoke",
+      "grants",
+      "ownership"
+    ],
+    "sandbox_sub": [
+      "pull",
+      "doctor",
+      "status"
+    ],
+    "skill_sub": [
+      "list",
+      "show"
+    ],
+    "sub": [
+      "setup",
+      "doctor",
+      "mcp",
+      "reset",
+      "auth",
+      "config",
+      "search",
+      "discover",
+      "resolve",
+      "recommend",
+      "install",
+      "run",
+      "remove",
+      "audit",
+      "logs",
+      "init",
+      "validate",
+      "verify-local",
+      "publish",
+      "record-cases",
+      "inspect",
+      "capabilities",
+      "skill",
+      "guard",
+      "lock",
+      "serve",
+      "sandbox"
+    ]
+  },
+  "config": {
+    "allowed_values": {
+      "agent_sandbox.enabled": [
+        "true",
+        "false"
+      ],
+      "guard.compute": [
+        "allow",
+        "prompt",
+        "deny"
+      ],
+      "guard.credential_use": [
+        "allow",
+        "prompt",
+        "deny"
+      ],
+      "guard.delete": [
+        "allow",
+        "prompt",
+        "deny"
+      ],
+      "guard.execute": [
+        "allow",
+        "prompt",
+        "deny"
+      ],
+      "guard.network_egress": [
+        "allow",
+        "prompt",
+        "deny"
+      ],
+      "guard.read": [
+        "allow",
+        "prompt",
+        "deny"
+      ],
+      "guard.unknown": [
+        "allow",
+        "prompt",
+        "deny"
+      ],
+      "guard.write_external": [
+        "allow",
+        "prompt",
+        "deny"
+      ],
+      "guard.write_local": [
+        "allow",
+        "prompt",
+        "deny"
+      ],
+      "llm.default_provider": [
+        "openai",
+        "anthropic",
+        "openrouter",
+        "deepseek",
+        "mistral",
+        "qwen",
+        "gemini",
+        "ollama"
+      ],
+      "sandbox.host_trust_policy": [
+        "default",
+        "curated_only",
+        "none"
+      ],
+      "trust.minimum_trust_level": [
+        "verified",
+        "trusted",
+        "curated"
+      ]
+    },
+    "descriptions": {
+      "agent_sandbox.enabled": "Route community (verified/unverified) agents through the container sandbox",
+      "credentials.require_before_auto_install": "Skip packages needing credentials you don't have during auto-install",
+      "guard.compute": "Guard policy for tools that perform computation",
+      "guard.credential_use": "Guard policy for tools that use credentials",
+      "guard.delete": "Guard policy for tools that delete resources",
+      "guard.execute": "Guard policy for tools that execute code",
+      "guard.network_egress": "Guard policy for tools with network egress",
+      "guard.read": "Guard policy for tools that read data",
+      "guard.unknown": "Guard policy for tools with unknown action type",
+      "guard.write_external": "Guard policy for tools that write data externally",
+      "guard.write_local": "Guard policy for tools that write locally",
+      "llm.default_provider": "Which stored LLM credential to try first (vault resolution order)",
+      "permissions.code_execution": "Policy for packages that execute code",
+      "permissions.filesystem": "Policy for packages that require filesystem access",
+      "permissions.network": "Policy for packages that require network access",
+      "risk_policies.external_write_capable": "Policy for packages that can write or send data externally",
+      "sandbox.host_trust_policy": "Which trust tiers may run directly on the host; the rest are sandboxed or fail-closed. curated_only (SHIPPED DEFAULT) = only AgentNode-owned curated code on the host, trusted third-party is sandboxed; default = curated+trusted on host; none = everything is sandboxed",
+      "trust.minimum_trust_level": "Minimum trust tier required for install and execution"
+    },
+    "shipped_defaults": {
+      "agent_sandbox.enabled": true,
+      "sandbox.host_trust_policy": "curated_only"
+    }
+  },
+  "execution_paths": {
+    "agent": {
+      "mount": "read-only /pack",
+      "network": "none"
+    },
+    "build": {
+      "network": "default (build step only)"
+    },
+    "host_agent_entrypoint": "refused: HostAgentExecutionUnsupported",
+    "mcp": {
+      "networks_used": [
+        "egress",
+        "none"
+      ]
+    }
+  },
+  "generated_from": "sdk/agentnode_sdk source, read not imported",
+  "sandbox_runtime": {
+    "egress_is_inert": true,
+    "hardening_flags": [
+      "--cap-drop=ALL",
+      "--cpus",
+      "--memory",
+      "--network",
+      "--pids-limit",
+      "--read-only",
+      "--rm",
+      "--security-opt=no-new-privileges",
+      "--tmpfs",
+      "--user"
+    ],
+    "image_is_placeholder": false,
+    "network_modes": [
+      "none",
+      "restricted",
+      "default",
+      "egress"
+    ],
+    "pinned_image": "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f",
+    "runtimes_probed": [
+      "docker",
+      "podman"
+    ],
+    "secret_passthrough_is_inert": true
+  },
+  "sdk_version": "0.24.0",
+  "wired_in": {
+    "conformance_suite_exists": false,
+    "em3_contract_importers": [],
+    "em3_contract_module_exists": false,
+    "managed_backend_exists": false,
+    "remote_backend_exists": false,
+    "sandbox_backend_implementations": [
+      "ContainerBackend",
+      "NoSandboxBackend"
+    ]
+  }
+}

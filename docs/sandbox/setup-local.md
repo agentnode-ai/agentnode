@@ -1,0 +1,117 @@
+# Set up the local sandbox
+
+*For everyone. About ten minutes, most of it waiting for a download.*
+
+You install one program once. After that AgentNode finds it by itself and you never think about it
+again.
+
+> **Before you start:** run `agentnode sandbox doctor`. It changes nothing and tells you exactly
+> what is missing on *your* machine. If it already says **Sandbox ready**, you are done — skip this
+> page.
+
+## Windows
+
+**You should see:** an icon called Docker Desktop in your taskbar, showing "Engine running".
+
+1. Download **Docker Desktop** from <https://docs.docker.com/get-docker/> and install it. AgentNode
+   does not install it for you — a tool that silently installs system software is a tool you cannot
+   audit.
+2. Start Docker Desktop and wait until it says the engine is running. The first start takes a while.
+3. Back in AgentNode:
+
+   ```
+   agentnode sandbox pull
+   agentnode sandbox doctor
+   ```
+
+   **You should see:** `Sandbox ready — community packages run isolated.`
+
+**If Docker Desktop will not start**, it is almost always one of three things, and the doctor names
+which: Windows virtualization turned off in the BIOS, WSL2 not installed, or Hyper-V disabled.
+Docker Desktop's own installer offers to fix the last two.
+
+### Windows with WSL2
+
+If you already work inside a WSL2 Linux distribution, you have a choice, and it matters:
+
+* **Docker Desktop with WSL2 integration** — install as above, then switch on integration for your
+  distribution in Docker Desktop's settings. AgentNode finds the runtime from both sides.
+* **A runtime installed inside the distribution** — then run AgentNode inside that same
+  distribution. AgentNode looks for the runtime on the `PATH` it can see, so a runtime installed in
+  Linux is invisible to an AgentNode started from Windows, and the doctor will say it found nothing.
+
+Either works. Mixing them is what causes the confusing case.
+
+## macOS
+
+**You should see:** the Docker whale in your menu bar.
+
+1. Install **Docker Desktop** from <https://docs.docker.com/get-docker/>, or **Podman Desktop** from
+   <https://podman-desktop.io/> — AgentNode accepts either.
+2. Start it.
+3. Then:
+
+   ```
+   agentnode sandbox pull
+   agentnode sandbox doctor
+   ```
+
+## Linux
+
+Install Docker or Podman with your distribution's package manager — the packages are usually called
+`docker.io` or `docker-ce`, and `podman`. Your distribution's own instructions are better than
+anything we could copy here, and copying installation commands into documentation is how people end
+up pasting the wrong thing into a terminal.
+
+With Docker you normally need to be in the `docker` group to use it without `sudo`. Your
+distribution documents that too.
+
+Then:
+
+```
+agentnode sandbox pull
+agentnode sandbox doctor
+```
+
+## Checking it really works
+
+```
+agentnode sandbox doctor
+```
+
+**You should see** three ticks — runtime, daemon, image — and `Sandbox ready`. If any line has a
+cross, that line carries its own fix.
+
+`agentnode sandbox status` shows the same thing in short form, and
+`agentnode sandbox doctor --json` prints it for scripts without doing anything.
+
+## When something is wrong
+
+Every failure the doctor reports comes with one concrete next step. The four you are most likely to
+meet:
+
+| What it says | What it means | What to do |
+|---|---|---|
+| no Docker or Podman found | nothing is installed, or it is not on the `PATH` this AgentNode can see | install one, or start AgentNode from the same place the runtime lives — see the WSL2 note above |
+| found but its daemon is not reachable | it is installed but not running | start Docker Desktop, or your service manager's docker service |
+| pinned sandbox image is not present | the sealed workspace image has not been downloaded | `agentnode sandbox pull` |
+| this SDK build has no pinned sandbox image | you are on a build where the image was never activated | update AgentNode |
+
+More cases, with explanations: [Troubleshooting](troubleshooting.md).
+
+## Undoing it
+
+AgentNode does not own any of this, so removing it is entirely in your hands:
+
+* the downloaded sandbox image is an ordinary container image; your runtime's own tools remove it;
+* Docker Desktop and Podman uninstall like any other application;
+* `agentnode config set sandbox.host_trust_policy curated_only` puts the trust setting back to what
+  a fresh install uses, if you changed it.
+
+Removing the runtime does not break AgentNode. It goes back to refusing to run other people's code,
+which is the safe state.
+
+---
+
+Next: [What the sandbox protects you from, and what it does not](security-model.md) ·
+[Troubleshooting](troubleshooting.md)

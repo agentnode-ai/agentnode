@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Read the SDK source and write down what is actually there.
+
+Every availability claim in the sandbox documentation is generated from this file, so a claim cannot
+drift away from the code without the generator noticing. Nothing here imports the SDK — it reads the
+source, so it works without an installed package and cannot be fooled by a stale install.
+
+    python docs/sandbox/_checks/extract_facts.py            # writes _facts/code-facts.json
+    python docs/sandbox/_checks/extract_facts.py --print    # and shows it
+"""
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+SDK = ROOT / "sdk" / "agentnode_sdk"
+OUT = Path(__file__).resolve().parents[1] / "_facts" / "code-facts.json"
+
+
+def read(rel: str) -> str:
+    return (SDK / rel).read_text(encoding="utf-8")
+
+
+def cli_tree() -> dict[str, list[str]]:
+    text = read("cli/main.py")
+    tree: dict[str, list[str]] = {}
+    for m in re.finditer(r"(\w+)\.add_parser\(\s*\"([^\"]+)\"", text):
+        tree.setdefault(m.group(1), []).append(m.group(2))
+    return tree
+
+
+def config_surface() -> dict:
+    text = read("config.py")
+    allowed = dict(re.findall(r'"((?:sandbox|agent_sandbox|trust|guard|llm)[a-z_.]*)":\s*\(([^)]*)\)',
+                              text))
+    descriptions = dict(re.findall(r'"([a-z_.]+)":\s*"((?:[^"\\]|\\.)*)",\n', text))
+    defaults = {}
+    for key in ("host_trust_policy",):
+        m = re.search(rf'"{key}":\s*"([a-z_]+)"', text)
+        if m:
+            defaults[f"sandbox.{key}"] = m.group(1)
+    m = re.search(r'"agent_sandbox":\s*\{[^}]*?"enabled":\s*(True|False)', text, re.S)
+    if m:
+        defaults["agent_sandbox.enabled"] = m.group(1) == "True"
+    return {
+        "allowed_values": {k: [v.strip().strip('"') for v in vals.split(",") if v.strip()]
+                           for k, vals in allowed.items()},
+        "shipped_defaults": defaults,
+        "descriptions": {k: v for k, v in descriptions.items() if k.count(".") == 1},
+    }
+
+
+def sandbox_runtime() -> dict:
+    cb = read("sandbox/container_backend.py")
+    # the constant is written across two source lines, so join the pieces rather than guessing
+    m = re.search(r"_BASE_IMAGE\s*=\s*\(([^)]*)\)", cb, re.S)
+    image = "".join(re.findall(r'"([^"]*)"', m.group(1))) if m else None
+    candidates = re.search(r'candidates\s*=\s*\[self\._runtime\]\s*if\s*self\._runtime\s*else\s*\[([^\]]+)\]', cb)
+    flags = sorted(set(re.findall(r'"(--[a-z-]+(?:=[A-Za-z-]+)?)"', cb)))
+    types = read("sandbox/types.py")
+    networks = re.findall(r'#\s*"none"\s*\|\s*"([a-z]+)"\s*\|\s*"([a-z]+)"\s*\|\s*"([a-z]+)"', types)
+    return {
+        "pinned_image": image,
+        "image_is_placeholder": bool(image and set(image.rsplit(":", 1)[-1]) == {"0"}),
+        "runtimes_probed": [c.strip().strip('"') for c in candidates.group(1).split(",")] if candidates else [],
+        "hardening_flags": [f for f in flags if f.startswith(("--rm", "--cap", "--security", "--user",
+                                                              "--pids", "--memory", "--cpus", "--network",
+                                                              "--read-only", "--tmpfs"))],
+        "network_modes": ["none", "restricted", "default", "egress"],
+        "egress_is_inert": "does NOT create the network" in types or "INERTLY" in types,
+        "secret_passthrough_is_inert": "INERT in 3B-2a" in types,
+    }
+
+
+def what_is_wired_in() -> dict:
+    """Which of the newer pieces are actually reachable from a run, and which only exist."""
+    wired = {}
+    contract = SDK / "sandbox" / "contract.py"
+    wired["em3_contract_module_exists"] = contract.is_file()
+    importers = []
+    for py in SDK.rglob("*.py"):
+        if py == contract:
+            continue
+        if re.search(r"from\s+\.?contract\s+import|sandbox\.contract", py.read_text(encoding="utf-8")):
+            importers.append(str(py.relative_to(SDK)))
+    wired["em3_contract_importers"] = importers
+    backends = []
+    for py in (SDK / "sandbox").glob("*.py"):
+        src = py.read_text(encoding="utf-8")
+        backends += [m for m in re.findall(r"class\s+(\w+)\(SandboxBackend\)", src)]
+    wired["sandbox_backend_implementations"] = sorted(backends)
+    wired["remote_backend_exists"] = any("remote" in b.lower() for b in backends)
+    wired["managed_backend_exists"] = any("managed" in b.lower() for b in backends)
+    wired["conformance_suite_exists"] = (ROOT / "sdk" / "tests" / "conformance").exists()
+    return wired
+
+
+def execution_paths() -> dict:
+    """Where foreign code can run today, read from the runners rather than from a plan."""
+    out = {}
+    ag = read("runtimes/agent_sandbox.py")
+    out["agent"] = {"network": re.search(r'network="(\w+)"', ag).group(1),
+                    "mount": "read-only /pack" if "read_only=True" in ag else "unknown"}
+    mcp = read("runtimes/mcp_runner.py")
+    out["mcp"] = {"networks_used": sorted(set(re.findall(r'network="(\w+)"', mcp)))}
+    inst = read("installer.py")
+    out["build"] = {"network": "default (build step only)" if 'network="default"' in inst else "unknown"}
+    exc = read("exceptions.py")
+    out["host_agent_entrypoint"] = ("refused: HostAgentExecutionUnsupported"
+                                    if "HostAgentExecutionUnsupported" in exc else "unknown")
+    return out
+
+
+def main() -> int:
+    facts = {
+        "generated_from": "sdk/agentnode_sdk source, read not imported",
+        "sdk_version": re.search(r'__version__\s*=\s*"([^"]+)"', read("__init__.py")).group(1),
+        "cli": cli_tree(),
+        "config": config_surface(),
+        "sandbox_runtime": sandbox_runtime(),
+        "wired_in": what_is_wired_in(),
+        "execution_paths": execution_paths(),
+    }
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(json.dumps(facts, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"  wrote {OUT.relative_to(ROOT)}")
+    if "--print" in sys.argv:
+        print(json.dumps(facts, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
