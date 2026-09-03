@@ -228,6 +228,43 @@ def check_facts_consistency(pages: list) -> None:
                                 f"called: {line.strip()[:90]!r}")
 
 
+def check_secret_claims(pages: list) -> None:
+    """No page may say the sandbox never holds the key while the runtime puts it there.
+
+    `SANDBOX-DOCS-0004`: the rule the project is working towards was written in the present tense
+    beside a description of `--env NAME`, which is the mechanism that hands the value to the
+    program. The two sentences were both on the page and a reader could take the first as a
+    property of today.
+    """
+    if not FACTS["sandbox_runtime"].get("secret_value_is_inside_the_container"):
+        return
+    claim = re.compile(r"(sandbox|container|process)[^.]{0,60}"
+                       r"(never (holds|sees|receives|gets)|does not (hold|see|receive))", re.I)
+    for page in pages:
+        for line in page.read_text(encoding="utf-8").splitlines():
+            low = line.lower()
+            if not claim.search(line):
+                continue
+            if any(w in low for w in ("planned", "would ", "working towards", "not built",
+                                      "goal", "broker")):
+                continue
+            fail(page.name, "says the sandbox never holds the key, which the runtime "
+                            f"contradicts: {line.strip()[:90]!r}")
+
+
+def selftest_secret_claims() -> int:
+    import tempfile
+    before = len(problems)
+    with tempfile.TemporaryDirectory() as td:
+        bad = Path(td) / "selftest.md"
+        bad.write_text("The sandbox never holds your key." + chr(10)
+                       + "A container process does not see the value." + chr(10), encoding="utf-8")
+        check_secret_claims([bad])
+    caught = len(problems) - before
+    del problems[before:]
+    return caught
+
+
 def selftest_facts_consistency() -> int:
     """Two planted sentences, both of which the check above must reject."""
     import tempfile
@@ -312,6 +349,10 @@ def main() -> int:
              "the planned-claims check did not reject two planted sentences")
     check_claims(pages + blog, phrases)
     check_facts_consistency(pages + blog)
+    check_secret_claims(pages + blog)
+    if selftest_secret_claims() != 2:
+        fail("_checks/check_docs.py",
+             "the secret-claim check did not reject two planted sentences")
     if selftest_facts_consistency() != 2:
         fail("_checks/check_docs.py",
              "the facts-consistency check did not reject two planted sentences")

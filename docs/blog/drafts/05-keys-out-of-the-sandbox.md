@@ -15,9 +15,14 @@ For a program you wrote, fine. For a program a stranger wrote, that is the entir
 that copies its own environment to a server, and your key is gone. No exploit, no clever trick. It
 was handed over.
 
-## The rule
+## The rule we are working towards
 
 **The process running someone else's code should never hold your key.**
+
+That is the goal, and it is worth saying immediately that AgentNode does not reach it yet. Today, a
+key you allow a package to use is inside the sandbox with that package, and the package can read it.
+What already exists is described further down; what would actually make the rule true is the broker,
+and that is not built.
 
 Not "should hold it carefully". Should not hold it.
 
@@ -47,13 +52,21 @@ fail confusingly.
 
 **The broker is planned.** Nothing in the current code substitutes a credential at a proxy.
 
-What does exist, and is live in both runners: a package can be told the *name* of an environment
-variable rather than having the value put on a command line — the container runtime reads the value.
-It is reached only through gates: a preinstalled and sealed package, recorded consent, and a sealed
-list of destinations, with the network restricted to that list for the same run. A failed gate
-refuses the run rather than relaxing it. What has not happened is an end-to-end exercise of that path
-outside unit tests, so the availability table marks it available but untested.
+What does exist, and is live in both runners, is narrower than it sounds: a package is given the
+*name* of an environment variable rather than the value on a command line, and the container runtime
+supplies the value on the other side. **The value is then in the sandbox.** Name-only keeps it out
+of the command line, the error messages and the logs — not out of the program.
 
-The safe thing to do meanwhile is the boring thing: do not give keys to packages you have not read.
+The protection is in the gates around it: the package must be preinstalled and sealed, the names
+must match what consent was recorded for, there must be a sealed list of destinations, the run is
+restricted to that list, and pass-through is refused entirely on any other network. Every one of
+those refuses on failure; none of them relaxes. And none of it has been exercised end to end outside
+unit tests, so the availability table says available, not tested.
+
+So the honest advice for today has not changed: a key you share with a package is a key that package
+has.
+
+The safe thing to do meanwhile is the boring thing: do not give keys to packages you have not read,
+and give a package its own key rather than one that opens everything.
 
 **Read the model:** [Secrets, and the limits](../../sandbox/security-model.md).

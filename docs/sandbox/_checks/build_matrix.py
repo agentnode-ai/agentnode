@@ -178,7 +178,9 @@ CAPABILITIES = [
     ("Secrets reaching an MCP or tool pack by name only", AVAILABLE_UNTESTED,
      "the same two run paths pass consented names rather than values "
      f"({', '.join('`' + c + '`' for c in FACTS['sandbox_runtime']['secret_passthrough_live_callers'])}), "
-     "gated behind consent and a sealed allowlist; no end-to-end run of that path is recorded here",
+     "behind the refusals listed in `sandbox_runtime.credentialed_run_refusals`. **The value still "
+     "reaches the container** — name-only keeps it off the command line and out of the logs, not "
+     "away from the program; no end-to-end run of this path is recorded here",
      "none"),
     ("Credential broker with a sentinel value", PLANNED,
      "nothing in the code substitutes a credential at a proxy", "none"),

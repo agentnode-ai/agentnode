@@ -64,8 +64,11 @@ organisation default.
   unavailable". When the sandbox cannot be created, the job does not run.
 * **No socket mounting.** The container-runtime socket is never mounted into a sandbox, and there is
   no flag for it.
-* **No automatic host selection.** No automatic path, onboarding flow or fallback may choose host
-  execution.
+* **Nothing automatic ever chooses unprotected execution.** "On the host" in this documentation
+  means *directly on your machine, outside a sandbox* — not "on some computer". No automatic path,
+  onboarding flow or fallback may arrive there. Automatic selection between **protected** places is
+  allowed and is how the software is meant to work; sending work off the device additionally
+  requires the person's agreement, once.
 
 ## Fleet-wide enforcement
 

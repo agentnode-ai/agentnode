@@ -195,6 +195,20 @@
   "generated_from": "sdk/agentnode_sdk source, read not imported",
   "sandbox_runtime": {
     "agent_session_has_wall_clock": false,
+    "credentialed_run_refusals": {
+      "runtimes/mcp_runner.py": [
+        "credentialed_requires_preinstall",
+        "empty_host_env_key",
+        "env_keys_identity_mismatch",
+        "grant_store_unusable",
+        "missing_host_env_key",
+        "missing_or_invalid_allowed_domains"
+      ],
+      "runtimes/toolpack_credentials.py": [
+        "grant_store_unusable",
+        "missing_or_invalid_allowed_domains"
+      ]
+    },
     "egress_live_callers": [
       "runtimes/mcp_runner.py",
       "runtimes/python_runner.py"
@@ -229,10 +243,12 @@
       "docker",
       "podman"
     ],
+    "secret_name_only_requires_egress": true,
     "secret_passthrough_live_callers": [
       "runtimes/mcp_runner.py",
       "runtimes/python_runner.py"
     ],
+    "secret_value_is_inside_the_container": true,
     "single_call_timeout_seconds": 120.0,
     "source_docstring_still_says_egress_is_inert": true,
     "source_docstring_still_says_passthrough_is_inert": true

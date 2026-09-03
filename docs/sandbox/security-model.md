@@ -76,19 +76,33 @@ casually.
 
 ## Secrets
 
-The rule is: **the process running other people's code should never hold your key.**
+**Read this part twice, because it is the one people get wrong.**
 
-Today, an MCP server or a tool pack can be given the *name* of an environment variable, never the
-value on a command line: the container runtime reads the value itself. That path is live in both
-runners, and it is gated — it needs a preinstalled, sealed package, recorded consent and a sealed
-list of destinations. Any gate that fails refuses the run; none of them opens it. Nothing here has
-been exercised end to end outside unit tests, which is why
-[the availability table](availability.md) marks it available but untested rather than tested.
+Today, when you allow a package to use one of your keys, **the key ends up inside the sandbox, and
+the code in there can read it.** The name-only mechanism means the *name* travels — `--env
+OPENAI_API_KEY` — and the container runtime supplies the value on the other side. That keeps the
+value off the command line, out of this process's error messages and out of logs. It does not keep
+it away from the program you are running. A package you gave a key to can copy that key.
 
-The planned shape is a broker: the sandbox sees a meaningless placeholder, and a proxy swaps in the
-real value only for a host that was explicitly allowed. The sandbox never holds the secret, so a
-malicious package that copies its whole environment out gets a useless string. That is planned, not
-built.
+What protects you is therefore not secrecy from the program; it is **who can get one, and where the
+program can send it**:
+
+* the package must be preinstalled and sealed — a package fetched at run time never gets a key;
+* the names must match the ones consent was recorded for, or the run is refused;
+* there must be a sealed, valid list of destinations, and the same run is restricted to it;
+* pass-through is refused outright unless the network is the destination-limited one.
+
+The refusal codes are extracted from the source into
+[the facts file](_facts/code-facts.json) under `credentialed_run_refusals`, so this list can be
+checked rather than believed. Every one of them refuses; none of them relaxes anything. And none of
+this has been exercised end to end outside unit tests, which is why
+[the availability table](availability.md) says available, not tested.
+
+**The rule we are working towards** — that the process running other people's code should never
+hold your key at all — needs the broker: the sandbox sees a meaningless placeholder and a proxy
+swaps in the real value only for a destination that was allowed, so a package that copies its whole
+environment gets a useless string. **That is planned, not built.** Until it exists, treat a key you
+share with a package as a key that package has.
 
 ## <a id="the-old-setting"></a>The old setting
 

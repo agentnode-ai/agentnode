@@ -87,8 +87,25 @@ def sandbox_runtime() -> dict:
         # equivalent wall clock, only per-message receive timeouts.
         "single_call_timeout_seconds": _default_timeout(cb),
         "agent_session_has_wall_clock": "wall" in read("sandbox/agent_session.py").lower(),
+        # SANDBOX-DOCS-0004: the pages describe the gates a credentialed run must pass. Read them
+        # out of the refusal sites rather than trusting the prose.
+        "credentialed_run_refusals": _refusal_reasons(),
+        # And the part a reader most needs: `--env NAME` means the container RUNTIME supplies the
+        # value inside the container. Name-only keeps the value off the argv and out of this
+        # process; it does NOT keep it away from the code in the sandbox.
+        "secret_value_is_inside_the_container": 'argv += ["--env", name]' in cb,
+        "secret_name_only_requires_egress": "env_passthrough requires network='egress'" in cb,
     }
 
+
+def _refusal_reasons() -> dict:
+    """The reason code of every refusal a credentialed run can hit, per module."""
+    out = {}
+    for rel in ("runtimes/mcp_runner.py", "runtimes/toolpack_credentials.py"):
+        src = read(rel)
+        codes = re.findall(r"Refused\(\s*[\"']([a-z_]+)[\"']", src)
+        out[rel] = sorted(set(c for c in codes if c))
+    return out
 
 def _network_mode_flags(cb: str) -> dict:
     """mode -> the network argument wrap_command emits for it, read from the source."""

@@ -43,8 +43,11 @@ instead?"*
 
 ## Rules the interface must not break
 
-* **Automatic means automatic *selection*, never automatic *consent*.** Choosing where to run is the
-  software's job; agreeing that data may leave the device is the person's, once.
+* **Automatic selection only ever chooses among *protected* places, and never sends anything away
+  by itself.** The software may pick between protected options on the device without asking, and it
+  may recommend a remote one — but work only leaves the device after the person has agreed to that,
+  once, knowing where it goes. Unprotected execution on your own machine is not one of the options
+  it can pick: it is not in the selection at all, so no automatic path can arrive at it.
 * **There is no "run it unprotected anyway" control** on the normal path. The old compatibility
   setting exists in advanced settings, is never offered as a solution to a problem, and is never
   described as safe.
