@@ -159,6 +159,19 @@ class TestThereIsNoHostPlacement:
         assert seen_placements == {Placement.LOCAL, Placement.SELF_HOSTED, Placement.MANAGED}
         assert seen_refusals > 0
 
+    def test_a_selection_cannot_be_built_with_a_host_placement(self):
+        """EM3A-IMPL-0005 / F-A2: an annotation is documentation, not a runtime check."""
+        for weapon in ("host", "legacy_host", "LEGACY_HOST", 0, None, object()):
+            with pytest.raises(TypeError, match="no host placement"):
+                Selection(weapon, "On this device, unprotected")
+        assert Selection(Placement.LOCAL, "On this device").placement is Placement.LOCAL
+
+    def test_selection_cannot_be_subclassed_around(self):
+        with pytest.raises(TypeError, match="Selection is final"):
+            class Sneaky(Selection):
+                def __post_init__(self):
+                    pass
+
     def test_no_extra_argument_can_ask_for_host(self):
         """The gate takes exactly one parameter, so there is nothing to smuggle a capability in."""
         import inspect
@@ -319,6 +332,12 @@ class TestRemoteConsentIsBoundAndRevocable:
 
 class TestALowerScopeMayOnlyNarrow:
     """§3.4 / D7 — package metadata is untrusted input, not configuration."""
+
+    def test_only_the_closed_scope_vocabulary_may_take_part(self):
+        """EM3A-IMPL-0005 / F-A1: an arbitrary orderable key could insert itself into precedence."""
+        for weapon in (0, 99, True, "user"):
+            with pytest.raises(TypeError, match="closed Scope vocabulary"):
+                merge_policies({weapon: SandboxPolicy()})
 
     def test_a_package_cannot_widen_the_network(self):
         user = SandboxPolicy(network=NetworkRules(True, frozenset({"api.example.com"})))

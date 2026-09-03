@@ -324,8 +324,16 @@
   const ctx = document.getElementById("ctx");
   const dbg = document.getElementById("dbg");
 
+  // Consent is bound to WHERE it was given AND to WHO operates it, so neither a placement change
+  // nor a scenario change (a different organisation server, say) can reuse it. EM3A-IMPL-0005 / F-A5.
+  const consentKey = () => {
+    const e = SCENARIOS[state.scenario];
+    const operator = state.place === "self_hosted" ? (e.organisation_backend || "?")
+                   : state.place === "managed" ? "agentnode" : "local";
+    return state.place + "|" + operator;
+  };
   const env = () => Object.assign({}, SCENARIOS[state.scenario],
-    { consent_ok: state.consentFor !== null && state.consentFor === state.place });
+    { consent_ok: state.consentFor !== null && state.consentFor === consentKey() });
 
   const el = (tag, cls, txt) => {
     const n = document.createElement(tag);
@@ -414,7 +422,7 @@
     screen.appendChild(opts);
 
     const remote = state.place === "managed" || state.place === "self_hosted";
-    if (remote && state.consentFor !== state.place) {
+    if (remote && state.consentFor !== consentKey()) {
       const c = el("div", "consent");
       c.appendChild(el("h3", null, "Before anything leaves this computer"));
       const dl = el("dl");
@@ -428,7 +436,7 @@
       c.appendChild(dl);
       const ok = el("button", "cta", "I agree — continue");
       ok.type = "button";
-      ok.addEventListener("click", () => { state.consentFor = state.place; state.step = 2; render(); });
+      ok.addEventListener("click", () => { state.consentFor = consentKey(); state.step = 2; render(); });
       c.appendChild(ok);
       screen.appendChild(c);
       screen.appendChild(el("div", "spacer"));
@@ -580,7 +588,7 @@
   for (const r of document.querySelectorAll('input[name="sc"]')) {
     r.addEventListener("change", () => {
       state.scenario = r.value;
-      state.step = 1; state.place = null; state.consentGiven = false;
+      state.step = 1; state.place = null; state.consentFor = null;
       render();
     });
   }

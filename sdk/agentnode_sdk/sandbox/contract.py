@@ -331,6 +331,11 @@ def merge_policies(scoped: Mapping[Scope, SandboxPolicy]) -> SandboxPolicy:
       that slipped past the check could not redirect the composition.
     """
     for scope, policy in scoped.items():
+        if type(scope) is not Scope:
+            raise TypeError(
+                f"policy scopes must come from the closed Scope vocabulary, not {type(scope).__name__}; "
+                "an arbitrary orderable key could insert itself anywhere in the precedence order"
+            )
         if type(policy) is not SandboxPolicy:
             raise TypeError(
                 f"policy for scope {scope!r} is {type(policy).__name__}, not exactly SandboxPolicy; "
@@ -419,6 +424,18 @@ class Selection:
     placement: Placement
     human_name: str
     consent_required: bool = False   # a remote placement never proceeds on a stale consent
+
+    def __init_subclass__(cls, **kw):  # noqa: D105
+        raise TypeError("Selection is final: a subclass could bypass the placement check below.")
+
+    def __post_init__(self) -> None:
+        # EM3A-IMPL-0005 / F-A2: a type annotation is documentation, not a runtime check, so
+        # Selection("host", ...) was constructible. The value must be a real Placement member.
+        if not isinstance(self.placement, Placement):
+            raise TypeError(
+                f"a selection's placement must be one of {[p.value for p in Placement]}; "
+                f"got {self.placement!r}. There is no host placement in this contract."
+            )
 
 
 @dataclass(frozen=True)
