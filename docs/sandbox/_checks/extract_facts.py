@@ -90,6 +90,10 @@ def sandbox_runtime() -> dict:
         # SANDBOX-DOCS-0004: the pages describe the gates a credentialed run must pass. Read them
         # out of the refusal sites rather than trusting the prose.
         "credentialed_run_refusals": _refusal_reasons(),
+        # Two facts that exist so a status can be DERIVED rather than asserted (SANDBOX-DOCS-0007):
+        # the refusal row needs proof the refusal exists, and the broker row needs proof it does not.
+        "refuses_without_runtime": "raise SandboxRequiredError" in cb and "check_available" in cb,
+        "credential_broker_exists": (SDK / "sandbox" / "credential_broker.py").is_file(),
         # And the part a reader most needs: `--env NAME` means the container RUNTIME supplies the
         # value inside the container. Name-only keeps the value off the argv and out of this
         # process; it does NOT keep it away from the code in the sandbox.

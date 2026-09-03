@@ -195,6 +195,7 @@
   "generated_from": "sdk/agentnode_sdk source, read not imported",
   "sandbox_runtime": {
     "agent_session_has_wall_clock": false,
+    "credential_broker_exists": false,
     "credentialed_run_refusals": {
       "runtimes/mcp_runner.py": [
         "credentialed_requires_preinstall",
@@ -239,6 +240,7 @@
       "egress"
     ],
     "pinned_image": "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f",
+    "refuses_without_runtime": true,
     "runtimes_probed": [
       "docker",
       "podman"

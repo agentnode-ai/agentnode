@@ -41,7 +41,7 @@ EVIDENCE = TESTS["evidence"]
 # ("observed") can never carry a row on its own -- see _require_evidence.
 GOOD = {"passed", "observed"}
 MACHINE = {"pytest", "check"}
-SELFTEST_CASES = 4
+SELFTEST_CASES = 8
 
 
 def _assertions(key: str) -> list:
@@ -83,6 +83,41 @@ def _require_evidence(name: str, status: str, key: str, claimed: dict) -> None:
         _refuse(f"{name!r} claims {AVAILABLE_TESTED!r} on hand observation alone")
 
 
+# SANDBOX-DOCS-0007 / F-D2-NONTESTED-STATUS-NOT-DERIVED. Execution evidence carried the tested
+# rows, but every other status was a constant somebody typed. A row could be downgraded to hide a
+# capability, or a planned row could survive after the thing was built, and nothing would object.
+# Each row now names a fact, and the status has to agree with what that fact says:
+#
+#   exists   the fact is truthy   -> the path is in the code (tested / untested / experimental)
+#   absent   the fact is falsey   -> nothing in the code does this (planned)
+#   removed  the fact says so     -> it was taken out, and the source records the refusal
+
+
+def _fact(path: str):
+    node = FACTS
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            _refuse(f"no such code fact: {path!r}")
+        node = node[part]
+    return node
+
+
+def _require_fact(name: str, status: str, fact_path: str) -> None:
+    value = _fact(fact_path)
+    present = bool(value)
+    if status == REMOVED:
+        if not (isinstance(value, str) and "refus" in value.lower()):
+            _refuse(f"{name!r} is {REMOVED!r}, but {fact_path} is {value!r} and does not record a "
+                    "refusal. A removed thing has to be removed in the source")
+        return
+    if status == PLANNED and present:
+        _refuse(f"{name!r} is {PLANNED!r}, but {fact_path} is {value!r}: the code has it. A planned "
+                "row that exists is the mistake this check is for")
+    if status in (AVAILABLE_TESTED, AVAILABLE_UNTESTED, EXPERIMENTAL) and not present:
+        _refuse(f"{name!r} claims {status!r}, but {fact_path} is {value!r}: nothing in the code "
+                "carries it")
+
+
 def _selftest() -> None:
     """Prove, on every run, that the three refusals above actually fire.
 
@@ -95,6 +130,14 @@ def _selftest() -> None:
         ("borrowed evidence", lambda: _require_evidence(
             "x", AVAILABLE_TESTED, "linux_mcp_container", {"linux_mcp_container": "someone else"})),
         ("an unknown status", lambda: _require_evidence("x", "mostly fine", "none", {})),
+        ("a planned row the code has", lambda: _require_fact(
+            "x", PLANNED, "sandbox_runtime.egress_live_callers")),
+        ("an available row the code lacks", lambda: _require_fact(
+            "x", AVAILABLE_UNTESTED, "sandbox_runtime.credential_broker_exists")),
+        ("a removed row with nothing removed", lambda: _require_fact(
+            "x", REMOVED, "sandbox_runtime.runtimes_probed")),
+        ("a fact that does not exist", lambda: _require_fact(
+            "x", PLANNED, "sandbox_runtime.no_such_fact")),
     ]
     caught = 0
     for label, run in cases:
@@ -130,68 +173,68 @@ ENVIRONMENTS = [
     ("Windows + Docker Desktop", "local container sandbox", AVAILABLE_UNTESTED,
      "the runtime probe looks for docker or podman on PATH and does not care which OS it is on "
      "(`sandbox_runtime.runtimes_probed`); no CI lane and no recorded manual run exercises it on "
-     "Windows, so it is not claimed as tested", "none"),
+     "Windows, so it is not claimed as tested", "none", "sandbox_runtime.runtimes_probed"),
     ("Windows + WSL2", "local container sandbox, via the runtime inside WSL2", AVAILABLE_UNTESTED,
      "same probe; whether the SDK runs inside the WSL2 distribution or on the Windows side changes "
-     "which PATH is searched. Untested here either way", "none"),
+     "which PATH is searched. Untested here either way", "none", "sandbox_runtime.runtimes_probed"),
     ("macOS", "local container sandbox", AVAILABLE_UNTESTED,
-     "same probe; no macOS machine is in CI", "none"),
+     "same probe; no macOS machine is in CI", "none", "sandbox_runtime.runtimes_probed"),
     ("Linux PC", "local container sandbox", AVAILABLE_TESTED,
      "exercised end to end in CI on ubuntu-24.04, including a real MCP server started in a "
-     "container and the hardening flags asserted on the argv", "linux_local_sandbox"),
+     "container and the hardening flags asserted on the argv", "linux_local_sandbox", "sandbox_runtime.runtimes_probed"),
     ("Linux server", "local container sandbox", AVAILABLE_UNTESTED,
      "technically the same path as the Linux PC row — the CI runner IS a Linux server — but no "
-     "headless multi-user server deployment has been exercised as such", "none"),
+     "headless multi-user server deployment has been exercised as such", "none", "sandbox_runtime.runtimes_probed"),
     ("Phone or tablet", "no local execution at all", PLANNED,
      "there is no mobile client and no remote backend in the code "
-     "(`wired_in.remote_backend_exists` is false), so a phone has nowhere to send work to", "none"),
+     "(`wired_in.remote_backend_exists` is false), so a phone has nowhere to send work to", "none", "wired_in.remote_backend_exists"),
     ("Your own sandbox server", "self-hosted gateway", PLANNED,
      "no remote backend class exists (`wired_in.sandbox_backend_implementations` is "
-     "ContainerBackend and NoSandboxBackend only)", "none"),
+     "ContainerBackend and NoSandboxBackend only)", "none", "wired_in.remote_backend_exists"),
     ("AgentNode Sandbox (managed)", "managed service", PLANNED,
      "no managed backend, no service, no billing (`wired_in.managed_backend_exists` is false)",
-     "none"),
+     "none", "wired_in.managed_backend_exists"),
 ]
 
 CAPABILITIES = [
     ("Tool packs run in a container", AVAILABLE_TESTED,
      "`installer.py` builds into a sealed volume and runs from it read-only",
-     "linux_toolpack_container"),
+     "linux_toolpack_container", "execution_paths.build.network"),
     ("MCP servers run in a container", AVAILABLE_TESTED,
      "`runtimes/mcp_runner.py`; the release artefact smoke starts a real one and completes the "
-     "initialize handshake", "linux_mcp_container"),
+     "initialize handshake", "linux_mcp_container", "execution_paths.mcp.networks_used"),
     ("Community agents run in a container", AVAILABLE_TESTED,
      f"`runtimes/agent_sandbox.py` with network={FACTS['execution_paths']['agent']['network']!r} "
-     f"and a {FACTS['execution_paths']['agent']['mount']} mount", "linux_agent_container"),
+     f"and a {FACTS['execution_paths']['agent']['mount']} mount", "linux_agent_container", "execution_paths.agent.network"),
     ("A community agent's own entrypoint on the host", REMOVED,
-     f"`exceptions.py`: {FACTS['execution_paths']['host_agent_entrypoint']}", "code_only"),
+     f"`exceptions.py`: {FACTS['execution_paths']['host_agent_entrypoint']}", "code_only", "execution_paths.host_agent_entrypoint"),
     ("Refusal when no runtime exists", AVAILABLE_TESTED,
      "`lane-runtime-absent` removes docker, podman and the socket, verifies they are gone, and "
-     "asserts the refusal; also observed by hand on Windows", "runtime_absent_refusal"),
+     "asserts the refusal; also observed by hand on Windows", "runtime_absent_refusal", "sandbox_runtime.refuses_without_runtime"),
     ("A sandboxed program reaching only the sites its install sealed", AVAILABLE_TESTED,
      "the `egress` mode joins an internal network with no route out except a proxy that allows "
      "exactly the sealed names; two run paths call it "
      f"({', '.join('`' + c + '`' for c in FACTS['sandbox_runtime']['egress_live_callers'])}), and "
      "the end-to-end test runs the bypass matrix from inside the container. Reached only where an "
      "install sealed an allowlist and consent was recorded — everything else is refused, not opened",
-     "linux_egress_topology"),
+     "linux_egress_topology", "sandbox_runtime.egress_live_callers"),
     ("Secrets reaching an MCP or tool pack by name only", AVAILABLE_UNTESTED,
      "the same two run paths pass consented names rather than values "
      f"({', '.join('`' + c + '`' for c in FACTS['sandbox_runtime']['secret_passthrough_live_callers'])}), "
      "behind the refusals listed in `sandbox_runtime.credentialed_run_refusals`. **The value still "
      "reaches the container** — name-only keeps it off the command line and out of the logs, not "
      "away from the program; no end-to-end run of this path is recorded here",
-     "none"),
+     "none", "sandbox_runtime.secret_passthrough_live_callers"),
     ("Credential broker with a sentinel value", PLANNED,
-     "nothing in the code substitutes a credential at a proxy", "none"),
+     "nothing in the code substitutes a credential at a proxy", "none", "sandbox_runtime.credential_broker_exists"),
     ("Conformance suite for a backend", PLANNED,
      f"`wired_in.conformance_suite_exists` is {FACTS['wired_in']['conformance_suite_exists']}",
-     "code_only"),
+     "code_only", "wired_in.conformance_suite_exists"),
     ("The EM-3 selection contract", PLANNED,
      "on this branch the module is "
      + ("present but imported by nothing" if FACTS["wired_in"]["em3_contract_module_exists"]
         else "not present on main; it is under review in pull request #115")
-     + ", so it decides nothing yet", "none"),
+     + ", so it decides nothing yet", "none", "wired_in.em3_contract_importers"),
 ]
 
 
@@ -211,11 +254,13 @@ def rows(items, kind: str, claimed: dict) -> str:
     for item in items:
         name, *rest = item
         if kind == "Environment":
-            _what, status, why, ev = rest
+            _what, status, why, ev, fact = rest
         else:
-            status, why, ev = rest
+            status, why, ev, fact = rest
         _require_evidence(name, status, ev, claimed)
-        out.append(f"| **{name}** | {MARK[status]} {status} | {why} | {_cite(ev)} |")
+        _require_fact(name, status, fact)
+        out.append(f"| **{name}** | {MARK[status]} {status} | {why} | {_cite(ev)}<br>"
+                   f"*status derived from* `{fact}` |")
     return chr(10).join(out)
 
 
@@ -249,6 +294,12 @@ never written as if it were coming back.
 that were recorded for *that row*, with the run they came from. The evidence for one row cannot be
 reused by another, and a hand observation on its own is never enough. The per-test outcomes come
 from the lane reports that the run uploaded, not from a summary anybody typed.
+
+**And every other status is derived too.** Each row names the code fact its status rests on, shown
+in the last column. A row calling something planned while the fact shows the code has it, or calling
+something available while the fact shows it absent, stops the generator. So a row cannot be quietly
+downgraded to hide what the software does, and a planned row cannot survive the day the thing is
+built.
 
 ## Where AgentNode can run other people's code
 
