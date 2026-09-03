@@ -28,7 +28,7 @@ env:
   # not from FROZEN_REV. An earlier attempt pinned the implementation commit while the
   # corrected inventory sat one commit further on, so the lane checked out new tests against
   # an old inventory and was correctly reported NOT CLEAN with six unknown node ids.
-  FROZEN_REV: "d5b1972045676cef06185ad45494c618c3530e90"
+  FROZEN_REV: "4312c48b58cc64bcce2433d09c7e95571ad52632"
   # The container runtime is pinned by SERVER VERSION and the pin is verified, so a runner
   # image that changed Docker fails the lane instead of silently altering the boundary under
   # test. Both values are OBSERVED, not assumed:
