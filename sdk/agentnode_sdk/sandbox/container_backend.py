@@ -100,6 +100,13 @@ _HARDENED_FLAGS = [
 ]
 
 _PROBE_TIMEOUT = 5  # seconds; check_available must stay fast (no long ops, no pull)
+
+# EM3B-R1-REVIEW-0003 / F1. "The container is gone" and "I could not find out" are different
+# answers, and a boolean cannot hold both. A runtime says a container is absent in one specific
+# way; anything else -- no answer, an empty answer, an error that is not that one -- is unknown,
+# and unknown must never be read as absent.
+PRESENT, ABSENT, UNKNOWN = "present", "absent", "unknown"
+_NO_SUCH = re.compile(r"no such (object|container|image)|error: no such", re.I)
 _CLIENT_REAP_TIMEOUT = 10   # how long the runtime client gets to die after being killed
 _KILL_TIMEOUT = 30          # how long the runtime gets to remove the container
 _REAP_TIMEOUT = 30          # how long the container gets to disappear afterwards
@@ -438,9 +445,25 @@ class ContainerBackend(SandboxBackend):
         return (from_file or from_name), ("cidfile" if from_file else
                                           ("name" if from_name else "none"))
 
-    def _exists(self, runtime: str, ident: str) -> bool:
+    def _presence(self, runtime: str, ident: str) -> str:
+        """PRESENT, ABSENT or UNKNOWN. Absence has to be stated by the runtime, never inferred.
+
+        EM3B-R1-REVIEW-0003 / F1: the previous version returned False when the container was gone
+        AND when the inspect failed, so a runtime that could not answer looked like a verified
+        removal and the run returned an ordinary timeout.
+        """
         r = _run_runtime([runtime, "inspect", "--format", "{{.Id}}", ident])
-        return bool(r is not None and r.returncode == 0 and r.stdout.strip())
+        if r is None:
+            return UNKNOWN
+        if r.returncode == 0:
+            return PRESENT if r.stdout.strip() else UNKNOWN
+        if _NO_SUCH.search((r.stderr or "") + (r.stdout or "")):
+            return ABSENT
+        return UNKNOWN
+
+    def _exists(self, runtime: str, ident: str) -> bool:
+        """Kept for callers that only ask whether something is there. UNKNOWN is not absence."""
+        return self._presence(runtime, ident) == PRESENT
 
     def _end_timed_out_run(self, proc, runtime: str, name: str, cidfile: str, timeout: float):
         """Stop the client, then the container, then prove the container is gone."""
@@ -460,11 +483,13 @@ class ContainerBackend(SandboxBackend):
         ident, how = self._resolve_identity(runtime, name, cidfile)
         if not ident:
             # The timeout may have fired before the runtime created anything. That is only
-            # acceptable if nothing by this exact name exists.
-            if self._exists(runtime, name):
+            # acceptable when the runtime SAYS nothing by this exact name exists -- not when it
+            # merely failed to tell us.
+            state = self._presence(runtime, name)
+            if state is not ABSENT:
                 raise SandboxContainmentError(
-                    f"a container named {name} exists but no identity could be resolved for it, "
-                    "so this run cannot be shown to have stopped")
+                    f"no identity could be resolved for this run and the runtime reports "
+                    f"{name} as {state}, so it cannot be shown to have stopped")
             return -1, out or "", (err or "") + f"\n[sandbox timed out after {timeout}s]"
 
         removed = _run_runtime([runtime, "rm", "-f", ident], timeout=_KILL_TIMEOUT)
@@ -472,19 +497,25 @@ class ContainerBackend(SandboxBackend):
             raise SandboxContainmentError(
                 f"the runtime did not answer the request to stop container {ident[:12]} after the "
                 "sandbox timed out")
-        if removed.returncode != 0 and self._exists(runtime, ident):
+        if removed.returncode != 0 and self._presence(runtime, ident) is not ABSENT:
             raise SandboxContainmentError(
                 f"stopping container {ident[:12]} failed ({removed.stderr.strip()[:160]}) and it "
-                "is still there")
+                "cannot be shown to be gone")
 
+        # Both identities must be reported ABSENT by the runtime. A state it will not tell us is
+        # not a state we may accept: this loop keeps asking, and running out of patience with an
+        # unanswered question is a containment failure, not a timeout.
         deadline = time.monotonic() + _REAP_TIMEOUT
+        states = (UNKNOWN, UNKNOWN)
         while time.monotonic() < deadline:
-            if not self._exists(runtime, ident) and not self._exists(runtime, name):
+            states = (self._presence(runtime, ident), self._presence(runtime, name))
+            if states == (ABSENT, ABSENT):
                 return -1, out or "", (err or "") + f"\n[sandbox timed out after {timeout}s]"
             time.sleep(0.1)
         raise SandboxContainmentError(
-            f"container {ident[:12]} (resolved by {how}) is still present after being stopped, so "
-            "the payload may still be running"
+            f"container {ident[:12]} (resolved by {how}) could not be shown to be gone after being "
+            f"stopped: the runtime reports it as {states[0]} by id and {states[1]} by name, so the "
+            "payload may still be running"
         )
 
     # -- long-lived agent session (B1) ---------------------------------------

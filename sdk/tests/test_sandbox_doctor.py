@@ -89,7 +89,10 @@ def test_env_no_runtime(monkeypatch, capsys):
     fix = runtime["fix"].lower()
     assert runtime["ok"] is False
     assert "docker" in fix or "podman" in fix
-    assert "install" in fix
+    # EM3B-R1-REVIEW-0003 / F4: where a runtime cannot be installed by a command this machine
+    # has, the honest text points at where to get one rather than naming a command that would
+    # not run. Both forms have to name getting a runtime.
+    assert "install" in fix or "where to get" in fix
 
 def test_env_daemon_down(monkeypatch, capsys):
     _patch_backend(monkeypatch, _av_daemon_down())
@@ -409,11 +412,14 @@ def test_daemon_fix_is_platform_specific(monkeypatch):
     version has to survive. The old test could only assert whichever platform it ran on."""
     from agentnode_sdk.sandbox.refusal import classify
 
-    windows = classify(_av_daemon_down(), platform="win32").render().lower()
+    has_everything = lambda tool: "/usr/bin/" + tool          # noqa: E731
+    windows = classify(_av_daemon_down(), platform="win32",
+                       which=has_everything).render().lower()
     assert "docker desktop" in windows
     assert "wsl2" in windows or "hyper-v" in windows or "firmware" in windows
 
-    linux = classify(_av_daemon_down(), platform="linux").render().lower()
+    linux = classify(_av_daemon_down(), platform="linux",
+                     which=has_everything).render().lower()
     assert "systemctl start docker" in linux
     assert "podman.socket" in linux
 

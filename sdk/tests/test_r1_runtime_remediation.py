@@ -21,7 +21,17 @@ import types
 import pytest
 
 from agentnode_sdk.sandbox import container_backend as cb
-from agentnode_sdk.sandbox.refusal import RefusalCase, classify
+from agentnode_sdk.sandbox.refusal import RefusalCase, classify as _classify
+
+
+def classify(*args, **kw):
+    """Describe a platform, not this machine.
+
+    EM3B-R1-REVIEW-0003 / F4: an action is now withheld where its tool is absent, so a test
+    describing what a Linux user is offered has to say which tools that Linux machine has.
+    `TestActionsAreWithheldWhereTheToolIsAbsent` is where the withholding itself is measured."""
+    kw.setdefault("which", lambda tool: "/usr/bin/" + tool)
+    return _classify(*args, **kw)
 from agentnode_sdk.sandbox.types import (
     ProcessSpec,
     SandboxAvailability,
@@ -53,9 +63,13 @@ class FakeRuntime:
         if verb == "inspect":
             if self._inspect_raises:
                 return None
-            found = target in self._exists
-            return types.SimpleNamespace(returncode=0 if found else 1,
-                                         stdout=(CID if found else ""), stderr="")
+            if target in self._exists:
+                return types.SimpleNamespace(returncode=0, stdout=CID, stderr="")
+            # How a runtime actually says a container is not there. EM3B-R1-REVIEW-0003 / F1:
+            # anything else is "I could not tell you", which is not the same answer.
+            return types.SimpleNamespace(
+                returncode=1, stdout="",
+                stderr=f"Error response from daemon: No such object: {target}")
         if verb == "rm":
             if self._rm_raises:
                 return None
@@ -119,7 +133,7 @@ class TestTimeoutEndsThePayload:
             self, tmp_path, monkeypatch):
         fake = FakeRuntime(exists={"run-x", CID}, rm_rc=1, gone_after_rm=False)
         monkeypatch.setattr(cb, "_run_runtime", fake)
-        with pytest.raises(SandboxContainmentError, match="still there"):
+        with pytest.raises(SandboxContainmentError, match="cannot be shown to be gone"):
             cb.ContainerBackend(runtime="docker")._end_timed_out_run(
                 FakeProc(), "docker", "run-x", _cidfile(tmp_path), 5.0)
 
@@ -135,7 +149,7 @@ class TestTimeoutEndsThePayload:
         monkeypatch.setattr(cb, "_REAP_TIMEOUT", 0.3)
         monkeypatch.setattr(cb, "_run_runtime",
                             FakeRuntime(exists={"run-x", CID}, rm_rc=0, gone_after_rm=False))
-        with pytest.raises(SandboxContainmentError, match="still present"):
+        with pytest.raises(SandboxContainmentError, match="could not be shown to be gone"):
             cb.ContainerBackend(runtime="docker")._end_timed_out_run(
                 FakeProc(), "docker", "run-x", _cidfile(tmp_path), 5.0)
 
@@ -607,3 +621,111 @@ class TestRefusalCarriesAWayOut:
         backend.check_available()
         backend.check_available(force=True)
         assert len(calls) == 2, "a re-check has to be able to ask again, not read the old answer"
+
+
+class TestActionsAreWithheldWhereTheToolIsAbsent:
+    """EM3B-R1-REVIEW-0003 / F4: offering a command and checking that a command was offered is
+    not the same as offering one that runs here."""
+
+    def test_a_command_is_not_offered_when_its_tool_is_missing(self):
+        nothing_installed = _classify(_unavailable(), platform="linux", which=lambda tool: None)
+        for a in nothing_installed.actions:
+            if a.informational or a.command is None:
+                continue
+            assert a.command.startswith("agentnode"), (
+                f"{a.command!r} was offered on a machine that has none of the tools it needs")
+        assert any(not a.informational for a in nothing_installed.actions), (
+            "withholding must never leave a person with nothing at all")
+
+    def test_the_same_case_offers_the_command_where_the_tool_exists(self):
+        with_apt = _classify(_unavailable(), platform="linux",
+                             which=lambda tool: "/usr/bin/apt" if tool == "apt" else None)
+        commands = [a.command for a in with_apt.actions if a.command]
+        assert any("apt install podman" in c for c in commands)
+        assert not any("dnf" in c for c in commands), "dnf is not on this machine"
+
+    def test_the_other_package_manager_is_chosen_on_a_machine_that_has_it(self):
+        with_dnf = _classify(_unavailable(), platform="linux",
+                             which=lambda tool: "/usr/bin/dnf" if tool == "dnf" else None)
+        commands = [a.command for a in with_dnf.actions if a.command]
+        assert any("dnf install podman" in c for c in commands)
+        assert not any("apt" in c for c in commands)
+
+    def test_a_stopped_daemon_on_a_machine_without_systemctl_offers_no_systemctl(self):
+        r = _classify(_unavailable(backend="docker", daemon_ok=False,
+                                   probe_error="Cannot connect"),
+                      platform="linux", which=lambda tool: None)
+        assert all("systemctl" not in (a.command or "") for a in r.actions)
+        assert any(not a.informational for a in r.actions), "and still something to do"
+
+    def test_every_command_offered_anywhere_declares_the_tool_it_needs(self):
+        """A command with no declared tool cannot be withheld, so it would be offered blindly."""
+        from agentnode_sdk.sandbox import refusal as mod
+
+        for group in (mod._INSTALL, mod._START, mod._PERMITTED_ACTIONS,
+                      mod._INCOMPATIBLE_ACTIONS, mod._MEMORY_ACTIONS,
+                      mod._NO_LOCAL_SANDBOX_ACTIONS):
+            for a in group:
+                if a.command and not a.informational:
+                    assert a.requires or a.command.startswith("agentnode"), (
+                        f"{a.command!r} names no tool, so nothing can withhold it")
+
+    def test_a_pointer_is_never_dressed_up_as_a_step(self):
+        from agentnode_sdk.sandbox.refusal import Action, Refusal
+
+        with pytest.raises(ValueError, match="pointer and a command"):
+            Refusal(RefusalCase.NOT_INSTALLED, "h", "p",
+                    actions=(Action("x", command="do this", informational=True),))
+
+    def test_the_rendering_keeps_steps_and_pointers_apart(self):
+        text = classify(_unavailable(), platform="win32").render()
+        assert "Worth knowing:" in text, "a download page is not a step"
+
+
+class TestUnknownIsNeverAbsence:
+    """EM3B-R1-REVIEW-0003 / F1: a runtime that cannot answer is not a runtime saying it is gone."""
+
+    def test_the_three_states_are_distinguished(self, monkeypatch):
+        backend = cb.ContainerBackend(runtime="docker")
+        cases = [
+            (types.SimpleNamespace(returncode=0, stdout=CID, stderr=""), cb.PRESENT),
+            (types.SimpleNamespace(returncode=1, stdout="",
+                                   stderr="Error: No such object: x"), cb.ABSENT),
+            (types.SimpleNamespace(returncode=1, stdout="",
+                                   stderr="Cannot connect to the Docker daemon"), cb.UNKNOWN),
+            (types.SimpleNamespace(returncode=0, stdout="", stderr=""), cb.UNKNOWN),
+            (None, cb.UNKNOWN),
+        ]
+        for answer, expected in cases:
+            monkeypatch.setattr(cb, "_run_runtime", lambda argv, timeout=None, a=answer: a)
+            assert backend._presence("docker", "x") == expected, answer
+
+    def test_an_unanswerable_verification_is_a_containment_error(self, tmp_path, monkeypatch):
+        """The container was removed successfully, and then the runtime stopped answering. The
+        previous version read that silence as absence and returned an ordinary timeout."""
+        monkeypatch.setattr(cb, "_REAP_TIMEOUT", 0.3)
+        state = {"removed": False}
+
+        def flaky(argv, timeout=None):
+            if argv[1] == "rm":
+                state["removed"] = True
+                return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            if argv[1] == "inspect":
+                if state["removed"]:
+                    return types.SimpleNamespace(returncode=1, stdout="",
+                                                 stderr="Cannot connect to the Docker daemon")
+                return types.SimpleNamespace(returncode=0, stdout=CID, stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(cb, "_run_runtime", flaky)
+        with pytest.raises(SandboxContainmentError, match="could not be shown to be gone"):
+            cb.ContainerBackend(runtime="docker")._end_timed_out_run(
+                FakeProc(), "docker", "run-x", _cidfile(tmp_path), 5.0)
+
+    def test_a_pre_creation_timeout_needs_the_runtime_to_SAY_it_is_absent(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cb, "_run_runtime", lambda argv, timeout=None: types.SimpleNamespace(
+            returncode=1, stdout="", stderr="Cannot connect to the Docker daemon"))
+        with pytest.raises(SandboxContainmentError, match="reports"):
+            cb.ContainerBackend(runtime="docker")._end_timed_out_run(
+                FakeProc(), "docker", "run-x", str(tmp_path / "cid"), 5.0)
