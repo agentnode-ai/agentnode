@@ -18,10 +18,11 @@ program.
 **What AgentNode prevented.** Someone else's code was about to run on your computer with your files
 in reach. It did not run. Nothing was executed and nothing was changed.
 
-**What to do.** [Set up the local sandbox](setup-local.md) — one program, once. If you are not
-allowed to install software on this machine, the remote options are the answer, and they do not
-exist yet; [the availability table](availability.md) says so plainly rather than leaving you
-guessing.
+**What to do.** [Set up the local sandbox](setup-local.md) — one program, once.
+
+If you may not install software on this machine, go to
+[the next entry](#you-are-not-allowed-to-install-software-on-this-machine): there is something you
+can do, and it is not waiting for a feature.
 
 <details><summary>For engineers</summary>
 
@@ -29,6 +30,48 @@ The runtime probe searches `PATH` for `docker`, then `podman`, and refuses with 
 `SandboxRequiredError` when neither is usable. There is no host fallback anywhere on this path.
 `agentnode sandbox doctor --json` prints the structured check list and performs no action.
 </details>
+
+---
+
+## You are not allowed to install software on this machine
+
+**In plain words.** The sealed workspace needs one program installed, and you do not have the
+rights to install it. That is a permission question, not a fault in AgentNode, and there is no
+setting that removes the requirement.
+
+**Where you stand right now.** Nothing ran. Nothing was downloaded, installed or changed, and
+there is no half-finished state to clean up. Stopping here costs you nothing.
+
+**1. Confirm that for yourself.** This command changes nothing:
+
+```
+agentnode sandbox doctor --json
+```
+
+**2. Ask the person who administers the machine, with the answer already in hand.** Send them
+that output and this sentence:
+
+> *AgentNode will not run third-party code without a container sandbox. It needs one of `podman`
+> or `docker` installed on this machine. Podman is the smaller ask: it runs under my own account
+> and needs no service running as an administrator.*
+
+**3. What you can still do meanwhile.** Everything that does not execute somebody else's code
+works unchanged — browsing the registry runs nothing and installs nothing:
+
+```
+agentnode search pdf
+agentnode skill list
+```
+
+**4. If the answer is no.** Then AgentNode cannot run third-party code on this machine, today, at
+all — and it will keep saying so rather than running it unprotected. The options that would
+remove the requirement by moving the work elsewhere are described in
+[choose where it runs](choose.md); [the availability table](availability.md) records that none of
+them exists yet. On a machine you do control, [the local setup](setup-local.md) takes one
+install. If you think this is wrong for your situation, say so at
+[the issue tracker](https://github.com/agentnode-ai/agentnode/issues) — the case of "I cannot
+install anything" is exactly the one the remote options are meant to answer, and how often it
+comes up decides when they get built.
 
 ---
 

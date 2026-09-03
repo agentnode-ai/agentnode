@@ -6,16 +6,24 @@ in `_checks/check_docs.py` fails.
 
 **SDK version this describes: 0.24.0.**
 
-Four statuses, and nothing here claims a better one than its evidence carries:
+Five statuses, and nothing here claims a better one than its evidence carries:
 
 | | meaning |
 |---|---|
-| ✅ available, tested | the code path exists **and** something has run it in that setting |
+| ✅ available, tested | the code path exists **and** a named test or check exercised **this row** |
 | 🟡 available, not tested here | the code path exists; nobody has run it in that setting |
 | ⚗️ experimental | the code exists and is reachable, but is declared unfinished in the source |
 | 🔭 planned | it is not in the code at all |
+| ⛔ removed | it existed once and was deliberately taken out; it cannot be selected |
 
-A planned thing is never written as if you could use it today.
+There is no sixth status: a row whose status is not one of these five stops the generator instead of
+being printed. A planned thing is never written as if you could use it today, and a removed thing is
+never written as if it were coming back.
+
+**What "tested" is allowed to mean here.** Every ✅ row names the test node ids or the named checks
+that were recorded for *that row*, with the run they came from. The evidence for one row cannot be
+reused by another, and a hand observation on its own is never enough. The per-test outcomes come
+from the lane reports that the run uploaded, not from a summary anybody typed.
 
 ## Where AgentNode can run other people's code
 
@@ -24,8 +32,8 @@ A planned thing is never written as if you could use it today.
 | **Windows + Docker Desktop** | 🟡 available, not tested here | the runtime probe looks for docker or podman on PATH and does not care which OS it is on (`sandbox_runtime.runtimes_probed`); no CI lane and no recorded manual run exercises it on Windows, so it is not claimed as tested | nothing has run this here |
 | **Windows + WSL2** | 🟡 available, not tested here | same probe; whether the SDK runs inside the WSL2 distribution or on the Windows side changes which PATH is searched. Untested here either way | nothing has run this here |
 | **macOS** | 🟡 available, not tested here | same probe; no macOS machine is in CI | nothing has run this here |
-| **Linux PC** | ✅ available, tested | exercised end to end in CI on ubuntu-24.04, including a real MCP server started in a container and the hardening flags asserted on the argv | GitHub Actions ubuntu-24.04: the five execution lanes, including lane-runtime-present with Docker 28.0.4 and the pinned image pulled by digest, and the release artefact smoke that starts a real MCP container — run 33633469871, 33654001890 |
-| **Linux server** | 🟡 available, not tested here | technically the same path as the Linux PC row — the CI runner IS a Linux server — but no headless multi-user server deployment has been exercised as such | GitHub Actions ubuntu-24.04: the five execution lanes, including lane-runtime-present with Docker 28.0.4 and the pinned image pulled by digest, and the release artefact smoke that starts a real MCP container — run 33633469871, 33654001890 |
+| **Linux PC** | ✅ available, tested | exercised end to end in CI on ubuntu-24.04, including a real MCP server started in a container and the hardening flags asserted on the argv | ubuntu-24.04: a real container started by the installed wheel, with the hardening asserted on the live process.<br>`the installed package runs a real container (rc=0)` → passed (run 33654001890)<br>`the container process runs as uid 1000, not root` → passed (run 33654001890)<br>`the container root filesystem is read-only` → passed (run 33654001890)<br>`HOME is a 16 MiB tmpfs` → passed (run 33654001890) |
+| **Linux server** | 🟡 available, not tested here | technically the same path as the Linux PC row — the CI runner IS a Linux server — but no headless multi-user server deployment has been exercised as such | nothing has run this here |
 | **Phone or tablet** | 🔭 planned | there is no mobile client and no remote backend in the code (`wired_in.remote_backend_exists` is false), so a phone has nowhere to send work to | nothing has run this here |
 | **Your own sandbox server** | 🔭 planned | no remote backend class exists (`wired_in.sandbox_backend_implementations` is ContainerBackend and NoSandboxBackend only) | nothing has run this here |
 | **AgentNode Sandbox (managed)** | 🔭 planned | no managed backend, no service, no billing (`wired_in.managed_backend_exists` is false) | nothing has run this here |
@@ -34,15 +42,15 @@ A planned thing is never written as if you could use it today.
 
 | What it does | status | why that status, in one line | evidence |
 |---|---|---|---|
-| **Tool packs run in a container** | ✅ available, tested | `installer.py` builds into a sealed volume and runs from it read-only; the lanes cover it | GitHub Actions ubuntu-24.04: the five execution lanes, including lane-runtime-present with Docker 28.0.4 and the pinned image pulled by digest, and the release artefact smoke that starts a real MCP container — run 33633469871, 33654001890 |
-| **MCP servers run in a container** | ✅ available, tested | `runtimes/mcp_runner.py`; the release artefact smoke starts a real one and completes the initialize handshake | GitHub Actions ubuntu-24.04: the five execution lanes, including lane-runtime-present with Docker 28.0.4 and the pinned image pulled by digest, and the release artefact smoke that starts a real MCP container — run 33633469871, 33654001890 |
-| **Community agents run in a container** | ✅ available, tested | `runtimes/agent_sandbox.py` with network='none' and a read-only /pack mount | GitHub Actions ubuntu-24.04: the five execution lanes, including lane-runtime-present with Docker 28.0.4 and the pinned image pulled by digest, and the release artefact smoke that starts a real MCP container — run 33633469871, 33654001890 |
-| **A community agent's own entrypoint on the host** | 🚫 removed | `exceptions.py`: refused: HostAgentExecutionUnsupported | GitHub Actions ubuntu-24.04: the five execution lanes, including lane-runtime-present with Docker 28.0.4 and the pinned image pulled by digest, and the release artefact smoke that starts a real MCP container — run 33633469871, 33654001890 |
-| **Refusal when no runtime exists** | ✅ available, tested | `lane-runtime-absent` removes docker, podman and the socket, verifies they are gone, and asserts the refusal; also observed by hand on Windows | the maintainer's Windows machine: the runtime-absent path only — the SDK refuses and explains, because no container runtime is installed there — run manual-2026-09-02 |
+| **Tool packs run in a container** | ✅ available, tested | `installer.py` builds into a sealed volume and runs from it read-only | ubuntu-24.04: a tool pack built into a sealed volume and run from it.<br>`tests/test_sandbox_e2e.py::test_toolpack_build_and_run_real` → passed (run 33633469871)<br>`tests/test_sandbox_e2e.py::test_run_failclosed_when_volume_removed` → passed (run 33633469871) |
+| **MCP servers run in a container** | ✅ available, tested | `runtimes/mcp_runner.py`; the release artefact smoke starts a real one and completes the initialize handshake | ubuntu-24.04: real MCP servers started in a container, both the Python and the npm path.<br>`tests/test_sandbox_e2e.py::test_mcp_starts_in_container_real` → passed (run 33633469871)<br>`tests/test_sandbox_e2e.py::test_npm_mcp_starts_in_container_real` → passed (run 33633469871)<br>`tests/test_sandbox_e2e.py::test_mcp_preinstall_cache_lands_only_in_private_tmp` → passed (run 33633469871)<br>`tests/test_sandbox_e2e.py::test_npm_preinstall_cache_lands_only_in_private_tmp` → passed (run 33633469871)<br>`the MCP started in a container named agentnode-mcp-release-smoke-mcp-ee610048` → passed (run 33654001890) |
+| **Community agents run in a container** | ✅ available, tested | `runtimes/agent_sandbox.py` with network='none' and a read-only /pack mount | ubuntu-24.04: a community agent executed inside the sandbox.<br>`tests/test_agent_sandbox_e2e.py::test_agent_sandbox_e2e` → passed (run 33633469871) |
+| **A community agent's own entrypoint on the host** | ⛔ removed | `exceptions.py`: refused: HostAgentExecutionUnsupported | no run — this row is a source fact, read out of the SDK by extract_facts.py |
+| **Refusal when no runtime exists** | ✅ available, tested | `lane-runtime-absent` removes docker, podman and the socket, verifies they are gone, and asserts the refusal; also observed by hand on Windows | ubuntu-24.04 with docker, podman and the socket removed from the job: the refusal, not a fallback.<br>`tests/test_shipped_default_live_paths.py::TestLiveGateRefusesWhenNoRuntimeExists::test_real_discovery_finds_no_runtime` → passed (run 33633469871)<br>`tests/test_shipped_default_live_paths.py::TestLiveGateRefusesWhenNoRuntimeExists::test_the_gate_itself_also_refuses` → passed (run 33633469871)<br>`tests/test_shipped_default_live_paths.py::TestLiveGateRefusesWhenNoRuntimeExists::test_trusted_is_refused_through_the_public_routing_entrypoint` → passed (run 33633469871)<br>`tests/test_shipped_default_live_paths.py::TestLiveGateRefusesWhenNoRuntimeExists::test_curated_still_runs_on_the_host_without_a_runtime` → passed (run 33633469871)<br>`Windows 11 with no container runtime installed: run_tool on a trusted pack returned success=False, mode_used=sandbox_unavailable` → observed (run manual-2026-09-02) |
 | **Limiting which sites a sandboxed program may reach** | ⚗️ experimental | the restricted-network mode builds the command line but never creates the network or the relay it needs — the source says so in as many words (`sandbox_runtime.egress_is_inert`) | nothing has run this here |
 | **Secrets passed to an MCP by name only** | ⚗️ experimental | implemented, allowed only together with the restricted-network mode, and marked inert in the source with no live caller (`sandbox_runtime.secret_passthrough_is_inert`) | nothing has run this here |
 | **Credential broker with a sentinel value** | 🔭 planned | nothing in the code substitutes a credential at a proxy | nothing has run this here |
-| **Conformance suite for a backend** | 🔭 planned | `wired_in.conformance_suite_exists` is False | nothing has run this here |
+| **Conformance suite for a backend** | 🔭 planned | `wired_in.conformance_suite_exists` is False | no run — this row is a source fact, read out of the SDK by extract_facts.py |
 | **The EM-3 selection contract** | 🔭 planned | on this branch the module is not present on main; it is under review in pull request #115, so it decides nothing yet | nothing has run this here |
 
 ## The container it uses

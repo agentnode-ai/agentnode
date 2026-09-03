@@ -76,9 +76,15 @@ AgentNode finds Podman by itself and needs nothing further.
 > convenience setting; it is a privilege change, and on a shared or work machine it may not be
 > yours to make.
 >
-> If you accept that, your distribution documents the exact step. If you would rather not, either
-> use Podman above, or run AgentNode with `sudo` for the commands that need the sandbox — slower,
-> and it changes nothing about who can do what.
+> If you accept that, your distribution documents the exact step.
+>
+> If you would rather not, use rootless Podman above. **Do not run AgentNode itself with `sudo`**
+> as a way around this. That gives the whole application — and everything it installs and runs —
+> administrator authority over the machine, which is a larger change than the one you were trying
+> to avoid, and it is not what the sandbox is for.
+>
+> If neither is open to you, the decision belongs to whoever administers the machine:
+> [what to do when you may not install software](troubleshooting.md#you-are-not-allowed-to-install-software-on-this-machine).
 
 Then:
 

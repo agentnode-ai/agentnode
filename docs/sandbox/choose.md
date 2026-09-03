@@ -30,7 +30,8 @@ it once; after that AgentNode uses it automatically.
 **Good when:** you work on a laptop or desktop, you want nothing to leave your computer, and you are
 willing to install one thing once.
 
-**Not good when:** you are on a phone or tablet, or you are not allowed to install software.
+**Not good when:** you are on a phone or tablet, or you are not allowed to install software —
+[what to do in that case](troubleshooting.md#you-are-not-allowed-to-install-software-on-this-machine).
 
 → [Set up the local sandbox](setup-local.md)
 

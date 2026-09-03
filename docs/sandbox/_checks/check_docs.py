@@ -52,19 +52,26 @@ def fail(where: str, msg: str) -> None:
     problems.append(f"{where}: {msg}")
 
 
+GROUPS = {"mcp": "mcp_sub", "auth": "auth_sub", "config": "config_sub", "guard": "guard_sub",
+          "lock": "lock_sub", "sandbox": "sandbox_sub", "capabilities": "cap_sub",
+          "skill": "skill_sub"}
+
+
 def known_commands() -> set[str]:
     cli = FACTS["cli"]
-    top = set(cli.get("sub", []))
-    groups = {"mcp": "mcp_sub", "auth": "auth_sub", "config": "config_sub", "guard": "guard_sub",
-              "lock": "lock_sub", "sandbox": "sandbox_sub", "capabilities": "cap_sub",
-              "skill": "skill_sub"}
-    known = {f"agentnode {c}" for c in top}
-    for parent, key in groups.items():
+    known = {f"agentnode {c}" for c in set(cli.get("sub", []))}
+    for parent, key in GROUPS.items():
         for child in cli.get(key, []):
             known.add(f"agentnode {parent} {child}")
     for child in cli.get("mcp_own_sub", []):
         known.add(f"agentnode mcp ownership {child}")
     return known
+
+
+def command_groups() -> set[str]:
+    """Commands that take a SUBCOMMAND, so a word after them must be one of its children."""
+    g = {f"agentnode {p}" for p in GROUPS} | {"agentnode", "agentnode mcp ownership"}
+    return g
 
 
 def check_commands(pages: list[Path], known: set[str]) -> None:
@@ -74,7 +81,14 @@ def check_commands(pages: list[Path], known: set[str]) -> None:
     prefix matched, so `agentnode sandbox invent` passed because `agentnode sandbox` exists. Now a
     command is valid only if every word of it is consumed by a real command, with the sole exception
     of placeholder arguments, which look like <this> or ARE the value in a `config set` example.
+
+    One thing it cannot decide and does not pretend to: whether a LEAF command accepts the argument
+    it was given. `agentnode search pdf` is a search term, not a subcommand, and no argument spec is
+    extracted from the parser. So a word after a leaf is left alone, and a word after a command that
+    takes subcommands must be one of that command's real children -- which is the case the
+    `SANDBOX-DOCS-0001` finding was about.
     """
+    groups = command_groups()
     placeholder = re.compile(r"^(<[^>]+>|[A-Z_]{2,}|[a-z_]+\.[a-z_.]+|curated_only|default|none)$")
     for page in pages:
         text = page.read_text(encoding="utf-8")
@@ -92,6 +106,8 @@ def check_commands(pages: list[Path], known: set[str]) -> None:
                 fail(page.name, f"names a command that does not exist: {' '.join(words)!r}")
                 continue
             leftover = words[best:]
+            if " ".join(words[:best]) not in groups:
+                continue  # a leaf command: what follows is its argument, not a subcommand
             # trailing prose is fine — documentation is prose. Trailing WORDS THAT LOOK LIKE
             # SUBCOMMANDS are not, because that is exactly how an invented command reads.
             for extra in leftover:
@@ -113,21 +129,28 @@ ALLOWED_PROSE = {
 }
 
 
-def selftest_command_checker(known: set[str]) -> None:
-    """A checker nobody has seen fail is a checker nobody should trust."""
+def selftest_command_checker(known: set[str]) -> int:
+    """A checker nobody has seen fail is a checker nobody should trust.
+
+    Returns how many of the three planted mistakes it caught; `main` checks that number too, so
+    disabling this in one place is not enough. What it cannot defend against is someone deleting
+    both guards on purpose -- no check inside a file protects that file. It defends against the
+    thing that actually happens: the checker quietly becoming hollow as the code around it changes.
+    """
     import tempfile
     before = len(problems)
     with tempfile.TemporaryDirectory() as td:
         bad = Path(td) / "selftest.md"
-        bad.write_text("Run `agentnode sandbox invent` and `agentnode notacommand`." + chr(10),
-                       encoding="utf-8")
+        bad.write_text("Run `agentnode sandbox invent`, `agentnode notacommand` and "
+                       "`agentnode mcp ownership invent`." + chr(10), encoding="utf-8")
         check_commands([bad], known)
     caught = len(problems) - before
     del problems[before:]
-    if caught != 2:
+    if caught != 3:
         fail("_checks/check_docs.py",
-             f"the command checker did not reject two known-broken commands (caught {caught}); "
+             f"the command checker did not reject three known-broken commands (caught {caught}); "
              "its clean result on the real pages would mean nothing")
+    return caught
 
 
 def check_links(pages: list[Path]) -> None:
@@ -192,7 +215,10 @@ def main() -> int:
     blog = sorted(BLOG.glob("*.md")) if BLOG.exists() else []
     known = known_commands()
 
-    selftest_command_checker(known)
+    caught = selftest_command_checker(known)
+    if caught != 3:
+        fail("_checks/check_docs.py",
+             f"the command checker self-test caught {caught} of 3 planted mistakes")
     check_commands(pages + blog, known)
     check_links(pages)
     check_drift()
