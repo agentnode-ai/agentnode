@@ -31,9 +31,16 @@ GOOD_HOST = {
                        "agentnode sandbox pull",
     "egress_matrix": {"direct_1_1_1_1": "blocked:OSError", "direct_8_8_8_8": "blocked:OSError",
                       "allowed_via_proxy": "ALLOWED:200", "denied_via_proxy": "refused:HTTPError"},
+    "env_baseline": ["HOME", "HOSTNAME", "LANG", "PATH", "PYTHON_VERSION"],
+    "cancel": {"name": "c", "was_running": True, "gone_after": True, "still_listed": ""},
+    "credential_lifecycle": {"name": "AGENTNODE_CONFORMANCE_RELEASED",
+                             "present_when_released": True, "present_afterwards": False,
+                             "leftovers": []},
 }
 GOOD_STRESS = {
-    "wallclock": {"sleep": 30, "timeout": 5.0, "elapsed": 5.1, "rc": -1, "killed": True},
+    "wallclock": {"sleep": 30, "timeout": 5.0, "elapsed": 5.1, "rc": -1,
+                  "timeout_marker_seen": True, "timeout_signal": True,
+                  "stderr_tail": "[sandbox timed out after 5.0s]"},
     "memory": {"requested_mb": 768, "rc": 137, "killed": True, "stdout_tail": ""},
 }
 
@@ -50,7 +57,8 @@ def bad_context():
         declared={**GOOD_DECLARED, "memory": "max", "pids": "max", "tmp_size": "500g",
                   "home_path": "/root", "home_size": None},
         stress={"wallclock": {"sleep": 30, "timeout": 5.0, "elapsed": 30.2, "rc": 0,
-                              "killed": False},
+                              "timeout_marker_seen": False, "timeout_signal": False,
+                              "stderr_tail": ""},
                 "memory": {"requested_mb": 768, "rc": 0, "killed": False,
                            "stdout_tail": "ALLOCATED 768"}},
         host={"runtime_version": "docker 28.0.4", "image": "img", "passthrough_refused": False,
@@ -60,16 +68,22 @@ def bad_context():
                                "reason": ""},
               "refusal_message": "error",
               "egress_matrix": {"direct_1_1_1_1": "BYPASS", "allowed_via_proxy": "refused:X",
-                                "denied_via_proxy": "ALLOWED:200"}},
+                                "denied_via_proxy": "ALLOWED:200"},
+              "env_baseline": ["HOME", "PATH"],
+              "cancel": {"name": "c", "was_running": True, "gone_after": False,
+                         "still_listed": "agentnode-conformance-x-cancel"},
+              "credential_lifecycle": {"name": "AGENTNODE_CONFORMANCE_RELEASED",
+                                       "present_when_released": True, "present_afterwards": True,
+                                       "leftovers": ["agentnode-egress-1"]}},
         argv=["docker", "run"])
 
 
 ALL_IDS = [check_id for check_id, _fn, _req in REGISTRY]
 #: These read host-side or runtime-side observations rather than the probe, so an empty probe does
 #: not make them unmeasurable -- they become not_checked from their own missing input instead.
-NOT_PROBE_BACKED = {"identity", "egress-allowlist", "limit-wallclock", "credentials-destroyed",
-                    "cancel-and-kill", "backend-loss", "log-retention", "errors-are-usable",
-                    "secrets-refused-without-egress"}
+NOT_PROBE_BACKED = {"identity", "egress-allowlist", "limit-wallclock", "run-leaves-nothing",
+                    "credentials-not-persisted", "cancel-and-kill", "backend-loss",
+                    "log-retention", "errors-are-usable", "secrets-refused-without-egress"}
 
 
 class TestTheChecksSeparateFailureFromBlindness:
@@ -85,7 +99,8 @@ class TestTheChecksSeparateFailureFromBlindness:
                          "capabilities-dropped", "no-new-privileges", "network-mode",
                          "egress-allowlist", "clean-home", "declared-mounts-only",
                          "secrets-only-by-release", "limit-wallclock", "limit-cpu",
-                         "credentials-destroyed", "cancel-and-kill", "backend-loss",
+                         "run-leaves-nothing", "credentials-not-persisted",
+                         "cancel-and-kill", "backend-loss",
                          "secrets-refused-without-egress", "outside-host-process"):
             assert results[check_id].outcome is Outcome.FAIL, (
                 f"{check_id} did not report a failure on a backend that is not isolating: "
@@ -197,3 +212,97 @@ class TestTheRunnerAgainstDoubles:
         d = json.loads(report.to_json())
         assert d["suite_version"]
         assert len(d["results"]) == len(REGISTRY)
+
+
+class TestTheNegativesTheReviewAskedFor:
+    """EM3B-IMPLEMENTATION-0001: each of these passed before, and must not."""
+
+    def test_a_processor_ceiling_larger_than_declared_fails(self):
+        ctx = good_context()
+        # eight processors enforced where one was declared: finite, and wrong.
+        ctx.readings["cgroup"]["cpu_max"] = "800000 100000"
+        r = {x.check_id: x for x in run_all(ctx)}["limit-cpu"]
+        assert r.outcome is Outcome.FAIL
+        assert "do not agree" in r.evidence
+
+    def test_an_unlimited_processor_setting_fails(self):
+        ctx = good_context()
+        ctx.readings["cgroup"]["cpu_max"] = "max 100000"
+        assert {x.check_id: x for x in run_all(ctx)}["limit-cpu"].outcome is Outcome.FAIL
+
+    def test_the_declared_processor_count_is_what_is_compared(self):
+        ctx = good_context()
+        ctx.readings["cgroup"]["cpu_max"] = "50000 100000"        # half a processor
+        assert {x.check_id: x for x in run_all(ctx)}["limit-cpu"].outcome is Outcome.FAIL
+        ctx2 = Context(readings=ctx.readings, declared={**GOOD_DECLARED, "cpus": "0.5"},
+                       stress=ctx.stress, host=ctx.host)
+        assert {x.check_id: x for x in run_all(ctx2)}["limit-cpu"].outcome is Outcome.PASS
+
+    def test_an_unrelated_early_nonzero_exit_is_not_a_timeout(self):
+        ctx = good_context()
+        ctx.stress["wallclock"] = {"sleep": 30, "timeout": 5.0, "elapsed": 0.2, "rc": 1,
+                                   "timeout_marker_seen": False, "timeout_signal": False,
+                                   "stderr_tail": "ModuleNotFoundError: no module named time"}
+        r = {x.check_id: x for x in run_all(ctx)}["limit-wallclock"]
+        assert r.outcome is Outcome.FAIL
+        assert "nothing attributes the ending to the ceiling" in r.evidence
+
+    def test_the_marker_without_the_documented_return_code_is_not_a_timeout(self):
+        ctx = good_context()
+        ctx.stress["wallclock"] = {"sleep": 30, "timeout": 5.0, "elapsed": 5.0, "rc": 0,
+                                   "timeout_marker_seen": True, "timeout_signal": False,
+                                   "stderr_tail": "[sandbox timed out after 5.0s]"}
+        assert {x.check_id: x for x in run_all(ctx)}["limit-wallclock"].outcome is Outcome.FAIL
+
+    def test_a_credential_that_outlives_its_run_fails_even_with_everything_cleaned_up(self):
+        ctx = good_context()
+        ctx.host["credential_lifecycle"] = {"name": "N", "present_when_released": True,
+                                            "present_afterwards": True, "leftovers": []}
+        ctx.host["leftovers"] = {"containers": [], "networks": [], "filtered_on": "x"}
+        results = {x.check_id: x for x in run_all(ctx)}
+        assert results["credentials-not-persisted"].outcome is Outcome.FAIL
+        # and the infrastructure check, which used to stand in for this one, is content
+        assert results["run-leaves-nothing"].outcome is Outcome.PASS
+
+    def test_a_credential_never_released_is_not_a_pass_either(self):
+        ctx = good_context()
+        ctx.host["credential_lifecycle"] = {"name": "N", "present_when_released": False,
+                                            "present_afterwards": False, "leftovers": []}
+        assert {x.check_id: x for x in run_all(ctx)}["credentials-not-persisted"].outcome \
+            is Outcome.FAIL
+
+    def test_a_timeout_that_fired_is_not_a_cancellation(self):
+        ctx = good_context()
+        ctx.host.pop("cancel")
+        r = {x.check_id: x for x in run_all(ctx)}["cancel-and-kill"]
+        assert r.outcome is Outcome.NOT_CHECKED
+        assert "no cancellation was performed" in r.evidence
+
+    def test_a_payload_that_survives_cancellation_fails(self):
+        ctx = good_context()
+        ctx.host["cancel"] = {"name": "c", "was_running": True, "gone_after": False,
+                              "still_listed": "agentnode-conformance-x-cancel"}
+        assert {x.check_id: x for x in run_all(ctx)}["cancel-and-kill"].outcome is Outcome.FAIL
+
+    def test_an_unknown_image_variable_is_not_smuggled_in_by_a_hand_written_allowlist(self):
+        ctx = good_context()
+        ctx.readings["env_names"] = sorted(ctx.readings["env_names"] + ["NODE_VERSION"])
+        r = {x.check_id: x for x in run_all(ctx)}["secrets-only-by-release"]
+        assert r.outcome is Outcome.FAIL, "a variable outside the measured baseline must be seen"
+        ctx.host["env_baseline"] = ctx.readings["env_names"]
+        assert {x.check_id: x for x in run_all(ctx)}["secrets-only-by-release"].outcome \
+            is Outcome.PASS
+
+    def test_a_released_name_that_never_arrived_fails(self):
+        ctx = Context(readings=good_context().readings,
+                      declared={**GOOD_DECLARED, "env_names": ["AGENTNODE_RELEASED"]},
+                      stress=copy.deepcopy(GOOD_STRESS), host=copy.deepcopy(GOOD_HOST))
+        r = {x.check_id: x for x in run_all(ctx)}["secrets-only-by-release"]
+        assert r.outcome is Outcome.FAIL
+        assert "released but absent" in r.evidence
+
+    def test_without_a_baseline_nothing_is_concluded(self):
+        ctx = good_context()
+        ctx.host.pop("env_baseline")
+        assert {x.check_id: x for x in run_all(ctx)}["secrets-only-by-release"].outcome \
+            is Outcome.NOT_CHECKED

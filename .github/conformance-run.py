@@ -20,7 +20,7 @@ import sys
 import time
 
 from agentnode_sdk.conformance import Outcome, SuiteOptions, run_conformance
-from agentnode_sdk.conformance.runner import measure_egress
+from agentnode_sdk.conformance.runner import measure_credential_lifecycle, measure_egress
 from agentnode_sdk.sandbox.container_backend import ContainerBackend
 
 OUT = pathlib.Path(os.environ.get("CONFORMANCE_REPORT", "conformance-report.json"))
@@ -42,11 +42,19 @@ def main() -> int:
     except Exception as exc:                                        # noqa: BLE001 - reported
         print(f"the egress matrix could not be measured: {type(exc).__name__}: {exc}")
 
+    lifecycle = None
+    try:
+        lifecycle = measure_credential_lifecycle(backend)
+        print("credential lifecycle: " + json.dumps(lifecycle, sort_keys=True))
+    except Exception as exc:                                        # noqa: BLE001 - reported
+        print(f"the credential lifecycle could not be measured: {type(exc).__name__}: {exc}")
+
     report = run_conformance(
         backend,
         generated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         options=SuiteOptions(),
         egress_matrix=egress,
+        credential_lifecycle=lifecycle,
     )
     OUT.write_text(report.to_json(), encoding="utf-8")
 

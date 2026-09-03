@@ -13,6 +13,7 @@ measurement into a passing property -- that is prevented one layer down, in :mod
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import time
@@ -26,6 +27,14 @@ from agentnode_sdk.sandbox.types import ProcessSpec
 
 #: A runtime name that cannot exist, used to observe what a backend does when it loses its runtime.
 ABSENT_RUNTIME = "agentnode-conformance-absent-runtime"
+
+#: The signal ``run_process`` documents for a run it stopped: this return code AND this marker
+#: on stderr. Both together are what attributes an ending to the ceiling rather than to chance.
+TIMEOUT_RC = -1
+TIMEOUT_MARKER = "[sandbox timed out after"
+
+#: A variable name released into the lifecycle run. The VALUE never leaves this process.
+CREDENTIAL_PROBE_NAME = "AGENTNODE_CONFORMANCE_RELEASED"
 
 
 @dataclass(frozen=True)
@@ -143,10 +152,16 @@ def _stress(backend, options, run_id):
             command=["python", "-c", f"import time; time.sleep({options.wallclock_sleep})"],
             network="none", clean_home=True, name=f"agentnode-conformance-{run_id}-clock")
         r = _run(backend, spec, options.wallclock_timeout)
+        # EM3B review: a duration is not evidence -- an unrelated early exit produces the same
+        # elapsed time. The verdict rests on the backend's own timeout signal: the return code it
+        # documents for a timeout AND the marker it writes. The elapsed time stays as diagnosis.
+        marker = TIMEOUT_MARKER in (r["stderr"] or "")
         out["wallclock"] = {
             "sleep": options.wallclock_sleep, "timeout": options.wallclock_timeout,
             "elapsed": r["elapsed"], "rc": r["rc"],
-            "killed": r["rc"] != 0 and r["elapsed"] < options.wallclock_sleep,
+            "timeout_marker_seen": marker,
+            "timeout_signal": bool(marker and r["rc"] == TIMEOUT_RC),
+            "stderr_tail": (r["stderr"] or "")[-120:].strip(),
         }
     except Exception as exc:                                        # noqa: BLE001
         out["wallclock"] = {"_error": f"{type(exc).__name__}: {str(exc)[:160]}"}
@@ -261,7 +276,8 @@ def _backend_loss(backend) -> dict:
 
 
 def run_conformance(backend, *, generated_at: str, options: SuiteOptions | None = None,
-                    egress_matrix: dict | None = None) -> ConformanceReport:
+                    egress_matrix: dict | None = None,
+                    credential_lifecycle: dict | None = None) -> ConformanceReport:
     """Measure what this backend actually does, and report what could not be measured as such.
 
     ``generated_at`` is supplied by the caller rather than read from the clock here, so a report
@@ -295,6 +311,13 @@ def run_conformance(backend, *, generated_at: str, options: SuiteOptions | None 
     host = _host_observations(backend, runtime, run_id)
     if egress_matrix is not None:
         host["egress_matrix"] = egress_matrix
+    if not probe_failure:
+        # setdefault, not assignment: a test double may have supplied these through the
+        # double-only hook, and a real backend never reaches that hook at all.
+        host.setdefault("env_baseline", _env_baseline(backend, options, run_id))
+        host.setdefault("cancel", _cancel_probe(backend, options, run_id))
+    if credential_lifecycle is not None:
+        host["credential_lifecycle"] = credential_lifecycle
 
     ctx = Context(readings=readings, probe_failure=probe_failure, inspect=inspect,
                   argv=argv or [], declared=declared or {}, stress=stress, host=host)
@@ -325,3 +348,138 @@ def measure_egress(backend, *, allowed: str = "example.com", denied: str = "goog
         return probe_mod.parse_egress(result["stdout"])
     finally:
         egress_mod.stop_egress_proxy(handle)
+
+
+def _cancel_probe(backend, options, run_id) -> dict:
+    """Start something long-running, confirm the runtime sees it, cancel it, confirm it is gone.
+
+    EM3B review: the earlier version reported the timeout run as though it were a cancellation.
+    A timeout firing and a cancellation being honoured are different things, and only one of them
+    was ever exercised.
+    """
+    if not options.include_outside:
+        return {"_error": "outside observation is switched off, so nothing could be confirmed"}
+    name = f"agentnode-conformance-{run_id}-cancel"
+    spec = ProcessSpec(command=["python", "-c", "import time; time.sleep(120)"],
+                       network="none", clean_home=True, name=name)
+    try:
+        argv = backend.wrap_command(spec)
+    except Exception as exc:                                        # noqa: BLE001
+        return {"_error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+    runtime = argv[0]
+    proc = None
+    out = {"name": name, "runtime": runtime}
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        out["was_running"] = False
+        for _ in range(60):
+            listed = subprocess.run([runtime, "ps", "--filter", f"name={name}",
+                                     "--format", "{{.Names}}"],
+                                    capture_output=True, text=True, timeout=15)
+            if name in listed.stdout:
+                out["was_running"] = True
+                break
+            time.sleep(0.25)
+        if not out["was_running"]:
+            out["_error"] = "the payload never appeared in the runtime's list, so there was " \
+                            "nothing to cancel"
+            return out
+        subprocess.run([runtime, "kill", name], capture_output=True, timeout=20)
+        for _ in range(40):
+            listed = subprocess.run([runtime, "ps", "-a", "--filter", f"name={name}",
+                                     "--format", "{{.Names}}"],
+                                    capture_output=True, text=True, timeout=15)
+            if name not in listed.stdout:
+                out["gone_after"] = True
+                out["still_listed"] = ""
+                return out
+            time.sleep(0.25)
+        out["gone_after"] = False
+        out["still_listed"] = listed.stdout.strip()
+        return out
+    except Exception as exc:                                        # noqa: BLE001
+        out["_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        return out
+    finally:
+        if proc is not None:
+            try:
+                subprocess.run([runtime, "rm", "-f", name], capture_output=True, timeout=20)
+            except Exception:                                       # noqa: BLE001
+                pass
+            try:
+                proc.wait(timeout=10)
+            except Exception:                                       # noqa: BLE001
+                proc.kill()
+
+
+def _env_baseline(backend, options, run_id):
+    """What the image itself puts in the environment, measured rather than assumed.
+
+    EM3B: the first real run found three variables a hand-written expectation did not know about.
+    The baseline is a run that releases nothing; anything beyond it in the measured run has to be
+    something this run released.
+    """
+    try:
+        spec = _probe_spec(backend, options, f"agentnode-conformance-{run_id}-baseline")
+        result = _run(backend, spec, options.probe_timeout)
+        readings = probe_mod.parse(result["stdout"])
+    except Exception:                                               # noqa: BLE001
+        return None
+    names = readings.get("env_names")
+    return list(names) if isinstance(names, list) else None
+
+
+def measure_credential_lifecycle(backend, *, allowed: str = "example.com",
+                                 timeout: float = 120.0) -> dict:
+    """Release one variable by name into one run, then look for it in the next one.
+
+    The name is released the way the product releases one -- ``--env NAME`` on the
+    destination-limited network -- and the VALUE never leaves this process: the probe reports
+    names only. What is measured is whether the release outlived the run it was made for.
+    """
+    from agentnode_sdk.sandbox import egress as egress_mod
+
+    out = {"name": CREDENTIAL_PROBE_NAME}
+    previous = os.environ.get(CREDENTIAL_PROBE_NAME)
+    os.environ[CREDENTIAL_PROBE_NAME] = "conformance-probe-value-" + uuid.uuid4().hex
+    handle = None
+    try:
+        handle = egress_mod.start_egress_proxy([allowed])
+        released = ProcessSpec(
+            command=["python", "-c", probe_mod.PROBE_SOURCE, json.dumps({"network": False})],
+            network="egress", egress=handle.spec, clean_home=True,
+            env_passthrough=[CREDENTIAL_PROBE_NAME],
+            name=f"agentnode-conformance-cred-{uuid.uuid4().hex[:8]}")
+        first = probe_mod.parse(_run(backend, released, timeout)["stdout"])
+        out["present_when_released"] = CREDENTIAL_PROBE_NAME in (first.get("env_names") or [])
+    except Exception as exc:                                        # noqa: BLE001
+        out["_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        return out
+    finally:
+        if handle is not None:
+            try:
+                egress_mod.stop_egress_proxy(handle)
+            except Exception:                                       # noqa: BLE001
+                pass
+        if previous is None:
+            os.environ.pop(CREDENTIAL_PROBE_NAME, None)
+        else:
+            os.environ[CREDENTIAL_PROBE_NAME] = previous
+    try:
+        after = ProcessSpec(
+            command=["python", "-c", probe_mod.PROBE_SOURCE, json.dumps({"network": False})],
+            network="none", clean_home=True,
+            name=f"agentnode-conformance-cred-after-{uuid.uuid4().hex[:8]}")
+        second = probe_mod.parse(_run(backend, after, timeout)["stdout"])
+        out["present_afterwards"] = CREDENTIAL_PROBE_NAME in (second.get("env_names") or [])
+    except Exception as exc:                                        # noqa: BLE001
+        out["_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        return out
+    try:
+        runtime = handle.runtime if handle is not None else ""
+        left = subprocess.run([runtime, "network", "ls", "--filter", "name=agentnode-egress",
+                               "--format", "{{.Name}}"], capture_output=True, text=True, timeout=15)
+        out["leftovers"] = [x for x in left.stdout.split() if x] if left.returncode == 0 else []
+    except Exception:                                               # noqa: BLE001
+        out["leftovers"] = []
+    return out

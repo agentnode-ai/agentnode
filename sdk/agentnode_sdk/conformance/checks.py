@@ -295,21 +295,60 @@ def check_limit_pids(ctx: Context) -> CheckResult:
         f"{expected!r}", detail={"cgroup": str(raw).strip(), "declared": expected})
 
 
+def _observed_cpus(cg: dict):
+    """Turn the cgroup processor setting into a number of processors, or None for unlimited."""
+    raw = cg.get("cpu_max")
+    if raw:
+        parts = str(raw).split()
+        if parts and parts[0] in ("max", "-1"):
+            return None, str(raw).strip()
+        if len(parts) >= 2:
+            try:
+                return int(parts[0]) / int(parts[1]), str(raw).strip()
+            except (ValueError, ZeroDivisionError):
+                return None, str(raw).strip()
+    quota, period = cg.get("cpu_quota_v1"), cg.get("cpu_period_v1")
+    if quota is not None and period:
+        try:
+            q, pr = int(str(quota).strip()), int(str(period).strip())
+            return (None if q < 0 else q / pr), f"{quota}/{period}"
+        except (ValueError, ZeroDivisionError):
+            return None, f"{quota}/{period}"
+    return None, None
+
+
 def check_limit_cpu(ctx: Context) -> CheckResult:
+    """The declared number of processors has to be the number actually enforced.
+
+    EM3B review: accepting any finite setting would pass a backend that declared one processor
+    and enforced eight. The observed quota is compared with the declaration now.
+    """
     cg, problem = _read(ctx, "cgroup")
     if problem:
         return CheckResult.probe_error("limit-cpu", "The processor limit is enforced", "limits",
                                        problem)
-    raw = cg.get("cpu_max") or cg.get("cpu_quota_v1")
+    observed, raw = _observed_cpus(cg)
     if raw is None:
         return CheckResult.probe_error("limit-cpu", "The processor limit is enforced", "limits",
-                                       "no cgroup cpu file was readable inside the sandbox")
-    unlimited = str(raw).strip().split()[0] in ("max", "-1")
+                                       "no cgroup processor file was readable inside the sandbox")
+    declared_raw = ctx.declared.get("cpus")
+    try:
+        declared = float(declared_raw)
+    except (TypeError, ValueError):
+        return CheckResult.probe_error(
+            "limit-cpu", "The processor limit is enforced", "limits",
+            f"the run declared its processor limit as {declared_raw!r}, which is not a number")
+    if observed is None:
+        return CheckResult.measured(
+            "limit-cpu", "The processor limit is enforced", "limits", False, Vantage.INSIDE,
+            f"inside: the cgroup processor setting reads {raw!r} -- unlimited -- while the run "
+            f"declared {declared_raw!r}", detail={"cgroup": raw, "declared": declared_raw})
+    ok = abs(observed - declared) <= max(0.01, declared * 0.02)
     return CheckResult.measured(
-        "limit-cpu", "The processor limit is enforced", "limits", not unlimited, Vantage.INSIDE,
-        f"inside: the cgroup processor setting reads {str(raw).strip()!r} against the declared "
-        f"{ctx.declared.get('cpus')!r}",
-        detail={"cgroup": str(raw).strip(), "declared": ctx.declared.get("cpus")})
+        "limit-cpu", "The processor limit is enforced", "limits", ok, Vantage.INSIDE,
+        f"inside: the cgroup processor setting {raw!r} enforces {observed:g} processors against "
+        f"the declared {declared:g}" + ("" if ok else " -- they do not agree"),
+        detail={"cgroup": raw, "observed_cpus": observed, "declared": declared})
 
 
 def check_limit_disk(ctx: Context) -> CheckResult:
@@ -330,16 +369,27 @@ def check_limit_disk(ctx: Context) -> CheckResult:
 
 
 def check_limit_wallclock(ctx: Context) -> CheckResult:
+    """The stop has to be attributable to the ceiling, never inferred from how long it took.
+
+    A duration is a diagnosis, not evidence: an unrelated early exit produces the same elapsed
+    time. What carries this check is the backend's own timeout signal.
+    """
     s = ctx.stress.get("wallclock")
-    if not isinstance(s, dict):
+    if not isinstance(s, dict) or "_error" in s:
         return CheckResult.not_checked(
             "limit-wallclock", "A run that will not finish is stopped", "limits",
-            "no timeout run was performed")
+            "no timeout run was performed"
+            + (f": {s.get('_error')}" if isinstance(s, dict) else ""))
+    attributed = bool(s.get("timeout_signal"))
     return CheckResult.measured(
         "limit-wallclock", "A run that will not finish is stopped", "limits",
-        bool(s.get("killed")), Vantage.OUTSIDE,
-        (f"a payload asked to sleep {s.get('sleep')}s under a {s.get('timeout')}s ceiling was "
-         f"{'stopped' if s.get('killed') else 'NOT stopped'} after {s.get('elapsed')}s"),
+        attributed, Vantage.OUTSIDE,
+        (f"a payload asked to sleep {s.get('sleep')}s under a {s.get('timeout')}s ceiling returned "
+         f"the backend's own timeout signal (rc={s.get('rc')}, marker present); the "
+         f"{s.get('elapsed')}s it took is diagnosis rather than evidence"
+         if attributed else
+         f"the run ended with rc={s.get('rc')} and no timeout signal from the backend, so nothing "
+         f"attributes the ending to the ceiling. It took {s.get('elapsed')}s"),
         detail=dict(s))
 
 
@@ -366,24 +416,35 @@ def check_clean_home(ctx: Context) -> CheckResult:
 
 
 def check_secrets_only_by_release(ctx: Context) -> CheckResult:
+    """What is inside must be the image's own environment plus exactly what was released.
+
+    The first version compared against a hand-written list of the variables an image is expected
+    to set, and the first real run found three it did not know about. A list of what an image
+    happens to contain is not knowledge, so the baseline is measured now: the environment of a
+    run that released nothing.
+    """
     names, problem = _read(ctx, "env_names")
     if problem:
         return CheckResult.probe_error(
             "secrets-only-by-release", "Only released variables are inside", "secrets", problem)
-    allowed = set(ctx.declared.get("env_names", ())) | {
-        "HOME", "HOSTNAME", "PATH", "LANG", "LC_ALL", "PWD", "SHLVL", "TERM", "PYTHONPATH",
-        "PYTHON_VERSION", "PYTHON_SHA256", "PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED",
-        "GPG_KEY", "PYTHON_PIP_VERSION", "PYTHON_GET_PIP_URL", "PYTHON_GET_PIP_SHA256",
-        "PYTHON_SETUPTOOLS_VERSION", "_",
-    }
-    leaked = sorted(n for n in names if n not in allowed)
+    baseline = ctx.host.get("env_baseline")
+    if baseline is None:
+        return CheckResult.not_checked(
+            "secrets-only-by-release", "Only released variables are inside", "secrets",
+            "no baseline run was performed, so this run's environment has nothing to be compared "
+            "against")
+    released = set(ctx.declared.get("env_names", ()))
+    unexpected = sorted(set(names) - set(baseline) - released)
+    missing = sorted(released - set(names))
     return CheckResult.measured(
         "secrets-only-by-release", "Only released variables are inside", "secrets",
-        not leaked, Vantage.INSIDE,
-        ("inside: the environment holds only the image's own variables and the ones this run "
-         "released by name"
-         if not leaked else f"inside: unexpected variable NAMES are present: {leaked}"),
-        detail={"unexpected_names": leaked, "released": sorted(ctx.declared.get("env_names", ()))})
+        not unexpected and not missing, Vantage.INSIDE,
+        ("inside: the environment is exactly the image's own variables plus the names this run "
+         "released"
+         if not unexpected and not missing else
+         f"inside: unexpected names {unexpected}, released but absent {missing}"),
+        detail={"unexpected_names": unexpected, "released_but_absent": missing,
+                "baseline_size": len(baseline)})
 
 
 def check_secrets_refused_without_egress(ctx: Context) -> CheckResult:
@@ -402,34 +463,73 @@ def check_secrets_refused_without_egress(ctx: Context) -> CheckResult:
         detail={"refused": refused})
 
 
-def check_credentials_destroyed(ctx: Context) -> CheckResult:
+def check_run_leaves_nothing(ctx: Context) -> CheckResult:
     left = ctx.host.get("leftovers")
     if left is None:
         return CheckResult.not_checked(
-            "credentials-destroyed", "Nothing of the run survives it", "credentials",
+            "run-leaves-nothing", "Nothing of the run survives it", "lifecycle",
             "the runtime could not be asked what remained after the run")
     remaining = [x for x in (left.get("containers", []) + left.get("networks", [])) if x]
     return CheckResult.measured(
-        "credentials-destroyed", "Nothing of the run survives it", "credentials",
+        "run-leaves-nothing", "Nothing of the run survives it", "lifecycle",
         not remaining, Vantage.OUTSIDE,
         ("the runtime lists no container, network or proxy belonging to this run afterwards"
          if not remaining else f"the runtime still lists {remaining} after the run"),
         detail=dict(left))
 
 
-def check_cancel_and_kill(ctx: Context) -> CheckResult:
-    s = ctx.stress.get("wallclock")
-    left = ctx.host.get("leftovers")
-    if not isinstance(s, dict) or left is None:
+def check_credentials_not_persisted(ctx: Context) -> CheckResult:
+    """A released variable must reach the run it was released to, and no run after that.
+
+    The first version of this check looked only at whether containers and networks were gone,
+    which a credential could outlive without anyone noticing. This measures the credential: the
+    name is inside the run that was allowed it, absent from a later run, and the infrastructure
+    that carried it is gone.
+    """
+    life = ctx.host.get("credential_lifecycle")
+    if life is None:
         return CheckResult.not_checked(
-            "cancel-and-kill", "A stopped run leaves nothing behind", "lifecycle",
-            "no stopped run was observed, or the runtime could not be asked what remained")
-    ok = bool(s.get("killed")) and not left.get("containers")
+            "credentials-not-persisted", "A released variable does not outlive its run",
+            "credentials",
+            "no credential lifecycle run was performed: it needs a container runtime and an "
+            "internal network, so it is measured on Linux CI rather than wherever the suite runs")
+    if life.get("_error"):
+        return CheckResult.probe_error(
+            "credentials-not-persisted", "A released variable does not outlive its run",
+            "credentials", f"the lifecycle run failed: {life['_error']}")
+    name = life.get("name")
+    ok = (bool(life.get("present_when_released"))
+          and not life.get("present_afterwards", True)
+          and not life.get("leftovers"))
     return CheckResult.measured(
-        "cancel-and-kill", "A stopped run leaves nothing behind", "lifecycle", ok, Vantage.OUTSIDE,
-        (f"the run was stopped after {s.get('elapsed')}s and the runtime lists "
-         f"{left.get('containers') or 'no container'} from it afterwards"),
-        detail={"stress": s, "leftovers": left})
+        "credentials-not-persisted", "A released variable does not outlive its run", "credentials",
+        ok, Vantage.INSIDE,
+        (f"inside: the released name {name!r} was present in the run it was released to and absent "
+         f"from a later run, and the proxy and networks that carried it are gone"
+         if ok else
+         f"inside: present when released={life.get('present_when_released')}, still present "
+         f"afterwards={life.get('present_afterwards')}, left behind={life.get('leftovers')}"),
+        detail=dict(life))
+
+
+def check_cancel_and_kill(ctx: Context) -> CheckResult:
+    """Cancellation has to be exercised, not inferred from a timeout that happened to fire."""
+    c = ctx.host.get("cancel")
+    if not isinstance(c, dict) or c.get("_error"):
+        return CheckResult.not_checked(
+            "cancel-and-kill", "A cancelled run stops and leaves nothing", "lifecycle",
+            "no cancellation was performed"
+            + (f": {c.get('_error')}" if isinstance(c, dict) else ""))
+    ok = bool(c.get("was_running")) and bool(c.get("gone_after"))
+    return CheckResult.measured(
+        "cancel-and-kill", "A cancelled run stops and leaves nothing", "lifecycle", ok,
+        Vantage.OUTSIDE,
+        ("a long-running payload was started, the runtime confirmed it running, it was cancelled, "
+         "and the runtime lists nothing of it afterwards"
+         if ok else
+         f"cancellation was not demonstrated: running before={c.get('was_running')}, "
+         f"gone after={c.get('gone_after')}, still listed={c.get('still_listed')}"),
+        detail=dict(c))
 
 
 def check_backend_loss(ctx: Context) -> CheckResult:
@@ -506,7 +606,8 @@ REGISTRY = (
     ("clean-home", check_clean_home, True),
     ("secrets-only-by-release", check_secrets_only_by_release, True),
     ("secrets-refused-without-egress", check_secrets_refused_without_egress, True),
-    ("credentials-destroyed", check_credentials_destroyed, True),
+    ("run-leaves-nothing", check_run_leaves_nothing, True),
+    ("credentials-not-persisted", check_credentials_not_persisted, True),
     ("cancel-and-kill", check_cancel_and_kill, True),
     ("backend-loss", check_backend_loss, True),
     ("log-retention", check_log_retention, True),

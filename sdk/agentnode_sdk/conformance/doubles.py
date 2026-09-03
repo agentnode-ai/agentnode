@@ -118,6 +118,12 @@ class _DoubleBase:
             "runtime_version": "double 0.0-not-a-runtime",
             "image": self._image,
             "leftovers": {"containers": [], "networks": [], "filtered_on": "double"},
+            "env_baseline": list(self._readings.get("env_names", [])),
+            "cancel": {"name": "double", "was_running": True, "gone_after": True,
+                       "still_listed": ""},
+            "credential_lifecycle": {"name": "AGENTNODE_CONFORMANCE_RELEASED",
+                                     "present_when_released": True, "present_afterwards": False,
+                                     "leftovers": []},
         }
 
     def open_agent_session(self, spec):
@@ -162,6 +168,14 @@ class BadBackendDouble(_DoubleBase):
             "image": self._image,
             "leftovers": {"containers": ["agentnode-conformance-leftover"],
                           "networks": ["agentnode-egress-leftover"], "filtered_on": "double"},
+            # A baseline from an image that leaks nothing, so the released-secret check has a real
+            # comparison to fail against rather than an empty one to pass by default.
+            "env_baseline": ["HOME", "PATH"],
+            "cancel": {"name": "double", "was_running": True, "gone_after": False,
+                       "still_listed": "agentnode-conformance-leftover"},
+            "credential_lifecycle": {"name": "AGENTNODE_CONFORMANCE_RELEASED",
+                                     "present_when_released": True, "present_afterwards": True,
+                                     "leftovers": ["agentnode-egress-leftover"]},
         }
 
     def run_process(self, spec, input_text=None, timeout=120.0):
