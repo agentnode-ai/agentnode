@@ -149,6 +149,18 @@ class ContainerBackend(SandboxBackend):
                     executable_path=path, daemon_ok=False, probe_error=probe_error,
                 )
             engine_os, mem_ok = self._engine_facts(path)
+            if mem_ok is not True:
+                # EM3B-R1-REVIEW-0001 / F2. An engine that cannot account for swap does not hold
+                # the declared memory ceiling, whatever the flags say. Running community code
+                # under a ceiling that may not bind is running it under no ceiling, so this is
+                # fail-closed rather than a note in a report.
+                return SandboxAvailability(
+                    available=False, backend=rt,
+                    reason=(f"{rt} cannot enforce the declared memory ceiling "
+                            f"(memory_limit_enforceable={mem_ok!r})"),
+                    executable_path=path, daemon_ok=True, engine_os=engine_os,
+                    memory_limit_enforceable=mem_ok,
+                )
             if engine_os not in ("", "linux"):
                 return SandboxAvailability(
                     available=False, backend=rt,
@@ -195,6 +207,15 @@ class ContainerBackend(SandboxBackend):
             mem, swap = parts[1].strip().lower(), parts[2].strip().lower()
             if mem in ("true", "false") and swap in ("true", "false"):
                 return engine_os, (mem == "true" and swap == "true")
+        # Podman has no .MemoryLimit/.SwapLimit: those are Docker's fields. Asking it in Docker's
+        # words and calling the empty answer "cannot enforce" would refuse every Podman host.
+        # Under cgroup v2 the memory-and-swap ceiling is accounted for by default, and that is a
+        # question Podman does answer.
+        v = _run_runtime([path, "info", "--format", "{{.Host.CgroupsVersion}}"])
+        if v is not None and v.returncode == 0:
+            version = (v.stdout or "").strip().lower()
+            if version:
+                return engine_os or "linux", version in ("v2", "2")
         return engine_os, None
 
     def _image_present(self, path: str) -> bool:
@@ -379,7 +400,13 @@ class ContainerBackend(SandboxBackend):
         timeout path always has something exact to act on, and a disagreement between them is
         itself a containment failure rather than a coin toss.
         """
-        name = spec.name or f"agentnode-run-{uuid.uuid4().hex}"
+        # EM3B-R1-REVIEW-0001 / F3. A supplied name must never BE the target: if a container of
+        # that name already exists -- a leftover, or another process's -- a timeout firing before
+        # the cidfile is written would resolve that container and remove it. Every run gets a
+        # fresh suffix, so the name this run targets cannot be anyone else's. Callers that filter
+        # by their own prefix still match.
+        suffix = uuid.uuid4().hex
+        name = f"{spec.name}-{suffix[:12]}" if spec.name else f"agentnode-run-{suffix}"
         tmpdir = tempfile.mkdtemp(prefix="agentnode-cid-")
         cidfile = os.path.join(tmpdir, "cid")      # must NOT exist: the runtime creates it
         if spec.name != name:

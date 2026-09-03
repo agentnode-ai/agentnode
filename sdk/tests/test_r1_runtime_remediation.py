@@ -184,6 +184,39 @@ class TestTimeoutEndsThePayload:
             cb.ContainerBackend(runtime="docker")._end_timed_out_run(
                 FakeProc(), "docker", "run-x", str(tmp_path / "cid"), 5.0)
 
+    def test_a_supplied_name_is_never_the_target(self):
+        """EM3B-R1-REVIEW-0001 / F3: if a container of the caller name already exists, a timeout
+        firing before the cidfile is written would have resolved and removed THAT one."""
+        backend = cb.ContainerBackend(runtime="docker")
+        spec, name, cidfile, tmpdir = backend._with_identity(
+            ProcessSpec(command=["true"], network="none", name="agentnode-mcp-weather"))
+        try:
+            assert name != "agentnode-mcp-weather"
+            assert name.startswith("agentnode-mcp-weather-"), "a caller prefix still matches"
+            second = backend._with_identity(
+                ProcessSpec(command=["true"], network="none", name="agentnode-mcp-weather"))
+            cb._remove_quietly(second[2], second[3])
+            assert second[1] != name, "two runs never share a target"
+        finally:
+            cb._remove_quietly(cidfile, tmpdir)
+
+    def test_a_pre_existing_container_of_the_same_name_is_never_removed(
+            self, tmp_path, monkeypatch):
+        pre_existing = "agentnode-mcp-weather"
+        fake = FakeRuntime(exists={pre_existing}, names={pre_existing: "someone-elses-id"})
+        monkeypatch.setattr(cb, "_run_runtime", fake)
+        backend = cb.ContainerBackend(runtime="docker")
+        _spec, name, cidfile, tmpdir = backend._with_identity(
+            ProcessSpec(command=["true"], network="none", name=pre_existing))
+        try:
+            rc, _out, err = backend._end_timed_out_run(FakeProc(), "docker", name, cidfile, 5.0)
+        finally:
+            cb._remove_quietly(cidfile, tmpdir)
+        assert rc == -1 and "timed out" in err
+        assert not [c for c in fake.calls if c[1] == "rm"], (
+            "a pre-existing container with the caller name was addressed")
+        assert pre_existing in fake._exists, "it must still be there"
+
     def test_every_run_carries_an_exact_identity(self):
         backend = cb.ContainerBackend(runtime="docker")
         spec, name, cidfile, tmpdir = backend._with_identity(
@@ -239,6 +272,45 @@ class TestMemoryCeiling:
     def test_an_engine_that_says_nothing_is_unknown_not_capable(self, monkeypatch):
         monkeypatch.setattr(cb, "_run_runtime", lambda argv, timeout=None: None)
         assert cb.ContainerBackend(runtime="docker")._engine_facts("docker") == ("", None)
+
+    def test_podman_is_asked_in_its_own_words(self, monkeypatch):
+        """Podman has no .MemoryLimit/.SwapLimit -- those are Docker fields. Asking it in
+        Docker words and calling the empty answer "cannot enforce" would refuse every Podman
+        host; under cgroup v2 the memory-and-swap ceiling is accounted for by default."""
+        def info(argv, timeout=None):
+            if "{{.Host.CgroupsVersion}}" in argv:
+                return types.SimpleNamespace(returncode=0, stdout="v2", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="||", stderr="")
+
+        monkeypatch.setattr(cb, "_run_runtime", info)
+        assert cb.ContainerBackend(runtime="podman")._engine_facts("podman") == ("linux", True)
+
+    def test_cgroup_v1_podman_cannot_hold_the_ceiling(self, monkeypatch):
+        def info(argv, timeout=None):
+            if "{{.Host.CgroupsVersion}}" in argv:
+                return types.SimpleNamespace(returncode=0, stdout="v1", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="||", stderr="")
+
+        monkeypatch.setattr(cb, "_run_runtime", info)
+        assert cb.ContainerBackend(runtime="podman")._engine_facts("podman")[1] is False
+
+    @pytest.mark.parametrize("state", ["false", "unknown"])
+    def test_an_engine_that_cannot_hold_the_ceiling_is_not_available(self, monkeypatch, state):
+        """EM3B-R1-REVIEW-0001 / F2: fail-closed BEFORE anything runs, not a note in a report."""
+        def info(argv, timeout=None):
+            if "{{.OSType}}|{{.MemoryLimit}}|{{.SwapLimit}}" in argv:
+                return types.SimpleNamespace(
+                    returncode=0,
+                    stdout="linux|true|false" if state == "false" else "linux", stderr="")
+            if "{{.Host.CgroupsVersion}}" in argv:
+                return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(cb.shutil, "which", lambda x: "/usr/bin/docker")
+        monkeypatch.setattr(cb, "_run_runtime", info)
+        av = cb.ContainerBackend(runtime="docker").check_available()
+        assert av.available is False
+        assert "memory ceiling" in av.reason
 
     @pytest.mark.skipif(os.environ.get("AGENTNODE_SANDBOX_E2E") != "1",
                         reason="set AGENTNODE_SANDBOX_E2E=1 (needs a container runtime) to run")
@@ -333,18 +405,25 @@ class TestRefusalCarriesAWayOut:
         assert r.case is RefusalCase.INCOMPATIBLE
         assert "linux" in r.details.lower() and r.actions
 
-    def test_a_device_with_no_local_sandbox_says_so_and_offers_nothing_false(self):
+    def test_a_device_with_no_local_sandbox_still_offers_a_clean_stop_and_a_person(self):
+        """EM3B-R1-REVIEW-0001 / F4: this case carried no actions at all, which broke the rule
+        that every refusal carries a way out. Stopping cleanly, and being able to say you need
+        this, ARE things a person can do."""
         r = classify(_unavailable(), platform="android")
         assert r.case is RefusalCase.PLATFORM_UNSUPPORTED
-        assert r.actions == ()
+        assert r.actions, "every refusal carries something the person can do -- no exceptions"
         text = r.render().lower()
-        for forbidden in ("run it anyway", "disable the sandbox", "remote sandbox now"):
+        assert "nothing was started" in text and "stop here safely" in text
+        assert "issues" in text, "and a way to reach a person"
+        for forbidden in ("run it anyway", "disable the sandbox", "remote sandbox now",
+                          "run it unprotected"):
             assert forbidden not in text
 
     def test_a_missing_image_and_a_placeholder_build_are_different(self):
-        missing = classify(_unavailable(backend="docker", daemon_ok=True, engine_os="linux"))
-        placeholder = classify(_unavailable(backend="docker", daemon_ok=True, engine_os="linux"),
-                               placeholder=True)
+        ok_engine = dict(backend="docker", daemon_ok=True, engine_os="linux",
+                         memory_limit_enforceable=True)
+        missing = classify(_unavailable(**ok_engine))
+        placeholder = classify(_unavailable(**ok_engine), placeholder=True)
         assert missing.case is RefusalCase.IMAGE_MISSING
         assert any("agentnode sandbox pull" == a.command for a in missing.actions)
         assert placeholder.case is RefusalCase.IMAGE_PLACEHOLDER
@@ -354,11 +433,24 @@ class TestRefusalCarriesAWayOut:
         text = classify(_unavailable(), platform="win32").render()
         assert "apt install" not in text and "systemctl" not in text
 
-    def test_every_refusal_names_a_recheck(self):
+    def test_every_refusal_names_a_recheck_and_an_action(self):
         for r in (classify(_unavailable(), platform="linux"),
                   classify(_unavailable(backend="docker", daemon_ok=False), platform="linux"),
-                  classify(_unavailable(backend="docker", daemon_ok=True, engine_os="linux"))):
+                  classify(_unavailable(backend="docker", daemon_ok=True, engine_os="linux"),
+                           platform="linux"),
+                  classify(_unavailable(backend="docker", daemon_ok=True, engine_os="linux",
+                                        memory_limit_enforceable=True), platform="linux"),
+                  classify(_unavailable(), platform="android")):
+            assert r.actions, f"{r.case.value} carries no action"
             assert "agentnode sandbox doctor" in r.render()
+
+    def test_an_engine_that_cannot_hold_the_ceiling_is_its_own_refusal(self):
+        """EM3B-R1-REVIEW-0001 / F2: a ceiling that may not bind is no ceiling."""
+        for state in (False, None):
+            r = classify(_unavailable(backend="docker", daemon_ok=True, engine_os="linux",
+                                      memory_limit_enforceable=state), platform="linux")
+            assert r.case is RefusalCase.MEMORY_CEILING_UNENFORCEABLE
+            assert r.actions and "cgroup" in r.render().lower()
 
     def test_a_refusal_without_a_way_out_cannot_be_constructed(self):
         from agentnode_sdk.sandbox.refusal import Refusal

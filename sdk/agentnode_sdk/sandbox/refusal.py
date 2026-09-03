@@ -40,6 +40,7 @@ _PERMISSION = re.compile(
 
 class RefusalCase(str, Enum):
     NOT_INSTALLED = "not_installed"
+    MEMORY_CEILING_UNENFORCEABLE = "memory_ceiling_unenforceable"
     NOT_RUNNING = "not_running"
     NOT_PERMITTED = "not_permitted"
     INCOMPATIBLE = "incompatible"
@@ -72,10 +73,11 @@ class Refusal:
     def __post_init__(self) -> None:
         if not self.headline.strip() or not self.prevented.strip():
             raise ValueError("a refusal needs a headline and what it prevented")
-        if self.case is not RefusalCase.PLATFORM_UNSUPPORTED and not self.actions:
+        if not self.actions:
             raise ValueError(
-                f"{self.case.value}: a refusal must carry something the person can do. Only "
-                "platform_unsupported may carry none, because on that device there is nothing")
+                f"{self.case.value}: a refusal must carry something the person can do. There is "
+                "no exception -- where nothing can be installed, a clean stop and a way to reach "
+                "a person are still things a person can do")
 
     def render(self) -> str:
         lines = [self.headline, "", self.prevented, ""]
@@ -134,6 +136,30 @@ _PERMITTED_ACTIONS = (
            platforms=("win32", "linux", "darwin")),
 )
 
+# EM3B-R1-REVIEW-0001 / F4. The first version gave this case no actions at all, on the grounds
+# that there is nothing to install on such a device. That was wrong twice over: it broke the rule
+# that every refusal carries a way out, and it is not even true. Stopping cleanly, knowing nothing
+# was half-done, and being able to say "I need this" are things a person can do -- and how often
+# the last one is said is what decides when the remote option gets built.
+_NO_LOCAL_SANDBOX_ACTIONS = (
+    Action("Nothing was started and nothing was changed, so there is nothing to undo. You can "
+           "stop here safely"),
+    Action("Run this on a computer where a container runtime can be installed -- the same command "
+           "works there", command="agentnode sandbox doctor"),
+    Action("Or say that you need to run this here, so the remote option gets built",
+           url="https://github.com/agentnode-ai/agentnode/issues"),
+)
+
+_MEMORY_ACTIONS = (
+    Action("Switch this machine to cgroup v2, where the memory and swap ceiling is accounted for "
+           "by default -- most current distributions already are", platforms=("linux",)),
+    Action("Or turn on swap accounting for cgroup v1 and reboot",
+           command='add  cgroup_enable=memory swapaccount=1  to the kernel command line',
+           platforms=("linux",)),
+    Action("Or ask whoever administers this machine to do one of those. Send them this",
+           command=RECHECK + " --json"),
+)
+
 _INCOMPATIBLE_ACTIONS = (
     Action("Switch Docker Desktop to Linux containers (right-click the tray icon)",
            platforms=("win32",)),
@@ -163,9 +189,10 @@ def classify(availability, *, platform: str | None = None, placeholder: bool = F
             RefusalCase.PLATFORM_UNSUPPORTED,
             "There is no sealed workspace on this kind of device",
             _PREVENTED + " A local sandbox needs a container runtime, and this platform has none. "
-            "Sending the work to a sandbox elsewhere is not built yet, so there is nothing to "
-            "offer here rather than something that would not work.",
-            actions=(), details=f"platform={platform}")
+            "Sending the work to a sandbox elsewhere is not built yet, so nothing here pretends "
+            "otherwise.",
+            actions=_pick(_NO_LOCAL_SANDBOX_ACTIONS, platform) or _NO_LOCAL_SANDBOX_ACTIONS,
+            details=f"platform={platform}")
 
     backend = getattr(availability, "backend", "none")
     if backend == "none":
@@ -198,6 +225,19 @@ def classify(availability, *, platform: str | None = None, placeholder: bool = F
             f"{availability.engine_os} containers.",
             actions=_pick(_INCOMPATIBLE_ACTIONS, platform),
             details=f"engine OS type is {availability.engine_os!r}, the pinned image needs linux")
+
+    if getattr(availability, "memory_limit_enforceable", None) is not True:
+        state = getattr(availability, "memory_limit_enforceable", None)
+        return Refusal(
+            RefusalCase.MEMORY_CEILING_UNENFORCEABLE,
+            f"{backend} cannot hold the memory limit this sandbox asks for",
+            _PREVENTED + " The sandbox declares how much memory a program may use. This engine "
+            + ("reports that it cannot enforce that ceiling"
+               if state is False else "did not say whether it can enforce that ceiling")
+            + ", and running someone else's code under a limit that may not bind is the same as "
+            "running it under no limit.",
+            actions=_pick(_MEMORY_ACTIONS, platform) or _MEMORY_ACTIONS,
+            details=f"memory_limit_enforceable={state!r} for {backend}")
 
     if placeholder:
         return Refusal(
