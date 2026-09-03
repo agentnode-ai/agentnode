@@ -151,26 +151,53 @@ def _build_env_checks() -> tuple[list[dict], bool, bool]:
     beyond the cached availability probe."""
     from agentnode_sdk.sandbox.container_backend import _BASE_IMAGE, ContainerBackend
 
-    av = ContainerBackend().check_available()
+    # EM-3B-R1/R3: the refusal and this output come from ONE classifier, so the doctor cannot
+    # drift from what the SDK tells a caller. `fix` is the first action that applies here.
+    from agentnode_sdk.sandbox.refusal import RefusalCase, classify
+
+    backend = ContainerBackend()
+    av = backend.check_available()
     placeholder = _is_placeholder_digest(_BASE_IMAGE)
+    refusal = classify(av, placeholder=placeholder)
     checks: list[dict] = []
 
     def rec(name, ok, detail, fix=None):
         checks.append({"check": name, "ok": ok, "detail": detail, "fix": fix})
 
+    def first_action() -> str | None:
+        """Every action that applies on this platform, in one line.
+
+        Not just the first: the Windows start advice ends with the firmware and WSL2 case, and a
+        person whose engine will not start needs that as much as the first sentence.
+        """
+        if refusal is None or not refusal.actions:
+            return None
+        parts = []
+        for a in refusal.actions:
+            parts.append(a.text + (f" ({a.command or a.url})" if (a.command or a.url) else ""))
+        return "; ".join(parts)
+
     if av.backend == "none":
-        rec("runtime", False, "no Docker or Podman found",
-            "Install Docker or Podman (NOT auto-installed): https://docs.docker.com/get-docker/")
+        rec("runtime", False, "no Docker or Podman found", first_action()
+            or "Install Docker or Podman (NOT auto-installed): https://docs.docker.com/get-docker/")
         return checks, False, False
 
     rec("runtime", True, f"{av.backend} ({av.executable_path or 'on PATH'})")
 
     if not av.daemon_ok:
-        rec("daemon", False, f"{av.backend} found but its daemon is not reachable",
-            "Start the container runtime (e.g. Docker Desktop). On Windows this can also be "
-            "WSL2/Hyper-V not running or hardware virtualization disabled in BIOS.")
+        permitted = refusal is not None and refusal.case is RefusalCase.NOT_PERMITTED
+        rec("daemon", False,
+            f"{av.backend} is installed but this account may not use it" if permitted
+            else f"{av.backend} found but its daemon is not reachable",
+            first_action()
+            or ("Start the container runtime (e.g. Docker Desktop). On Windows this can also be "
+                "WSL2/Hyper-V not running or hardware virtualization disabled in BIOS."))
         return checks, False, False
     rec("daemon", True, "reachable")
+
+    if refusal is not None and refusal.case is RefusalCase.INCOMPATIBLE:
+        rec("engine", False, refusal.headline, first_action())
+        return checks, False, False
 
     if placeholder:
         rec("image", False, "this SDK build has no pinned sandbox image (placeholder digest)",

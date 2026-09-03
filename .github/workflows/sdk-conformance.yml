@@ -13,7 +13,10 @@ name: Sandbox conformance (EM-3B)
 
 on:
   push:
-    branches: [main]
+    # EM-3B-R1 is a stacked branch: its pull request targets the EM-3B branch, not main, so a
+    # pull_request trigger on main would never fire for it. The correction has to be measured
+    # against a real container before anything about it can be claimed.
+    branches: [main, "em3b-r1/**"]
   pull_request:
     branches: [main]
   workflow_dispatch:

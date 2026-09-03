@@ -42,6 +42,11 @@ def test_detect_available_and_cached(monkeypatch):
         calls.append(args)
         class R:
             returncode = 0
+            # EM-3B-R1: the probe now also reads what the runtime SAID -- that is what tells a
+            # stopped daemon apart from one this account may not use -- and asks the engine for
+            # its container OS and whether it can hold a memory+swap ceiling.
+            stdout = "linux|true|true"
+            stderr = ""
         return R()
     monkeypatch.setattr(cb.subprocess, "run", fake_run)
 
@@ -60,6 +65,8 @@ def test_detect_daemon_down(monkeypatch):
     def fake_run(args, **k):
         class R:
             returncode = 1
+            stdout = ""
+            stderr = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
         return R()
     monkeypatch.setattr(cb.subprocess, "run", fake_run)
 
