@@ -18,8 +18,6 @@ that implement it are EM-3C and later.
 from __future__ import annotations
 
 import re
-import secrets
-import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Mapping, Sequence
@@ -80,6 +78,13 @@ def register_remediation(action: Action) -> Action:
     """
     if action.kind is not ActionKind.REMEDIATION:
         raise ValueError("only remediation actions belong in the catalogue")
+    blob = (action.id + " " + action.label).lower()
+    for word in ("host", "unprotected", "unsafe", "legacy", "directly on"):
+        if word in blob:
+            raise ValueError(
+                f"{action.id!r} points at host execution. Every way out of a refusal ends in a "
+                "protected placement or in stopping; this contract has no host placement."
+            )
     _REMEDIATION_CATALOGUE[action.id] = action
     return action
 
@@ -368,147 +373,6 @@ class RemoteConsent:
 
 
 # --------------------------------------------------------------------------------------
-# The legacy host mode: a capability nothing automatic can mint (D3 / E6)
-# --------------------------------------------------------------------------------------
-
-class LegacyHostIntent:
-    """Proof that a human deliberately confirmed host execution, for exactly one bound operation.
-
-    `EM3A-IMPL-0001` / F-A2 found the first version forgeable: it was a duck type, so any object with
-    a ``spend()`` method selected host execution, and the mint key was reachable on the module. The
-    capability now lives in a private registry the gate checks; an instance on its own proves nothing.
-
-    What a holder gets is a handle. What the gate verifies is that the handle's token is in the
-    registry, unspent, unexpired, and bound to the operation being attempted. Forging the object does
-    not put a token in the registry, and the registry is not reachable through the public surface.
-    """
-
-    __slots__ = ("_token", "_purpose", "_confirmed_by", "_confirmed_at")
-
-    def __init__(self, _private: object, purpose: str, confirmed_by: str, confirmed_at: float) -> None:
-        if _private is not _MINT_KEY:
-            raise PermissionError(
-                "LegacyHostIntent cannot be constructed directly. It records a deliberate human "
-                "confirmation, and an automatic path must not be able to fabricate one."
-            )
-        self._token = secrets.token_urlsafe(32)
-        self._purpose = purpose
-        self._confirmed_by = confirmed_by
-        self._confirmed_at = confirmed_at
-
-    @property
-    def purpose(self) -> str:
-        return self._purpose
-
-    @property
-    def confirmed_by(self) -> str:
-        return self._confirmed_by
-
-    @property
-    def confirmed_at(self) -> float:
-        return self._confirmed_at
-
-
-_MINT_KEY = object()
-_LIVE_INTENTS: dict[str, tuple[str, float]] = {}   # token -> (purpose, confirmed_at)
-INTENT_TTL_SECONDS = 300.0
-
-LEGACY_HOST_WARNING = (
-    "Host execution with elevated risk: code from other people would run directly on this computer, "
-    "outside the protected area. Only continue if you know exactly what you are running."
-)
-
-
-class ConfirmationAuthority:
-    """The right to record a human confirmation. Installed once, by the host application.
-
-    `EM3A-IMPL-0002` / F-A2 is correct and worth stating plainly rather than patching around:
-    **inside one Python process there is no boundary against that same process.** Underscore names
-    are reachable, dictionaries are mutable, and any callable can return ``True``. A registry, a
-    closure or a name-mangled attribute all yield to ``import contract``.
-
-    So this class does not pretend to be a boundary. It does two honest things:
-
-    * **Out of the box, host execution is impossible.** No authority is installed, so minting fails
-      outright. A library user who never wires up an interactive front end cannot reach the legacy
-      path at all, whatever they pass.
-    * **Installing one is a deliberate, recorded act** by the application that owns the screen, and
-      the automatic selector, onboarding and fallback code are never handed the object.
-
-    The real boundary lives where EM-2 already put it: outside the process. A front end that can
-    prove a human acted — an OS confirmation, a signed UI attestation from a separate process —
-    supplies that proof to a backend, and the backend enforces it. Until such a backend exists
-    (EM-3C and later), what is here is defence in depth and is documented as exactly that.
-    """
-
-    __slots__ = ("name",)
-
-    def __init__(self, name: str) -> None:
-        if not name:
-            raise ValueError("an authority must name the front end that owns the confirmation")
-        self.name = name
-
-
-_authority: ConfirmationAuthority | None = None
-
-
-def install_confirmation_authority(authority: ConfirmationAuthority | None) -> None:
-    """Called once by the interactive application at start-up. Passing ``None`` removes it."""
-    global _authority
-    if authority is not None and type(authority) is not ConfirmationAuthority:
-        raise TypeError("an authority must be a ConfirmationAuthority")
-    _authority = authority
-
-
-def mint_legacy_host_intent(confirm: Any, *, purpose: str, confirmed_by: str,
-                            authority: ConfirmationAuthority | None = None,
-                            now: float | None = None) -> LegacyHostIntent:
-    """Record one confirmation, bound to one named operation.
-
-    Requires an installed :class:`ConfirmationAuthority` — without one, which is the default state
-    of a freshly imported library, this always refuses. ``purpose`` names the run or settings change
-    being confirmed, so a confirmation for one thing cannot be spent on another.
-    """
-    auth = authority if authority is not None else _authority
-    if type(auth) is not ConfirmationAuthority:
-        raise PermissionError(
-            "host execution cannot be confirmed here: no interactive front end is installed. "
-            "This is the default, and it is why an automatic path cannot reach the legacy mode."
-        )
-    if not callable(confirm):
-        raise PermissionError("an explicit interactive confirmation is required")
-    if not purpose:
-        raise PermissionError("a confirmation must name the operation it confirms")
-    if confirm(LEGACY_HOST_WARNING) is not True:
-        raise PermissionError("host execution was not confirmed")
-    stamp = time.monotonic() if now is None else now
-    intent = LegacyHostIntent(_MINT_KEY, purpose, confirmed_by, stamp)
-    _LIVE_INTENTS[intent._token] = (purpose, stamp)
-    return intent
-
-
-def _consume_intent(intent: object, purpose: str, now: float | None = None) -> None:
-    """Verify and burn a confirmation, or refuse. Everything unusual is a refusal, never a pass."""
-    if type(intent) is not LegacyHostIntent:
-        raise PermissionError(
-            "that is not a confirmation this gate issued; host execution needs a fresh confirmation "
-            "made by a person in advanced settings"
-        )
-    token = object.__getattribute__(intent, "_token")
-    entry = _LIVE_INTENTS.pop(token, None)
-    if entry is None:
-        raise PermissionError("this confirmation was already used, or was never issued")
-    bound_purpose, stamp = entry
-    if bound_purpose != purpose:
-        raise PermissionError(
-            f"this confirmation was given for {bound_purpose!r}, not for {purpose!r}"
-        )
-    elapsed = (time.monotonic() if now is None else now) - stamp
-    if elapsed > INTENT_TTL_SECONDS:
-        raise PermissionError("this confirmation is too old; confirm again if you still want this")
-
-
-# --------------------------------------------------------------------------------------
 # The single selection gate
 # --------------------------------------------------------------------------------------
 
@@ -516,7 +380,15 @@ class Placement(str, Enum):
     LOCAL = "local"                  # a container on this device
     SELF_HOSTED = "self_hosted"      # the customer's own gateway
     MANAGED = "managed"              # the AgentNode Sandbox
-    LEGACY_HOST = "legacy_host"      # unprotected; reachable only with a LegacyHostIntent
+
+    # There is deliberately NO host value. Three earlier designs modelled host execution as a
+    # placement behind a capability token, and three reviews took each of them apart, because inside
+    # one Python process there is no boundary against that same process: module state is mutable,
+    # underscore names are reachable, any callable returns True. Removing the value is stronger than
+    # guarding it — nothing can select what does not exist. The old sandbox.host_trust_policy setting
+    # lives on OUTSIDE this contract as an outdated compatibility feature, and 0.24.0 behaviour is
+    # unchanged; a future controlled host execution would need a real process and privilege boundary
+    # with an authenticated channel, which is not this.
 
 
 @dataclass(frozen=True)
@@ -540,17 +412,13 @@ class Environment:
     config_host_trust_policy: str = "curated_only"   # may say "default"; on its own it selects nothing
 
 
-def select_backend(env: Environment, *, intent: object | None = None,
-                   purpose: str = "") -> Selection | Refusal:
+def select_backend(env: Environment) -> Selection | Refusal:
     """The one authoritative gate. Every path — automatic, onboarding, fallback, retry — comes here.
 
-    Returns a :class:`Selection`, or a :class:`Refusal` that always carries a way out. It never
-    returns ``None`` and never falls through to host execution.
+    Returns a :class:`Selection` naming one of the three protected placements, or a
+    :class:`Refusal` that always carries a way out. It never returns ``None``, and it cannot return
+    host execution because :class:`Placement` has no such value.
     """
-    if intent is not None:
-        _consume_intent(intent, purpose)
-        return Selection(Placement.LEGACY_HOST, "On this device, unprotected")
-
     if env.organisation_backend:
         return Selection(Placement.SELF_HOSTED, "Your organisation's server",
                          consent_required=_needs_consent(env))

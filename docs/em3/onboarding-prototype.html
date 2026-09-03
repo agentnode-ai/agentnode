@@ -235,19 +235,15 @@
     </div>
 
     <div class="panel">
-      <details class="adv">
-        <summary>Advanced settings</summary>
-        <div class="risknote" style="margin-top:10px">
-          <strong>Host execution with elevated risk</strong>
-          <span>Code from other people would run directly on this computer, outside the protected area.
-            Only continue if you know exactly what you are running.</span>
-          <label class="check"><input type="checkbox" id="legacyChk">
-            <span>I understand and want to turn this on anyway.</span></label>
-          <button class="cta ghost" id="legacyBtn" disabled>Turn on unprotected execution</button>
-          <span id="legacyState" style="color:var(--ink-muted)">Off. Nothing on the normal path can turn this on.</span>
-        </div>
-      </details>
+      <h3>Where unprotected execution went</h3>
+      <p>An older setting can still run other people&rsquo;s code directly on this computer. It is
+        <strong>not part of this flow</strong>: nothing here selects it, nothing offers it as a way out,
+        and no screen calls it protected. It stays where it already is, marked as an outdated
+        compatibility setting, until it is migrated on its own.</p>
+      <p style="margin-top:10px">A genuinely controlled host execution would need a separate
+        privileged process with an authenticated channel &mdash; not a switch in a library.</p>
     </div>
+
   </aside>
 
   <footer>
@@ -307,8 +303,6 @@
     place: null,
     files: new Set(["Invoices 2026"]),
     consentFor: null,     // EM3A-IMPL-0001 / F-A3: consent is bound to WHERE it was given
-    legacy: false,        // armed for exactly one run
-    legacySpent: false,
     freeRunsLeft: 3
   };
 
@@ -342,7 +336,7 @@
 
   function placeLabel(p) {
     return { local: "On this device", managed: "AgentNode Sandbox",
-             self_hosted: "Your organisation's server", legacy_host: "On this device, unprotected" }[p];
+             self_hosted: "Your organisation's server" }[p];
   }
 
   function render() {
@@ -486,10 +480,8 @@
   function renderRunning() {
     screen.appendChild(pips(3));
     screen.appendChild(el("h2", "q", "Working…"));
-    const where = placeLabel(state.legacy ? "legacy_host" : (state.place || "managed"));
-    screen.appendChild(el("p", "help", state.legacy
-      ? "Running UNPROTECTED, directly on this computer"
-      : "Running in the protected area · " + where));
+    const where = placeLabel(state.place || "managed");
+    screen.appendChild(el("p", "help", "Running in the protected area · " + where));
     const bar = el("div", "bar"); const fill = el("i"); bar.appendChild(fill);
     screen.appendChild(bar);
     requestAnimationFrame(() => { fill.style.width = "100%"; });
@@ -505,12 +497,6 @@
     setTimeout(() => {
       if (state.step === 3) {
         if (state.place === "managed") state.freeRunsLeft = Math.max(0, state.freeRunsLeft - 1);
-        if (state.legacy) {          // the confirmation covered exactly this run
-          state.legacy = false;
-          state.legacySpent = true;
-          st.textContent = "Off again. That confirmation covered one run only.";
-          chk.disabled = false; chk.checked = false; btn.disabled = true;
-        }
         state.step = 4; render();
       }
     }, reduce ? 250 : 1500);
@@ -518,8 +504,7 @@
 
   function renderResult() {
     const wrap = el("div", "result");
-    const badge = el("span", "badge", state.legacySpent ? "Finished — unprotected" : "✓ Finished safely");
-    if (state.legacySpent) { badge.style.background = "var(--risk-soft)"; badge.style.color = "var(--risk)"; }
+    const badge = el("span", "badge", "✓ Finished safely");
     wrap.appendChild(badge);
     wrap.appendChild(el("h2", "q", "Here is your result"));
     const out = el("div", "out");
@@ -527,19 +512,18 @@
     out.appendChild(el("div", null, "12 invoices · 3 unpaid · €4,180 outstanding"));
     wrap.appendChild(out);
 
-    const where = placeLabel(state.legacySpent ? "legacy_host" : (state.place || "managed"));
-    const note = el("div", "banner " + (state.legacySpent ? "blocked" : "calm"));
-    note.appendChild(el("strong", null, state.legacySpent ? "This ran unprotected on your computer" : "Where this ran"));
-    note.appendChild(el("span", null, state.legacySpent
-      ? "You turned that on yourself in advanced settings."
-      : where + ". The agent never had access to anything you did not pick, and its workspace has been deleted."));
+    const where = placeLabel(state.place || "managed");
+    const note = el("div", "banner calm");
+    note.appendChild(el("strong", null, "Where this ran"));
+    note.appendChild(el("span", null, where +
+      ". The agent never had access to anything you did not pick, and its workspace has been deleted."));
     wrap.appendChild(note);
 
     wrap.appendChild(el("div", "spacer"));
     const again = el("button", "cta", "Save the result");
     again.type = "button";
     again.addEventListener("click", () => {
-      state.step = 1; state.place = null; state.consentFor = null; state.legacySpent = false; render();
+      state.step = 1; state.place = null; state.consentFor = null; render();
     });
     wrap.appendChild(again);
     screen.appendChild(wrap);
@@ -583,7 +567,7 @@
       ["ways out offered", d.kind === "refusal"
         ? String(d.actions.filter(a => ACTIONS[a].kind === "remediation").length) : "n/a"],
       ["consent needed", d.kind === "selection" ? String(d.consent_required) : "—"],
-      ["legacy host", state.legacy ? "armed for ONE run (confirmed by hand)" : "unreachable from here"],
+      ["host placement", "does not exist in this contract"],
       ["essential steps", "2 (budget: 3)"]
     ];
     for (const [k, v] of rows) {
@@ -601,17 +585,6 @@
     });
   }
 
-  // ---- the legacy mode: two deliberate acts, and it never touches the normal path
-  const chk = document.getElementById("legacyChk");
-  const btn = document.getElementById("legacyBtn");
-  const st = document.getElementById("legacyState");
-  chk.addEventListener("change", () => { btn.disabled = !chk.checked; });
-  btn.addEventListener("click", () => {
-    state.legacy = true;
-    st.textContent = "Confirmed for the NEXT run only. It switches itself off afterwards.";
-    btn.disabled = true; chk.checked = false; chk.disabled = true;
-    render();
-  });
 
   render();
 })();

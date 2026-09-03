@@ -9,7 +9,6 @@ import pytest
 
 from agentnode_sdk.sandbox.contract import (
     LEARN_MORE,
-    LEGACY_HOST_WARNING,
     SHOW_DETAILS,
     USE_MANAGED,
     Action,
@@ -30,12 +29,9 @@ from agentnode_sdk.sandbox.contract import (
     Scope,
     SecretRef,
     Selection,
-    LegacyHostIntent,
-    ConfirmationAuthority,
-    install_confirmation_authority,
     merge_policies,
-    mint_legacy_host_intent,
     negotiate,
+    register_remediation,
     select_backend,
 )
 
@@ -118,123 +114,96 @@ class TestEveryRefusalHasAWayOut:
 
 # ---------------------------------------------------------------- E6: legacy host mode
 
-class TestLegacyHostIsUnreachableFromAutomaticPaths:
-    """§7.1 / F-E6-HOST-EXCLUSION-BY-CONVENTION — an invariant, not a prose rule."""
+class TestThereIsNoHostPlacement:
+    """§7.1 v1.6 / Option b. Three token designs were taken apart in review; the property is now
+    structural instead of guarded, and these are the six acceptance obligations the plan names."""
 
-    @pytest.fixture(autouse=True)
-    def _interactive_front_end(self):
-        """Most tests here need a front end installed; the ones about its absence remove it."""
-        install_confirmation_authority(ConfirmationAuthority("test-front-end"))
-        yield
-        install_confirmation_authority(None)
+    def test_the_placement_enum_has_no_host_value(self):
+        assert {p.value for p in Placement} == {"local", "self_hosted", "managed"}
+        with pytest.raises(ValueError):
+            Placement("legacy_host")
+        with pytest.raises(ValueError):
+            Placement("host")
 
-    def test_a_freshly_imported_library_cannot_confirm_anything(self):
-        """EM3A-IMPL-0002 / F-A2: automatic code holding the public mint API still gets nothing,
-        because the default state of the module has no interactive front end at all."""
-        install_confirmation_authority(None)
-        with pytest.raises(PermissionError, match="no interactive front end is installed"):
-            mint_legacy_host_intent(lambda _w: True, purpose="run-1", confirmed_by="automatic")
+    def test_the_module_exposes_no_host_symbol_at_all(self):
+        """Bound 3: not part of the interface — checked by name, not by intention."""
+        from agentnode_sdk.sandbox import contract as C
+        leaked = [n for n in dir(C)
+                  if any(k in n.lower() for k in ("host", "legacy", "intent", "mint", "authority"))]
+        assert leaked == [], f"host-shaped names survive in the contract: {leaked}"
 
-    def test_an_automatic_caller_with_a_truthy_callback_still_gets_nothing(self):
-        install_confirmation_authority(None)
-        for callback in (lambda _w: True, lambda *_a, **_k: True, bool):
-            with pytest.raises(PermissionError):
-                mint_legacy_host_intent(callback, purpose="run-1", confirmed_by="automatic")
-
-    def test_an_authority_look_alike_is_rejected(self):
-        install_confirmation_authority(None)
-        class NotOne:
-            name = "pretend"
-        with pytest.raises(PermissionError, match="no interactive front end"):
-            mint_legacy_host_intent(lambda _w: True, purpose="run-1", confirmed_by="x",
-                                    authority=NotOne())
-        with pytest.raises(TypeError):
-            install_confirmation_authority(NotOne())
-
-    def test_the_token_cannot_be_constructed_directly(self):
-        with pytest.raises(PermissionError, match="cannot be constructed directly"):
-            LegacyHostIntent(object(), "purpose", "someone", 0.0)
-
-    def test_a_config_saying_default_still_never_selects_host(self):
-        env = Environment(local_runtime_ready=True, config_host_trust_policy="default")
-        out = select_backend(env)
-        assert isinstance(out, Selection)
-        assert out.placement is Placement.LOCAL
-
-    def test_no_environment_at_all_yields_host_without_a_token(self):
-        """Sweep the whole reachable environment space rather than one hand-picked case."""
+    def test_automatic_selection_is_total_over_the_environment_space(self):
+        """Bound 1: enumerate the WHOLE product space, not a sample, and assert every outcome is a
+        protected placement or a refusal with a way out."""
+        seen_placements, seen_refusals = set(), 0
+        combos = 0
         for local in (True, False):
             for mobile in (True, False):
                 for org in (None, "gateway.example"):
                     for managed in (True, False):
                         for online in (True, False):
-                            env = Environment(local_runtime_ready=local, is_mobile=mobile,
-                                              organisation_backend=org, managed_available=managed,
-                                              online=online, config_host_trust_policy="default")
-                            out = select_backend(env)
-                            if isinstance(out, Selection):
-                                assert out.placement is not Placement.LEGACY_HOST, env
+                            for policy in ("curated_only", "default", "none", "anything-else"):
+                                combos += 1
+                                env = Environment(local_runtime_ready=local, is_mobile=mobile,
+                                                  organisation_backend=org,
+                                                  managed_available=managed, online=online,
+                                                  config_host_trust_policy=policy)
+                                out = select_backend(env)
+                                if isinstance(out, Selection):
+                                    assert out.placement in (Placement.LOCAL, Placement.SELF_HOSTED,
+                                                             Placement.MANAGED), env
+                                    seen_placements.add(out.placement)
+                                else:
+                                    assert out.remediations, env
+                                    seen_refusals += 1
+        assert combos == 128
+        assert seen_placements == {Placement.LOCAL, Placement.SELF_HOSTED, Placement.MANAGED}
+        assert seen_refusals > 0
 
-    def test_declining_the_confirmation_mints_nothing(self):
-        with pytest.raises(PermissionError, match="not confirmed"):
-            mint_legacy_host_intent(lambda _warning: False, purpose="run-1", confirmed_by="user")
+    def test_no_extra_argument_can_ask_for_host(self):
+        """The gate takes exactly one parameter, so there is nothing to smuggle a capability in."""
+        import inspect
+        params = list(inspect.signature(select_backend).parameters)
+        assert params == ["env"], params
+        for weapon in (object(), "legacy_host", Placement.LOCAL, {"placement": "host"}, None):
+            with pytest.raises(TypeError):
+                select_backend(Environment(), weapon)          # positional
+            with pytest.raises(TypeError):
+                select_backend(Environment(), intent=weapon)   # the old keyword
 
-    def test_a_non_interactive_caller_cannot_mint(self):
-        with pytest.raises(PermissionError, match="interactive confirmation"):
-            mint_legacy_host_intent(None, purpose="run-1", confirmed_by="automatic")
+    def test_no_remediation_leads_to_the_host(self):
+        """Bound 2: every catalogue entry ends in a protected placement or in stopping."""
+        from agentnode_sdk.sandbox.contract import _REMEDIATION_CATALOGUE
+        allowed = {"use_managed", "install_local_runtime", "connect_own_server",
+                   "retry_when_online", "contact_support", "abandon_safely"}
+        assert set(_REMEDIATION_CATALOGUE) == allowed
+        for action in _REMEDIATION_CATALOGUE.values():
+            blob = (action.id + " " + action.label).lower()
+            for word in ("host", "unprotected", "unsafe", "legacy", "directly on"):
+                assert word not in blob, f"{action.id} points at host execution: {action.label!r}"
 
-    def test_the_confirmation_text_names_the_risk_in_plain_language(self):
-        assert "elevated risk" in LEGACY_HOST_WARNING
-        assert "directly on this computer" in LEGACY_HOST_WARNING
+    def test_a_host_shaped_remediation_cannot_be_registered(self):
+        with pytest.raises(ValueError, match="host execution"):
+            register_remediation(Action("run_on_host", "Run it on this computer anyway",
+                                        ActionKind.REMEDIATION))
 
-    def test_a_confirmed_token_selects_host_exactly_once(self):
-        intent = mint_legacy_host_intent(lambda _w: True, purpose="run-1", confirmed_by="user")
-        first = select_backend(Environment(local_runtime_ready=True), intent=intent, purpose="run-1")
-        assert isinstance(first, Selection) and first.placement is Placement.LEGACY_HOST
-        with pytest.raises(PermissionError, match="already used|never issued"):
-            select_backend(Environment(local_runtime_ready=True), intent=intent, purpose="run-1")
-
-    # ---- the adversarial half. EM3A-IMPL-0001 / F-A2 found the first version forgeable.
-
-    def test_a_look_alike_object_is_not_a_confirmation(self):
-        """The original defect: anything with a spend() method selected host execution."""
-        class LooksLikeOne:
-            def spend(self):
-                return "token"
-        with pytest.raises(PermissionError, match="not a confirmation this gate issued"):
-            select_backend(Environment(), intent=LooksLikeOne(), purpose="run-1")
-
-    def test_a_subclass_is_not_a_confirmation_either(self):
-        class Sneaky(LegacyHostIntent):
-            def __init__(self):
-                pass
-        with pytest.raises(PermissionError, match="not a confirmation this gate issued"):
-            select_backend(Environment(), intent=Sneaky(), purpose="run-1")
-
-    def test_reaching_for_the_mint_key_does_not_help(self):
-        """Even holding the module-private key yields an unregistered handle, and the gate checks
-        the registry rather than the object."""
-        from agentnode_sdk.sandbox import contract as C
-        forged = C.LegacyHostIntent(C._MINT_KEY, "run-1", "attacker", 0.0)
-        with pytest.raises(PermissionError, match="already used, or was never issued"):
-            select_backend(Environment(), intent=forged, purpose="run-1")
-
-    def test_a_confirmation_cannot_be_spent_on_a_different_operation(self):
-        intent = mint_legacy_host_intent(lambda _w: True, purpose="settings-change",
-                                         confirmed_by="user")
-        with pytest.raises(PermissionError, match="given for 'settings-change'"):
-            select_backend(Environment(), intent=intent, purpose="run-1")
-
-    def test_a_confirmation_expires(self):
-        from agentnode_sdk.sandbox.contract import _consume_intent, INTENT_TTL_SECONDS
-        intent = mint_legacy_host_intent(lambda _w: True, purpose="run-1", confirmed_by="user",
-                                         now=0.0)
-        with pytest.raises(PermissionError, match="too old"):
-            _consume_intent(intent, "run-1", now=INTENT_TTL_SECONDS + 1)
-
-    def test_a_confirmation_must_name_what_it_confirms(self):
-        with pytest.raises(PermissionError, match="name the operation"):
-            mint_legacy_host_intent(lambda _w: True, purpose="", confirmed_by="user")
+    def test_no_user_facing_string_promises_safety_for_a_legacy_path(self):
+        """Bound 4: safety words must never co-occur with a legacy or host marker."""
+        surfaces = []
+        for env in (Environment(), Environment(online=False), Environment(managed_available=False),
+                    Environment(local_runtime_ready=True), Environment(organisation_backend="g")):
+            out = select_backend(env)
+            surfaces.append(out.human_name if isinstance(out, Selection) else out.reason)
+            if isinstance(out, Refusal):
+                surfaces.extend(a.label for a in out.actions)
+        from agentnode_sdk.sandbox.contract import _REMEDIATION_CATALOGUE
+        surfaces.extend(a.label for a in _REMEDIATION_CATALOGUE.values())
+        safety = ("safe", "protected", "sandbox")
+        legacy = ("host", "legacy", "unprotected", "directly on this computer")
+        for text in surfaces:
+            low = text.lower()
+            if any(w in low for w in legacy):
+                assert not any(w in low for w in safety), f"safety claimed for a legacy path: {text!r}"
 
 
 # ---------------------------------------------------------------- E3: no silent cloud switch
@@ -412,7 +381,7 @@ class TestHumanFacingTextIsPartOfTheContract:
               "cap-drop", "namespace", "seccomp", "runc", "tmpfs")
 
     def test_no_jargon_reaches_the_person(self):
-        surfaces = [LEGACY_HOST_WARNING]
+        surfaces = []
         for env in (Environment(), Environment(online=False), Environment(managed_available=False)):
             out = select_backend(env)
             if isinstance(out, Refusal):
@@ -426,6 +395,14 @@ class TestHumanFacingTextIsPartOfTheContract:
             low = text.lower()
             for word in self.JARGON:
                 assert word not in low, f"{word!r} leaked into user-facing text: {text!r}"
+
+    def test_every_catalogue_label_is_plain_language_too(self):
+        """The jargon rule covers what the person can click, not only what they read."""
+        from agentnode_sdk.sandbox.contract import _REMEDIATION_CATALOGUE
+        for action in _REMEDIATION_CATALOGUE.values():
+            low = action.label.lower()
+            for word in self.JARGON:
+                assert word not in low, f"{word!r} in a button label: {action.label!r}"
 
     def test_a_refusal_states_that_nothing_ran(self):
         out = select_backend(Environment(managed_available=False))
