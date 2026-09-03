@@ -1,0 +1,173 @@
+<title>Score the ten-person test</title>
+<style>
+  :root{--paper:#F2F5F4;--surface:#fff;--surface-2:#E9EEEC;--ink:#14201D;--muted:#576763;
+        --line:#D6DEDB;--ok:#0E6B5A;--ok-soft:#DCEBE6;--bad:#9A4E2B;--bad-soft:#F6E7DF;}
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+        --paper:#0E1413;--surface:#171F1D;--surface-2:#202A28;--ink:#E7EDEB;--muted:#9AAAA5;
+        --line:#2A3634;--ok:#4FBFA5;--ok-soft:#16302B;--bad:#E0996F;--bad-soft:#33221A;}}
+  :root[data-theme="dark"]{--paper:#0E1413;--surface:#171F1D;--surface-2:#202A28;--ink:#E7EDEB;
+        --muted:#9AAAA5;--line:#2A3634;--ok:#4FBFA5;--ok-soft:#16302B;--bad:#E0996F;--bad-soft:#33221A;}
+  *,*::before,*::after{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);line-height:1.55;
+       font-family:ui-sans-serif,system-ui,"Segoe UI Variable Text","Segoe UI",-apple-system,Arial,sans-serif}
+  .wrap{max-width:760px;margin:0 auto;padding:clamp(20px,4vw,48px) clamp(16px,4vw,28px) 64px;
+        display:flex;flex-direction:column;gap:22px}
+  h1{font-size:clamp(1.4rem,1.1rem+1vw,1.9rem);margin:0;letter-spacing:-.015em}
+  p{margin:0;color:var(--muted)}
+  .drop{border:2px dashed var(--line);border-radius:16px;background:var(--surface);
+        padding:34px 22px;text-align:center;cursor:pointer}
+  .drop:hover,.drop.over{border-color:var(--ok);background:var(--ok-soft)}
+  .drop strong{display:block;font-size:1.05rem;color:var(--ink)}
+  .drop small{color:var(--muted)}
+  fieldset{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:14px 16px}
+  legend{padding:0 6px;font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  label.r{display:flex;gap:9px;align-items:baseline;cursor:pointer}
+  input[type=radio]{accent-color:var(--ok)}
+  .out{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px;
+       white-space:pre-wrap;font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:.88rem}
+  .verdict{border-radius:14px;padding:16px 18px;font-weight:650}
+  .verdict.pass{background:var(--ok-soft);color:var(--ok);border:1.5px solid var(--ok)}
+  .verdict.fail{background:var(--bad-soft);color:var(--bad);border:1.5px solid var(--bad)}
+  button{font:inherit}
+  :where(button,input,[tabindex]):focus-visible{outline:2.5px solid var(--ok);outline-offset:2px}
+  footer{color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padding-top:16px}
+</style>
+
+<div class="wrap">
+  <h1>Score the ten-person test</h1>
+  <p>Drop your finished <code>results.csv</code> below. Nothing is uploaded — this page reads the
+    file in your browser and never sends it anywhere. The thresholds are the ones fixed before
+    anyone was recruited, and this page cannot relax them.</p>
+
+  <fieldset>
+    <legend>Which gate</legend>
+    <label class="r"><input type="radio" name="gate" value="prototype" checked>
+      <span><b>The prototype walkthrough</b> — the EM-3A gate. No time bound.</span></label>
+    <label class="r"><input type="radio" name="gate" value="programme">
+      <span><b>The real secure run</b> — the whole-programme gate. Three minutes, excluding
+        downloads and model waiting.</span></label>
+  </fieldset>
+
+  <div class="drop" id="drop" tabindex="0" role="button" aria-describedby="hint">
+    <strong>Drop results.csv here</strong>
+    <small id="hint">or press Enter to choose a file. Drop your participant list instead and you get
+      its fingerprint.</small>
+    <input type="file" id="file" hidden accept=".csv,.txt">
+  </div>
+
+  <div id="verdict" hidden></div>
+  <div class="out" id="out" aria-live="polite">Waiting for a file.</div>
+
+  <footer>
+    A single “yes” to <em>“did a stranger’s code run unprotected on your computer?”</em> fails the whole
+    run, even at ten out of ten. Someone who finishes but feels exposed has not been given a product
+    they can trust. If the run fails, the finding is about the product — the thresholds do not move.
+  </footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const COHORT = 10, MUST_COMPLETE = 8, MAX_SECONDS = 180, MIN_ASSISTIVE = 2;
+  const IDS = Array.from({length: COHORT}, (_, i) => "U" + String(i + 1).padStart(2, "0"));
+  const out = document.getElementById("out");
+  const verdict = document.getElementById("verdict");
+  const drop = document.getElementById("drop");
+  const file = document.getElementById("file");
+  const gate = () => document.querySelector('input[name="gate"]:checked').value;
+
+  function parseCsv(text) {
+    const lines = text.replace(/\r/g, "").split("\n").filter(l => l.trim());
+    const head = lines.shift().split(",").map(s => s.trim());
+    return lines.map(l => {
+      const cells = l.split(",");
+      return Object.fromEntries(head.map((h, i) => [h, (cells[i] || "").trim()]));
+    }).filter(r => r.participant);
+  }
+
+  async function fingerprint(text) {
+    const lines = text.replace(/\r/g, "").split("\n").map(s => s.trim()).filter(Boolean);
+    const buf = new TextEncoder().encode(lines.join("\n"));
+    const hash = await crypto.subtle.digest("SHA-256", buf);
+    return { count: lines.length,
+             hex: [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, "0")).join("") };
+  }
+
+  function evaluate(rows) {
+    const g = gate(), notes = [], fails = [];
+    const ids = rows.map(r => r.participant);
+    if (ids.join(",") !== IDS.join(",")) {
+      fails.push(`the sheet must contain exactly ${IDS[0]}..${IDS[COHORT - 1]}, once each, in order — found ${ids.length} row(s)`);
+    }
+    const fp = (rows.find(r => r.roster_fingerprint) || {}).roster_fingerprint || "";
+    if (!fp) fails.push("no roster fingerprint: the list must be committed before the first session, so the ten cannot be chosen after the results are known");
+
+    const exposed = rows.filter(r => (r.q2_unprotected_belief || "").toLowerCase() === "yes")
+                        .map(r => r.participant);
+    if (exposed.length) fails.push(`${exposed.length} participant(s) believed a stranger's code ran unprotected on their computer: ${exposed.join(", ")}. A single "yes" fails the whole run.`);
+
+    const completed = [];
+    for (const r of rows) {
+      const secs = parseFloat(r.seconds_to_result || "0") || 0;
+      if ((r.moderator_intervened || "").toLowerCase() === "yes") {
+        notes.push(`${r.participant}: moderator intervened — counted as a failure of the measurement`);
+        continue;
+      }
+      if ((r.completed_unaided || "").toLowerCase() !== "yes") continue;
+      if (g === "programme" && (secs <= 0 || secs > MAX_SECONDS)) {
+        notes.push(`${r.participant}: finished in ${secs || "unrecorded"}s, over the ${MAX_SECONDS}s bound`);
+        continue;
+      }
+      completed.push(r.participant);
+    }
+    if (completed.length < MUST_COMPLETE) {
+      fails.push(`${completed.length} of ${COHORT} completed unaided${g === "programme" ? ` within ${MAX_SECONDS}s` : ""}; the threshold is ${MUST_COMPLETE}`);
+    }
+    const assistive = rows.filter(r => ["screenreader", "keyboard", "magnification"]
+                                  .includes((r.assistive || "").toLowerCase())).map(r => r.participant);
+    if (assistive.length < MIN_ASSISTIVE) {
+      fails.push(`only ${assistive.length} participant(s) used assistive technology; at least ${MIN_ASSISTIVE} of the ten must`);
+    }
+    const named = rows.filter(r => ["agentnode", "own_server", "local"]
+                               .includes((r.q1_where_did_it_run || "").toLowerCase())).length;
+
+    const lines = [];
+    notes.forEach(n => lines.push("  note  " + n));
+    if (notes.length) lines.push("");
+    lines.push(`  gate                         : ${g}`);
+    lines.push(`  completed unaided            : ${completed.length}/${COHORT}  (threshold ${MUST_COMPLETE})${g === "prototype" ? "  — no time bound at this gate" : ` within ${MAX_SECONDS}s`}`);
+    lines.push(`  believed themselves exposed  : ${exposed.length}  (threshold 0)`);
+    lines.push(`  using assistive technology   : ${assistive.length}  (minimum ${MIN_ASSISTIVE})`);
+    lines.push(`  named where it ran, reported : ${named}/${COHORT}`);
+    lines.push(`  roster fingerprint           : ${fp || "(missing)"}`);
+    if (fails.length) { lines.push(""); fails.forEach(f => lines.push("  FAIL  " + f)); }
+    out.textContent = lines.join("\n");
+
+    verdict.hidden = false;
+    verdict.className = "verdict " + (fails.length ? "fail" : "pass");
+    verdict.textContent = fails.length
+      ? `FAIL — ${fails.length} threshold(s) not met. Fix the product and run the ten again.`
+      : `PASS — the ${g} gate is evidenced. Hand over the sheet as the raw outcome; do not summarise it away.`;
+  }
+
+  async function handle(f) {
+    const text = await f.text();
+    if (/^\s*participant\s*,/i.test(text)) { evaluate(parseCsv(text)); return; }
+    const { count, hex } = await fingerprint(text);
+    verdict.hidden = true;
+    out.textContent =
+      `  participant list fingerprint\n\n  entries      : ${count}  (ten participants, the rest are your ordered reserves)\n` +
+      `  fingerprint  : ${hex}\n\n  Put the fingerprint in the roster_fingerprint column of results.csv.\n` +
+      `  Keep the list itself on this machine — it must not be committed, pasted or uploaded.`;
+  }
+
+  drop.addEventListener("click", () => file.click());
+  drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
+  file.addEventListener("change", () => file.files[0] && handle(file.files[0]));
+  ["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", e => { const f = e.dataTransfer.files[0]; if (f) handle(f); });
+  document.querySelectorAll('input[name="gate"]').forEach(r =>
+    r.addEventListener("change", () => { if (file.files[0]) handle(file.files[0]); }));
+})();
+</script>

@@ -65,19 +65,36 @@ class Action:
             raise ValueError("an action needs an id and a non-empty plain-language label")
 
 
+# Every remediation declares where it LEADS. That is what makes it a way out rather than a label:
+# the check below resolves each entry to a protected placement or to stopping, so an entry that
+# resolves to neither cannot exist.
+LEADS_TO_PROTECTED = "protected_placement"
+LEADS_TO_STOPPING = "stopping"
+
 _REMEDIATION_CATALOGUE: dict[str, Action] = {}
+_REMEDIATION_OUTCOME: dict[str, str] = {}
+_CATALOGUE_SEALED = False
 
 
-def register_remediation(action: Action) -> Action:
-    """Add an action the product actually implements.
+def _register_remediation(action: Action, leads_to: str) -> Action:
+    """Add an action the product actually implements. Module-private, and sealed after import.
 
     `EM3A-IMPL-0002` / F-A1: a caller could previously construct any `Action` and label it a
     remediation, so the invariant proved a *label* rather than a way out. Only catalogue entries
     count now, and the catalogue is what a front end has to implement — an id nobody wired up cannot
     be smuggled into a refusal to satisfy the check.
     """
+    if _CATALOGUE_SEALED:
+        raise RuntimeError(
+            "the remediation catalogue is sealed. It is fixed at import so a caller cannot invent a "
+            "way out that nothing implements, and cannot mutate one that exists."
+        )
     if action.kind is not ActionKind.REMEDIATION:
         raise ValueError("only remediation actions belong in the catalogue")
+    if leads_to not in (LEADS_TO_PROTECTED, LEADS_TO_STOPPING):
+        raise ValueError(
+            f"{action.id!r} must declare where it leads: a protected placement, or stopping"
+        )
     blob = (action.id + " " + action.label).lower()
     for word in ("host", "unprotected", "unsafe", "legacy", "directly on"):
         if word in blob:
@@ -86,19 +103,26 @@ def register_remediation(action: Action) -> Action:
                 "protected placement or in stopping; this contract has no host placement."
             )
     _REMEDIATION_CATALOGUE[action.id] = action
+    _REMEDIATION_OUTCOME[action.id] = leads_to
     return action
 
 
 # The catalogue. `learn_more` and `show_details` are informational ON PURPOSE: a link to
 # documentation is not a way out of a dead end, and counting it as one is how dead ends get shipped.
-USE_MANAGED = register_remediation(Action("use_managed", "Use the AgentNode Sandbox", ActionKind.REMEDIATION))
-INSTALL_LOCAL_RUNTIME = register_remediation(Action(
-    "install_local_runtime", "Set up secure execution on this device", ActionKind.REMEDIATION))
-CONNECT_OWN_SERVER = register_remediation(Action("connect_own_server", "Connect your own server", ActionKind.REMEDIATION))
-RETRY_WHEN_ONLINE = register_remediation(Action(
-    "retry_when_online", "Try again when you are back online", ActionKind.REMEDIATION))
-CONTACT_SUPPORT = register_remediation(Action("contact_support", "Get help", ActionKind.REMEDIATION))
-ABANDON_SAFELY = register_remediation(Action("abandon_safely", "Stop and keep nothing", ActionKind.REMEDIATION))
+USE_MANAGED = _register_remediation(
+    Action("use_managed", "Use the AgentNode Sandbox", ActionKind.REMEDIATION), LEADS_TO_PROTECTED)
+INSTALL_LOCAL_RUNTIME = _register_remediation(
+    Action("install_local_runtime", "Set up secure execution on this device", ActionKind.REMEDIATION),
+    LEADS_TO_PROTECTED)
+CONNECT_OWN_SERVER = _register_remediation(
+    Action("connect_own_server", "Connect your own server", ActionKind.REMEDIATION), LEADS_TO_PROTECTED)
+RETRY_WHEN_ONLINE = _register_remediation(
+    Action("retry_when_online", "Try again when you are back online", ActionKind.REMEDIATION),
+    LEADS_TO_PROTECTED)
+CONTACT_SUPPORT = _register_remediation(
+    Action("contact_support", "Get help", ActionKind.REMEDIATION), LEADS_TO_STOPPING)
+ABANDON_SAFELY = _register_remediation(
+    Action("abandon_safely", "Stop and keep nothing", ActionKind.REMEDIATION), LEADS_TO_STOPPING)
 LEARN_MORE = Action("learn_more", "What does this mean?", ActionKind.INFORMATIONAL)
 SHOW_DETAILS = Action("show_details", "Show technical details", ActionKind.INFORMATIONAL)
 
@@ -171,9 +195,8 @@ class Blocked:
             raise ValueError("a blocked state must carry a plain-language reason")
         if self.safe_exit is None:
             object.__setattr__(self, "safe_exit", ABANDON_SAFELY)
-        for a in (self.safe_exit, self.escalation):
-            if a.kind is not ActionKind.REMEDIATION:
-                raise ValueError("a blocked state's exit and escalation must both be executable")
+        _require_a_way_out((self.safe_exit,), "a blocked state's exit")
+        _require_a_way_out((self.escalation,), "a blocked state's escalation")
 
 
 @dataclass(frozen=True)
@@ -494,3 +517,9 @@ def negotiate(policy: SandboxPolicy, caps: BackendCapabilities) -> Refusal | Non
             first.actions,
         )
     return None
+
+
+# The catalogue is complete. Sealing it here is what makes a remediation a way out the product
+# implements, rather than a label a caller can mint: after import there is no way to add one, and
+# `Refusal` accepts nothing outside it.
+_CATALOGUE_SEALED = True

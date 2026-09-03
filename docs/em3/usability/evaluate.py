@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Apply the frozen thresholds to a completed results sheet. No judgement, no interpretation.
 
-    python evaluate.py results.csv
+    python evaluate.py results.csv --gate prototype     # the EM-3A walkthrough
+    python evaluate.py results.csv --gate programme     # the whole-programme real secure run
 
 The thresholds were fixed in EXEC_MODEL_PLAN_EM3.md §16 before anyone was recruited, and this script
 is deliberately unable to relax them: they are constants, and every refusal below names the rule it
@@ -17,7 +18,10 @@ from pathlib import Path
 
 COHORT = 10                 # exactly ten, fixed prospectively — not "ten or more"
 MUST_COMPLETE = 8           # 8 of exactly 10
-MAX_SECONDS = 180           # three minutes, excluding downloads and model latency
+# The frozen table applies the three-minute bound to the WHOLE-PROGRAMME real secure run. The EM-3A
+# prototype walkthrough has no time bound, and adding one would be a gate the protocol does not
+# contain — so the bound is applied only for --gate programme.
+MAX_SECONDS = 180           # programme gate only; excludes downloads and model latency
 MIN_ASSISTIVE = 2           # at least two participants using their own assistive technology
 IDS = [f"U{i:02d}" for i in range(1, COHORT + 1)]
 
@@ -35,10 +39,17 @@ def load(path: Path) -> list[dict]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
+    gate = None
+    args = [a for a in argv[1:]]
+    if "--gate" in args:
+        i = args.index("--gate")
+        if i + 1 < len(args):
+            gate = args[i + 1]
+            del args[i:i + 2]
+    if len(args) != 1 or gate not in ("prototype", "programme"):
         print(__doc__)
         return 2
-    path = Path(argv[1])
+    path = Path(args[0])
     if not path.is_file():
         print(f"  FAIL  no such file: {path}")
         return 2
@@ -90,14 +101,15 @@ def main(argv: list[str]) -> int:
             continue
         if not unaided:
             continue
-        if secs <= 0 or secs > MAX_SECONDS:
+        if gate == "programme" and (secs <= 0 or secs > MAX_SECONDS):
             print(f"  note  {pid}: finished in {secs or 'unrecorded'}s, over the {MAX_SECONDS}s bound")
             continue
         completed.append(pid)
 
     if len(completed) < MUST_COMPLETE:
-        fail(f"{len(completed)} of {COHORT} completed the first safe run unaided within "
-             f"{MAX_SECONDS}s; the threshold is {MUST_COMPLETE}")
+        bound = f" within {MAX_SECONDS}s" if gate == "programme" else ""
+        fail(f"{len(completed)} of {COHORT} completed unaided{bound}; the threshold is "
+             f"{MUST_COMPLETE}")
         problems += 1
 
     # ---- the accessibility participants are part of the same ten, not a softer group
@@ -112,8 +124,9 @@ def main(argv: list[str]) -> int:
     right = sum(1 for r in rows
                 if r["q1_where_did_it_run"].strip().lower() in ("agentnode", "own_server", "local"))
     print()
-    print(f"  completed unaided within {MAX_SECONDS}s : {len(completed)}/{COHORT} "
-          f"(threshold {MUST_COMPLETE})")
+    bound = f" within {MAX_SECONDS}s" if gate == "programme" else " (no time bound at this gate)"
+    print(f"  gate                                    : {gate}")
+    print(f"  completed unaided{bound} : {len(completed)}/{COHORT} (threshold {MUST_COMPLETE})")
     print(f"  believed themselves exposed             : {len(believed_exposed)} (threshold 0)")
     print(f"  using assistive technology              : {len(assistive)} (minimum {MIN_ASSISTIVE})")
     print(f"  named where it ran, reported only       : {right}/{COHORT}")
@@ -123,7 +136,7 @@ def main(argv: list[str]) -> int:
         print(f"  RESULT: FAIL — {problems} threshold(s) not met.")
         print("  The thresholds do not move. Fix the product and run the ten again.")
         return 1
-    print("  RESULT: PASS — the usability half of EM-3A is evidenced.")
+    print(f"  RESULT: PASS — the {gate} gate is evidenced.")
     print("  Hand over this sheet as the raw outcome; do not summarise it away.")
     return 0
 

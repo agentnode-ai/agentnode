@@ -31,7 +31,6 @@ from agentnode_sdk.sandbox.contract import (
     Selection,
     merge_policies,
     negotiate,
-    register_remediation,
     select_backend,
 )
 
@@ -182,13 +181,52 @@ class TestThereIsNoHostPlacement:
             for word in ("host", "unprotected", "unsafe", "legacy", "directly on"):
                 assert word not in blob, f"{action.id} points at host execution: {action.label!r}"
 
-    def test_a_host_shaped_remediation_cannot_be_registered(self):
-        with pytest.raises(ValueError, match="host execution"):
-            register_remediation(Action("run_on_host", "Run it on this computer anyway",
-                                        ActionKind.REMEDIATION))
+    def test_every_catalogue_entry_resolves_to_a_protected_placement_or_to_stopping(self):
+        """Bound 2, as behaviour rather than wording: each entry DECLARES where it leads, and the
+        only two destinations are a protected placement or stopping. Nothing resolves to a host."""
+        from agentnode_sdk.sandbox.contract import (_REMEDIATION_CATALOGUE, _REMEDIATION_OUTCOME,
+                                                    LEADS_TO_PROTECTED, LEADS_TO_STOPPING)
+        assert set(_REMEDIATION_OUTCOME) == set(_REMEDIATION_CATALOGUE)
+        for aid, outcome in _REMEDIATION_OUTCOME.items():
+            assert outcome in (LEADS_TO_PROTECTED, LEADS_TO_STOPPING), aid
+        # and the protected ones name placements that exist in this contract
+        protected = {a for a, o in _REMEDIATION_OUTCOME.items() if o == LEADS_TO_PROTECTED}
+        assert protected == {"use_managed", "install_local_runtime", "connect_own_server",
+                             "retry_when_online"}
+
+    def test_the_catalogue_is_sealed_after_import(self):
+        """Bound 2: a caller cannot invent a way out that nothing implements."""
+        from agentnode_sdk.sandbox import contract as C
+        with pytest.raises(RuntimeError, match="sealed"):
+            C._register_remediation(Action("run_on_host", "Run it on this computer anyway",
+                                           ActionKind.REMEDIATION), C.LEADS_TO_PROTECTED)
+
+    def test_no_concrete_backend_reports_a_host_placement(self):
+        """Bound 3, as behaviour: walk the real SandboxBackend implementations in the package."""
+        import inspect
+        from agentnode_sdk.sandbox.backend import SandboxBackend
+        import agentnode_sdk.sandbox.container_backend as cb
+        found = [obj for _n, obj in inspect.getmembers(cb, inspect.isclass)
+                 if issubclass(obj, SandboxBackend) and obj is not SandboxBackend]
+        assert found, "no concrete backend found to inspect"
+        for cls in found:
+            src = inspect.getsource(cls).lower()
+            for word in ("legacy_host", "legacyhostintent", "placement.legacy"):
+                assert word not in src, f"{cls.__name__} mentions {word}"
+            assert not hasattr(cls, "placement"), f"{cls.__name__} declares a placement"
+
+    def test_the_shipped_policy_is_documented_as_what_it_is(self):
+        """Bound 5, read from the config description rather than trusted as prose."""
+        from agentnode_sdk.config import CONFIG_DESCRIPTIONS
+        text = CONFIG_DESCRIPTIONS["sandbox.host_trust_policy"].lower()
+        assert "host" in text
+        assert "sandboxed" in text or "fail-closed" in text
+        # it must not advertise host execution as safe or protected
+        assert "safe" not in text
 
     def test_no_user_facing_string_promises_safety_for_a_legacy_path(self):
-        """Bound 4: safety words must never co-occur with a legacy or host marker."""
+        """Bound 4: safety words must never co-occur with a legacy or host marker — in the contract
+        AND in the prototype, because the person reads the prototype."""
         surfaces = []
         for env in (Environment(), Environment(online=False), Environment(managed_available=False),
                     Environment(local_runtime_ready=True), Environment(organisation_backend="g")):
@@ -200,6 +238,24 @@ class TestThereIsNoHostPlacement:
         surfaces.extend(a.label for a in _REMEDIATION_CATALOGUE.values())
         safety = ("safe", "protected", "sandbox")
         legacy = ("host", "legacy", "unprotected", "directly on this computer")
+        # the prototype's user-facing strings too: every quoted string the script can show
+        from pathlib import Path
+        import re as _re
+        proto = Path(__file__).resolve().parents[2] / "docs" / "em3" / "onboarding-prototype.html"
+        assert proto.is_file(), f"the prototype must be reviewable from the tests: {proto}"
+        html = proto.read_text(encoding="utf-8")
+        checked_prototype = 0
+        for line in html.splitlines():
+            low = line.lower()
+            if any(w in low for w in legacy) and "//" not in low.split("<")[0][:4]:
+                checked_prototype += 1
+                # a line may name the legacy mode only to say it is NOT part of this flow
+                if any(w in low for w in safety):
+                    assert ("not part of" in low or "no host placement" in low
+                            or "does not exist" in low or "unprotected execution" in low), (
+                        f"the prototype claims safety near a legacy marker: {line.strip()[:120]!r}")
+        assert checked_prototype > 0, "the prototype scan found nothing to check"
+
         for text in surfaces:
             low = text.lower()
             if any(w in low for w in legacy):
