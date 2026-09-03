@@ -227,7 +227,8 @@
       <details class="adv">
         <summary>What the system decided</summary>
         <dl class="kv" id="dbg"></dl>
-        <p style="margin-top:12px">Mirrors <span class="mono">select_backend()</span> in
+        <p style="margin-top:12px">Two screens ask the person for a decision; the third is progress and
+          does not count as a step under the frozen definition. Mirrors <span class="mono">select_backend()</span> in
           <span class="mono">sandbox/contract.py</span>. A refusal that reaches this screen without a
           usable next step is a contract violation, not a design mistake.</p>
       </details>
@@ -347,7 +348,8 @@
   function render() {
     const d = selectBackend(env());
     screen.replaceChildren();
-    ctx.textContent = state.step === 4 ? "Finished" : "Step " + Math.min(state.step, 3) + " of 3";
+    ctx.textContent = state.step === 4 ? "Finished"
+      : state.step === 3 ? "Working" : "Step " + state.step + " of 2";
 
     if (d.kind === "refusal" && state.step < 4) { renderRefusal(d); }
     else if (state.step === 1) { renderStep1(d); }
@@ -358,14 +360,16 @@
     renderDebug(d);
   }
 
+  // Two DECISION screens, then progress. The frozen definition counts only screens where the
+  // person must decide or provide something, so progress and success are not steps.
   function pips(n) {
     const row = el("div", "stepline");
-    for (let i = 1; i <= 3; i++) {
+    for (let i = 1; i <= 2; i++) {
       const p = el("span", "pip");
       p.dataset.on = i <= n ? "1" : "0";
       row.appendChild(p);
     }
-    row.appendChild(el("em", null, "Step " + n + " of 3"));
+    row.appendChild(el("em", null, n <= 2 ? ("Step " + n + " of 2") : "Working"));
     return row;
   }
 
@@ -580,7 +584,7 @@
         ? String(d.actions.filter(a => ACTIONS[a].kind === "remediation").length) : "n/a"],
       ["consent needed", d.kind === "selection" ? String(d.consent_required) : "—"],
       ["legacy host", state.legacy ? "armed for ONE run (confirmed by hand)" : "unreachable from here"],
-      ["essential steps", "3"]
+      ["essential steps", "2 (budget: 3)"]
     ];
     for (const [k, v] of rows) {
       dbg.appendChild(el("dt", null, k));

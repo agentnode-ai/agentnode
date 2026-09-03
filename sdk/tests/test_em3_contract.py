@@ -31,6 +31,8 @@ from agentnode_sdk.sandbox.contract import (
     SecretRef,
     Selection,
     LegacyHostIntent,
+    ConfirmationAuthority,
+    install_confirmation_authority,
     merge_policies,
     mint_legacy_host_intent,
     negotiate,
@@ -42,6 +44,17 @@ from agentnode_sdk.sandbox.contract import (
 
 class TestEveryRefusalHasAWayOut:
     """§3.3 / F-E2-OPTIONAL-REMEDIATION — cardinality zero must be unrepresentable."""
+
+    def test_a_home_made_action_labelled_remediation_does_not_count(self):
+        """EM3A-IMPL-0002 / F-A1: the invariant proved a label, not a way out."""
+        pretend = Action("teleport", "Do something nobody implemented", ActionKind.REMEDIATION)
+        with pytest.raises(ValueError, match="not a registered one"):
+            Refusal("x", "Something went wrong.", (pretend,))
+
+    def test_an_impostor_reusing_a_real_id_does_not_count_either(self):
+        impostor = Action("use_managed", "Use the AgentNode Sandbox", ActionKind.REMEDIATION)
+        with pytest.raises(ValueError, match="not a registered one"):
+            Refusal("x", "Something went wrong.", (impostor,))
 
     def test_a_refusal_without_any_action_cannot_be_built(self):
         with pytest.raises(ValueError, match="at least one executable remediation"):
@@ -94,6 +107,36 @@ class TestEveryRefusalHasAWayOut:
 
 class TestLegacyHostIsUnreachableFromAutomaticPaths:
     """§7.1 / F-E6-HOST-EXCLUSION-BY-CONVENTION — an invariant, not a prose rule."""
+
+    @pytest.fixture(autouse=True)
+    def _interactive_front_end(self):
+        """Most tests here need a front end installed; the ones about its absence remove it."""
+        install_confirmation_authority(ConfirmationAuthority("test-front-end"))
+        yield
+        install_confirmation_authority(None)
+
+    def test_a_freshly_imported_library_cannot_confirm_anything(self):
+        """EM3A-IMPL-0002 / F-A2: automatic code holding the public mint API still gets nothing,
+        because the default state of the module has no interactive front end at all."""
+        install_confirmation_authority(None)
+        with pytest.raises(PermissionError, match="no interactive front end is installed"):
+            mint_legacy_host_intent(lambda _w: True, purpose="run-1", confirmed_by="automatic")
+
+    def test_an_automatic_caller_with_a_truthy_callback_still_gets_nothing(self):
+        install_confirmation_authority(None)
+        for callback in (lambda _w: True, lambda *_a, **_k: True, bool):
+            with pytest.raises(PermissionError):
+                mint_legacy_host_intent(callback, purpose="run-1", confirmed_by="automatic")
+
+    def test_an_authority_look_alike_is_rejected(self):
+        install_confirmation_authority(None)
+        class NotOne:
+            name = "pretend"
+        with pytest.raises(PermissionError, match="no interactive front end"):
+            mint_legacy_host_intent(lambda _w: True, purpose="run-1", confirmed_by="x",
+                                    authority=NotOne())
+        with pytest.raises(TypeError):
+            install_confirmation_authority(NotOne())
 
     def test_the_token_cannot_be_constructed_directly(self):
         with pytest.raises(PermissionError, match="cannot be constructed directly"):

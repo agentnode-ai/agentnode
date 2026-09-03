@@ -67,20 +67,44 @@ class Action:
             raise ValueError("an action needs an id and a non-empty plain-language label")
 
 
+_REMEDIATION_CATALOGUE: dict[str, Action] = {}
+
+
+def register_remediation(action: Action) -> Action:
+    """Add an action the product actually implements.
+
+    `EM3A-IMPL-0002` / F-A1: a caller could previously construct any `Action` and label it a
+    remediation, so the invariant proved a *label* rather than a way out. Only catalogue entries
+    count now, and the catalogue is what a front end has to implement — an id nobody wired up cannot
+    be smuggled into a refusal to satisfy the check.
+    """
+    if action.kind is not ActionKind.REMEDIATION:
+        raise ValueError("only remediation actions belong in the catalogue")
+    _REMEDIATION_CATALOGUE[action.id] = action
+    return action
+
+
 # The catalogue. `learn_more` and `show_details` are informational ON PURPOSE: a link to
 # documentation is not a way out of a dead end, and counting it as one is how dead ends get shipped.
-USE_MANAGED = Action("use_managed", "Use the AgentNode Sandbox", ActionKind.REMEDIATION)
-INSTALL_LOCAL_RUNTIME = Action("install_local_runtime", "Set up secure execution on this device",
-                               ActionKind.REMEDIATION)
-CONNECT_OWN_SERVER = Action("connect_own_server", "Connect your own server", ActionKind.REMEDIATION)
-RETRY_WHEN_ONLINE = Action("retry_when_online", "Try again when you are back online",
-                           ActionKind.REMEDIATION)
-CONTACT_SUPPORT = Action("contact_support", "Get help", ActionKind.REMEDIATION)
+USE_MANAGED = register_remediation(Action("use_managed", "Use the AgentNode Sandbox", ActionKind.REMEDIATION))
+INSTALL_LOCAL_RUNTIME = register_remediation(Action(
+    "install_local_runtime", "Set up secure execution on this device", ActionKind.REMEDIATION))
+CONNECT_OWN_SERVER = register_remediation(Action("connect_own_server", "Connect your own server", ActionKind.REMEDIATION))
+RETRY_WHEN_ONLINE = register_remediation(Action(
+    "retry_when_online", "Try again when you are back online", ActionKind.REMEDIATION))
+CONTACT_SUPPORT = register_remediation(Action("contact_support", "Get help", ActionKind.REMEDIATION))
+ABANDON_SAFELY = register_remediation(Action("abandon_safely", "Stop and keep nothing", ActionKind.REMEDIATION))
 LEARN_MORE = Action("learn_more", "What does this mean?", ActionKind.INFORMATIONAL)
 SHOW_DETAILS = Action("show_details", "Show technical details", ActionKind.INFORMATIONAL)
 
 
 def _require_a_way_out(actions: Sequence[Action], what: str) -> tuple[Action, ...]:
+    for a in actions:
+        if a.kind is ActionKind.REMEDIATION and _REMEDIATION_CATALOGUE.get(a.id) is not a:
+            raise ValueError(
+                f"{what} carries an action labelled 'remediation' that is not a registered one "
+                f"({a.id!r}). A label is not a way out; register the action the product implements."
+            )
     if not any(a.kind is ActionKind.REMEDIATION for a in actions):
         raise ValueError(
             f"{what} must offer at least one executable remediation. "
@@ -122,13 +146,14 @@ class Blocked:
 
     code: str
     reason: str
-    safe_exit: Action = field(default=Action("abandon_safely", "Stop and keep nothing",
-                                             ActionKind.REMEDIATION))
+    safe_exit: Action = field(default=None)  # set in __post_init__ to the registered exit
     escalation: Action = CONTACT_SUPPORT
 
     def __post_init__(self) -> None:
         if not self.reason.strip():
             raise ValueError("a blocked state must carry a plain-language reason")
+        if self.safe_exit is None:
+            object.__setattr__(self, "safe_exit", ABANDON_SAFELY)
         for a in (self.safe_exit, self.escalation):
             if a.kind is not ActionKind.REMEDIATION:
                 raise ValueError("a blocked state's exit and escalation must both be executable")
@@ -382,18 +407,62 @@ LEGACY_HOST_WARNING = (
 )
 
 
-def mint_legacy_host_intent(confirm: Any, *, purpose: str, confirmed_by: str,
-                            now: float | None = None) -> LegacyHostIntent:
-    """Mint one confirmation, bound to one named operation, from an interactive flow only.
+class ConfirmationAuthority:
+    """The right to record a human confirmation. Installed once, by the host application.
 
-    ``purpose`` names the run or settings change being confirmed, so a confirmation for one thing
-    cannot be spent on another. ``confirm`` must be a callable that shows
-    :data:`LEGACY_HOST_WARNING` and returns ``True`` only for an explicit human confirmation.
+    `EM3A-IMPL-0002` / F-A2 is correct and worth stating plainly rather than patching around:
+    **inside one Python process there is no boundary against that same process.** Underscore names
+    are reachable, dictionaries are mutable, and any callable can return ``True``. A registry, a
+    closure or a name-mangled attribute all yield to ``import contract``.
 
-    The gate rejects anything that is not a registered, unspent, unexpired token, so an automatic
-    caller cannot get past it by imitating the object, by reaching for the mint key, or by keeping an
-    old handle around.
+    So this class does not pretend to be a boundary. It does two honest things:
+
+    * **Out of the box, host execution is impossible.** No authority is installed, so minting fails
+      outright. A library user who never wires up an interactive front end cannot reach the legacy
+      path at all, whatever they pass.
+    * **Installing one is a deliberate, recorded act** by the application that owns the screen, and
+      the automatic selector, onboarding and fallback code are never handed the object.
+
+    The real boundary lives where EM-2 already put it: outside the process. A front end that can
+    prove a human acted — an OS confirmation, a signed UI attestation from a separate process —
+    supplies that proof to a backend, and the backend enforces it. Until such a backend exists
+    (EM-3C and later), what is here is defence in depth and is documented as exactly that.
     """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        if not name:
+            raise ValueError("an authority must name the front end that owns the confirmation")
+        self.name = name
+
+
+_authority: ConfirmationAuthority | None = None
+
+
+def install_confirmation_authority(authority: ConfirmationAuthority | None) -> None:
+    """Called once by the interactive application at start-up. Passing ``None`` removes it."""
+    global _authority
+    if authority is not None and type(authority) is not ConfirmationAuthority:
+        raise TypeError("an authority must be a ConfirmationAuthority")
+    _authority = authority
+
+
+def mint_legacy_host_intent(confirm: Any, *, purpose: str, confirmed_by: str,
+                            authority: ConfirmationAuthority | None = None,
+                            now: float | None = None) -> LegacyHostIntent:
+    """Record one confirmation, bound to one named operation.
+
+    Requires an installed :class:`ConfirmationAuthority` — without one, which is the default state
+    of a freshly imported library, this always refuses. ``purpose`` names the run or settings change
+    being confirmed, so a confirmation for one thing cannot be spent on another.
+    """
+    auth = authority if authority is not None else _authority
+    if type(auth) is not ConfirmationAuthority:
+        raise PermissionError(
+            "host execution cannot be confirmed here: no interactive front end is installed. "
+            "This is the default, and it is why an automatic path cannot reach the legacy mode."
+        )
     if not callable(confirm):
         raise PermissionError("an explicit interactive confirmation is required")
     if not purpose:
