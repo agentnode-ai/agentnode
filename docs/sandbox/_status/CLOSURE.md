@@ -1,0 +1,188 @@
+# Sandbox documentation track — closure status
+
+**TECHNICAL DOCUMENTATION COMPLETE — human usability and remaining platform validation pending.**
+
+Recorded against the branch state of 2026-09-03. This file is a status record rather than a
+documentation page: it is not part of the reader-facing set and is not checked by
+`_checks/check_docs.py`.
+
+## What is being closed
+
+| | |
+|---|---|
+| branch | `docs/sandbox-track` |
+| documentation anchor | `9d3adf7f6115677bd78fa88dee7d1e294172501c` |
+| tree of that commit | `2dd7aa2ca6eb69a48119cfa9507f5db2583d570a` |
+| base | `main 8b83059` |
+| product source changed | none |
+| merged | no |
+| published | no |
+
+The anchor above is the commit carrying the reviewed documentation. **This status file is committed
+after it and therefore names that commit rather than itself** — a commit cannot contain its own
+hash. The per-file hashes below are the authoritative anchors for the content.
+
+## The three separate assessments
+
+A missing proof in one category does not turn a passed category into a defect. These answer three
+different questions and are kept apart deliberately.
+
+| category | question | status |
+|---|---|---|
+| **TECHNICAL_CONTENT** | does the documentation agree with the code, the contract and the security model? | **COMPLETE** — six criteria passed |
+| **PLATFORM_VALIDATION** | were the described steps actually carried out on each platform? | **PARTIAL** — Linux only; everything else is source-verified or does not exist |
+| **HUMAN_USABILITY** | have real non-technical people completed the flow? | **DEFERRED_EXTERNAL_VALIDATION** — no participants; not simulated, not inferred |
+
+## TECHNICAL_CONTENT — the six criteria that passed
+
+Verdict `SANDBOX-DOCS-0008`, profile `sandbox-docs-r8`, against the anchor above:
+
+| criterion | result |
+|---|---|
+| `D1-MATCHES-THE-CODE` | PASS |
+| `D2-AVAILABILITY-IS-HONEST` | PASS |
+| `D3-NO-UNSAFE-INSTRUCTION` | PASS |
+| `D4-NO-FALSE-SECURITY-CLAIM` | PASS |
+| `D6-CONSISTENT-WITH-THE-CONTRACT` | PASS |
+| `D7-VERDICT` | PASS |
+
+Eight review rounds, twenty-one findings, every one corrected except the last, which is recorded
+below as what it is. Two corrections changed what the product says about itself: the
+destination-limited network was marked inert on the strength of a stale docstring while two run
+paths call it, and a consented key does reach the sandboxed program rather than staying outside it.
+
+## HUMAN_USABILITY — DEFERRED_EXTERNAL_VALIDATION
+
+`D5-BEGINNER-PATH-WORKS` was returned NOT_EVIDENCED. That is the absence of an external result, not
+a defect found in the text. Ten people and a facilitator produce it; nothing else does.
+
+**No simulated study will be run.** No automated browser test, no persona, no model, and no reading
+of the pages by their author counts as a substitute. Until real sessions happen, no page, blog draft
+or marketing line may say the onboarding is validated by beginners, easy, or quick.
+
+The test pack is preserved **unchanged** on branch `em3a/sandbox-contract`, tip
+`3fbb71c24838bfcb8c47cdb45b36abb0e495e28a`:
+
+| file | bytes | sha256 |
+|---|---|---|
+| `docs/em3/usability/README.md` | 3,672 | `5a59d3dc0b99ac3aeaa536772651e18eceb33c1c4e883d2ae8cf54001cfaf409` |
+| `docs/em3/usability/accessibility.md` | 1,470 | `5b07fdb5358061b500e591f0bb175c31adfee670aa36def6c1c610ea80a2cb98` |
+| `docs/em3/usability/commit_roster.py` | 1,806 | `bbfa8a47a22a9e0157f9156e0c95ce2938e06fb698b923acda55ca42c594233c` |
+| `docs/em3/usability/evaluate.html` | 10,073 | `136c988c5bba774493529a27e3a310518145662d4f8b79b296140deaf3105900` |
+| `docs/em3/usability/evaluate.py` | 6,510 | `1a56f6f65cdaaf043edbb358ee8494b46eb0516813177d9ddd60907c9260f4c3` |
+| `docs/em3/usability/results-guide.md` | 1,450 | `2087cc6259d07826576e6a20d1c0a21b5f0e58b9a6794ca0ca7d26aeeb0a8458` |
+| `docs/em3/usability/results-template.csv` | 484 | `7042155ddbf12f206dff8a3f00e7a7063d101e27152b27fb6bd4d58816f925d5` |
+| `docs/em3/usability/screening.md` | 1,654 | `c43d94b044ff15959bca7b98d578f5b8128405a5998f0142d7b1ef259faf479b` |
+| `docs/em3/usability/session-script.md` | 2,977 | `18f905116acb32348e6948762bf0d71832579a944fdc74d0f6e89facdb399182` |
+
+## PLATFORM_VALIDATION
+
+Four statuses, and nothing is promoted by expectation:
+
+* **tested** — the steps were executed there and the result recorded;
+* **source-verified** — the code path was read and does not branch on that platform, and nobody has
+  executed it there;
+* **not tested** — neither;
+* **not available** — it does not exist in the code, so there is nothing to test.
+
+| platform or path | status | what backs it |
+|---|---|---|
+| Linux, ubuntu-24.04 (CI) | **tested** | run `33633469871`, five lanes with per-test outcomes; run `33654001890`, artefact smoke against the installed wheel |
+| Linux desktop | **tested** | same code path, same runs |
+| Linux server, headless and multi-user | **source-verified** | identical path; that deployment shape has not been exercised as such |
+| Windows + Docker Desktop | **source-verified** | the runtime probe does not branch on the operating system. One hand observation exists of the *refusal* path with no runtime installed, which is not a sandbox run |
+| Windows + WSL2 | **source-verified** | same probe; the WSL2/Windows split changes which PATH is searched and has not been exercised |
+| macOS | **source-verified** | same probe; no macOS machine is in CI |
+| Phone or tablet | **not available** | no mobile client and no remote backend exist |
+| Self-hosted remote sandbox | **not available** | no remote backend class, no connector |
+| Managed AgentNode Sandbox | **not available** | no managed backend, no service |
+
+Capability rows, same vocabulary:
+
+| what | status |
+|---|---|
+| tool packs in a container | tested |
+| MCP servers in a container | tested |
+| community agents in a container | tested |
+| refusal when no runtime exists | tested |
+| destination-limited network (`egress`) | tested |
+| secrets passed by name | source-verified — live in both runners, no end-to-end run recorded |
+| a community agent's own entrypoint on the host | not available — removed deliberately, and the source records the refusal |
+| credential broker | not available |
+| backend conformance suite | not available — this is EM-3B |
+| EM-3 selection contract | not available on `main`; under review in pull request #115 |
+
+The generated matrix in `availability.md` uses its own five-word vocabulary. The crosswalk is exact:
+*available, tested* = **tested**; *available, not tested here* = **source-verified**; *planned* and
+*removed* = **not available**; *experimental* would be **source-verified**, and no row currently
+carries it.
+
+## Inventory
+
+### Documentation pages (12)
+
+| file | bytes | sha256 |
+|---|---|---|
+| `docs/sandbox/README.md` | 2,584 | `9be589620372bd6f0d06616a5ff5be01e8e9195828cb8f8c7ccf3f9ebe8920a3` |
+| `docs/sandbox/admin-policy.md` | 4,193 | `b1dd53e07e168402c2802930c6d0d2fd0481f7e1ab711ca6624153138b220549` |
+| `docs/sandbox/availability.md` | 12,148 | `40f2069c7350a741042e81e5951bef1aced3e802009941e10a4e861629f148d8` |
+| `docs/sandbox/choose.md` | 3,008 | `afee2b76ca2543aebf26742a6c11f643b7c6c4fb888e5d64387eb2064327b159` |
+| `docs/sandbox/managed.md` | 2,509 | `3e241c4f325521fd9c5f9ce7e21affb4fda1eb6a896e6325f51c0009c19e8c51` |
+| `docs/sandbox/mobile.md` | 1,539 | `106840d9b2b72b02d07bb3657633afba9a34918d1327ccad06dc173c8d80b2b1` |
+| `docs/sandbox/security-model.md` | 7,952 | `9f88d89e023661625fb83264122b07e399851d027527fcbfea55c89b99b3d698` |
+| `docs/sandbox/self-hosted.md` | 5,427 | `29553c0869b5fb8a93aa1027296a3daf537298adcc502d409d38f9fa5b006d11` |
+| `docs/sandbox/setup-contract.md` | 4,475 | `c969701f63ff725bfca308cd7b739dd6d8fea395e2abceeffdb473338f60b0cf` |
+| `docs/sandbox/setup-local.md` | 6,006 | `8f14c226a4ecb842d10e75fea46be519a3ad8059b7272de77fd9efa493dd81d9` |
+| `docs/sandbox/troubleshooting.md` | 6,166 | `00093e99050274851570affd9ac98326e0c2d59642af3ef3f0c5b1fd4b0451de` |
+| `docs/sandbox/understand.md` | 3,426 | `655bcad194187f31134da0d2dcc5d5cfe392c6777399dc06a6370e08edba6b5b` |
+
+### Generators and extracted facts
+
+| file | bytes | sha256 |
+|---|---|---|
+| `docs/sandbox/_checks/build_matrix.py` | 18,660 | `b19dc042f7d985bca3b8e40c44ec1ae1d0a27dfc9bb51027c93713a0e1228363` |
+| `docs/sandbox/_checks/check_docs.py` | 21,147 | `a56cdb9f706be17cf5c8cb5851485283a54bf1458d1d97e9a43a1743fcfb94cb` |
+| `docs/sandbox/_checks/extract_facts.py` | 10,376 | `e3d487795ba2b7a71677802661879d417ecfa738bed68771bd535a8a63b18da6` |
+| `docs/sandbox/_facts/code-facts.json` | 7,220 | `4988efec67450107523071f7b87418a9a4949a91c381e27a9094343f4ddfc20b` |
+| `docs/sandbox/_facts/test-evidence.json` | 9,324 | `2b60119b1ead9bc13e40d2a706f61e902915a5ed952209b2d365852e11fec4fe` |
+
+### Blog drafts (7) — written, **not published**
+
+None of these has been published anywhere. Every draft carries a header saying so, and the drafts
+describing the self-hosted and managed services state in their own words that those services do not
+exist, are not bookable and have no price.
+
+| # | title | file | sha256 |
+|---|---|---|---|
+| 1 | Why AgentNode never quietly runs a stranger's code on your computer | `01-never-silently.md` | `0e4f9373ffd34eaad87c9499b91d660d4010973531296d0a6669495a222db795` |
+| 2 | Local, your own, or managed: which sandbox is yours? | `02-which-sandbox.md` | `6f89c9035439dea2f4511bc19818abc9526225d510a4bf44d467cf848074b95e` |
+| 3 | Setting up a local sandbox without knowing what a container is | `03-setup-without-expertise.md` | `e35a5a121b90792a55b2a580498626a443d442a7065c140d7d23fef9a35e3259` |
+| 4 | From a phone to a Linux server: where your agent actually runs | `04-where-your-agent-runs.md` | `d0603e00064c1881b257b85b7370818cc25c54d0529f85b7f03be2467de9800e` |
+| 5 | Why your API keys do not belong in the sandbox | `05-keys-out-of-the-sandbox.md` | `ac101637e91b23c5ed56de357fd29df6b1de0ca39006c3ba9acf82fe220defc5` |
+| 6 | Container, microVM, remote sandbox: what the words mean | `06-container-microvm-remote.md` | `dac25b66c9bbcadbe854b6891095b53bef17772794d63e0f2481f8becc4be61d` |
+| 7 | The AgentNode Sandbox: what we are planning, and what we have not decided | `07-security-as-a-service.md` | `5f81a2810d79157bb3d34cff9042844848784f87a5aac2c7959df24f78f44dc7` |
+
+## Open backend dependencies
+
+Each of these is currently documented as absent. Building one changes the documentation rather than
+contradicting it, which is the point of having written it this way.
+
+1. **Backend conformance suite** — the next track, EM-3B. Nothing today can measure a backend's
+   claims rather than repeat them.
+2. **Remote backend and its connector** — `sandbox_backend_implementations` is `ContainerBackend`
+   and `NoSandboxBackend`. Until a third exists, self-hosted and managed cannot be selected at all.
+3. **Managed service** — no backend, no service, no billing, no region handling, no kill switch.
+4. **Credential broker** — nothing substitutes a credential at a proxy, so a consented key is inside
+   the sandbox with the program that asked for it.
+5. **Egress binding beyond the hostname** — the proxy checks that a name resolves to a public
+   address; it cannot verify the host behind the name without terminating the encryption.
+6. **EM-3 selection contract** — exists on a branch, imported by nothing.
+
+Two smaller ones worth carrying forward: the network mode named `restricted` emits an ordinary
+bridge network and restricts nothing, and nothing selects it; and a single call is killed after 120
+seconds while a long-lived agent session has no wall clock at all.
+
+## What remains a founder action
+
+Merging this branch, and publishing any of it. Neither has been done, neither is implied by this
+status, and the technical work continues without them.
