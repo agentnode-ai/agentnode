@@ -1,0 +1,82 @@
+name: Sandbox conformance (EM-3B)
+
+# The suite that measures whether the local container backend does what it says. It is the same
+# suite a self-hosted or managed backend will have to answer, which is why it lives in the SDK
+# rather than in the test tree.
+#
+# This lane is the only place the suite can produce PRODUCT evidence: it needs a real container
+# runtime, and the development machines this project is written on do not have one. The report it
+# uploads is what entitles anyone to write "observed" rather than "intended" about the sandbox.
+#
+# The runtime version and the sandbox image are pinned to exactly the values the execution lanes
+# use. A drifting runtime would silently change what is being measured.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  DOCKER_SERVER_VERSION: "28.0.4"
+  DOCKER_APT_VERSION: "5:28.0.4-1~ubuntu.24.04~noble"
+  SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
+  PIP_VERSION: "24.2"
+  SETUPTOOLS_VERSION: "75.1.0"
+  WHEEL_VERSION: "0.44.0"
+
+jobs:
+  conformance-local-container:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+      - name: Select and VERIFY the pinned container runtime
+        run: |
+          set -eu
+          got="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo none)"
+          echo "runner provides docker server: ${got}; pin is ${DOCKER_SERVER_VERSION}"
+          if [ "${got}" != "${DOCKER_SERVER_VERSION}" ]; then
+            echo "the runner's Docker is not the pinned version; installing it from the Docker repository"
+            sudo install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            sudo chmod a+r /etc/apt/keyrings/docker.gpg
+            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+            sudo apt-get update
+            if ! apt-cache madison docker-ce | grep -qF "${DOCKER_APT_VERSION}"; then
+              echo "pinned ${DOCKER_APT_VERSION} is not available; docker-ce candidates are:"
+              apt-cache madison docker-ce | head -20
+              exit 1
+            fi
+            sudo apt-get install -y --allow-downgrades "docker-ce=${DOCKER_APT_VERSION}" "docker-ce-cli=${DOCKER_APT_VERSION}"
+            sudo systemctl start docker
+            got="$(docker version --format '{{.Server.Version}}')"
+          fi
+          # The pin is asserted whichever path was taken: a drifting runtime fails the lane.
+          test "${got}" = "${DOCKER_SERVER_VERSION}" || {
+            echo "docker server is ${got}, pinned ${DOCKER_SERVER_VERSION}"; exit 1; }
+          echo "container runtime verified at the pinned version ${got}"
+          docker info --format '{{.OSType}}/{{.Architecture}}'
+      - name: Pull the pinned sandbox image by digest
+        run: docker pull "${SANDBOX_IMAGE}"
+      - name: Pin installer tooling
+        run: |
+          python -m pip install --upgrade "pip==${PIP_VERSION}"             "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
+      - run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
+      - name: Test the suite itself before trusting what it reports
+        run: python -m pytest tests/test_conformance_report.py tests/test_conformance_checks.py -q -p no:randomly
+      - name: Measure the local container backend
+        env:
+          CONFORMANCE_REPORT: conformance-report.json
+        run: python ../.github/conformance-run.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-report-local-container
+          path: sdk/conformance-report.json
