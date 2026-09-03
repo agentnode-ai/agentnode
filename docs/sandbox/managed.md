@@ -27,7 +27,7 @@ After that, ordinary runs do not ask again.
 ## What we intend to promise
 
 * **one sealed machine per job**, with its own kernel — not a shared box with walls drawn on it;
-* **your keys never enter it.** The sandbox gets a placeholder; a broker outside substitutes the
+* **your keys would never enter it.** The sandbox gets a placeholder; a broker outside substitutes the
   real value only for destinations you allowed;
 * **the workspace and any temporary access are destroyed** as soon as you have your result;
 * **logs containing your content live at most 24 hours** by default; audit records without content

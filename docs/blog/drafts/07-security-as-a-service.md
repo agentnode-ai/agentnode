@@ -24,7 +24,8 @@ The managed sandbox moves the complicated part to us.
 **One sealed machine per job**, with its own kernel — not a shared box with walls drawn on it.
 Destroyed when the job ends, never reused.
 
-**Your keys never enter it.** The sandbox gets a placeholder; a broker outside substitutes the real
+**Your keys would never enter it.** The sandbox would get a placeholder, and a broker outside would
+substitute the real
 value only for destinations you allowed. A malicious package that copies its environment gets
 nothing worth having.
 

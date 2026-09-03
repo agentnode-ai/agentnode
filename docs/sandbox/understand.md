@@ -21,9 +21,18 @@ Inside that workspace the program gets only what it needs:
 * **no network at all** — unless the package declared, when you installed it, exactly which sites it
   needs and you agreed to them; then it can reach those and nothing else;
 * **none of your files**, unless you picked them;
-* **none of your passwords or keys**.
+* **none of your passwords or keys** — with one exception, below.
 
-It does not get your home folder, your browser profile, your SSH keys, or the rest of your disk.
+It does not get your home folder, your browser profile, your login credentials, or the rest of your
+disk — apart from the one exception below, which only happens if you agree to it.
+
+**The one exception, and it matters.** If a program asks for one of your keys and *you agree to give
+it that key*, the key goes into the sealed workspace with it, and the program can read it. Nothing
+hides it from a program you handed it to. What the workspace still does is limit where that program
+can send it: only the sites it declared when you installed it. Nothing here happens without you
+agreeing first, and the honest way to think about it is the ordinary one — **a key you give to a
+program is a key that program has**. Give it its own key rather than one that opens everything.
+[The detail is in the security model](security-model.md).
 
 ## "Sandbox or refusal"
 

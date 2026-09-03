@@ -87,7 +87,8 @@ it away from the program you are running. A package you gave a key to can copy t
 What protects you is therefore not secrecy from the program; it is **who can get one, and where the
 program can send it**:
 
-* the package must be preinstalled and sealed — a package fetched at run time never gets a key;
+* the package must be preinstalled and sealed — a package fetched at run time is refused, key or
+  no key;
 * the names must match the ones consent was recorded for, or the run is refused;
 * there must be a sealed, valid list of destinations, and the same run is restricted to it;
 * pass-through is refused outright unless the network is the destination-limited one.

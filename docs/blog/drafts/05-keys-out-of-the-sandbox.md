@@ -28,12 +28,14 @@ Not "should hold it carefully". Should not hold it.
 
 ## What that looks like when it is built
 
-The sandbox gets a meaningless placeholder. Your real key stays outside, held by a broker. When the
-program makes a request to a destination you allowed, the broker swaps the placeholder for the real
-value on the way out.
+*This section describes the planned design. None of it is built.*
 
-The program authenticates successfully and never sees the secret. If it copies its whole environment
-somewhere, the attacker gets a placeholder.
+The sandbox would get a meaningless placeholder. Your real key would stay outside, held by a broker.
+When the program made a request to a destination you allowed, the broker would swap the placeholder
+for the real value on the way out.
+
+The program would authenticate successfully without ever seeing the secret, and if it copied its
+whole environment somewhere, the attacker would get a placeholder.
 
 ## The trade-off, said out loud
 

@@ -226,30 +226,81 @@ def check_facts_consistency(pages: list) -> None:
             if any(d in low for d in dead) and any(s in low for s in subjects):
                 fail(page.name, "calls a capability unfinished that the code facts show being "
                                 f"called: {line.strip()[:90]!r}")
+# Written out, not derived: deleting a planted wording must be a failure, not a smaller test.
+EXPECTED_PLANTED_CLAIMS = 5
+
+
+def sentences(text: str) -> list:
+    """Split prose into sentences, with wrapped lines rejoined and code blocks dropped."""
+    out, buf, in_code = [], [], False
+    for line in text.splitlines():
+        if line.strip().startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        if not line.strip():
+            out.append(" ".join(buf)); buf = []
+            continue
+        buf.append(line.strip())
+    out.append(" ".join(buf))
+    result = []
+    for para in out:
+        for s in re.split(r"(?<=[.!?;])\s+", para):
+            if s.strip():
+                result.append(s.strip())
+    return result
 
 
 def check_secret_claims(pages: list) -> None:
-    """No page may say the sandbox never holds the key while the runtime puts it there.
+    """No page may promise that keys stay out of the sandbox while the runtime puts them there.
 
-    `SANDBOX-DOCS-0004`: the rule the project is working towards was written in the present tense
-    beside a description of `--env NAME`, which is the mechanism that hands the value to the
-    program. The two sentences were both on the page and a reader could take the first as a
-    property of today.
+    Two rounds of this. `SANDBOX-DOCS-0004` caught the rule stated in the present tense beside the
+    mechanism that contradicts it. `SANDBOX-DOCS-0005` caught the same claim in beginner wording
+    the first pattern did not cover -- "none of your passwords or keys", "what it does not get:
+    your keys" -- which is the more dangerous form, because it is the one a beginner reads. So the
+    check is written around the CLAIM rather than around one sentence shape: any line that says a
+    key does not reach the sandboxed program has to carry the exception with it.
     """
     if not FACTS["sandbox_runtime"].get("secret_value_is_inside_the_container"):
         return
-    claim = re.compile(r"(sandbox|container|process)[^.]{0,60}"
-                       r"(never (holds|sees|receives|gets)|does not (hold|see|receive))", re.I)
+    secret = re.compile(r"\b(key|keys|secret|secrets|password|passwords|credential|credentials"
+                        r"|value|values)\b",
+                        re.I)
+    denial = re.compile(
+        r"(never (holds|sees|receives|gets|enter|enters)"
+        r"|does not (hold|see|receive|get|enter)"
+        r"|do not (hold|see|receive|get|enter)"
+        r"|(gets|receives|holds) (no|none of)"
+        r"|\bnone of your\b"
+        r"|\bno\b[^.]{0,20}\b(are|is) (passed|given|shared)"
+        r"|does not get:"
+        r"|not get:)", re.I)
+    # A sentence may say it when it is about the planned broker, or when it is the exception itself.
+    excused = ("planned", "would ", "working towards", "not built", "goal", "broker",
+               "exception", "unless you", "if you agree", "you agree to")
     for page in pages:
-        for line in page.read_text(encoding="utf-8").splitlines():
-            low = line.lower()
-            if not claim.search(line):
+        # Sentences, not lines: prose wraps, and the qualifier that makes a claim true is often on
+        # the next line. A line-based check reported exactly that as a violation.
+        for sentence in sentences(page.read_text(encoding="utf-8")):
+            low = sentence.lower()
+            if not (secret.search(sentence) and denial.search(sentence)):
                 continue
-            if any(w in low for w in ("planned", "would ", "working towards", "not built",
-                                      "goal", "broker")):
+            if any(w in low for w in excused):
                 continue
-            fail(page.name, "says the sandbox never holds the key, which the runtime "
-                            f"contradicts: {line.strip()[:90]!r}")
+            fail(page.name, "promises that keys stay out of the sandbox, which the code facts "
+                            f"contradict: {sentence.strip()[:90]!r}")
+
+
+# The exact wordings this check has been caught missing. Each one must still be rejected, so a
+# later simplification of the patterns above cannot quietly reopen a finding that was already made.
+PLANTED_SECRET_CLAIMS = (
+    "The sandbox never holds your key.",
+    "A container process does not see the value.",
+    "Inside that workspace the program gets: none of your passwords or keys.",
+    "What it does not get: your home folder, your browser profile, your keys.",
+    "Your keys never enter it.",
+)
 
 
 def selftest_secret_claims() -> int:
@@ -257,13 +308,11 @@ def selftest_secret_claims() -> int:
     before = len(problems)
     with tempfile.TemporaryDirectory() as td:
         bad = Path(td) / "selftest.md"
-        bad.write_text("The sandbox never holds your key." + chr(10)
-                       + "A container process does not see the value." + chr(10), encoding="utf-8")
+        bad.write_text(chr(10).join(PLANTED_SECRET_CLAIMS) + chr(10), encoding="utf-8")
         check_secret_claims([bad])
     caught = len(problems) - before
     del problems[before:]
     return caught
-
 
 def selftest_facts_consistency() -> int:
     """Two planted sentences, both of which the check above must reject."""
@@ -350,9 +399,12 @@ def main() -> int:
     check_claims(pages + blog, phrases)
     check_facts_consistency(pages + blog)
     check_secret_claims(pages + blog)
-    if selftest_secret_claims() != 2:
+    planted = selftest_secret_claims()
+    if planted != EXPECTED_PLANTED_CLAIMS or len(PLANTED_SECRET_CLAIMS) != EXPECTED_PLANTED_CLAIMS:
         fail("_checks/check_docs.py",
-             "the secret-claim check did not reject two planted sentences")
+             f"the secret-claim check rejected {planted} of {EXPECTED_PLANTED_CLAIMS} planted "
+             f"claims and holds {len(PLANTED_SECRET_CLAIMS)} of them; these are the beginner "
+             "wordings it has been caught missing before, and none may be dropped")
     if selftest_facts_consistency() != 2:
         fail("_checks/check_docs.py",
              "the facts-consistency check did not reject two planted sentences")

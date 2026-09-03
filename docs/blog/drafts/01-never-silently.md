@@ -28,7 +28,14 @@ none of your documents unless you picked them. It runs as a non-privileged user,
 cannot write to, with limits on memory and processes, and a call that will not finish is killed
 after two minutes.
 
-What it does not get: your home folder, your browser profile, your keys.
+What it does not get: your home folder, your browser profile, the rest of your disk — apart from
+one exception, which only happens if you agree to it.
+
+With one exception worth stating plainly, because the alternative is a comforting sentence that is
+not true: if you agree to give a program one of your API keys, that key goes into the workspace with
+it and the program can read it. The workspace limits where it can then send the key — only the sites
+the package declared at install time — and nothing is handed over without you agreeing first. But a
+key you give to a program is a key that program has.
 
 ## The part people argue about
 
