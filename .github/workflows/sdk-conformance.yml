@@ -80,3 +80,27 @@ jobs:
         with:
           name: conformance-report-local-container
           path: sdk/conformance-report.json
+      # EM-3B-R1: the one acceptance the conformance suite cannot make on its own. Its timeout
+      # payload is an ordinary sleep; this one ignores every signal it is allowed to ignore and
+      # would keep running without an active removal. Exactly one test id is named, so enabling
+      # the E2E flag here cannot quietly switch on other suites that nobody has vetted. Same
+      # pinned runtime, same digest-pinned image, same job.
+      #
+      # pytest exits 0 when a test SKIPS, and this test skips itself when no runtime is present.
+      # A lane that accepted that would report the acceptance as met without ever running it, so
+      # the step demands the word "passed" and fails on anything else.
+      - name: The payload that ignores its deadline must still be ended
+        env:
+          AGENTNODE_SANDBOX_E2E: "1"
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly             "tests/test_r1_runtime_remediation.py::TestTheResistantPayloadForReal::test_real_timeout_ends_a_payload_that_ignores_it"             2>&1 | tee r1-resistant-payload.txt
+          grep -qE "^1 passed" r1-resistant-payload.txt || {
+            echo "the resistant-payload acceptance did not PASS -- it skipped, failed or errored"
+            exit 1
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r1-resistant-payload
+          path: sdk/r1-resistant-payload.txt

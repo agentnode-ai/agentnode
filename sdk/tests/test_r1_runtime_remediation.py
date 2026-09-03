@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+import time
 import types
 
 import pytest
@@ -339,29 +341,158 @@ class TestMemoryCeiling:
                         network="none"), timeout=120)
         assert rc == 0 and "FINE" in out
 
+
+
+# --------------------------------------------------------------- the resistant payload, for real
+
+#: Ignores every signal a process is allowed to ignore, then sleeps far past any deadline. Without
+#: an active removal it keeps running: SIGTERM, SIGINT, SIGHUP and SIGQUIT are all swallowed.
+#: SIGKILL cannot be ignored by anything, which is the whole point of what is being measured.
+IGNORING_PAYLOAD = (
+    "import signal, sys, time\n"
+    "for name in ('SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT', 'SIGUSR1', 'SIGUSR2'):\n"
+    "    s = getattr(signal, name, None)\n"
+    "    if s is not None:\n"
+    "        try:\n"
+    "            signal.signal(s, signal.SIG_IGN)\n"
+    "        except Exception:\n"
+    "            pass\n"
+    "print('IGNORING', flush=True)\n"
+    "sys.stdout.flush()\n"
+    "time.sleep(600)\n"
+)
+
+
+def _runtime_of(backend) -> str:
+    return backend.check_available().backend
+
+
+def _watch_for_container(runtime: str, prefix: str, seconds: float = 20.0):
+    """Poll until a container whose name carries `prefix` is RUNNING; return (name, id).
+
+    The run's real name is generated inside the backend with a fresh suffix, which is the point
+    of the identity fix -- so the test watches for it rather than assuming it.
+    """
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        listed = subprocess.run(
+            [runtime, "ps", "--filter", f"name={prefix}", "--format", "{{.Names}} {{.ID}}"],
+            capture_output=True, text=True)
+        for line in listed.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0].startswith(prefix):
+                return parts[0], parts[1]
+        time.sleep(0.25)
+    return None, None
+
+
+def _absent(runtime: str, ident: str) -> bool:
+    r = subprocess.run([runtime, "inspect", "--format", "{{.Id}}", ident],
+                       capture_output=True, text=True)
+    return r.returncode != 0 or not r.stdout.strip()
+
+
+class TestTheResistantPayloadForReal:
+    """EM-3B-R1 acceptance: a payload that would keep running without an active removal.
+
+    The ten observations the authorised run has to make are asserted here in order, each one
+    named where it is made. Nothing is inferred from a duration.
+    """
+
     @pytest.mark.skipif(os.environ.get("AGENTNODE_SANDBOX_E2E") != "1",
                         reason="set AGENTNODE_SANDBOX_E2E=1 (needs a container runtime) to run")
     def test_real_timeout_ends_a_payload_that_ignores_it(self):
         backend = cb.ContainerBackend()
         if not backend.check_available().available:
             pytest.skip("no container runtime + pinned image available")
-        # A payload that ignores its deadline: it swallows every signal it can and sleeps on.
-        code = ("import signal, time\n"
-                "for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):\n"
-                "    try:\n"
-                "        signal.signal(s, signal.SIG_IGN)\n"
-                "    except Exception:\n"
-                "        pass\n"
-                "print('IGNORING', flush=True)\n"
-                "time.sleep(300)\n")
+        runtime = _runtime_of(backend)
         name = "agentnode-r1-ignoring-payload"
-        rc, _out, err = backend.run_process(
-            ProcessSpec(command=["python", "-c", code], network="none", name=name), timeout=5)
-        assert rc == -1 and "timed out" in err
-        runtime = backend.check_available().backend
-        listed = subprocess.run([runtime, "ps", "-a", "--filter", f"name={name}",
-                                 "--format", "{{.Names}}"], capture_output=True, text=True)
-        assert name not in listed.stdout, "the payload survived its own timeout"
+        bystander = "agentnode-r1-bystander"
+
+        # (8) a concurrent unrelated container, started before the run and inspected after it.
+        subprocess.run([runtime, "rm", "-f", bystander], capture_output=True)
+        started = subprocess.run(
+            [runtime, "run", "-d", "--name", bystander, cb._BASE_IMAGE,
+             "python", "-c", "import time; time.sleep(600)"],
+            capture_output=True, text=True)
+        assert started.returncode == 0, f"could not start the bystander: {started.stderr[:200]}"
+        bystander_id = started.stdout.strip()
+        watcher: list = [None, None]
+
+        def watch():
+            watcher[0], watcher[1] = _watch_for_container(runtime, name)
+
+        thread = threading.Thread(target=watch, daemon=True)
+        try:
+            thread.start()
+            rc, out, err = backend.run_process(
+                ProcessSpec(command=["python", "-c", IGNORING_PAYLOAD], network="none",
+                            name=name), timeout=8)
+            thread.join(timeout=5)
+            observed_name, observed_id = watcher
+
+            # (1) it really started, in a real container, and said so from inside.
+            assert "IGNORING" in out, (
+                f"the payload never reported starting; stdout={out[:200]!r} stderr={err[:200]!r}")
+            # (1) and the runtime saw it running under this run's own generated name.
+            assert observed_name and observed_id, (
+                "the runtime never listed a running container for this run")
+            assert observed_name.startswith(name) and observed_name != name, (
+                f"the run must carry its own generated identity, got {observed_name!r}")
+
+            # (3)(9) the wall clock was reached, and the timeout is what came back -- AFTER the
+            # backend verified absence, which is why the checks below hold the moment it returns.
+            assert rc == -1, f"expected the documented timeout code, got {rc}"
+            assert "timed out" in err
+
+            # (4)(5)(6) not merely the client: the exact container of this run is gone, by BOTH
+            # its id and its name, checked immediately after the call returned.
+            assert _absent(runtime, observed_id), (
+                f"container {observed_id} is still present after its timeout")
+            assert _absent(runtime, observed_name), (
+                f"container {observed_name} is still present after its timeout")
+
+            # (7) nothing of it is left in any state, running or exited.
+            listed = subprocess.run([runtime, "ps", "-a", "--filter", f"name={name}",
+                                     "--format", "{{.Names}}"], capture_output=True, text=True)
+            assert name not in listed.stdout, "the payload survived its own timeout"
+
+            # (8) the bystander was never touched.
+            alive = subprocess.run(
+                [runtime, "inspect", "--format", "{{.State.Running}}", bystander],
+                capture_output=True, text=True)
+            assert alive.returncode == 0 and alive.stdout.strip() == "true", (
+                f"an unrelated container was affected: {alive.stdout.strip()!r} "
+                f"{alive.stderr.strip()[:160]!r}")
+
+            # (10) and a cleanup that does not succeed is NOT reported as an ordinary timeout.
+            # The same resistant payload, with the removal made to fail: the backend must raise
+            # rather than return -1. The container is cleaned up by hand afterwards.
+            leaked_prefix = "agentnode-r1-containment"
+            real_run_runtime = cb._run_runtime
+
+            def refuse_removal(argv, timeout=None):
+                if len(argv) > 1 and argv[1] == "rm":
+                    return types.SimpleNamespace(returncode=1, stdout="",
+                                                 stderr="injected: removal refused")
+                return real_run_runtime(argv, timeout=timeout)
+
+            cb._run_runtime = refuse_removal
+            try:
+                with pytest.raises(SandboxContainmentError):
+                    backend.run_process(
+                        ProcessSpec(command=["python", "-c", IGNORING_PAYLOAD], network="none",
+                                    name=leaked_prefix), timeout=8)
+            finally:
+                cb._run_runtime = real_run_runtime
+                leaked = subprocess.run(
+                    [runtime, "ps", "-a", "--filter", f"name={leaked_prefix}",
+                     "--format", "{{.Names}}"], capture_output=True, text=True)
+                for leftover in leaked.stdout.split():
+                    subprocess.run([runtime, "rm", "-f", leftover], capture_output=True)
+        finally:
+            subprocess.run([runtime, "rm", "-f", bystander_id or bystander], capture_output=True)
+            subprocess.run([runtime, "rm", "-f", name], capture_output=True)
 
 
 # --------------------------------------------------------------------- R3: a refusal with a way out
