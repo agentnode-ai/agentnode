@@ -13,7 +13,9 @@ what is coming before you invest time in a setup.
 | **Available?** | ✅ yes, today | 🔭 planned | 🔭 planned |
 | Setup effort | install one program, once | you run a server | none |
 | What it costs | nothing | your server | not decided yet |
-| Your files leave your computer? | no | yes, to your server | yes, to ours |
+| The work runs somewhere else? | no | yes, on your server | yes, on ours |
+| Your files are sent away? | no | yes, to your server | yes, to ours |
+| The program can reach the internet? | only sites you agreed to at install | same | same |
 | Works offline | yes | only on your network | no |
 | Works on a phone | no | that is the point of it | that is the point of it |
 | Protection | a locked container on your machine | whatever your server proves | a separate machine per job |
@@ -27,7 +29,8 @@ otherwise.**
 A program called a container runtime creates the sealed workspace on your own machine. You install
 it once; after that AgentNode uses it automatically.
 
-**Good when:** you work on a laptop or desktop, you want nothing to leave your computer, and you are
+**Good when:** you work on a laptop or desktop, you want the work itself to stay on your computer,
+and you are
 willing to install one thing once.
 
 **Not good when:** you are on a phone or tablet, or you are not allowed to install software —

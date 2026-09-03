@@ -252,6 +252,49 @@ def sentences(text: str) -> list:
     return result
 
 
+def check_local_only_claims(pages: list) -> None:
+    """"Nothing leaves your machine" is a promise the consented-egress path can break.
+
+    `SANDBOX-DOCS-0006`: the local pages said it absolutely. Where the work RUNS and what the
+    program may REACH are two different questions, and a sentence that answers the first must not
+    read as an answer to the second.
+    """
+    if not FACTS["sandbox_runtime"].get("egress_live_callers"):
+        return
+    absolute = re.compile(r"(nothing|never|no data)[^.]{0,40}"
+                          r"leaves?[^.]{0,30}(machine|computer|device)", re.I)
+    qualified = ("work ", "the work", "files", "documents", "agreed", "unless", "except",
+                 "sites", "declared", "consent")
+    for page in pages:
+        for sentence in sentences(page.read_text(encoding="utf-8")):
+            if not absolute.search(sentence):
+                continue
+            if any(w in sentence.lower() for w in qualified):
+                continue
+            fail(page.name, "promises that nothing leaves the machine, which a consented "
+                            f"destination list can break: {sentence.strip()[:90]!r}")
+
+
+PLANTED_LOCAL_CLAIMS = (
+    "Nothing leaves the computer.",
+    "You want nothing to leave your machine.",
+    "It is free, and nothing ever leaves your device.",
+)
+EXPECTED_PLANTED_LOCAL = 3
+
+
+def selftest_local_only_claims() -> int:
+    import tempfile
+    before = len(problems)
+    with tempfile.TemporaryDirectory() as td:
+        bad = Path(td) / "selftest.md"
+        bad.write_text(chr(10) + chr(10).join(PLANTED_LOCAL_CLAIMS) + chr(10), encoding="utf-8")
+        check_local_only_claims([bad])
+    caught = len(problems) - before
+    del problems[before:]
+    return caught
+
+
 def check_secret_claims(pages: list) -> None:
     """No page may promise that keys stay out of the sandbox while the runtime puts them there.
 
@@ -399,6 +442,12 @@ def main() -> int:
     check_claims(pages + blog, phrases)
     check_facts_consistency(pages + blog)
     check_secret_claims(pages + blog)
+    check_local_only_claims(pages + blog)
+    local = selftest_local_only_claims()
+    if local != EXPECTED_PLANTED_LOCAL or len(PLANTED_LOCAL_CLAIMS) != EXPECTED_PLANTED_LOCAL:
+        fail("_checks/check_docs.py",
+             f"the local-only check rejected {local} of {EXPECTED_PLANTED_LOCAL} planted claims "
+             f"and holds {len(PLANTED_LOCAL_CLAIMS)} of them")
     planted = selftest_secret_claims()
     if planted != EXPECTED_PLANTED_CLAIMS or len(PLANTED_SECRET_CLAIMS) != EXPECTED_PLANTED_CLAIMS:
         fail("_checks/check_docs.py",

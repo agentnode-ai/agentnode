@@ -22,7 +22,7 @@ instead?"*
 
 2. **One safe available option is recommended.** The recommendation is *computed for this device*,
    not fixed: on a machine with a working runtime the recommendation is local, because it is free
-   and nothing leaves the device. Recommending a paid remote service to someone who already has a
+   and the work stays on the device. Recommending a paid remote service to someone who already has a
    working local sandbox would be selling, not helping.
 
 3. **Local prerequisites can be set up or checked from one clearly named action.** *(Planned as a

@@ -16,7 +16,7 @@ honest way to write this article is to say that up front rather than at the bott
 You install one program once. After that AgentNode creates a sealed workspace on your machine
 whenever it needs one.
 
-**Choose this if** you work on a laptop or desktop, you want nothing to leave your machine, and you
+**Choose this if** you work on a laptop or desktop, you want the work to stay on your machine, and you
 can install software.
 
 **Do not choose it if** you are on a phone, or your machine is locked down by an employer.

@@ -13,7 +13,9 @@ each kind of device, today.
 
 ## Laptop or desktop, with a container runtime installed
 
-The agent runs **on your machine, in a sealed workspace**. Nothing leaves the computer. This is the
+The agent runs **on your machine, in a sealed workspace** — the work is not sent anywhere, and
+AgentNode receives nothing. That is not the same as silence: a package whose install declared the
+sites it needs, and which you agreed to, can reach exactly those and nothing else. This is the
 one that works today, and on Linux it is the one that is actually tested.
 
 ## Laptop or desktop, without one

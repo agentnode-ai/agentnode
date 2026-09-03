@@ -46,7 +46,7 @@ We would rather say that than invent a number.
 ## What you can do today
 
 Nothing on this page — that is the honest answer. If you want the protection now and you are on a
-computer, [set up the local sandbox](setup-local.md): it is free, it works, and nothing leaves your
+computer, [set up the local sandbox](setup-local.md): it is free, it works, and the work stays on your
 machine.
 
 If this page is what you actually want, the useful thing is to tell us which part matters most — the
