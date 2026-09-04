@@ -446,3 +446,48 @@ class TestTheCheckInventoryCannotShrinkQuietly:
         assert "limit-memory" not in produced
         assert produced != list(REQUIRED_CHECK_IDS), (
             "the guard must notice a missing check")
+
+
+class TestContainmentNeedsPositiveEvidence:
+    """EM3B-SUITE-0002 / F1: an unfamiliar PID 1 name is not containment."""
+
+    def _context(self, **containment):
+        readings = copy.deepcopy(doubles.GOOD_READINGS)
+        readings["containment"] = {"dockerenv": False, "containerenv": False,
+                                   "self_cgroup": "0::/", "pid1_comm": "systemd"}
+        readings["containment"].update(containment)
+        readings["mounts"] = [{"source": "/dev/sda1", "target": "/", "fstype": "ext4",
+                               "options": "rw"}]
+        return Context(readings=readings, declared=dict(GOOD_DECLARED),
+                       stress=copy.deepcopy(GOOD_STRESS), host=copy.deepcopy(GOOD_HOST))
+
+    @pytest.mark.parametrize("pid1", ["python", "bash", "supervisord", "myapp", "", "init",
+                                      "systemd"])
+    def test_no_marker_and_no_container_cgroup_never_passes(self, pid1):
+        r = {x.check_id: x for x in run_all(self._context(pid1_comm=pid1))}["outside-host-process"]
+        assert r.outcome is Outcome.FAIL, (
+            f"pid 1 named {pid1!r} carried the check with nothing else behind it")
+        assert "not evidence of containment" in r.evidence
+
+    @pytest.mark.parametrize("signal", [
+        {"dockerenv": True}, {"containerenv": True},
+        {"self_cgroup": "0::/docker/3f2a1b0c"}, {"self_cgroup": "0::/libpod-abc"},
+    ])
+    def test_a_real_signal_carries_it(self, signal):
+        ctx = self._context(pid1_comm="python", **signal)
+        r = {x.check_id: x for x in run_all(ctx)}["outside-host-process"]
+        assert r.outcome is Outcome.PASS
+
+    def test_an_overlay_root_carries_it(self):
+        ctx = self._context(pid1_comm="python")
+        ctx.readings["mounts"] = [{"source": "overlay", "target": "/", "fstype": "overlay",
+                                   "options": "ro"}]
+        r = {x.check_id: x for x in run_all(ctx)}["outside-host-process"]
+        assert r.outcome is Outcome.PASS
+        assert "root filesystem is overlay" in r.evidence
+
+    def test_the_real_run_that_produced_the_evidence_still_passes(self):
+        """The container the suite actually measured had a marker file, so the tightened check
+        does not change what that run reported."""
+        r = {x.check_id: x for x in run_all(good_context())}["outside-host-process"]
+        assert r.outcome is Outcome.PASS
