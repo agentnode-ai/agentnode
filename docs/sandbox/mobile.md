@@ -10,6 +10,14 @@ Phones cannot create the kind of sealed workspace this protection depends on. So
 a weaker version and calling it a sandbox, the plan is that a phone sends the work somewhere that
 can do it properly and shows you the result.
 
+## Why there is no sealed workspace on this device
+
+A phone or tablet cannot run the kind of sealed workspace this protection depends on, and there is
+no remote one to send the work to yet. So AgentNode refuses, says so, and leaves you with something
+you can do: nothing was started, nothing was changed, and the same command works on a computer where
+a container runtime can be installed. If you need it here, saying so is what decides when the remote
+option gets built.
+
 ## What works today
 
 **Nothing yet.** There is no AgentNode mobile app, and no remote sandbox for one to talk to. A phone

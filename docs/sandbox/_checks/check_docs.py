@@ -295,61 +295,81 @@ def selftest_local_only_claims() -> int:
     return caught
 
 
-#: Every situation the refusal classifier tells apart, and a phrase the pages use for it. Written
-#: out so that adding a case to the product without documenting it fails here rather than passing
-#: unnoticed -- the same discipline as the check inventory in the conformance suite.
-REFUSAL_CASE_PHRASES = {
-    "not_installed": "is not installed",
-    "not_running": "not running",
-    "not_permitted": "may not use it",
-    "incompatible": "not in a mode that can run the sandbox",
-    "platform_unsupported": "cannot create the kind of sealed workspace",
-    "image_missing": "not present locally",
-    "image_placeholder": "no pinned sandbox image",
-    "memory_ceiling_unenforceable": "cannot hold the memory limit",
+#: Every situation the refusal classifier tells apart, bound to the ENTRY that documents it: the
+#: page, and a phrase that must appear in one of that page's headings. A phrase found loose in some
+#: paragraph is not documentation -- an entry is. Written out, so a case added to the product
+#: without an entry fails here rather than passing unnoticed.
+REFUSAL_CASE_ENTRIES = {
+    "not_installed": ("troubleshooting.md", "No Docker or Podman found"),
+    "not_running": ("troubleshooting.md", "daemon is not reachable"),
+    "not_permitted": ("troubleshooting.md", "this account may not use it"),
+    "incompatible": ("troubleshooting.md", "not in a mode that can run the sandbox"),
+    "memory_ceiling_unenforceable": ("troubleshooting.md", "cannot hold the memory limit"),
+    "image_missing": ("troubleshooting.md", "is not present locally"),
+    "image_placeholder": ("troubleshooting.md", "no pinned sandbox image"),
+    "platform_unsupported": ("mobile.md", "no sealed workspace on this device"),
 }
 
 
+def _headings(page: Path) -> list:
+    return [line.lstrip("#").strip().lower()
+            for line in page.read_text(encoding="utf-8").splitlines()
+            if line.startswith("#")]
+
+
 def check_refusal_cases(pages: list) -> None:
-    """Every case the code can refuse with has to be a situation the pages describe."""
+    """Every case the code can refuse with has to have its own entry on a named page."""
     cases = FACTS["sandbox_runtime"].get("refusal_cases") or []
     if not cases:
         return
-    undocumented = [c for c in cases if c not in REFUSAL_CASE_PHRASES]
-    if undocumented:
-        fail("_checks/check_docs.py",
-             f"the code refuses with cases this checker does not know: {undocumented}. Document "
-             "them and add the phrase here, in the same change")
-    text = " ".join(page.read_text(encoding="utf-8").lower() for page in pages)
+    by_name = {page.name: page for page in pages}
     for case in cases:
-        phrase = REFUSAL_CASE_PHRASES.get(case)
-        if phrase and phrase.lower() not in text:
-            fail("troubleshooting.md",
-                 f"the code can refuse with {case!r} and no page says so (looked for "
-                 f"{phrase!r})")
-    stale = [c for c in REFUSAL_CASE_PHRASES if c not in cases]
+        entry = REFUSAL_CASE_ENTRIES.get(case)
+        if entry is None:
+            fail("_checks/check_docs.py",
+                 f"the code can refuse with {case!r} and this checker has no entry for it. Write "
+                 "the entry and map it here, in the same change")
+            continue
+        filename, phrase = entry
+        page = by_name.get(filename)
+        if page is None:
+            fail("_checks/check_docs.py", f"{case!r} is mapped to {filename}, which is not a page")
+            continue
+        if not any(phrase.lower() in h for h in _headings(page)):
+            fail(filename,
+                 f"the code can refuse with {case!r} and {filename} has no entry for it "
+                 f"(no heading contains {phrase!r})")
+    stale = [c for c in REFUSAL_CASE_ENTRIES if c not in cases]
     if stale:
         fail("_checks/check_docs.py",
-             f"these cases are documented but the code no longer has them: {stale}")
+             f"these cases have entries but the code no longer refuses with them: {stale}. Either "
+             "the entry describes something that cannot happen, or a case was renamed")
 
 
-def selftest_refusal_cases(pages: list) -> int:
-    """Plant a case the pages cannot possibly describe, and require it to be caught."""
-    before = len(problems)
+def selftest_refusal_cases(pages: list) -> tuple:
+    """Both directions, each planted alone so its result is about itself.
+
+    SANDBOX-DOCS-DELTA-0002 / F-D4-002: the first version exercised only the undocumented
+    direction and the brief nonetheless claimed both. Each is planted separately here, and each
+    failure is matched by name rather than counted.
+    """
     real = FACTS["sandbox_runtime"].get("refusal_cases")
+    before = len(problems)
     try:
-        # ONLY the planted case, so the count is about the plant and not about whatever else the
-        # real pages may or may not be missing. Appending it made a genuine failure elsewhere show
-        # up as a broken self-test instead of as itself.
+        # (1) the code grows a case no page has an entry for
         FACTS["sandbox_runtime"]["refusal_cases"] = ["a_case_nobody_wrote_about"]
         check_refusal_cases(pages)
+        undocumented = len([x for x in problems[before:] if "a_case_nobody_wrote_about" in x])
+        del problems[before:]
+        # (2) a documented case the code no longer has
+        FACTS["sandbox_runtime"]["refusal_cases"] = ["not_installed"]
+        check_refusal_cases(pages)
+        stale = len([x for x in problems[before:] if "no longer refuses with them" in x])
+        del problems[before:]
     finally:
         FACTS["sandbox_runtime"]["refusal_cases"] = real
-    # Count only failures that NAME the planted case: replacing the case list also makes every
-    # real documented case look stale, and a raw count would fold those in.
-    planted = [x for x in problems[before:] if "a_case_nobody_wrote_about" in x]
-    del problems[before:]
-    return len(planted)
+        del problems[before:]
+    return undocumented, stale
 
 
 def check_secret_claims(pages: list) -> None:
@@ -500,9 +520,11 @@ def main() -> int:
     check_facts_consistency(pages + blog)
     check_secret_claims(pages + blog)
     check_refusal_cases(pages)
-    if selftest_refusal_cases(pages) != 1:
+    undocumented, stale = selftest_refusal_cases(pages)
+    if (undocumented, stale) != (1, 1):
         fail("_checks/check_docs.py",
-             "the refusal-case check did not reject a case no page describes")
+             f"the refusal-case check caught {undocumented} of 1 undocumented case and {stale} of "
+             "1 stale entry; it has to fail in both directions")
     check_local_only_claims(pages + blog)
     local = selftest_local_only_claims()
     if local != EXPECTED_PLANTED_LOCAL or len(PLANTED_LOCAL_CLAIMS) != EXPECTED_PLANTED_LOCAL:
