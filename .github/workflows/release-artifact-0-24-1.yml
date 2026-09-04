@@ -133,10 +133,10 @@ jobs:
       - name: STOP GATE — the files under test must BE the ones the build job produced
         run: |
           set -euo pipefail
-          find /tmp/art -type f -printf '%p %s bytes
-'
+          ls -lR /tmp/art
           cd /tmp/art/dist
-          sha256sum "agentnode_sdk-${VERSION}-py3-none-any.whl" "agentnode_sdk-${VERSION}.tar.gz"             > /tmp/here.txt
+          sha256sum "agentnode_sdk-${VERSION}-py3-none-any.whl" > /tmp/here.txt
+          sha256sum "agentnode_sdk-${VERSION}.tar.gz" >> /tmp/here.txt
           echo "--- recorded by the build job ---"; cat /tmp/art/DIGESTS.txt
           echo "--- the files actually downloaded here ---"; cat /tmp/here.txt
           sort /tmp/art/DIGESTS.txt > /tmp/a.txt
