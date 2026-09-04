@@ -296,14 +296,28 @@ def check_limit_memory(ctx: Context) -> CheckResult:
     except ValueError:
         return CheckResult.probe_error("limit-memory", "The memory limit is enforced", "limits",
                                        f"the cgroup memory file read {raw!r}")
+    # EM3B-SUITE-0004 / F-001: the ceiling being CONFIGURED is not the ceiling being ENFORCED, and
+    # this used to pass on the configuration whenever the stress result was missing -- `killed`
+    # was None, `None is not False` is true, and an allocation nobody attempted counted as one
+    # that was stopped. A limit is enforced when something hit it.
     stress = ctx.stress.get("memory")
-    killed = stress.get("killed") if isinstance(stress, dict) else None
-    ok = actual == expected and (killed is not False)
+    if not isinstance(stress, dict) or "_error" in stress:
+        reason = stress.get("_error") if isinstance(stress, dict) else "none was performed"
+        return CheckResult.probe_error(
+            "limit-memory", "The memory limit is enforced", "limits",
+            f"the cgroup ceiling reads {actual} bytes, but no allocation was run against it: "
+            f"{reason}") if isinstance(stress, dict) else CheckResult.not_checked(
+            "limit-memory", "The memory limit is enforced", "limits",
+            f"the cgroup ceiling reads {actual} bytes, but no allocation was run against it")
+    killed = stress.get("killed")
+    if not isinstance(killed, bool):
+        return CheckResult.probe_error(
+            "limit-memory", "The memory limit is enforced", "limits",
+            f"the allocation run recorded {killed!r} rather than whether it was stopped")
+    ok = actual == expected and killed
     evidence = (f"inside: the cgroup memory ceiling is {actual} bytes against the declared "
-                f"{expected} bytes")
-    if killed is not None:
-        evidence += ("; an allocation past that ceiling was stopped"
-                     if killed else "; an allocation past that ceiling was NOT stopped")
+                f"{expected} bytes; an allocation past that ceiling was "
+                + ("stopped" if killed else "NOT stopped"))
     return CheckResult.measured("limit-memory", "The memory limit is enforced", "limits", ok,
                                 Vantage.INSIDE, evidence,
                                 detail={"cgroup": actual, "declared": expected, "stress": stress})

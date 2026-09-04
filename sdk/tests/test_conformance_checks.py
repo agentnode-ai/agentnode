@@ -491,3 +491,54 @@ class TestContainmentNeedsPositiveEvidence:
         does not change what that run reported."""
         r = {x.check_id: x for x in run_all(good_context())}["outside-host-process"]
         assert r.outcome is Outcome.PASS
+
+
+class TestAConfiguredCeilingIsNotAnEnforcedOne:
+    """EM3B-SUITE-0004 / F-001: an allocation nobody attempted is not one that was stopped."""
+
+    def _memory(self, stress):
+        ctx = good_context()
+        if stress is None:
+            ctx.stress.pop("memory", None)
+        else:
+            ctx.stress["memory"] = stress
+        return {x.check_id: x for x in run_all(ctx)}["limit-memory"]
+
+    def test_limit_memory_without_stress_is_not_pass(self):
+        r = self._memory(None)
+        assert r.outcome is Outcome.NOT_CHECKED
+        assert "no allocation was run against it" in r.evidence
+
+    def test_an_errored_stress_run_is_a_probe_error(self):
+        r = self._memory({"_error": "OSError: the runtime went away"})
+        assert r.outcome is Outcome.PROBE_ERROR
+        assert "went away" in r.evidence
+
+    @pytest.mark.parametrize("malformed", [{}, {"killed": None}, {"killed": "yes"},
+                                           {"requested_mb": 768}, "not a dict"])
+    def test_a_malformed_stress_result_never_passes(self, malformed):
+        assert self._memory(malformed).outcome is not Outcome.PASS
+
+    def test_an_unstopped_allocation_fails(self):
+        r = self._memory({"requested_mb": 768, "rc": 0, "killed": False, "stdout_tail": "ALLOCATED"})
+        assert r.outcome is Outcome.FAIL
+        assert "NOT stopped" in r.evidence
+
+    def test_only_a_stopped_allocation_with_the_right_ceiling_passes(self):
+        r = self._memory({"requested_mb": 768, "rc": 137, "killed": True, "stdout_tail": ""})
+        assert r.outcome is Outcome.PASS
+
+    def test_a_stopped_allocation_against_the_wrong_ceiling_still_fails(self):
+        ctx = good_context()
+        ctx.readings["cgroup"]["memory_max"] = str(2 * 1024 ** 3)
+        r = {x.check_id: x for x in run_all(ctx)}["limit-memory"]
+        assert r.outcome is Outcome.FAIL
+
+    def test_a_report_missing_the_stress_run_is_not_conformant(self):
+        report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False, include_stress=False),
+                                 egress_matrix=GOOD_HOST["egress_matrix"])
+        assert not report.is_conformant
+        # a double is never conformant anyway, so the substantive claim is that the check itself
+        # is unproven rather than passing
+        assert "limit-memory" in [r.check_id for r in report.unproven]
