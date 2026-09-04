@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased — the sandbox does what it said
+
+Three defects in the local sandbox runtime, found by the backend conformance suite (EM-3B)
+measuring a real container rather than reading its configuration. Each is a case where
+AgentNode reported a property it was not enforcing.
+
+### Fixed
+
+- **A wall-clock timeout now ends the payload.** It killed the `docker run` client, which is
+  a pipe to a daemon that owns the process — so the SDK reported a timeout while the
+  container kept running, and `--rm` never removed it because it never exited. Every run now
+  carries an exact identity (a unique name *and* a cidfile); a timeout removes that exact
+  container, waits, and verifies that neither the id nor the name remains. If any of that
+  cannot be shown, `SandboxContainmentError` is raised instead of the ordinary timeout
+  result: a stop nobody could verify is not a stop. Nothing outside the run being stopped is
+  ever addressed, and an identity in doubt stops the removal rather than guessing.
+- **The declared memory ceiling now binds.** `--memory` was passed without `--memory-swap`,
+  and a runtime with only the first set grants a swap allowance of twice the limit — the
+  suite watched a 768 MiB allocation finish with exit code 0 under a 512 MiB "limit". The
+  two are now equal, so the total of memory and swap *is* the limit. Whether an engine can
+  account for swap at all is recorded from `docker info` rather than assumed, so a report can
+  say the ceiling is unproven on that engine instead of resting on the flag having been
+  passed.
+- **A refusal now carries a way out.** It said `no container runtime (docker or podman)
+  found on PATH` and nothing more. There were also two answers to the same question — the
+  SDK's bare sentence and the CLI doctor's structured checks — and only one of them ever had
+  a next step. Both now render one classifier, which distinguishes *not installed*, *not
+  running*, *not permitted*, *an engine in the wrong mode* and *a device where no local
+  sandbox is possible*, and offers only actions that exist on the platform in front of you,
+  each followed by the check that tells you whether it worked. Joining the `docker` group is
+  deliberately not among them: it is administrator-equivalent power on the machine.
+
+### Changed
+
+- `SandboxAvailability` carries `probe_error`, `engine_os` and `memory_limit_enforceable`;
+  `check_available(force=True)` re-asks rather than returning the cached answer, which is what
+  a re-check after a fix needs.
+- One-shot sandboxed runs are now named and labelled like the long-lived ones. Nothing
+  filters on that label; it makes a run identifiable, which is the point.
+
 ## 0.24.0 — The container is the boundary
 
 This release makes the execution boundary real rather than advisory. Third-party code

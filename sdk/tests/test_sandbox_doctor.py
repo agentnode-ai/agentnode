@@ -84,14 +84,26 @@ def test_env_no_runtime(monkeypatch, capsys):
     rc, data = _env_json(monkeypatch, capsys)
     assert rc == 1 and data["ready"] is False
     runtime = next(c for c in data["checks"] if c["check"] == "runtime")
-    assert runtime["ok"] is False and "Docker" in runtime["fix"]
+    # EM-3B-R1/R3: the fix comes from the one refusal classifier now. It must still name a way
+    # to get a runtime, on whichever platform the test happens to run.
+    fix = runtime["fix"].lower()
+    assert runtime["ok"] is False
+    assert "docker" in fix or "podman" in fix
+    # EM3B-R1-REVIEW-0003 / F4: where a runtime cannot be installed by a command this machine
+    # has, the honest text points at where to get one rather than naming a command that would
+    # not run. Both forms have to name getting a runtime.
+    assert "install" in fix or "where to get" in fix
 
 def test_env_daemon_down(monkeypatch, capsys):
     _patch_backend(monkeypatch, _av_daemon_down())
     rc, data = _env_json(monkeypatch, capsys)
     assert rc == 1
     daemon = next(c for c in data["checks"] if c["check"] == "daemon")
-    assert daemon["ok"] is False and "BIOS" in daemon["fix"]
+    # EM-3B-R1/R3: platform-independent here (the platform-specific wording is asserted in
+    # test_daemon_fix_is_platform_specific below, which is a stronger check than the old one).
+    fix = daemon["fix"].lower()
+    assert daemon["ok"] is False
+    assert "start" in fix
 
 def test_env_image_missing(monkeypatch, capsys):
     _patch_backend(monkeypatch, _av_image_missing())
@@ -393,3 +405,24 @@ def test_pull_failure_hints_auth(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "docker login ghcr.io" in out
+
+
+def test_daemon_fix_is_platform_specific(monkeypatch):
+    """EM-3B-R1/R3: the advice for a stopped runtime differs by platform, and every platform's
+    version has to survive. The old test could only assert whichever platform it ran on."""
+    from agentnode_sdk.sandbox.refusal import classify
+
+    has_everything = lambda tool: "/usr/bin/" + tool          # noqa: E731
+    windows = classify(_av_daemon_down(), platform="win32",
+                       which=has_everything).render().lower()
+    assert "docker desktop" in windows
+    assert "wsl2" in windows or "hyper-v" in windows or "firmware" in windows
+
+    linux = classify(_av_daemon_down(), platform="linux",
+                     which=has_everything).render().lower()
+    assert "systemctl start docker" in linux
+    assert "podman.socket" in linux
+
+    for text in (windows, linux):
+        assert "agentnode sandbox doctor" in text, "an action without a re-check is not a way out"
+

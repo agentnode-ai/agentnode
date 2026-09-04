@@ -22,6 +22,16 @@ class SandboxAvailability:
     daemon_ok: bool = False
     image_available: bool = False
     image_digest: str | None = None
+    # EM-3B-R1/R3: what the runtime said when asked whether it was usable. It is what separates
+    # "the daemon is not running" from "you are not allowed to talk to it", which the old bare
+    # reason string could not express.
+    probe_error: str = ""
+    # The engine's own container OS. A Linux image cannot run on an engine in Windows-container
+    # mode, and that case used to look identical to a missing image.
+    engine_os: str = ""
+    # EM-3B-R1/R2: whether this engine reports that it can enforce a memory AND swap ceiling.
+    # None means it was not determined. Never assumed true.
+    memory_limit_enforceable: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -76,3 +86,13 @@ class ProcessSpec:
 
 class SandboxRequiredError(RuntimeError):
     """Raised when a trust tier needs a sandbox but none is available (fail-closed)."""
+
+
+class SandboxContainmentError(RuntimeError):
+    """The sandbox could not be proven to have ENDED, so the run may still be executing.
+
+    EM-3B-R1. A wall-clock timeout used to kill the ``docker run`` client and return the ordinary
+    timeout result while the container carried on under the daemon. A stop that cannot be verified
+    is not a stop, and it must never be reported as one -- so this is raised instead of returning
+    the timeout code, and no caller can mistake one for the other.
+    """
