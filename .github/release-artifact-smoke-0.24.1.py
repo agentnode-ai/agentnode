@@ -211,14 +211,13 @@ def main() -> int:
     # The counts above say a way out exists. This prints the way out itself, rendered by the
     # installed wheel, so it can be read rather than trusted: every case, its headline, what it
     # prevented, each action with the command it would run and the tool it needs, and the recheck.
-    print("
-[R3-rendered] every refusal as the installed wheel renders it", flush=True)
+    print("\n[R3-rendered] every refusal as the installed wheel renders it", flush=True)
     for label, kwargs in situations:
         ref = R.classify(which=lambda tool: "/usr/bin/" + tool, **kwargs)
         if ref is None:
             continue
-        print(f"
-  === {ref.case.value} ===", flush=True)
+        print("")
+        print(f"  === {ref.case.value} ===", flush=True)
         print(f"    headline : {ref.headline}", flush=True)
         print(f"    prevented: {ref.prevented}", flush=True)
         if ref.details:
@@ -226,22 +225,22 @@ def main() -> int:
         for i, a in enumerate(ref.actions, 1):
             kind = "POINTER (not executable here)" if a.informational else "COMMAND"
             print(f"    action {i} [{kind}]", flush=True)
-            print(f"      label   : {a.label}", flush=True)
+            print(f"      text    : {a.text}", flush=True)
             print(f"      command : {a.command!r}", flush=True)
+            print(f"      url     : {a.url!r}", flush=True)
             print(f"      requires: {getattr(a, 'requires', None)!r}", flush=True)
             print(f"      platforms: {getattr(a, 'platforms', None)!r}", flush=True)
         print(f"    recheck  : {ref.recheck}", flush=True)
 
     # and the same rendering on a machine where NO tool is present, so the withholding is visible
-    print("
-[R3-rendered] the same case where no named tool exists on the machine", flush=True)
+    print("\n[R3-rendered] the same case where no named tool exists on the machine", flush=True)
     none_here = R.classify(availability=avail(daemon_ok=False), platform="linux",
                            which=lambda tool: None)
     if none_here is not None:
         print(f"  === {none_here.case.value} (which() finds nothing) ===", flush=True)
         for i, a in enumerate(none_here.actions, 1):
             kind = "POINTER" if a.informational else "COMMAND"
-            print(f"    action {i} [{kind}] {a.label}", flush=True)
+            print(f"    action {i} [{kind}] {a.text}", flush=True)
             print(f"      command : {a.command!r}  requires: {getattr(a, 'requires', None)!r}",
                   flush=True)
         print(f"    recheck  : {none_here.recheck}", flush=True)
