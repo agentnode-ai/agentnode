@@ -238,8 +238,15 @@ class TestThereIsNoHostPlacement:
         assert "safe" not in text
 
     def test_no_user_facing_string_promises_safety_for_a_legacy_path(self):
-        """Bound 4: safety words must never co-occur with a legacy or host marker — in the contract
-        AND in the prototype, because the person reads the prototype."""
+        """Bound 4: safety words must never co-occur with a legacy or host marker, in every
+        string this contract can put in front of a person.
+
+        EM3D-SPLIT-BLOCKERS-0001, Option B: this test used to scan the onboarding prototype as
+        well, because the person reads that too. The prototype is not part of the policy-contract
+        changeset and stays on `em3a/sandbox-contract`, so the prototype half of this bound is
+        asserted there, by this same test, against the file it describes. Nothing is unasserted:
+        the two halves live where their subject lives.
+        """
         surfaces = []
         for env in (Environment(), Environment(online=False), Environment(managed_available=False),
                     Environment(local_runtime_ready=True), Environment(organisation_backend="g")):
@@ -251,23 +258,6 @@ class TestThereIsNoHostPlacement:
         surfaces.extend(a.label for a in _REMEDIATION_CATALOGUE.values())
         safety = ("safe", "protected", "sandbox")
         legacy = ("host", "legacy", "unprotected", "directly on this computer")
-        # the prototype's user-facing strings too: every quoted string the script can show
-        from pathlib import Path
-        import re as _re
-        proto = Path(__file__).resolve().parents[2] / "docs" / "em3" / "onboarding-prototype.html"
-        assert proto.is_file(), f"the prototype must be reviewable from the tests: {proto}"
-        html = proto.read_text(encoding="utf-8")
-        checked_prototype = 0
-        for line in html.splitlines():
-            low = line.lower()
-            if any(w in low for w in legacy) and "//" not in low.split("<")[0][:4]:
-                checked_prototype += 1
-                # a line may name the legacy mode only to say it is NOT part of this flow
-                if any(w in low for w in safety):
-                    assert ("not part of" in low or "no host placement" in low
-                            or "does not exist" in low or "unprotected execution" in low), (
-                        f"the prototype claims safety near a legacy marker: {line.strip()[:120]!r}")
-        assert checked_prototype > 0, "the prototype scan found nothing to check"
 
         for text in surfaces:
             low = text.lower()
