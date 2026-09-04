@@ -320,9 +320,11 @@ def _headings(page: Path) -> list:
 
 def check_refusal_cases(pages: list) -> None:
     """Every case the code can refuse with has to have its own entry on a named page."""
+    # SANDBOX-DOCS-DELTA-0004 / F-D4: returning early on an empty list skipped the stale
+    # comparison too, so a code base with no refusal cases at all would pass while eight entries
+    # advertised cases it no longer has. An empty list is an answer, and it is the one that makes
+    # every mapping stale.
     cases = FACTS["sandbox_runtime"].get("refusal_cases") or []
-    if not cases:
-        return
     by_name = {page.name: page for page in pages}
     for case in cases:
         entry = REFUSAL_CASE_ENTRIES.get(case)
@@ -377,7 +379,7 @@ def selftest_refusal_cases() -> tuple:
             if baseline:
                 fail("_checks/check_docs.py",
                      f"the refusal self-test's own pages do not satisfy the mapping: {baseline}")
-                return 0, 0
+                return 0, 0, 0
             # (1) one case the synthetic pages do not document
             FACTS["sandbox_runtime"]["refusal_cases"] = cases + ["a_case_nobody_wrote_about"]
             check_refusal_cases(pages)
@@ -391,10 +393,17 @@ def selftest_refusal_cases() -> tuple:
             stale = int(len(raised) == 1 and victim in raised[0]
                         and "no longer refuses" in raised[0])
             del problems[before:]
+            # (3) the code reports no cases at all: every mapping is stale, and that is a failure
+            #     rather than a reason to skip the comparison.
+            FACTS["sandbox_runtime"]["refusal_cases"] = []
+            check_refusal_cases(pages)
+            raised = problems[before:]
+            empty = int(bool(raised) and any("no longer refuses" in x for x in raised))
+            del problems[before:]
         finally:
             FACTS["sandbox_runtime"]["refusal_cases"] = real
             del problems[before:]
-    return undocumented, stale
+    return undocumented, stale, empty
 
 
 def check_secret_claims(pages: list) -> None:
@@ -545,11 +554,11 @@ def main() -> int:
     check_facts_consistency(pages + blog)
     check_secret_claims(pages + blog)
     check_refusal_cases(pages)
-    undocumented, stale = selftest_refusal_cases()
-    if (undocumented, stale) != (1, 1):
+    undocumented, stale, empty = selftest_refusal_cases()
+    if (undocumented, stale, empty) != (1, 1, 1):
         fail("_checks/check_docs.py",
-             f"the refusal-case check caught {undocumented} of 1 undocumented case and {stale} of "
-             "1 stale entry; it has to fail in both directions")
+             f"the refusal-case check caught {undocumented} of 1 undocumented case, {stale} of 1 "
+             f"stale entry and {empty} of 1 empty-list case; it has to fail in all three")
     check_local_only_claims(pages + blog)
     local = selftest_local_only_claims()
     if local != EXPECTED_PLANTED_LOCAL or len(PLANTED_LOCAL_CLAIMS) != EXPECTED_PLANTED_LOCAL:

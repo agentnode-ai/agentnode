@@ -224,7 +224,8 @@ not protected execution.
 ## A program that will not stop
 
 **In plain words.** A sandboxed program that runs past its time limit is ended — the program itself,
-not just the command that started it. You do not have to clean anything up.
+not just the command that started it — and when AgentNode reports an ordinary timeout it has already
+checked that nothing of it remains. In that case there is nothing for you to clean up.
 
 **Worth knowing, because it was not always true.** Until recently the time limit stopped the local
 command while the program carried on inside its workspace. AgentNode said "timed out" and something
@@ -233,7 +234,10 @@ workspace and checks it is gone.
 
 **If it cannot be shown to have stopped**, you get a different message from an ordinary timeout —
 one saying the workspace could not be confirmed gone. That is deliberate: a stop nobody could verify
-is not reported as a stop.
+is not reported as a stop. It also means the opposite of the paragraph above applies: something may
+still be running, and this is the one case where you may have to look. `agentnode sandbox doctor`
+tells you whether the runtime is answering at all, which is usually why this happened; your
+container runtime's own listing will show anything left behind.
 
 ---
 
