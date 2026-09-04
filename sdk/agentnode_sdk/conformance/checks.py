@@ -314,10 +314,24 @@ def check_limit_memory(ctx: Context) -> CheckResult:
         return CheckResult.probe_error(
             "limit-memory", "The memory limit is enforced", "limits",
             f"the allocation run recorded {killed!r} rather than whether it was stopped")
+    # EM3B-SUITE-0005: an ending is evidence about the ceiling only when the allocation began
+    # AND the ending is attributable to the ceiling. A non-zero exit is not by itself a limit
+    # binding -- a syntax error is also a non-zero exit.
+    if "started" in stress and not stress.get("started"):
+        return CheckResult.probe_error(
+            "limit-memory", "The memory limit is enforced", "limits",
+            f"the allocation never began (rc={stress.get('rc')}, stderr "
+            f"{str(stress.get('stderr_tail'))[:120]!r}), so nothing was measured about the ceiling")
+    if (not killed and not stress.get("completed", True)
+            and not stress.get("ended_by_the_ceiling", False)):
+        return CheckResult.probe_error(
+            "limit-memory", "The memory limit is enforced", "limits",
+            f"the allocation neither completed nor was stopped by the ceiling "
+            f"(rc={stress.get('rc')}), so that ending is not attributable to the limit")
     ok = actual == expected and killed
     evidence = (f"inside: the cgroup memory ceiling is {actual} bytes against the declared "
                 f"{expected} bytes; an allocation past that ceiling was "
-                + ("stopped" if killed else "NOT stopped"))
+                + ("stopped by it" if killed else "NOT stopped"))
     return CheckResult.measured("limit-memory", "The memory limit is enforced", "limits", ok,
                                 Vantage.INSIDE, evidence,
                                 detail={"cgroup": actual, "declared": expected, "stress": stress})

@@ -520,12 +520,15 @@ class TestAConfiguredCeilingIsNotAnEnforcedOne:
         assert self._memory(malformed).outcome is not Outcome.PASS
 
     def test_an_unstopped_allocation_fails(self):
-        r = self._memory({"requested_mb": 768, "rc": 0, "killed": False, "stdout_tail": "ALLOCATED"})
+        r = self._memory({"requested_mb": 768, "rc": 0, "started": True, "completed": True,
+                          "ended_by_the_ceiling": False, "killed": False,
+                          "stdout_tail": "ALLOCATED"})
         assert r.outcome is Outcome.FAIL
         assert "NOT stopped" in r.evidence
 
     def test_only_a_stopped_allocation_with_the_right_ceiling_passes(self):
-        r = self._memory({"requested_mb": 768, "rc": 137, "killed": True, "stdout_tail": ""})
+        r = self._memory({"requested_mb": 768, "rc": 137, "started": True, "completed": False,
+                          "ended_by_the_ceiling": True, "killed": True, "stdout_tail": ""})
         assert r.outcome is Outcome.PASS
 
     def test_a_stopped_allocation_against_the_wrong_ceiling_still_fails(self):
@@ -608,3 +611,56 @@ class TestNoCheckPassesOnAbsentInput:
         report = ConformanceReport(backend_identity="B", backend_version="1", runtime="x",
                                    image="i", generated_at="t", results=run_all(Context()))
         assert not report.is_conformant
+
+
+class TestAnEndingMustBeAttributableToTheCeiling:
+    """EM3B-SUITE-0005 / F-001: a non-zero exit is not a limit binding.
+
+    A syntax error, a missing interpreter, or an image that will not start all end non-zero with
+    no completion marker. Counting those as "the ceiling stopped it" is the same false positive
+    this suite exists to prevent, one layer further in.
+    """
+
+    def _memory(self, stress):
+        ctx = good_context()
+        ctx.stress["memory"] = stress
+        return {x.check_id: x for x in run_all(ctx)}["limit-memory"]
+
+    def test_an_allocation_that_never_began_measures_nothing(self):
+        r = self._memory({"requested_mb": 768, "rc": 1, "started": False, "completed": False,
+                          "ended_by_the_ceiling": False, "killed": False,
+                          "stderr_tail": "SyntaxError: invalid syntax"})
+        assert r.outcome is Outcome.PROBE_ERROR
+        assert "never began" in r.evidence
+
+    def test_an_unattributed_ending_is_not_the_ceiling(self):
+        r = self._memory({"requested_mb": 768, "rc": 2, "started": True, "completed": False,
+                          "ended_by_the_ceiling": False, "killed": False,
+                          "stderr_tail": "ImportError: no module named numpy"})
+        assert r.outcome is Outcome.PROBE_ERROR
+        assert "not attributable" in r.evidence
+
+    def test_the_runner_does_not_credit_an_unrelated_failure(self):
+        """The derivation itself, on the shape the runner records."""
+        import agentnode_sdk.conformance.runner as runner
+
+        for rc, stdout, stderr in [(1, "", "SyntaxError"), (127, "", "not found"),
+                                   (2, "", "ImportError")]:
+            started = "ALLOCATING" in stdout
+            by_ceiling = rc == runner.OOM_KILLED_RC or "MemoryError" in stderr
+            assert not (started and "ALLOCATED" not in stdout and by_ceiling), (
+                f"rc={rc} with no start marker would have been credited to the ceiling")
+
+    def test_the_runner_credits_a_real_kill(self):
+        import agentnode_sdk.conformance.runner as runner
+
+        rc, stdout, stderr = runner.OOM_KILLED_RC, "ALLOCATING\n", "Killed"
+        started, completed = "ALLOCATING" in stdout, "ALLOCATED" in stdout
+        by_ceiling = rc == runner.OOM_KILLED_RC or "MemoryError" in stderr
+        assert started and not completed and by_ceiling
+
+    def test_a_refused_allocation_inside_the_container_also_counts(self):
+        r = self._memory({"requested_mb": 768, "rc": 1, "started": True, "completed": False,
+                          "ended_by_the_ceiling": True, "killed": True,
+                          "stderr_tail": "MemoryError"})
+        assert r.outcome is Outcome.PASS

@@ -143,7 +143,7 @@ class GoodBackendDouble(_DoubleBase):
         if "time.sleep" in joined:
             return -1, "", f"\n[sandbox timed out after {timeout}s]"
         if "held.append" in joined:
-            return 137, "", "killed"
+            return 137, "ALLOCATING\n", "Killed"
         return 0, MARKER + json.dumps(self._readings) + "\n", ""
 
 
@@ -183,7 +183,7 @@ class BadBackendDouble(_DoubleBase):
         if "time.sleep" in joined:
             return 0, "", ""            # not stopped: the ceiling did not hold
         if "held.append" in joined:
-            return 0, "ALLOCATED 768\n", ""
+            return 0, "ALLOCATING\nALLOCATED 768\n", ""
         return 0, MARKER + json.dumps(self._readings) + "\n", ""
 
 

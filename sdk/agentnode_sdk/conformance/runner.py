@@ -33,6 +33,10 @@ ABSENT_RUNTIME = "agentnode-conformance-absent-runtime"
 TIMEOUT_RC = -1
 TIMEOUT_MARKER = "[sandbox timed out after"
 
+#: 128 + SIGKILL: what a container runtime reports when the kernel stops a process for
+#: exceeding its memory ceiling.
+OOM_KILLED_RC = 137
+
 #: A variable name released into the lifecycle run. The VALUE never leaves this process.
 CREDENTIAL_PROBE_NAME = "AGENTNODE_CONFORMANCE_RELEASED"
 
@@ -167,8 +171,13 @@ def _stress(backend, options, run_id):
         out["wallclock"] = {"_error": f"{type(exc).__name__}: {str(exc)[:160]}"}
     try:
         mb = options.memory_stress_mb
+        # EM3B-SUITE-0005: the payload says it got going BEFORE it allocates. Without that, a
+        # syntax error, a missing interpreter or an image that will not start all produce a
+        # non-zero exit with no ALLOCATED line -- and that used to read as "the ceiling stopped
+        # it". A run that never began measures nothing about a limit.
         code = (
             "import sys\n"
+            "print('ALLOCATING', flush=True)\n"
             "held = []\n"
             f"for _ in range({mb} // 32):\n"
             "    held.append(bytearray(32 * 1024 * 1024))\n"
@@ -178,10 +187,17 @@ def _stress(backend, options, run_id):
         spec = ProcessSpec(command=["python", "-c", code], network="none", clean_home=True,
                            name=f"agentnode-conformance-{run_id}-mem")
         r = _run(backend, spec, 60)
+        stdout, stderr = r["stdout"] or "", r["stderr"] or ""
+        started = "ALLOCATING" in stdout
+        completed = "ALLOCATED" in stdout
+        # What a ceiling looks like when it binds: the kernel kills the process, or the allocation
+        # is refused inside it. Anything else that ends the run is not the ceiling.
+        by_the_ceiling = r["rc"] == OOM_KILLED_RC or "MemoryError" in stderr
         out["memory"] = {
-            "requested_mb": mb, "rc": r["rc"],
-            "killed": r["rc"] != 0 or "ALLOCATED" not in (r["stdout"] or ""),
-            "stdout_tail": (r["stdout"] or "")[-80:].strip(),
+            "requested_mb": mb, "rc": r["rc"], "started": started, "completed": completed,
+            "ended_by_the_ceiling": by_the_ceiling,
+            "killed": started and not completed and by_the_ceiling,
+            "stdout_tail": stdout[-80:].strip(), "stderr_tail": stderr[-160:].strip(),
         }
     except Exception as exc:                                        # noqa: BLE001
         out["memory"] = {"_error": f"{type(exc).__name__}: {str(exc)[:160]}"}
