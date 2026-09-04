@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — the sandbox does what it said
+## 0.24.1 — the sandbox does what it said
 
 Three defects in the local sandbox runtime, found by the backend conformance suite (EM-3B)
 measuring a real container rather than reading its configuration. Each is a case where
@@ -39,6 +39,22 @@ AgentNode reported a property it was not enforcing.
   a re-check after a fix needs.
 - One-shot sandboxed runs are now named and labelled like the long-lived ones. Nothing
   filters on that label; it makes a run identifiable, which is the point.
+
+### Not fixed in this release
+
+- **Declared network levels are still not distinguished from one another.** A toolpack that
+  declares `restricted` receives the same open container network as one that declares
+  `unrestricted`: six recognised level names all map to the engine's default bridge. An unknown or
+  missing level is still correctly isolated (`--network none`), so this is not a case of an
+  unrecognised value being let through — the recognised names simply do not differ in what they
+  grant. The risk score meanwhile rates `internal` below `external`, which points the opposite way
+  from what the runtime does.
+
+  This release deliberately does not correct it. The correction requires a declared domain
+  allowlist in the package manifest, registry validation for it, and a refusal for packages that
+  ask for `restricted` without one — a behaviour change that refuses packages which work today,
+  and too large to carry inside a patch that exists to get two proven runtime fixes to people.
+  It ships separately, at a version that reflects the break.
 
 ## 0.24.0 — The container is the boundary
 
