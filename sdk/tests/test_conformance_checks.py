@@ -542,3 +542,69 @@ class TestAConfiguredCeilingIsNotAnEnforcedOne:
         # a double is never conformant anyway, so the substantive claim is that the check itself
         # is unproven rather than passing
         assert "limit-memory" in [r.check_id for r in report.unproven]
+
+
+class TestNoCheckPassesOnAbsentInput:
+    """The pattern behind five separate findings, guarded once instead of one case at a time.
+
+    Every one of them was the same shape: a check that could not see its input reported the good
+    answer. `_exists` on an inspect that failed, `_absent` in the regression, the leftovers query
+    on an exception, containment on an unfamiliar init, the memory ceiling with no allocation
+    attempted. Individually they were five bugs; together they are one, and it is cheaper to
+    assert the property than to keep discovering it.
+    """
+
+    def test_an_empty_context_produces_no_passes_at_all(self):
+        """Nothing was gathered. No property can hold on that."""
+        passed = [r.check_id for r in run_all(Context()) if r.outcome is Outcome.PASS]
+        assert passed == [], f"these checks passed with nothing to go on: {passed}"
+
+    def test_every_outcome_on_an_empty_context_says_why(self):
+        for r in run_all(Context()):
+            assert r.outcome in (Outcome.NOT_CHECKED, Outcome.PROBE_ERROR, Outcome.NOT_APPLICABLE,
+                                 Outcome.FAIL), r.check_id
+            assert r.evidence.strip(), f"{r.check_id} gave no reason"
+
+    def test_no_check_passes_when_the_probe_produced_nothing(self):
+        ctx = Context(probe_failure="the probe never ran", declared=dict(GOOD_DECLARED),
+                      stress=copy.deepcopy(GOOD_STRESS), host=copy.deepcopy(GOOD_HOST))
+        for r in run_all(ctx):
+            if r.outcome is Outcome.PASS:
+                assert r.check_id in NOT_PROBE_BACKED, (
+                    f"{r.check_id} passed although the probe produced nothing")
+
+    def test_no_stress_backed_check_passes_without_its_stress_run(self):
+        ctx = good_context()
+        ctx.stress.clear()
+        for r in run_all(ctx):
+            assert r.check_id not in ("limit-memory", "limit-wallclock")                 or r.outcome is not Outcome.PASS, f"{r.check_id} passed with no stress run"
+
+    #: Checks whose input is a stress RUN rather than a host observation. Blanking `host` leaves
+    #: them untouched, and they are covered by the stress test above.
+    STRESS_BACKED = {"limit-memory", "limit-wallclock"}
+    #: log-retention is not applicable to a local backend whatever is gathered, which is its own
+    #: honest answer rather than a pass.
+    NOT_HOST_BACKED = STRESS_BACKED | {"log-retention"}
+
+    def test_no_host_backed_check_passes_without_its_host_observation(self):
+        ctx = Context(readings=copy.deepcopy(doubles.GOOD_READINGS),
+                      declared=dict(GOOD_DECLARED), stress=copy.deepcopy(GOOD_STRESS), host={})
+        for r in run_all(ctx):
+            if r.check_id in NOT_PROBE_BACKED and r.check_id not in self.NOT_HOST_BACKED:
+                assert r.outcome is not Outcome.PASS, (
+                    f"{r.check_id} passed with no host observation behind it")
+
+    def test_the_two_groups_together_cover_every_check(self):
+        """A check in neither group would be guarded by neither test."""
+        registry_ids = {check_id for check_id, _fn, _required in REGISTRY}
+        probe_backed = registry_ids - NOT_PROBE_BACKED
+        host_backed = NOT_PROBE_BACKED - self.NOT_HOST_BACKED
+        covered = probe_backed | host_backed | self.STRESS_BACKED | {"log-retention"}
+        assert covered == registry_ids, f"guarded by nothing: {registry_ids - covered}"
+
+    def test_a_report_of_such_a_run_is_never_conformant(self):
+        from agentnode_sdk.conformance.report import ConformanceReport
+
+        report = ConformanceReport(backend_identity="B", backend_version="1", runtime="x",
+                                   image="i", generated_at="t", results=run_all(Context()))
+        assert not report.is_conformant
