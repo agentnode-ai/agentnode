@@ -13,6 +13,7 @@ failing on it. A test that passes on the old code proves nothing about the fix.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import threading
 import time
@@ -24,6 +25,13 @@ from agentnode_sdk.sandbox import container_backend as cb
 from agentnode_sdk.sandbox.refusal import RefusalCase, classify as _classify
 
 
+from agentnode_sdk.sandbox.types import (
+    ProcessSpec,
+    SandboxAvailability,
+    SandboxContainmentError,
+)
+
+
 def classify(*args, **kw):
     """Describe a platform, not this machine.
 
@@ -32,11 +40,6 @@ def classify(*args, **kw):
     `TestActionsAreWithheldWhereTheToolIsAbsent` is where the withholding itself is measured."""
     kw.setdefault("which", lambda tool: "/usr/bin/" + tool)
     return _classify(*args, **kw)
-from agentnode_sdk.sandbox.types import (
-    ProcessSpec,
-    SandboxAvailability,
-    SandboxContainmentError,
-)
 
 CID = "c0ffee" * 10 + "abcd"          # 64 hex chars, like a real container id
 OTHER = "dead" * 16                    # a concurrent, unrelated container
@@ -392,6 +395,9 @@ def _watch_for_container(runtime: str, prefix: str, seconds: float = 20.0):
         listed = subprocess.run(
             [runtime, "ps", "--filter", f"name={prefix}", "--format", "{{.Names}} {{.ID}}"],
             capture_output=True, text=True)
+        if listed.returncode != 0:
+            time.sleep(0.25)               # a failed listing is not an empty one; ask again
+            continue
         for line in listed.stdout.splitlines():
             parts = line.split()
             if len(parts) == 2 and parts[0].startswith(prefix):
@@ -400,10 +406,24 @@ def _watch_for_container(runtime: str, prefix: str, seconds: float = 20.0):
     return None, None
 
 
+#: How a runtime says a container is not there. Anything else it says is not that.
+_NO_SUCH = re.compile(r"no such (object|container)|error: no such", re.I)
+
+
 def _absent(runtime: str, ident: str) -> bool:
+    """Absent means the runtime SAID so.
+
+    EM3B-R1-MEASUREMENT-0001 / F2: the first version returned True on any non-zero exit or empty
+    output, so a permission error, a malformed invocation or a runtime that could not answer all
+    read as "the container is gone" -- the same hole the product fix had just closed, reproduced
+    in the check that was supposed to verify it. A verification that accepts silence verifies
+    nothing.
+    """
     r = subprocess.run([runtime, "inspect", "--format", "{{.Id}}", ident],
                        capture_output=True, text=True)
-    return r.returncode != 0 or not r.stdout.strip()
+    if r.returncode == 0:
+        return False                       # it answered with an id, or answered nothing useful
+    return bool(_NO_SUCH.search((r.stderr or "") + (r.stdout or "")))
 
 
 class TestTheResistantPayloadForReal:
@@ -469,6 +489,11 @@ class TestTheResistantPayloadForReal:
             # (7) nothing of it is left in any state, running or exited.
             listed = subprocess.run([runtime, "ps", "-a", "--filter", f"name={name}",
                                      "--format", "{{.Names}}"], capture_output=True, text=True)
+            # EM3B-R1-MEASUREMENT-0001 / F3: an empty answer from a command that failed is not an
+            # empty list of containers. The listing has to have succeeded before its emptiness
+            # means anything.
+            assert listed.returncode == 0, (
+                f"the runtime could not be asked what remains: {listed.stderr.strip()[:200]}")
             assert name not in listed.stdout, "the payload survived its own timeout"
 
             # (8) the bystander was never touched.
