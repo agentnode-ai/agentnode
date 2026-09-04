@@ -128,24 +128,29 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: release-artifacts-0.24.1
-          path: /tmp/dist
+          path: /tmp/art
 
-      - name: The files under test are the ones the build job produced
+      - name: STOP GATE — the files under test must BE the ones the build job produced
         run: |
           set -euo pipefail
-          cd /tmp/dist
-          ls -l
-          sha256sum agentnode_sdk-${VERSION}-py3-none-any.whl agentnode_sdk-${VERSION}.tar.gz
-          echo "--- as recorded by the build job ---"
-          cat DIGESTS.txt
+          find /tmp/art -type f -printf '%p %s bytes
+'
+          cd /tmp/art/dist
+          sha256sum "agentnode_sdk-${VERSION}-py3-none-any.whl" "agentnode_sdk-${VERSION}.tar.gz"             > /tmp/here.txt
+          echo "--- recorded by the build job ---"; cat /tmp/art/DIGESTS.txt
+          echo "--- the files actually downloaded here ---"; cat /tmp/here.txt
+          sort /tmp/art/DIGESTS.txt > /tmp/a.txt
+          sort /tmp/here.txt        > /tmp/b.txt
+          diff -u /tmp/a.txt /tmp/b.txt
+          echo "everything below is measured against exactly these bytes"
 
       - name: Package metadata, dependencies and file inventory
         run: |
           set -euo pipefail
           python -m pip install --quiet twine
-          cd /tmp/dist
+          cd /tmp/art/dist
           python -m twine check "agentnode_sdk-${VERSION}-py3-none-any.whl" "agentnode_sdk-${VERSION}.tar.gz"
-          python "${GITHUB_WORKSPACE}/.github/release-wheel-inventory.py" /tmp/dist "${VERSION}"
+          python "${GITHUB_WORKSPACE}/.github/release-wheel-inventory.py" /tmp/art/dist "${VERSION}"
 
       - name: Select and VERIFY the pinned container runtime
         run: |
@@ -181,7 +186,7 @@ jobs:
           set -euo pipefail
           python -m venv /tmp/rcvenv
           /tmp/rcvenv/bin/python -m pip install --quiet --upgrade pip
-          /tmp/rcvenv/bin/python -m pip install --quiet "/tmp/dist/agentnode_sdk-${VERSION}-py3-none-any.whl"
+          /tmp/rcvenv/bin/python -m pip install --quiet "/tmp/art/dist/agentnode_sdk-${VERSION}-py3-none-any.whl"
           /tmp/rcvenv/bin/python -c "import agentnode_sdk, pathlib; print('imported from', pathlib.Path(agentnode_sdk.__file__).parent)"
           test "$(/tmp/rcvenv/bin/agentnode --version)" = "agentnode ${VERSION}"
           /tmp/rcvenv/bin/python -c "import importlib.metadata as m; print('mcp resolved:', m.version('mcp'))"
@@ -219,7 +224,7 @@ jobs:
           set -euo pipefail
           python -m venv /tmp/rcvenv_sdist
           /tmp/rcvenv_sdist/bin/python -m pip install --quiet --upgrade pip
-          /tmp/rcvenv_sdist/bin/python -m pip install --quiet "/tmp/dist/agentnode_sdk-${VERSION}.tar.gz"
+          /tmp/rcvenv_sdist/bin/python -m pip install --quiet "/tmp/art/dist/agentnode_sdk-${VERSION}.tar.gz"
           test "$(/tmp/rcvenv_sdist/bin/agentnode --version)" = "agentnode ${VERSION}"
           echo "sdist install OK"
 
