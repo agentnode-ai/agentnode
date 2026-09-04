@@ -475,11 +475,28 @@ def measure_credential_lifecycle(backend, *, allowed: str = "example.com",
     except Exception as exc:                                        # noqa: BLE001
         out["_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         return out
+    remaining, problem = _egress_leftovers(handle.runtime if handle is not None else "")
+    if problem:
+        # EM3B-IMPLEMENTATION-0002 / F1: an exception or a failed command used to be recorded as an
+        # empty list, and an empty list reads as "nothing was left behind". A question the runtime
+        # would not answer is not an answer, and it must not become the evidence that the
+        # credential-carrying network is gone.
+        out["_error"] = problem
+        return out
+    out["leftovers"] = remaining
+    return out
+
+
+def _egress_leftovers(runtime: str):
+    """(what remains, why that could not be determined). Exactly one of the two is set."""
+    if not runtime:
+        return None, "no runtime was resolved, so nothing could be asked about what remained"
     try:
-        runtime = handle.runtime if handle is not None else ""
         left = subprocess.run([runtime, "network", "ls", "--filter", "name=agentnode-egress",
                                "--format", "{{.Name}}"], capture_output=True, text=True, timeout=15)
-        out["leftovers"] = [x for x in left.stdout.split() if x] if left.returncode == 0 else []
-    except Exception:                                               # noqa: BLE001
-        out["leftovers"] = []
-    return out
+    except Exception as exc:                                        # noqa: BLE001 - deliberate
+        return None, f"asking the runtime what remained raised {type(exc).__name__}: {str(exc)[:160]}"
+    if left.returncode != 0:
+        return None, ("the runtime refused to list what remained: "
+                      + (left.stderr or "").strip()[:160])
+    return [x for x in left.stdout.split() if x], None

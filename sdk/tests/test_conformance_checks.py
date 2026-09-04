@@ -306,3 +306,70 @@ class TestTheNegativesTheReviewAskedFor:
         ctx.host.pop("env_baseline")
         assert {x.check_id: x for x in run_all(ctx)}["secrets-only-by-release"].outcome \
             is Outcome.NOT_CHECKED
+
+
+class TestACleanupQueryThatFailsIsNotACleanResult:
+    """EM3B-IMPLEMENTATION-0002 / F1: the third time this project has written the same bug.
+
+    An exception while asking the runtime what remained was recorded as an empty list, and an
+    empty list is how "nothing was left behind" looks. A question the runtime would not answer
+    cannot be the evidence that the credential-carrying network is gone.
+    """
+
+    def test_an_exception_while_asking_is_not_an_empty_result(self, monkeypatch):
+        import agentnode_sdk.conformance.runner as runner
+
+        def boom(*a, **k):
+            raise OSError("the socket went away")
+
+        monkeypatch.setattr(runner.subprocess, "run", boom)
+        remaining, problem = runner._egress_leftovers("docker")
+        assert remaining is None
+        assert "raised OSError" in problem
+
+    def test_a_refused_listing_is_not_an_empty_result(self, monkeypatch):
+        import types as _types
+
+        import agentnode_sdk.conformance.runner as runner
+
+        monkeypatch.setattr(runner.subprocess, "run",
+                            lambda *a, **k: _types.SimpleNamespace(
+                                returncode=1, stdout="", stderr="permission denied"))
+        remaining, problem = runner._egress_leftovers("docker")
+        assert remaining is None and "refused" in problem
+
+    def test_no_runtime_is_not_an_empty_result(self):
+        import agentnode_sdk.conformance.runner as runner
+
+        remaining, problem = runner._egress_leftovers("")
+        assert remaining is None and problem
+
+    def test_an_answered_empty_listing_is_an_empty_result(self, monkeypatch):
+        import types as _types
+
+        import agentnode_sdk.conformance.runner as runner
+
+        monkeypatch.setattr(runner.subprocess, "run",
+                            lambda *a, **k: _types.SimpleNamespace(
+                                returncode=0, stdout="\n", stderr=""))
+        assert runner._egress_leftovers("docker") == ([], None)
+
+    def test_the_check_cannot_pass_on_an_unanswered_cleanup(self):
+        ctx = good_context()
+        ctx.host["credential_lifecycle"] = {
+            "name": "N", "present_when_released": True, "present_afterwards": False,
+            "_error": "asking the runtime what remained raised OSError: the socket went away"}
+        r = {x.check_id: x for x in run_all(ctx)}["credentials-not-persisted"]
+        assert r.outcome is Outcome.PROBE_ERROR
+        assert "socket went away" in r.evidence
+
+    def test_and_such_a_report_is_not_conformant(self):
+        from agentnode_sdk.conformance.report import CheckResult, ConformanceReport
+
+        report = ConformanceReport(
+            backend_identity="B", backend_version="1", runtime="docker", image="i",
+            generated_at="t",
+            results=(CheckResult.probe_error("credentials-not-persisted", "t", "credentials",
+                                             "the cleanup query was not answered"),))
+        assert not report.is_conformant
+        assert "credentials-not-persisted" in report.summary_line()
