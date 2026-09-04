@@ -373,3 +373,76 @@ class TestACleanupQueryThatFailsIsNotACleanResult:
                                              "the cleanup query was not answered"),))
         assert not report.is_conformant
         assert "credentials-not-persisted" in report.summary_line()
+
+
+#: Every check this suite is required to make, written out rather than read from the registry.
+#: EM3B-SUITE-0001 / F1: the serialisation test compared the produced result count with
+#: `len(REGISTRY)`, so both sides of it moved together. Deleting a check removed it from the
+#: expectation as well as from the run, the remaining checks still passed, and the report was
+#: still "conformant" -- coverage could shrink without anything going red. This list is the
+#: independent side of that comparison, and changing what the suite covers means changing it here
+#: too, deliberately.
+REQUIRED_CHECK_IDS = (
+    "identity",
+    "outside-host-process",
+    "not-root",
+    "read-only-root",
+    "declared-mounts-only",
+    "no-runtime-socket",
+    "capabilities-dropped",
+    "no-new-privileges",
+    "network-mode",
+    "egress-allowlist",
+    "limit-memory",
+    "limit-pids",
+    "limit-cpu",
+    "limit-disk",
+    "limit-wallclock",
+    "clean-home",
+    "secrets-only-by-release",
+    "secrets-refused-without-egress",
+    "run-leaves-nothing",
+    "credentials-not-persisted",
+    "cancel-and-kill",
+    "backend-loss",
+    "log-retention",
+    "errors-are-usable",
+)
+
+
+class TestTheCheckInventoryCannotShrinkQuietly:
+    def test_the_registry_is_exactly_the_required_checks(self):
+        registry_ids = [check_id for check_id, _fn, _required in REGISTRY]
+        assert len(REQUIRED_CHECK_IDS) == 24, "the required inventory is 24 checks"
+        missing = [c for c in REQUIRED_CHECK_IDS if c not in registry_ids]
+        extra = [c for c in registry_ids if c not in REQUIRED_CHECK_IDS]
+        assert not missing, f"the suite no longer makes these checks: {missing}"
+        assert not extra, (
+            f"the suite makes checks the required inventory does not list: {extra}. Adding one is "
+            "fine -- add it to REQUIRED_CHECK_IDS in the same change, so the two stay deliberate")
+        assert len(registry_ids) == len(set(registry_ids)), "a check id appears twice"
+        assert registry_ids == list(REQUIRED_CHECK_IDS), (
+            "the registry order differs from the required inventory; the report is read in order")
+
+    def test_every_required_check_is_marked_required(self):
+        for check_id, _fn, required in REGISTRY:
+            assert required, f"{check_id} is in the required inventory but is not marked required"
+
+    def test_a_report_covers_every_required_check(self):
+        report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False),
+                                 egress_matrix=GOOD_HOST["egress_matrix"])
+        produced = [r.check_id for r in report.results]
+        assert produced == list(REQUIRED_CHECK_IDS), (
+            "a run produced a different set of checks than the suite is required to make")
+
+    def test_a_shortened_registry_is_caught(self, monkeypatch):
+        """The failure this guard exists for: a check quietly removed."""
+        import agentnode_sdk.conformance.checks as mod
+
+        monkeypatch.setattr(mod, "REGISTRY", tuple(r for r in mod.REGISTRY
+                                                   if r[0] != "limit-memory"))
+        produced = [r.check_id for r in mod.run_all(good_context())]
+        assert "limit-memory" not in produced
+        assert produced != list(REQUIRED_CHECK_IDS), (
+            "the guard must notice a missing check")
