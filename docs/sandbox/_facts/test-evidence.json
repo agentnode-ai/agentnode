@@ -1,0 +1,213 @@
+{
+  "_comment": [
+    "Recorded execution results, one key per row of availability.md that claims 'available, tested'.",
+    "SANDBOX-DOCS-0002 / F-D2-EVIDENCE-NOT-ROW-SPECIFIC: the previous version had a single shared",
+    "'linux_ci' bucket, so any one recorded run satisfied every Linux row. It does not any more:",
+    "a key belongs to exactly one row, generation fails if two rows share one, and every assertion",
+    "must name a node id or a named check together with the outcome that was recorded for it.",
+    "The pytest outcomes are taken from the per-test lane reports that run 33633469871 uploaded as",
+    "artifacts (tests/lanes/conftest_report.py writes them); they are reproduced in ci-lane-record.txt."
+  ],
+  "evidence": {
+    "linux_local_sandbox": {
+      "summary": "ubuntu-24.04: a real container started by the installed wheel, with the hardening asserted on the live process",
+      "platform": "ubuntu-24.04 (GitHub Actions)",
+      "assertions": [
+        {
+          "kind": "check",
+          "check": "the installed package runs a real container (rc=0)",
+          "outcome": "passed",
+          "run_id": "33654001890",
+          "job": "artifact-smoke",
+          "raw_record": "ci-lane-record.txt"
+        },
+        {
+          "kind": "check",
+          "check": "the container process runs as uid 1000, not root",
+          "outcome": "passed",
+          "run_id": "33654001890",
+          "job": "artifact-smoke",
+          "raw_record": "ci-lane-record.txt"
+        },
+        {
+          "kind": "check",
+          "check": "the container root filesystem is read-only",
+          "outcome": "passed",
+          "run_id": "33654001890",
+          "job": "artifact-smoke",
+          "raw_record": "ci-lane-record.txt"
+        },
+        {
+          "kind": "check",
+          "check": "HOME is a 16 MiB tmpfs",
+          "outcome": "passed",
+          "run_id": "33654001890",
+          "job": "artifact-smoke",
+          "raw_record": "ci-lane-record.txt"
+        }
+      ]
+    },
+    "linux_toolpack_container": {
+      "summary": "ubuntu-24.04: a tool pack built into a sealed volume and run from it",
+      "platform": "ubuntu-24.04 (GitHub Actions)",
+      "assertions": [
+        {
+          "kind": "pytest",
+          "node_id": "tests/test_sandbox_e2e.py::test_toolpack_build_and_run_real",
+          "outcome": "passed",
+          "run_id": "33633469871",
+          "lane": "lane-runtime-present",
+          "raw_record": "ci-lane-record.txt",
+          "note": "collected but skipped in lane-ordinary, so this outcome is the test actually executing here, not a no-op"
+        },
+        {
+          "kind": "pytest",
+          "node_id": "tests/test_sandbox_e2e.py::test_run_failclosed_when_volume_removed",
+          "outcome": "passed",
+          "run_id": "33633469871",
+          "lane": "lane-runtime-present",
+          "raw_record": "ci-lane-record.txt",
+          "note": "collected but skipped in lane-ordinary, so this outcome is the test actually executing here, not a no-op"
+        }
+      ]
+    },
+    "linux_mcp_container": {
+      "summary": "ubuntu-24.04: real MCP servers started in a container, both the Python and the npm path",
+      "platform": "ubuntu-24.04 (GitHub Actions)",
+      "assertions": [
+        {
+          "kind": "pytest",
+          "node_id": "tests/test_sandbox_e2e.py::test_mcp_starts_in_container_real",
+          "outcome": "passed",
+          "run_id": "33633469871",
+          "lane": "lane-runtime-present",
+          "raw_record": "ci-lane-record.txt",
+          "note": "collected but skipped in lane-ordinary, so this outcome is the test actually executing here, not a no-op"
+        },
+        {
+          "kind": "pytest",
+          "node_id": "tests/test_sandbox_e2e.py::test_npm_mcp_starts_in_container_real",
+          "outcome": "passed",
+          "run_id": "33633469871",
+          "lane": "lane-runtime-present",
+          "raw_record": "ci-lane-record.txt",
+          "note": "collected but skipped in lane-ordinary, so this outcome is the test actually executing here, not a no-op"
+        },
+        {
+          "kind": "pytest",
+          "node_id": "tests/test_sandbox_e2e.py::test_mcp_preinstall_cache_lands_only_in_private_tmp",
+          "outcome": "passed",
+          "run_id": "33633469871",
+          "lane": "lane-runtime-present",
+          "raw_record": "ci-lane-record.txt",
+          "note": "collected but skipped in lane-ordinary, so this outcome is the test actually executing here, not a no-op"
+        },
+        {
+          "kind": "pytest",
+          "node_id": "tests/test_sandbox_e2e.py::test_npm_preinstall_cache_lands_only_in_private_tmp",
+          "outcome": "passed",
+          "run_id": "33633469871",
+          "lane": "lane-runtime-present",
+          "raw_record": "ci-lane-record.txt",
+          "note": "collected but skipped in lane-ordinary, so this outcome is the test actually executing here, not a no-op"
+        },
+        {
+          "kind": "check",
+          "check": "the MCP started in a container named agentnode-mcp-release-smoke-mcp-ee610048",
+          "outcome": "passed",
+          "run_id": "33654001890",
+          "job": "artifact-smoke",
+          "raw_record": "ci-lane-record.txt",
+          "note": "against the installed wheel, not the source tree"
+        }
+      ]
+    },
+    "linux_agent_container": {
+      "summary": "ubuntu-24.04: a community agent executed inside the sandbox",
+      "platform": "ubuntu-24.04 (GitHub Actions)",
+      "assertions": [
+        {
+          "kind": "pytest",
+          "node_id": "tests/test_agent_sandbox_e2e.py::test_agent_sandbox_e2e",
+          "outcome": "passed",
+          "run_id": "33633469871",
+          "lane": "lane-runtime-present",
+          "raw_record": "ci-lane-record.txt",
+          "note": "collected but skipped in lane-ordinary, so this outcome is the test actually executing here, not a no-op"
+        }
+      ]
+    },
+    "runtime_absent_refusal": {
+      "summary": "ubuntu-24.04 with docker, podman and the socket removed from the job: the refusal, not a fallback",
+      "platform": "ubuntu-24.04 (GitHub Actions), plus one manual observation on Windows",
+      "assertions": [
+        {
+          "kind": "pytest",
+          "node_id": "tests/test_shipped_default_live_paths.py::TestLiveGateRefusesWhenNoRuntimeExists::test_real_discovery_finds_no_runtime",
+          "outcome": "passed",
+          "run_id": "33633469871",
+          "lane": "lane-runtime-absent",
+          "raw_record": "ci-lane-record.txt",
+          "note": "this class is 'mandatory' for this lane in FROZEN_INVENTORY.json: the lane fails if it skips"
+        },
+        {
+          "kind": "pytest",
+          "node_id": "tests/test_shipped_default_live_paths.py::TestLiveGateRefusesWhenNoRuntimeExists::test_the_gate_itself_also_refuses",
+          "outcome": "passed",
+          "run_id": "33633469871",
+          "lane": "lane-runtime-absent",
+          "raw_record": "ci-lane-record.txt"
+        },
+        {
+          "kind": "pytest",
+          "node_id": "tests/test_shipped_default_live_paths.py::TestLiveGateRefusesWhenNoRuntimeExists::test_trusted_is_refused_through_the_public_routing_entrypoint",
+          "outcome": "passed",
+          "run_id": "33633469871",
+          "lane": "lane-runtime-absent",
+          "raw_record": "ci-lane-record.txt"
+        },
+        {
+          "kind": "pytest",
+          "node_id": "tests/test_shipped_default_live_paths.py::TestLiveGateRefusesWhenNoRuntimeExists::test_curated_still_runs_on_the_host_without_a_runtime",
+          "outcome": "passed",
+          "run_id": "33633469871",
+          "lane": "lane-runtime-absent",
+          "raw_record": "ci-lane-record.txt"
+        },
+        {
+          "kind": "manual",
+          "check": "Windows 11 with no container runtime installed: run_tool on a trusted pack returned success=False, mode_used=sandbox_unavailable",
+          "outcome": "observed",
+          "run_id": "manual-2026-09-02",
+          "raw_record": "ci-lane-record.txt",
+          "note": "a hand observation, and on its own it carries nothing: a tested status needs at least one machine-recorded assertion"
+        }
+      ]
+    },
+    "none": {
+      "summary": "nothing has run this here",
+      "platform": null,
+      "assertions": []
+    },
+    "code_only": {
+      "summary": "no run — this row is a source fact, read out of the SDK by extract_facts.py",
+      "platform": null,
+      "assertions": []
+    },
+    "linux_egress_topology": {
+      "summary": "ubuntu-24.04: the Stage-0A bypass matrix run inside a container on the internal network",
+      "platform": "ubuntu-24.04 (GitHub Actions)",
+      "assertions": [
+        {
+          "kind": "pytest",
+          "node_id": "tests/test_egress_e2e.py::test_egress_e2e_matrix",
+          "outcome": "passed",
+          "run_id": "33633469871",
+          "lane": "lane-runtime-present",
+          "raw_record": "ci-lane-record.txt",
+          "note": "creates the internal network and the dual-homed proxy for real, then from inside the container tries direct connections to two public addresses and a resolved host, an unproxied request, an allowed host through the proxy and a host that is not on the allowlist; collected but skipped in lane-ordinary"
+        }
+      ]
+    }
+  }
+}
