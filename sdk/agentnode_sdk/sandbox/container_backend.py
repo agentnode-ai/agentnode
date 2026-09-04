@@ -8,17 +8,34 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
+import time
+import uuid
+
+from dataclasses import replace
 
 from agentnode_sdk.sandbox.agent_session import AgentSandboxSession
 from agentnode_sdk.sandbox.backend import SandboxBackend
-from agentnode_sdk.sandbox.types import ProcessSpec, SandboxAvailability, SandboxRequiredError
+from agentnode_sdk.sandbox.types import (
+    ProcessSpec,
+    SandboxAvailability,
+    SandboxContainmentError,
+    SandboxRequiredError,
+)
 
 # Stage 3B-2a: a valid env-var NAME for name-only secret pass-through (`--env NAME`).
 _ENV_PASSTHROUGH_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _is_placeholder(image: str) -> bool:
+    """A digest of all zeroes is the marker for a build with no activated image."""
+    tail = (image or "").rsplit(":", 1)[-1]
+    return bool(tail) and set(tail) == {"0"}
 
 
 def sandbox_volume_name(slug: str, version: str | None, artifact_hash: str | None) -> str:
@@ -74,10 +91,41 @@ _HARDENED_FLAGS = [
     "--user", "1000:1000",
     "--pids-limit", "256",
     "--memory", "512m",
+    # EM-3B-R1/R2. `--memory` alone is not a ceiling: with no `--memory-swap`, the runtime grants
+    # a swap allowance of twice the memory limit, and the conformance suite watched a 768 MiB
+    # allocation finish with exit code 0 under a 512 MiB "limit". Equal values mean the total of
+    # memory AND swap is the limit, which is the only form of it a payload cannot walk around.
+    "--memory-swap", "512m",
     "--cpus", "1",
 ]
 
 _PROBE_TIMEOUT = 5  # seconds; check_available must stay fast (no long ops, no pull)
+
+# EM3B-R1-REVIEW-0003 / F1. "The container is gone" and "I could not find out" are different
+# answers, and a boolean cannot hold both. A runtime says a container is absent in one specific
+# way; anything else -- no answer, an empty answer, an error that is not that one -- is unknown,
+# and unknown must never be read as absent.
+PRESENT, ABSENT, UNKNOWN = "present", "absent", "unknown"
+_NO_SUCH = re.compile(r"no such (object|container|image)|error: no such", re.I)
+_CLIENT_REAP_TIMEOUT = 10   # how long the runtime client gets to die after being killed
+_KILL_TIMEOUT = 30          # how long the runtime gets to remove the container
+_REAP_TIMEOUT = 30          # how long the container gets to disappear afterwards
+
+
+def _run_runtime(argv: list, timeout: float = _PROBE_TIMEOUT):
+    """Run a runtime command, or return None if it could not be run at all."""
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except Exception:                                              # noqa: BLE001 - deliberate
+        return None
+
+
+def _remove_quietly(path: str, directory: str) -> None:
+    for target, remover in ((path, os.unlink), (directory, os.rmdir)):
+        try:
+            remover(target)
+        except OSError:
+            pass
 
 
 class ContainerBackend(SandboxBackend):
@@ -88,8 +136,9 @@ class ContainerBackend(SandboxBackend):
 
     # -- detection -----------------------------------------------------------
 
-    def check_available(self) -> SandboxAvailability:
-        if self._cached is None:
+    def check_available(self, force: bool = False) -> SandboxAvailability:
+        """Cached probe. ``force`` re-asks, which is what a re-check after a fix needs."""
+        if self._cached is None or force:
             self._cached = self._probe()
         return self._cached
 
@@ -99,11 +148,32 @@ class ContainerBackend(SandboxBackend):
             path = shutil.which(rt)
             if not path:
                 continue
-            if not self._runtime_ok(path):
+            ok, probe_error = self._runtime_ok(path)
+            if not ok:
                 return SandboxAvailability(
                     available=False, backend=rt,
                     reason=f"{rt} found but its daemon is not reachable",
-                    executable_path=path, daemon_ok=False,
+                    executable_path=path, daemon_ok=False, probe_error=probe_error,
+                )
+            engine_os, mem_ok = self._engine_facts(path)
+            if mem_ok is not True:
+                # EM3B-R1-REVIEW-0001 / F2. An engine that cannot account for swap does not hold
+                # the declared memory ceiling, whatever the flags say. Running community code
+                # under a ceiling that may not bind is running it under no ceiling, so this is
+                # fail-closed rather than a note in a report.
+                return SandboxAvailability(
+                    available=False, backend=rt,
+                    reason=(f"{rt} cannot enforce the declared memory ceiling "
+                            f"(memory_limit_enforceable={mem_ok!r})"),
+                    executable_path=path, daemon_ok=True, engine_os=engine_os,
+                    memory_limit_enforceable=mem_ok,
+                )
+            if engine_os not in ("", "linux"):
+                return SandboxAvailability(
+                    available=False, backend=rt,
+                    reason=f"{rt} is running {engine_os} containers; the pinned image needs linux",
+                    executable_path=path, daemon_ok=True, engine_os=engine_os,
+                    memory_limit_enforceable=mem_ok,
                 )
             image_ok = self._image_present(path)
             return SandboxAvailability(
@@ -111,18 +181,49 @@ class ContainerBackend(SandboxBackend):
                 reason="" if image_ok else "sandbox image not present (pull required)",
                 executable_path=path, daemon_ok=True,
                 image_available=image_ok, image_digest=self._image,
+                engine_os=engine_os, memory_limit_enforceable=mem_ok,
             )
         return SandboxAvailability(
             available=False, backend="none",
             reason="no container runtime (docker or podman) found on PATH",
         )
 
-    def _runtime_ok(self, path: str) -> bool:
-        try:
-            r = subprocess.run([path, "info"], capture_output=True, timeout=_PROBE_TIMEOUT)
-            return r.returncode == 0
-        except Exception:
-            return False
+    def _runtime_ok(self, path: str) -> tuple[bool, str]:
+        """(usable, what it said). EM-3B-R1/R3: the message is what tells a permission problem
+        apart from a stopped daemon, and the old boolean threw it away."""
+        r = _run_runtime([path, "info"])
+        if r is None:
+            return False, "the runtime did not answer within the probe timeout"
+        if r.returncode == 0:
+            return True, ""
+        return False, ((r.stderr or "") + (r.stdout or "")).strip()[:400]
+
+    def _engine_facts(self, path: str) -> tuple[str, bool | None]:
+        """(container OS, whether this engine reports it can hold a memory AND swap ceiling).
+
+        EM-3B-R1/R2: an engine that cannot account for swap cannot enforce the ceiling this
+        backend asks for. That is recorded rather than assumed, so a conformance report can say
+        so instead of resting on the flag having been passed.
+        """
+        r = _run_runtime([path, "info", "--format", "{{.OSType}}|{{.MemoryLimit}}|{{.SwapLimit}}"])
+        if r is None or r.returncode != 0:
+            return "", None
+        parts = (r.stdout or "").strip().split("|")
+        engine_os = parts[0].strip().lower() if parts else ""
+        if len(parts) >= 3:
+            mem, swap = parts[1].strip().lower(), parts[2].strip().lower()
+            if mem in ("true", "false") and swap in ("true", "false"):
+                return engine_os, (mem == "true" and swap == "true")
+        # Podman has no .MemoryLimit/.SwapLimit: those are Docker's fields. Asking it in Docker's
+        # words and calling the empty answer "cannot enforce" would refuse every Podman host.
+        # Under cgroup v2 the memory-and-swap ceiling is accounted for by default, and that is a
+        # question Podman does answer.
+        v = _run_runtime([path, "info", "--format", "{{.Host.CgroupsVersion}}"])
+        if v is not None and v.returncode == 0:
+            version = (v.stdout or "").strip().lower()
+            if version:
+                return engine_os or "linux", version in ("v2", "2")
+        return engine_os, None
 
     def _image_present(self, path: str) -> bool:
         try:
@@ -135,6 +236,20 @@ class ContainerBackend(SandboxBackend):
             return False
 
     # -- pure argv construction (no execution) -------------------------------
+
+    def refusal(self):
+        """The structured refusal for the current state, or None when the sandbox is usable.
+
+        EM-3B-R1/R3. One classifier, so what the SDK says and what the doctor prints cannot drift.
+        """
+        from agentnode_sdk.sandbox.refusal import classify
+
+        return classify(self.check_available(), placeholder=_is_placeholder(self._image),
+                        probe_error=self.check_available().probe_error)
+
+    def explain_unavailable(self) -> str:
+        refusal = self.refusal()
+        return "" if refusal is None else refusal.render()
 
     def wrap_command(self, spec: ProcessSpec) -> list[str]:
         rt = self._runtime
@@ -252,11 +367,20 @@ class ContainerBackend(SandboxBackend):
         """Build the hardened argv and run it once, capturing stdout/stderr.
 
         Returns ``(returncode, stdout, stderr)``. A timeout returns
-        ``(-1, partial_stdout, stderr + marker)`` so callers can distinguish it.
-        Used for BOTH the toolpack build (pip install into the volume) and the
-        per-call run (``python -c <wrapper>``, JSON stdin → JSON stdout).
+        ``(-1, partial_stdout, stderr + marker)`` so callers can distinguish it. Used for BOTH the
+        toolpack build (pip install into the volume) and the per-call run.
+
+        **EM-3B-R1.** Killing the ``docker run`` client does not stop the container -- the client
+        is a pipe to a daemon that owns the process, and ``--rm`` only removes a container that
+        exits. The conformance suite caught the consequence: the SDK reported a timeout while the
+        payload kept running. Every run now carries an exact identity (a unique name AND a cidfile)
+        and a timeout ends that exact container, waits for the removal, and verifies that neither
+        the id nor the name remains. If any of that cannot be shown,
+        :class:`SandboxContainmentError` is raised rather than the ordinary timeout being returned:
+        a stop nobody could verify is not a stop.
         """
-        argv = self.wrap_command(spec)
+        spec, name, cidfile, tmpdir = self._with_identity(spec)
+        argv = self._argv_with_cidfile(spec, cidfile)
         proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -265,12 +389,134 @@ class ContainerBackend(SandboxBackend):
             text=True,
         )
         try:
-            out, err = proc.communicate(input=input_text, timeout=timeout)
-        except subprocess.TimeoutExpired:
+            try:
+                out, err = proc.communicate(input=input_text, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return self._end_timed_out_run(proc, argv[0], name, cidfile, timeout)
+            return proc.returncode, out or "", err or ""
+        finally:
+            _remove_quietly(cidfile, tmpdir)
+
+    # -- EM-3B-R1: identity, and ending a run that ignored its deadline -------
+
+    def _with_identity(self, spec: ProcessSpec):
+        """Give every run an exact identity. Nothing here can target another container.
+
+        A name alone is targetable from the moment the command is built; a cidfile alone is the
+        container itself but does not exist until the runtime creates it. Carrying both means the
+        timeout path always has something exact to act on, and a disagreement between them is
+        itself a containment failure rather than a coin toss.
+        """
+        # EM3B-R1-REVIEW-0001 / F3. A supplied name must never BE the target: if a container of
+        # that name already exists -- a leftover, or another process's -- a timeout firing before
+        # the cidfile is written would resolve that container and remove it. Every run gets a
+        # fresh suffix, so the name this run targets cannot be anyone else's. Callers that filter
+        # by their own prefix still match.
+        suffix = uuid.uuid4().hex
+        name = f"{spec.name}-{suffix[:12]}" if spec.name else f"agentnode-run-{suffix}"
+        tmpdir = tempfile.mkdtemp(prefix="agentnode-cid-")
+        cidfile = os.path.join(tmpdir, "cid")      # must NOT exist: the runtime creates it
+        if spec.name != name:
+            spec = replace(spec, name=name)
+        return spec, name, cidfile, tmpdir
+
+    def _argv_with_cidfile(self, spec: ProcessSpec, cidfile: str) -> list[str]:
+        argv = self.wrap_command(spec)
+        return argv[:2] + ["--cidfile", cidfile] + argv[2:]
+
+    def _resolve_identity(self, runtime: str, name: str, cidfile: str):
+        """(container id, how it was resolved). Exact lookups only -- never a pattern or a prefix."""
+        from_file = ""
+        try:
+            with open(cidfile, encoding="utf-8") as fh:
+                from_file = fh.read().strip()
+        except OSError:
+            pass
+        from_name = ""
+        r = _run_runtime([runtime, "inspect", "--format", "{{.Id}}", name])
+        if r is not None and r.returncode == 0:
+            from_name = r.stdout.strip()
+        if from_file and from_name and not (from_file.startswith(from_name)
+                                            or from_name.startswith(from_file)):
+            raise SandboxContainmentError(
+                "the run's cidfile and its name resolve to different containers "
+                f"({from_file[:12]} vs {from_name[:12]}) -- refusing to stop either, because "
+                "stopping the wrong container is worse than reporting this")
+        return (from_file or from_name), ("cidfile" if from_file else
+                                          ("name" if from_name else "none"))
+
+    def _presence(self, runtime: str, ident: str) -> str:
+        """PRESENT, ABSENT or UNKNOWN. Absence has to be stated by the runtime, never inferred.
+
+        EM3B-R1-REVIEW-0003 / F1: the previous version returned False when the container was gone
+        AND when the inspect failed, so a runtime that could not answer looked like a verified
+        removal and the run returned an ordinary timeout.
+        """
+        r = _run_runtime([runtime, "inspect", "--format", "{{.Id}}", ident])
+        if r is None:
+            return UNKNOWN
+        if r.returncode == 0:
+            return PRESENT if r.stdout.strip() else UNKNOWN
+        if _NO_SUCH.search((r.stderr or "") + (r.stdout or "")):
+            return ABSENT
+        return UNKNOWN
+
+    def _exists(self, runtime: str, ident: str) -> bool:
+        """Kept for callers that only ask whether something is there. UNKNOWN is not absence."""
+        return self._presence(runtime, ident) == PRESENT
+
+    def _end_timed_out_run(self, proc, runtime: str, name: str, cidfile: str, timeout: float):
+        """Stop the client, then the container, then prove the container is gone."""
+        try:
             proc.kill()
-            out, err = proc.communicate()
+        except Exception:                                          # noqa: BLE001
+            pass
+        try:
+            out, err = proc.communicate(timeout=_CLIENT_REAP_TIMEOUT)
+        except Exception:                                          # noqa: BLE001
+            out, err = "", ""
+        if proc.poll() is None:
+            raise SandboxContainmentError(
+                "the runtime client would not terminate after the sandbox timed out, so the "
+                "payload cannot be shown to have stopped")
+
+        ident, how = self._resolve_identity(runtime, name, cidfile)
+        if not ident:
+            # The timeout may have fired before the runtime created anything. That is only
+            # acceptable when the runtime SAYS nothing by this exact name exists -- not when it
+            # merely failed to tell us.
+            state = self._presence(runtime, name)
+            if state is not ABSENT:
+                raise SandboxContainmentError(
+                    f"no identity could be resolved for this run and the runtime reports "
+                    f"{name} as {state}, so it cannot be shown to have stopped")
             return -1, out or "", (err or "") + f"\n[sandbox timed out after {timeout}s]"
-        return proc.returncode, out or "", err or ""
+
+        removed = _run_runtime([runtime, "rm", "-f", ident], timeout=_KILL_TIMEOUT)
+        if removed is None:
+            raise SandboxContainmentError(
+                f"the runtime did not answer the request to stop container {ident[:12]} after the "
+                "sandbox timed out")
+        if removed.returncode != 0 and self._presence(runtime, ident) is not ABSENT:
+            raise SandboxContainmentError(
+                f"stopping container {ident[:12]} failed ({removed.stderr.strip()[:160]}) and it "
+                "cannot be shown to be gone")
+
+        # Both identities must be reported ABSENT by the runtime. A state it will not tell us is
+        # not a state we may accept: this loop keeps asking, and running out of patience with an
+        # unanswered question is a containment failure, not a timeout.
+        deadline = time.monotonic() + _REAP_TIMEOUT
+        states = (UNKNOWN, UNKNOWN)
+        while time.monotonic() < deadline:
+            states = (self._presence(runtime, ident), self._presence(runtime, name))
+            if states == (ABSENT, ABSENT):
+                return -1, out or "", (err or "") + f"\n[sandbox timed out after {timeout}s]"
+            time.sleep(0.1)
+        raise SandboxContainmentError(
+            f"container {ident[:12]} (resolved by {how}) could not be shown to be gone after being "
+            f"stopped: the runtime reports it as {states[0]} by id and {states[1]} by name, so the "
+            "payload may still be running"
+        )
 
     # -- long-lived agent session (B1) ---------------------------------------
 

@@ -1,0 +1,666 @@
+"""EM-3B: every check, against a good context, a bad one, and a context with nothing in it.
+
+The third case is the one that matters most. A suite that cannot tell "the backend did not do this"
+from "I could not see whether the backend did this" will eventually accuse a correct backend and,
+far worse, eventually clear a broken one. So each check is shown to report `probe_error` -- not
+`fail` -- when its own reading is missing or itself failed.
+"""
+from __future__ import annotations
+
+import copy
+
+import pytest
+
+from agentnode_sdk.conformance import doubles
+from agentnode_sdk.conformance.checks import REGISTRY, Context, run_all
+from agentnode_sdk.conformance.report import Outcome, Vantage
+from agentnode_sdk.conformance.runner import SuiteOptions, run_conformance
+
+GOOD_DECLARED = {
+    "memory": "536870912", "pids": "256", "cpus": "1", "tmp_size": "64m",
+    "home_size": "16m", "home_path": "/sandbox-home", "network": "none",
+    "mount_targets": [], "env_names": [],
+}
+GOOD_HOST = {
+    "runtime_version": "docker 28.0.4", "image": "ghcr.io/x@sha256:abc",
+    "passthrough_refused": True,
+    "leftovers": {"containers": [], "networks": [], "filtered_on": "agentnode-conformance-x"},
+    "backend_loss": {"available": False, "refused": True, "error_type": "SandboxRequiredError",
+                     "reason": "no container runtime found"},
+    "refusal_message": "no container runtime found. Install Docker or Podman, then run "
+                       "agentnode sandbox pull",
+    "egress_matrix": {"direct_1_1_1_1": "blocked:OSError", "direct_8_8_8_8": "blocked:OSError",
+                      "allowed_via_proxy": "ALLOWED:200", "denied_via_proxy": "refused:HTTPError"},
+    "env_baseline": ["HOME", "HOSTNAME", "LANG", "PATH", "PYTHON_VERSION"],
+    "cancel": {"name": "c", "was_running": True, "gone_after": True, "still_listed": ""},
+    "credential_lifecycle": {"name": "AGENTNODE_CONFORMANCE_RELEASED",
+                             "present_when_released": True, "present_afterwards": False,
+                             "leftovers": []},
+}
+GOOD_STRESS = {
+    "wallclock": {"sleep": 30, "timeout": 5.0, "elapsed": 5.1, "rc": -1,
+                  "timeout_marker_seen": True, "timeout_signal": True,
+                  "stderr_tail": "[sandbox timed out after 5.0s]"},
+    "memory": {"requested_mb": 768, "rc": 137, "killed": True, "stdout_tail": ""},
+}
+
+
+def good_context():
+    return Context(readings=copy.deepcopy(doubles.GOOD_READINGS), declared=dict(GOOD_DECLARED),
+                   stress=copy.deepcopy(GOOD_STRESS), host=copy.deepcopy(GOOD_HOST),
+                   argv=["docker", "run", "--rm"])
+
+
+def bad_context():
+    return Context(
+        readings=copy.deepcopy(doubles.BAD_READINGS),
+        declared={**GOOD_DECLARED, "memory": "max", "pids": "max", "tmp_size": "500g",
+                  "home_path": "/root", "home_size": None},
+        stress={"wallclock": {"sleep": 30, "timeout": 5.0, "elapsed": 30.2, "rc": 0,
+                              "timeout_marker_seen": False, "timeout_signal": False,
+                              "stderr_tail": ""},
+                "memory": {"requested_mb": 768, "rc": 0, "killed": False,
+                           "stdout_tail": "ALLOCATED 768"}},
+        host={"runtime_version": "docker 28.0.4", "image": "img", "passthrough_refused": False,
+              "leftovers": {"containers": ["agentnode-conformance-x-probe"], "networks":
+                            ["agentnode-egress-1"], "filtered_on": "x"},
+              "backend_loss": {"available": True, "refused": False, "error_type": None,
+                               "reason": ""},
+              "refusal_message": "error",
+              "egress_matrix": {"direct_1_1_1_1": "BYPASS", "allowed_via_proxy": "refused:X",
+                                "denied_via_proxy": "ALLOWED:200"},
+              "env_baseline": ["HOME", "PATH"],
+              "cancel": {"name": "c", "was_running": True, "gone_after": False,
+                         "still_listed": "agentnode-conformance-x-cancel"},
+              "credential_lifecycle": {"name": "AGENTNODE_CONFORMANCE_RELEASED",
+                                       "present_when_released": True, "present_afterwards": True,
+                                       "leftovers": ["agentnode-egress-1"]}},
+        argv=["docker", "run"])
+
+
+ALL_IDS = [check_id for check_id, _fn, _req in REGISTRY]
+#: These read host-side or runtime-side observations rather than the probe, so an empty probe does
+#: not make them unmeasurable -- they become not_checked from their own missing input instead.
+NOT_PROBE_BACKED = {"identity", "egress-allowlist", "limit-wallclock", "run-leaves-nothing",
+                    "credentials-not-persisted", "cancel-and-kill", "backend-loss",
+                    "log-retention", "errors-are-usable", "secrets-refused-without-egress"}
+
+
+class TestTheChecksSeparateFailureFromBlindness:
+    def test_a_good_context_passes_every_check(self):
+        results = run_all(good_context())
+        bad = [(r.check_id, r.outcome.value, r.evidence) for r in results
+               if r.outcome not in (Outcome.PASS, Outcome.NOT_APPLICABLE)]
+        assert bad == []
+
+    def test_a_bad_context_fails_and_never_silently_passes(self):
+        results = {r.check_id: r for r in run_all(bad_context())}
+        for check_id in ("not-root", "read-only-root", "no-runtime-socket",
+                         "capabilities-dropped", "no-new-privileges", "network-mode",
+                         "egress-allowlist", "clean-home", "declared-mounts-only",
+                         "secrets-only-by-release", "limit-wallclock", "limit-cpu",
+                         "run-leaves-nothing", "credentials-not-persisted",
+                         "cancel-and-kill", "backend-loss",
+                         "secrets-refused-without-egress", "outside-host-process"):
+            assert results[check_id].outcome is Outcome.FAIL, (
+                f"{check_id} did not report a failure on a backend that is not isolating: "
+                f"{results[check_id].outcome.value} -- {results[check_id].evidence}")
+
+    @pytest.mark.parametrize("check_id", sorted(set(ALL_IDS) - NOT_PROBE_BACKED))
+    def test_a_missing_probe_is_a_probe_error_not_a_failure(self, check_id):
+        results = {r.check_id: r for r in run_all(Context(probe_failure="the probe never ran"))}
+        assert results[check_id].outcome is Outcome.PROBE_ERROR
+        assert "probe" in results[check_id].evidence.lower()
+
+    @pytest.mark.parametrize("check_id", sorted(set(ALL_IDS) - NOT_PROBE_BACKED))
+    def test_a_reading_that_failed_inside_is_a_probe_error(self, check_id):
+        readings = {k: {"_error": "PermissionError", "_detail": "denied"}
+                    for k in doubles.GOOD_READINGS}
+        results = {r.check_id: r for r in run_all(Context(readings=readings,
+                                                          declared=dict(GOOD_DECLARED)))}
+        assert results[check_id].outcome is Outcome.PROBE_ERROR
+
+    @pytest.mark.parametrize("check_id", sorted(NOT_PROBE_BACKED - {"log-retention"}))
+    def test_a_host_backed_check_without_its_input_is_not_checked(self, check_id):
+        results = {r.check_id: r for r in run_all(Context(readings=doubles.GOOD_READINGS,
+                                                          declared=dict(GOOD_DECLARED)))}
+        assert results[check_id].outcome is Outcome.NOT_CHECKED
+
+    def test_a_check_that_raises_becomes_a_suite_defect_not_a_verdict(self, monkeypatch):
+        import agentnode_sdk.conformance.checks as mod
+
+        def boom(_ctx):
+            raise RuntimeError("the check itself is broken")
+
+        monkeypatch.setattr(mod, "REGISTRY", (("not-root", boom, True),))
+        result = mod.run_all(Context())[0]
+        assert result.outcome is Outcome.PROBE_ERROR
+        assert "defect in the suite" in result.evidence
+
+    def test_no_check_claims_observed_without_a_measurement_vantage(self):
+        for r in run_all(good_context()):
+            if r.assurance.value == "observed":
+                assert r.vantage in (Vantage.INSIDE, Vantage.OUTSIDE, Vantage.BOTH)
+
+    def test_the_sdk_refusal_is_only_ever_self_reported(self):
+        results = {r.check_id: r for r in run_all(good_context())}
+        for check_id in ("secrets-refused-without-egress", "backend-loss", "errors-are-usable"):
+            assert results[check_id].assurance.value == "self-reported", (
+                f"{check_id} claims more than the Python layer can carry")
+
+
+class TestTheRunnerAgainstDoubles:
+    def test_a_good_double_passes_every_check_it_can_reach(self):
+        report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False),
+                                 egress_matrix=GOOD_HOST["egress_matrix"])
+        unproven = [(r.check_id, r.outcome.value, r.evidence) for r in report.unproven]
+        assert unproven == []
+
+    def test_but_a_double_is_never_conformant(self):
+        report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False),
+                                 egress_matrix=GOOD_HOST["egress_matrix"])
+        assert report.is_test_double
+        assert not report.is_conformant
+        assert "TEST DOUBLE" in report.summary_line()
+
+    def test_a_bad_double_is_reported_as_failing(self):
+        report = run_conformance(doubles.BadBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False),
+                                 egress_matrix=bad_context().host["egress_matrix"])
+        failed = {r.check_id for r in report.results if r.outcome is Outcome.FAIL}
+        for check_id in ("not-root", "read-only-root", "no-runtime-socket",
+                         "capabilities-dropped", "no-new-privileges", "clean-home"):
+            assert check_id in failed
+        assert not report.is_conformant
+
+    def test_a_silent_backend_yields_probe_errors_not_failures(self):
+        report = run_conformance(doubles.SilentBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False, include_stress=False))
+        outcomes = {r.check_id: r.outcome for r in report.results}
+        assert outcomes["not-root"] is Outcome.PROBE_ERROR
+        assert outcomes["capabilities-dropped"] is Outcome.PROBE_ERROR
+        assert not report.is_conformant
+
+    def test_an_unavailable_backend_measures_nothing_and_says_so(self):
+        report = run_conformance(doubles.GoodBackendDouble(available=False), generated_at="t")
+        assert not report.is_conformant
+        # Nothing was measured: no result may carry the observed level. The refusal message is
+        # still inspectable, and that check is self-reported by construction.
+        assert all(r.assurance.value == "self-reported" for r in report.results)
+        assert any("not available" in r.evidence for r in report.results)
+
+    def test_a_backend_that_is_not_a_double_cannot_supply_its_own_observations(self):
+        class PretendingBackend(doubles.GoodBackendDouble):
+            IS_TEST_DOUBLE = False
+
+            def conformance_host_observations(self):
+                return {"runtime_version": "whatever I say", "image": "mine",
+                        "leftovers": {"containers": [], "networks": []}}
+
+        report = run_conformance(PretendingBackend(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False))
+        identity = next(r for r in report.results if r.check_id == "identity")
+        assert identity.outcome is Outcome.NOT_CHECKED
+        assert "whatever I say" not in identity.evidence
+
+    def test_the_report_serialises(self):
+        import json
+        report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False))
+        d = json.loads(report.to_json())
+        assert d["suite_version"]
+        assert len(d["results"]) == len(REGISTRY)
+
+
+class TestTheNegativesTheReviewAskedFor:
+    """EM3B-IMPLEMENTATION-0001: each of these passed before, and must not."""
+
+    def test_a_processor_ceiling_larger_than_declared_fails(self):
+        ctx = good_context()
+        # eight processors enforced where one was declared: finite, and wrong.
+        ctx.readings["cgroup"]["cpu_max"] = "800000 100000"
+        r = {x.check_id: x for x in run_all(ctx)}["limit-cpu"]
+        assert r.outcome is Outcome.FAIL
+        assert "do not agree" in r.evidence
+
+    def test_an_unlimited_processor_setting_fails(self):
+        ctx = good_context()
+        ctx.readings["cgroup"]["cpu_max"] = "max 100000"
+        assert {x.check_id: x for x in run_all(ctx)}["limit-cpu"].outcome is Outcome.FAIL
+
+    def test_the_declared_processor_count_is_what_is_compared(self):
+        ctx = good_context()
+        ctx.readings["cgroup"]["cpu_max"] = "50000 100000"        # half a processor
+        assert {x.check_id: x for x in run_all(ctx)}["limit-cpu"].outcome is Outcome.FAIL
+        ctx2 = Context(readings=ctx.readings, declared={**GOOD_DECLARED, "cpus": "0.5"},
+                       stress=ctx.stress, host=ctx.host)
+        assert {x.check_id: x for x in run_all(ctx2)}["limit-cpu"].outcome is Outcome.PASS
+
+    def test_an_unrelated_early_nonzero_exit_is_not_a_timeout(self):
+        ctx = good_context()
+        ctx.stress["wallclock"] = {"sleep": 30, "timeout": 5.0, "elapsed": 0.2, "rc": 1,
+                                   "timeout_marker_seen": False, "timeout_signal": False,
+                                   "stderr_tail": "ModuleNotFoundError: no module named time"}
+        r = {x.check_id: x for x in run_all(ctx)}["limit-wallclock"]
+        assert r.outcome is Outcome.FAIL
+        assert "nothing attributes the ending to the ceiling" in r.evidence
+
+    def test_the_marker_without_the_documented_return_code_is_not_a_timeout(self):
+        ctx = good_context()
+        ctx.stress["wallclock"] = {"sleep": 30, "timeout": 5.0, "elapsed": 5.0, "rc": 0,
+                                   "timeout_marker_seen": True, "timeout_signal": False,
+                                   "stderr_tail": "[sandbox timed out after 5.0s]"}
+        assert {x.check_id: x for x in run_all(ctx)}["limit-wallclock"].outcome is Outcome.FAIL
+
+    def test_a_credential_that_outlives_its_run_fails_even_with_everything_cleaned_up(self):
+        ctx = good_context()
+        ctx.host["credential_lifecycle"] = {"name": "N", "present_when_released": True,
+                                            "present_afterwards": True, "leftovers": []}
+        ctx.host["leftovers"] = {"containers": [], "networks": [], "filtered_on": "x"}
+        results = {x.check_id: x for x in run_all(ctx)}
+        assert results["credentials-not-persisted"].outcome is Outcome.FAIL
+        # and the infrastructure check, which used to stand in for this one, is content
+        assert results["run-leaves-nothing"].outcome is Outcome.PASS
+
+    def test_a_credential_never_released_is_not_a_pass_either(self):
+        ctx = good_context()
+        ctx.host["credential_lifecycle"] = {"name": "N", "present_when_released": False,
+                                            "present_afterwards": False, "leftovers": []}
+        assert {x.check_id: x for x in run_all(ctx)}["credentials-not-persisted"].outcome \
+            is Outcome.FAIL
+
+    def test_a_timeout_that_fired_is_not_a_cancellation(self):
+        ctx = good_context()
+        ctx.host.pop("cancel")
+        r = {x.check_id: x for x in run_all(ctx)}["cancel-and-kill"]
+        assert r.outcome is Outcome.NOT_CHECKED
+        assert "no cancellation was performed" in r.evidence
+
+    def test_a_payload_that_survives_cancellation_fails(self):
+        ctx = good_context()
+        ctx.host["cancel"] = {"name": "c", "was_running": True, "gone_after": False,
+                              "still_listed": "agentnode-conformance-x-cancel"}
+        assert {x.check_id: x for x in run_all(ctx)}["cancel-and-kill"].outcome is Outcome.FAIL
+
+    def test_an_unknown_image_variable_is_not_smuggled_in_by_a_hand_written_allowlist(self):
+        ctx = good_context()
+        ctx.readings["env_names"] = sorted(ctx.readings["env_names"] + ["NODE_VERSION"])
+        r = {x.check_id: x for x in run_all(ctx)}["secrets-only-by-release"]
+        assert r.outcome is Outcome.FAIL, "a variable outside the measured baseline must be seen"
+        ctx.host["env_baseline"] = ctx.readings["env_names"]
+        assert {x.check_id: x for x in run_all(ctx)}["secrets-only-by-release"].outcome \
+            is Outcome.PASS
+
+    def test_a_released_name_that_never_arrived_fails(self):
+        ctx = Context(readings=good_context().readings,
+                      declared={**GOOD_DECLARED, "env_names": ["AGENTNODE_RELEASED"]},
+                      stress=copy.deepcopy(GOOD_STRESS), host=copy.deepcopy(GOOD_HOST))
+        r = {x.check_id: x for x in run_all(ctx)}["secrets-only-by-release"]
+        assert r.outcome is Outcome.FAIL
+        assert "released but absent" in r.evidence
+
+    def test_without_a_baseline_nothing_is_concluded(self):
+        ctx = good_context()
+        ctx.host.pop("env_baseline")
+        assert {x.check_id: x for x in run_all(ctx)}["secrets-only-by-release"].outcome \
+            is Outcome.NOT_CHECKED
+
+
+class TestACleanupQueryThatFailsIsNotACleanResult:
+    """EM3B-IMPLEMENTATION-0002 / F1: the third time this project has written the same bug.
+
+    An exception while asking the runtime what remained was recorded as an empty list, and an
+    empty list is how "nothing was left behind" looks. A question the runtime would not answer
+    cannot be the evidence that the credential-carrying network is gone.
+    """
+
+    def test_an_exception_while_asking_is_not_an_empty_result(self, monkeypatch):
+        import agentnode_sdk.conformance.runner as runner
+
+        def boom(*a, **k):
+            raise OSError("the socket went away")
+
+        monkeypatch.setattr(runner.subprocess, "run", boom)
+        remaining, problem = runner._egress_leftovers("docker")
+        assert remaining is None
+        assert "raised OSError" in problem
+
+    def test_a_refused_listing_is_not_an_empty_result(self, monkeypatch):
+        import types as _types
+
+        import agentnode_sdk.conformance.runner as runner
+
+        monkeypatch.setattr(runner.subprocess, "run",
+                            lambda *a, **k: _types.SimpleNamespace(
+                                returncode=1, stdout="", stderr="permission denied"))
+        remaining, problem = runner._egress_leftovers("docker")
+        assert remaining is None and "refused" in problem
+
+    def test_no_runtime_is_not_an_empty_result(self):
+        import agentnode_sdk.conformance.runner as runner
+
+        remaining, problem = runner._egress_leftovers("")
+        assert remaining is None and problem
+
+    def test_an_answered_empty_listing_is_an_empty_result(self, monkeypatch):
+        import types as _types
+
+        import agentnode_sdk.conformance.runner as runner
+
+        monkeypatch.setattr(runner.subprocess, "run",
+                            lambda *a, **k: _types.SimpleNamespace(
+                                returncode=0, stdout="\n", stderr=""))
+        assert runner._egress_leftovers("docker") == ([], None)
+
+    def test_the_check_cannot_pass_on_an_unanswered_cleanup(self):
+        ctx = good_context()
+        ctx.host["credential_lifecycle"] = {
+            "name": "N", "present_when_released": True, "present_afterwards": False,
+            "_error": "asking the runtime what remained raised OSError: the socket went away"}
+        r = {x.check_id: x for x in run_all(ctx)}["credentials-not-persisted"]
+        assert r.outcome is Outcome.PROBE_ERROR
+        assert "socket went away" in r.evidence
+
+    def test_and_such_a_report_is_not_conformant(self):
+        from agentnode_sdk.conformance.report import CheckResult, ConformanceReport
+
+        report = ConformanceReport(
+            backend_identity="B", backend_version="1", runtime="docker", image="i",
+            generated_at="t",
+            results=(CheckResult.probe_error("credentials-not-persisted", "t", "credentials",
+                                             "the cleanup query was not answered"),))
+        assert not report.is_conformant
+        assert "credentials-not-persisted" in report.summary_line()
+
+
+#: Every check this suite is required to make, written out rather than read from the registry.
+#: EM3B-SUITE-0001 / F1: the serialisation test compared the produced result count with
+#: `len(REGISTRY)`, so both sides of it moved together. Deleting a check removed it from the
+#: expectation as well as from the run, the remaining checks still passed, and the report was
+#: still "conformant" -- coverage could shrink without anything going red. This list is the
+#: independent side of that comparison, and changing what the suite covers means changing it here
+#: too, deliberately.
+REQUIRED_CHECK_IDS = (
+    "identity",
+    "outside-host-process",
+    "not-root",
+    "read-only-root",
+    "declared-mounts-only",
+    "no-runtime-socket",
+    "capabilities-dropped",
+    "no-new-privileges",
+    "network-mode",
+    "egress-allowlist",
+    "limit-memory",
+    "limit-pids",
+    "limit-cpu",
+    "limit-disk",
+    "limit-wallclock",
+    "clean-home",
+    "secrets-only-by-release",
+    "secrets-refused-without-egress",
+    "run-leaves-nothing",
+    "credentials-not-persisted",
+    "cancel-and-kill",
+    "backend-loss",
+    "log-retention",
+    "errors-are-usable",
+)
+
+
+class TestTheCheckInventoryCannotShrinkQuietly:
+    def test_the_registry_is_exactly_the_required_checks(self):
+        registry_ids = [check_id for check_id, _fn, _required in REGISTRY]
+        assert len(REQUIRED_CHECK_IDS) == 24, "the required inventory is 24 checks"
+        missing = [c for c in REQUIRED_CHECK_IDS if c not in registry_ids]
+        extra = [c for c in registry_ids if c not in REQUIRED_CHECK_IDS]
+        assert not missing, f"the suite no longer makes these checks: {missing}"
+        assert not extra, (
+            f"the suite makes checks the required inventory does not list: {extra}. Adding one is "
+            "fine -- add it to REQUIRED_CHECK_IDS in the same change, so the two stay deliberate")
+        assert len(registry_ids) == len(set(registry_ids)), "a check id appears twice"
+        assert registry_ids == list(REQUIRED_CHECK_IDS), (
+            "the registry order differs from the required inventory; the report is read in order")
+
+    def test_every_required_check_is_marked_required(self):
+        for check_id, _fn, required in REGISTRY:
+            assert required, f"{check_id} is in the required inventory but is not marked required"
+
+    def test_a_report_covers_every_required_check(self):
+        report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False),
+                                 egress_matrix=GOOD_HOST["egress_matrix"])
+        produced = [r.check_id for r in report.results]
+        assert produced == list(REQUIRED_CHECK_IDS), (
+            "a run produced a different set of checks than the suite is required to make")
+
+    def test_a_shortened_registry_is_caught(self, monkeypatch):
+        """The failure this guard exists for: a check quietly removed."""
+        import agentnode_sdk.conformance.checks as mod
+
+        monkeypatch.setattr(mod, "REGISTRY", tuple(r for r in mod.REGISTRY
+                                                   if r[0] != "limit-memory"))
+        produced = [r.check_id for r in mod.run_all(good_context())]
+        assert "limit-memory" not in produced
+        assert produced != list(REQUIRED_CHECK_IDS), (
+            "the guard must notice a missing check")
+
+
+class TestContainmentNeedsPositiveEvidence:
+    """EM3B-SUITE-0002 / F1: an unfamiliar PID 1 name is not containment."""
+
+    def _context(self, **containment):
+        readings = copy.deepcopy(doubles.GOOD_READINGS)
+        readings["containment"] = {"dockerenv": False, "containerenv": False,
+                                   "self_cgroup": "0::/", "pid1_comm": "systemd"}
+        readings["containment"].update(containment)
+        readings["mounts"] = [{"source": "/dev/sda1", "target": "/", "fstype": "ext4",
+                               "options": "rw"}]
+        return Context(readings=readings, declared=dict(GOOD_DECLARED),
+                       stress=copy.deepcopy(GOOD_STRESS), host=copy.deepcopy(GOOD_HOST))
+
+    @pytest.mark.parametrize("pid1", ["python", "bash", "supervisord", "myapp", "", "init",
+                                      "systemd"])
+    def test_no_marker_and_no_container_cgroup_never_passes(self, pid1):
+        r = {x.check_id: x for x in run_all(self._context(pid1_comm=pid1))}["outside-host-process"]
+        assert r.outcome is Outcome.FAIL, (
+            f"pid 1 named {pid1!r} carried the check with nothing else behind it")
+        assert "not evidence of containment" in r.evidence
+
+    @pytest.mark.parametrize("signal", [
+        {"dockerenv": True}, {"containerenv": True},
+        {"self_cgroup": "0::/docker/3f2a1b0c"}, {"self_cgroup": "0::/libpod-abc"},
+    ])
+    def test_a_real_signal_carries_it(self, signal):
+        ctx = self._context(pid1_comm="python", **signal)
+        r = {x.check_id: x for x in run_all(ctx)}["outside-host-process"]
+        assert r.outcome is Outcome.PASS
+
+    def test_an_overlay_root_carries_it(self):
+        ctx = self._context(pid1_comm="python")
+        ctx.readings["mounts"] = [{"source": "overlay", "target": "/", "fstype": "overlay",
+                                   "options": "ro"}]
+        r = {x.check_id: x for x in run_all(ctx)}["outside-host-process"]
+        assert r.outcome is Outcome.PASS
+        assert "root filesystem is overlay" in r.evidence
+
+    def test_the_real_run_that_produced_the_evidence_still_passes(self):
+        """The container the suite actually measured had a marker file, so the tightened check
+        does not change what that run reported."""
+        r = {x.check_id: x for x in run_all(good_context())}["outside-host-process"]
+        assert r.outcome is Outcome.PASS
+
+
+class TestAConfiguredCeilingIsNotAnEnforcedOne:
+    """EM3B-SUITE-0004 / F-001: an allocation nobody attempted is not one that was stopped."""
+
+    def _memory(self, stress):
+        ctx = good_context()
+        if stress is None:
+            ctx.stress.pop("memory", None)
+        else:
+            ctx.stress["memory"] = stress
+        return {x.check_id: x for x in run_all(ctx)}["limit-memory"]
+
+    def test_limit_memory_without_stress_is_not_pass(self):
+        r = self._memory(None)
+        assert r.outcome is Outcome.NOT_CHECKED
+        assert "no allocation was run against it" in r.evidence
+
+    def test_an_errored_stress_run_is_a_probe_error(self):
+        r = self._memory({"_error": "OSError: the runtime went away"})
+        assert r.outcome is Outcome.PROBE_ERROR
+        assert "went away" in r.evidence
+
+    @pytest.mark.parametrize("malformed", [{}, {"killed": None}, {"killed": "yes"},
+                                           {"requested_mb": 768}, "not a dict"])
+    def test_a_malformed_stress_result_never_passes(self, malformed):
+        assert self._memory(malformed).outcome is not Outcome.PASS
+
+    def test_an_unstopped_allocation_fails(self):
+        r = self._memory({"requested_mb": 768, "rc": 0, "started": True, "completed": True,
+                          "ended_by_the_ceiling": False, "killed": False,
+                          "stdout_tail": "ALLOCATED"})
+        assert r.outcome is Outcome.FAIL
+        assert "NOT stopped" in r.evidence
+
+    def test_only_a_stopped_allocation_with_the_right_ceiling_passes(self):
+        r = self._memory({"requested_mb": 768, "rc": 137, "started": True, "completed": False,
+                          "ended_by_the_ceiling": True, "killed": True, "stdout_tail": ""})
+        assert r.outcome is Outcome.PASS
+
+    def test_a_stopped_allocation_against_the_wrong_ceiling_still_fails(self):
+        ctx = good_context()
+        ctx.readings["cgroup"]["memory_max"] = str(2 * 1024 ** 3)
+        r = {x.check_id: x for x in run_all(ctx)}["limit-memory"]
+        assert r.outcome is Outcome.FAIL
+
+    def test_a_report_missing_the_stress_run_is_not_conformant(self):
+        report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False, include_stress=False),
+                                 egress_matrix=GOOD_HOST["egress_matrix"])
+        assert not report.is_conformant
+        # a double is never conformant anyway, so the substantive claim is that the check itself
+        # is unproven rather than passing
+        assert "limit-memory" in [r.check_id for r in report.unproven]
+
+
+class TestNoCheckPassesOnAbsentInput:
+    """The pattern behind five separate findings, guarded once instead of one case at a time.
+
+    Every one of them was the same shape: a check that could not see its input reported the good
+    answer. `_exists` on an inspect that failed, `_absent` in the regression, the leftovers query
+    on an exception, containment on an unfamiliar init, the memory ceiling with no allocation
+    attempted. Individually they were five bugs; together they are one, and it is cheaper to
+    assert the property than to keep discovering it.
+    """
+
+    def test_an_empty_context_produces_no_passes_at_all(self):
+        """Nothing was gathered. No property can hold on that."""
+        passed = [r.check_id for r in run_all(Context()) if r.outcome is Outcome.PASS]
+        assert passed == [], f"these checks passed with nothing to go on: {passed}"
+
+    def test_every_outcome_on_an_empty_context_says_why(self):
+        for r in run_all(Context()):
+            assert r.outcome in (Outcome.NOT_CHECKED, Outcome.PROBE_ERROR, Outcome.NOT_APPLICABLE,
+                                 Outcome.FAIL), r.check_id
+            assert r.evidence.strip(), f"{r.check_id} gave no reason"
+
+    def test_no_check_passes_when_the_probe_produced_nothing(self):
+        ctx = Context(probe_failure="the probe never ran", declared=dict(GOOD_DECLARED),
+                      stress=copy.deepcopy(GOOD_STRESS), host=copy.deepcopy(GOOD_HOST))
+        for r in run_all(ctx):
+            if r.outcome is Outcome.PASS:
+                assert r.check_id in NOT_PROBE_BACKED, (
+                    f"{r.check_id} passed although the probe produced nothing")
+
+    def test_no_stress_backed_check_passes_without_its_stress_run(self):
+        ctx = good_context()
+        ctx.stress.clear()
+        for r in run_all(ctx):
+            assert r.check_id not in ("limit-memory", "limit-wallclock")                 or r.outcome is not Outcome.PASS, f"{r.check_id} passed with no stress run"
+
+    #: Checks whose input is a stress RUN rather than a host observation. Blanking `host` leaves
+    #: them untouched, and they are covered by the stress test above.
+    STRESS_BACKED = {"limit-memory", "limit-wallclock"}
+    #: log-retention is not applicable to a local backend whatever is gathered, which is its own
+    #: honest answer rather than a pass.
+    NOT_HOST_BACKED = STRESS_BACKED | {"log-retention"}
+
+    def test_no_host_backed_check_passes_without_its_host_observation(self):
+        ctx = Context(readings=copy.deepcopy(doubles.GOOD_READINGS),
+                      declared=dict(GOOD_DECLARED), stress=copy.deepcopy(GOOD_STRESS), host={})
+        for r in run_all(ctx):
+            if r.check_id in NOT_PROBE_BACKED and r.check_id not in self.NOT_HOST_BACKED:
+                assert r.outcome is not Outcome.PASS, (
+                    f"{r.check_id} passed with no host observation behind it")
+
+    def test_the_two_groups_together_cover_every_check(self):
+        """A check in neither group would be guarded by neither test."""
+        registry_ids = {check_id for check_id, _fn, _required in REGISTRY}
+        probe_backed = registry_ids - NOT_PROBE_BACKED
+        host_backed = NOT_PROBE_BACKED - self.NOT_HOST_BACKED
+        covered = probe_backed | host_backed | self.STRESS_BACKED | {"log-retention"}
+        assert covered == registry_ids, f"guarded by nothing: {registry_ids - covered}"
+
+    def test_a_report_of_such_a_run_is_never_conformant(self):
+        from agentnode_sdk.conformance.report import ConformanceReport
+
+        report = ConformanceReport(backend_identity="B", backend_version="1", runtime="x",
+                                   image="i", generated_at="t", results=run_all(Context()))
+        assert not report.is_conformant
+
+
+class TestAnEndingMustBeAttributableToTheCeiling:
+    """EM3B-SUITE-0005 / F-001: a non-zero exit is not a limit binding.
+
+    A syntax error, a missing interpreter, or an image that will not start all end non-zero with
+    no completion marker. Counting those as "the ceiling stopped it" is the same false positive
+    this suite exists to prevent, one layer further in.
+    """
+
+    def _memory(self, stress):
+        ctx = good_context()
+        ctx.stress["memory"] = stress
+        return {x.check_id: x for x in run_all(ctx)}["limit-memory"]
+
+    def test_an_allocation_that_never_began_measures_nothing(self):
+        r = self._memory({"requested_mb": 768, "rc": 1, "started": False, "completed": False,
+                          "ended_by_the_ceiling": False, "killed": False,
+                          "stderr_tail": "SyntaxError: invalid syntax"})
+        assert r.outcome is Outcome.PROBE_ERROR
+        assert "never began" in r.evidence
+
+    def test_an_unattributed_ending_is_not_the_ceiling(self):
+        r = self._memory({"requested_mb": 768, "rc": 2, "started": True, "completed": False,
+                          "ended_by_the_ceiling": False, "killed": False,
+                          "stderr_tail": "ImportError: no module named numpy"})
+        assert r.outcome is Outcome.PROBE_ERROR
+        assert "not attributable" in r.evidence
+
+    def test_the_runner_does_not_credit_an_unrelated_failure(self):
+        """The derivation itself, on the shape the runner records."""
+        import agentnode_sdk.conformance.runner as runner
+
+        for rc, stdout, stderr in [(1, "", "SyntaxError"), (127, "", "not found"),
+                                   (2, "", "ImportError")]:
+            started = "ALLOCATING" in stdout
+            by_ceiling = rc == runner.OOM_KILLED_RC or "MemoryError" in stderr
+            assert not (started and "ALLOCATED" not in stdout and by_ceiling), (
+                f"rc={rc} with no start marker would have been credited to the ceiling")
+
+    def test_the_runner_credits_a_real_kill(self):
+        import agentnode_sdk.conformance.runner as runner
+
+        rc, stdout, stderr = runner.OOM_KILLED_RC, "ALLOCATING\n", "Killed"
+        started, completed = "ALLOCATING" in stdout, "ALLOCATED" in stdout
+        by_ceiling = rc == runner.OOM_KILLED_RC or "MemoryError" in stderr
+        assert started and not completed and by_ceiling
+
+    def test_a_refused_allocation_inside_the_container_also_counts(self):
+        r = self._memory({"requested_mb": 768, "rc": 1, "started": True, "completed": False,
+                          "ended_by_the_ceiling": True, "killed": True,
+                          "stderr_tail": "MemoryError"})
+        assert r.outcome is Outcome.PASS
