@@ -46,6 +46,7 @@ JARGON = {
 }
 
 problems: list[str] = []
+NEWLINE = chr(10)
 
 
 def fail(where: str, msg: str) -> None:
@@ -346,29 +347,53 @@ def check_refusal_cases(pages: list) -> None:
              "the entry describes something that cannot happen, or a case was renamed")
 
 
-def selftest_refusal_cases(pages: list) -> tuple:
-    """Both directions, each planted alone so its result is about itself.
+def selftest_refusal_cases() -> tuple:
+    """Both directions, against a synthetic page set, so the self-test is about itself.
 
-    SANDBOX-DOCS-DELTA-0002 / F-D4-002: the first version exercised only the undocumented
-    direction and the brief nonetheless claimed both. Each is planted separately here, and each
-    failure is matched by name rather than counted.
+    SANDBOX-DOCS-DELTA-0003 / F-D4: earlier versions planted against the REAL pages, so breaking a
+    real entry made the self-test fail instead of letting the real check report it -- the guard
+    masked the thing it guards. The pages here are generated from the mapping: one file per page,
+    one heading per case. Whatever the real documentation says cannot change this result.
     """
+    import tempfile
+
     real = FACTS["sandbox_runtime"].get("refusal_cases")
+    cases = sorted(REFUSAL_CASE_ENTRIES)
+    victim = "not_permitted" if "not_permitted" in cases else cases[0]
     before = len(problems)
-    try:
-        # (1) the code grows a case no page has an entry for
-        FACTS["sandbox_runtime"]["refusal_cases"] = ["a_case_nobody_wrote_about"]
-        check_refusal_cases(pages)
-        undocumented = len([x for x in problems[before:] if "a_case_nobody_wrote_about" in x])
-        del problems[before:]
-        # (2) a documented case the code no longer has
-        FACTS["sandbox_runtime"]["refusal_cases"] = ["not_installed"]
-        check_refusal_cases(pages)
-        stale = len([x for x in problems[before:] if "no longer refuses with them" in x])
-        del problems[before:]
-    finally:
-        FACTS["sandbox_runtime"]["refusal_cases"] = real
-        del problems[before:]
+    with tempfile.TemporaryDirectory() as td:
+        pages = []
+        for filename in {f for f, _ in REFUSAL_CASE_ENTRIES.values()}:
+            headings = [f"## {phrase}" for c, (f2, phrase) in REFUSAL_CASE_ENTRIES.items()
+                        if f2 == filename]
+            page = Path(td) / filename
+            page.write_text(NEWLINE.join(headings) + NEWLINE, encoding="utf-8")
+            pages.append(page)
+        try:
+            FACTS["sandbox_runtime"]["refusal_cases"] = cases
+            check_refusal_cases(pages)
+            baseline = problems[before:]
+            del problems[before:]
+            if baseline:
+                fail("_checks/check_docs.py",
+                     f"the refusal self-test's own pages do not satisfy the mapping: {baseline}")
+                return 0, 0
+            # (1) one case the synthetic pages do not document
+            FACTS["sandbox_runtime"]["refusal_cases"] = cases + ["a_case_nobody_wrote_about"]
+            check_refusal_cases(pages)
+            raised = problems[before:]
+            undocumented = int(len(raised) == 1 and "a_case_nobody_wrote_about" in raised[0])
+            del problems[before:]
+            # (2) one documented case the code no longer has
+            FACTS["sandbox_runtime"]["refusal_cases"] = [c for c in cases if c != victim]
+            check_refusal_cases(pages)
+            raised = problems[before:]
+            stale = int(len(raised) == 1 and victim in raised[0]
+                        and "no longer refuses" in raised[0])
+            del problems[before:]
+        finally:
+            FACTS["sandbox_runtime"]["refusal_cases"] = real
+            del problems[before:]
     return undocumented, stale
 
 
@@ -520,7 +545,7 @@ def main() -> int:
     check_facts_consistency(pages + blog)
     check_secret_claims(pages + blog)
     check_refusal_cases(pages)
-    undocumented, stale = selftest_refusal_cases(pages)
+    undocumented, stale = selftest_refusal_cases()
     if (undocumented, stale) != (1, 1):
         fail("_checks/check_docs.py",
              f"the refusal-case check caught {undocumented} of 1 undocumented case and {stale} of "
