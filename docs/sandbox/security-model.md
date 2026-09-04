@@ -26,7 +26,8 @@ the same process cannot make host execution safe, so instead there is nothing to
 Every sandboxed process is started with, at minimum:
 
 `--rm` · `--read-only` · `--cap-drop=ALL` · `--security-opt=no-new-privileges` · `--user` (not root)
-· `--pids-limit` · `--memory` · `--cpus` · `--network` · `--tmpfs` for a clean, small `HOME`
+· `--pids-limit` · `--memory` with `--memory-swap` set to the same value, so the total of memory
+and swap is the limit · `--cpus` · `--network` · `--tmpfs` for a clean, small `HOME`
 
 The image is pinned **by digest**, so it is one exact image and not whatever a tag points at today.
 The exact digest and flag list are in [availability](availability.md), generated from the source.

@@ -2,7 +2,7 @@
 
 **TECHNICAL DOCUMENTATION COMPLETE — human usability and remaining platform validation pending.**
 
-Recorded against the branch state of 2026-09-03. This file is a status record rather than a
+Recorded against the branch state of 2026-09-04. This file is a status record rather than a
 documentation page: it is not part of the reader-facing set and is not checked by
 `_checks/check_docs.py`.
 
@@ -11,8 +11,8 @@ documentation page: it is not part of the reader-facing set and is not checked b
 | | |
 |---|---|
 | branch | `docs/sandbox-track` |
-| documentation anchor | `9d3adf7f6115677bd78fa88dee7d1e294172501c` |
-| tree of that commit | `2dd7aa2ca6eb69a48119cfa9507f5db2583d570a` |
+| documentation anchor | `1883338d118651692882343fe087ea0c3ebe4cc4` |
+| tree of that commit | `272c3bd18cec52b11f537791f720adeda36ad41a` |
 | base | `main 8b83059` |
 | product source changed | none |
 | merged | no |
@@ -21,6 +21,25 @@ documentation page: it is not part of the reader-facing set and is not checked b
 The anchor above is the commit carrying the reviewed documentation. **This status file is committed
 after it and therefore names that commit rather than itself** — a commit cannot contain its own
 hash. The per-file hashes below are the authoritative anchors for the content.
+
+## Regenerated against the merged code
+
+This status was first written against `main 8b83059`. The EM-3B conformance suite (#116) and the
+EM-3B-R1 runtime correction (#117) have since merged, and the pages were regenerated against that
+code rather than left describing what it used to do. What changed in the facts, and therefore in the
+pages:
+
+* **the memory ceiling now includes swap** — `--memory-swap` is set to the same value as `--memory`,
+  so the total binds. An engine that cannot account for swap is refused rather than run under a
+  limit that might not hold;
+* **a wall-clock timeout now ends the program**, not just the command that started it: the run's own
+  container is removed, waited for and checked absent by id and by name, and a stop that cannot be
+  shown is a distinct containment error rather than an ordinary timeout;
+* **refusals are structured**, with eight situations the classifier tells apart, each carrying an
+  action that exists on the platform in front of you and a re-check afterwards.
+
+A checker now binds those cases to the pages in both directions: a case the code can refuse with
+that no page describes fails, and a case the checker knows that the code no longer has fails too.
 
 ## The three separate assessments
 
@@ -125,25 +144,25 @@ carries it.
 |---|---|---|
 | `docs/sandbox/README.md` | 2,584 | `9be589620372bd6f0d06616a5ff5be01e8e9195828cb8f8c7ccf3f9ebe8920a3` |
 | `docs/sandbox/admin-policy.md` | 4,193 | `b1dd53e07e168402c2802930c6d0d2fd0481f7e1ab711ca6624153138b220549` |
-| `docs/sandbox/availability.md` | 12,148 | `40f2069c7350a741042e81e5951bef1aced3e802009941e10a4e861629f148d8` |
+| `docs/sandbox/availability.md` | 13,328 | `6a4992b8f0401b33850f5cc58ced98257831d1f74febfa71bd2f061cc46cc6fa` |
 | `docs/sandbox/choose.md` | 3,008 | `afee2b76ca2543aebf26742a6c11f643b7c6c4fb888e5d64387eb2064327b159` |
 | `docs/sandbox/managed.md` | 2,509 | `3e241c4f325521fd9c5f9ce7e21affb4fda1eb6a896e6325f51c0009c19e8c51` |
 | `docs/sandbox/mobile.md` | 1,539 | `106840d9b2b72b02d07bb3657633afba9a34918d1327ccad06dc173c8d80b2b1` |
-| `docs/sandbox/security-model.md` | 7,952 | `9f88d89e023661625fb83264122b07e399851d027527fcbfea55c89b99b3d698` |
+| `docs/sandbox/security-model.md` | 8,041 | `55b9d7a3d66620894fef3f65d81f2e8ea2d9f3faa584b982d68af7b7254e12ce` |
 | `docs/sandbox/self-hosted.md` | 5,427 | `29553c0869b5fb8a93aa1027296a3daf537298adcc502d409d38f9fa5b006d11` |
 | `docs/sandbox/setup-contract.md` | 4,475 | `c969701f63ff725bfca308cd7b739dd6d8fea395e2abceeffdb473338f60b0cf` |
 | `docs/sandbox/setup-local.md` | 6,006 | `8f14c226a4ecb842d10e75fea46be519a3ad8059b7272de77fd9efa493dd81d9` |
-| `docs/sandbox/troubleshooting.md` | 6,166 | `00093e99050274851570affd9ac98326e0c2d59642af3ef3f0c5b1fd4b0451de` |
+| `docs/sandbox/troubleshooting.md` | 9,012 | `556a47e1f46f791ec13a5c66a0fc0b66ce6aaabb0f6404a27c239924c25a6b47` |
 | `docs/sandbox/understand.md` | 3,426 | `655bcad194187f31134da0d2dcc5d5cfe392c6777399dc06a6370e08edba6b5b` |
 
 ### Generators and extracted facts
 
 | file | bytes | sha256 |
 |---|---|---|
-| `docs/sandbox/_checks/build_matrix.py` | 18,660 | `b19dc042f7d985bca3b8e40c44ec1ae1d0a27dfc9bb51027c93713a0e1228363` |
-| `docs/sandbox/_checks/check_docs.py` | 21,147 | `a56cdb9f706be17cf5c8cb5851485283a54bf1458d1d97e9a43a1743fcfb94cb` |
-| `docs/sandbox/_checks/extract_facts.py` | 10,376 | `e3d487795ba2b7a71677802661879d417ecfa738bed68771bd535a8a63b18da6` |
-| `docs/sandbox/_facts/code-facts.json` | 7,220 | `4988efec67450107523071f7b87418a9a4949a91c381e27a9094343f4ddfc20b` |
+| `docs/sandbox/_checks/build_matrix.py` | 20,000 | `8c3fb788bd00b2f0f834c10c7704c0550f9a272c2014866d979f0ec62ca7e925` |
+| `docs/sandbox/_checks/check_docs.py` | 24,122 | `7067946245d934e62a65ea5f3ffffe3d39f43a34cbc542cf9c4e8547033e6311` |
+| `docs/sandbox/_checks/extract_facts.py` | 12,244 | `14d5898dcada1e66c5763628f60aeb9d41f9e0871a861084ce2b9fb679d1f3f5` |
+| `docs/sandbox/_facts/code-facts.json` | 7,694 | `0e8a558aea1921fdb60dde66882ee56a7d4c584832043392acd337c6e6bd9b10` |
 | `docs/sandbox/_facts/test-evidence.json` | 9,324 | `2b60119b1ead9bc13e40d2a706f61e902915a5ed952209b2d365852e11fec4fe` |
 
 ### Blog drafts (7) — written, **not published**
@@ -154,7 +173,7 @@ exist, are not bookable and have no price.
 
 | # | title | file | sha256 |
 |---|---|---|---|
-| 1 | Why AgentNode never quietly runs a stranger's code on your computer | `01-never-silently.md` | `0e4f9373ffd34eaad87c9499b91d660d4010973531296d0a6669495a222db795` |
+| 1 | Why AgentNode never quietly runs a stranger's code on your computer | `01-never-silently.md` | `eb5ace08412e0da842e55ab458f047befed00dcd043249bb30c5ec3e2891cf84` |
 | 2 | Local, your own, or managed: which sandbox is yours? | `02-which-sandbox.md` | `6f89c9035439dea2f4511bc19818abc9526225d510a4bf44d467cf848074b95e` |
 | 3 | Setting up a local sandbox without knowing what a container is | `03-setup-without-expertise.md` | `e35a5a121b90792a55b2a580498626a443d442a7065c140d7d23fef9a35e3259` |
 | 4 | From a phone to a Linux server: where your agent actually runs | `04-where-your-agent-runs.md` | `d0603e00064c1881b257b85b7370818cc25c54d0529f85b7f03be2467de9800e` |

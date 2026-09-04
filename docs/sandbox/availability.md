@@ -67,7 +67,7 @@ The image is pinned by digest, so "the sandbox image" is one exact image and not
 ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f
 ```
 
-It is started with `--cap-drop=ALL`, `--cpus`, `--memory`, `--network`, `--pids-limit`, `--read-only`, `--rm`, `--security-opt=no-new-privileges`, `--tmpfs`, `--user`.
+It is started with `--cap-drop=ALL`, `--cpus`, `--memory`, `--memory-swap`, `--network`, `--pids-limit`, `--read-only`, `--rm`, `--security-opt=no-new-privileges`, `--tmpfs`, `--user`.
 
 ## What each network mode actually does
 
@@ -85,13 +85,32 @@ bridge network, and no run path selects it. The mode that does restrict is `egre
 usable form without a real internal network and proxy: without them it raises instead of emitting an
 open network.
 
-## The one time limit there is
+## The memory ceiling
+
+`--memory` alone is not a ceiling: a container runtime given only that grants a swap allowance of
+twice the limit, and a program can use the difference. The two are set to the same value, so the
+total of memory **and** swap is the limit
+(`sandbox_runtime.memory_ceiling_includes_swap` is True).
+An engine that cannot account for swap cannot hold that ceiling, and the sandbox refuses on such a
+machine rather than running under a limit that might not bind.
+
+## The one time limit there is, and what reaching it does
 
 A single call is killed after **120 seconds**.
 A long-lived agent session has no such clock
 (`sandbox_runtime.agent_session_has_wall_clock` is False):
 it has per-message receive timeouts, which is not the same thing. Anything written here about "time
 limits" means that one number and nothing more.
+
+Reaching it **ends the program**, which is worth saying because for a long time it did not. The
+runtime client was stopped and the container carried on; the conformance suite measured that and it
+is fixed. Each run now carries its own identity, the ceiling removes that exact container, waits,
+and checks it is gone — by id and by name
+(`sandbox_runtime.timeout_removes_the_container` is True,
+`timeout_verifies_absence` is True). If any of that
+cannot be shown, the result is a distinct containment error rather than an ordinary timeout
+(`timeout_failure_is_distinct` is True): a stop
+nobody could verify is not reported as a stop.
 
 ## What is switched on when you install it
 

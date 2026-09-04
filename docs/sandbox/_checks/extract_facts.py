@@ -86,7 +86,17 @@ def sandbox_runtime() -> dict:
         # A single call is killed after this many seconds; the long-lived agent session has no
         # equivalent wall clock, only per-message receive timeouts.
         "single_call_timeout_seconds": _default_timeout(cb),
+        # EM-3B-R1. What happens when that ceiling is reached: the client used to be killed and
+        # the container left running. These three say whether that is still true.
+        "timeout_removes_the_container": "_end_timed_out_run" in cb and 'rm", "-f"' in cb,
+        "timeout_verifies_absence": "could not be shown to be gone" in cb,
+        "timeout_failure_is_distinct": "SandboxContainmentError" in cb,
+        # The memory ceiling binds only when the swap half of it is bound too.
+        "memory_ceiling_includes_swap": _memory_swap_bound(cb),
         "agent_session_has_wall_clock": "wall" in read("sandbox/agent_session.py").lower(),
+        # EM-3B-R1 / R3: one classifier, and these are the situations it tells apart.
+        "refusal_cases": _refusal_cases(),
+        "refusal_is_structured": (SDK / "sandbox" / "refusal.py").is_file(),
         # SANDBOX-DOCS-0004: the pages describe the gates a credentialed run must pass. Read them
         # out of the refusal sites rather than trusting the prose.
         "credentialed_run_refusals": _refusal_reasons(),
@@ -134,7 +144,9 @@ def _callers_of(needle: str) -> list:
     hits = []
     for py in sorted(SDK.rglob("*.py")):
         rel = str(py.relative_to(SDK)).replace(chr(92), "/")
-        if rel.startswith("tests/") or rel == "sandbox/egress.py":
+        # The conformance suite calls this machinery in order to MEASURE it. That is not a run
+        # path: counting it here would let the instrument answer the question it exists to ask.
+        if rel.startswith(("tests/", "conformance/")) or rel == "sandbox/egress.py":
             continue
         for line in py.read_text(encoding="utf-8").splitlines():
             s = line.strip()
@@ -142,6 +154,27 @@ def _callers_of(needle: str) -> list:
                 hits.append(rel)
                 break
     return hits
+
+
+def _memory_swap_bound(cb: str) -> bool:
+    """True when --memory-swap is passed and equals --memory, which is what makes the total bind."""
+    flags = re.search(r"_HARDENED_FLAGS = \[(.*?)\]", cb, re.S)
+    if not flags:
+        return False
+    items = re.findall(r'"([^"]+)"', flags.group(1))
+    if "--memory-swap" not in items or "--memory" not in items:
+        return False
+    return items[items.index("--memory") + 1] == items[items.index("--memory-swap") + 1]
+
+
+def _refusal_cases() -> list:
+    """The situations the refusal classifier tells apart, read from the enum."""
+    try:
+        src = read("sandbox/refusal.py")
+    except Exception:                                              # noqa: BLE001
+        return []
+    body = re.search(r"class RefusalCase\(str, Enum\):(.*?)(\n\n|\nclass )", src, re.S)
+    return re.findall(r'"([a-z_]+)"', body.group(1)) if body else []
 
 
 def _default_timeout(cb: str):

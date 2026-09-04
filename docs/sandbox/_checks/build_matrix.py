@@ -332,13 +332,32 @@ bridge network, and no run path selects it. The mode that does restrict is `egre
 usable form without a real internal network and proxy: without them it raises instead of emitting an
 open network.
 
-## The one time limit there is
+## The memory ceiling
+
+`--memory` alone is not a ceiling: a container runtime given only that grants a swap allowance of
+twice the limit, and a program can use the difference. The two are set to the same value, so the
+total of memory **and** swap is the limit
+(`sandbox_runtime.memory_ceiling_includes_swap` is {f['sandbox_runtime']['memory_ceiling_includes_swap']}).
+An engine that cannot account for swap cannot hold that ceiling, and the sandbox refuses on such a
+machine rather than running under a limit that might not bind.
+
+## The one time limit there is, and what reaching it does
 
 A single call is killed after **{f['sandbox_runtime']['single_call_timeout_seconds']:.0f} seconds**.
 A long-lived agent session has no such clock
 (`sandbox_runtime.agent_session_has_wall_clock` is {f['sandbox_runtime']['agent_session_has_wall_clock']}):
 it has per-message receive timeouts, which is not the same thing. Anything written here about "time
 limits" means that one number and nothing more.
+
+Reaching it **ends the program**, which is worth saying because for a long time it did not. The
+runtime client was stopped and the container carried on; the conformance suite measured that and it
+is fixed. Each run now carries its own identity, the ceiling removes that exact container, waits,
+and checks it is gone — by id and by name
+(`sandbox_runtime.timeout_removes_the_container` is {f['sandbox_runtime']['timeout_removes_the_container']},
+`timeout_verifies_absence` is {f['sandbox_runtime']['timeout_verifies_absence']}). If any of that
+cannot be shown, the result is a distinct containment error rather than an ordinary timeout
+(`timeout_failure_is_distinct` is {f['sandbox_runtime']['timeout_failure_is_distinct']}): a stop
+nobody could verify is not reported as a stop.
 
 ## What is switched on when you install it
 

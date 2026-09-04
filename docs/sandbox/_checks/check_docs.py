@@ -295,6 +295,63 @@ def selftest_local_only_claims() -> int:
     return caught
 
 
+#: Every situation the refusal classifier tells apart, and a phrase the pages use for it. Written
+#: out so that adding a case to the product without documenting it fails here rather than passing
+#: unnoticed -- the same discipline as the check inventory in the conformance suite.
+REFUSAL_CASE_PHRASES = {
+    "not_installed": "is not installed",
+    "not_running": "not running",
+    "not_permitted": "may not use it",
+    "incompatible": "not in a mode that can run the sandbox",
+    "platform_unsupported": "cannot create the kind of sealed workspace",
+    "image_missing": "not present locally",
+    "image_placeholder": "no pinned sandbox image",
+    "memory_ceiling_unenforceable": "cannot hold the memory limit",
+}
+
+
+def check_refusal_cases(pages: list) -> None:
+    """Every case the code can refuse with has to be a situation the pages describe."""
+    cases = FACTS["sandbox_runtime"].get("refusal_cases") or []
+    if not cases:
+        return
+    undocumented = [c for c in cases if c not in REFUSAL_CASE_PHRASES]
+    if undocumented:
+        fail("_checks/check_docs.py",
+             f"the code refuses with cases this checker does not know: {undocumented}. Document "
+             "them and add the phrase here, in the same change")
+    text = " ".join(page.read_text(encoding="utf-8").lower() for page in pages)
+    for case in cases:
+        phrase = REFUSAL_CASE_PHRASES.get(case)
+        if phrase and phrase.lower() not in text:
+            fail("troubleshooting.md",
+                 f"the code can refuse with {case!r} and no page says so (looked for "
+                 f"{phrase!r})")
+    stale = [c for c in REFUSAL_CASE_PHRASES if c not in cases]
+    if stale:
+        fail("_checks/check_docs.py",
+             f"these cases are documented but the code no longer has them: {stale}")
+
+
+def selftest_refusal_cases(pages: list) -> int:
+    """Plant a case the pages cannot possibly describe, and require it to be caught."""
+    before = len(problems)
+    real = FACTS["sandbox_runtime"].get("refusal_cases")
+    try:
+        # ONLY the planted case, so the count is about the plant and not about whatever else the
+        # real pages may or may not be missing. Appending it made a genuine failure elsewhere show
+        # up as a broken self-test instead of as itself.
+        FACTS["sandbox_runtime"]["refusal_cases"] = ["a_case_nobody_wrote_about"]
+        check_refusal_cases(pages)
+    finally:
+        FACTS["sandbox_runtime"]["refusal_cases"] = real
+    # Count only failures that NAME the planted case: replacing the case list also makes every
+    # real documented case look stale, and a raw count would fold those in.
+    planted = [x for x in problems[before:] if "a_case_nobody_wrote_about" in x]
+    del problems[before:]
+    return len(planted)
+
+
 def check_secret_claims(pages: list) -> None:
     """No page may promise that keys stay out of the sandbox while the runtime puts them there.
 
@@ -442,6 +499,10 @@ def main() -> int:
     check_claims(pages + blog, phrases)
     check_facts_consistency(pages + blog)
     check_secret_claims(pages + blog)
+    check_refusal_cases(pages)
+    if selftest_refusal_cases(pages) != 1:
+        fail("_checks/check_docs.py",
+             "the refusal-case check did not reject a case no page describes")
     check_local_only_claims(pages + blog)
     local = selftest_local_only_claims()
     if local != EXPECTED_PLANTED_LOCAL or len(PLANTED_LOCAL_CLAIMS) != EXPECTED_PLANTED_LOCAL:

@@ -103,6 +103,63 @@ to an AgentNode started from Windows, and the other way round. Start both from t
 
 ---
 
+## "It is installed, but this account may not use it"
+
+**In plain words.** The program that creates the sealed workspace is there and running, but your
+user is not allowed to talk to it.
+
+**What AgentNode prevented.** Nothing ran. This is a permission question, not a fault.
+
+**What to do.**
+
+* **Linux, the smaller ask:** use rootless Podman — it runs under your own account and needs no
+  service owned by an administrator.
+
+  ```
+  sudo apt install podman        # or: sudo dnf install podman
+  ```
+
+* **Or ask whoever administers the machine**, and send them this, which changes nothing:
+
+  ```
+  agentnode sandbox doctor --json
+  ```
+
+**Deliberately not suggested:** adding yourself to the `docker` group. That is administrator-
+equivalent power on the machine, permanently, and it is not a fix to take in passing.
+
+---
+
+## "It is running, but not in a mode that can run the sandbox"
+
+**In plain words.** Docker Desktop can run Linux containers or Windows containers. The sealed
+workspace is a Linux image, and the engine is currently set to the other one.
+
+**What to do.** Switch Docker Desktop to Linux containers — right-click its tray icon. To see which
+mode it is in:
+
+```
+docker info --format "{{.OSType}}"
+```
+
+---
+
+## "This machine cannot hold the memory limit"
+
+**In plain words.** The sandbox tells the runtime how much memory a program may use. On this
+machine the runtime cannot account for swap, so that ceiling would not actually bind: a program
+could quietly use more by swapping.
+
+**What AgentNode prevented.** Running someone else's code under a limit that might not hold, which
+is the same as running it under no limit. It refuses instead.
+
+**What to do.** Most current Linux distributions already use cgroup v2, where the memory-and-swap
+ceiling is accounted for by default. On an older cgroup v1 machine, swap accounting has to be turned
+on in the kernel command line (`cgroup_enable=memory swapaccount=1`) and the machine restarted.
+Either is an administrator's decision; send them the output of `agentnode sandbox doctor --json`.
+
+---
+
 ## "Pinned sandbox image is not present locally"
 
 **In plain words.** The sealed workspace is built from one specific image, and it has not been
@@ -161,6 +218,22 @@ setting from an older version.
 **What to do.** [Set up the local sandbox](setup-local.md). The alternative — putting the old
 setting back — is described in [the security model](security-model.md#the-old-setting), and it is
 not protected execution.
+
+---
+
+## A program that will not stop
+
+**In plain words.** A sandboxed program that runs past its time limit is ended — the program itself,
+not just the command that started it. You do not have to clean anything up.
+
+**Worth knowing, because it was not always true.** Until recently the time limit stopped the local
+command while the program carried on inside its workspace. AgentNode said "timed out" and something
+was still running. The conformance suite found that; it is fixed, and each run now removes its own
+workspace and checks it is gone.
+
+**If it cannot be shown to have stopped**, you get a different message from an ordinary timeout —
+one saying the workspace could not be confirmed gone. That is deliberate: a stop nobody could verify
+is not reported as a stop.
 
 ---
 

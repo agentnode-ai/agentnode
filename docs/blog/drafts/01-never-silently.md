@@ -25,8 +25,9 @@ A sealed workspace on your own computer. Inside it, the program gets its own fil
 scratch area that is deleted afterwards, no network at all unless its install sealed the sites it
 needs and you agreed to them, and
 none of your documents unless you picked them. It runs as a non-privileged user, on a filesystem it
-cannot write to, with limits on memory and processes, and a call that will not finish is killed
-after two minutes.
+cannot write to, with limits on memory and processes that it cannot spend its way around, and a
+call that will not finish is ended after two minutes — the program, not just the command that
+started it.
 
 What it does not get: your home folder, your browser profile, the rest of your disk — apart from
 one exception, which only happens if you agree to it.
