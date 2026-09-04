@@ -33,6 +33,10 @@ ABSENT_RUNTIME = "agentnode-conformance-absent-runtime"
 TIMEOUT_RC = -1
 TIMEOUT_MARKER = "[sandbox timed out after"
 
+#: 128 + SIGKILL: what a container runtime reports when the kernel stops a process for
+#: exceeding its memory ceiling.
+OOM_KILLED_RC = 137
+
 #: A variable name released into the lifecycle run. The VALUE never leaves this process.
 CREDENTIAL_PROBE_NAME = "AGENTNODE_CONFORMANCE_RELEASED"
 
@@ -167,8 +171,13 @@ def _stress(backend, options, run_id):
         out["wallclock"] = {"_error": f"{type(exc).__name__}: {str(exc)[:160]}"}
     try:
         mb = options.memory_stress_mb
+        # EM3B-SUITE-0005: the payload says it got going BEFORE it allocates. Without that, a
+        # syntax error, a missing interpreter or an image that will not start all produce a
+        # non-zero exit with no ALLOCATED line -- and that used to read as "the ceiling stopped
+        # it". A run that never began measures nothing about a limit.
         code = (
             "import sys\n"
+            "print('ALLOCATING', flush=True)\n"
             "held = []\n"
             f"for _ in range({mb} // 32):\n"
             "    held.append(bytearray(32 * 1024 * 1024))\n"
@@ -178,10 +187,17 @@ def _stress(backend, options, run_id):
         spec = ProcessSpec(command=["python", "-c", code], network="none", clean_home=True,
                            name=f"agentnode-conformance-{run_id}-mem")
         r = _run(backend, spec, 60)
+        stdout, stderr = r["stdout"] or "", r["stderr"] or ""
+        started = "ALLOCATING" in stdout
+        completed = "ALLOCATED" in stdout
+        # What a ceiling looks like when it binds: the kernel kills the process, or the allocation
+        # is refused inside it. Anything else that ends the run is not the ceiling.
+        by_the_ceiling = r["rc"] == OOM_KILLED_RC or "MemoryError" in stderr
         out["memory"] = {
-            "requested_mb": mb, "rc": r["rc"],
-            "killed": r["rc"] != 0 or "ALLOCATED" not in (r["stdout"] or ""),
-            "stdout_tail": (r["stdout"] or "")[-80:].strip(),
+            "requested_mb": mb, "rc": r["rc"], "started": started, "completed": completed,
+            "ended_by_the_ceiling": by_the_ceiling,
+            "killed": started and not completed and by_the_ceiling,
+            "stdout_tail": stdout[-80:].strip(), "stderr_tail": stderr[-160:].strip(),
         }
     except Exception as exc:                                        # noqa: BLE001
         out["memory"] = {"_error": f"{type(exc).__name__}: {str(exc)[:160]}"}
@@ -475,11 +491,28 @@ def measure_credential_lifecycle(backend, *, allowed: str = "example.com",
     except Exception as exc:                                        # noqa: BLE001
         out["_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         return out
+    remaining, problem = _egress_leftovers(handle.runtime if handle is not None else "")
+    if problem:
+        # EM3B-IMPLEMENTATION-0002 / F1: an exception or a failed command used to be recorded as an
+        # empty list, and an empty list reads as "nothing was left behind". A question the runtime
+        # would not answer is not an answer, and it must not become the evidence that the
+        # credential-carrying network is gone.
+        out["_error"] = problem
+        return out
+    out["leftovers"] = remaining
+    return out
+
+
+def _egress_leftovers(runtime: str):
+    """(what remains, why that could not be determined). Exactly one of the two is set."""
+    if not runtime:
+        return None, "no runtime was resolved, so nothing could be asked about what remained"
     try:
-        runtime = handle.runtime if handle is not None else ""
         left = subprocess.run([runtime, "network", "ls", "--filter", "name=agentnode-egress",
                                "--format", "{{.Name}}"], capture_output=True, text=True, timeout=15)
-        out["leftovers"] = [x for x in left.stdout.split() if x] if left.returncode == 0 else []
-    except Exception:                                               # noqa: BLE001
-        out["leftovers"] = []
-    return out
+    except Exception as exc:                                        # noqa: BLE001 - deliberate
+        return None, f"asking the runtime what remained raised {type(exc).__name__}: {str(exc)[:160]}"
+    if left.returncode != 0:
+        return None, ("the runtime refused to list what remained: "
+                      + (left.stderr or "").strip()[:160])
+    return [x for x in left.stdout.split() if x], None

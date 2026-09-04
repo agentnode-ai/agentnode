@@ -86,7 +86,20 @@ def check_identity(ctx: Context) -> CheckResult:
         detail={"runtime_version": ident, "image": image})
 
 
+#: Cgroup paths a container runtime writes. A cgroup that says nothing is not evidence either way.
+_CONTAINER_CGROUPS = ("docker", "libpod", "kubepods", "containerd", "crio", "buildkit")
+#: Root filesystems that mean an image was unpacked rather than a machine booted.
+_CONTAINER_ROOTFS = ("overlay", "overlayfs", "aufs")
+
+
 def check_outside_host_process(ctx: Context) -> CheckResult:
+    """Containment has to be shown, not inferred from the absence of a familiar init.
+
+    EM3B-SUITE-0002 / F1: this passed whenever PID 1 was not called `systemd` or `init`. On a host
+    whose PID 1 happens to be anything else -- and inside this very suite the payload IS PID 1 and
+    is called `python` -- that made an unconstrained process look contained. The name of PID 1 is a
+    diagnosis; it is not evidence, and it cannot carry this check on its own.
+    """
     c, problem = _read(ctx, "containment")
     ident, problem2 = _read(ctx, "identity")
     if problem or problem2:
@@ -96,12 +109,27 @@ def check_outside_host_process(ctx: Context) -> CheckResult:
     markers = [k for k in ("dockerenv", "containerenv") if c.get(k)]
     cgroup = str(c.get("self_cgroup", ""))
     pid1 = c.get("pid1_comm", "")
-    ok = bool(markers) or "docker" in cgroup or "libpod" in cgroup or pid1 not in ("systemd", "init")
+    cgroup_says = [w for w in _CONTAINER_CGROUPS if w in cgroup.lower()]
+    mounts = ctx.readings.get("mounts")
+    root_fs = ""
+    if isinstance(mounts, list):
+        root_fs = next((m.get("fstype", "") for m in mounts if m.get("target") == "/"), "")
+    rootfs_says = root_fs.lower() in _CONTAINER_ROOTFS
+    positive = markers or cgroup_says or rootfs_says
+    carried = (["a runtime marker file: " + ", ".join(markers)] if markers else []) \
+        + (["the cgroup path names " + ", ".join(cgroup_says)] if cgroup_says else []) \
+        + ([f"the root filesystem is {root_fs}"] if rootfs_says else [])
     return CheckResult.measured(
-        "outside-host-process", "The work runs outside the host process", "execution", ok,
-        Vantage.INSIDE,
-        f"inside: markers {markers or 'none'}, pid 1 is {pid1!r}, hostname {ident.get('hostname')!r}",
-        detail={"markers": markers, "cgroup": cgroup[:200], "pid1": pid1})
+        "outside-host-process", "The work runs outside the host process", "execution",
+        bool(positive), Vantage.INSIDE,
+        ("inside: " + "; ".join(carried)
+         + f" (pid 1 is {pid1!r}, which is diagnosis rather than evidence)"
+         if positive else
+         "inside: nothing shows this is contained -- no runtime marker file, no container cgroup "
+         f"and a {root_fs or 'unknown'} root filesystem. Pid 1 being {pid1!r} is not evidence of "
+         "containment"),
+        detail={"markers": markers, "cgroup": cgroup[:200], "cgroup_says": cgroup_says,
+                "root_fs": root_fs, "pid1": pid1})
 
 
 def check_not_root(ctx: Context) -> CheckResult:
@@ -268,14 +296,42 @@ def check_limit_memory(ctx: Context) -> CheckResult:
     except ValueError:
         return CheckResult.probe_error("limit-memory", "The memory limit is enforced", "limits",
                                        f"the cgroup memory file read {raw!r}")
+    # EM3B-SUITE-0004 / F-001: the ceiling being CONFIGURED is not the ceiling being ENFORCED, and
+    # this used to pass on the configuration whenever the stress result was missing -- `killed`
+    # was None, `None is not False` is true, and an allocation nobody attempted counted as one
+    # that was stopped. A limit is enforced when something hit it.
     stress = ctx.stress.get("memory")
-    killed = stress.get("killed") if isinstance(stress, dict) else None
-    ok = actual == expected and (killed is not False)
+    if not isinstance(stress, dict) or "_error" in stress:
+        reason = stress.get("_error") if isinstance(stress, dict) else "none was performed"
+        return CheckResult.probe_error(
+            "limit-memory", "The memory limit is enforced", "limits",
+            f"the cgroup ceiling reads {actual} bytes, but no allocation was run against it: "
+            f"{reason}") if isinstance(stress, dict) else CheckResult.not_checked(
+            "limit-memory", "The memory limit is enforced", "limits",
+            f"the cgroup ceiling reads {actual} bytes, but no allocation was run against it")
+    killed = stress.get("killed")
+    if not isinstance(killed, bool):
+        return CheckResult.probe_error(
+            "limit-memory", "The memory limit is enforced", "limits",
+            f"the allocation run recorded {killed!r} rather than whether it was stopped")
+    # EM3B-SUITE-0005: an ending is evidence about the ceiling only when the allocation began
+    # AND the ending is attributable to the ceiling. A non-zero exit is not by itself a limit
+    # binding -- a syntax error is also a non-zero exit.
+    if "started" in stress and not stress.get("started"):
+        return CheckResult.probe_error(
+            "limit-memory", "The memory limit is enforced", "limits",
+            f"the allocation never began (rc={stress.get('rc')}, stderr "
+            f"{str(stress.get('stderr_tail'))[:120]!r}), so nothing was measured about the ceiling")
+    if (not killed and not stress.get("completed", True)
+            and not stress.get("ended_by_the_ceiling", False)):
+        return CheckResult.probe_error(
+            "limit-memory", "The memory limit is enforced", "limits",
+            f"the allocation neither completed nor was stopped by the ceiling "
+            f"(rc={stress.get('rc')}), so that ending is not attributable to the limit")
+    ok = actual == expected and killed
     evidence = (f"inside: the cgroup memory ceiling is {actual} bytes against the declared "
-                f"{expected} bytes")
-    if killed is not None:
-        evidence += ("; an allocation past that ceiling was stopped"
-                     if killed else "; an allocation past that ceiling was NOT stopped")
+                f"{expected} bytes; an allocation past that ceiling was "
+                + ("stopped by it" if killed else "NOT stopped"))
     return CheckResult.measured("limit-memory", "The memory limit is enforced", "limits", ok,
                                 Vantage.INSIDE, evidence,
                                 detail={"cgroup": actual, "declared": expected, "stress": stress})
