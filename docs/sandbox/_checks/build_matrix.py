@@ -334,12 +334,18 @@ open network.
 
 ## The memory ceiling
 
-`--memory` alone is not a ceiling: a container runtime given only that grants a swap allowance of
-twice the limit, and a program can use the difference. The two are set to the same value, so the
-total of memory **and** swap is the limit
-(`sandbox_runtime.memory_ceiling_includes_swap` is {f['sandbox_runtime']['memory_ceiling_includes_swap']}).
-An engine that cannot account for swap cannot hold that ceiling, and the sandbox refuses on such a
-machine rather than running under a limit that might not bind.
+`--memory` and `--memory-swap` are set to the **same** value, so the total of memory and swap is the
+limit (`sandbox_runtime.memory_ceiling_includes_swap` is
+{f['sandbox_runtime']['memory_ceiling_includes_swap']}, derived by reading both out of the flag
+list).
+
+That matters because `--memory` on its own did not bind here: with only it set, the conformance
+suite watched a 768 MiB allocation finish with exit code 0 under a declared 512 MiB limit. With both
+set, the same allocation is stopped. Those are two measurements against a real container, not a
+statement about runtimes in general.
+
+An engine that cannot account for swap cannot hold the ceiling either way, and the sandbox refuses
+on such a machine rather than running under a limit that might not bind.
 
 ## The one time limit there is, and what reaching it does
 

@@ -35,8 +35,11 @@ pages:
 * **a wall-clock timeout now ends the program**, not just the command that started it: the run's own
   container is removed, waited for and checked absent by id and by name, and a stop that cannot be
   shown is a distinct containment error rather than an ordinary timeout;
-* **refusals are structured**, with eight situations the classifier tells apart, each carrying an
-  action that exists on the platform in front of you and a re-check afterwards.
+* **refusals are structured**, with eight situations the classifier tells apart. Three properties
+  of it are read out of its source rather than claimed about it: a refusal cannot be constructed
+  without an action (`refusal_requires_an_action`), an action whose tool is absent is withheld
+  rather than offered (`refusal_withholds_unavailable_actions`), and every refusal names the check
+  to run afterwards (`refusal_names_a_recheck`).
 
 A checker now binds those cases to the pages in both directions: a case the code can refuse with
 that no page describes fails, and a case the checker knows that the code no longer has fails too.

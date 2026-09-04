@@ -97,6 +97,10 @@ def sandbox_runtime() -> dict:
         # EM-3B-R1 / R3: one classifier, and these are the situations it tells apart.
         "refusal_cases": _refusal_cases(),
         "refusal_is_structured": (SDK / "sandbox" / "refusal.py").is_file(),
+        # Three properties of that classifier, read out of it rather than claimed about it.
+        "refusal_requires_an_action": _refusal_says("a refusal must carry something the person"),
+        "refusal_withholds_unavailable_actions": _refusal_says("a.available_here(which)"),
+        "refusal_names_a_recheck": _refusal_says("Then check it worked"),
         # SANDBOX-DOCS-0004: the pages describe the gates a credentialed run must pass. Read them
         # out of the refusal sites rather than trusting the prose.
         "credentialed_run_refusals": _refusal_reasons(),
@@ -165,6 +169,14 @@ def _memory_swap_bound(cb: str) -> bool:
     if "--memory-swap" not in items or "--memory" not in items:
         return False
     return items[items.index("--memory") + 1] == items[items.index("--memory-swap") + 1]
+
+
+def _refusal_says(needle: str) -> bool:
+    """Whether the refusal classifier's own source contains this, so a property is read not told."""
+    try:
+        return needle in read("sandbox/refusal.py")
+    except Exception:                                              # noqa: BLE001
+        return False
 
 
 def _refusal_cases() -> list:

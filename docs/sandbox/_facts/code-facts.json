@@ -253,6 +253,9 @@
       "image_placeholder"
     ],
     "refusal_is_structured": true,
+    "refusal_names_a_recheck": true,
+    "refusal_requires_an_action": true,
+    "refusal_withholds_unavailable_actions": true,
     "refuses_without_runtime": true,
     "runtimes_probed": [
       "docker",
