@@ -852,6 +852,56 @@ class TestARedirectIsASecondDestination:
             server.shutdown()
 
 
+class TestTheAnswerMustComeFromTheGatewayYouPairedWith:
+    """EM3C-REMOTE-ACCESS-0001 asked for this independently of the transport.
+
+    TLS or a tunnel authenticates the channel. This authenticates the peer at the other end of it,
+    against what was learned when the two were introduced -- so an address that is later pointed
+    somewhere else stops being trusted rather than being quietly used.
+    """
+
+    def test_an_answer_from_a_different_gateway_is_refused(self, gateway):
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none", run_id="pinned")
+        gc.wait_for(conn, "pinned", timeout=20)
+
+        elsewhere = gc.GatewayConnection(base_url=base, token=conn.token,
+                                         gateway_id="a-different-gateway",
+                                         fingerprint=conn.fingerprint)
+        with pytest.raises(gc.GatewayClientError, match="not the sandbox you paired with"):
+            gc.status_of(elsewhere, "pinned", verify=False)
+
+    def test_a_changed_fingerprint_is_refused(self, gateway):
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none", run_id="pinned-print")
+        gc.wait_for(conn, "pinned-print", timeout=20)
+
+        moved = gc.GatewayConnection(base_url=base, token=conn.token,
+                                     gateway_id=conn.gateway_id,
+                                     fingerprint="0" * 64)
+        with pytest.raises(gc.GatewayClientError, match="no longer identifies itself"):
+            gc.status_of(moved, "pinned-print", verify=False)
+
+    def test_submitting_to_the_wrong_gateway_is_refused_too(self, gateway):
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        elsewhere = gc.GatewayConnection(base_url=base, token=conn.token,
+                                         gateway_id="somebody-else", fingerprint="")
+        with pytest.raises(gc.GatewayClientError, match="not the sandbox you paired with"):
+            gc.submit(elsewhere, b"x", network="none", run_id="wrong-peer")
+
+    def test_a_connection_saved_before_fingerprints_still_works(self, gateway):
+        """Refusing those would break every existing pairing to add a check it cannot perform."""
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        older = gc.GatewayConnection(base_url=base, token=conn.token,
+                                     gateway_id=conn.gateway_id, fingerprint="")
+        answer = gc.submit(older, b"x", network="none", run_id="legacy")
+        assert answer["state"] != "refused"
+
+
 class TestCredentialsNeverRideInAUrl:
     """A URL outlives its request, in proxy logs, shell history and crash reports."""
 

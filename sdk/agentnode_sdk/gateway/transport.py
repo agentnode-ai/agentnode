@@ -107,19 +107,32 @@ DEFAULT_RULES = TransportRules()
 
 
 def _tls_remedy(host: str) -> str:
-    """A refusal that does not say how to proceed is just an obstacle."""
+    """A refusal that does not say how to proceed is just an obstacle.
+
+    The order is the decision from `EM3C-REMOTE-ACCESS-0001`, not a matter of taste. A private
+    tunnel comes first because it is the only one of the three that works for the machine most
+    people actually have: at home, behind NAT, with no domain name and no way to open a port. The
+    certificate routes are real and are second and third because both of them start by requiring
+    something -- a public name, an inbound port -- that a large share of people cannot get.
+    """
     where = host or "your-gateway"
     return (
-        "Two ways to reach a gateway that is not on this machine, both of which encrypt the link:\n"
+        "Three ways to reach a gateway on another machine. All of them encrypt the link; the\n"
+        "first needs no domain name and no open port, which is why it is first.\n"
         "\n"
-        "  1. Give the gateway a certificate, and it will serve HTTPS itself:\n"
+        "  1. A private tunnel, with the tunnel providing the encryption.\n"
+        "     On the gateway machine, leave it on 127.0.0.1 and put the tunnel in front:\n"
+        "       tailscale serve --bg 8099\n"
+        "     Tailscale gives it an https:// address on your private network. Connect to that.\n"
+        "     Nothing is exposed to the internet and no certificate is yours to manage.\n"
+        "\n"
+        "  2. A TLS reverse proxy you already run -- Caddy or nginx -- in front of a gateway that\n"
+        "     stays on 127.0.0.1. Needs a domain name pointed at the machine and port 443 open.\n"
+        "\n"
+        "  3. A certificate of the gateway's own, if you already have one:\n"
         "       agentnode gateway init --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem\n"
         "       agentnode gateway start\n"
         "     then connect to  https://" + where + "/\n"
-        "\n"
-        "  2. Or leave the gateway on 127.0.0.1 and put a TLS terminator in front of it -- a\n"
-        "     reverse proxy such as Caddy or nginx, or tailscale serve. The gateway needs no\n"
-        "     certificate of its own in that shape, because it never binds a public interface.\n"
     )
 
 

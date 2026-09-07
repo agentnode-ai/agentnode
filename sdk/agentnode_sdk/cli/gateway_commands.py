@@ -255,7 +255,42 @@ def cmd_doctor(args) -> int:
         for step in readiness.next_steps:
             print(f"    {step}")
         return 1
+
+    _say_remote_access(root, _load_config(root))
     return 0
+
+
+def _say_remote_access(root: Path, config: dict) -> None:
+    """Whether anyone else can reach this, and what to do about it.
+
+    A gateway on loopback is not a problem to be fixed -- it is the right answer for someone
+    running it on their own machine. It is only worth raising because the person who wants a
+    second machine to use it has no way to find out what to do next except by being told.
+    """
+    import shutil
+
+    print()
+    if config.get("tls_cert"):
+        print(f"  {bold('Reachable from other machines')} over its own certificate.")
+        return
+
+    print(f"  {bold('This sandbox is reachable from this machine only.')}")
+    print("  That is the safe default and is all you need if you are the only one using it.")
+    print()
+    print("  To let another machine use it, the connection has to be encrypted -- a pairing code")
+    print("  and an access token cross it, and neither survives being read on the way.")
+    print()
+    if shutil.which("tailscale"):
+        print("  Tailscale is installed here, which is the simplest route:")
+        print("    tailscale serve --bg 8099")
+        print("  That publishes an https:// address on your private network. Nothing is exposed")
+        print("  to the internet, and there is no certificate for you to manage.")
+    else:
+        print("  The simplest route needs no domain name and no open port:")
+        print("    install Tailscale (or another private tunnel), then:")
+        print("      tailscale serve --bg 8099")
+        print("  If you already run Caddy or nginx with a certificate, put it in front instead")
+        print("  and leave this gateway on 127.0.0.1.")
 
 
 def cmd_pair(args) -> int:

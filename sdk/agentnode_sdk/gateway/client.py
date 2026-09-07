@@ -203,6 +203,7 @@ def submit(connection: GatewayConnection, artifact: bytes, *, granted=None,
     status, answer = _post(connection.base_url + "/v1/jobs", body)
     if status not in (200, 202, 409):
         raise GatewayClientError(answer.get("error", f"the gateway answered {status}"))
+    assert_same_gateway(connection, answer)
     return answer
 
 
@@ -248,6 +249,36 @@ def verify_answer(connection: GatewayConnection, answer: dict[str, Any]) -> dict
     return answer
 
 
+def assert_same_gateway(connection: GatewayConnection, body: dict) -> None:
+    """Refuse an answer from a gateway that is not the one this connection was paired with.
+
+    `EM3C-REMOTE-ACCESS-0001` asked for this as defence in depth, independent of which secure
+    transport is in front. The transport authenticates the channel; this authenticates the peer at
+    the other end of it, using what was learned when the two were introduced. If the address is
+    ever pointed somewhere else -- a changed tunnel route, a proxy reconfigured, a name that now
+    resolves elsewhere -- the answer stops being accepted rather than being quietly used.
+
+    Only checked when there is something to check against: a connection saved before fingerprints
+    were recorded has none, and refusing those would break every existing pairing to add a check
+    it cannot perform. Both fields are compared when both are known.
+    """
+    said = body.get("gateway") or {}
+    seen_id = str(said.get("gateway_id", "") or body.get("gateway_id", "") or "")
+    seen_print = str(body.get("fingerprint", "") or "")
+
+    if connection.gateway_id and seen_id and seen_id != connection.gateway_id:
+        raise GatewayClientError(
+            "the machine answering at " + connection.base_url + " is not the sandbox you paired "
+            "with. Nothing was sent to it. If the gateway genuinely moved, connect to it again; "
+            "if it did not, something else is answering on that address."
+        )
+    if connection.fingerprint and seen_print and seen_print != connection.fingerprint:
+        raise GatewayClientError(
+            "the sandbox at " + connection.base_url + " no longer identifies itself the way it "
+            "did when you paired with it. Nothing was sent to it."
+        )
+
+
 def rotate(connection: GatewayConnection) -> GatewayConnection:
     """Trade the current token for a fresh one. Returns the updated connection.
 
@@ -264,6 +295,9 @@ def rotate(connection: GatewayConnection) -> GatewayConnection:
     })
     if status != 200 or not body.get("token"):
         raise GatewayClientError(str(body.get("error") or "the gateway would not rotate the token"))
+    # Checked BEFORE the new token is adopted: taking a credential from a machine that is not the
+    # one you paired with is how you end up holding somebody else's key and calling it yours.
+    assert_same_gateway(connection, body)
     return GatewayConnection(
         base_url=connection.base_url,
         token=str(body["token"]),
@@ -276,6 +310,7 @@ def rotate(connection: GatewayConnection) -> GatewayConnection:
 def status_of(connection: GatewayConnection, run_id: str, verify: bool = True) -> dict[str, Any]:
     """Idempotent: asking twice gives the same answer, and asking is free."""
     status, body = _get(f"{connection.base_url}/v1/jobs/{run_id}", token=connection.token)
+    assert_same_gateway(connection, body)
     if status == 404:
         raise GatewayClientError(f"the gateway does not know a run {run_id}")
     if status != 200:
@@ -295,6 +330,7 @@ def cancel(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
     status, answer = _post(f"{connection.base_url}/v1/jobs/{run_id}/cancel", body)
     if status != 200:
         raise GatewayClientError(answer.get("error", f"the gateway answered {status}"))
+    assert_same_gateway(connection, answer)
     return answer
 
 
