@@ -75,10 +75,12 @@ jobs:
           AGENTNODE_SANDBOX_E2E: "1"
         run: |
           set -o pipefail
-          python -m pytest -q -p no:randomly \
+          # -s so the observations the tests print reach the log: an aggregate
+          # "3 passed" says a test asserted something, not what was seen.
+          python -m pytest -p no:randomly -v -s \
             "tests/test_em3c_gateway.py::TestTheVerticalFlowForReal" \
             2>&1 | tee em3c-vertical.txt
-          grep -qE "^3 passed" em3c-vertical.txt || {
+          grep -qE "3 passed" em3c-vertical.txt || {
             echo "the vertical flow did not run: it skipped, failed or errored"
             exit 1
           }
