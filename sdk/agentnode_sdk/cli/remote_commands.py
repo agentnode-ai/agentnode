@@ -246,8 +246,10 @@ def cmd_run(args) -> int:
         return 1
 
     # Printed so it can be stopped from another terminal. A job you cannot name is a job you
-    # cannot cancel.
-    print(f"  run: {answer['run_id']}")
+    # cannot cancel -- and flushed, because when this is piped anywhere the id would otherwise sit
+    # in a buffer until the job ended, which is exactly when it stops being useful. The two-role
+    # check found that by trying to read it the way a person would.
+    print(f"  run: {answer['run_id']}", flush=True)
 
     try:
         final = gc.wait_for(connection, answer["run_id"],
