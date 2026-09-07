@@ -67,7 +67,7 @@ jobs:
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_em3c_gateway.py \
             -k "not TestTheVerticalFlowForReal" 2>&1 | tee em3c-admission.txt
-          grep -qE "^117 passed" em3c-admission.txt || {
+          grep -qE "^122 passed" em3c-admission.txt || {
             echo "the admission tests did not all pass"; exit 1; }
 
       - name: The commands a person actually types

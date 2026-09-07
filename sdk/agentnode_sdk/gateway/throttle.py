@@ -28,7 +28,18 @@ A limit that resets when the process does is not a limit; it is a delay. The sam
 applied to replay protection, and it applies here for the same reason.
 
 The state is small and is re-read before each decision rather than cached, because `agentnode
-gateway pair` and `agentnode gateway start` are different processes and both touch it.
+gateway pair` and `agentnode gateway start` are different processes and both touch it. Re-reading
+is not enough on its own, and `EM3C-GATEWAY-0009` said so: read-check-write is a transaction, and
+without mutual exclusion two processes each read the same count, each decide, and the second write
+erases the first -- losing exactly the failures this exists to count. Every update therefore runs
+under a `ProcessLock`, which the kernel releases even if the holder dies.
+
+Corrupt state fails **closed**. A file that exists but cannot be parsed is not the same as no file:
+treating it as absent is how a restart into an unlocked state happens, which is the outcome an
+attacker would want from tampering. It is treated as locked instead, for the maximum interval, and
+then rewritten as valid state so the lock expires normally rather than bricking the gateway
+forever. Writes are atomic, so a torn file should not occur; if one does, something wrote to the
+gateway directory that should not have.
 """
 from __future__ import annotations
 
@@ -39,6 +50,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from agentnode_sdk.gateway.filelock import LockUnavailable, ProcessLock
 
 
 @dataclass
@@ -64,24 +77,58 @@ class Throttle:
     _consecutive_locks: int = field(default=0, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
+    #: Set when corrupt state was read, so the fail-closed decision is written back rather
+    #: than being recomputed on every call.
+    _dirty: bool = field(default=False, repr=False)
+
     # ------------------------------------------------------------------ durability
 
-    def _read_locked(self) -> None:
-        """Refresh from disk. Called inside the lock, before every decision."""
+    def _across_processes(self):
+        """The lock that actually excludes the other interpreter, or a no-op in memory."""
+        if self.path is None:
+            return _NoLock()
+        return ProcessLock(self.path)
+
+    def _fail_closed(self, now: float) -> None:
+        """State exists but cannot be read. Assume the worst and say so by locking."""
+        self._failures = [now]
+        self._locked_until = now + self.max_lock_seconds
+        self._consecutive_locks = max(1, self._consecutive_locks)
+        self._dirty = True
+
+    def _read_locked(self, now: float) -> None:
+        """Refresh from disk. Called under the process lock, before every decision."""
         if self.path is None:
             return
+        target = Path(self.path)
+        if not target.exists():
+            return                                # nothing recorded yet: genuinely no history
         try:
-            loaded = json.loads(Path(self.path).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return                                # nothing recorded yet, or unreadable
+            raw = target.read_text(encoding="utf-8")
+        except OSError:
+            # Could not READ it -- a transient sharing violation, a permissions problem. That is
+            # not evidence of tampering, and treating it as such locked the gateway out of its own
+            # pairing under ordinary concurrency. Keep whatever this object already knew; the
+            # process lock above means a writer is not mid-flight, so this is rare and not a
+            # licence to assume the file says nothing.
+            return
+        try:
+            loaded = json.loads(raw)
+        except ValueError:
+            # It exists and will NOT parse. That is different: a file that is present but
+            # meaningless is not the same as no file, and treating it as absent is precisely how a
+            # restart into an unlocked state happens.
+            self._fail_closed(now)
+            return
         if not isinstance(loaded, dict):
+            self._fail_closed(now)
             return
         try:
             self._failures = [float(t) for t in (loaded.get("failures") or [])]
             self._locked_until = float(loaded.get("locked_until") or 0.0)
             self._consecutive_locks = int(loaded.get("consecutive_locks") or 0)
         except (TypeError, ValueError):
-            return
+            self._fail_closed(now)
 
     def _write_locked(self) -> None:
         if self.path is None:
@@ -115,8 +162,11 @@ class Throttle:
     def locked_for(self, now: float | None = None) -> float:
         """Seconds remaining on the lock, or 0.0. Never negative."""
         now = time.time() if now is None else now
-        with self._lock:
-            self._read_locked()
+        with self._lock, self._across_processes():
+            self._read_locked(now)
+            if self._dirty:
+                self._write_locked()
+                self._dirty = False
             return max(0.0, self._locked_until - now)
 
     def check(self, now: float | None = None) -> None:
@@ -128,8 +178,8 @@ class Throttle:
     def record_failure(self, now: float | None = None) -> float:
         """Count a failed attempt. Returns the seconds now locked (0.0 if not yet locked)."""
         now = time.time() if now is None else now
-        with self._lock:
-            self._read_locked()
+        with self._lock, self._across_processes():
+            self._read_locked(now)
             self._prune(now)
             self._failures.append(now)
             if len(self._failures) <= self.allowed_failures:
@@ -146,11 +196,21 @@ class Throttle:
 
     def record_success(self, now: float | None = None) -> None:
         """Clear the slate. Someone who proved they know the code is not who this guards against."""
-        with self._lock:
+        with self._lock, self._across_processes():
             self._failures = []
             self._locked_until = 0.0
             self._consecutive_locks = 0
             self._write_locked()
+
+
+class _NoLock:
+    """What `_across_processes` returns when the throttle is memory-only."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
 
 
 class Locked(Exception):

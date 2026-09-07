@@ -1169,6 +1169,103 @@ class TestPairingIsWorthGuessingOnlyOnce:
         assert state._throttle.locked_for() == 0.0
 
 
+class TestSharedStateSurvivesConcurrentOwners:
+    """EM3C-GATEWAY-0009: an atomic rename publishes a value; it is not a transaction.
+
+    Two owners of the same state can each read it, each decide, and each write back -- and the
+    second write erases the first. For the throttle that loses failed attempts, which is exactly
+    the count an attacker wants lost. For the ledger it is worse: both can find a nonce absent and
+    both accept the same job.
+
+    Each test below uses SEPARATE objects over one directory, which is what two processes are.
+    """
+
+    def test_no_failed_attempt_is_lost_when_owners_write_at_once(self):
+        from agentnode_sdk.gateway.throttle import Throttle
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "throttle.json"
+            attempts = 12
+            barrier = threading.Barrier(attempts)
+
+            def record():
+                own = Throttle(allowed_failures=1000, path=path)
+                barrier.wait()
+                own.record_failure(now=1000.0)
+
+            threads = [threading.Thread(target=record) for _ in range(attempts)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+
+            final = Throttle(allowed_failures=1000, path=path)
+            final.locked_for(now=1000.0)              # forces a read
+            assert len(final._failures) == attempts, (
+                f"{attempts - len(final._failures)} failed attempts were lost to a race"
+            )
+
+    def test_two_owners_cannot_both_claim_one_run(self):
+        from agentnode_sdk.gateway.ledger import Ledger
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "ledger.json"
+            results: list = []
+            barrier = threading.Barrier(8)
+
+            def claim():
+                own = Ledger(path)
+                barrier.wait()
+                results.append(own.claim("same-run", "same-nonce", "sha", "client"))
+
+            threads = [threading.Thread(target=claim) for _ in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+
+            assert len(results) == 8, results
+            assert sum(1 for r in results if r) == 1, (
+                f"{sum(1 for r in results if r)} owners each believed they claimed the same run"
+            )
+
+
+class TestCorruptLockoutStateFailsClosed:
+    """A file that exists and will not parse is not the same as no file."""
+
+    def test_unparseable_state_leaves_attempts_locked(self):
+        from agentnode_sdk.gateway.throttle import Throttle
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "throttle.json"
+            path.write_text("{ this is not json", encoding="utf-8")
+            throttle = Throttle(path=path)
+            assert throttle.locked_for(now=1000.0) > 0.0, (
+                "corrupt lockout state was treated as no lockout -- the restart-into-unlocked case"
+            )
+
+    def test_it_heals_rather_than_bricking_the_gateway(self):
+        """Failing closed forever would make one bad byte a permanent outage."""
+        from agentnode_sdk.gateway.throttle import Throttle
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "throttle.json"
+            path.write_text("not json at all", encoding="utf-8")
+            throttle = Throttle(path=path)
+            locked = throttle.locked_for(now=1000.0)
+            assert locked > 0.0
+            # the fail-closed decision was written back as valid state, so it expires normally
+            later = Throttle(path=path)
+            assert later.locked_for(now=1000.0 + locked + 1.0) == 0.0
+
+    def test_a_missing_file_is_not_corruption(self):
+        from agentnode_sdk.gateway.throttle import Throttle
+
+        with tempfile.TemporaryDirectory() as td:
+            throttle = Throttle(path=Path(td) / "nothing-here.json")
+            assert throttle.locked_for(now=1000.0) == 0.0
+
+
 class TestRotationReplacesTheSecretAndNothingElse:
 
     def test_the_old_token_stops_and_the_new_one_works(self, gateway):

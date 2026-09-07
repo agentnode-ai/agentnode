@@ -40,6 +40,8 @@ import threading
 import time
 from pathlib import Path
 
+from agentnode_sdk.gateway.filelock import ProcessLock
+
 #: Nonces are kept a good deal longer than the freshness window. The window is what makes a
 #: captured request stale; this margin is what covers a clock that moved.
 NONCE_RETENTION_SECONDS = 60 * 60
@@ -114,15 +116,18 @@ class Ledger:
     # ------------------------------------------------------------------ questions
 
     def knows_nonce(self, nonce: str) -> bool:
-        with self._lock:
+        with self._lock, ProcessLock(self.path):
+            self._load()
             return str(nonce) in self._data["nonces"]
 
     def knows_run(self, run_id: str) -> bool:
-        with self._lock:
+        with self._lock, ProcessLock(self.path):
+            self._load()
             return str(run_id) in self._data["runs"]
 
     def run_entry(self, run_id: str) -> dict | None:
-        with self._lock:
+        with self._lock, ProcessLock(self.path):
+            self._load()
             entry = self._data["runs"].get(str(run_id))
             return dict(entry) if entry else None
 
@@ -135,7 +140,12 @@ class Ledger:
         defect as reading a pairing code and clearing it in two steps.
         """
         now = time.time() if now is None else now
-        with self._lock:
+        # The process lock matters more here than anywhere else: without it two gateways sharing
+        # a directory can each find the same nonce absent and each accept the same job, which is
+        # the replay this file exists to prevent. Re-read INSIDE the lock, because whatever was
+        # loaded at construction may be stale by now.
+        with self._lock, ProcessLock(self.path):
+            self._load()
             self._prune_locked(now)
             if str(run_id) in self._data["runs"] or str(nonce) in self._data["nonces"]:
                 return False
@@ -151,7 +161,8 @@ class Ledger:
             return True
 
     def note_state(self, run_id: str, state: str) -> None:
-        with self._lock:
+        with self._lock, ProcessLock(self.path):
+            self._load()
             entry = self._data["runs"].get(str(run_id))
             if entry is None:
                 return

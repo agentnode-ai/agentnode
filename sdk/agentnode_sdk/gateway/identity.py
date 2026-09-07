@@ -221,9 +221,23 @@ class GatewayState:
             os.rename(self._pairing_path, claimed)
         except OSError:
             return None                              # somebody else got there first, or none
+        # The rename decided the winner. Reading what was won is a separate problem, and on
+        # Windows a file that has just been renamed can briefly refuse to open -- another handle,
+        # an indexer, a scanner. Giving up there threw away a code this caller had already claimed
+        # and consumed it for everyone, which showed up as a race where NOBODY paired. Retry
+        # briefly: the claim is already ours, so there is nothing to race against any more.
         try:
-            return json.loads(claimed.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            deadline = time.monotonic() + 2.0
+            while True:
+                try:
+                    return json.loads(claimed.read_text(encoding="utf-8"))
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.02)
+                except ValueError:
+                    return None                      # present and meaningless: not a pairing
+        except OSError:
             return None
         finally:
             try:
