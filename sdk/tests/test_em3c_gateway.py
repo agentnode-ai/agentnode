@@ -26,6 +26,7 @@ import time
 import pytest
 
 from agentnode_sdk.gateway import client as gc
+from agentnode_sdk.conformance.report import Vantage
 from agentnode_sdk.gateway import readiness
 from agentnode_sdk.gateway import transport as tr
 from agentnode_sdk.gateway.identity import (
@@ -136,23 +137,28 @@ def _store_measurement(service, ok=True, observed=True, only=None, binding=None)
     conclusions -- which is the part under test here. Whether the real suite reaches these
     verdicts is the container lane's job, and it does measure, for real.
     """
+    from agentnode_sdk.conformance.report import CheckResult, ConformanceReport
     from agentnode_sdk.gateway.readiness import PROPERTY_CHECKS
 
+    # Built as REAL CheckResults and serialised by the real report, not hand-written dicts. The
+    # first version of this helper invented a shape -- it wrote an "ok" key and an outcome of
+    # "measured", neither of which the serialiser produces -- and the gate read the invented
+    # shape happily while the real one made every property unproven. A double that does not
+    # produce what the real thing produces tests the double.
     check_ids = sorted({c for ids in PROPERTY_CHECKS.values() for c in ids})
     results = []
     for check_id in check_ids:
-        wanted = ok if (only is None or check_id in only) else False
-        results.append({
-            "check_id": check_id,
-            "title": check_id,
-            "family": "test",
-            "ok": bool(wanted),
-            "assurance": "observed" if observed else "self-reported",
-            "outcome": "measured",
-            "required": True,
-            "evidence": "stated by the test",
-        })
-    service.readiness.store({"results": results}, binding or service.report_binding())
+        wanted = bool(ok) if (only is None or check_id in only) else False
+        if observed:
+            results.append(CheckResult.measured(
+                check_id, check_id, "test", wanted, Vantage.INSIDE, "stated by the test"))
+        else:
+            results.append(CheckResult.claimed(
+                check_id, check_id, "test", wanted, "stated by the test"))
+    report = ConformanceReport(
+        backend_identity="StandInBackend", backend_version="test", runtime="docker",
+        image="", generated_at="1970-01-01T00:00:00+00:00", results=tuple(results))
+    service.readiness.store(report.to_dict(), binding or service.report_binding())
     return service.readiness_now()
 
 
@@ -1241,6 +1247,35 @@ class TestNothingRunsOnAnUnmeasuredGateway:
                 assert service.backend.specs == []
             finally:
                 server.shutdown()
+
+    def test_the_gate_can_actually_read_a_report_the_real_suite_produced(self):
+        """End to end through the real serialiser, which is where this went wrong.
+
+        The gate first looked for a boolean `ok` on each result. A serialised CheckResult has no
+        such key -- `ok` is a constructor argument that becomes an `outcome` -- so every property
+        came out unproven whatever the suite had found. It failed closed, so nothing unsafe
+        shipped, but the gate was blind and the unit suite could not see it, because the helper
+        that built its input had invented the same key.
+
+        This test takes the path that has no invented shapes in it at all: the real suite, the
+        real report, the real gate.
+        """
+        from agentnode_sdk.conformance.doubles import GoodBackendDouble
+        from agentnode_sdk.conformance.runner import run_conformance
+
+        report = run_conformance(GoodBackendDouble(), generated_at="1970-01-01T00:00:00+00:00")
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            service = GatewayService(state, backend=StandInBackend())
+            service.readiness.store(report.to_dict(), service.report_binding())
+            result = service.readiness_now()
+
+        proven = [name for name, held in result.properties.items() if held]
+        assert proven, (
+            "the gate proved NOTHING from a report the suite itself produced -- it is reading "
+            "fields the report does not have: " + str(result.unproven)
+        )
+        assert result.properties["container_isolation"] is True, result.unproven
 
     def test_every_mapped_check_is_one_the_suite_really_emits(self):
         """A mapping naming a check the suite does not produce would make its property

@@ -59,6 +59,13 @@ PROPERTY_CHECKS: dict[str, tuple[str, ...]] = {
     "egress_allowlist": ("egress-allowlist",),
 }
 
+#: The two words a stored result must carry to count. Taken from the report's own vocabulary:
+#: `observed` is what separates a measurement from something the SDK merely says about itself, and
+#: `pass` is the only outcome that is a yes -- `not_checked`, `probe_error` and `not_applicable`
+#: are all outcomes rather than omissions, and none of them is proof.
+OBSERVED = "observed"
+PASSED = "pass"
+
 #: Properties this gateway will not run anything without, whatever a job asks for.
 ALWAYS_REQUIRED: tuple[str, ...] = ("container_isolation",)
 
@@ -202,6 +209,10 @@ class ReadinessGate:
             for r in ((document.get("report") or {}).get("results") or [])
             if isinstance(r, dict)
         }
+        # A serialised CheckResult carries `outcome` and `assurance`. It has no boolean `ok` --
+        # `ok` is a constructor argument that becomes an outcome. Reading `ok` here meant reading
+        # a key that is never present, so every property came out unproven no matter what the
+        # suite had found: a check that could not see its input, failing closed but still blind.
         properties: dict[str, bool] = {}
         unproven: list[str] = []
         for name, check_ids in PROPERTY_CHECKS.items():
@@ -211,8 +222,8 @@ class ReadinessGate:
                 # Missing, not measured, or measured false -- all three are "not proven".
                 # `not_checked` and `probe_error` are outcomes, not omissions.
                 if (result is None
-                        or str(result.get("assurance")) != "observed"
-                        or result.get("ok") is not True):
+                        or str(result.get("assurance")) != OBSERVED
+                        or str(result.get("outcome")) != PASSED):
                     holds = False
                     break
             properties[name] = holds
