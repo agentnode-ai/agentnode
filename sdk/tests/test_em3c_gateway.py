@@ -1340,6 +1340,108 @@ class TestUnknownCleanupIsNotSuccess:
                 server.shutdown()
 
 
+# ------------------------------------------- the way out of a refusal, taken rather than read
+
+class TestEveryRemediationIsInvocableAndChangesTheAnswer:
+    """F-A4-DEFERRED-UNTIL-BACKEND, for the refusals this gateway issues.
+
+    The finding asked for evidence that INVOKING a remediation reaches its declared outcome, and
+    was left open because the backend that would implement them did not exist. Its sibling
+    F-A4-DECLARATION-NOT-EXECUTION named the tempting shortcut: checking a second declaration
+    instead of running the thing. So each test here refuses first, then does exactly what the
+    refusal said to do, then observes that the answer changed -- three steps, no declaration
+    consulted in place of any of them.
+    """
+
+    def test_measuring_turns_an_unmeasured_gateway_into_a_ready_one(self):
+        """The refusal says `agentnode gateway doctor --measure`. That command is measure()."""
+        from agentnode_sdk.conformance.doubles import GoodBackendDouble
+
+        backend = GoodBackendDouble()
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            service = GatewayService(state, backend=backend)
+            server = make_server(service, port=0)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = "http://127.0.0.1:%d" % server.server_address[1]
+            try:
+                before = gc.hello(base)
+                assert before["ready"] is False
+                assert before["next_steps"] == ["agentnode gateway doctor --measure"]
+
+                conn = gc.pair(base, state.start_pairing())
+                refused = gc.submit(conn, b"x", network="none", run_id="before-measuring")
+                assert refused["state"] == "refused"
+
+                # take the step the refusal named
+                service.measure()
+
+                after = gc.hello(base)
+                assert after["ready"] is True, after["reason"]
+                assert after["properties"]["container_isolation"] is True
+                accepted = gc.submit(conn, b"x", network="none", run_id="after-measuring")
+                assert accepted["state"] != "refused", accepted.get("refusal")
+            finally:
+                server.shutdown()
+
+    def test_supplying_a_certificate_turns_a_refused_bind_into_a_serving_one(self, tmp_path):
+        """The refusal names --tls-cert and --tls-key. Supplying them has to be enough."""
+        with pytest.raises(tr.InsecureTransportError) as refusal:
+            make_server(object(), host="0.0.0.0")
+        assert "--tls-cert" in str(refusal.value)
+
+        cert, key = _self_signed(tmp_path)
+        server = make_server(object(), host="127.0.0.1", port=0,
+                             tls=tr.TlsFiles(certfile=cert, keyfile=key))
+        try:
+            assert server.agentnode_tls is True
+        finally:
+            server.server_close()
+
+    def test_measuring_the_missing_property_turns_a_refused_job_into_a_running_one(self):
+        """A job refused for an unproven property runs once that property is measured."""
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            service = GatewayService(state, backend=StandInBackend())
+            # measured, but cleanup was not among the things shown
+            _store_measurement(service, only=("outside-host-process", "not-root",
+                                              "network-mode", "limit-memory"))
+            server = make_server(service, port=0)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = "http://127.0.0.1:%d" % server.server_address[1]
+            try:
+                conn = gc.pair(base, state.start_pairing())
+                refused = gc.submit(conn, b"x", network="none", run_id="needs-cleanup",
+                                    required_properties=("verified_cleanup",))
+                assert refused["state"] == "refused"
+                assert service.backend.specs == []
+
+                _store_measurement(service)          # now everything is measured
+
+                accepted = gc.submit(conn, b"x", network="none", run_id="needs-cleanup-2",
+                                     required_properties=("verified_cleanup",))
+                assert accepted["state"] != "refused", accepted.get("refusal")
+                final = gc.wait_for(conn, "needs-cleanup-2", timeout=20)
+                assert final["state"] == "finished"
+            finally:
+                server.shutdown()
+
+    def test_a_refusal_that_names_no_way_through_is_itself_a_defect(self):
+        """Every refusal this gateway can issue on the readiness path carries a next step."""
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            service = GatewayService(state, backend=StandInBackend())
+            unmeasured = service.readiness_now()
+            assert unmeasured.ready is False
+            assert unmeasured.next_steps, "an unmeasured gateway offers no way to be measured"
+
+            _store_measurement(service)
+            service.readiness.max_age_seconds = 0.0
+            stale = service.readiness_now()
+            assert stale.ready is False
+            assert stale.next_steps, "a stale measurement offers no way to be refreshed"
+
+
 # ----------------------------------------------------- what must outlive the process itself
 
 class TestARestartDoesNotForget:

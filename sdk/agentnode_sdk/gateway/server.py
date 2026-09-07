@@ -839,6 +839,24 @@ class _Handler(BaseHTTPRequestHandler):
                                   self.service.stamp(record.public()),
                                   body.get("token", "")))
 
+        if self.path == "/v1/token/rotate":
+            # Rotation is client-initiated on purpose. Doing it only from the server side would
+            # mean the operator has to convey a new secret by hand, which is the moment tokens
+            # get pasted into chat windows. The client proves it holds the current token, and
+            # gets its replacement over the same connection it was already trusted on.
+            token = body.get("token", "")
+            try:
+                self.service.authenticate(token, body.get("payload") or {},
+                                          body.get("signature", ""))
+            except ProtocolError as exc:
+                return self._send(403, {"error": str(exc)})
+            replacement = self.service.state.rotate_token(token)
+            if replacement is None:
+                return self._send(403, {"error": "this client is not paired with this gateway"})
+            identity = self.service.state.identity
+            return self._send(200, {"token": replacement, "gateway": identity.as_dict(),
+                                    "fingerprint": identity.fingerprint})
+
         if self.path.endswith("/cancel") and self.path.startswith("/v1/jobs/"):
             run_id = self.path.split("/")[3]
             token = body.get("token", "")

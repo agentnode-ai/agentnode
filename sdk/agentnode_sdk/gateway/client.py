@@ -24,6 +24,7 @@ from agentnode_sdk.gateway.transport import check_client_url
 
 from agentnode_sdk.gateway.protocol import (
     JobRequest,
+    new_nonce,
     TERMINAL_STATES,
     canonical_bytes,
     digest,
@@ -216,6 +217,31 @@ def verify_answer(connection: GatewayConnection, answer: dict[str, Any]) -> dict
             "this answer could not be verified as coming from your gateway. It was discarded."
         )
     return answer
+
+
+def rotate(connection: GatewayConnection) -> GatewayConnection:
+    """Trade the current token for a fresh one. Returns the updated connection.
+
+    The old token stops working the moment this returns, so the caller must store the new one
+    before doing anything else with it.
+    """
+    from agentnode_sdk.gateway.identity import client_token_secret
+
+    payload = {"purpose": "rotate", "nonce": new_nonce(), "issued_at": time.time()}
+    status, body = _post(f"{connection.base_url}/v1/token/rotate", {
+        "token": connection.token,
+        "payload": payload,
+        "signature": sign(client_token_secret(connection.token), payload),
+    })
+    if status != 200 or not body.get("token"):
+        raise GatewayClientError(str(body.get("error") or "the gateway would not rotate the token"))
+    return GatewayConnection(
+        base_url=connection.base_url,
+        token=str(body["token"]),
+        gateway_id=str((body.get("gateway") or {}).get("gateway_id", connection.gateway_id)),
+        version=str((body.get("gateway") or {}).get("version", connection.version)),
+        fingerprint=str(body.get("fingerprint", connection.fingerprint)),
+    )
 
 
 def status_of(connection: GatewayConnection, run_id: str, verify: bool = True) -> dict[str, Any]:

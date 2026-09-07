@@ -27,6 +27,7 @@ import json
 import os
 import secrets
 import time
+import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -117,6 +118,7 @@ class GatewayState:
         # both read the live code before either clears it, and a single-use code is used
         # twice -- the exact property the code is supposed to have.
         self._pairing_lock = threading.Lock()
+        self._pairing_path = self.root / "pairing.json"
         self._throttle = Throttle()
 
     @staticmethod
@@ -161,13 +163,73 @@ class GatewayState:
         """
         now = time.time() if now is None else now
         code = new_pairing_code()
+        expires = now + PAIRING_TTL_SECONDS
         with self._pairing_lock:
-            self._pairing = (code, now + PAIRING_TTL_SECONDS)
+            self._pairing = (code, expires)
+            # Also on disk, because `agentnode gateway pair` and `agentnode gateway start` are
+            # separate processes. A code held only in the memory of whoever issued it could never
+            # reach the process that has to accept it -- the CLI would have been unusable in the
+            # one shape everybody actually runs it in.
+            #
+            # The HASH is stored, not the code. The file is what an attacker with a copy of the
+            # gateway directory gets, and a pairing code sitting in it in plain text would make
+            # that copy a working key for fifteen minutes.
+            self._write_pairing({"code_sha256": hash_token(code), "expires": expires})
         return code
 
     def pairing_active(self, now: float | None = None) -> bool:
         now = time.time() if now is None else now
-        return self._pairing is not None and self._pairing[1] > now
+        if self._pairing is not None and self._pairing[1] > now:
+            return True
+        stored = self._read_pairing()
+        return bool(stored) and float(stored.get("expires", 0)) > now
+
+    # ---------------------------------------------------------- pairing, on disk
+
+    def _write_pairing(self, document: dict) -> None:
+        handle, tmp = tempfile.mkstemp(dir=str(self.root), prefix=".pairing-")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as fh:
+                json.dump(document, fh)
+            os.replace(tmp, self._pairing_path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        self._harden(self._pairing_path)
+
+    def _read_pairing(self) -> dict | None:
+        if not self._pairing_path.is_file():
+            return None
+        try:
+            loaded = json.loads(self._pairing_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return loaded if isinstance(loaded, dict) else None
+
+    def _claim_pairing_file(self) -> dict | None:
+        """Take the live code, atomically, so exactly one caller can have it.
+
+        The rename is the claim. Reading the file and then deleting it would let two processes
+        both read it first, which is the cross-process version of the two-step bug the in-memory
+        path already had -- and a single-use code that two callers can use is not single-use.
+        """
+        claimed = self.root / (".pairing-claimed-" + secrets.token_hex(8))
+        try:
+            os.rename(self._pairing_path, claimed)
+        except OSError:
+            return None                              # somebody else got there first, or none
+        try:
+            return json.loads(claimed.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        finally:
+            try:
+                os.unlink(claimed)
+            except OSError:
+                pass
 
     def redeem_pairing(self, presented: str, client_name: str = "",
                        now: float | None = None) -> str:
@@ -186,10 +248,17 @@ class GatewayState:
 
         # Claim the code and clear it in ONE critical section. Reading it and clearing it as two
         # steps lets two concurrent attempts both see the same live code, which would make a
-        # single-use code usable twice.
+        # single-use code usable twice. The lock covers threads; the rename below covers
+        # processes, since the CLI really does run these in different ones.
         with self._pairing_lock:
             pending = self._pairing
             self._pairing = None
+            on_disk = self._claim_pairing_file()
+        if pending is None and on_disk is not None:
+            pending = ("", float(on_disk.get("expires", 0)))
+            expected_hash = str(on_disk.get("code_sha256", ""))
+        else:
+            expected_hash = hash_token(pending[0]) if pending else ""
 
         if pending is None:
             self._throttle.record_failure(now)
@@ -197,7 +266,7 @@ class GatewayState:
                 "this gateway is not accepting pairings right now. Run `agentnode gateway pair` "
                 "on the server to show a new code."
             )
-        code, expires = pending
+        _code, expires = pending
         if expires <= now:
             self._throttle.record_failure(now)
             raise PairingError(
@@ -209,7 +278,7 @@ class GatewayState:
         except PairingError:
             self._throttle.record_failure(now)
             raise
-        if not hmac.compare_digest(presented_norm, code):
+        if not hmac.compare_digest(hash_token(presented_norm), expected_hash):
             self._throttle.record_failure(now)
             raise PairingError(
                 "that pairing code does not match. The code can be used once, so ask the server "
