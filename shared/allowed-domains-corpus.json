@@ -1,5 +1,5 @@
 {
-  "_note": "Shared corpus for allowed_domains. The backend registry validator and the SDK sandbox each have their own canonicaliser -- two rule sets that must not drift, or a package would pass submission and refuse to run. Each side has a test asserting its implementation satisfies this file, so a divergence in either breaks that side's build.",
+  "_note": "Shared corpus for allowed_domains. The backend registry validator and the SDK sandbox each have their own canonicaliser -- two rule sets that must not drift, or a package would pass submission and refuse to run. ONE test, in the backend suite, loads BOTH implementations by file path and holds each to this file, so Backend CI fails if either side diverges on a listed host. It binds these inputs only: a host outside this corpus could still be treated differently by the two.",
   "accepted": {
     " example.com": "example.com",
     "API.Example.com": "api.example.com",

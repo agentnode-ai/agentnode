@@ -101,8 +101,13 @@ class TestTheTwoCanonicalisersDoNotDrift:
     `shared/allowed-domains-corpus.json` is the mechanism instead. Both implementations are loaded
     here -- by file path, since neither is installed in the other's environment, and both are
     stdlib-only -- and each must accept every listed host with the same canonical form and reject
-    every listed one. A change to either side that alters what it accepts fails this test, which is
-    what makes the agreement checkable rather than asserted.
+    every listed one.
+
+    What that establishes, exactly: a change to either side that alters its treatment of a host IN
+    THE CORPUS fails this test. It is a finite corpus of 30 inputs, so it bounds the disagreement
+    rather than excluding it -- a host outside the corpus could still be handled differently by the
+    two. Removing the duplication would need a shared package both trees depend on, which is out of
+    scope here and recorded as a known limitation rather than presented as solved.
     """
 
     @staticmethod
