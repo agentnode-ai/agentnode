@@ -442,9 +442,35 @@ class TestTheVerticalFlowForReal:
                 server.shutdown()
 
     def test_foreign_code_runs_in_a_container_and_the_result_comes_back(self, real_gateway):
+        """The runtime is asked what it created, so the observation names a real container.
+
+        EM3C-GATEWAY-0002 was right that the earlier version could have come from any backend:
+        every assertion was about the gateway's own answer. A watcher now reads the container out
+        of the runtime while the job runs, and the test requires the runtime to have named one.
+        """
+        import subprocess
+
         base, state, service = real_gateway
         assert gc.hello(base)["ready"] is True
         conn = _paired(base, state)
+        runtime = service.backend.check_available().backend
+        seen: dict = {}
+
+        def watch():
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline and not seen:
+                listed = subprocess.run(
+                    [runtime, "ps", "--filter", "name=agentnode-em3c-",
+                     "--format", "{{.Names}}|{{.ID}}|{{.Image}}"],
+                    capture_output=True, text=True)
+                if listed.returncode == 0 and listed.stdout.strip():
+                    name, cid, image = listed.stdout.strip().splitlines()[0].split("|")
+                    seen.update(name=name, id=cid, image=image)
+                    return
+                time.sleep(0.2)
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
         artifact = b"import os\nprint('EM3C-RAN-AS', os.getuid(), flush=True)\n"
         answer = gc.submit(conn, artifact, granted=_granted(service), network="none",
                            required_properties=("container_isolation", "verified_cleanup"),
