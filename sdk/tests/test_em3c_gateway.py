@@ -408,6 +408,139 @@ class TestEveryAnswerNamesTheGatewayThatGaveIt:
         assert state.identity.gateway_id == GatewayState(state.root, "x").identity.gateway_id
 
 
+# ---------------------------------------------- mandatory vs optional, and the two digests
+
+class TestMandatoryAndOptionalNarrowing:
+    """EM3C-DIGEST-DECISION-0001 chose A1/B1/C1/D1/E1. This is that decision, checked."""
+
+    def _serve(self, state, wall_clock_s=180):
+        from agentnode_sdk.sandbox.contract import Limits, SandboxPolicy
+        svc = GatewayService(state, backend=StandInBackend(),
+                             operator_policy=SandboxPolicy(
+                                 limits=Limits(wall_clock_s=wall_clock_s)))
+        server = make_server(svc, port=0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return svc, server, "http://127.0.0.1:%d" % server.server_address[1]
+
+    def test_narrowing_a_mandatory_field_refuses_before_the_container(self, gateway):
+        _, state, _, _ = gateway
+        svc, server, url = self._serve(state, wall_clock_s=5)
+        try:
+            conn = gc.pair(url, state.start_pairing())
+            answer = gc.submit(conn, b"x", network="none", wall_clock_s=3600,
+                               mandatory=("limits.wall_clock_s",))
+            assert answer["state"] == "refused"
+            assert "limits.wall_clock_s" in answer["refusal"]
+            assert "mandatory" in answer["refusal"]
+            assert svc.backend.specs == [], "nothing may start when a mandatory field is narrowed"
+        finally:
+            server.shutdown()
+
+    def test_narrowing_an_optional_field_runs_and_reports_the_delta(self, gateway):
+        _, state, _, _ = gateway
+        svc, server, url = self._serve(state, wall_clock_s=5)
+        try:
+            conn = gc.pair(url, state.start_pairing())
+            answer = gc.submit(conn, b"x", network="none", wall_clock_s=3600,
+                               optional=("limits.wall_clock_s",))
+            assert answer["state"] != "refused", answer.get("refusal")
+            final = gc.wait_for(conn, answer["run_id"], timeout=20)
+            deltas = {d["field"]: d for d in final["policy_deltas"]}
+            assert "limits.wall_clock_s" in deltas, final["policy_deltas"]
+            assert deltas["limits.wall_clock_s"]["requested"] == 3600
+            assert deltas["limits.wall_clock_s"]["effective"] == 5
+            assert final["request_policy_sha256"] != final["effective_policy_sha256"]
+            assert final["requested_policy"]["limits.wall_clock_s"] == 3600
+            assert final["effective_policy"]["limits.wall_clock_s"] == 5
+        finally:
+            server.shutdown()
+
+    def test_an_unnarrowed_job_has_equal_digests_and_no_deltas(self, gateway):
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none", wall_clock_s=60)
+        final = gc.wait_for(conn, answer["run_id"], timeout=20)
+        assert final["policy_deltas"] == []
+        assert final["request_policy_sha256"] == final["effective_policy_sha256"]
+
+    @pytest.mark.parametrize("bad", [("network.nope",), ("",), ("limits",)])
+    def test_an_unknown_policy_path_is_refused(self, gateway, bad):
+        """A path nobody validated would be a requirement that silently is not one."""
+        base, state, service, backend = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none", mandatory=bad)
+        assert answer["state"] == "refused"
+        assert "cannot be enforced" in answer["refusal"]
+        assert backend.specs == []
+
+    def test_a_field_cannot_be_both_mandatory_and_optional(self, gateway):
+        base, state, service, backend = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none",
+                           mandatory=("limits.cpu",), optional=("limits.cpu",))
+        assert answer["state"] == "refused"
+        assert "cannot be both" in answer["refusal"]
+        assert backend.specs == []
+
+    def test_a_duplicated_path_is_refused(self, gateway):
+        base, state, service, backend = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none",
+                           mandatory=("limits.cpu", "limits.cpu"))
+        assert answer["state"] == "refused"
+        assert backend.specs == []
+
+
+class TestTheClientVerifiesTheAnswer:
+    """D1: an answer that cannot be verified is discarded, not returned as unverified."""
+
+    def _finished(self, base, state, service, run_id="v"):
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none", run_id=run_id)
+        return conn, gc.wait_for(conn, answer["run_id"], timeout=20)
+
+    def test_a_good_answer_verifies(self, gateway):
+        base, state, service, _ = gateway
+        conn, final = self._finished(base, state, service)
+        assert final["signature"] and final["binding"]
+        assert gc.verify_answer(conn, final) is final
+
+    def test_an_answer_with_no_proof_is_discarded(self, gateway):
+        base, state, service, _ = gateway
+        conn, final = self._finished(base, state, service)
+        stripped = {k: v for k, v in final.items() if k not in ("binding", "signature")}
+        with pytest.raises(gc.GatewayClientError, match="no proof"):
+            gc.verify_answer(conn, stripped)
+
+    def test_a_tampered_result_is_discarded(self, gateway):
+        """The result is inside the binding, so changing it breaks the signature."""
+        base, state, service, _ = gateway
+        conn, final = self._finished(base, state, service)
+        with pytest.raises(gc.GatewayClientError):
+            gc.verify_answer(conn, dict(final, stdout="something else entirely"))
+
+    def test_a_tampered_effective_policy_digest_is_discarded(self, gateway):
+        base, state, service, _ = gateway
+        conn, final = self._finished(base, state, service)
+        with pytest.raises(gc.GatewayClientError):
+            gc.verify_answer(conn, dict(final, effective_policy_sha256="0" * 64))
+
+    def test_an_answer_from_another_gateway_is_discarded(self, gateway):
+        base, state, service, _ = gateway
+        conn, final = self._finished(base, state, service)
+        foreign = dict(final, binding=dict(final["binding"], gateway_id="someone-else"))
+        with pytest.raises(gc.GatewayClientError):
+            gc.verify_answer(conn, foreign)
+
+    def test_a_signature_from_another_token_is_discarded(self, gateway):
+        base, state, service, _ = gateway
+        conn, final = self._finished(base, state, service)
+        other = gc.GatewayConnection(base_url=base, token="a-different-token",
+                                     gateway_id=conn.gateway_id)
+        with pytest.raises(gc.GatewayClientError):
+            gc.verify_answer(other, final)
+
+
 # ------------------------------------------------------------------ idempotence
 
 class TestAskingTwiceGivesTheSameAnswer:

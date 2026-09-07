@@ -71,25 +71,42 @@ def digest(data: bytes) -> str:
 
 
 def policy_digest(granted: Any) -> str:
-    """A stable digest of the granted policy, so a job cannot be replayed under a laxer one.
+    """A digest of a policy, over the one canonical shape both sides use.
 
-    Only the fields that decide what the sandbox may do are included, in a fixed order. A change
-    to any of them changes the digest, and a job signed for one policy will not verify against
-    another.
+    EM3C-DIGEST-DECISION-0001 chose B1: the requested and the effective policy are digested over
+    the SAME shape, which is what makes them comparable -- a delta needs two values of one thing,
+    not two different summaries.
+
+    What it deliberately does not cover, named because a reader would otherwise assume it does:
+    retention and the assurance floor. No path enforces them yet, so a digest change there would
+    mean less than it appears to.
     """
-    net = getattr(granted, "network", None)
-    limits = getattr(granted, "limits", None)
-    dests = getattr(net, "allowed_destinations", None)
-    shape = {
-        "network_enabled": bool(getattr(net, "enabled", False)),
-        # None (unrestricted) and a set are different things and must digest differently
-        "network_destinations": None if dests is None else sorted(dests),
-        "cpu": getattr(limits, "cpu", None),
-        "memory_mb": getattr(limits, "memory_mb", None),
-        "processes": getattr(limits, "processes", None),
-        "wall_clock_s": getattr(limits, "wall_clock_s", None),
+    from agentnode_sdk.gateway.policy_paths import policy_shape
+
+    return digest(canonical_bytes(policy_shape(granted)))
+
+
+def response_binding(*, gateway_id: str, version: str, job_id: str, run_id: str,
+                     artifact_sha256: str, request_policy_sha256: str,
+                     effective_policy_sha256: str, result: Any) -> dict[str, Any]:
+    """The exact tuple a response is authenticated over.
+
+    Everything a client needs in order to know that THIS answer belongs to THIS job on THIS
+    gateway under THIS policy. Leaving any of it out would let an answer be lifted from one
+    context into another -- a result from a laxer policy replayed against a stricter request, or
+    a result from another gateway entirely.
+    """
+    return {
+        "protocol": PROTOCOL_VERSION,
+        "gateway_id": gateway_id,
+        "version": version,
+        "job_id": job_id,
+        "run_id": run_id,
+        "artifact_sha256": artifact_sha256,
+        "request_policy_sha256": request_policy_sha256,
+        "effective_policy_sha256": effective_policy_sha256,
+        "result_sha256": digest(canonical_bytes({"result": result})),
     }
-    return digest(canonical_bytes(shape))
 
 
 def new_nonce() -> str:
@@ -116,6 +133,12 @@ class JobRequest:
     #: What the client REQUIRES of the backend. S-B: the gateway refuses if it cannot satisfy
     #: these, rather than running the job with less.
     required_properties: tuple[str, ...] = ()
+    #: Policy fields this job REQUIRES to survive composition. Narrowing one of these is refused
+    #: before the container starts.
+    mandatory: tuple[str, ...] = ()
+    #: Policy fields the job would like but can run without. Narrowing one of these is allowed and
+    #: is reported back as a delta rather than silently applied.
+    optional: tuple[str, ...] = ()
     command: tuple[str, ...] = ()
     network: str = "none"
     allowed_domains: tuple[str, ...] = ()
@@ -131,6 +154,8 @@ class JobRequest:
             "artifact_sha256": self.artifact_sha256,
             "policy_sha256": self.policy_sha256,
             "required_properties": sorted(self.required_properties),
+            "mandatory": sorted(self.mandatory),
+            "optional": sorted(self.optional),
             "command": list(self.command),
             "network": self.network,
             "allowed_domains": sorted(self.allowed_domains),
@@ -153,6 +178,8 @@ class JobRequest:
                 artifact_sha256=str(payload["artifact_sha256"]),
                 policy_sha256=str(payload["policy_sha256"]),
                 required_properties=tuple(payload.get("required_properties") or ()),
+                mandatory=tuple(payload.get("mandatory") or ()),
+                optional=tuple(payload.get("optional") or ()),
                 command=tuple(payload.get("command") or ()),
                 network=str(payload.get("network", "none")),
                 allowed_domains=tuple(payload.get("allowed_domains") or ()),

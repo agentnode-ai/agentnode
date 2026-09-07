@@ -42,7 +42,8 @@ from agentnode_sdk.gateway.protocol import (
     canonical_bytes,
     check_freshness,
     digest,
-    policy_digest,
+    response_binding,
+    sign,
     verify_signature,
 )
 
@@ -56,6 +57,14 @@ class RunRecord:
     run_id: str
     job_id: str
     request_sha256: str = ""     # the signed request this run belongs to
+    requested_policy: dict = field(default_factory=dict)
+    effective_policy: dict = field(default_factory=dict)
+    request_policy_sha256: str = ""
+    effective_policy_sha256: str = ""
+    deltas: list = field(default_factory=list)
+    artifact_sha256: str = ""
+    binding: dict = field(default_factory=dict)
+    signature: str = ""
     state: str = "accepted"          # accepted | running | finished | refused | cancelled
     exit_code: int | None = None
     stdout: str = ""
@@ -77,7 +86,14 @@ class RunRecord:
             "stdout": self.stdout,
             "stderr": self.stderr,
             "refusal": self.refusal,
+            "artifact_sha256": self.artifact_sha256,
             "cleanup_verified": self.cleanup_verified,
+            # Invariant 5: an optional narrowing may run, but the answer has to SAY what changed.
+            "requested_policy": self.requested_policy,
+            "effective_policy": self.effective_policy,
+            "request_policy_sha256": self.request_policy_sha256,
+            "effective_policy_sha256": self.effective_policy_sha256,
+            "policy_deltas": self.deltas,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
         }
@@ -85,6 +101,32 @@ class RunRecord:
 
 class GatewayService:
     """The decisions. Kept apart from HTTP so they can be tested without a socket."""
+
+    def sign_answer(self, body: dict[str, Any], token: str) -> dict[str, Any]:
+        """Authenticate an answer with the paired client's own secret (C1).
+
+        EM3C-DIGEST-DECISION-0001 chose the per-token HMAC: both sides already derive it at
+        pairing, so no new key material is introduced. Its limit is named rather than left to be
+        discovered -- a result authenticated this way is verifiable by the paired client and by
+        nobody else, so it is not evidence a third party can check.
+
+        The binding covers the whole tuple: gateway identity and version, protocol, job and run
+        id, artifact digest, both policy digests, and the result itself. An answer lifted out of
+        its context fails verification because the context is what is signed.
+        """
+        secret = self.state.token_secret(token)
+        if secret is None:
+            return body
+        identity = self.state.identity
+        binding = response_binding(
+            gateway_id=identity.gateway_id, version=identity.version,
+            job_id=body.get("job_id", ""), run_id=body.get("run_id", ""),
+            artifact_sha256=body.get("artifact_sha256", ""),
+            request_policy_sha256=body.get("request_policy_sha256", ""),
+            effective_policy_sha256=body.get("effective_policy_sha256", ""),
+            result=body.get("stdout", ""),
+        )
+        return {**body, "binding": binding, "signature": sign(secret, binding)}
 
     def stamp(self, body: dict[str, Any]) -> dict[str, Any]:
         """Bind an answer to the gateway that produced it.
@@ -165,8 +207,28 @@ class GatewayService:
             raise ProtocolError("the signature does not match the request")
         return secret
 
+    def requested_policy(self, request: JobRequest):
+        """The policy the JOB asked for, on its own -- no operator, no client.
+
+        This is the left-hand side of every delta. Composing it the same way the job's scope is
+        composed keeps the two shapes comparable.
+        """
+        from agentnode_sdk.sandbox.contract import Limits, NetworkRules, SandboxPolicy
+
+        if request.network == "none":
+            net = NetworkRules(enabled=False, allowed_destinations=frozenset())
+        elif request.network == "unrestricted":
+            net = NetworkRules(enabled=True, allowed_destinations=None)
+        else:
+            net = NetworkRules(enabled=True,
+                               allowed_destinations=frozenset(request.allowed_domains))
+        return SandboxPolicy(
+            network=net,
+            limits=Limits(wall_clock_s=max(1, int(getattr(request, "wall_clock_s", 60)))),
+        )
+
     def admit(self, request: JobRequest, artifact: bytes,
-              token: str = "") -> tuple[Any, dict[str, bool]]:
+              token: str = "") -> tuple:
         """Everything that must hold before a container exists. Raises to refuse.
 
         Order matters: the cheap structural checks come before anything that costs work, and
@@ -190,13 +252,52 @@ class GatewayService:
                 + ". The job was not started."
             )
 
+        from agentnode_sdk.gateway.policy_paths import (
+            PolicyPathError,
+            describe_deltas,
+            narrowed_paths,
+            policy_shape,
+            validate_paths,
+            widened_paths,
+        )
+
+        try:
+            mandatory, optional = validate_paths(request.mandatory, request.optional)
+        except PolicyPathError as exc:
+            raise ProtocolError(f"this job's requirements cannot be enforced: {exc}") from exc
+
         granted = self.compose(request, token)
-        if policy_digest(granted) != request.policy_sha256:
+        requested_shape = policy_shape(self.requested_policy(request))
+        effective_shape = policy_shape(granted)
+
+        # A gateway may narrow and never widen. Checked rather than assumed: the fold is supposed
+        # to guarantee it, and a check that never fires costs nothing while an unchecked
+        # assumption costs everything the one time it is wrong.
+        widened = widened_paths(requested_shape, effective_shape)
+        if widened:
             raise ProtocolError(
-                "the policy this gateway composed is not the one the job was signed for. "
+                "this gateway composed a policy WIDER than the job asked for in "
+                + ", ".join(widened) + ". Refusing rather than running it."
+            )
+
+        narrowed = narrowed_paths(requested_shape, effective_shape)
+        broken = [p for p in narrowed if p in mandatory]
+        if broken:
+            raise ProtocolError(
+                "this gateway cannot run the job as required: it must narrow "
+                + ", ".join(sorted(broken))
+                + ", and the job declared that mandatory. Nothing was started."
+            )
+
+        if request.policy_sha256 and request.policy_sha256 != digest(
+                canonical_bytes(requested_shape)):
+            raise ProtocolError(
+                "the policy digest does not match the policy this job describes. "
                 "The job was not started."
             )
-        return granted, properties
+        return granted, properties, requested_shape, effective_shape, describe_deltas(
+            tuple(p for p in narrowed if p in optional), requested_shape, effective_shape)
+
 
     def client_policy(self, token: str):
         """What THIS client is allowed, independently of what its job asks for.
@@ -283,7 +384,8 @@ class GatewayService:
             refused.finished_at = time.time()
             return refused
         try:
-            granted, _ = self.admit(request, artifact, token)
+            granted, _props, req_shape, eff_shape, deltas = self.admit(
+                request, artifact, token)
         except Exception as exc:                              # noqa: BLE001 - refusal is an answer
             record.state = "refused"
             record.refusal = str(exc)
@@ -292,6 +394,12 @@ class GatewayService:
             with self._lock:
                 self.runs.setdefault(request.run_id, record)
             return record
+        record.requested_policy = req_shape
+        record.effective_policy = eff_shape
+        record.request_policy_sha256 = digest(canonical_bytes(req_shape))
+        record.effective_policy_sha256 = digest(canonical_bytes(eff_shape))
+        record.deltas = deltas
+        record.artifact_sha256 = request.artifact_sha256
         with self._lock:
             self.runs[request.run_id] = record
         thread = threading.Thread(target=self._run, args=(request, artifact, granted, record),
@@ -468,6 +576,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _token_of(self) -> str:
+        """A GET carries its token in a header; the status endpoint is authenticated too."""
+        return self.headers.get("X-AgentNode-Token", "") or ""
+
     def _read_json(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
         if length > MAX_BODY_BYTES:
@@ -482,7 +594,8 @@ class _Handler(BaseHTTPRequestHandler):
             record = self.service.runs.get(run_id)
             if record is None:
                 return self._send(404, self.service.stamp({"error": "no such run"}))
-            return self._send(200, self.service.stamp(record.public()))
+            return self._send(200, self.service.sign_answer(
+                self.service.stamp(record.public()), self._token_of()))
         return self._send(404, {"error": "no such endpoint"})
 
     def do_POST(self):
@@ -513,7 +626,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send(403, {"error": str(exc)})
             record = self.service.submit(request, artifact, body.get("token", ""))
             return self._send(202 if record.state != "refused" else 409,
-                              self.service.stamp(record.public()))
+                              self.service.sign_answer(
+                                  self.service.stamp(record.public()),
+                                  body.get("token", "")))
 
         if self.path.endswith("/cancel") and self.path.startswith("/v1/jobs/"):
             run_id = self.path.split("/")[3]
@@ -525,7 +640,8 @@ class _Handler(BaseHTTPRequestHandler):
             record = self.service.cancel(run_id)
             if record is None:
                 return self._send(404, self.service.stamp({"error": "no such run"}))
-            return self._send(200, self.service.stamp(record.public()))
+            return self._send(200, self.service.sign_answer(
+                self.service.stamp(record.public()), self._token_of()))
 
         return self._send(404, {"error": "no such endpoint"})
 

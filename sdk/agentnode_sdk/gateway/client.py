@@ -23,8 +23,8 @@ from typing import Any
 
 from agentnode_sdk.gateway.protocol import (
     JobRequest,
+    canonical_bytes,
     digest,
-    policy_digest,
     sign,
 )
 
@@ -72,9 +72,12 @@ def _post(url: str, body: dict, timeout: float = 30.0) -> tuple[int, dict]:
         ) from exc
 
 
-def _get(url: str, timeout: float = 30.0) -> tuple[int, dict]:
+def _get(url: str, timeout: float = 30.0, token: str = "") -> tuple[int, dict]:
+    req = urllib.request.Request(url, method="GET")
+    if token:
+        req.add_header("X-AgentNode-Token", token)
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as exc:
         try:
@@ -115,33 +118,40 @@ def pair(base_url: str, code: str, client_name: str = "") -> GatewayConnection:
     )
 
 
-def submit(connection: GatewayConnection, artifact: bytes, *, granted,
+def submit(connection: GatewayConnection, artifact: bytes, *, granted=None,
            command: tuple[str, ...] = (), network: str = "none",
            allowed_domains: tuple[str, ...] = (), wall_clock_s: int = 60,
-           required_properties: tuple[str, ...] = (), job_id: str = "",
+           required_properties: tuple[str, ...] = (), mandatory: tuple[str, ...] = (),
+           optional: tuple[str, ...] = (), job_id: str = "",
            run_id: str = "") -> dict[str, Any]:
     """Send a job. What is signed is what the gateway will check it against."""
     import uuid
 
-    from dataclasses import replace as _replace
+    from agentnode_sdk.gateway.policy_paths import policy_shape
+    from agentnode_sdk.sandbox.contract import Limits, NetworkRules, SandboxPolicy
 
-    # The digest has to cover what will actually be enforced. The gateway folds the requested
-    # wall clock in at the lowest scope, so the client narrows its own view the same way before
-    # signing -- otherwise a job would be signed for a policy nobody ever runs, and every
-    # submission would be refused for a mismatch the client itself created.
-    try:
-        limits = _replace(granted.limits,
-                          wall_clock_s=min(granted.limits.wall_clock_s, int(wall_clock_s)))
-        granted = _replace(granted, limits=limits)
-    except (AttributeError, TypeError):
-        pass
+    # Invariant 1: the client signs the REQUESTED policy -- what this job asks for, on its own.
+    # An earlier version digested a composed policy the caller supplied, which meant the client
+    # and the gateway were digesting two different things and every submission depended on the
+    # caller having composed it identically. What a job asks for is knowable from the job.
+    if network == "none":
+        _net = NetworkRules(enabled=False, allowed_destinations=frozenset())
+    elif network == "unrestricted":
+        _net = NetworkRules(enabled=True, allowed_destinations=None)
+    else:
+        _net = NetworkRules(enabled=True, allowed_destinations=frozenset(allowed_domains))
+    _requested = SandboxPolicy(network=_net,
+                               limits=Limits(wall_clock_s=max(1, int(wall_clock_s))))
+    _request_policy_sha = digest(canonical_bytes(policy_shape(_requested)))
 
     request = JobRequest(
         job_id=job_id or uuid.uuid4().hex,
         run_id=run_id or uuid.uuid4().hex,
         artifact_sha256=digest(artifact),
-        policy_sha256=policy_digest(granted),
+        policy_sha256=_request_policy_sha,
         required_properties=tuple(required_properties),
+        mandatory=tuple(mandatory),
+        optional=tuple(optional),
         command=tuple(command),
         network=network,
         allowed_domains=tuple(allowed_domains),
@@ -162,14 +172,56 @@ def submit(connection: GatewayConnection, artifact: bytes, *, granted,
     return answer
 
 
-def status_of(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
+def verify_answer(connection: GatewayConnection, answer: dict[str, Any]) -> dict[str, Any]:
+    """Check that this answer belongs to this gateway, job, artifact and policy -- or discard it.
+
+    EM3C-DIGEST-DECISION-0001 chose D1: a result that cannot be verified is not returned as an
+    unverified result, it is refused. A job may have run and the caller still gets nothing usable,
+    which is the cost; the alternative is an unverified answer being used as though it were
+    verified, which is the failure this exists to prevent.
+    """
+    from agentnode_sdk.gateway.identity import client_token_secret
+    from agentnode_sdk.gateway.protocol import response_binding, verify_signature
+
+    binding = answer.get("binding")
+    signature = answer.get("signature")
+    if not binding or not signature:
+        raise GatewayClientError(
+            "this answer carries no proof that it came from the gateway you paired with. "
+            "It was discarded."
+        )
+    expected = response_binding(
+        gateway_id=binding.get("gateway_id", ""), version=binding.get("version", ""),
+        job_id=answer.get("job_id", ""), run_id=answer.get("run_id", ""),
+        artifact_sha256=answer.get("artifact_sha256", ""),
+        request_policy_sha256=answer.get("request_policy_sha256", ""),
+        effective_policy_sha256=answer.get("effective_policy_sha256", ""),
+        result=answer.get("stdout", ""),
+    )
+    if expected != binding:
+        raise GatewayClientError(
+            "this answer does not describe the job it claims to. It was discarded."
+        )
+    if connection.gateway_id and binding.get("gateway_id") != connection.gateway_id:
+        raise GatewayClientError(
+            "this answer came from a different gateway than the one you paired with. "
+            "It was discarded."
+        )
+    if not verify_signature(client_token_secret(connection.token), binding, signature):
+        raise GatewayClientError(
+            "this answer could not be verified as coming from your gateway. It was discarded."
+        )
+    return answer
+
+
+def status_of(connection: GatewayConnection, run_id: str, verify: bool = True) -> dict[str, Any]:
     """Idempotent: asking twice gives the same answer, and asking is free."""
-    status, body = _get(f"{connection.base_url}/v1/jobs/{run_id}")
+    status, body = _get(f"{connection.base_url}/v1/jobs/{run_id}", token=connection.token)
     if status == 404:
         raise GatewayClientError(f"the gateway does not know a run {run_id}")
     if status != 200:
         raise GatewayClientError(body.get("error", f"the gateway answered {status}"))
-    return body
+    return verify_answer(connection, body) if verify else body
 
 
 def cancel(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
