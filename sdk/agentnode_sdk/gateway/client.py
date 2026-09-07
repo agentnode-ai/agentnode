@@ -123,6 +123,19 @@ def submit(connection: GatewayConnection, artifact: bytes, *, granted,
     """Send a job. What is signed is what the gateway will check it against."""
     import uuid
 
+    from dataclasses import replace as _replace
+
+    # The digest has to cover what will actually be enforced. The gateway folds the requested
+    # wall clock in at the lowest scope, so the client narrows its own view the same way before
+    # signing -- otherwise a job would be signed for a policy nobody ever runs, and every
+    # submission would be refused for a mismatch the client itself created.
+    try:
+        limits = _replace(granted.limits,
+                          wall_clock_s=min(granted.limits.wall_clock_s, int(wall_clock_s)))
+        granted = _replace(granted, limits=limits)
+    except (AttributeError, TypeError):
+        pass
+
     request = JobRequest(
         job_id=job_id or uuid.uuid4().hex,
         run_id=run_id or uuid.uuid4().hex,
