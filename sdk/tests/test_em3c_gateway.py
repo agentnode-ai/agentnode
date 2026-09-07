@@ -1967,10 +1967,13 @@ class TestRestrictedEgressForReal:
         )
 
         runtime = service.backend.check_available().backend
-        for kind in ("container", "network"):
+        # A container lists as .Names, a network as .Name. The wrong one makes docker fail the
+        # template instead of answering -- and an empty answer from a failed command is not an
+        # empty list of leftovers, which is why the return code is checked before the output.
+        for kind, field in (("container", "{{.Names}}"), ("network", "{{.Name}}")):
             listed = subprocess.run(
-                [runtime, kind, "ls", "--filter", "name=agentnode-egress-",
-                 "--format", "{{.Name}}"],
+                [runtime, kind, "ls", "-a" if kind == "container" else "--no-trunc",
+                 "--filter", "name=agentnode-egress-", "--format", field],
                 capture_output=True, text=True, timeout=30,
             )
             assert listed.returncode == 0, listed.stderr
