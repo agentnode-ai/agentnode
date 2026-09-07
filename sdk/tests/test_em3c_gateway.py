@@ -59,6 +59,14 @@ class StandInBackend:
         self.specs.append(spec)
         return 0, "RAN", ""
 
+    def containers_named(self, prefix):
+        """It answered, and it started nothing -- so nothing carries that name.
+
+        Truthful rather than convenient: this backend really does know the answer. The REAL
+        cleanup path is exercised by the container lane against a runtime that ran something.
+        """
+        return True, []
+
 
 @pytest.fixture()
 def gateway():
@@ -604,6 +612,57 @@ class TestSecretsDoNotTravelInTheClear:
         conn = gc.GatewayConnection(base_url="http://10.0.0.4:8099", token="t", gateway_id="g")
         with pytest.raises(tr.InsecureTransportError):
             gc.status_of(conn, "any-run")
+
+
+# ------------------------------------------------- a terminal answer must be a complete one
+
+class TestATerminalStateMeansTheRecordIsComplete:
+    """A client that sees `finished` stops polling. Whatever it reads then is what it gets.
+
+    The gateway used to set the terminal state before verifying cleanup, so a client polling in
+    that window saw `finished` with `cleanup_verified` still None -- a terminal answer that was
+    not yet true. It passed CI on timing alone until the container lane happened to lose the race,
+    which is the worst way for a race to behave. This pins the ordering instead of the timing.
+    """
+
+    def test_cleanup_is_verified_before_the_state_is_published(self, gateway):
+        base, state, service, _ = gateway
+        observed: list = []
+        original = service._verify_gone
+
+        def watching(container_name):
+            # what a client would have seen if it had polled at this exact moment
+            observed.append([r.state for r in service.runs.values()])
+            return original(container_name)
+
+        service._verify_gone = watching
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none")
+        final = gc.wait_for(conn, answer["run_id"], timeout=20)
+
+        assert observed, "cleanup verification never ran"
+        for states in observed:
+            assert "finished" not in states, (
+                "the run was already advertised as finished while cleanup was still being "
+                "verified; a client polling here would have read an incomplete record"
+            )
+        assert final["state"] == "finished"
+
+    def test_a_finished_run_never_reports_an_unset_cleanup(self, gateway):
+        """The invariant itself, stated once over the public surface."""
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        for i in range(3):
+            answer = gc.submit(conn, b"x", network="none", run_id=f"complete-{i}")
+            final = gc.wait_for(conn, answer["run_id"], timeout=20)
+            assert final["state"] in ("finished", "refused", "cancelled")
+            assert final["finished_at"] is not None
+            # Not "is not None": unknown is a legitimate FINAL answer when there is no runtime to
+            # ask, and demanding a yes/no there would push the code towards inventing one. What a
+            # terminal state promises is that the answer is settled -- so it must not move.
+            again = gc.status_of(conn, answer["run_id"])
+            assert again["cleanup_verified"] == final["cleanup_verified"]
+            assert again["state"] == final["state"]
 
 
 # ------------------------------------------------------------------ idempotence

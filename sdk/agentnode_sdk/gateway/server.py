@@ -439,6 +439,7 @@ class GatewayService:
             interactive=True,
             name=record.container_name,
         )
+        terminal = "refused"
         try:
             if record.cancel_requested.is_set():
                 raise _Cancelled()
@@ -453,16 +454,23 @@ class GatewayService:
             record.exit_code = rc
             record.stdout = out or ""
             record.stderr = err or ""
-            record.state = "cancelled" if record.cancel_requested.is_set() else "finished"
+            terminal = "cancelled" if record.cancel_requested.is_set() else "finished"
         except _Cancelled:
-            record.state = "cancelled"
+            terminal = "cancelled"
             record.refusal = "cancelled by the client before it started"
         except Exception as exc:                              # noqa: BLE001
-            record.state = "refused"
+            terminal = "refused"
             record.refusal = f"the run could not be completed: {exc}"
         finally:
             record.cleanup_verified = self._verify_gone(record.container_name)
             record.finished_at = time.time()
+            # The terminal state is published LAST, and that ordering is the point. An earlier
+            # version set it before this block, so a client polling in the window between the two
+            # saw state="finished" on a record whose cleanup_verified was still None -- a terminal
+            # answer that was not yet true. The real container lane caught it; before that it
+            # passed on timing alone, which is the worst way for a race to behave.
+            # A reader that sees a terminal state must be seeing a complete record.
+            record.state = terminal
 
     def _containers_named(self, prefix: str) -> tuple[bool, list[str]]:
         """Ask the runtime which containers carry this run's name prefix.
@@ -473,6 +481,15 @@ class GatewayService:
         backend; the same rule applies here.
         """
         import subprocess
+
+        # A backend that ran the container is best placed to say whether it is gone. Where one can
+        # answer, ask it; the shell-out below is the fallback for backends that cannot. This also
+        # keeps the question honest under test: a stand-in that never started a container was
+        # previously interrogated by asking the REAL runtime about a name it had never created, so
+        # the unit suite was quietly driving docker and waiting on it.
+        asker = getattr(self.backend, "containers_named", None)
+        if asker is not None:
+            return asker(prefix)
 
         availability = self.backend.check_available()
         runtime = availability.backend
@@ -502,6 +519,15 @@ class GatewayService:
         # which would report "not gone" about something that is going. Ask repeatedly until the
         # runtime says it is absent, or until the deadline; a listing that never succeeds stays
         # unknown rather than becoming a "yes".
+        # Retrying is only worth anything against a runtime that ANSWERS. If there is no runtime
+        # to ask, thirty seconds of asking again produces the same "unknown" it produced at once,
+        # and every run pays for it -- which is what happened when the terminal state began waiting
+        # on this method. Distinguish the two cases before looping: unknowable now is unknowable
+        # later, while "still present" is exactly the thing that changes with time.
+        availability = self.backend.check_available()
+        if not availability.backend or availability.backend == "none":
+            return None
+
         deadline = time.monotonic() + 30.0
         answered = False
         names: list[str] = ["pending"]
