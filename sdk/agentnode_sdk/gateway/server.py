@@ -35,6 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
+from agentnode_sdk.gateway.ledger import Ledger
 from agentnode_sdk.gateway.transport import TlsFiles, check_bind_address
 from agentnode_sdk.gateway.protocol import (
     PROTOCOL_VERSION,
@@ -152,6 +153,10 @@ class GatewayService:
         self._operator_policy = operator_policy
         self.nonces = NonceCache()
         self.runs: dict[str, RunRecord] = {}
+        # What must survive this process. In-memory replay protection has a documented way
+        # around it: restart the gateway, which on a server happens on its own.
+        self.ledger = Ledger(self.state.root / "ledger.json")
+        self._restore_interrupted()
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ backend
@@ -213,6 +218,30 @@ class GatewayService:
             raise ProtocolError("the signature does not match the request")
         return secret
 
+    def _restore_interrupted(self) -> None:
+        """Runs that were executing when the process died are interrupted, not running.
+
+        They are restored so the client gets an honest answer instead of a status that will
+        never change again, and they are emphatically NOT re-executed: the client asked once,
+        and the gateway does not get to decide it should happen a second time.
+        """
+        for run_id in self.ledger.unfinished_runs():
+            entry = self.ledger.run_entry(run_id) or {}
+            record = RunRecord(
+                run_id=run_id,
+                job_id=str(entry.get("job_id", "")),
+                request_sha256=str(entry.get("request_sha256", "")),
+                owner_client_id=str(entry.get("owner_client_id", "")),
+            )
+            record.state = "interrupted"
+            record.refusal = (
+                "the gateway restarted while this job was running, so it did not finish. It has "
+                "not been started again -- submit it as a new job if you still want it run."
+            )
+            record.finished_at = time.time()
+            self.runs[run_id] = record
+            self.ledger.note_state(run_id, "interrupted")
+
     def require_client(self, token: str) -> str:
         """The token hash for a paired client, or a refusal. No signature involved.
 
@@ -271,6 +300,10 @@ class GatewayService:
         nothing here has a side effect that would survive a refusal.
         """
         check_freshness(request.issued_at)
+        # Both stores. The in-memory one has the tighter window; the durable one is what
+        # still knows about a captured request after a restart.
+        if request.nonce and self.ledger.knows_nonce(request.nonce):
+            raise ProtocolError("this request has already been used (replay)")
         self.nonces.check_and_remember(request.nonce)
 
         actual = digest(artifact)
@@ -409,17 +442,6 @@ class GatewayService:
         record = RunRecord(run_id=request.run_id, job_id=request.job_id,
                            request_sha256=request_sha,
                            owner_client_id=self.state.client_id_for(token) or "")
-        with self._lock:
-            existing = self.runs.get(request.run_id)
-        if existing is not None:
-            refused = RunRecord(run_id=request.run_id, job_id=request.job_id,
-                                request_sha256=request_sha, state="refused")
-            refused.refusal = (
-                "this run id has already been submitted; re-sending a signed job is a replay. "
-                f"Ask for its status at /v1/jobs/{request.run_id}. Nothing was started."
-            )
-            refused.finished_at = time.time()
-            return refused
         try:
             granted, _props, req_shape, eff_shape, deltas = self.admit(
                 request, artifact, token)
@@ -430,6 +452,11 @@ class GatewayService:
             # Recorded, so a refused job cannot be retried into an acceptance by resending it.
             with self._lock:
                 self.runs.setdefault(request.run_id, record)
+            # Deliberately NOT written to the ledger. The ledger records what was ACCEPTED and
+            # may therefore have run; that is what must survive a restart. Claiming a run id here
+            # also made a refusal steal the claim from a concurrent legitimate submission -- in a
+            # parallel burst the losers of the nonce race recorded the id before the winner
+            # reached its own claim, so all eight were refused and none ran.
             return record
         record.requested_policy = req_shape
         record.effective_policy = eff_shape
@@ -437,6 +464,26 @@ class GatewayService:
         record.effective_policy_sha256 = digest(canonical_bytes(eff_shape))
         record.deltas = deltas
         record.artifact_sha256 = request.artifact_sha256
+
+        # Admitted -- so now claim it, atomically and durably, before anything starts. One
+        # critical section covers both the look and the write, so two identical requests arriving
+        # together cannot both be told they are the first; and the claim is on disk before the
+        # container is, so a crash mid-run still leaves the run id spoken for and the job is not
+        # quietly executed a second time by a gateway that restarted.
+        #
+        # It runs AFTER admission, not before. Before, it recorded the very nonce that admission
+        # was about to check, so every first submission was refused as a replay of itself.
+        if not self.ledger.claim(request.run_id, request.nonce, request_sha,
+                                 record.owner_client_id):
+            refused = RunRecord(run_id=request.run_id, job_id=request.job_id,
+                                request_sha256=request_sha, state="refused")
+            refused.refusal = (
+                "this run id has already been submitted; re-sending a signed job is a replay. "
+                f"Ask for its status at /v1/jobs/{request.run_id}. Nothing was started."
+            )
+            refused.finished_at = time.time()
+            return refused
+
         with self._lock:
             self.runs[request.run_id] = record
         thread = threading.Thread(target=self._run, args=(request, artifact, granted, record),
@@ -507,6 +554,7 @@ class GatewayService:
             # passed on timing alone, which is the worst way for a race to behave.
             # A reader that sees a terminal state must be seeing a complete record.
             record.state = terminal
+            self.ledger.note_state(record.run_id, terminal)
 
     def _containers_named(self, prefix: str) -> tuple[bool, list[str]]:
         """Ask the runtime which containers carry this run's name prefix.

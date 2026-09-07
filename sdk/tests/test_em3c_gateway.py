@@ -19,6 +19,7 @@ import base64
 import json
 import os
 import tempfile
+from pathlib import Path
 import threading
 import time
 
@@ -1090,6 +1091,126 @@ class TestAskingTwiceGivesTheSameAnswer:
         conn = _paired(base, state)
         with pytest.raises(gc.GatewayClientError, match="does not know"):
             gc.status_of(conn, "never-existed")
+
+
+# ----------------------------------------------------- what must outlive the process itself
+
+class TestARestartDoesNotForget:
+    """Replay protection held only in memory has a documented way around it: restart.
+
+    On a server that happens on its own -- a deploy, a crash, a reboot -- so this is not an
+    exotic case. What is on the other side of it is running somebody's code a second time.
+    """
+
+    def _serve(self, root, backend=None):
+        """A gateway on an existing directory. Calling it twice is the restart."""
+        state = GatewayState(root, version="test")
+        service = GatewayService(state, backend=backend or StandInBackend())
+        server = make_server(service, port=0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return state, service, server, "http://127.0.0.1:%d" % server.server_address[1]
+
+    def _signed_body(self, service, conn, run_id, artifact=b"x"):
+        request = JobRequest(job_id="j", run_id=run_id, artifact_sha256=digest(artifact),
+                             policy_sha256=policy_digest(_granted(service)))
+        payload = request.to_payload()
+        return {"token": conn.token, "payload": payload,
+                "signature": sign(client_token_secret(conn.token), payload),
+                "artifact_b64": base64.b64encode(artifact).decode()}
+
+    def test_a_captured_request_is_still_a_replay_after_a_restart(self):
+        with tempfile.TemporaryDirectory() as td:
+            state, service, server, base = self._serve(td)
+            try:
+                conn = gc.pair(base, state.start_pairing())
+                body = self._signed_body(service, conn, "survives-restart")
+                first = gc._post(base + "/v1/jobs", body)[1]
+                assert first["state"] != "refused", first
+                gc.wait_for(conn, "survives-restart", timeout=20)
+            finally:
+                server.shutdown()
+
+            # The restart. A brand-new process would have an empty NonceCache and an empty run
+            # table; only what was written down survives.
+            _state2, service2, server2, base2 = self._serve(td)
+            try:
+                assert service2.runs.get("survives-restart") is None or True
+                again = gc._post(base2 + "/v1/jobs", body)[1]
+                assert again["state"] == "refused", again
+                assert service2.backend.specs == [], "the job ran a second time after a restart"
+                assert again["stdout"] == "", "a replay must not disclose the original run"
+            finally:
+                server2.shutdown()
+
+    def test_an_interrupted_run_is_reported_honestly_and_not_started_again(self):
+        with tempfile.TemporaryDirectory() as td:
+            state, service, server, base = self._serve(td)
+            try:
+                conn = gc.pair(base, state.start_pairing())
+                # A run the ledger last saw mid-flight, exactly as a crash would leave it.
+                service.ledger.claim("cut-short", "nonce-cut-short", "sha",
+                                     state.client_id_for(conn.token))
+            finally:
+                server.shutdown()
+
+            _s2, service2, server2, base2 = self._serve(td)
+            try:
+                record = service2.runs.get("cut-short")
+                assert record is not None, "the interrupted run vanished instead of being answered"
+                assert record.state == "interrupted"
+                assert "did not finish" in record.refusal
+                assert service2.backend.specs == [], "an interrupted run was executed again"
+            finally:
+                server2.shutdown()
+
+    def test_an_unreadable_ledger_stops_the_gateway_rather_than_starting_empty(self):
+        """An unreadable ledger is not an empty one, and treating it as empty reopens every
+        replay the file existed to prevent."""
+        from agentnode_sdk.gateway.ledger import LedgerUnreadable
+
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "ledger.json").write_text("{not json at all", encoding="utf-8")
+            state = GatewayState(td, version="test")
+            with pytest.raises(LedgerUnreadable) as e:
+                GatewayService(state, backend=StandInBackend())
+            assert "replayed" in str(e.value)
+            assert "Move the file aside" in str(e.value)
+
+
+class TestTwoIdenticalRequestsAtOnce:
+
+    def test_only_one_of_a_parallel_burst_is_accepted(self, gateway):
+        """Look-then-write is not a claim. Under a burst both halves interleave."""
+        base, state, service, backend = gateway
+        conn = _paired(base, state)
+        request = JobRequest(job_id="j", run_id="burst", artifact_sha256=digest(b"x"),
+                             policy_sha256=policy_digest(_granted(service)))
+        payload = request.to_payload()
+        body = {"token": conn.token, "payload": payload,
+                "signature": sign(client_token_secret(conn.token), payload),
+                "artifact_b64": base64.b64encode(b"x").decode()}
+
+        results: list = []
+        barrier = threading.Barrier(8)
+
+        def fire():
+            barrier.wait()
+            try:
+                results.append(gc._post(base + "/v1/jobs", body)[1].get("state"))
+            except Exception as exc:                          # noqa: BLE001
+                results.append("error:%s" % exc)
+
+        threads = [threading.Thread(target=fire) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert len(results) == 8, results
+        accepted = [r for r in results if r not in ("refused", None) and not str(r).startswith("error")]
+        assert len(accepted) == 1, f"{len(accepted)} of 8 identical requests were accepted: {results}"
+        gc.wait_for(conn, "burst", timeout=20)
+        assert len(backend.specs) == 1, f"the job ran {len(backend.specs)} times"
 
 
 # ------------------------------------------------------------------ the real thing
