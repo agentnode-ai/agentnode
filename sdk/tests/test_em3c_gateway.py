@@ -24,6 +24,7 @@ import time
 import pytest
 
 from agentnode_sdk.gateway import client as gc
+from agentnode_sdk.gateway import transport as tr
 from agentnode_sdk.gateway.identity import (
     GatewayState,
     client_token_secret,
@@ -539,6 +540,70 @@ class TestTheClientVerifiesTheAnswer:
                                      gateway_id=conn.gateway_id)
         with pytest.raises(gc.GatewayClientError):
             gc.verify_answer(other, final)
+
+
+# ------------------------------------------------------------- what may travel in the clear
+
+class TestSecretsDoNotTravelInTheClear:
+    """Signing proves who wrote something. It does not stop anyone reading it.
+
+    On a plain connection the pairing code, the token and every job's output are readable by
+    anyone on the path, so the rule is about WHERE the connection goes, not what it carries.
+    """
+
+    def test_loopback_over_plain_http_is_allowed(self):
+        tr.check_client_url("http://127.0.0.1:8099/v1/hello")
+        tr.check_client_url("http://[::1]:8099/v1/hello")
+        tr.check_client_url("http://localhost:8099/v1/hello")
+
+    def test_https_anywhere_is_allowed(self):
+        tr.check_client_url("https://gateway.example.com/v1/hello")
+
+    @pytest.mark.parametrize("url", [
+        "http://10.0.0.4:8099/v1/hello",
+        "http://gateway.example.com/v1/hello",
+        "http://192.168.1.20:8099/v1/jobs",
+    ])
+    def test_plain_http_off_the_machine_is_refused(self, url, monkeypatch):
+        monkeypatch.delenv(tr.ALLOW_PLAINTEXT_ENV, raising=False)
+        with pytest.raises(tr.InsecureTransportError) as e:
+            tr.check_client_url(url)
+        msg = str(e.value)
+        assert "not encrypted" in msg
+        # the refusal has to name a way out, or it is just an obstacle
+        assert "TLS reverse proxy" in msg and "tunnel" in msg
+        assert tr.ALLOW_PLAINTEXT_ENV in msg
+
+    def test_a_name_that_is_not_loopback_does_not_inherit_the_exemption(self):
+        """`localhost` is conventional; an arbitrary name may resolve anywhere."""
+        assert not tr.is_loopback("localhost.attacker.example")
+        with pytest.raises(tr.InsecureTransportError):
+            tr.check_client_url("http://localhost.attacker.example/v1/hello")
+
+    def test_an_unknown_scheme_is_refused(self):
+        with pytest.raises(tr.InsecureTransportError):
+            tr.check_client_url("ftp://gateway.example.com/v1/hello")
+
+    def test_the_operator_can_accept_the_risk_explicitly(self, monkeypatch):
+        monkeypatch.setenv(tr.ALLOW_PLAINTEXT_ENV, "1")
+        tr.check_client_url("http://10.0.0.4:8099/v1/hello")
+        tr.check_bind_address("0.0.0.0")
+
+    @pytest.mark.parametrize("host", ["", "0.0.0.0", "::", "10.0.0.4"])
+    def test_serving_beyond_loopback_in_the_clear_is_refused(self, host, monkeypatch):
+        monkeypatch.delenv(tr.ALLOW_PLAINTEXT_ENV, raising=False)
+        with pytest.raises(tr.InsecureTransportError) as e:
+            make_server(object(), host=host)
+        assert "without encryption" in str(e.value)
+
+    def test_the_guard_is_on_the_request_path_not_only_the_helper(self, monkeypatch):
+        """The check has to sit where the bytes leave, or it can be walked around."""
+        monkeypatch.delenv(tr.ALLOW_PLAINTEXT_ENV, raising=False)
+        with pytest.raises(tr.InsecureTransportError):
+            gc.hello("http://10.0.0.4:8099")
+        conn = gc.GatewayConnection(base_url="http://10.0.0.4:8099", token="t", gateway_id="g")
+        with pytest.raises(tr.InsecureTransportError):
+            gc.status_of(conn, "any-run")
 
 
 # ------------------------------------------------------------------ idempotence

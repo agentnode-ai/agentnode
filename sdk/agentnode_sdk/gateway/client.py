@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
+from agentnode_sdk.gateway.transport import check_client_url
 
 from agentnode_sdk.gateway.protocol import (
     JobRequest,
@@ -54,6 +55,7 @@ class GatewayConnection:
 
 
 def _post(url: str, body: dict, timeout: float = 30.0) -> tuple[int, dict]:
+    check_client_url(url)
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST",
                                  headers={"Content-Type": "application/json"})
@@ -73,6 +75,7 @@ def _post(url: str, body: dict, timeout: float = 30.0) -> tuple[int, dict]:
 
 
 def _get(url: str, timeout: float = 30.0, token: str = "") -> tuple[int, dict]:
+    check_client_url(url)
     req = urllib.request.Request(url, method="GET")
     if token:
         req.add_header("X-AgentNode-Token", token)

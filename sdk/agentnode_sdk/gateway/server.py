@@ -34,6 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
+from agentnode_sdk.gateway.transport import check_bind_address
 from agentnode_sdk.gateway.protocol import (
     PROTOCOL_VERSION,
     JobRequest,
@@ -650,8 +651,11 @@ def make_server(service: GatewayService, host: str = "127.0.0.1", port: int = 0)
     """A threading HTTP server bound to `host`. Defaults to loopback deliberately.
 
     Binding to loopback by default means an operator has to make an explicit choice before the
-    gateway is reachable from anywhere else -- the safe direction for a default.
+    gateway is reachable from anywhere else -- the safe direction for a default. Making that
+    choice is not enough on its own: serving beyond loopback in the clear is refused, because
+    the pairing code and the token would be readable by anyone who can reach the machine.
     """
+    check_bind_address(host)
     handler = type("_BoundHandler", (_Handler,), {"service": service})
     return ThreadingHTTPServer((host, port), handler)
 
