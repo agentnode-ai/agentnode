@@ -80,22 +80,83 @@ class TestTheAllowlistIsNotSilentlyIgnored:
         assert check(level, [])[0] == []
 
 
-class TestItAgreesWithTheRuntime:
-    def test_the_registry_and_the_sdk_reject_the_same_hosts(self):
-        """Both sides consult a canonicaliser with the same rules; this pins that they agree.
+class TestTheTwoCanonicalisersDoNotDrift:
+    """The registry and the sandbox each have their own canonicaliser. That is two rule sets.
 
-        The SDK's copy lives in agentnode_sdk.sandbox.domain_policy and is not importable here, so
-        the agreement is asserted against the backend's own canonicaliser — the one the validator
-        actually calls — for the cases that matter most.
-        """
-        from app.mcp.mcp_policy import DomainPolicyError, canonicalize_allowed_domains
+    EM3D-REGISTRY-FINAL-0001 was right to call the earlier version of this class a false claim: it
+    was named after registry/SDK agreement and only ever compared the registry helper with the
+    backend function that helper already calls, so it could not have detected SDK drift at all.
 
-        for bad in ("127.0.0.1", "localhost", "single", "https://x.example.com"):
-            with pytest.raises(DomainPolicyError):
-                canonicalize_allowed_domains([bad])
-            assert check("restricted", [bad])[0], f"validator accepted {bad!r}"
+    `shared/allowed-domains-corpus.json` is the mechanism instead. Both implementations are loaded
+    here -- by file path, since neither is installed in the other's environment, and both are
+    stdlib-only -- and each must accept every listed host with the same canonical form and reject
+    every listed one. A change to either side that alters what it accepts fails this test, which is
+    what makes the agreement checkable rather than asserted.
+    """
 
-        assert canonicalize_allowed_domains(["B.example.com", "a.example.com"]) == (
-            "a.example.com",
-            "b.example.com",
+    @staticmethod
+    def _load(rel_path, name):
+        import importlib.util
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location(name, root / rel_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def _corpus():
+        import json
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        return json.loads(
+            (root / "shared" / "allowed-domains-corpus.json").read_text(
+                encoding="utf-8"
+            )
         )
+
+    @property
+    def implementations(self):
+        return {
+            "backend": self._load("backend/app/mcp/mcp_policy.py", "_corpus_backend"),
+            "sdk": self._load(
+                "sdk/agentnode_sdk/sandbox/domain_policy.py", "_corpus_sdk"
+            ),
+        }
+
+    def test_the_corpus_is_not_empty(self):
+        c = self._corpus()
+        assert len(c["accepted"]) >= 5 and len(c["rejected"]) >= 10
+
+    def test_both_accept_every_accepted_host_with_the_same_canonical_form(self):
+        implementations = self.implementations
+        corpus = self._corpus()
+        for name, module in implementations.items():
+            for raw_host, canonical in corpus["accepted"].items():
+                got = module.canonicalize_allowed_domains([raw_host])
+                assert got == (canonical,), (
+                    f"{name} canonicalised {raw_host!r} to {got!r}, corpus says {canonical!r}"
+                )
+
+    def test_both_reject_every_rejected_host(self):
+        implementations = self.implementations
+        corpus = self._corpus()
+        for name, module in implementations.items():
+            for raw_host in corpus["rejected"]:
+                with pytest.raises(Exception):
+                    module.canonicalize_allowed_domains([raw_host])
+
+    def test_the_validator_itself_refuses_every_rejected_host(self):
+        """The corpus binds the canonicalisers; this binds the validator to the corpus too."""
+        for raw_host in self._corpus()["rejected"]:
+            assert check("restricted", [raw_host])[0], (
+                f"the validator accepted {raw_host!r}"
+            )
+
+    def test_the_validator_accepts_every_accepted_host(self):
+        for raw_host in self._corpus()["accepted"]:
+            assert check("restricted", [raw_host])[0] == [], (
+                f"the validator rejected {raw_host!r}, which the corpus lists as usable"
+            )
