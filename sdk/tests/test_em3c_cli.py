@@ -315,6 +315,31 @@ class TestPairingWorksBetweenProcesses:
         assert len(outcomes) == 6, outcomes
         assert len(wins) == 1, f"{len(wins)} of 6 processes were given a token"
 
+    def test_the_issuer_cannot_redeem_a_code_another_process_already_took(self, tmp_path):
+        """EM3C-GATEWAY-0012: the issuing process kept its own copy.
+
+        `gateway pair` issues the code and holds it in memory. If it could redeem from that copy
+        without winning the disk claim, then one code yields two tokens -- once to whoever raced
+        for the file, and once more to the issuer. The earlier race test used only fresh state
+        objects, so the issuer was never among the racers and this path was invisible to it.
+        """
+        from agentnode_sdk.gateway.identity import PairingError
+
+        issuer = GatewayState(tmp_path / "gw", version="test")
+        code = issuer.start_pairing()
+
+        other = GatewayState(tmp_path / "gw", version="test")
+        assert other.redeem_pairing(code, client_name="the-racer")
+
+        with pytest.raises(PairingError):
+            issuer.redeem_pairing(code, client_name="the-issuer")
+
+    def test_the_issuer_can_still_redeem_when_nobody_raced_it(self, tmp_path):
+        """The ordinary case: one process issues and the same one accepts."""
+        issuer = GatewayState(tmp_path / "gw", version="test")
+        code = issuer.start_pairing()
+        assert issuer.redeem_pairing(code, client_name="ordinary")
+
     def test_the_code_itself_is_not_written_to_disk(self, tmp_path):
         """The gateway directory is what an attacker with a backup copy gets."""
         state = GatewayState(tmp_path / "gw", version="test")

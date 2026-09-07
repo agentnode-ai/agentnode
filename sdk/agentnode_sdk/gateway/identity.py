@@ -272,15 +272,19 @@ class GatewayState:
         # steps lets two concurrent attempts both see the same live code, which would make a
         # single-use code usable twice. The lock covers threads; the rename below covers
         # processes, since the CLI really does run these in different ones.
+        # The disk claim is the ONLY authority, for every caller including the one that issued
+        # the code. An earlier version preferred an in-memory copy when it had one, which meant
+        # the issuing process could still redeem after another process had won the rename: one
+        # code, two tokens. The in-memory copy is cleared here so it cannot be reused, but it is
+        # never a substitute for winning the claim.
         with self._pairing_lock:
-            pending = self._pairing
             self._pairing = None
             on_disk = self._claim_pairing_file()
-        if pending is None and on_disk is not None:
+        pending = None
+        expected_hash = ""
+        if on_disk is not None:
             pending = ("", float(on_disk.get("expires", 0)))
             expected_hash = str(on_disk.get("code_sha256", ""))
-        else:
-            expected_hash = hash_token(pending[0]) if pending else ""
 
         if pending is None:
             self._throttle.record_failure(now)
