@@ -234,6 +234,7 @@ def cmd_run(args) -> int:
     try:
         answer = gc.submit(connection, artifact, network=network,
                            allowed_domains=allow,
+                           wall_clock_s=int(getattr(args, "max_seconds", 0) or 60),
                            required_properties=("container_isolation",))
     except Exception as exc:                                  # noqa: BLE001
         print(f"  It would not take the job: {exc}")
@@ -243,6 +244,10 @@ def cmd_run(args) -> int:
         print(f"  {bold('Refused, and nothing was run.')}")
         print(f"  {answer.get('refusal')}")
         return 1
+
+    # Printed so it can be stopped from another terminal. A job you cannot name is a job you
+    # cannot cancel.
+    print(f"  run: {answer['run_id']}")
 
     try:
         final = gc.wait_for(connection, answer["run_id"],
@@ -277,6 +282,23 @@ def cmd_run(args) -> int:
     print()
     print(f"  {bold('Did not finish.')} {final.get('refusal') or state}")
     return 1
+
+
+def cmd_cancel(args) -> int:
+    from agentnode_sdk.gateway import client as gc
+
+    saved, connection = _connection(args)
+    if saved is None:
+        return _no_gateway()
+    try:
+        record = gc.cancel(connection, str(args.run))
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"  Could not stop it: {exc}")
+        return 1
+    print()
+    print(f"  Asked {bold(saved.name)} to stop {args.run}.")
+    print(f"  It is now: {record.get('state')}")
+    return 0
 
 
 def cmd_rotate(args) -> int:
@@ -320,13 +342,14 @@ def dispatch(args) -> int:
         "status": cmd_status,
         "test": cmd_test,
         "run": cmd_run,
+        "cancel": cmd_cancel,
         "rotate": cmd_rotate,
         "disconnect": cmd_disconnect,
     }
     handler = handlers.get(action)
     if handler is None:
         print("  Usage: agentnode remote "
-              "{connect|list|use|status|test|run|rotate|disconnect}")
+              "{connect|list|use|status|test|run|cancel|rotate|disconnect}")
         return 2
     try:
         return handler(args)

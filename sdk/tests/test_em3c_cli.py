@@ -322,3 +322,206 @@ class TestPairingWorksBetweenProcesses:
         stored = (tmp_path / "gw" / "pairing.json").read_text(encoding="utf-8")
         assert code not in stored
         assert code.replace("-", "") not in stored
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def _wait_until_listening(url: str, timeout: float = 90.0) -> None:
+    import time
+    import urllib.error
+    import urllib.request
+
+    deadline = time.monotonic() + timeout
+    last = ""
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url + "/v1/hello", timeout=5) as response:
+                if response.status == 200:
+                    return
+        except Exception as exc:                              # noqa: BLE001
+            last = str(exc)
+        time.sleep(0.25)
+    raise AssertionError("the gateway never started listening: " + last)
+
+
+@pytest.mark.skipif(not os.environ.get("AGENTNODE_SANDBOX_E2E"),
+                    reason="needs a container runtime")
+class TestTheWholeJourneyThroughThePublishedCommands:
+    """Set one up, connect to it, run something, stop something, and be shut out again.
+
+    Nothing here reaches into a service object to arrange an outcome. The gateway is a separate
+    process started by `agentnode gateway start`, the pairing code comes out of `agentnode
+    gateway pair` in a third process, and every client step is a published command. That is the
+    point: the internals have been tested for a while now, and none of that says whether a person
+    with a terminal can actually get to them.
+
+    The one step that is not a CLI command is the replay, which is deliberate -- re-sending a
+    captured request is not something the CLI offers or should. It goes through the gateway's
+    own HTTP API, which is equally public.
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def gateway_process(tmp_path_factory):
+        import subprocess
+        import sys
+
+        root = tmp_path_factory.mktemp("e2e")
+        gw_dir = root / "gw"
+        home = root / "home"
+        home.mkdir()
+        env = dict(os.environ, AGENTNODE_HOME=str(home))
+
+        assert main(["gateway", "init", "--dir", str(gw_dir)]) == 0
+        # The real suite against the real runtime. This is the slow part, and it is the part
+        # that decides whether the gateway is allowed to run anything at all.
+        assert main(["gateway", "doctor", "--dir", str(gw_dir), "--measure"]) == 0
+
+        port = _free_port()
+        process = subprocess.Popen(
+            [sys.executable, "-m", "agentnode_sdk.cli", "gateway", "start",
+             "--dir", str(gw_dir), "--port", str(port)],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        url = "http://127.0.0.1:%d" % port
+        try:
+            _wait_until_listening(url)
+            yield url, gw_dir, home, env
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=30)
+            except Exception:                                 # noqa: BLE001
+                process.kill()
+
+    def _pair_and_connect(self, url, gw_dir, home, capsys, name="e2e"):
+        import re
+
+        capsys.readouterr()
+        assert main(["gateway", "pair", "--dir", str(gw_dir)]) == 0
+        printed = capsys.readouterr().out
+        found = re.search(r"[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}", printed)
+        assert found, "the pair command printed no code: " + printed
+        code = found.group(0)
+        assert main(["remote", "connect", url, "--code", code, "--as", name]) == 0
+        return code
+
+    def test_a_person_can_set_this_up_and_run_something_in_it(self, gateway_process,
+                                                              monkeypatch, capsys, tmp_path):
+        url, gw_dir, home, env = gateway_process
+        monkeypatch.setenv("AGENTNODE_HOME", str(home))
+
+        self._pair_and_connect(url, gw_dir, home, capsys, name="journey")
+        out = capsys.readouterr().out
+        assert "Connected" in out
+
+        assert main(["remote", "status"]) == 0
+        assert "not ready" not in capsys.readouterr().out
+
+        assert main(["remote", "test"]) == 0
+        out = capsys.readouterr().out
+        print("  [observed] remote test said:", out.strip().replace("\n", " | ")[:300])
+        assert "It works" in out
+
+        script = tmp_path / "job.py"
+        script.write_text("import os\nprint('E2E-RAN-AS', os.getuid(), flush=True)\n",
+                          encoding="utf-8")
+        assert main(["remote", "run", str(script), "--max-seconds", "90"]) == 0
+        out = capsys.readouterr().out
+        print("  [observed] remote run said:", out.strip().replace("\n", " | ")[:300])
+        assert "E2E-RAN-AS 1000" in out, "the job did not run as the unprivileged user"
+
+    def test_a_run_can_be_stopped_from_another_terminal(self, gateway_process,
+                                                        monkeypatch, capsys, tmp_path):
+        import re
+        import threading
+
+        url, gw_dir, home, env = gateway_process
+        monkeypatch.setenv("AGENTNODE_HOME", str(home))
+        self._pair_and_connect(url, gw_dir, home, capsys, name="stoppable")
+
+        script = tmp_path / "slow.py"
+        script.write_text("import time\nprint('started', flush=True)\ntime.sleep(120)\n",
+                          encoding="utf-8")
+
+        captured: dict = {}
+
+        def run_it():
+            captured["code"] = main(["remote", "run", str(script), "--max-seconds", "150",
+                                     "--timeout", "180"])
+
+        worker = threading.Thread(target=run_it, daemon=True)
+        worker.start()
+
+        # find the run id the command printed, then stop it the way anyone else would
+        run_id = ""
+        import time as _time
+        deadline = _time.monotonic() + 60
+        while _time.monotonic() < deadline and not run_id:
+            found = re.search(r"run: ([0-9a-f]{8,})", capsys.readouterr().out)
+            if found:
+                run_id = found.group(1)
+            else:
+                _time.sleep(0.5)
+        assert run_id, "the run command never printed a run id"
+
+        _time.sleep(3)                       # let the container actually come up
+        assert main(["remote", "cancel", "--run", run_id]) == 0
+        print("  [observed] cancel said:", capsys.readouterr().out.strip()[:200])
+        worker.join(timeout=180)
+        assert not worker.is_alive(), "the run never came back after being cancelled"
+
+    def test_a_job_that_overruns_is_stopped_by_the_sandbox(self, gateway_process,
+                                                           monkeypatch, capsys, tmp_path):
+        url, gw_dir, home, env = gateway_process
+        monkeypatch.setenv("AGENTNODE_HOME", str(home))
+        self._pair_and_connect(url, gw_dir, home, capsys, name="overrunner")
+
+        script = tmp_path / "forever.py"
+        script.write_text("import time\nprint('going', flush=True)\ntime.sleep(600)\n",
+                          encoding="utf-8")
+        code = main(["remote", "run", str(script), "--max-seconds", "10", "--timeout", "180"])
+        out = capsys.readouterr().out
+        print("  [observed] overrun run said:", out.strip().replace("\n", " | ")[:300])
+        assert code != 0, "a job that ran past its limit reported success"
+
+    def test_revoking_shuts_the_client_out_at_once(self, gateway_process,
+                                                   monkeypatch, capsys, tmp_path):
+        import re
+
+        url, gw_dir, home, env = gateway_process
+        monkeypatch.setenv("AGENTNODE_HOME", str(home))
+        self._pair_and_connect(url, gw_dir, home, capsys, name="doomed")
+        assert main(["remote", "test"]) == 0
+
+        capsys.readouterr()
+        assert main(["gateway", "clients", "--dir", str(gw_dir)]) == 0
+        listed = capsys.readouterr().out
+        found = re.search(r"doomed\s+([0-9a-f]{6,})", listed)
+        assert found, "the clients list did not show the connection: " + listed
+
+        assert main(["gateway", "revoke", "--dir", str(gw_dir),
+                     "--client", found.group(1)]) == 0
+        capsys.readouterr()
+        assert main(["remote", "test"]) == 1, "a revoked client could still run work"
+        print("  [observed] after revocation:", capsys.readouterr().out.strip()[:200])
+
+    def test_nothing_is_left_behind_by_any_of_it(self, gateway_process):
+        import subprocess
+
+        subprocess.run(["docker", "ps", "-a"], capture_output=True, timeout=30)
+        listed = subprocess.run(
+            ["docker", "container", "ls", "-a", "--filter", "name=agentnode-em3c-",
+             "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert listed.returncode == 0, listed.stderr
+        leftovers = [n for n in listed.stdout.split() if n.strip()]
+        print("  [observed] leftover run containers:", leftovers or "none")
+        assert not leftovers, leftovers

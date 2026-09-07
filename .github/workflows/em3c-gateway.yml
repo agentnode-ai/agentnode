@@ -92,6 +92,18 @@ jobs:
             exit 1
           }
 
+      - name: The whole journey, through the published commands only
+        env:
+          AGENTNODE_SANDBOX_E2E: "1"
+        run: |
+          set -o pipefail
+          # -s because what matters is what the commands printed to the person running them.
+          python -m pytest -p no:randomly -v -s             "tests/test_em3c_cli.py::TestTheWholeJourneyThroughThePublishedCommands"             2>&1 | tee em3c-journey.txt
+          grep -qE "5 passed" em3c-journey.txt || {
+            echo "the end-to-end journey did not run: it skipped, failed or errored"
+            exit 1
+          }
+
       - name: A restricted network, for real
         env:
           AGENTNODE_SANDBOX_E2E: "1"

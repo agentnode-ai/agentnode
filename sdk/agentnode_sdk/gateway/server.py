@@ -27,6 +27,8 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+import os
+import sys
 import threading
 import time
 import uuid
@@ -865,6 +867,24 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def log_message(self, fmt, *args):                        # noqa: A003 - stdlib name
+        """Say which endpoint was called, and nothing that could be a secret.
+
+        The default handler writes the whole request line. Nothing secret rides in a path today
+        -- tokens are headers and codes are bodies -- but "today" is doing a lot of work in that
+        sentence, and a log is the one place a leak is permanent and copied elsewhere. Only the
+        method and the path with any query string removed are recorded.
+        """
+        if not getattr(self.server, "agentnode_log", False):
+            return
+        try:
+            line = str(args[0]) if args else ""
+            method, _, rest = line.partition(" ")
+            path = rest.split(" ", 1)[0].split("?", 1)[0]
+            sys.stderr.write(f"gateway {method} {path}\n")
+        except Exception:                                     # noqa: BLE001
+            pass
+
     def _token_of(self) -> str:
         """A GET carries its token in a header; the status endpoint is authenticated too."""
         return self.headers.get("X-AgentNode-Token", "") or ""
@@ -986,6 +1006,9 @@ def make_server(
     context = check_bind_address(host, tls)
     handler = type("_BoundHandler", (_Handler,), {"service": service})
     server = ThreadingHTTPServer((host, port), handler)
+    # Off unless asked for. A gateway that logs every request by default writes a record of who
+    # ran what and when, on a machine whose operator never chose to keep one.
+    server.agentnode_log = bool(os.environ.get("AGENTNODE_GATEWAY_LOG"))
     if context is not None:
         # The certificate was already loaded by check_bind_address above, before this socket
         # existed, so a certificate that will not load stops the gateway rather than leaving it

@@ -293,7 +293,13 @@ def main(argv: list[str] | None = None) -> int:
     rm_run.add_argument("--name", default="")
     rm_run.add_argument("--allow", action="append", default=[],
                         help="A host the code may reach. Repeatable. Everything else is blocked.")
-    rm_run.add_argument("--timeout", type=float, default=600)
+    rm_run.add_argument("--timeout", type=float, default=600,
+                        help="How long to wait for the result here")
+    rm_run.add_argument("--max-seconds", dest="max_seconds", type=int, default=60,
+                        help="How long the sandbox lets it run before stopping it")
+    rm_cancel = rm_sub.add_parser("cancel", help="Stop a run that is still going")
+    rm_cancel.add_argument("--run", required=True, help="The run id printed when it started")
+    rm_cancel.add_argument("--name", default="")
     rm_rotate = rm_sub.add_parser("rotate", help="Replace your access, keeping the connection")
     rm_rotate.add_argument("--name", default="")
     rm_disconnect = rm_sub.add_parser("disconnect", help="Forget a sandbox on this machine")
