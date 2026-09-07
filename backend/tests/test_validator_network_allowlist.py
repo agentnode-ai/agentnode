@@ -77,7 +77,18 @@ class TestTheAllowlistIsNotSilentlyIgnored:
     @pytest.mark.parametrize("level", ["none", "unrestricted"])
     def test_no_allowlist_at_those_levels_is_fine(self, level):
         assert check(level, None)[0] == []
+
+    @pytest.mark.parametrize("level", ["none", "unrestricted"])
+    def test_an_EMPTY_allowlist_at_those_levels_is_accepted(self, level):
+        """Deliberate, and worth stating: the rule is about a NON-EMPTY allowlist.
+
+        `allowed_domains: []` is what the manifest schema itself carries as the default (see the
+        default permissions block in validator.py), so rejecting it would fail every manifest that
+        simply left the field at its default. An empty list declares nothing, so there is nothing
+        for the author to have expected to apply.
+        """
         assert check(level, [])[0] == []
+        assert check(level, ())[0] == []
 
 
 class TestTheTwoCanonicalisersDoNotDrift:
@@ -144,8 +155,9 @@ class TestTheTwoCanonicalisersDoNotDrift:
         implementations = self.implementations
         corpus = self._corpus()
         for name, module in implementations.items():
+            error_type = module.DomainPolicyError
             for raw_host in corpus["rejected"]:
-                with pytest.raises(Exception):
+                with pytest.raises(error_type):
                     module.canonicalize_allowed_domains([raw_host])
 
     def test_the_validator_itself_refuses_every_rejected_host(self):

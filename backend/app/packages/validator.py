@@ -923,8 +923,9 @@ def _validate_network_allowlist(network: dict, errors: list, warnings: list) -> 
             )
         return
 
-    # A non-restricted level does not consult the allowlist, so declaring one is a sign the author
-    # expected it to apply. Say so rather than ignoring it silently.
+    # A non-restricted level does not consult the allowlist, so declaring a NON-EMPTY one is a
+    # sign the author expected it to apply. Say so rather than ignoring it silently. An empty list
+    # is the manifest schema's own default for this field, declares nothing, and is accepted.
     if isinstance(raw, (list, tuple)) and raw:
         errors.append(
             f"permissions.network.allowed_domains is set but permissions.network.level is "
