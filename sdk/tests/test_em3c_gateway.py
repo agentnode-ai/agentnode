@@ -1276,12 +1276,39 @@ class TestCorruptLockoutStateFailsClosed:
                 "state that could not be read was reported as no lockout"
             )
 
-    def test_a_missing_file_is_not_corruption(self):
+    def test_a_missing_file_on_a_gateway_that_never_ran_is_not_corruption(self):
+        """No state on a gateway that has never run is exactly right, not suspicious."""
         from agentnode_sdk.gateway.throttle import Throttle
 
         with tempfile.TemporaryDirectory() as td:
-            throttle = Throttle(path=Path(td) / "nothing-here.json")
+            throttle = Throttle(path=Path(td) / "nothing-here.json",
+                                established_marker=Path(td) / "never-created.json")
             assert throttle.locked_for(now=1000.0) == 0.0
+
+    def test_deleting_the_state_of_a_gateway_that_HAS_run_fails_closed(self):
+        """EM3C-GATEWAY-0011: the restart bypass with one extra step.
+
+        Deleting the file was as good as restarting into an unlocked gateway. The marker is what
+        separates "never had a failed attempt" from "someone removed the record".
+        """
+        from agentnode_sdk.gateway.identity import GatewayState, PairingError
+
+        with tempfile.TemporaryDirectory() as td:
+            now = 9_000.0
+            state = GatewayState(td, version="test")
+            assert state.identity.gateway_id                # the marker now exists
+            for _ in range(state._throttle.allowed_failures + 1):
+                state.start_pairing(now=now)
+                with pytest.raises(PairingError):
+                    state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now)
+            assert state._throttle.locked_for(now) > 0.0
+
+            (Path(td) / "pairing-throttle.json").unlink()
+
+            reopened = GatewayState(td, version="test")
+            assert reopened._throttle.locked_for(now) > 0.0, (
+                "deleting the lockout file unlocked the gateway"
+            )
 
 
 class TestRotationReplacesTheSecretAndNothingElse:

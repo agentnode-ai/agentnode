@@ -72,6 +72,18 @@ class Throttle:
     #: which is only ever right for a throttle that guards nothing durable.
     path: str | os.PathLike[str] | None = None
 
+    #: A file that exists once this gateway has been set up. Its presence is what makes a MISSING
+    #: state file suspicious rather than ordinary: on a gateway that has never run, no state is
+    #: exactly right, while on one that has, it means the file was removed. Without this, deleting
+    #: the state file resets the lockout, which is the restart bypass with an extra step.
+    #:
+    #: This is not a defence against an attacker who can write to the gateway directory. Such an
+    #: attacker can rewrite the state to say "unlocked", forge tokens.json, or replace identity
+    #: outright, and the throttle is not what stands between them and the gateway. It closes the
+    #: cheaper move -- delete one file -- and nothing more, which is worth having and worth not
+    #: overstating.
+    established_marker: str | os.PathLike[str] | None = None
+
     _failures: list[float] = field(default_factory=list, repr=False)
     _locked_until: float = field(default=0.0, repr=False)
     _consecutive_locks: int = field(default=0, repr=False)
@@ -102,7 +114,12 @@ class Throttle:
             return
         target = Path(self.path)
         if not target.exists():
-            return                                # nothing recorded yet: genuinely no history
+            marker = Path(self.established_marker) if self.established_marker else None
+            if marker is not None and marker.exists():
+                # This gateway has run before, so an absent state file was removed rather than
+                # never written. Cannot prove there is no lock, so assume there is one.
+                self._fail_closed(now)
+            return                                # otherwise: genuinely no history yet
         # A transient sharing violation is not evidence of tampering, and treating it as such
         # locked the gateway out of its own pairing under ordinary concurrency -- so retry first.
         raw = None
@@ -164,6 +181,23 @@ class Throttle:
             os.chmod(target, 0o600)
         except OSError:
             pass
+
+    def ensure_initialised(self) -> None:
+        """Write empty-but-valid state if there is none.
+
+        Called at the moment the gateway becomes established, so that from then on an ABSENT
+        state file means removed rather than never-written. Without this the marker would make
+        every gateway that has simply never had a failed attempt look tampered with -- which it
+        did, and which locked three tests out of pairing immediately.
+        """
+        if self.path is None or Path(self.path).exists():
+            return
+        with self._lock, self._across_processes():
+            if not Path(self.path).exists():
+                try:
+                    self._write_locked()
+                except OSError:
+                    pass
 
     def _prune(self, now: float) -> None:
         cutoff = now - self.window_seconds

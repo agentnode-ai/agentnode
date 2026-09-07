@@ -119,7 +119,12 @@ class GatewayState:
         # twice -- the exact property the code is supposed to have.
         self._pairing_lock = threading.Lock()
         self._pairing_path = self.root / "pairing.json"
-        self._throttle = Throttle(path=self.root / "pairing-throttle.json")
+        self._throttle = Throttle(
+            path=self.root / "pairing-throttle.json",
+            # identity.json exists from the first time this gateway answered for itself, so its
+            # presence separates "never had a failed attempt" from "someone removed the record".
+            established_marker=self._identity_path,
+        )
 
     @staticmethod
     def _harden(path: Path) -> None:
@@ -151,6 +156,9 @@ class GatewayState:
                 json.dumps({"gateway_id": gid}, indent=2), encoding="utf-8"
             )
             self._harden(self._identity_path)
+            # Written together with the marker, so from here on an absent throttle file means
+            # somebody removed it rather than that nothing has been recorded yet.
+            self._throttle.ensure_initialised()
         return GatewayIdentity(gateway_id=gid, version=self.version)
 
     # ---------------------------------------------------------------- pairing
