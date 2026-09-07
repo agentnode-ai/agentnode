@@ -280,27 +280,44 @@ class GatewayService:
             record.cleanup_verified = self._verify_gone(record.container_name)
             record.finished_at = time.time()
 
-    def _verify_gone(self, container_name: str) -> bool | None:
-        """Absence has to be stated by the runtime, not inferred from a command that failed."""
-        import re
+    def _containers_named(self, prefix: str) -> tuple[bool, list[str]]:
+        """Ask the runtime which containers carry this run's name prefix.
+
+        Returns (the runtime answered, the names). The first element matters: an empty list from a
+        command that FAILED is not an empty list of containers, and treating it as one would report
+        a container gone because we could not ask. EM-3B-R1 closed exactly that hole in the local
+        backend; the same rule applies here.
+        """
         import subprocess
 
         availability = self.backend.check_available()
         runtime = availability.backend
-        if not runtime or runtime == "none" or not container_name:
-            return None
+        if not runtime or runtime == "none" or not prefix:
+            return False, []
         try:
-            probe = subprocess.run(
-                [runtime, "inspect", "--format", "{{.Id}}", container_name],
+            listed = subprocess.run(
+                [runtime, "ps", "-a", "--filter", f"name={prefix}", "--format", "{{.Names}}"],
                 capture_output=True, text=True, timeout=30,
             )
         except Exception:                                     # noqa: BLE001
-            return None
-        if probe.returncode == 0:
-            return False
-        blob = (probe.stderr or "") + (probe.stdout or "")
-        return bool(re.search(r"no such (object|container)", blob, re.IGNORECASE))
+            return False, []
+        if listed.returncode != 0:
+            return False, []
+        return True, [n for n in listed.stdout.split() if n.startswith(prefix)]
 
+    def _verify_gone(self, container_name: str) -> bool | None:
+        """Absence has to be stated by the runtime, not inferred from a command that failed.
+
+        The prefix, not the exact name: the backend gives every run its own generated identity
+        (`<name>-<suffix>`), so the name this service chose is a PREFIX of the container that
+        actually ran. An earlier version of this method asked about the bare name, which matched
+        nothing -- so a cancellation removed nothing and a cleanup check reported success about a
+        container that was still running. The real container lane caught it.
+        """
+        answered, names = self._containers_named(container_name)
+        if not answered:
+            return None
+        return not names
     def cancel(self, run_id: str) -> RunRecord | None:
         record = self.runs.get(run_id)
         if record is None:
@@ -312,17 +329,36 @@ class GatewayService:
         return record
 
     def _end_container(self, record: RunRecord) -> None:
+        """Remove this run's container by the identity the backend actually gave it.
+
+        Nothing outside this run's own prefix is ever addressed, and a listing that failed stops
+        the removal rather than making it guess at a name.
+        """
         import subprocess
 
         availability = self.backend.check_available()
         runtime = availability.backend
         if not runtime or runtime == "none" or not record.container_name:
             return
-        try:
-            subprocess.run([runtime, "rm", "-f", record.container_name],
-                           capture_output=True, timeout=60)
-        except Exception:                                     # noqa: BLE001
-            pass
+        # A cancel can arrive before the container exists: the worker marks the run "running"
+        # and then the runtime takes a moment to create it. Removing nothing at that instant and
+        # returning would leave the payload to run to its wall clock, which is not what the client
+        # asked for -- so wait briefly for it to appear. Bounded, because a container that never
+        # appears is a run that never started, and the record already says so.
+        deadline = time.monotonic() + 20.0
+        names: list[str] = []
+        while time.monotonic() < deadline:
+            answered, names = self._containers_named(record.container_name)
+            if answered and names:
+                break
+            if record.state in ("finished", "refused", "cancelled") and not names:
+                return
+            time.sleep(0.25)
+        for name in names:
+            try:
+                subprocess.run([runtime, "rm", "-f", name], capture_output=True, timeout=60)
+            except Exception:                                 # noqa: BLE001
+                pass
 
 
 class _Cancelled(Exception):
