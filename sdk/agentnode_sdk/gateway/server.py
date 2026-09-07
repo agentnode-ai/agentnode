@@ -246,44 +246,48 @@ class GatewayService:
     # ------------------------------------------------------------------ execution
 
     def submit(self, request: JobRequest, artifact: bytes, token: str = "") -> RunRecord:
-        """Idempotent for a repeat of the SAME request; a refusal for anything else.
+        """Admission runs first, always. A re-sent request is a replay and is refused.
 
-        These two pull in opposite directions and the earlier version let idempotence win
-        outright: any request carrying a known run id returned that run's record before admission
-        ran at all. So an exact captured request was answered from the table instead of being
-        refused as a replay, and -- worse -- a DIFFERENT request that merely reused the run id was
-        handed the original run's record and result. EM3C-GATEWAY-0002 found it.
+        Two earlier versions got this wrong in the same direction, and the second was worse
+        because it argued for itself. First, ANY request carrying a known run id returned that
+        run's record before the nonce was ever checked. Then a byte-identical repeat was made to
+        return the existing run deliberately, reasoning that a client retrying after a dropped
+        connection needs it -- which quietly created a signed request that could be captured and
+        re-sent forever, while the brief still claimed replays were refused.
 
-        The decision, enforced here: a run id is bound to the exact signed request that created
-        it. A byte-identical repeat is the same run and returns it, which is what a client
-        retrying after a dropped connection needs. A repeat that differs in any signed field is
-        refused, and nothing about the original run is disclosed.
+        A byte-identical replay is a replayed nonce. It is refused here like any other, and the
+        criterion is met rather than argued around.
+
+        A client that loses its connection does not need to re-POST: GET /v1/jobs/<run_id> is
+        idempotent, carries no session, and is the reconnection path. Re-sending the submission
+        was never the right way to ask whether a job ran.
         """
         request_sha = digest(canonical_bytes(request.to_payload()))
         record = RunRecord(run_id=request.run_id, job_id=request.job_id,
                            request_sha256=request_sha)
         with self._lock:
             existing = self.runs.get(request.run_id)
-            if existing is not None:
-                if existing.request_sha256 == request_sha:
-                    return existing
-                refused = RunRecord(run_id=request.run_id, job_id=request.job_id,
-                                    request_sha256=request_sha, state="refused")
-                refused.refusal = (
-                    "this run id already belongs to a different request. A run id identifies one "
-                    "signed job; reusing it for another is refused, and nothing was started."
-                )
-                refused.finished_at = time.time()
-                return refused
-            self.runs[request.run_id] = record
+        if existing is not None:
+            refused = RunRecord(run_id=request.run_id, job_id=request.job_id,
+                                request_sha256=request_sha, state="refused")
+            refused.refusal = (
+                "this run id has already been submitted; re-sending a signed job is a replay. "
+                f"Ask for its status at /v1/jobs/{request.run_id}. Nothing was started."
+            )
+            refused.finished_at = time.time()
+            return refused
         try:
             granted, _ = self.admit(request, artifact, token)
-        except (ProtocolError, Exception) as exc:            # noqa: BLE001 - refusal is an answer
+        except Exception as exc:                              # noqa: BLE001 - refusal is an answer
             record.state = "refused"
             record.refusal = str(exc)
             record.finished_at = time.time()
+            # Recorded, so a refused job cannot be retried into an acceptance by resending it.
+            with self._lock:
+                self.runs.setdefault(request.run_id, record)
             return record
-
+        with self._lock:
+            self.runs[request.run_id] = record
         thread = threading.Thread(target=self._run, args=(request, artifact, granted, record),
                                   daemon=True)
         thread.start()

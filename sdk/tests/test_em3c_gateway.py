@@ -351,8 +351,8 @@ class TestEveryAnswerNamesTheGatewayThatGaveIt:
 # ------------------------------------------------------------------ idempotence
 
 class TestAskingTwiceGivesTheSameAnswer:
-    def test_an_exact_repeat_returns_the_same_run_and_starts_nothing_new(self, gateway):
-        """A retry after a dropped connection must not fail, and must not run twice."""
+    def test_an_exact_repeat_is_a_replay_and_is_refused(self, gateway):
+        """A byte-identical re-POST carries a used nonce. It is a replay like any other."""
         base, state, service, backend = gateway
         conn = _paired(base, state)
         request = JobRequest(job_id="j", run_id="exact", artifact_sha256=digest(b"x"),
@@ -365,13 +365,25 @@ class TestAskingTwiceGivesTheSameAnswer:
         assert first["state"] != "refused", first
         gc.wait_for(conn, "exact", timeout=20)
         calls = len(backend.specs)
-        again = gc._post(base + "/v1/jobs", body)[1]     # byte-identical repeat
-        assert again["run_id"] == "exact"
-        assert again["state"] != "refused"
-        assert len(backend.specs) == calls, "an exact repeat must not start a second run"
+        again = gc._post(base + "/v1/jobs", body)[1]
+        assert again["state"] == "refused"
+        assert again["stdout"] == "", "a replay must not disclose the original run"
+        assert len(backend.specs) == calls
+
+    def test_the_reconnection_path_is_the_status_endpoint(self, gateway):
+        """What a client with a dropped connection does, and it needs no re-POST."""
+        base, state, service, backend = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", granted=_granted(service), run_id="dropped")
+        assert answer["state"] != "refused"
+        gc.wait_for(conn, "dropped", timeout=20)
+        calls = len(backend.specs)
+        for _ in range(3):
+            again = gc.status_of(conn, "dropped")
+            assert again["run_id"] == "dropped" and again["state"] == "finished"
+        assert len(backend.specs) == calls
 
     def test_a_different_request_reusing_a_run_id_is_refused(self, gateway):
-        """The hole EM3C-GATEWAY-0002 found: a known run id used to bypass admission entirely."""
         base, state, service, backend = gateway
         conn = _paired(base, state)
         first = JobRequest(job_id="j", run_id="shared", artifact_sha256=digest(b"honest"),
@@ -391,18 +403,17 @@ class TestAskingTwiceGivesTheSameAnswer:
             "signature": sign(client_token_secret(conn.token), p2),
             "artifact_b64": base64.b64encode(b"other").decode()})[1]
         assert answer["state"] == "refused"
-        assert "already belongs to a different request" in answer["refusal"]
         assert answer["stdout"] == "", "the original run must not be disclosed"
         assert len(backend.specs) == calls
 
-    def test_the_same_run_id_is_the_same_run(self, gateway):
+    def test_a_refusal_cannot_be_retried_into_an_acceptance(self, gateway):
         base, state, service, backend = gateway
         conn = _paired(base, state)
-        first = gc.submit(conn, b"x", granted=_granted(service), run_id="fixed-run")
-        gc.wait_for(conn, "fixed-run", timeout=20)
-        again = gc.status_of(conn, "fixed-run")
-        assert again["run_id"] == first["run_id"]
-        assert len(backend.specs) == 1, "a repeated run id must not start a second run"
+        for _ in range(2):
+            answer = gc.submit(conn, b"x", granted=_granted(service), run_id="refused-once",
+                               required_properties=("microvm_isolation",))
+            assert answer["state"] == "refused"
+        assert backend.specs == []
 
     def test_status_of_an_unknown_run_says_so(self, gateway):
         base, state, _, _ = gateway
