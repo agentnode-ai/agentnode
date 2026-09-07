@@ -538,11 +538,17 @@ class TestTheVerticalFlowForReal:
                     name, cid, image = listed.stdout.strip().splitlines()[0].split("|")
                     seen.update(name=name, id=cid, image=image)
                     return
-                time.sleep(0.2)
+                time.sleep(0.05)
 
         watcher = threading.Thread(target=watch, daemon=True)
         watcher.start()
-        artifact = b"import os\nprint('EM3C-RAN-AS', os.getuid(), flush=True)\n"
+        # The payload stays alive for a moment on purpose. Its work is instant, and a
+        # container that exists for under one poll interval is one the watcher can miss --
+        # which it did, reporting name=None while the job had plainly run. A few seconds makes
+        # the observation reliable without changing what is being observed.
+        artifact = (b"import os, time\n"
+                    b"print('EM3C-RAN-AS', os.getuid(), flush=True)\n"
+                    b"time.sleep(3)\n")
         answer = gc.submit(conn, artifact,
                            granted=_granted(service, wall_clock_s=120, token=conn.token),
                            network="none",
