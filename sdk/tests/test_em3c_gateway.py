@@ -79,9 +79,17 @@ def _paired(base, state):
     return gc.pair(base, state.start_pairing(), client_name="test")
 
 
-def _granted(service, network="none", domains=()):
+def _granted(service, network="none", domains=(), wall_clock_s=60, token=""):
+    """Compose the way the gateway will, INCLUDING the wall clock it will fold in.
+
+    Leaving the wall clock out here signs the job for a policy the gateway would never compose,
+    and every submission is then refused for a digest mismatch the caller created. The container
+    lane found exactly that once the wall clock started coming from the fold.
+    """
     return service.compose(
-        type("R", (), {"network": network, "allowed_domains": tuple(domains)})()
+        type("R", (), {"network": network, "allowed_domains": tuple(domains),
+                       "wall_clock_s": wall_clock_s})(),
+        token,
     )
 
 
@@ -535,7 +543,9 @@ class TestTheVerticalFlowForReal:
         watcher = threading.Thread(target=watch, daemon=True)
         watcher.start()
         artifact = b"import os\nprint('EM3C-RAN-AS', os.getuid(), flush=True)\n"
-        answer = gc.submit(conn, artifact, granted=_granted(service), network="none",
+        answer = gc.submit(conn, artifact,
+                           granted=_granted(service, wall_clock_s=120, token=conn.token),
+                           network="none",
                            required_properties=("container_isolation", "verified_cleanup"),
                            wall_clock_s=120)
         assert answer["state"] != "refused", answer.get("refusal")
@@ -569,8 +579,9 @@ class TestTheVerticalFlowForReal:
                     b"    if s: signal.signal(s, signal.SIG_IGN)\n"
                     b"print('EM3C-IGNORING', flush=True)\n"
                     b"time.sleep(600)\n")
-        answer = gc.submit(conn, artifact, granted=_granted(service), network="none",
-                           wall_clock_s=300)
+        answer = gc.submit(conn, artifact,
+                           granted=_granted(service, wall_clock_s=300, token=conn.token),
+                           network="none", wall_clock_s=300)
         assert answer["state"] != "refused", answer.get("refusal")
         run_id = answer["run_id"]
         deadline = time.monotonic() + 60
@@ -590,8 +601,9 @@ class TestTheVerticalFlowForReal:
         base, state, service = real_gateway
         conn = _paired(base, state)
         artifact = b"import time\nprint('EM3C-SLEEPING', flush=True)\ntime.sleep(600)\n"
-        answer = gc.submit(conn, artifact, granted=_granted(service), network="none",
-                           wall_clock_s=8)
+        answer = gc.submit(conn, artifact,
+                           granted=_granted(service, wall_clock_s=8, token=conn.token),
+                           network="none", wall_clock_s=8)
         assert answer["state"] != "refused", answer.get("refusal")
         final = gc.wait_for(conn, answer["run_id"], timeout=180)
         print("")
