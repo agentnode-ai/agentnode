@@ -2427,3 +2427,106 @@ class TestRestrictedEgressForReal:
             leftovers = [n for n in listed.stdout.split() if n.strip()]
             print("  [observed] leftover %ss: %s" % (kind, leftovers or "none"))
             assert not leftovers, "%s left behind: %s" % (kind, leftovers)
+
+
+@pytest.mark.skipif(not os.environ.get("AGENTNODE_SANDBOX_E2E"),
+                    reason="needs a container runtime")
+class TestAControlledDestinationWithNoInternet:
+    """A destination this test owns, so the egress result does not depend on anyone else.
+
+    The other egress lane reaches example.com, which is honest about what it proves and dishonest
+    about when it fails: a network fault out there is indistinguishable from the allowlist letting
+    the wrong thing through. This one creates its own destination on the proxy's own network, so
+    the answer comes from the code under test and nothing else.
+
+    What it establishes is the screening rather than the allowlist. The destination is on a private
+    address, and the proxy refuses private addresses whatever the allowlist says -- which is the
+    property worth pinning, because an allowlist alone would let a hostname an attacker controls
+    resolve to something inside the network it is supposed to be kept out of. Being on the
+    allowlist is exactly what makes the refusal meaningful here.
+    """
+
+    IMAGE_ENV = "AGENTNODE_SANDBOX_IMAGE"
+
+    def _image(self):
+        import os as _os
+
+        image = _os.environ.get(self.IMAGE_ENV) or _os.environ.get("SANDBOX_IMAGE")
+        if not image:
+            from agentnode_sdk.sandbox import container_backend
+
+            image = getattr(container_backend, "_BASE_IMAGE", "")
+        assert image, "no sandbox image is pinned for this lane"
+        return image
+
+    def _run(self, argv, timeout=120):
+        import subprocess
+
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+
+    def test_the_proxy_refuses_a_private_address_even_when_it_is_allowlisted(self):
+        from agentnode_sdk.sandbox.egress import start_egress_proxy, stop_egress_proxy
+
+        image = self._image()
+        handle = start_egress_proxy(("controlled.test",))
+        server = "agentnode-controlled-destination"
+        try:
+            started = self._run([
+                handle.runtime, "run", "-d", "--rm", "--name", server,
+                "--network", handle.ext_net, "--network-alias", "controlled.test",
+                image, "python", "-m", "http.server", "8000",
+            ])
+            assert started.returncode == 0, started.stderr
+            print("")
+            print("  [observed] destination container: %s" % started.stdout.strip()[:12])
+
+            probe = (
+                "import urllib.request\n"
+                "try:\n"
+                "    with urllib.request.urlopen('http://controlled.test:8000/', timeout=20) as r:\n"
+                "        print('REACHED', r.status)\n"
+                "except Exception as e:\n"
+                "    print('REFUSED', type(e).__name__)\n"
+            )
+            out = self._run([
+                handle.runtime, "run", "--rm", "--network", handle.int_net,
+                "-e", "HTTP_PROXY=" + handle.spec.proxy_url,
+                "-e", "HTTPS_PROXY=" + handle.spec.proxy_url,
+                image, "python", "-c", probe,
+            ])
+            said = (out.stdout or "").strip()
+            print("  [observed] through the proxy, to an allowlisted private address: %r" % said)
+            assert said.startswith("REFUSED"), (
+                "the proxy connected to a private address because it was on the allowlist: "
+                + said + " / " + (out.stderr or "")[:200]
+            )
+
+            # and with no proxy at all there is no route to it either
+            direct = self._run([
+                handle.runtime, "run", "--rm", "--network", handle.int_net,
+                image, "python", "-c", probe,
+            ])
+            said_direct = (direct.stdout or "").strip()
+            print("  [observed] with no proxy at all: %r" % said_direct)
+            assert said_direct.startswith("REFUSED"), said_direct
+        finally:
+            self._run([handle.runtime, "rm", "-f", server], timeout=60)
+            stop_egress_proxy(handle)
+
+    def test_nothing_of_the_controlled_run_is_left_behind(self):
+        import subprocess
+
+        from agentnode_sdk.sandbox.backend import get_default_backend
+
+        runtime = get_default_backend().check_available().backend
+        for kind, field in (("container", "{{.Names}}"), ("network", "{{.Name}}")):
+            listed = subprocess.run(
+                [runtime, kind, "ls", "-a" if kind == "container" else "--no-trunc",
+                 "--filter", "name=agentnode-controlled-destination",
+                 "--format", field],
+                capture_output=True, text=True, timeout=30,
+            )
+            assert listed.returncode == 0, listed.stderr
+            left = [n for n in listed.stdout.split() if n.strip()]
+            print("  [observed] leftover %ss: %s" % (kind, left or "none"))
+            assert not left, left

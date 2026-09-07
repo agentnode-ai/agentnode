@@ -117,6 +117,19 @@ jobs:
             exit 1
           }
 
+      - name: A destination this lane owns, with no internet involved
+        env:
+          AGENTNODE_SANDBOX_E2E: "1"
+        run: |
+          set -o pipefail
+          # The other egress lane reaches a public host, which cannot tell a network fault from a
+          # policy failure. This one owns both ends.
+          python -m pytest -p no:randomly -v -s             "tests/test_em3c_gateway.py::TestAControlledDestinationWithNoInternet"             2>&1 | tee em3c-controlled.txt
+          grep -qE "2 passed" em3c-controlled.txt || {
+            echo "the controlled-destination lane did not run: it skipped, failed or errored"
+            exit 1
+          }
+
       - name: No egress network or proxy may be left behind
         if: always()
         run: |
