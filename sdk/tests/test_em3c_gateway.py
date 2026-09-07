@@ -16,6 +16,7 @@ this file does not pretend otherwise — the gated test skips loudly rather than
 from __future__ import annotations
 
 import base64
+import json
 import os
 import tempfile
 import threading
@@ -26,6 +27,7 @@ import pytest
 from agentnode_sdk.gateway import client as gc
 from agentnode_sdk.gateway import transport as tr
 from agentnode_sdk.gateway.identity import (
+    PairingError,
     GatewayState,
     client_token_secret,
 )
@@ -106,6 +108,19 @@ def _self_signed(tmp_path):
         )
     )
     return str(cert_path), str(key_path)
+
+
+def _raw_get(base, path, token):
+    """The gateway's own answer, before the client turns it into a message."""
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(base + path, headers={"X-AgentNode-Token": token})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, json.loads(response.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8") or "{}")
 
 
 @pytest.fixture()
@@ -801,6 +816,206 @@ class TestATerminalStateMeansTheRecordIsComplete:
             again = gc.status_of(conn, answer["run_id"])
             assert again["cleanup_verified"] == final["cleanup_verified"]
             assert again["state"] == final["state"]
+
+
+# ------------------------------------------------ every answer is somebody's, and only theirs
+
+class TestNobodyReadsSomebodyElsesRun:
+    """A run id is not a secret. The ownership check is what protects the output.
+
+    The status endpoint used to have no authentication at all -- it looked a run up by id and
+    returned it, stdout and all. Being paired was likewise never enough to cancel another
+    client's run; nothing checked, so it only looked as though something did. These are the
+    tests that would have caught both, which the passing suite at the time did not.
+    """
+
+    def _two_clients(self, base, state):
+        first = _paired(base, state)
+        second = gc.pair(base, state.start_pairing())
+        assert first.token != second.token
+        return first, second
+
+    def test_status_without_a_token_is_refused(self, gateway):
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none")
+        anonymous = gc.GatewayConnection(base_url=base, token="", gateway_id=conn.gateway_id)
+        with pytest.raises(gc.GatewayClientError) as e:
+            gc.status_of(anonymous, answer["run_id"], verify=False)
+        assert "not paired" in str(e.value)
+
+    def test_status_with_a_token_this_gateway_never_issued_is_refused(self, gateway):
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none")
+        forged = gc.GatewayConnection(base_url=base, token="not-a-real-token",
+                                      gateway_id=conn.gateway_id)
+        with pytest.raises(gc.GatewayClientError):
+            gc.status_of(forged, answer["run_id"], verify=False)
+
+    def test_another_clients_run_is_reported_exactly_like_one_that_does_not_exist(self, gateway):
+        """Distinguishing them would let any paired client enumerate real run ids."""
+        base, state, service, _ = gateway
+        first, second = self._two_clients(base, state)
+        answer = gc.submit(first, b"secret-payload", network="none", run_id="private")
+        gc.wait_for(first, answer["run_id"], timeout=20)
+
+        # Compared at the GATEWAY, not through the client's formatted message -- that
+        # message interpolates the run id, so comparing it would have compared two ids and
+        # proved nothing about what the server disclosed.
+        theirs = _raw_get(base, "/v1/jobs/private", second.token)
+        absent = _raw_get(base, "/v1/jobs/no-such-run-at-all", second.token)
+        assert theirs[0] == absent[0] == 404
+        assert theirs[1].get("error") == absent[1].get("error") == "no such run"
+
+    def test_the_owner_can_still_read_it(self, gateway):
+        base, state, service, _ = gateway
+        first, _second = self._two_clients(base, state)
+        answer = gc.submit(first, b"x", network="none", run_id="mine")
+        final = gc.wait_for(first, "mine", timeout=20)
+        assert final["state"] == "finished"
+
+    def test_a_stranger_cannot_cancel_and_the_run_is_not_touched(self, gateway):
+        """The check runs BEFORE the cancel, so a stranger cannot stop a run and then be told
+        it was not theirs."""
+        base, state, service, _ = gateway
+        first, second = self._two_clients(base, state)
+        answer = gc.submit(first, b"x", network="none", run_id="not-yours")
+        with pytest.raises(gc.GatewayClientError):
+            gc.cancel(second, "not-yours")
+        record = service.runs["not-yours"]
+        assert not record.cancel_requested.is_set(), "the cancel reached the run anyway"
+        final = gc.wait_for(first, "not-yours", timeout=20)
+        assert final["state"] == "finished"
+
+    def test_a_revoked_token_stops_working_at_once_everywhere(self, gateway):
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none", run_id="before-revocation")
+        gc.wait_for(conn, "before-revocation", timeout=20)
+
+        assert state.revoke(conn.token) is True
+        with pytest.raises(gc.GatewayClientError):
+            gc.status_of(conn, "before-revocation", verify=False)
+        with pytest.raises(gc.GatewayClientError):
+            gc.submit(conn, b"x", network="none", run_id="after-revocation")
+        with pytest.raises(gc.GatewayClientError):
+            gc.cancel(conn, "before-revocation")
+
+
+class TestPairingIsWorthGuessingOnlyOnce:
+    """The code is short so a person can read it aloud. That is its weakness as well as its point."""
+
+    def test_a_code_works_once(self, gateway):
+        base, state, service, _ = gateway
+        code = state.start_pairing()
+        gc.pair(base, code)
+        with pytest.raises(gc.GatewayClientError):
+            gc.pair(base, code)
+
+    def test_concurrent_redemptions_of_one_code_produce_exactly_one_token(self, gateway):
+        """Reading the live code and clearing it as two steps lets two attempts both win."""
+        base, state, service, _ = gateway
+        code = state.start_pairing()
+        results: list = []
+        barrier = threading.Barrier(8)
+
+        def attempt():
+            barrier.wait()
+            try:
+                results.append(("ok", gc.pair(base, code).token))
+            except Exception as exc:                          # noqa: BLE001
+                results.append(("no", str(exc)))
+
+        threads = [threading.Thread(target=attempt) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+        wins = [r for r in results if r[0] == "ok"]
+        assert len(results) == 8, results
+        assert len(wins) == 1, f"{len(wins)} concurrent attempts were accepted, expected 1"
+        assert len({w[1] for w in wins}) == 1
+
+    def test_a_wrong_guess_consumes_the_code(self, gateway):
+        base, state, service, _ = gateway
+        code = state.start_pairing()
+        with pytest.raises(gc.GatewayClientError):
+            gc.pair(base, "AAAA-AAAA-AAAA" if code != "AAAA-AAAA-AAAA" else "BBBB-BBBB-BBBB")
+        with pytest.raises(gc.GatewayClientError):
+            gc.pair(base, code)
+
+    def test_repeated_failures_lock_attempts_out_for_a_while(self):
+        """Time is injected: a lockout tested with sleep is slow and still proves less."""
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.throttle import Locked
+
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            now = 1_000.0
+            for i in range(state._throttle.allowed_failures):
+                state.start_pairing(now=now)
+                with pytest.raises(PairingError):
+                    state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now)
+                assert state._throttle.locked_for(now) == 0.0, f"locked too early, after {i + 1}"
+
+            state.start_pairing(now=now)
+            with pytest.raises(PairingError):
+                state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now)
+            assert state._throttle.locked_for(now) > 0.0
+
+            # while locked, even the RIGHT code is refused, and it is refused before the code is
+            # looked at -- a locked-out caller learns nothing about whether a pairing is live
+            good = state.start_pairing(now=now)
+            with pytest.raises(PairingError, match="failed pairing attempts"):
+                state.redeem_pairing(good, now=now)
+
+    def test_the_lock_lengthens_rather_than_staying_a_speed_bump(self):
+        from agentnode_sdk.gateway.throttle import Throttle
+
+        t = Throttle(allowed_failures=1, base_lock_seconds=30.0)
+        assert t.record_failure(now=0.0) == 0.0
+        first = t.record_failure(now=1.0)
+        second = t.record_failure(now=2.0)
+        assert second > first, (first, second)
+
+    def test_a_success_clears_the_slate(self, gateway):
+        base, state, service, _ = gateway
+        for _ in range(3):
+            state.start_pairing()
+            with pytest.raises(gc.GatewayClientError):
+                gc.pair(base, "ZZZZ-ZZZZ-ZZZZ")
+        gc.pair(base, state.start_pairing())
+        assert state._throttle.locked_for() == 0.0
+
+
+class TestRotationReplacesTheSecretAndNothingElse:
+
+    def test_the_old_token_stops_and_the_new_one_works(self, gateway):
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none", run_id="pre-rotation")
+        gc.wait_for(conn, "pre-rotation", timeout=20)
+
+        replacement = state.rotate_token(conn.token)
+        assert replacement and replacement != conn.token
+
+        with pytest.raises(gc.GatewayClientError):
+            gc.status_of(conn, "pre-rotation", verify=False)
+        rotated = gc.GatewayConnection(base_url=base, token=replacement,
+                                       gateway_id=conn.gateway_id)
+        assert gc.status_of(rotated, "pre-rotation", verify=False)["state"] == "finished"
+
+    def test_what_the_client_may_reach_travels_with_it(self, gateway):
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        state.set_client_allowance(conn.token, ["example.com"])
+        replacement = state.rotate_token(conn.token)
+        assert state.client_allowance(replacement) == ["example.com"]
+
+    def test_rotating_something_that_is_not_a_token_invents_nothing(self, gateway):
+        base, state, service, _ = gateway
+        assert state.rotate_token("not-a-token") is None
 
 
 # ------------------------------------------------------------------ idempotence

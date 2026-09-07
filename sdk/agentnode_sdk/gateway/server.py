@@ -25,6 +25,7 @@ a job does not depend on the channel.
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import threading
 import time
@@ -64,6 +65,10 @@ class RunRecord:
     effective_policy_sha256: str = ""
     deltas: list = field(default_factory=list)
     artifact_sha256: str = ""
+    #: Which paired client this run belongs to. A run is readable and cancellable by its
+    #: owner and by nobody else. This is the client's identity, NOT its token: rotating a
+    #: credential must not orphan the runs the client already submitted.
+    owner_client_id: str = ""
     binding: dict = field(default_factory=dict)
     signature: str = ""
     state: str = "accepted"          # accepted | running | finished | refused | cancelled
@@ -207,6 +212,36 @@ class GatewayService:
         if not verify_signature(secret, payload, signature):
             raise ProtocolError("the signature does not match the request")
         return secret
+
+    def require_client(self, token: str) -> str:
+        """The token hash for a paired client, or a refusal. No signature involved.
+
+        Reading a run is not submitting one, so it does not carry a signed payload -- but it must
+        still prove which client is asking, because a run's output is the output of somebody's
+        code. This is the check that the status endpoint previously did not have at all.
+        """
+        client_id = self.state.client_id_for(token)
+        if client_id is None or self.state.token_secret(token) is None:
+            raise ProtocolError("this client is not paired with this gateway")
+        return client_id
+
+    def owned_run(self, run_id: str, token: str) -> "RunRecord | None":
+        """This client's run, or None -- and None for somebody else's run too.
+
+        A run belonging to another client is reported exactly like a run that does not exist.
+        Distinguishing them would let anyone with a token enumerate which run ids are real, and a
+        run id is not a secret -- the ownership check is what protects the output, so it must not
+        leak around the edges of its own answer.
+        """
+        record = self.runs.get(run_id)
+        if record is None:
+            return None
+        client_id = self.state.client_id_for(token)
+        if client_id is None or not record.owner_client_id:
+            return None
+        if not hmac.compare_digest(record.owner_client_id, client_id):
+            return None
+        return record
 
     def requested_policy(self, request: JobRequest):
         """The policy the JOB asked for, on its own -- no operator, no client.
@@ -372,7 +407,8 @@ class GatewayService:
         """
         request_sha = digest(canonical_bytes(request.to_payload()))
         record = RunRecord(run_id=request.run_id, job_id=request.job_id,
-                           request_sha256=request_sha)
+                           request_sha256=request_sha,
+                           owner_client_id=self.state.client_id_for(token) or "")
         with self._lock:
             existing = self.runs.get(request.run_id)
         if existing is not None:
@@ -618,11 +654,20 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(200, self.service.hello())
         if self.path.startswith("/v1/jobs/"):
             run_id = self.path.rsplit("/", 1)[-1]
-            record = self.service.runs.get(run_id)
+            token = self._token_of()
+            # This endpoint previously had NO authentication at all: it looked the run up by id
+            # and returned it. A run id is not a secret, and a run's output is the output of
+            # somebody's code, so that handed every job's stdout to anyone who could reach the
+            # port. Both checks now happen before the record is touched.
+            try:
+                self.service.require_client(token)
+            except ProtocolError as exc:
+                return self._send(403, {"error": str(exc)})
+            record = self.service.owned_run(run_id, token)
             if record is None:
                 return self._send(404, self.service.stamp({"error": "no such run"}))
             return self._send(200, self.service.sign_answer(
-                self.service.stamp(record.public()), self._token_of()))
+                self.service.stamp(record.public()), token))
         return self._send(404, {"error": "no such endpoint"})
 
     def do_POST(self):
@@ -659,16 +704,24 @@ class _Handler(BaseHTTPRequestHandler):
 
         if self.path.endswith("/cancel") and self.path.startswith("/v1/jobs/"):
             run_id = self.path.split("/")[3]
+            token = body.get("token", "")
             try:
-                self.service.authenticate(body.get("token", ""), body.get("payload") or {},
+                self.service.authenticate(token, body.get("payload") or {},
                                           body.get("signature", ""))
             except ProtocolError as exc:
                 return self._send(403, {"error": str(exc)})
+            # Being paired was never enough to cancel somebody else's run; it only looked like it
+            # was, because nothing checked. Ownership is checked BEFORE the cancel, so a stranger
+            # cannot stop a run and then be told it was not theirs.
+            if self.service.owned_run(run_id, token) is None:
+                return self._send(404, self.service.stamp({"error": "no such run"}))
             record = self.service.cancel(run_id)
             if record is None:
                 return self._send(404, self.service.stamp({"error": "no such run"}))
+            # Signed with the token that authenticated, not with whatever a header claimed. The
+            # two were different variables, and only one of them had been checked.
             return self._send(200, self.service.sign_answer(
-                self.service.stamp(record.public()), self._token_of()))
+                self.service.stamp(record.public()), token))
 
         return self._send(404, {"error": "no such endpoint"})
 

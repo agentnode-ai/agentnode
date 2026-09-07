@@ -27,13 +27,27 @@ import json
 import os
 import secrets
 import time
+import threading
 from dataclasses import dataclass
 from pathlib import Path
+
+from agentnode_sdk.gateway.throttle import Locked, Throttle
 
 #: A pairing code is typed by a human, so it avoids characters that look alike in most fonts.
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 CODE_GROUPS, CODE_GROUP_LEN = 3, 4
 PAIRING_TTL_SECONDS = 15 * 60
+
+
+def hash_token(token: str) -> str:
+    """How a token is named without being stored.
+
+    One helper rather than the same expression written out at each call site: an identity check
+    that hashes differently in two places is one that sometimes says no to the right client, and
+    it would only surface under rotation or ownership -- the two paths where being wrong matters
+    most.
+    """
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
 
 
 class PairingError(Exception):
@@ -99,6 +113,11 @@ class GatewayState:
         self._identity_path = self.root / "identity.json"
         self._tokens_path = self.root / "tokens.json"
         self._pairing: tuple[str, float] | None = None
+        # One lock covers issuing and redeeming. Without it two concurrent redemptions can
+        # both read the live code before either clears it, and a single-use code is used
+        # twice -- the exact property the code is supposed to have.
+        self._pairing_lock = threading.Lock()
+        self._throttle = Throttle()
 
     @staticmethod
     def _harden(path: Path) -> None:
@@ -142,7 +161,8 @@ class GatewayState:
         """
         now = time.time() if now is None else now
         code = new_pairing_code()
-        self._pairing = (code, now + PAIRING_TTL_SECONDS)
+        with self._pairing_lock:
+            self._pairing = (code, now + PAIRING_TTL_SECONDS)
         return code
 
     def pairing_active(self, now: float | None = None) -> bool:
@@ -157,14 +177,29 @@ class GatewayState:
         per code the operator issues, in person, at the machine.
         """
         now = time.time() if now is None else now
-        if self._pairing is None:
+        # Checked before the attempt is even looked at, so a locked-out caller learns nothing
+        # about whether a pairing is live.
+        try:
+            self._throttle.check(now)
+        except Locked as exc:
+            raise PairingError(str(exc)) from None
+
+        # Claim the code and clear it in ONE critical section. Reading it and clearing it as two
+        # steps lets two concurrent attempts both see the same live code, which would make a
+        # single-use code usable twice.
+        with self._pairing_lock:
+            pending = self._pairing
+            self._pairing = None
+
+        if pending is None:
+            self._throttle.record_failure(now)
             raise PairingError(
                 "this gateway is not accepting pairings right now. Run `agentnode gateway pair` "
                 "on the server to show a new code."
             )
-        code, expires = self._pairing
-        self._pairing = None
+        code, expires = pending
         if expires <= now:
+            self._throttle.record_failure(now)
             raise PairingError(
                 "that pairing code has expired. Run `agentnode gateway pair` on the server for a "
                 "new one -- codes last 15 minutes on purpose."
@@ -172,12 +207,16 @@ class GatewayState:
         try:
             presented_norm = normalise_code(presented)
         except PairingError:
+            self._throttle.record_failure(now)
             raise
         if not hmac.compare_digest(presented_norm, code):
+            self._throttle.record_failure(now)
             raise PairingError(
                 "that pairing code does not match. The code can be used once, so ask the server "
                 "for a new one with `agentnode gateway pair`."
             )
+        # Someone who proved they know the code is not who the throttle guards against.
+        self._throttle.record_success(now)
         return self._issue_token(client_name=client_name, now=now)
 
     # ---------------------------------------------------------------- tokens
@@ -203,7 +242,7 @@ class GatewayState:
         it is bound to an authenticated identity rather than to anything a job carries.
         """
         tokens = self._read_tokens()
-        token_hash = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+        token_hash = hash_token(token)
         if token_hash not in tokens:
             return False
         tokens[token_hash]["allowance"] = (
@@ -214,7 +253,7 @@ class GatewayState:
 
     def client_allowance(self, token: str):
         """The recorded allowance, or None when this client has no ceiling of its own."""
-        token_hash = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+        token_hash = hash_token(token)
         entry = self._read_tokens().get(token_hash) or {}
         return entry.get("allowance")
 
@@ -223,23 +262,67 @@ class GatewayState:
         token = secrets.token_urlsafe(32)
         tokens = self._read_tokens()
         # Only the hash is stored. A leaked token file must not hand over working credentials.
-        tokens[hashlib.sha256(token.encode("utf-8")).hexdigest()] = {
+        tokens[hash_token(token)] = {
             "client_name": str(client_name or "")[:64],
             "issued_at": now,
+            # A client's identity is not its credential. The token can be replaced; who the
+            # client IS must survive that, or rotating a token would orphan the client's own
+            # runs -- which is what happened the first time this was written.
+            "client_id": secrets.token_hex(8),
         }
         self._write_tokens(tokens)
         return token
 
+    def client_id_for(self, token: str) -> str | None:
+        """Who is holding this token, or None if this gateway did not issue it.
+
+        Falls back to the token hash for entries issued before client ids existed, so an existing
+        gateway directory keeps working rather than quietly losing every client on upgrade.
+        """
+        digest = hash_token(token)
+        entry = self._read_tokens().get(digest)
+        if entry is None:
+            return None
+        return str(entry.get("client_id") or digest)
+
     def token_secret(self, token: str) -> bytes | None:
         """The HMAC key for a token, or None when the token is not one this gateway issued."""
-        token_hash = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+        token_hash = hash_token(token)
         if token_hash not in self._read_tokens():
             return None
         return hashlib.sha256(f"em3c-sig\n{token}".encode()).digest()
 
+    def rotate_token(self, token: str, now: float | None = None) -> str | None:
+        """Issue a replacement and retire the old one in a single write.
+
+        Rotation exists so a client that suspects exposure does not have to be re-paired by hand
+        at the machine. What the client was allowed to reach travels with it: rotation is meant to
+        change the secret and nothing else, and silently widening or narrowing a client's reach
+        while replacing its credential would be a second, invisible change.
+
+        Returns None when the token is not one this gateway issued -- the caller says so; this
+        does not invent a client.
+        """
+        tokens = self._read_tokens()
+        old_hash = hash_token(token)
+        previous = tokens.get(old_hash)
+        if previous is None:
+            return None
+        now = time.time() if now is None else now
+        replacement = secrets.token_urlsafe(32)
+        entry = dict(previous)          # client_id travels with it: same client, new secret
+        entry["issued_at"] = now
+        entry["rotated_from"] = old_hash[:12]      # enough to correlate, not enough to reverse
+        tokens[hash_token(replacement)] = entry
+        # Removed in the same write as the replacement is added, so there is never a moment on
+        # disk where both work and never one where neither does.
+        del tokens[old_hash]
+        self._write_tokens(tokens)
+        return replacement
+
     def revoke(self, token: str) -> bool:
         tokens = self._read_tokens()
-        token_hash = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+        token_hash = hash_token(token)
         if token_hash not in tokens:
             return False
         del tokens[token_hash]
