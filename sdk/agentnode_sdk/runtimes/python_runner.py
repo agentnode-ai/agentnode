@@ -491,6 +491,23 @@ def _filtered_env() -> dict[str, str]:
 # Container execution (P0.3) — community toolpacks in an ephemeral container
 # ---------------------------------------------------------------------------
 
+def _load_config_for_composition() -> dict:
+    """The user's configuration for the policy fold, or an empty one.
+
+    An unreadable configuration yields ``{}``, which the USER scope reads as its permissive
+    default -- and that is safe here only because the admission gate in
+    :mod:`agentnode_sdk.policy` has already run and refuses a broken config outright. This read
+    can therefore never be the thing that turns a broken config into a wider grant.
+    """
+    try:
+        from agentnode_sdk.config import load_config
+
+        cfg = load_config()
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:                                             # noqa: BLE001
+        return {}
+
+
 def _resolve_container_target(entry: dict, tool_name: str | None) -> tuple[str, list[str]]:
     """Resolve ``(module, [candidate_function_names])`` STRING-ONLY (no import).
 
@@ -551,13 +568,14 @@ def _run_container(
       * no container runtime → ``SandboxRequiredError`` (raised; the caller maps it
         to ``sandbox_unavailable``).
     Host-FS/HOME/secrets are isolated (clean HOME, only the volume mounted, no env
-    passthrough). Network is derived from the declared ``network_level`` permission
-    (allowlist; unknown = deny).
+    passthrough). The network is the GRANTED one: the declared ``network_level`` is a request
+    that enters the policy fold at the lowest scope and can only narrow what the user allows.
+    ``restricted`` is enforced through a proxied egress bound to the declared domains, never
+    relabelled as open; an unusable declaration is refused before anything runs.
     """
     from agentnode_sdk.sandbox import (
         SandboxRequiredError,
         get_default_backend,
-        network_for_level,
         sandbox_volume_name,
     )
     from agentnode_sdk.sandbox.types import MountSpec
@@ -593,9 +611,28 @@ def _run_container(
     if insp.returncode != 0:
         return None, _reinstall, False
 
-    # --- Resolve target + network (allowlist; unknown = deny) ---------------
+    # --- Resolve target + the GRANTED network -------------------------------
+    # EM-3A: the declared level is a REQUEST, not a grant. It enters the fold at the lowest
+    # scope, where it can only narrow what the user already allows, and what comes out is what
+    # the container is asked to enforce. An unusable declaration is refused here, before a
+    # container exists -- never downgraded into a quieter grant and never widened into an open
+    # one.
     module, functions = _resolve_container_target(entry, tool_name)
-    network = network_for_level((entry.get("permissions") or {}).get("network_level"))
+    from agentnode_sdk.sandbox.composition import (
+        NetworkRequestError,
+        compose,
+        network_mode,
+    )
+
+    try:
+        _cfg = _load_config_for_composition()
+        granted = compose(entry, _cfg)
+        net_mode, net_domains = network_mode(granted)
+    except NetworkRequestError as exc:
+        return None, (
+            f"{slug} declares a network permission this build cannot enforce: {exc}. "
+            "Nothing was run."
+        ), False
 
     # --- Credentialed toolpack (declared env_requirements) ------------------
     # Secrets never ride the plain path: consent + sealed egress allowlist are
@@ -632,10 +669,33 @@ def _run_container(
             clean_home=True,
             interactive=True,
         )
+    elif net_mode == "egress":
+        # A restricted request is enforced, not relabelled: an internal network with no route
+        # out, reachable only through a CONNECT proxy bound to exactly the granted hosts. If the
+        # proxy cannot be built, the run is refused -- there is no fall back to open networking.
+        from agentnode_sdk.sandbox.egress import start_egress_proxy
+        from agentnode_sdk.sandbox.types import ProcessSpec
+
+        try:
+            egress_handle = start_egress_proxy(list(net_domains))
+        except Exception as exc:
+            return None, (
+                f"{slug} may reach {', '.join(net_domains)} and nothing else, and that "
+                f"restriction could not be put in place: {exc}. Nothing was run."
+            ), False
+        spec = ProcessSpec(
+            command=["python", "-c", _CONTAINER_WRAPPER],
+            network="egress",
+            egress=egress_handle.spec,
+            mounts=[MountSpec(src=expected_vol, dst="/pack", read_only=True)],
+            env={"PYTHONPATH": "/pack"},
+            clean_home=True,
+            interactive=True,
+        )
     else:
         spec = backend.build_process_spec(
             ["python", "-c", _CONTAINER_WRAPPER],
-            network=network,
+            network=net_mode,
             mounts=[MountSpec(src=expected_vol, dst="/pack", read_only=True)],
             env={"PYTHONPATH": "/pack"},
             clean_home=True,

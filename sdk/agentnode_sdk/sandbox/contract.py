@@ -246,14 +246,44 @@ class Limits:
 
 @dataclass(frozen=True)
 class NetworkRules:
-    """Default off. An allowlist can only ever shrink as scopes descend."""
+    """Default off. An allowlist can only ever shrink as scopes descend.
+
+    ``allowed_destinations`` is a set of hosts, or ``None`` meaning *unrestricted* -- every
+    destination, the widest value there is. The distinction matters because an empty set and
+    "no restriction" are opposites, and a shape without it cannot tell them apart: if empty
+    meant open, a PACKAGE asking for open networking would intersect a USER's allowlist down to
+    empty and come out open again, which is a lower scope widening a higher one. ``None`` is the
+    universe under intersection instead, so narrowing holds in both directions:
+
+        unrestricted  narrowed by  {a}           -> {a}          (the user's list wins)
+        {a}           narrowed by  unrestricted  -> {a}          (the package cannot widen)
+        {a, b}        narrowed by  {b, c}        -> {b}
+        unrestricted  narrowed by  unrestricted  -> unrestricted
+    """
 
     enabled: bool = False
-    allowed_destinations: frozenset[str] = frozenset()
+    allowed_destinations: frozenset[str] | None = frozenset()
+
+    @staticmethod
+    def _narrow_destinations(higher, lower):
+        """Intersection in which ``None`` is the universe, and therefore the identity."""
+        if higher is None:
+            return lower
+        if lower is None:
+            return higher
+        return higher & lower
 
     def _narrowed_by(self, other: "NetworkRules") -> "NetworkRules":
-        return NetworkRules(self.enabled and other.enabled,
-                            self.allowed_destinations & other.allowed_destinations)
+        return NetworkRules(
+            self.enabled and other.enabled,
+            NetworkRules._narrow_destinations(self.allowed_destinations,
+                                              other.allowed_destinations),
+        )
+
+    @property
+    def is_unrestricted(self) -> bool:
+        """Only when the network is on AND nothing constrains where it may reach."""
+        return self.enabled and self.allowed_destinations is None
 
 
 @dataclass(frozen=True)
@@ -300,7 +330,8 @@ class SandboxPolicy:
         """
         net = NetworkRules._narrowed_by(self.network, lower.network)
         secrets = tuple(
-            replace(s, inject_hosts=frozenset(s.inject_hosts) & net.allowed_destinations)
+            replace(s, inject_hosts=NetworkRules._narrow_destinations(
+                frozenset(s.inject_hosts), net.allowed_destinations))
             for s in self.secrets
             if s.name in {t.name for t in lower.secrets} or not lower.secrets
         )
