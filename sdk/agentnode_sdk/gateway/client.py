@@ -56,13 +56,42 @@ class GatewayConnection:
         }
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow nothing. A redirect is a second destination the guard never saw.
+
+    EM3C-GATEWAY-0007 found this: `check_client_url` validated the address it was given, and then
+    urllib's default opener followed 30x responses on its own. An https or loopback URL could
+    redirect to plaintext on another host, and because a redirected request keeps the headers that
+    were set on it, the access token went along. The boundary held for exactly one hop.
+
+    The fix is not to re-check each hop. This API has no legitimate redirect -- every endpoint
+    answers directly -- so following one is never something a caller asked for, and refusing
+    outright leaves no ordering subtlety to get wrong later. It also removes the more interesting
+    version of the attack, where a redirect stays on loopback and simply moves the token to a
+    different process listening there.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise GatewayClientError(
+            "the gateway answered with a redirect to " + str(newurl).split("?", 1)[0] +
+            ", and AgentNode does not follow redirects. Your access token is not sent anywhere "
+            "except the address you connected to. If the gateway has genuinely moved, connect to "
+            "its new address directly."
+        )
+
+
+#: One opener for every request this module makes, so no call site can opt out of the rules by
+#: reaching for urlopen. Built once: it holds no per-request state.
+_OPENER = urllib.request.build_opener(_RefuseRedirects)
+
+
 def _post(url: str, body: dict, timeout: float = 30.0) -> tuple[int, dict]:
     check_client_url(url)
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST",
                                  headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as exc:
         try:
@@ -82,7 +111,7 @@ def _get(url: str, timeout: float = 30.0, token: str = "") -> tuple[int, dict]:
     if token:
         req.add_header("X-AgentNode-Token", token)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as exc:
         try:

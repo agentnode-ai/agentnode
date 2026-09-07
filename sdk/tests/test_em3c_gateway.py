@@ -721,6 +721,119 @@ class TestSecretsDoNotTravelInTheClear:
             gc.status_of(conn, "any-run")
 
 
+class TestARedirectIsASecondDestination:
+    """EM3C-GATEWAY-0007: the guard validated one address and urllib followed the next.
+
+    `check_client_url` checked the URL it was handed. The default opener then followed 30x
+    responses by itself, so an https or loopback address could redirect to plaintext on another
+    host -- and because a redirected request keeps the headers set on it, the access token went
+    along. The boundary held for exactly one hop.
+
+    Nothing is followed now. This API has no legitimate redirect, so the interesting case is not
+    only the off-box one: a redirect that stays on loopback would move the token to a different
+    process listening there, which is equally not what the caller asked for.
+    """
+
+    def _redirector(self, location):
+        """A server that answers every request with a redirect and records what it was sent."""
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        seen: list = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):                        # noqa: A003
+                pass
+
+            def _redirect(self):
+                seen.append({
+                    "path": self.path,
+                    "token": self.headers.get("X-AgentNode-Token", ""),
+                })
+                self.send_response(302)
+                self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            do_GET = _redirect
+            do_POST = _redirect
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, seen, "http://127.0.0.1:%d" % server.server_address[1]
+
+    def test_a_redirect_to_plaintext_off_the_machine_is_not_followed(self):
+        server, seen, base = self._redirector("http://10.0.0.4:8099/v1/hello")
+        try:
+            with pytest.raises(gc.GatewayClientError, match="does not follow redirects"):
+                gc.hello(base)
+        finally:
+            server.shutdown()
+        assert len(seen) == 1, "the client made more than the one request it was asked to make"
+
+    def _recorder(self):
+        """A server that answers, and remembers whether a token was handed to it."""
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        got: list = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):                        # noqa: A003
+                pass
+
+            def do_GET(self):
+                got.append(self.headers.get("X-AgentNode-Token", ""))
+                body = b"{}"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, got, "http://127.0.0.1:%d" % server.server_address[1]
+
+    def test_a_redirect_does_not_carry_the_token_onward(self):
+        """Pointed at a server that is really listening, so a followed redirect really arrives.
+
+        An earlier version of this test redirected to an unroutable address, and passed with the
+        fix removed -- not because nothing was sent, but because nothing could connect. A test
+        that passes for the wrong reason is worse than none: it would have reported this defect
+        as fixed.
+        """
+        recorder, got, target = self._recorder()
+        server, seen, base = self._redirector(target + "/v1/jobs/anything")
+        conn = gc.GatewayConnection(base_url=base, token="s3cret-token", gateway_id="g")
+        try:
+            with pytest.raises(gc.GatewayClientError):
+                gc.status_of(conn, "some-run", verify=False)
+        finally:
+            server.shutdown()
+            recorder.shutdown()
+        assert len(seen) == 1, "the client made more than the one request it was asked to make"
+        assert seen[0]["token"] == "s3cret-token"
+        assert got == [], "the access token was handed to the redirect target: %r" % (got,)
+
+    def test_even_a_redirect_that_stays_on_loopback_is_refused(self):
+        """A different process on this machine is still not the gateway you paired with."""
+        server, seen, base = self._redirector("http://127.0.0.1:9/v1/hello")
+        try:
+            with pytest.raises(gc.GatewayClientError, match="does not follow redirects"):
+                gc.hello(base)
+        finally:
+            server.shutdown()
+        assert len(seen) == 1
+
+    def test_the_refusal_does_not_echo_a_query_string(self):
+        server, seen, base = self._redirector("http://10.0.0.4:8099/v1/hello?token=s3cret")
+        try:
+            with pytest.raises(gc.GatewayClientError) as exc:
+                gc.hello(base)
+            assert "s3cret" not in str(exc.value)
+        finally:
+            server.shutdown()
+
+
 class TestCredentialsNeverRideInAUrl:
     """A URL outlives its request, in proxy logs, shell history and crash reports."""
 
