@@ -402,6 +402,40 @@ class GatewayService:
         requested_shape = policy_shape(self.requested_policy(request))
         effective_shape = policy_shape(granted)
 
+        # Checked once the EFFECTIVE policy is known -- the operator may have narrowed the
+        # destinations, so validating what the job asked for would be checking the wrong set.
+        # An allowlist the proxy could not enforce is refused here, before a network, a proxy
+        # or a container exists. validate_allowed_domains rejects an IP literal, localhost, a
+        # single-label name and an empty set -- each of which would otherwise become either an
+        # unenforceable rule or, worse, a quietly open network.
+        from agentnode_sdk.sandbox.composition import network_mode
+
+        _mode, _domains = network_mode(granted)
+        _net = granted.network
+        if _net.enabled and _net.allowed_destinations is not None and not _net.allowed_destinations:
+            # "Let me reach a restricted set of hosts" plus "here are none of them" is not a
+            # coherent request. Running it with no network would be safe and would also be a
+            # different job from the one that was asked for, decided silently. The dangerous
+            # reading -- that an empty list means no restriction -- is the reason this is an
+            # explicit refusal rather than a quiet substitution either way.
+            raise ProtocolError(
+                "this job asked for a restricted network but named no host it may reach, so "
+                "there is nothing to allow. Name the hosts, or ask for no network at all. "
+                "Nothing was started."
+            )
+        if _mode == "egress":
+            from agentnode_sdk.sandbox.egress import validate_allowed_domains
+
+            try:
+                validate_allowed_domains(_domains)
+            except ValueError as exc:
+                raise ProtocolError(
+                    "this job asks to reach " + (", ".join(_domains) or "nothing at all") +
+                    ", which cannot be enforced as an allowlist: " + str(exc) +
+                    ". Nothing was started."
+                ) from None
+
+
         # A gateway may narrow and never widen. Checked rather than assumed: the fold is supposed
         # to guarantee it, and a check that never fires costs nothing while an unchecked
         # assumption costs everything the one time it is wrong.
@@ -572,17 +606,27 @@ class GatewayService:
         from agentnode_sdk.sandbox.types import ProcessSpec
 
         mode, domains = network_mode(granted)
+        egress = None
         if mode == "egress":
-            # An allowlisted egress needs a proxy. Until the gateway builds one, saying so is the
-            # honest answer -- running the job with open networking instead would be exactly the
-            # silent widening the whole design refuses.
-            record.state = "refused"
-            record.refusal = (
-                "this gateway cannot yet enforce an allowlisted egress for a remote job "
-                f"({', '.join(domains)}). The job was not started."
-            )
-            record.finished_at = time.time()
-            return
+            # The same mechanism the local runners already use: an --internal network with no
+            # route out, plus a dual-homed CONNECT proxy that is the only way through. The job
+            # does not get a filtered internet -- it gets no route at all, and one door.
+            #
+            # Built here rather than declared: an earlier version refused this case outright and
+            # said so honestly, which was right at the time. Running it with open networking
+            # instead would have been the silent widening this whole design exists to refuse.
+            from agentnode_sdk.sandbox.egress import start_egress_proxy
+
+            try:
+                egress = start_egress_proxy(domains)
+            except Exception as exc:                          # noqa: BLE001
+                record.state = "refused"
+                record.refusal = (
+                    "the restricted network this job asked for could not be set up, so it was "
+                    f"not started: {exc}"
+                )
+                record.finished_at = time.time()
+                return
 
         record.container_name = f"agentnode-em3c-{record.run_id[:16]}"
         record.state = "running"
@@ -594,6 +638,7 @@ class GatewayService:
         spec = ProcessSpec(
             command=command,
             network=mode,
+            egress=egress.spec if egress is not None else None,
             clean_home=True,
             interactive=True,
             name=record.container_name,
@@ -621,7 +666,19 @@ class GatewayService:
             terminal = "refused"
             record.refusal = f"the run could not be completed: {exc}"
         finally:
+            if egress is not None:
+                # The proxy and its two networks are part of this run. Leaving them behind would
+                # leave a route out that nothing is using and nobody is watching.
+                from agentnode_sdk.sandbox.egress import stop_egress_proxy
+
+                try:
+                    stop_egress_proxy(egress)
+                except Exception:                             # noqa: BLE001
+                    pass
             record.cleanup_verified = self._verify_gone(record.container_name)
+            if record.cleanup_verified and egress is not None:
+                # Cleanup means the whole run, not just the container that carried it.
+                record.cleanup_verified = self._egress_gone(egress)
             record.finished_at = time.time()
             # The terminal state is published LAST, and that ordering is the point. An earlier
             # version set it before this block, so a client polling in the window between the two
@@ -678,6 +735,35 @@ class GatewayService:
         if listed.returncode != 0:
             return False, []
         return True, [n for n in listed.stdout.split() if n.startswith(prefix)]
+
+    def _egress_gone(self, handle) -> bool | None:
+        """Whether this run's proxy and its two networks are gone. None when unaskable.
+
+        Separate from the container check because they are separate objects: a container can be
+        removed while the network it sat on stays, and a leftover network with a proxy on it is a
+        route out that nothing is using and nobody is watching.
+        """
+        import subprocess
+
+        availability = self.backend.check_available()
+        runtime = availability.backend
+        if not runtime or runtime == "none":
+            return None
+        for kind, name in (("container", handle.proxy_name),
+                           ("network", handle.int_net),
+                           ("network", handle.ext_net)):
+            try:
+                listed = subprocess.run(
+                    [runtime, kind, "ls", "--filter", f"name={name}", "--format", "{{.Name}}"],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except Exception:                                 # noqa: BLE001
+                return None
+            if listed.returncode != 0:
+                return None                                   # could not ask is not "gone"
+            if any(line.strip() == name for line in listed.stdout.splitlines()):
+                return False
+        return True
 
     def _verify_gone(self, container_name: str) -> bool | None:
         """Absence has to be stated by the runtime, not inferred from a command that failed.

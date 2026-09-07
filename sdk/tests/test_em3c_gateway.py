@@ -1442,6 +1442,135 @@ class TestEveryRemediationIsInvocableAndChangesTheAnswer:
             assert stale.next_steps, "a stale measurement offers no way to be refreshed"
 
 
+# ------------------------------------------------------- a restricted network, or none at all
+
+class TestRestrictedEgress:
+    """The job does not get a filtered internet. It gets no route out, and one door.
+
+    A gateway's default operator policy is no network at all, so every test here has to hand it
+    an operator that permits one -- which is the right way round: opening the network is a
+    deliberate act by the machine's owner, not something a job can ask its way into.
+    """
+
+    def _open_gateway(self, td, allowed=None, backend=None):
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        state = GatewayState(td, version="test")
+        operator = SandboxPolicy(network=NetworkRules(
+            enabled=True,
+            allowed_destinations=None if allowed is None else frozenset(allowed),
+        ))
+        service = GatewayService(state, backend=backend or StandInBackend(),
+                                 operator_policy=operator)
+        _store_measurement(service)
+        server = make_server(service, port=0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return state, service, server, "http://127.0.0.1:%d" % server.server_address[1]
+
+    @pytest.mark.parametrize("destination,why", [
+        ("1.2.3.4", "an address, not a name"),
+        ("127.0.0.1", "loopback"),
+        ("localhost", "loopback by name"),
+        ("intranet", "a single label that resolves differently everywhere"),
+        ("", "nothing at all"),
+    ])
+    def test_an_allowlist_that_cannot_be_enforced_is_refused_before_anything_starts(
+            self, destination, why):
+        with tempfile.TemporaryDirectory() as td:
+            state, service, server, base = self._open_gateway(td)
+            try:
+                conn = _paired(base, state)
+                answer = gc.submit(conn, b"x", network="restricted",
+                                   allowed_domains=(destination,) if destination else ())
+                assert answer["state"] == "refused", (destination, why)
+                assert service.backend.specs == [], "a container was started for " + repr(destination)
+            finally:
+                server.shutdown()
+
+    def test_an_empty_allowlist_is_not_quietly_treated_as_open(self):
+        """The dangerous reading of "restricted with nothing listed" is "unrestricted"."""
+        with tempfile.TemporaryDirectory() as td:
+            state, service, server, base = self._open_gateway(td)
+            try:
+                conn = _paired(base, state)
+                answer = gc.submit(conn, b"x", network="restricted", allowed_domains=())
+                assert answer["state"] == "refused"
+                assert service.backend.specs == []
+            finally:
+                server.shutdown()
+
+    def test_the_operator_narrows_the_destinations_and_says_so(self):
+        """The client asked for two hosts; the operator allows one. It gets one."""
+        with tempfile.TemporaryDirectory() as td:
+            state, service, server, base = self._open_gateway(td, allowed=("example.com",))
+            try:
+                conn = _paired(base, state)
+                answer = gc.submit(conn, b"x", network="restricted",
+                                   allowed_domains=("example.com", "elsewhere.example"),
+                                   optional=("network.allowed_destinations",))
+                assert answer["state"] != "refused", answer.get("refusal")
+                final = gc.wait_for(conn, answer["run_id"], timeout=30)
+                effective = final["effective_policy"]["network.allowed_destinations"]
+                assert effective == ["example.com"], effective
+                fields = {d["field"] for d in final["policy_deltas"]}
+                assert "network.allowed_destinations" in fields, final["policy_deltas"]
+                assert final["request_policy_sha256"] != final["effective_policy_sha256"]
+            finally:
+                server.shutdown()
+
+    def test_a_client_cannot_widen_past_the_operator(self):
+        with tempfile.TemporaryDirectory() as td:
+            state, service, server, base = self._open_gateway(td, allowed=("example.com",))
+            try:
+                conn = _paired(base, state)
+                answer = gc.submit(conn, b"x", network="unrestricted")
+                if answer["state"] != "refused":
+                    final = gc.wait_for(conn, answer["run_id"], timeout=30)
+                    effective = final["effective_policy"]["network.allowed_destinations"]
+                    assert effective == ["example.com"], effective
+            finally:
+                server.shutdown()
+
+    def test_unrestricted_stays_a_different_mode_from_restricted(self):
+        """Not a cosmetic difference: one has a door, the other has no wall."""
+        from agentnode_sdk.sandbox.composition import network_mode
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        wide = SandboxPolicy(network=NetworkRules(enabled=True, allowed_destinations=None))
+        narrow = SandboxPolicy(network=NetworkRules(enabled=True,
+                                                    allowed_destinations=frozenset({"a.com"})))
+        shut = SandboxPolicy(network=NetworkRules(enabled=False,
+                                                  allowed_destinations=frozenset()))
+        assert network_mode(wide) == ("default", ())
+        assert network_mode(narrow) == ("egress", ("a.com",))
+        assert network_mode(shut) == ("none", ())
+
+    def test_the_job_is_told_the_proxy_and_never_a_bare_network(self):
+        """What reaches the backend decides what the container can do."""
+        with tempfile.TemporaryDirectory() as td:
+            state, service, server, base = self._open_gateway(td, allowed=("example.com",))
+            try:
+                conn = _paired(base, state)
+                answer = gc.submit(conn, b"x", network="restricted",
+                                   allowed_domains=("example.com",))
+                assert answer["state"] != "refused", answer.get("refusal")
+                final = gc.wait_for(conn, answer["run_id"], timeout=30)
+                if final["state"] == "refused":
+                    # There is no runtime here to build a proxy with. It must have refused for
+                    # exactly that reason, and must not have run the job on a bare network --
+                    # which is the failure this whole path exists to prevent.
+                    assert service.backend.specs == [], "it ran anyway, without the proxy"
+                    assert "restricted network" in final["refusal"], final["refusal"]
+                    return
+                spec = service.backend.specs[-1]
+                assert spec.network == "egress"
+                assert spec.egress is not None
+                assert spec.egress.proxy_url
+                assert tuple(spec.egress.allowed_domains) == ("example.com",)
+            finally:
+                server.shutdown()
+
+
 # ----------------------------------------------------- what must outlive the process itself
 
 class TestARestartDoesNotForget:
@@ -1734,3 +1863,117 @@ class TestTheVerticalFlowForReal:
         assert final["state"] in ("finished", "cancelled"), final
         assert final["exit_code"] != 0, "a timed-out run must not report success"
         assert final["cleanup_verified"] is True
+
+
+@pytest.mark.skipif(not os.environ.get("AGENTNODE_SANDBOX_E2E"),
+                    reason="needs a container runtime and outbound network")
+class TestRestrictedEgressForReal:
+    """Three questions, asked from inside the container, answered by the network itself.
+
+    Can it reach the host it was allowed? Can it reach one it was not? And can it get out
+    without going through the door at all? Only the first may be yes. The third is the one that
+    matters most: a proxy that filters requests is worth nothing if the code can simply open its
+    own socket, so the network the container sits on has no route out to open.
+    """
+
+    PAYLOAD = (
+        b"import json, socket, urllib.request\n"
+        b"out = {}\n"
+        b"try:\n"
+        b"    with urllib.request.urlopen('http://example.com', timeout=25) as r:\n"
+        b"        out['allowed'] = r.status\n"
+        b"except Exception as e:\n"
+        b"    out['allowed'] = 'ERR:' + type(e).__name__\n"
+        b"try:\n"
+        b"    with urllib.request.urlopen('http://www.google.com', timeout=25) as r:\n"
+        b"        out['denied'] = r.status\n"
+        b"except Exception as e:\n"
+        b"    out['denied'] = 'ERR:' + type(e).__name__\n"
+        b"try:\n"
+        b"    s = socket.create_connection(('1.1.1.1', 80), timeout=10)\n"
+        b"    s.close()\n"
+        b"    out['direct'] = 'OPEN'\n"
+        b"except Exception as e:\n"
+        b"    out['direct'] = 'ERR:' + type(e).__name__\n"
+        b"print('EM3C-EGRESS ' + json.dumps(out), flush=True)\n"
+    )
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def egress_gateway():
+        from agentnode_sdk.sandbox.container_backend import ContainerBackend
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        backend = ContainerBackend()
+        if not backend.check_available().available:
+            pytest.skip("no container runtime + pinned image available")
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            operator = SandboxPolicy(network=NetworkRules(
+                enabled=True, allowed_destinations=frozenset({"example.com"})))
+            service = GatewayService(state, backend=backend, operator_policy=operator)
+            readiness = service.measure()
+            if not readiness.ready:
+                pytest.fail("conformance could not be measured: " + readiness.reason)
+            server = make_server(service, port=0)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = "http://127.0.0.1:%d" % server.server_address[1]
+            try:
+                yield base, state, service
+            finally:
+                server.shutdown()
+
+    def test_only_the_allowed_host_is_reachable_and_only_through_the_proxy(self,
+                                                                          egress_gateway):
+        base, state, service = egress_gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, self.PAYLOAD, network="restricted",
+                           allowed_domains=("example.com",), wall_clock_s=180,
+                           required_properties=("container_isolation",))
+        assert answer["state"] != "refused", answer.get("refusal")
+        final = gc.wait_for(conn, answer["run_id"], timeout=300)
+
+        print("")
+        print("  [observed] state=%s exit=%s" % (final["state"], final["exit_code"]))
+        print("  [observed] the container said: %s" % (final["stdout"] or "").strip())
+        print("  [observed] stderr: %s" % (final["stderr"] or "").strip()[:400])
+        assert final["state"] == "finished", final.get("refusal") or final
+
+        marker = "EM3C-EGRESS "
+        line = next((ln for ln in (final["stdout"] or "").splitlines() if marker in ln), "")
+        assert line, "the payload produced no result line at all"
+        seen = json.loads(line.split(marker, 1)[1])
+
+        assert seen["allowed"] == 200, "the allowed host was not reachable: %r" % (seen,)
+        assert str(seen["denied"]).startswith("ERR"), "a host that was not allowed was reached"
+        assert seen["direct"] == "ERR:timeout" or str(seen["direct"]).startswith("ERR"), (
+            "the container had a route out that did not go through the proxy: %r" % (seen,)
+        )
+
+    def test_nothing_of_the_restricted_run_is_left_behind(self, egress_gateway):
+        """The container, the proxy and both networks. A leftover network with a proxy on it is
+        a route out that nothing is using and nobody is watching."""
+        import subprocess
+
+        base, state, service = egress_gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"print('done')\n", network="restricted",
+                           allowed_domains=("example.com",), wall_clock_s=120)
+        assert answer["state"] != "refused", answer.get("refusal")
+        final = gc.wait_for(conn, answer["run_id"], timeout=300)
+        assert final["state"] == "finished", final.get("refusal") or final
+        assert final["cleanup_verified"] is True, (
+            "cleanup was not confirmed for a run that had a proxy and two networks"
+        )
+
+        runtime = service.backend.check_available().backend
+        for kind in ("container", "network"):
+            listed = subprocess.run(
+                [runtime, kind, "ls", "--filter", "name=agentnode-egress-",
+                 "--format", "{{.Name}}"],
+                capture_output=True, text=True, timeout=30,
+            )
+            assert listed.returncode == 0, listed.stderr
+            leftovers = [n for n in listed.stdout.split() if n.strip()]
+            print("  [observed] leftover %ss: %s" % (kind, leftovers or "none"))
+            assert not leftovers, "%s left behind: %s" % (kind, leftovers)

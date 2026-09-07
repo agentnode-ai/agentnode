@@ -67,7 +67,7 @@ jobs:
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_em3c_gateway.py \
             -k "not TestTheVerticalFlowForReal" 2>&1 | tee em3c-admission.txt
-          grep -qE "^102 passed" em3c-admission.txt || {
+          grep -qE "^112 passed" em3c-admission.txt || {
             echo "the admission tests did not all pass"; exit 1; }
 
       - name: The commands a person actually types
@@ -91,6 +91,30 @@ jobs:
             echo "the vertical flow did not run: it skipped, failed or errored"
             exit 1
           }
+
+      - name: A restricted network, for real
+        env:
+          AGENTNODE_SANDBOX_E2E: "1"
+        run: |
+          set -o pipefail
+          # -s again: the point of this lane is what the container itself reported about which
+          # hosts it could and could not reach, not that an assertion held somewhere.
+          python -m pytest -p no:randomly -v -s             "tests/test_em3c_gateway.py::TestRestrictedEgressForReal"             2>&1 | tee em3c-egress.txt
+          grep -qE "2 passed" em3c-egress.txt || {
+            echo "the restricted-network lane did not run: it skipped, failed or errored"
+            exit 1
+          }
+
+      - name: No egress network or proxy may be left behind
+        if: always()
+        run: |
+          set -eu
+          for kind in container network; do
+            left="$(docker "${kind}" ls --filter 'name=agentnode-egress-' --format '{{.Name}}' | wc -l)"
+            echo "${kind}s still named agentnode-egress-*: ${left}"
+            docker "${kind}" ls --filter 'name=agentnode-egress-' --format '{{.Name}}'
+            test "${left}" = "0"
+          done
 
       - name: Nothing of the run may be left behind
         if: always()
