@@ -185,6 +185,11 @@ class GatewayState:
             self._write_pairing({"code_sha256": hash_token(code), "expires": expires})
         return code
 
+    def _record_failure(self, now: float, by_source) -> None:
+        self._throttle.record_failure(now)
+        if by_source is not None:
+            by_source.record_failure(now)
+
     def pairing_active(self, now: float | None = None) -> bool:
         now = time.time() if now is None else now
         if self._pairing is not None and self._pairing[1] > now:
@@ -253,8 +258,29 @@ class GatewayState:
             except OSError:
                 pass
 
+    def _source_throttle(self, source: str) -> Throttle:
+        """A second counter, for one origin. Both must allow the attempt.
+
+        The gateway-wide counter is what stops an attacker grinding, and it is deliberately not
+        reset by issuing a new code -- otherwise an operator being helpful ("here, try this one")
+        would hand back the attempts the limit had just taken away. But one global counter also
+        means anyone who fails a few times slows down everyone else, so a per-origin counter sits
+        beside it with a tighter allowance. An attacker with many addresses still meets the global
+        one; an ordinary person mistyping from one address meets only their own.
+        """
+        digest = hashlib.sha256(str(source or "unknown").encode("utf-8")).hexdigest()[:32]
+        # No established_marker here, and that is the difference between the two counters. A
+        # source that has never failed legitimately has no file, so "missing" cannot mean
+        # "deleted" for this one -- treating it that way locked every first pairing attempt on
+        # the planet out at once. Deleting a per-source file therefore resets that one source,
+        # and the gateway-wide counter, which does carry the marker, is what still holds.
+        return Throttle(
+            allowed_failures=3,
+            path=self.root / "pairing-by-source" / (digest + ".json"),
+        )
+
     def redeem_pairing(self, presented: str, client_name: str = "",
-                       now: float | None = None) -> str:
+                       now: float | None = None, source: str = "") -> str:
         """Exchange a valid code for a token. The code is consumed whether or not it matched.
 
         Consuming on failure is what stops a wrong guess being cheap: an attacker gets one attempt
@@ -263,8 +289,11 @@ class GatewayState:
         now = time.time() if now is None else now
         # Checked before the attempt is even looked at, so a locked-out caller learns nothing
         # about whether a pairing is live.
+        by_source = self._source_throttle(source) if source else None
         try:
             self._throttle.check(now)
+            if by_source is not None:
+                by_source.check(now)
         except Locked as exc:
             raise PairingError(str(exc)) from None
 
@@ -287,14 +316,14 @@ class GatewayState:
             expected_hash = str(on_disk.get("code_sha256", ""))
 
         if pending is None:
-            self._throttle.record_failure(now)
+            self._record_failure(now, by_source)
             raise PairingError(
                 "this gateway is not accepting pairings right now. Run `agentnode gateway pair` "
                 "on the server to show a new code."
             )
         _code, expires = pending
         if expires <= now:
-            self._throttle.record_failure(now)
+            self._record_failure(now, by_source)
             raise PairingError(
                 "that pairing code has expired. Run `agentnode gateway pair` on the server for a "
                 "new one -- codes last 15 minutes on purpose."
@@ -302,16 +331,18 @@ class GatewayState:
         try:
             presented_norm = normalise_code(presented)
         except PairingError:
-            self._throttle.record_failure(now)
+            self._record_failure(now, by_source)
             raise
         if not hmac.compare_digest(hash_token(presented_norm), expected_hash):
-            self._throttle.record_failure(now)
+            self._record_failure(now, by_source)
             raise PairingError(
                 "that pairing code does not match. The code can be used once, so ask the server "
                 "for a new one with `agentnode gateway pair`."
             )
         # Someone who proved they know the code is not who the throttle guards against.
         self._throttle.record_success(now)
+        if by_source is not None:
+            by_source.record_success(now)
         return self._issue_token(client_name=client_name, now=now)
 
     # ---------------------------------------------------------------- tokens

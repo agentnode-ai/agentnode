@@ -162,6 +162,24 @@ def _store_measurement(service, ok=True, observed=True, only=None, binding=None)
     return service.readiness_now()
 
 
+_BINDABLE_DIRS: list = []
+
+
+def _bindable():
+    """Something shaped like a service, with a private state directory of its own.
+
+    These tests are about which addresses may be served, not about the service -- but make_server
+    now also checks that the gateway's own files are private, and handing it a bare object() would
+    only prove that an attribute is missing.
+    """
+    import tempfile
+    import types
+
+    holder = tempfile.TemporaryDirectory()
+    _BINDABLE_DIRS.append(holder)                 # kept alive for the session
+    return types.SimpleNamespace(state=types.SimpleNamespace(root=Path(holder.name)))
+
+
 @pytest.fixture()
 def gateway():
     with tempfile.TemporaryDirectory() as td:
@@ -693,7 +711,7 @@ class TestSecretsDoNotTravelInTheClear:
             tr.check_client_url(url)
         assert "no longer does anything" in str(e.value)
         with pytest.raises(tr.InsecureTransportError):
-            make_server(object(), host="0.0.0.0")
+            make_server(_bindable(), host="0.0.0.0")
 
     def test_a_name_that_is_not_loopback_does_not_inherit_the_exemption(self):
         assert not tr.is_loopback("localhost.attacker.example")
@@ -708,7 +726,7 @@ class TestSecretsDoNotTravelInTheClear:
     def test_serving_beyond_loopback_in_the_clear_is_refused(self, host, monkeypatch):
         monkeypatch.delenv(tr.LEGACY_PLAINTEXT_ENV, raising=False)
         with pytest.raises(tr.InsecureTransportError) as e:
-            make_server(object(), host=host)
+            make_server(_bindable(), host=host)
         assert "without encryption" in str(e.value)
 
     def test_the_guard_is_on_the_request_path_not_only_the_helper(self, monkeypatch):
@@ -906,13 +924,13 @@ class TestTlsIsProvenByLoadingIt:
     def test_a_certificate_that_does_not_load_stops_the_gateway(self, tmp_path):
         bad = tr.TlsFiles(certfile=str(tmp_path / "nope.pem"), keyfile=str(tmp_path / "nope.key"))
         with pytest.raises(tr.InsecureTransportError) as e:
-            make_server(object(), host="0.0.0.0", tls=bad)
+            make_server(_bindable(), host="0.0.0.0", tls=bad)
         assert "could not be loaded" in str(e.value)
         assert "not started" in str(e.value)
 
     def test_a_real_certificate_permits_a_bind_that_plain_http_could_not_have(self, tmp_path):
         cert, key = _self_signed(tmp_path)
-        server = make_server(object(), host="127.0.0.1", port=0,
+        server = make_server(_bindable(), host="127.0.0.1", port=0,
                              tls=tr.TlsFiles(certfile=cert, keyfile=key))
         try:
             assert server.agentnode_tls is True
@@ -1669,11 +1687,11 @@ class TestEveryRemediationIsInvocableAndChangesTheAnswer:
     def test_supplying_a_certificate_turns_a_refused_bind_into_a_serving_one(self, tmp_path):
         """The refusal names --tls-cert and --tls-key. Supplying them has to be enough."""
         with pytest.raises(tr.InsecureTransportError) as refusal:
-            make_server(object(), host="0.0.0.0")
+            make_server(_bindable(), host="0.0.0.0")
         assert "--tls-cert" in str(refusal.value)
 
         cert, key = _self_signed(tmp_path)
-        server = make_server(object(), host="127.0.0.1", port=0,
+        server = make_server(_bindable(), host="127.0.0.1", port=0,
                              tls=tr.TlsFiles(certfile=cert, keyfile=key))
         try:
             assert server.agentnode_tls is True
@@ -1851,6 +1869,153 @@ class TestRestrictedEgress:
                 assert tuple(spec.egress.allowed_domains) == ("example.com",)
             finally:
                 server.shutdown()
+
+
+# ------------------------------------------------- what a restart and a shared machine change
+
+class TestAMeasurementBelongsToOneBoot:
+    """A reboot can change what a container gets without moving the image digest.
+
+    A new kernel, a cgroup controller that is no longer mounted, a seccomp or apparmor policy that
+    loaded differently -- none of those change the image, and all of them change what the sandbox
+    actually enforces. Without the boot in the binding the old report would still look current.
+    """
+
+    def test_a_report_from_an_earlier_boot_does_not_count(self):
+        from agentnode_sdk.gateway.readiness import ReportBinding
+
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            service = GatewayService(state, backend=StandInBackend())
+            current = service.report_binding()
+            assert current.boot_id, "the binding does not record a boot at all"
+
+            earlier = ReportBinding(gateway_id=current.gateway_id,
+                                    gateway_version=current.gateway_version,
+                                    backend=current.backend,
+                                    image_digest=current.image_digest,
+                                    boot_id="some-previous-boot")
+            _store_measurement(service, binding=earlier)
+            result = service.readiness_now()
+            assert result.ready is False
+            assert "restarted" in result.reason
+            assert result.next_steps
+
+    def test_the_same_boot_still_counts(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            service = GatewayService(state, backend=StandInBackend())
+            _store_measurement(service)
+            assert service.readiness_now().ready is True
+
+    def test_the_boot_is_named_by_the_kernel_where_there_is_one(self):
+        """On Linux this is exact; elsewhere it is an estimate and says so."""
+        from agentnode_sdk.gateway.boot import boot_identity, describe
+
+        value, method = boot_identity()
+        assert value
+        assert method in ("kernel-boot-id", "derived-boot-time")
+        assert describe(method)
+        again, method_again = boot_identity()
+        assert (value, method) == (again, method_again), "the boot identity is not stable"
+
+
+class TestTheGatewaysOwnFilesArePrivate:
+    """The directory holds token hashes, the ledger, the lockout and the live code's hash."""
+
+    def test_a_private_directory_is_accepted(self):
+        from agentnode_sdk.gateway.statedir import inspect
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "gw"
+            root.mkdir(mode=0o700)
+            verdict = inspect(root)
+            assert verdict.ok is True
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+    def test_a_world_readable_directory_stops_the_gateway(self):
+        from agentnode_sdk.gateway.statedir import InsecureStateDirectory, require_private
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "gw"
+            root.mkdir(mode=0o755)
+            with pytest.raises(InsecureStateDirectory) as exc:
+                require_private(root)
+            message = str(exc.value)
+            assert "not private" in message
+            assert "chmod 700" in message, "the refusal must name the command that fixes it"
+            assert "was not started" in message
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+    def test_serving_is_refused_on_a_shared_directory(self):
+        from agentnode_sdk.gateway.statedir import InsecureStateDirectory
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "gw"
+            root.mkdir(mode=0o700)
+            state = GatewayState(root, version="test")
+            service = GatewayService(state, backend=StandInBackend())
+            os.chmod(root, 0o755)
+            with pytest.raises(InsecureStateDirectory):
+                make_server(service, port=0)
+
+    @pytest.mark.skipif(os.name == "posix", reason="the unverifiable case")
+    def test_where_it_cannot_be_checked_it_is_not_claimed_to_be_secure(self):
+        from agentnode_sdk.gateway.statedir import inspect
+
+        with tempfile.TemporaryDirectory() as td:
+            verdict = inspect(td)
+            assert verdict.verifiable is False
+            assert "cannot be checked" in verdict.reason
+
+
+class TestOneOriginCannotSpendEveryoneElsesAttempts:
+    """Two counters: one for the gateway, one for each origin."""
+
+    def test_issuing_a_new_code_does_not_hand_back_spent_attempts(self):
+        """Otherwise an operator being helpful would undo the limit."""
+        with tempfile.TemporaryDirectory() as td:
+            now = 4_000.0
+            state = GatewayState(td, version="test")
+            for _ in range(state._throttle.allowed_failures):
+                state.start_pairing(now=now)
+                with pytest.raises(PairingError):
+                    state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now)
+            # a fresh code, which is exactly what an attacker would hope resets the count
+            state.start_pairing(now=now)
+            with pytest.raises(PairingError):
+                state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now)
+            assert state._throttle.locked_for(now) > 0.0
+
+    def test_one_origin_locks_itself_before_it_locks_the_gateway(self):
+        with tempfile.TemporaryDirectory() as td:
+            now = 4_000.0
+            state = GatewayState(td, version="test")
+            noisy = "203.0.113.7"
+            for _ in range(4):                    # three are free; the fourth locks
+                state.start_pairing(now=now)
+                with pytest.raises(PairingError):
+                    state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now, source=noisy)
+
+            assert state._source_throttle(noisy).locked_for(now) > 0.0
+            assert state._throttle.locked_for(now) == 0.0, "the gateway locked on one origin"
+
+            # somebody else, from another address, is not paying for that
+            good = state.start_pairing(now=now)
+            assert state.redeem_pairing(good, now=now, source="198.51.100.2")
+
+    def test_a_locked_origin_is_refused_even_with_the_right_code(self):
+        with tempfile.TemporaryDirectory() as td:
+            now = 4_000.0
+            state = GatewayState(td, version="test")
+            noisy = "203.0.113.9"
+            for _ in range(4):
+                state.start_pairing(now=now)
+                with pytest.raises(PairingError):
+                    state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now, source=noisy)
+            good = state.start_pairing(now=now)
+            with pytest.raises(PairingError, match="failed pairing attempts"):
+                state.redeem_pairing(good, now=now, source=noisy)
 
 
 # ----------------------------------------------------- what must outlive the process itself

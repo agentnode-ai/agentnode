@@ -194,13 +194,17 @@ class GatewayService:
 
     def report_binding(self) -> ReportBinding:
         """What a conformance report about this gateway would have to be about."""
+        from agentnode_sdk.gateway.boot import boot_identity
+
         identity = self.state.identity
         availability = self.backend.check_available()
+        boot_value, _method = boot_identity()
         return ReportBinding(
             gateway_id=identity.gateway_id,
             gateway_version=identity.version,
             backend=str(availability.backend or ""),
             image_digest=str(availability.image_digest or ""),
+            boot_id=boot_value,
         )
 
     def measure(self, options=None, now: float | None = None):
@@ -925,7 +929,8 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/pair":
             try:
                 token = self.service.state.redeem_pairing(
-                    body.get("code", ""), client_name=body.get("client_name", "")
+                    body.get("code", ""), client_name=body.get("client_name", ""),
+                    source=self.client_address[0] if self.client_address else "",
                 )
             except PairingError as exc:
                 return self._send(403, {"error": str(exc)})
@@ -1004,6 +1009,13 @@ def make_server(
     the pairing code and the token would be readable by anyone who can reach the machine.
     """
     context = check_bind_address(host, tls)
+    # After the transport decision, because that one is about the address the operator typed and
+    # should be what they hear about first. Checked here rather than at construction, so that
+    # building a service to inspect it is not the same act as exposing one -- this is the moment
+    # the tokens become reachable.
+    from agentnode_sdk.gateway.statedir import require_private
+
+    require_private(service.state.root)
     handler = type("_BoundHandler", (_Handler,), {"service": service})
     server = ThreadingHTTPServer((host, port), handler)
     # Off unless asked for. A gateway that logs every request by default writes a record of who

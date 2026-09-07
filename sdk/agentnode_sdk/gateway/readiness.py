@@ -82,12 +82,20 @@ class ReportBinding:
     #: taken against a different image describes different software even on the same daemon.
     image_digest: str = ""
 
+    #: Which boot of this machine the measurement happened during. A reboot can bring a new
+    #: kernel, a cgroup controller that is no longer mounted, or a seccomp or apparmor policy that
+    #: loaded differently -- none of which move the image digest, and all of which change what the
+    #: container actually gets. Without this the report would describe the previous boot and still
+    #: look current.
+    boot_id: str = ""
+
     def as_dict(self) -> dict[str, str]:
         return {
             "gateway_id": self.gateway_id,
             "gateway_version": self.gateway_version,
             "backend": self.backend,
             "image_digest": self.image_digest,
+            "boot_id": self.boot_id,
         }
 
     def mismatches(self, other: "ReportBinding") -> tuple[str, ...]:
@@ -184,10 +192,16 @@ class ReadinessGate:
         })
         drift = binding.mismatches(stored)
         if drift:
+            rebooted = drift == ("boot_id",)
             return Readiness(
                 False,
-                "the stored measurement describes something else (" + ", ".join(drift) +
-                " differ), so it says nothing about what is running here.",
+                ("this machine has restarted since it was last measured, and a restart can change "
+                 "what a container actually gets -- a new kernel, a cgroup controller that is no "
+                 "longer mounted, a policy that loaded differently. The old measurement is not "
+                 "wrong, it just describes the previous boot.")
+                if rebooted else
+                ("the stored measurement describes something else (" + ", ".join(drift) +
+                 " differ), so it says nothing about what is running here."),
                 blank, tuple(sorted(PROPERTY_CHECKS)), (_MEASURE_STEP,),
                 measured_at=document.get("measured_at"),
             )
