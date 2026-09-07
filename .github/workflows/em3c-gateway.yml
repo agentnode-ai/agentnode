@@ -109,12 +109,16 @@ jobs:
         if: always()
         run: |
           set -eu
-          for kind in container network; do
-            left="$(docker "${kind}" ls --filter 'name=agentnode-egress-' --format '{{.Name}}' | wc -l)"
-            echo "${kind}s still named agentnode-egress-*: ${left}"
-            docker "${kind}" ls --filter 'name=agentnode-egress-' --format '{{.Name}}'
-            test "${left}" = "0"
-          done
+          # containers list as .Names, networks as .Name -- the wrong field makes docker fail
+          # the template instead of answering, which reads as "nothing found".
+          left="$(docker container ls -a --filter 'name=agentnode-egress-' --format '{{.Names}}' | wc -l)"
+          echo "egress containers still present: ${left}"
+          docker container ls -a --filter 'name=agentnode-egress-' --format '{{.Names}}'
+          test "${left}" = "0"
+          left="$(docker network ls --filter 'name=agentnode-egress-' --format '{{.Name}}' | wc -l)"
+          echo "egress networks still present: ${left}"
+          docker network ls --filter 'name=agentnode-egress-' --format '{{.Name}}'
+          test "${left}" = "0"
 
       - name: Nothing of the run may be left behind
         if: always()

@@ -749,12 +749,15 @@ class GatewayService:
         runtime = availability.backend
         if not runtime or runtime == "none":
             return None
-        for kind, name in (("container", handle.proxy_name),
-                           ("network", handle.int_net),
-                           ("network", handle.ext_net)):
+        # A container is listed with .Names and a network with .Name. Asking for the wrong one
+        # makes the runtime fail the template rather than answer, which came back as "could not
+        # ask" -- unknown rather than a false yes, but still blind.
+        for kind, field, name in (("container", "{{.Names}}", handle.proxy_name),
+                                  ("network", "{{.Name}}", handle.int_net),
+                                  ("network", "{{.Name}}", handle.ext_net)):
             try:
                 listed = subprocess.run(
-                    [runtime, kind, "ls", "--filter", f"name={name}", "--format", "{{.Name}}"],
+                    [runtime, kind, "ls", "--filter", f"name={name}", "--format", field],
                     capture_output=True, text=True, timeout=30,
                 )
             except Exception:                                 # noqa: BLE001
