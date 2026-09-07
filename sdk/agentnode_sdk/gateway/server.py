@@ -389,7 +389,18 @@ class GatewayService:
         nothing -- so a cancellation removed nothing and a cleanup check reported success about a
         container that was still running. The real container lane caught it.
         """
-        answered, names = self._containers_named(container_name)
+        # Removal is not instantaneous, and sampling once can catch a container mid-teardown --
+        # which would report "not gone" about something that is going. Ask repeatedly until the
+        # runtime says it is absent, or until the deadline; a listing that never succeeds stays
+        # unknown rather than becoming a "yes".
+        deadline = time.monotonic() + 30.0
+        answered = False
+        names: list[str] = ["pending"]
+        while time.monotonic() < deadline:
+            answered, names = self._containers_named(container_name)
+            if answered and not names:
+                return True
+            time.sleep(0.25)
         if not answered:
             return None
         return not names
