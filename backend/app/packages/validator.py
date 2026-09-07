@@ -888,6 +888,51 @@ def _validate_agent_verification_cases(
                     )
 
 
+def _validate_network_allowlist(network: dict, errors: list, warnings: list) -> None:
+    """`restricted` has to say what it may reach, and the hosts have to be usable.
+
+    EM3D-NETWORK-DECISION-0001 (Option B). The runtime enforces `restricted` by putting the
+    container on an internal network with no route out and letting it reach the declared hosts
+    through a proxy -- so a `restricted` declaration with no usable allowlist describes no
+    restriction, and the SDK refuses to run it. Catching that here means a publisher learns at
+    submission time rather than after someone installs the package and it will not start.
+
+    The same canonicaliser the MCP policy uses decides what a usable host is, rather than a second
+    set of rules that could drift from it: bare hostnames only, no scheme, path, port or userinfo,
+    no IP literal, no localhost, no single label, ASCII only.
+    """
+    from app.mcp.mcp_policy import DomainPolicyError, canonicalize_allowed_domains
+
+    level = network.get("level")
+    raw = network.get("allowed_domains")
+
+    if level == "restricted":
+        if not isinstance(raw, (list, tuple)) or not raw:
+            errors.append(
+                "permissions.network.level is 'restricted' but permissions.network."
+                "allowed_domains is empty — a restricted package must declare the hosts it may "
+                "reach, otherwise there is no restriction to enforce and the package cannot run"
+            )
+            return
+        try:
+            canonicalize_allowed_domains(list(raw))
+        except DomainPolicyError as exc:
+            errors.append(
+                f"permissions.network.allowed_domains is not usable: {exc}. Bare hostnames only — "
+                "no scheme, port or path, no IP address, no localhost"
+            )
+        return
+
+    # A non-restricted level does not consult the allowlist, so declaring one is a sign the author
+    # expected it to apply. Say so rather than ignoring it silently.
+    if isinstance(raw, (list, tuple)) and raw:
+        errors.append(
+            f"permissions.network.allowed_domains is set but permissions.network.level is "
+            f"{level!r}; the allowlist is only enforced for 'restricted'. Use 'restricted' to have "
+            "these hosts enforced, or remove the list"
+        )
+
+
 def _validate_tool_verification(
     verification: dict,
     errors: list[str],
@@ -1405,6 +1450,8 @@ async def validate_manifest(
             errors.append(
                 f"permissions.network.level must be one of {VALID_NETWORK_LEVELS}"
             )
+        else:
+            _validate_network_allowlist(network, errors, warnings)
 
         fs = perms.get("filesystem", {})
         if fs.get("level", "") not in VALID_FS_LEVELS:
