@@ -337,23 +337,80 @@ def test_run_env_is_clean_no_host_paths(monkeypatch):
 
 # --- network enforcement (allowlist; unknown = deny) -------------------------
 
-@pytest.mark.parametrize("level", ["none", "unknown-garbage", None])
-def test_run_network_denied_for_none_or_unknown(monkeypatch, level):
+# EM3D-NETWORK-DECISION-0001 (Option B) changed what these assert, and the change is the point.
+#
+# The versions replaced here parameterised ["restricted", "full", "unrestricted", "external"] and
+# required NO --network flag for every one of them -- that is, the engine's open default. They were
+# an accurate description of the code and an accurate description of the defect: a package asking
+# for the narrowest named level received exactly what one asking for the widest received. Keeping
+# them would have meant keeping the defect, so they now assert the three levels the decision
+# defines, and each of them fails against the old mapping.
+
+
+@pytest.mark.parametrize("level", ["none", None])
+def test_run_network_none_gets_an_isolated_container(monkeypatch, level):
+    """No declaration and an explicit none both mean: no socket."""
     _, rec = _available_backend(monkeypatch)
     _patch_inspect_ok(monkeypatch)
     run_python("community-pack", "do", entry=_run_entry(network_level=level))
     argv = rec.last_argv
-    # --network none must be present (no silent grant)
     assert "--network" in argv
     assert argv[argv.index("--network") + 1] == "none"
 
 
-@pytest.mark.parametrize("level", ["restricted", "full", "unrestricted", "external"])
-def test_run_network_granted_for_recognized_levels(monkeypatch, level):
+@pytest.mark.parametrize("level", ["unrestricted", "external"])
+def test_run_unrestricted_gets_the_open_default(monkeypatch, level):
     _, rec = _available_backend(monkeypatch)
     _patch_inspect_ok(monkeypatch)
     run_python("community-pack", "do", entry=_run_entry(network_level=level))
-    assert "--network" not in rec.last_argv  # network allowed (no isolation flag)
+    assert "--network" not in rec.last_argv
+
+
+@pytest.mark.parametrize("level", ["unknown-garbage", "full", "limited"])
+def test_run_refuses_a_level_it_cannot_enforce_before_any_container(monkeypatch, level):
+    """Refused before execution -- not downgraded to none, and not widened to open.
+
+    `full` and `limited` were recognised by the old mapping and granted everything. They are not
+    aliased to a quieter level now; the run is refused and says so.
+    """
+    _, rec = _available_backend(monkeypatch)
+    _patch_inspect_ok(monkeypatch)
+    result = run_python("community-pack", "do", entry=_run_entry(network_level=level))
+    assert not result.success
+    assert "network" in (result.error or "").lower()
+    assert rec.calls == [], "a refused declaration must not reach a container"
+
+
+def test_run_restricted_without_an_allowlist_is_refused(monkeypatch):
+    """There is no restriction to enforce, so the run does not happen."""
+    _, rec = _available_backend(monkeypatch)
+    _patch_inspect_ok(monkeypatch)
+    result = run_python("community-pack", "do", entry=_run_entry(network_level="restricted"))
+    assert not result.success
+    assert "allowed_domains" in (result.error or "")
+    assert rec.calls == [], "a refused declaration must not reach a container"
+
+
+def test_run_restricted_is_not_the_open_default(monkeypatch):
+    """The defect, stated as its own test: restricted must not resolve to open networking."""
+    _, rec = _available_backend(monkeypatch)
+    _patch_inspect_ok(monkeypatch)
+    entry = _run_entry(network_level="restricted")
+    entry["permissions"]["allowed_domains"] = ["api.example.com"]
+    started = {}
+
+    def _fake_start(domains, **kw):
+        started["domains"] = tuple(domains)
+        raise RuntimeError("egress proxy not available in this unit test")
+
+    monkeypatch.setattr("agentnode_sdk.sandbox.egress.start_egress_proxy", _fake_start)
+    result = run_python("community-pack", "do", entry=entry)
+
+    # It took the egress path -- bound to exactly the declared host -- rather than the open one.
+    assert started.get("domains") == ("api.example.com",)
+    # And when that restriction cannot be put in place, the run is refused rather than run open.
+    assert not result.success
+    assert rec.calls == [], "a restriction that could not be applied must not run open"
 
 
 # --- volume gate -------------------------------------------------------------

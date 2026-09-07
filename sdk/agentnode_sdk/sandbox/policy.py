@@ -67,24 +67,31 @@ _HOST_TOLERATED_TIERS = {"trusted"}
 
 _UNAVAILABLE = SandboxAvailability(available=False, backend="none", reason="")
 
-# Network permission allowlist — UNKNOWN = DENY. P0.3 turns the declared
-# ``network_level`` permission into REAL container enforcement (--network none),
-# not just a UI label. Only these explicitly-recognized "has network" levels
-# (the vocabulary actually used across lock_integrity/validate/risk_profile)
-# grant the container a network. Everything else — "none", missing, None, or any
-# unrecognized value — is physically isolated. An unknown value is NEVER a
-# silent network grant.
-_NETWORK_GRANT_LEVELS = {
-    "restricted", "internal", "external", "full", "unrestricted", "limited",
-}
+# Superseded. `agentnode_sdk.sandbox.composition` decides the network now.
+#
+# This mapping used to BE the grant: six recognised level names -- restricted, internal, external,
+# full, unrestricted, limited -- all returned "default", which reaches the container backend as no
+# `--network` flag at all, i.e. the engine's default bridge. A package declaring the narrowest
+# named level therefore received exactly what one declaring the widest received, while the risk
+# score told the reader that `internal` was the lesser risk. Unknown values were correctly denied;
+# the recognised ones simply did not differ.
+#
+# EM3D-NETWORK-DECISION-0001 (Option B) replaced it: three levels, `restricted` enforced through a
+# proxied egress bound to a declared allowlist, and `full`/`limited` refused rather than aliased.
+# The name is kept importable so an external caller does not break on upgrade, but it no longer
+# grants anything a caller could mistake for the old behaviour: everything except `unrestricted`
+# and its translation spelling now answers "none", and the two removed levels answer "none" too
+# rather than silently meaning "everything".
+_NETWORK_GRANT_LEVELS = {"unrestricted", "external"}
 
 
 def network_for_level(network_level: str | None) -> str:
-    """Map a declared ``network_level`` permission to a ProcessSpec network mode.
+    """DEPRECATED. Use :func:`agentnode_sdk.sandbox.composition.network_mode` instead.
 
-    Allowlist semantics (unknown = deny): a recognized network-granting level →
-    ``"default"`` (network allowed); anything else (``none``/missing/``None``/
-    unknown) → ``"none"`` (``--network none``, no socket).
+    Returns ``"default"`` only for an explicitly unrestricted declaration, and ``"none"`` for
+    everything else -- including ``restricted``, which cannot be expressed as a bare mode because
+    it needs the allowlist that goes with it, and including ``full``/``limited``, which this
+    build refuses at composition time.
     """
     return "default" if (network_level or "").strip().lower() in _NETWORK_GRANT_LEVELS else "none"
 
