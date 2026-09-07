@@ -347,7 +347,19 @@ class GatewayState:
 
     # ---------------------------------------------------------------- tokens
 
+    def _guard_private(self) -> None:
+        """Refuse to touch the token file while anyone else can read the directory.
+
+        `EM3C-EXTERNAL-0002` found the service-level checks were in the wrong place: they covered
+        requests, and `agentnode gateway clients` and `gateway revoke` read and write this file
+        without going through a request at all. The chokepoint is the file, so the check is here.
+        """
+        from agentnode_sdk.gateway.statedir import require_private
+
+        require_private(self.root)
+
     def _read_tokens(self) -> dict[str, dict]:
+        self._guard_private()
         if not self._tokens_path.is_file():
             return {}
         try:
@@ -356,6 +368,7 @@ class GatewayState:
             return {}
 
     def _write_tokens(self, tokens: dict[str, dict]) -> None:
+        self._guard_private()
         self._tokens_path.write_text(json.dumps(tokens, indent=2, sort_keys=True),
                                      encoding="utf-8")
         self._harden(self._tokens_path)

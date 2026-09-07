@@ -297,9 +297,13 @@ def _say_remote_access(root: Path, config: dict) -> None:
         print("          reverse_proxy 127.0.0.1:8099")
         print("      }")
         print()
-        print("  Caddy obtains and renews the certificate itself. The equivalent for nginx needs")
-        print("  proxy_pass http://127.0.0.1:8099; inside a server block that already terminates")
-        print("  TLS. Either way the gateway keeps its default address and is never exposed.")
+        print("  Caddy handles the certificate for you -- that is Caddy doing it, not AgentNode:")
+        print("  this gateway never obtains or renews a certificate itself and has no plans to.")
+        print("  For nginx, use proxy_pass http://127.0.0.1:8099; inside a server block that")
+        print("  already terminates TLS. Either way the gateway keeps its default address.")
+        print()
+        print(dim("  These commands have not been run by this build. They are the shapes that"))
+        print(dim("  work; your own network is what decides whether they do."))
 
 
 def cmd_pair(args) -> int:

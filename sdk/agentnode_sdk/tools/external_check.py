@@ -150,15 +150,17 @@ def client_role(args) -> int:
     heading("a job allowed to reach exactly one host")
     limited = Path("external-limited.py")
     limited.write_text(
-        "import json, urllib.request\n"
+        "import json, urllib.error, urllib.request\n"
         "seen = {}\n"
         "for name, url in (('allowed', 'https://example.com'),\n"
         "                  ('denied', 'https://www.google.com')):\n"
         "    try:\n"
         "        with urllib.request.urlopen(url, timeout=25) as r:\n"
         "            seen[name] = r.status\n"
+        "    except urllib.error.HTTPError as e:\n"
+        "        seen[name] = 'REFUSED:' + str(e.code)\n"
         "    except Exception as e:\n"
-        "        seen[name] = 'ERR:' + type(e).__name__\n"
+        "        seen[name] = 'UNREACHABLE:' + type(e).__name__\n"
         "print('EGRESS ' + json.dumps(seen))\n",
         encoding="utf-8")
     egress = run("remote", "run", str(limited), "--allow", "example.com",
@@ -171,8 +173,15 @@ def client_role(args) -> int:
         # reachable, then the earlier "no route" was policy rather than a sandbox that cannot
         # reach anything at all.
         step("the allowed host was reachable", seen.get("allowed") == 200, str(seen.get("allowed")))
-        step("a host that was not allowed was refused",
-             str(seen.get("denied")).startswith("ERR"), str(seen.get("denied")))
+        # A refusal the proxy ANSWERED with is policy. "Could not reach it" is also what
+        # selective DNS failure, a routing problem or a dead host look like, and accepting that
+        # would let the step pass without establishing anything -- EM3C-EXTERNAL-0002 found
+        # exactly that. UNREACHABLE is reported as inconclusive rather than as a pass.
+        denied = str(seen.get("denied"))
+        step("a host that was not allowed was refused by the proxy",
+             denied.startswith("REFUSED"),
+             denied + (" -- inconclusive: this is also what a network fault looks like"
+                       if denied.startswith("UNREACHABLE") else ""))
 
     heading("stopping a job from here")
     slow = Path("external-slow.py")
