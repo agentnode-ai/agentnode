@@ -1,0 +1,240 @@
+# 0.24.1 release-candidate verification, against the EXACT artefacts that would be uploaded.
+#
+# The 0.24.0 lane (release-artifact-smoke.yml) is left exactly as it is: it is that release's
+# evidence and is pinned to its digests. This is the 0.24.1 lane.
+#
+# Three jobs, in order, and the order is the point:
+#
+#   build      builds the authoritative wheel and sdist ONCE from the frozen candidate commit and
+#              records their digests. Nothing else builds an artefact.
+#   reproduce  a SEPARATE runner rebuilds from the same commit and must arrive at the same bytes.
+#              The digests come from the build job, not from a value pasted into this file, so the
+#              gate cannot be satisfied by editing the expectation.
+#   verify     installs only the built wheel and measures the release properties against the
+#              INSTALLED distribution: package metadata, twine check, the container smoke, the
+#              full conformance suite, and the three EM-3B-R1 properties.
+#
+# Everything here lives outside sdk/, so adding it cannot change the artefacts it verifies.
+name: Release artefact 0.24.1
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  RC_COMMIT: "82c96cc8028568c0ff024baabc4911e369ec0a73"
+  VERSION: "0.24.1"
+  SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
+  DOCKER_SERVER_VERSION: "28.0.4"
+  DOCKER_APT_VERSION: "5:28.0.4-1~ubuntu.24.04~noble"
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'release/v0.24.1'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: The artefact comes from the anchored candidate commit, not from this branch head
+        run: |
+          set -euo pipefail
+          git cat-file -e "${RC_COMMIT}^{commit}"
+          echo "anchored candidate commit: ${RC_COMMIT}"
+          git log -1 --format='%H %ci %s' "${RC_COMMIT}"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+
+      - name: Build the artefacts ONCE from the frozen candidate
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet build
+          mkdir -p /tmp/rcbuild
+          git archive --format=tar "${RC_COMMIT}:sdk" | tar -x -C /tmp/rcbuild
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct "${RC_COMMIT}")"
+          echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
+          cd /tmp/rcbuild && python -m build
+
+      - name: Record the digests — these become the release anchors
+        run: |
+          set -euo pipefail
+          cd /tmp/rcbuild/dist
+          ls -l
+          sha256sum "agentnode_sdk-${VERSION}-py3-none-any.whl" "agentnode_sdk-${VERSION}.tar.gz" \
+            | tee /tmp/rcbuild/DIGESTS.txt
+          stat -c '%n %s bytes' "agentnode_sdk-${VERSION}-py3-none-any.whl" "agentnode_sdk-${VERSION}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts-0.24.1
+          path: |
+            /tmp/rcbuild/dist/agentnode_sdk-0.24.1-py3-none-any.whl
+            /tmp/rcbuild/dist/agentnode_sdk-0.24.1.tar.gz
+            /tmp/rcbuild/DIGESTS.txt
+
+  reproduce:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts-0.24.1
+          path: /tmp/frombuild
+
+      - name: Rebuild independently from the same commit
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet build
+          mkdir -p /tmp/rebuild
+          git archive --format=tar "${RC_COMMIT}:sdk" | tar -x -C /tmp/rebuild
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct "${RC_COMMIT}")"
+          cd /tmp/rebuild && python -m build
+
+      - name: STOP GATE — a different runner must arrive at the same bytes
+        run: |
+          set -euo pipefail
+          cd /tmp/rebuild/dist
+          sha256sum "agentnode_sdk-${VERSION}-py3-none-any.whl" "agentnode_sdk-${VERSION}.tar.gz" \
+            > /tmp/rebuild/DIGESTS.txt
+          echo "--- the build job recorded ---"; cat /tmp/frombuild/DIGESTS.txt
+          echo "--- this independent rebuild ---"; cat /tmp/rebuild/DIGESTS.txt
+          # compare digest+name pairs, not file order
+          sort /tmp/frombuild/DIGESTS.txt > /tmp/a.txt
+          sort /tmp/rebuild/DIGESTS.txt   > /tmp/b.txt
+          diff -u /tmp/a.txt /tmp/b.txt
+          echo "the artefacts reproduce byte-for-byte on an independent runner"
+
+  verify:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts-0.24.1
+          path: /tmp/art
+
+      - name: STOP GATE — the files under test must BE the ones the build job produced
+        run: |
+          set -euo pipefail
+          ls -lR /tmp/art
+          cd /tmp/art/dist
+          sha256sum "agentnode_sdk-${VERSION}-py3-none-any.whl" > /tmp/here.txt
+          sha256sum "agentnode_sdk-${VERSION}.tar.gz" >> /tmp/here.txt
+          echo "--- recorded by the build job ---"; cat /tmp/art/DIGESTS.txt
+          echo "--- the files actually downloaded here ---"; cat /tmp/here.txt
+          sort /tmp/art/DIGESTS.txt > /tmp/a.txt
+          sort /tmp/here.txt        > /tmp/b.txt
+          diff -u /tmp/a.txt /tmp/b.txt
+          echo "everything below is measured against exactly these bytes"
+
+      - name: Package metadata, dependencies and file inventory
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet twine
+          cd /tmp/art/dist
+          python -m twine check "agentnode_sdk-${VERSION}-py3-none-any.whl" "agentnode_sdk-${VERSION}.tar.gz"
+          python "${GITHUB_WORKSPACE}/.github/release-wheel-inventory.py" /tmp/art/dist "${VERSION}"
+
+      - name: Select and VERIFY the pinned container runtime
+        run: |
+          set -eu
+          got="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo none)"
+          echo "runner provides docker server: ${got}; pin is ${DOCKER_SERVER_VERSION}"
+          if [ "${got}" != "${DOCKER_SERVER_VERSION}" ]; then
+            echo "the runner's Docker is not the pinned version; installing it from the Docker repository"
+            sudo install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            sudo chmod a+r /etc/apt/keyrings/docker.gpg
+            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+            sudo apt-get update
+            if ! apt-cache madison docker-ce | grep -qF "${DOCKER_APT_VERSION}"; then
+              echo "pinned ${DOCKER_APT_VERSION} is not available; docker-ce candidates are:"
+              apt-cache madison docker-ce | head -20
+              exit 1
+            fi
+            sudo apt-get install -y --allow-downgrades "docker-ce=${DOCKER_APT_VERSION}" "docker-ce-cli=${DOCKER_APT_VERSION}"
+            sudo systemctl start docker
+            got="$(docker version --format '{{.Server.Version}}')"
+          fi
+          test "${got}" = "${DOCKER_SERVER_VERSION}" || {
+            echo "docker server is ${got}, pinned ${DOCKER_SERVER_VERSION}"; exit 1; }
+          echo "container runtime verified at the pinned version ${got}"
+          docker info --format '{{.OSType}}/{{.Architecture}}'
+
+      - name: Pull the pinned sandbox image by digest
+        run: docker pull "${SANDBOX_IMAGE}"
+
+      - name: Install ONLY the wheel, in a clean environment
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/rcvenv
+          /tmp/rcvenv/bin/python -m pip install --quiet --upgrade pip
+          /tmp/rcvenv/bin/python -m pip install --quiet "/tmp/art/dist/agentnode_sdk-${VERSION}-py3-none-any.whl"
+          /tmp/rcvenv/bin/python -c "import agentnode_sdk, pathlib; print('imported from', pathlib.Path(agentnode_sdk.__file__).parent)"
+          test "$(/tmp/rcvenv/bin/agentnode --version)" = "agentnode ${VERSION}"
+          /tmp/rcvenv/bin/python -c "import importlib.metadata as m; print('mcp resolved:', m.version('mcp'))"
+
+      - name: The CLI works from the installed distribution
+        run: |
+          set -euo pipefail
+          cd /tmp
+          /tmp/rcvenv/bin/agentnode --help > /tmp/cli-help.txt
+          head -5 /tmp/cli-help.txt
+          # doctor renders the refusal machinery from the installed distribution and performs
+          # no actions; with a runtime present it reports readiness rather than a refusal.
+          /tmp/rcvenv/bin/agentnode sandbox doctor --json > /tmp/cli-doctor.json
+          cat /tmp/cli-doctor.json
+          /tmp/rcvenv/bin/python -c "import json;json.load(open('/tmp/cli-doctor.json'));print('doctor emitted valid JSON')"
+
+      - name: The three EM-3B-R1 properties, against the INSTALLED wheel
+        run: |
+          set -euo pipefail
+          cd /tmp                      # never run from the repository checkout
+          /tmp/rcvenv/bin/python "${GITHUB_WORKSPACE}/.github/release-artifact-smoke-0.24.1.py" \
+            2>&1 | tee /tmp/r1-artifact.txt
+
+      - name: Full conformance suite, against the INSTALLED wheel
+        env:
+          CONFORMANCE_REPORT: /tmp/conformance-report-0.24.1.json
+        run: |
+          set -euo pipefail
+          cd /tmp
+          /tmp/rcvenv/bin/python "${GITHUB_WORKSPACE}/.github/conformance-run.py" \
+            2>&1 | tee /tmp/conformance-0.24.1.txt
+
+      - name: The sdist installs and produces the same version
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/rcvenv_sdist
+          /tmp/rcvenv_sdist/bin/python -m pip install --quiet --upgrade pip
+          /tmp/rcvenv_sdist/bin/python -m pip install --quiet "/tmp/art/dist/agentnode_sdk-${VERSION}.tar.gz"
+          test "$(/tmp/rcvenv_sdist/bin/agentnode --version)" = "agentnode ${VERSION}"
+          echo "sdist install OK"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-verification-0.24.1
+          path: |
+            /tmp/conformance-report-0.24.1.json
+            /tmp/conformance-0.24.1.txt
+            /tmp/r1-artifact.txt
+            /tmp/cli-help.txt
+            /tmp/cli-doctor.json

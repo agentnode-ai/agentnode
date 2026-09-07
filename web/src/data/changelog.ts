@@ -44,6 +44,24 @@ export function anchorId(r: ChangelogRelease): string {
 
 export const RELEASES: ChangelogRelease[] = [
   {
+    version: "0.24.1",
+    date: null,
+    dateSource: null,
+    title: "The sandbox does what it said",
+    summary:
+      "Three defects in the local sandbox runtime, found by a conformance suite that measures a real container instead of reading its configuration. Each was a property AgentNode reported but did not enforce. This release corrects the runtime only; declared network levels are still not distinguished from one another and are fixed separately.",
+    highlights: [
+      "A wall-clock timeout now ends the payload. It used to kill the `docker run` client while the container kept running; a run now carries an exact identity, the timeout removes that container, waits, and verifies it is gone — and raises `SandboxContainmentError` rather than reporting a clean timeout it could not confirm",
+      "The declared memory ceiling now binds. `--memory` was passed without `--memory-swap`, so a 768 MiB allocation completed under a 512 MiB limit. Both now carry the same value",
+      "A refusal now carries a way out. One classifier distinguishes not installed, not running, not permitted, an engine in the wrong mode and a device where no local sandbox is possible, and offers only actions that exist on your platform, each with the check that tells you whether it worked",
+      "Known and not fixed here: a toolpack declaring `restricted` still receives the same open network as one declaring `unrestricted`. An unknown level is still isolated. The correction needs a manifest domain allowlist and refuses packages that work today, so it ships separately",
+    ],
+    onPyPI: false,
+    hasTag: false,
+    notes:
+      "Prepared but not yet published: no PyPI release and no git tag exist for this version yet.",
+  },
+  {
     version: "0.24.0",
     date: "2026-09-02",
     dateSource: "pypi",
