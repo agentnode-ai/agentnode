@@ -34,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
-from agentnode_sdk.gateway.transport import check_bind_address
+from agentnode_sdk.gateway.transport import TlsFiles, check_bind_address
 from agentnode_sdk.gateway.protocol import (
     PROTOCOL_VERSION,
     JobRequest,
@@ -673,7 +673,12 @@ class _Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "no such endpoint"})
 
 
-def make_server(service: GatewayService, host: str = "127.0.0.1", port: int = 0):
+def make_server(
+    service: GatewayService,
+    host: str = "127.0.0.1",
+    port: int = 0,
+    tls: TlsFiles | None = None,
+):
     """A threading HTTP server bound to `host`. Defaults to loopback deliberately.
 
     Binding to loopback by default means an operator has to make an explicit choice before the
@@ -681,9 +686,18 @@ def make_server(service: GatewayService, host: str = "127.0.0.1", port: int = 0)
     choice is not enough on its own: serving beyond loopback in the clear is refused, because
     the pairing code and the token would be readable by anyone who can reach the machine.
     """
-    check_bind_address(host)
+    context = check_bind_address(host, tls)
     handler = type("_BoundHandler", (_Handler,), {"service": service})
-    return ThreadingHTTPServer((host, port), handler)
+    server = ThreadingHTTPServer((host, port), handler)
+    if context is not None:
+        # The certificate was already loaded by check_bind_address above, before this socket
+        # existed, so a certificate that will not load stops the gateway rather than leaving it
+        # briefly serving in the clear. Wrapping here only attaches it, before serve_forever.
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        server.agentnode_tls = True
+    else:
+        server.agentnode_tls = False
+    return server
 
 
 def new_run_id() -> str:
