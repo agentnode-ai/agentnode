@@ -84,6 +84,18 @@ class RunRecord:
 class GatewayService:
     """The decisions. Kept apart from HTTP so they can be tested without a socket."""
 
+    def stamp(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Bind an answer to the gateway that produced it.
+
+        T-C only means something if a client can tell WHICH build answered. An earlier version
+        stamped only /v1/hello and /v1/pair while the protocol claimed every response carried it,
+        so a job result could not be tied to the gateway that produced it -- the review was right
+        that the claim was broader than the code. Every answer carries it now.
+        """
+        identity = self.state.identity
+        return {**body, "gateway": identity.as_dict(), "fingerprint": identity.fingerprint,
+                "protocol": PROTOCOL_VERSION}
+
     def __init__(self, state: GatewayState, backend=None, operator_policy=None) -> None:
         self.state = state
         self._backend = backend
@@ -395,8 +407,8 @@ class _Handler(BaseHTTPRequestHandler):
             run_id = self.path.rsplit("/", 1)[-1]
             record = self.service.runs.get(run_id)
             if record is None:
-                return self._send(404, {"error": "no such run"})
-            return self._send(200, record.public())
+                return self._send(404, self.service.stamp({"error": "no such run"}))
+            return self._send(200, self.service.stamp(record.public()))
         return self._send(404, {"error": "no such endpoint"})
 
     def do_POST(self):
@@ -426,7 +438,8 @@ class _Handler(BaseHTTPRequestHandler):
             except (ProtocolError, ValueError) as exc:
                 return self._send(403, {"error": str(exc)})
             record = self.service.submit(request, artifact)
-            return self._send(202 if record.state != "refused" else 409, record.public())
+            return self._send(202 if record.state != "refused" else 409,
+                              self.service.stamp(record.public()))
 
         if self.path.endswith("/cancel") and self.path.startswith("/v1/jobs/"):
             run_id = self.path.split("/")[3]
@@ -437,8 +450,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send(403, {"error": str(exc)})
             record = self.service.cancel(run_id)
             if record is None:
-                return self._send(404, {"error": "no such run"})
-            return self._send(200, record.public())
+                return self._send(404, self.service.stamp({"error": "no such run"}))
+            return self._send(200, self.service.stamp(record.public()))
 
         return self._send(404, {"error": "no such endpoint"})
 

@@ -182,8 +182,13 @@ class TestNothingRunsUntilItIsAdmitted:
         body2 = {"token": conn.token, "payload": payload2,
                  "signature": sign(client_token_secret(conn.token), payload2),
                  "artifact_b64": base64.b64encode(b"x").decode()}
+        gc.wait_for(conn, "r1", timeout=20)
+        calls_after_first = len(backend.specs)
         second = gc._post(base + "/v1/jobs", body2)[1]
         assert second["state"] == "refused" and "replay" in second["refusal"]
+        assert len(backend.specs) == calls_after_first, (
+            "the replayed request must not have reached a container"
+        )
 
     def test_a_stale_request_is_refused(self, gateway):
         base, state, service, backend = gateway
@@ -198,6 +203,22 @@ class TestNothingRunsUntilItIsAdmitted:
         answer = gc._post(base + "/v1/jobs", body)[1]
         assert answer["state"] == "refused" and "old" in answer["refusal"]
         assert backend.specs == []
+
+    def test_a_future_dated_request_is_refused(self, gateway):
+        """Without this, a captured request given a far-future timestamp stays valid forever."""
+        base, state, service, backend = gateway
+        conn = _paired(base, state)
+        request = JobRequest(job_id="j", run_id="r", artifact_sha256=digest(b"x"),
+                             policy_sha256=policy_digest(_granted(service)),
+                             issued_at=time.time() + 3600)
+        payload = request.to_payload()
+        body = {"token": conn.token, "payload": payload,
+                "signature": sign(client_token_secret(conn.token), payload),
+                "artifact_b64": base64.b64encode(b"x").decode()}
+        answer = gc._post(base + "/v1/jobs", body)[1]
+        assert answer["state"] == "refused"
+        assert "future" in answer["refusal"]
+        assert backend.specs == [], "a future-dated request must not reach a container"
 
     def test_a_policy_digest_that_does_not_match_is_refused(self, gateway):
         """A job cannot be replayed against a laxer policy than the one it was signed for."""
@@ -223,7 +244,7 @@ class TestNothingRunsUntilItIsAdmitted:
         assert backend.specs == []
 
     def test_an_unknown_protocol_version_is_refused(self, gateway):
-        base, state, service, _ = gateway
+        base, state, service, backend = gateway
         conn = _paired(base, state)
         request = JobRequest(job_id="j", run_id="r", artifact_sha256=digest(b"x"),
                              policy_sha256=policy_digest(_granted(service)))
@@ -233,6 +254,7 @@ class TestNothingRunsUntilItIsAdmitted:
                 "artifact_b64": base64.b64encode(b"x").decode()}
         status, answer = gc._post(base + "/v1/jobs", body)
         assert status == 403 and "em3c/1" in answer["error"]
+        assert backend.specs == [], "an unknown protocol version must not reach a container"
 
 
 # ------------------------------------------------------------------ the operator is above the client
@@ -263,6 +285,34 @@ class TestTheOperatorPolicyWins:
             "allowed_domains": ("api.allowed.example", "evil.example"),
         })())
         assert network_mode(granted) == ("egress", ("api.allowed.example",))
+
+
+class TestEveryAnswerNamesTheGatewayThatGaveIt:
+    """T-C: an answer a client cannot tie to a build is not a measurement of that build."""
+
+    def test_hello_pair_submit_status_and_cancel_all_carry_the_identity(self, gateway):
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        expected = state.identity
+
+        answers = {"hello": gc.hello(base)}
+        answers["submit"] = gc.submit(conn, b"x", granted=_granted(service), run_id="stamped")
+        gc.wait_for(conn, "stamped", timeout=20)
+        answers["status"] = gc.status_of(conn, "stamped")
+        answers["cancel"] = gc.cancel(conn, "stamped")
+
+        for name, answer in answers.items():
+            assert answer.get("protocol") == "em3c/1", name
+            assert answer.get("gateway", {}).get("gateway_id") == expected.gateway_id, name
+            assert answer.get("gateway", {}).get("version") == expected.version, name
+            assert answer.get("fingerprint") == expected.fingerprint, name
+
+    def test_the_fingerprint_changes_when_the_version_does(self, gateway):
+        base, state, _, _ = gateway
+        before = state.identity.fingerprint
+        state.version = "a-different-build"
+        assert state.identity.fingerprint != before
+        assert state.identity.gateway_id == GatewayState(state.root, "x").identity.gateway_id
 
 
 # ------------------------------------------------------------------ idempotence
@@ -324,6 +374,13 @@ class TestTheVerticalFlowForReal:
                            wall_clock_s=120)
         assert answer["state"] != "refused", answer.get("refusal")
         final = gc.wait_for(conn, answer["run_id"], timeout=180)
+        # Printed so the LANE OUTPUT carries the observation, not only the fact that an assertion
+        # passed. A reviewer reading the log should be able to see the container's own words.
+        print(f"
+  [observed] state={final['state']} exit={final['exit_code']} "
+              f"stdout={final['stdout']!r} cleanup_verified={final['cleanup_verified']} "
+              f"gateway={final.get('gateway')} fingerprint={str(final.get('fingerprint'))[:16]}…",
+              flush=True)
         assert final["state"] == "finished", final
         assert final["exit_code"] == 0, final
         assert "EM3C-RAN-AS" in final["stdout"], final
@@ -351,6 +408,9 @@ class TestTheVerticalFlowForReal:
             time.sleep(0.25)
         gc.cancel(conn, run_id)
         final = gc.wait_for(conn, run_id, timeout=180)
+        print(f"
+  [observed] cancelled run: state={final['state']} "
+              f"cleanup_verified={final['cleanup_verified']}", flush=True)
         assert final["state"] in ("cancelled", "finished"), final
         assert final["cleanup_verified"] is True, "a cancelled run must leave nothing behind"
 
@@ -362,6 +422,9 @@ class TestTheVerticalFlowForReal:
                            wall_clock_s=8)
         assert answer["state"] != "refused", answer.get("refusal")
         final = gc.wait_for(conn, answer["run_id"], timeout=180)
+        print(f"
+  [observed] timed-out run: state={final['state']} exit={final['exit_code']} "
+              f"cleanup_verified={final['cleanup_verified']}", flush=True)
         assert final["state"] in ("finished", "cancelled"), final
         assert final["exit_code"] != 0, "a timed-out run must not report success"
         assert final["cleanup_verified"] is True

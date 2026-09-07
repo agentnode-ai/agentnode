@@ -8,9 +8,11 @@ refusal is a normal, structured answer rather than an error. The gateway never s
 a job to something it *can* do.
 
 **T-C — the gateway is measured, and a report is bound to an identity and a version.** Every
-response carries the gateway's identity and version, so a client can tell that the report it holds
-describes the build it is talking to. A gateway that changes either invalidates what the client
-knew about it.
+response the gateway sends -- hello, pairing, job submission, status, cancellation, and the
+not-found answers -- carries its identity, its version and a fingerprint over both, so a client can
+tie any answer to the build that produced it. A gateway that changes either invalidates what the
+client knew about it. `GatewayService.stamp` is the single place that adds them, so an endpoint
+added later cannot quietly omit them.
 
 What this module is *not*: it is not transport. It defines the bytes that are signed and the rules
 for accepting them. HTTP, TLS and framing live elsewhere, and TLS in particular is deliberately not
