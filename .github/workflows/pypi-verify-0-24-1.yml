@@ -1,0 +1,96 @@
+# Post-publication verification: the sandbox smokes and the conformance suite, run against the
+# distribution as PyPI serves it — installed by `pip install agentnode-sdk==0.24.1`, not from a
+# built file and not from this checkout.
+#
+# The upload was verified byte-identical to the reviewed artefacts before this ran; this answers
+# the different question of whether the published package BEHAVES correctly on a container-present
+# Linux host when a stranger installs it.
+#
+# Verification only. It builds nothing, publishes nothing and changes nothing.
+name: PyPI verification 0.24.1
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  VERSION: "0.24.1"
+  SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
+  DOCKER_SERVER_VERSION: "28.0.4"
+  DOCKER_APT_VERSION: "5:28.0.4-1~ubuntu.24.04~noble"
+
+jobs:
+  from-pypi:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'verify/pypi-0.24.1'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+
+      - name: Select and VERIFY the pinned container runtime
+        run: |
+          set -eu
+          got="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo none)"
+          echo "runner provides docker server: ${got}; pin is ${DOCKER_SERVER_VERSION}"
+          if [ "${got}" != "${DOCKER_SERVER_VERSION}" ]; then
+            sudo install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            sudo chmod a+r /etc/apt/keyrings/docker.gpg
+            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+            sudo apt-get update
+            sudo apt-get install -y --allow-downgrades "docker-ce=${DOCKER_APT_VERSION}" "docker-ce-cli=${DOCKER_APT_VERSION}"
+            sudo systemctl start docker
+            got="$(docker version --format '{{.Server.Version}}')"
+          fi
+          test "${got}" = "${DOCKER_SERVER_VERSION}"
+          docker info --format '{{.OSType}}/{{.Architecture}}'
+
+      - name: Pull the pinned sandbox image by digest
+        run: docker pull "${SANDBOX_IMAGE}"
+
+      - name: Install from PyPI — not from a file, not from this checkout
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/pypienv
+          /tmp/pypienv/bin/python -m pip install --quiet --upgrade pip
+          /tmp/pypienv/bin/python -m pip install --no-cache-dir "agentnode-sdk==${VERSION}"
+          /tmp/pypienv/bin/python -m pip download --no-deps --no-binary :none: --dest /tmp/dlcheck "agentnode-sdk==${VERSION}" >/dev/null 2>&1 || true
+          /tmp/pypienv/bin/python -c "import agentnode_sdk,pathlib;print('imported from',pathlib.Path(agentnode_sdk.__file__).parent)"
+          test "$(/tmp/pypienv/bin/agentnode --version)" = "agentnode ${VERSION}"
+          /tmp/pypienv/bin/python -c "import importlib.metadata as m;print('mcp resolved:',m.version('mcp'))"
+
+      - name: The CLI and the doctor, from the PyPI install
+        run: |
+          set -euo pipefail
+          cd /tmp
+          /tmp/pypienv/bin/agentnode sandbox doctor --json > /tmp/pypi-doctor.json
+          cat /tmp/pypi-doctor.json
+          /tmp/pypienv/bin/python -c "import json;json.load(open('/tmp/pypi-doctor.json'));print('doctor emitted valid JSON')"
+
+      - name: The three EM-3B-R1 properties, against the PyPI distribution
+        run: |
+          set -euo pipefail
+          cd /tmp
+          /tmp/pypienv/bin/python "${GITHUB_WORKSPACE}/.github/release-artifact-smoke-0.24.1.py" \
+            2>&1 | tee /tmp/pypi-r1.txt
+
+      - name: Full conformance suite, against the PyPI distribution
+        env:
+          CONFORMANCE_REPORT: /tmp/pypi-conformance.json
+        run: |
+          set -euo pipefail
+          cd /tmp
+          /tmp/pypienv/bin/python "${GITHUB_WORKSPACE}/.github/conformance-run.py" 2>&1 | tee /tmp/pypi-conformance.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pypi-verification-0.24.1
+          path: |
+            /tmp/pypi-doctor.json
+            /tmp/pypi-r1.txt
+            /tmp/pypi-conformance.json
+            /tmp/pypi-conformance.txt
