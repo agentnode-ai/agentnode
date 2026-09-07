@@ -35,6 +35,11 @@ CLIENT_USER = os.environ.get("TWO_ROLE_CLIENT_USER", "anclient")
 GATEWAY_DIR = Path(os.environ.get("TWO_ROLE_GATEWAY_DIR", "/opt/agentnode-gateway"))
 CLIENT_HOME = Path(os.environ.get("TWO_ROLE_CLIENT_HOME", f"/home/{CLIENT_USER}"))
 PORT = int(os.environ.get("TWO_ROLE_PORT", "8399"))
+#: The client's own interpreter. It does NOT share the gateway's: a real remote client installs
+#: AgentNode from a package, and the first run of this check proved the point by failing -- the
+#: client user could not import the developer's checkout, because it cannot read it. That is the
+#: boundary doing its job, so the client is installed the way a real one is.
+CLIENT_PYTHON = os.environ.get("TWO_ROLE_CLIENT_PYTHON", sys.executable)
 BASE = f"http://127.0.0.1:{PORT}"
 
 failures: list[str] = []
@@ -84,7 +89,7 @@ def client(*args, timeout: int = 600, extra_env: dict | None = None) -> subproce
     global last_result
     last_result = subprocess.run(
         ["sudo", "-n", "-u", CLIENT_USER, "env", *env_bits,
-         sys.executable, "-m", "agentnode_sdk.cli", "remote", *args],
+         CLIENT_PYTHON, "-m", "agentnode_sdk.cli", "remote", *args],
         capture_output=True, text=True, timeout=timeout,
     )
     return last_result
@@ -174,7 +179,7 @@ def main() -> int:
         runner = subprocess.Popen(
             ["sudo", "-n", "-u", CLIENT_USER, "env",
              f"AGENTNODE_HOME={CLIENT_HOME}/.agentnode", f"HOME={CLIENT_HOME}",
-             sys.executable, "-m", "agentnode_sdk.cli", "remote", "run", str(script),
+             CLIENT_PYTHON, "-m", "agentnode_sdk.cli", "remote", "run", str(script),
              "--max-seconds", "150", "--timeout", "200"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         run_id = ""

@@ -56,6 +56,13 @@ jobs:
 
       - run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
 
+      - name: Build the wheel the client will be installed from
+        run: |
+          set -eu
+          python -m pip install build
+          python -m build --wheel --outdir /tmp/anwheel
+          ls -l /tmp/anwheel
+
       - name: Make the client a different user, with no runtime and no access
         run: |
           set -eu
@@ -66,6 +73,16 @@ jobs:
           # Deliberately NOT added to the docker group. The check asserts this rather than
           # assuming it, because a client that can start its own containers would prove nothing.
           echo "client groups: $(id -nG "${TWO_ROLE_CLIENT_USER}")"
+
+      - name: Install AgentNode for the client, from the wheel, as the client
+        run: |
+          set -eu
+          # Not the developer checkout: the client cannot read it, which is the boundary working.
+          # A real remote client installs from a package, so this one does too.
+          sudo -n -u "${TWO_ROLE_CLIENT_USER}" python3 -m venv "${TWO_ROLE_CLIENT_HOME}/venv"
+          sudo -n -u "${TWO_ROLE_CLIENT_USER}" "${TWO_ROLE_CLIENT_HOME}/venv/bin/pip"             install --quiet /tmp/anwheel/*.whl
+          sudo -n -u "${TWO_ROLE_CLIENT_USER}" "${TWO_ROLE_CLIENT_HOME}/venv/bin/python"             -m agentnode_sdk.cli remote list || true
+          echo "TWO_ROLE_CLIENT_PYTHON=${TWO_ROLE_CLIENT_HOME}/venv/bin/python" >> "$GITHUB_ENV"
 
       - name: Set the gateway up as its own user
         run: python -m agentnode_sdk.cli gateway init --dir "${TWO_ROLE_GATEWAY_DIR}"
