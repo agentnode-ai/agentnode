@@ -39,6 +39,7 @@ from agentnode_sdk.gateway.protocol import (
     JobRequest,
     NonceCache,
     ProtocolError,
+    canonical_bytes,
     check_freshness,
     digest,
     policy_digest,
@@ -54,6 +55,7 @@ class RunRecord:
 
     run_id: str
     job_id: str
+    request_sha256: str = ""     # the signed request this run belongs to
     state: str = "accepted"          # accepted | running | finished | refused | cancelled
     exit_code: int | None = None
     stdout: str = ""
@@ -163,7 +165,8 @@ class GatewayService:
             raise ProtocolError("the signature does not match the request")
         return secret
 
-    def admit(self, request: JobRequest, artifact: bytes) -> tuple[Any, dict[str, bool]]:
+    def admit(self, request: JobRequest, artifact: bytes,
+              token: str = "") -> tuple[Any, dict[str, bool]]:
         """Everything that must hold before a container exists. Raises to refuse.
 
         Order matters: the cheap structural checks come before anything that costs work, and
@@ -187,7 +190,7 @@ class GatewayService:
                 + ". The job was not started."
             )
 
-        granted = self.compose(request)
+        granted = self.compose(request, token)
         if policy_digest(granted) != request.policy_sha256:
             raise ProtocolError(
                 "the policy this gateway composed is not the one the job was signed for. "
@@ -195,7 +198,30 @@ class GatewayService:
             )
         return granted, properties
 
-    def compose(self, request: JobRequest):
+    def client_policy(self, token: str):
+        """What THIS client is allowed, independently of what its job asks for.
+
+        A real layer, not a formality. The earlier version hardcoded an unrestricted USER scope,
+        which meant the fold was really operator-over-job with a decorative middle -- a client
+        ceiling could not be expressed at all, so "operator > client > job" was three names for
+        two levels. EM3C-GATEWAY-0002 was right to call that out.
+
+        The allowance is recorded against the token when the client pairs, so it is bound to an
+        authenticated identity rather than to anything the job carries. A client with no recorded
+        restriction is unrestricted at this scope, and the operator above it still binds.
+        """
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        allowance = self.state.client_allowance(token)
+        if allowance is None:
+            return SandboxPolicy(network=NetworkRules(enabled=True, allowed_destinations=None))
+        if not allowance:
+            return SandboxPolicy(network=NetworkRules(enabled=False,
+                                                      allowed_destinations=frozenset()))
+        return SandboxPolicy(network=NetworkRules(enabled=True,
+                                                  allowed_destinations=frozenset(allowance)))
+
+    def compose(self, request: JobRequest, token: str = ""):
         """The fold, server-side. The operator is above the client, and the job is below both."""
         from agentnode_sdk.sandbox.contract import (
             NetworkRules,
@@ -213,23 +239,45 @@ class GatewayService:
                                  allowed_destinations=frozenset(request.allowed_domains))
         return merge_policies({
             Scope.ORGANISATION: self.operator_policy(),
-            Scope.USER: SandboxPolicy(network=NetworkRules(enabled=True,
-                                                           allowed_destinations=None)),
+            Scope.USER: self.client_policy(token),
             Scope.PACKAGE: SandboxPolicy(network=asked),
         })
 
     # ------------------------------------------------------------------ execution
 
-    def submit(self, request: JobRequest, artifact: bytes) -> RunRecord:
-        record = RunRecord(run_id=request.run_id, job_id=request.job_id)
+    def submit(self, request: JobRequest, artifact: bytes, token: str = "") -> RunRecord:
+        """Idempotent for a repeat of the SAME request; a refusal for anything else.
+
+        These two pull in opposite directions and the earlier version let idempotence win
+        outright: any request carrying a known run id returned that run's record before admission
+        ran at all. So an exact captured request was answered from the table instead of being
+        refused as a replay, and -- worse -- a DIFFERENT request that merely reused the run id was
+        handed the original run's record and result. EM3C-GATEWAY-0002 found it.
+
+        The decision, enforced here: a run id is bound to the exact signed request that created
+        it. A byte-identical repeat is the same run and returns it, which is what a client
+        retrying after a dropped connection needs. A repeat that differs in any signed field is
+        refused, and nothing about the original run is disclosed.
+        """
+        request_sha = digest(canonical_bytes(request.to_payload()))
+        record = RunRecord(run_id=request.run_id, job_id=request.job_id,
+                           request_sha256=request_sha)
         with self._lock:
             existing = self.runs.get(request.run_id)
             if existing is not None:
-                # Idempotent: the same run id is the same run, not a second one.
-                return existing
+                if existing.request_sha256 == request_sha:
+                    return existing
+                refused = RunRecord(run_id=request.run_id, job_id=request.job_id,
+                                    request_sha256=request_sha, state="refused")
+                refused.refusal = (
+                    "this run id already belongs to a different request. A run id identifies one "
+                    "signed job; reusing it for another is refused, and nothing was started."
+                )
+                refused.finished_at = time.time()
+                return refused
             self.runs[request.run_id] = record
         try:
-            granted, _ = self.admit(request, artifact)
+            granted, _ = self.admit(request, artifact, token)
         except (ProtocolError, Exception) as exc:            # noqa: BLE001 - refusal is an answer
             record.state = "refused"
             record.refusal = str(exc)
@@ -437,7 +485,7 @@ class _Handler(BaseHTTPRequestHandler):
                 artifact = base64.b64decode(body.get("artifact_b64", "") or "")
             except (ProtocolError, ValueError) as exc:
                 return self._send(403, {"error": str(exc)})
-            record = self.service.submit(request, artifact)
+            record = self.service.submit(request, artifact, body.get("token", ""))
             return self._send(202 if record.state != "refused" else 409,
                               self.service.stamp(record.public()))
 

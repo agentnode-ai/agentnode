@@ -271,6 +271,39 @@ class TestTheOperatorPolicyWins:
         # the default operator policy is network-off, so the fold produces no network at all
         assert network_mode(granted) == ("none", ())
 
+    def test_the_client_scope_bounds_the_job_below_it(self, gateway):
+        """operator > client > job, with three distinct levels rather than two and a label."""
+        base, state, service, _ = gateway
+        from agentnode_sdk.sandbox.composition import network_mode
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        conn = _paired(base, state)
+        operator = SandboxPolicy(network=NetworkRules(
+            enabled=True, allowed_destinations=frozenset({"a.example", "b.example",
+                                                          "c.example"})))
+        svc = GatewayService(state, backend=StandInBackend(), operator_policy=operator)
+        # this CLIENT may reach two of the operator's three hosts
+        assert state.set_client_allowance(conn.token, ["a.example", "b.example"])
+        request = type("R", (), {"network": "restricted",
+                                 "allowed_domains": ("a.example", "c.example")})()
+        # the job asks for one the client may have and one only the operator allows
+        granted = svc.compose(request, conn.token)
+        assert network_mode(granted) == ("egress", ("a.example",))
+
+    def test_a_client_with_no_network_allowance_gets_none(self, gateway):
+        base, state, _, _ = gateway
+        from agentnode_sdk.sandbox.composition import network_mode
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        conn = _paired(base, state)
+        operator = SandboxPolicy(network=NetworkRules(
+            enabled=True, allowed_destinations=frozenset({"a.example"})))
+        svc = GatewayService(state, backend=StandInBackend(), operator_policy=operator)
+        state.set_client_allowance(conn.token, [])
+        granted = svc.compose(type("R", (), {"network": "restricted",
+                                             "allowed_domains": ("a.example",)})(), conn.token)
+        assert network_mode(granted) == ("none", ())
+
     def test_an_operator_who_allows_a_host_still_bounds_the_job(self, gateway):
         base, state, _, _ = gateway
         from agentnode_sdk.sandbox.composition import network_mode
@@ -318,6 +351,50 @@ class TestEveryAnswerNamesTheGatewayThatGaveIt:
 # ------------------------------------------------------------------ idempotence
 
 class TestAskingTwiceGivesTheSameAnswer:
+    def test_an_exact_repeat_returns_the_same_run_and_starts_nothing_new(self, gateway):
+        """A retry after a dropped connection must not fail, and must not run twice."""
+        base, state, service, backend = gateway
+        conn = _paired(base, state)
+        request = JobRequest(job_id="j", run_id="exact", artifact_sha256=digest(b"x"),
+                             policy_sha256=policy_digest(_granted(service)))
+        payload = request.to_payload()
+        body = {"token": conn.token, "payload": payload,
+                "signature": sign(client_token_secret(conn.token), payload),
+                "artifact_b64": base64.b64encode(b"x").decode()}
+        first = gc._post(base + "/v1/jobs", body)[1]
+        assert first["state"] != "refused", first
+        gc.wait_for(conn, "exact", timeout=20)
+        calls = len(backend.specs)
+        again = gc._post(base + "/v1/jobs", body)[1]     # byte-identical repeat
+        assert again["run_id"] == "exact"
+        assert again["state"] != "refused"
+        assert len(backend.specs) == calls, "an exact repeat must not start a second run"
+
+    def test_a_different_request_reusing_a_run_id_is_refused(self, gateway):
+        """The hole EM3C-GATEWAY-0002 found: a known run id used to bypass admission entirely."""
+        base, state, service, backend = gateway
+        conn = _paired(base, state)
+        first = JobRequest(job_id="j", run_id="shared", artifact_sha256=digest(b"honest"),
+                           policy_sha256=policy_digest(_granted(service)))
+        p1 = first.to_payload()
+        gc._post(base + "/v1/jobs", {
+            "token": conn.token, "payload": p1,
+            "signature": sign(client_token_secret(conn.token), p1),
+            "artifact_b64": base64.b64encode(b"honest").decode()})
+        gc.wait_for(conn, "shared", timeout=20)
+        calls = len(backend.specs)
+        second = JobRequest(job_id="j", run_id="shared", artifact_sha256=digest(b"other"),
+                            policy_sha256=policy_digest(_granted(service)))
+        p2 = second.to_payload()
+        answer = gc._post(base + "/v1/jobs", {
+            "token": conn.token, "payload": p2,
+            "signature": sign(client_token_secret(conn.token), p2),
+            "artifact_b64": base64.b64encode(b"other").decode()})[1]
+        assert answer["state"] == "refused"
+        assert "already belongs to a different request" in answer["refusal"]
+        assert answer["stdout"] == "", "the original run must not be disclosed"
+        assert len(backend.specs) == calls
+
     def test_the_same_run_id_is_the_same_run(self, gateway):
         base, state, service, backend = gateway
         conn = _paired(base, state)
@@ -376,7 +453,10 @@ class TestTheVerticalFlowForReal:
         final = gc.wait_for(conn, answer["run_id"], timeout=180)
         # Printed so the LANE OUTPUT carries the observation, not only the fact that an assertion
         # passed. A reviewer reading the log should be able to see the container's own words.
+        watcher.join(timeout=5)
         print("")
+        print(f"  [observed runtime] the runtime reported a container while the job ran: "
+              f"name={seen.get('name')} id={seen.get('id')} image={seen.get('image')}", flush=True)
         print(f"  [observed] state={final['state']} exit={final['exit_code']} "
               f"stdout={final['stdout']!r} cleanup_verified={final['cleanup_verified']} "
               f"gateway={final.get('gateway')} fingerprint={str(final.get('fingerprint'))[:16]}…",
@@ -387,6 +467,9 @@ class TestTheVerticalFlowForReal:
         # uid 1000, not root: the container hardening applies to remote jobs too
         assert "EM3C-RAN-AS 1000" in final["stdout"], final
         assert final["cleanup_verified"] is True, "the container must be gone, and shown to be"
+        # the runtime itself named a container for this run -- not our own record of one
+        assert seen.get("name", "").startswith("agentnode-em3c-"), seen
+        assert seen.get("id"), "the runtime reported no container id for this run"
 
     def test_a_cancelled_run_ends_its_container_and_says_so(self, real_gateway):
         base, state, service = real_gateway

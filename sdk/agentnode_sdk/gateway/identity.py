@@ -195,6 +195,29 @@ class GatewayState:
                                      encoding="utf-8")
         self._harden(self._tokens_path)
 
+    def set_client_allowance(self, token: str, allowance) -> bool:
+        """Record what a client may reach, against its token.
+
+        `None` means unrestricted at the client scope; a (possibly empty) list of hosts is a
+        ceiling that the operator above still narrows further. Stored against the token hash, so
+        it is bound to an authenticated identity rather than to anything a job carries.
+        """
+        tokens = self._read_tokens()
+        token_hash = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+        if token_hash not in tokens:
+            return False
+        tokens[token_hash]["allowance"] = (
+            None if allowance is None else sorted({str(h) for h in allowance})
+        )
+        self._write_tokens(tokens)
+        return True
+
+    def client_allowance(self, token: str):
+        """The recorded allowance, or None when this client has no ceiling of its own."""
+        token_hash = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+        entry = self._read_tokens().get(token_hash) or {}
+        return entry.get("allowance")
+
     def _issue_token(self, client_name: str = "", now: float | None = None) -> str:
         now = time.time() if now is None else now
         token = secrets.token_urlsafe(32)
