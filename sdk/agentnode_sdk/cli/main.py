@@ -241,6 +241,70 @@ def main(argv: list[str] | None = None) -> int:
 
     # Sandbox runtime image — explicit pull only (no auto-pull). Full guided
     # setup/repair UX is Sprint B.
+    # `gateway` and `remote` are new top-level groups. Nothing existing is renamed, moved or
+    # given a new default -- the V1 surface is structurally frozen, so this is additive only.
+    gw = sub.add_parser("gateway", help="Run a sandbox other machines can send work to")
+    gw_sub = gw.add_subparsers(dest="gateway_command")
+    gw_init = gw_sub.add_parser("init", help="Set this machine up as a sandbox gateway")
+    gw_init.add_argument("--dir", default=None, help="Where to keep its files")
+    gw_init.add_argument("--tls-cert", dest="tls_cert", default=None,
+                         help="Certificate, so machines elsewhere can reach it securely")
+    gw_init.add_argument("--tls-key", dest="tls_key", default=None, help="Its private key")
+    gw_start = gw_sub.add_parser("start", help="Start accepting work")
+    gw_start.add_argument("--dir", default=None)
+    gw_start.add_argument("--host", default=None, help="Address to listen on (default 127.0.0.1)")
+    gw_start.add_argument("--port", type=int, default=None, help="Port (default 8099)")
+    gw_start.add_argument("--tls-cert", dest="tls_cert", default=None)
+    gw_start.add_argument("--tls-key", dest="tls_key", default=None)
+    gw_status = gw_sub.add_parser("status", help="Is it running, and is it protecting anything")
+    gw_status.add_argument("--dir", default=None)
+    # --verbose is per-command rather than global: the V1 top-level surface is frozen, and
+    # the detail it unlocks only exists for these two groups anyway.
+    gw_status.add_argument("--verbose", action="store_true", help="Show the underlying detail")
+    gw_doctor = gw_sub.add_parser("doctor", help="Check what this machine can actually enforce")
+    gw_doctor.add_argument("--dir", default=None)
+    gw_doctor.add_argument("--measure", action="store_true",
+                           help="Measure it for real, by running short containers")
+    gw_doctor.add_argument("--verbose", action="store_true", help="Show the underlying detail")
+    gw_pair = gw_sub.add_parser("pair", help="Show a one-time code so someone can connect")
+    gw_pair.add_argument("--dir", default=None)
+    gw_clients = gw_sub.add_parser("clients", help="Who is connected")
+    gw_clients.add_argument("--dir", default=None)
+    gw_revoke = gw_sub.add_parser("revoke", help="Disconnect a client, at once")
+    gw_revoke.add_argument("--client", required=True, help="Its id or name")
+    gw_revoke.add_argument("--dir", default=None)
+
+    rm = sub.add_parser("remote", help="Send work to a sandbox on another machine")
+    rm_sub = rm.add_subparsers(dest="remote_command")
+    rm_connect = rm_sub.add_parser("connect", help="Pair with a sandbox gateway")
+    rm_connect.add_argument("url", help="Its address, e.g. https://sandbox.example.com")
+    rm_connect.add_argument("--code", required=True, help="The one-time code you were given")
+    rm_connect.add_argument("--as", dest="as_name", default="", help="A name to remember it by")
+    rm_sub.add_parser("list", help="Which sandboxes you can send work to")
+    rm_use = rm_sub.add_parser("use", help="Choose the one used by default")
+    rm_use.add_argument("name")
+    rm_status = rm_sub.add_parser("status", help="Is it reachable, and is it protecting anything")
+    rm_status.add_argument("--name", default="")
+    rm_status.add_argument("--verbose", action="store_true", help="Show the underlying detail")
+    rm_test = rm_sub.add_parser("test", help="Send a tiny program and check it comes back")
+    rm_test.add_argument("--name", default="")
+    rm_run = rm_sub.add_parser("run", help="Run a file in the sandbox")
+    rm_run.add_argument("file")
+    rm_run.add_argument("--name", default="")
+    rm_run.add_argument("--allow", action="append", default=[],
+                        help="A host the code may reach. Repeatable. Everything else is blocked.")
+    rm_run.add_argument("--timeout", type=float, default=600,
+                        help="How long to wait for the result here")
+    rm_run.add_argument("--max-seconds", dest="max_seconds", type=int, default=60,
+                        help="How long the sandbox lets it run before stopping it")
+    rm_cancel = rm_sub.add_parser("cancel", help="Stop a run that is still going")
+    rm_cancel.add_argument("--run", required=True, help="The run id printed when it started")
+    rm_cancel.add_argument("--name", default="")
+    rm_rotate = rm_sub.add_parser("rotate", help="Replace your access, keeping the connection")
+    rm_rotate.add_argument("--name", default="")
+    rm_disconnect = rm_sub.add_parser("disconnect", help="Forget a sandbox on this machine")
+    rm_disconnect.add_argument("--name", default="")
+
     sandbox_parser = sub.add_parser("sandbox", help="Sandbox runtime image management")
     sandbox_sub = sandbox_parser.add_subparsers(dest="sandbox_action")
     sandbox_sub.add_parser("pull", help="Pull the pinned sandbox image (explicit, no auto-pull)")
@@ -299,6 +363,14 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             mcp_parser.print_help()
             return 0
+        if args.command == "gateway":
+            from agentnode_sdk.cli.gateway_commands import dispatch as gateway_dispatch
+            return gateway_dispatch(args)
+
+        if args.command == "remote":
+            from agentnode_sdk.cli.remote_commands import dispatch as remote_dispatch
+            return remote_dispatch(args)
+
         if args.command == "sandbox":
             if args.sandbox_action == "pull":
                 from agentnode_sdk.cli.sandbox_commands import cmd_sandbox_pull
