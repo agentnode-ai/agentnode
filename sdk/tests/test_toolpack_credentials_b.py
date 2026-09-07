@@ -239,17 +239,46 @@ def test_container_refusal_starts_nothing(monkeypatch, container_env):
     assert backend.spec is None  # no container ran
 
 
-def test_container_non_credentialed_path_unchanged(container_env):
+def test_container_non_credentialed_pack_without_a_network_declaration_takes_the_plain_path(
+        container_env):
+    """No credentials and no network request: the ordinary build path, no proxy."""
     backend, proxy, _ = container_env
     from agentnode_sdk.runtimes.python_runner import _run_container
 
     entry = _sandboxed_entry("plain-pack", env_requirements=[])
+    entry["permissions"] = {"network_level": "none"}
 
     result, error, timed_out = _run_container("plain-pack", None, {}, 30.0, entry)
 
     assert error is None
     assert result == {"n": 1}
     assert backend.build_spec_called is True
-    assert backend.spec.network in ("default", "none")
+    assert backend.spec.network == "none"
     assert backend.spec.env_passthrough == []
     assert proxy["started"] == 0
+
+
+def test_container_non_credentialed_restricted_pack_now_gets_a_bound_egress(container_env):
+    """EM3D-NETWORK-DECISION-0001: a restriction is enforced even without credentials.
+
+    This test previously asserted the opposite under the name
+    ``test_container_non_credentialed_path_unchanged``: a pack declaring ``restricted`` but no
+    ``env_requirements`` skipped the credentialed branch and reached ``build_process_spec`` with an
+    open network, because the declared level resolved to the engine default. Only a credentialed
+    pack ever got a proxy. The restriction now applies to both, so the plain path is genuinely not
+    unchanged -- and asserting that it was would have preserved the defect.
+    """
+    backend, proxy, _ = container_env
+    from agentnode_sdk.runtimes.python_runner import _run_container
+
+    entry = _sandboxed_entry("plain-pack", env_requirements=[])
+    assert entry["permissions"]["network_level"] == "restricted"
+
+    result, error, timed_out = _run_container("plain-pack", None, {}, 30.0, entry)
+
+    assert error is None
+    assert result == {"n": 1}
+    assert proxy["started"] == 1, "a restricted pack must reach its hosts through the proxy"
+    assert backend.spec.network == "egress"
+    # no credentials were declared, so nothing is passed through by name
+    assert backend.spec.env_passthrough == []
