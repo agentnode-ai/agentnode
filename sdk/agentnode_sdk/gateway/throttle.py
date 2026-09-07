@@ -103,14 +103,24 @@ class Throttle:
         target = Path(self.path)
         if not target.exists():
             return                                # nothing recorded yet: genuinely no history
-        try:
-            raw = target.read_text(encoding="utf-8")
-        except OSError:
-            # Could not READ it -- a transient sharing violation, a permissions problem. That is
-            # not evidence of tampering, and treating it as such locked the gateway out of its own
-            # pairing under ordinary concurrency. Keep whatever this object already knew; the
-            # process lock above means a writer is not mid-flight, so this is rare and not a
-            # licence to assume the file says nothing.
+        # A transient sharing violation is not evidence of tampering, and treating it as such
+        # locked the gateway out of its own pairing under ordinary concurrency -- so retry first.
+        raw = None
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                raw = target.read_text(encoding="utf-8")
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.02)
+        if raw is None:
+            # It exists and still will not open. "Keep what this object already knew" was the
+            # earlier answer and it was wrong in the case that matters: a FRESH object after a
+            # restart knows nothing, so it reported no lock. Not being able to read the state is
+            # not the same as the state saying there is no lock.
+            self._fail_closed(now)
             return
         try:
             loaded = json.loads(raw)
@@ -165,7 +175,14 @@ class Throttle:
         with self._lock, self._across_processes():
             self._read_locked(now)
             if self._dirty:
-                self._write_locked()
+                # Best effort. If the fail-closed decision cannot be persisted -- the same broken
+                # state that made it unreadable may also make it unwritable -- the answer is still
+                # "locked", and the next fresh object will fail closed on the same read. Raising
+                # here would turn a lockout into a crash, and a crash is not an answer.
+                try:
+                    self._write_locked()
+                except OSError:
+                    pass
                 self._dirty = False
             return max(0.0, self._locked_until - now)
 

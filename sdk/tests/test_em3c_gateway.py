@@ -1258,6 +1258,24 @@ class TestCorruptLockoutStateFailsClosed:
             later = Throttle(path=path)
             assert later.locked_for(now=1000.0 + locked + 1.0) == 0.0
 
+    def test_state_that_exists_but_will_not_open_also_fails_closed(self):
+        """EM3C-GATEWAY-0010: unparseable was handled; unreadable was not.
+
+        A fresh object after a restart knows nothing, so "keep what we already knew" reported no
+        lock. Not being able to read the state is not the same as the state saying there is no
+        lock. A directory in the file's place is a portable way to make the read fail without
+        depending on permissions, which a root CI user would ignore.
+        """
+        from agentnode_sdk.gateway.throttle import Throttle
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "throttle.json"
+            path.mkdir()
+            throttle = Throttle(path=path)
+            assert throttle.locked_for(now=1000.0) > 0.0, (
+                "state that could not be read was reported as no lockout"
+            )
+
     def test_a_missing_file_is_not_corruption(self):
         from agentnode_sdk.gateway.throttle import Throttle
 
