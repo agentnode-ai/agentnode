@@ -36,6 +36,11 @@ from typing import Any
 
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
 from agentnode_sdk.gateway.ledger import Ledger
+from agentnode_sdk.gateway.readiness import (
+    ReadinessGate,
+    ReportBinding,
+    describe_missing,
+)
 from agentnode_sdk.gateway.transport import TlsFiles, check_bind_address
 from agentnode_sdk.gateway.protocol import (
     PROTOCOL_VERSION,
@@ -66,6 +71,9 @@ class RunRecord:
     effective_policy_sha256: str = ""
     deltas: list = field(default_factory=list)
     artifact_sha256: str = ""
+    #: What the job said it required. Kept so the end of the run can check that what it
+    #: asked for actually held, rather than only that the job finished.
+    required_properties: tuple = ()
     #: Which paired client this run belongs to. A run is readable and cancellable by its
     #: owner and by nobody else. This is the client's identity, NOT its token: rotating a
     #: credential must not orphan the runs the client already submitted.
@@ -156,6 +164,7 @@ class GatewayService:
         # What must survive this process. In-memory replay protection has a documented way
         # around it: restart the gateway, which on a server happens on its own.
         self.ledger = Ledger(self.state.root / "ledger.json")
+        self.readiness = ReadinessGate(self.state.root)
         self._restore_interrupted()
         self._lock = threading.Lock()
 
@@ -181,30 +190,81 @@ class GatewayService:
 
     # ------------------------------------------------------------------ capabilities
 
-    def measured_properties(self) -> dict[str, bool]:
-        """What this backend can actually be shown to do, measured rather than declared.
-
-        These are the names a client may put in `required_properties`. A property this gateway
-        cannot demonstrate is absent, and a job requiring it is refused -- not run anyway.
-        """
+    def report_binding(self) -> ReportBinding:
+        """What a conformance report about this gateway would have to be about."""
+        identity = self.state.identity
         availability = self.backend.check_available()
-        return {
+        return ReportBinding(
+            gateway_id=identity.gateway_id,
+            gateway_version=identity.version,
+            backend=str(availability.backend or ""),
+            image_digest=str(availability.image_digest or ""),
+        )
+
+    def measure(self, options=None, now: float | None = None):
+        """Run the conformance suite against this backend and keep the result.
+
+        This is what closes the loop. A gate that can refuse but offers no way through is not a
+        gate, it is a wall -- and the remediation the refusal names has to be a command that
+        really runs and really changes the answer, not a label. `agentnode gateway doctor
+        --measure` is this method.
+
+        The report is stored with what it is about, so it cannot later be read as evidence for a
+        different gateway, a different image, or a version that has since been upgraded.
+        """
+        from datetime import datetime, timezone
+
+        from agentnode_sdk.conformance.runner import run_conformance
+
+        stamp = datetime.fromtimestamp(now or time.time(), tz=timezone.utc).isoformat()
+        report = run_conformance(self.backend, generated_at=stamp, options=options)
+        self.readiness.store(report.to_dict(), self.report_binding(), now)
+        return self.readiness_now()
+
+    def readiness_now(self):
+        """The current answer to whether this gateway may take work, with its reason."""
+        return self.readiness.evaluate(self.report_binding())
+
+    def measured_properties(self) -> dict[str, bool]:
+        """What this gateway has been SHOWN to do -- from measurements, not from its own say-so.
+
+        This used to read:
+
             "container_isolation": bool(availability.available),
-            "network_none": bool(availability.available),
-            "memory_ceiling_enforceable": availability.memory_limit_enforceable is True,
-            "verified_cleanup": bool(availability.available),
-        }
+            "verified_cleanup":    bool(availability.available),
+
+        A container runtime being installed was reported as proof that the runtime isolates and
+        that cleanup is verified. Neither follows, and a client asking for `verified_cleanup` was
+        checked against that claim and told yes -- a check that could not see its input reporting
+        the good answer.
+
+        Now every name here is true only if the conformance suite MEASURED it, on this gateway,
+        against this image, recently enough to still describe it. Missing, stale, foreign,
+        unmeasured and failed all come out false.
+        """
+        return dict(self.readiness_now().properties)
 
     def hello(self) -> dict[str, Any]:
         identity = self.state.identity
         availability = self.backend.check_available()
+        readiness = self.readiness_now()
+        # Both have to hold. A runtime that is missing means nothing can run; a gateway that has
+        # not been measured means nothing SHOULD run, because it cannot say what it enforces.
+        ready = bool(availability.available) and readiness.ready
+        if not availability.available:
+            reason = availability.reason or "no container runtime is available"
+        else:
+            reason = readiness.reason
         return {
             "protocol": PROTOCOL_VERSION,
             "gateway": identity.as_dict(),
             "fingerprint": identity.fingerprint,
-            "ready": bool(availability.available),
-            "reason": "" if availability.available else (availability.reason or "not ready"),
-            "properties": self.measured_properties(),
+            "ready": ready,
+            "reason": "" if ready else reason,
+            "properties": readiness.properties,
+            "unproven": list(readiness.unproven),
+            "next_steps": list(readiness.next_steps),
+            "measured_at": readiness.measured_at,
             "pairing_open": self.state.pairing_active(),
         }
 
@@ -314,6 +374,9 @@ class GatewayService:
             )
 
         properties = self.measured_properties()
+        # `properties` now comes from measurements. A name that was never measured is absent
+        # rather than false-but-known, and both are equally "not satisfied" -- unknown does not
+        # round up to yes just because a job asked for it.
         missing = [p for p in request.required_properties if not properties.get(p, False)]
         if missing:
             raise ProtocolError(
@@ -438,9 +501,22 @@ class GatewayService:
         idempotent, carries no session, and is the reconnection path. Re-sending the submission
         was never the right way to ask whether a job ran.
         """
+        # Before anything else about this particular job: may this gateway run ANY job? An
+        # unmeasured gateway cannot say what it enforces, so it does not get to run foreign code
+        # and find out afterwards. Refused before admission, and long before a container.
+        readiness = self.readiness_now()
+        if not readiness.ready:
+            blocked = RunRecord(run_id=request.run_id, job_id=request.job_id, state="refused")
+            blocked.refusal = readiness.reason + (
+                (" Next: " + readiness.next_steps[0]) if readiness.next_steps else ""
+            )
+            blocked.finished_at = time.time()
+            return blocked
+
         request_sha = digest(canonical_bytes(request.to_payload()))
         record = RunRecord(run_id=request.run_id, job_id=request.job_id,
                            request_sha256=request_sha,
+                           required_properties=tuple(request.required_properties),
                            owner_client_id=self.state.client_id_for(token) or "")
         try:
             granted, _props, req_shape, eff_shape, deltas = self.admit(
@@ -552,6 +628,19 @@ class GatewayService:
             # saw state="finished" on a record whose cleanup_verified was still None -- a terminal
             # answer that was not yet true. The real container lane caught it; before that it
             # passed on timing alone, which is the worst way for a race to behave.
+            # A job that asked for verified cleanup and got "unknown" did not get what it
+            # asked for. Unknown is an honest answer -- there are backends with nothing to ask --
+            # but it is not a yes, and rounding it up here would make the requirement decorative
+            # while leaving the caller believing it held.
+            if (terminal == "finished"
+                    and "verified_cleanup" in record.required_properties
+                    and record.cleanup_verified is not True):
+                terminal = "unverified"
+                record.refusal = (
+                    "the job ran and finished, but it required verified cleanup and this gateway "
+                    "could not confirm the container was removed. Treat the result as unproven: "
+                    "what ran is not in question, what was left behind is."
+                )
             # A reader that sees a terminal state must be seeing a complete record.
             record.state = terminal
             self.ledger.note_state(record.run_id, terminal)

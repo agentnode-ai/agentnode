@@ -44,6 +44,11 @@ from typing import Any
 #: rather than guessing, because guessing is how a client ends up believing a property holds.
 PROTOCOL_VERSION = "em3c/1"
 
+#: Every state from which a run will never move again. One list, shared, because a client that
+#: does not recognise a terminal state waits for it forever -- which is how "unverified" was
+#: first met: the run had ended and the client polled until it timed out.
+TERMINAL_STATES = ("finished", "refused", "cancelled", "unverified", "interrupted")
+
 #: How far apart the two clocks may be before a request is refused as stale. Wide enough for an
 #: ordinary skew, narrow enough that a captured request stops being useful quickly.
 CLOCK_SKEW_SECONDS = 120

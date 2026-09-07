@@ -26,6 +26,7 @@ import time
 import pytest
 
 from agentnode_sdk.gateway import client as gc
+from agentnode_sdk.gateway import readiness
 from agentnode_sdk.gateway import transport as tr
 from agentnode_sdk.gateway.identity import (
     PairingError,
@@ -124,12 +125,41 @@ def _raw_get(base, path, token):
         return exc.code, json.loads(exc.read().decode("utf-8") or "{}")
 
 
+def _store_measurement(service, ok=True, observed=True, only=None, binding=None):
+    """Give a gateway a conformance report, so the readiness gate is exercised not bypassed.
+
+    The unit suite has no container runtime, so it cannot measure anything for real. What it can
+    do is state exactly what a measurement would have said and let the gate draw its own
+    conclusions -- which is the part under test here. Whether the real suite reaches these
+    verdicts is the container lane's job, and it does measure, for real.
+    """
+    from agentnode_sdk.gateway.readiness import PROPERTY_CHECKS
+
+    check_ids = sorted({c for ids in PROPERTY_CHECKS.values() for c in ids})
+    results = []
+    for check_id in check_ids:
+        wanted = ok if (only is None or check_id in only) else False
+        results.append({
+            "check_id": check_id,
+            "title": check_id,
+            "family": "test",
+            "ok": bool(wanted),
+            "assurance": "observed" if observed else "self-reported",
+            "outcome": "measured",
+            "required": True,
+            "evidence": "stated by the test",
+        })
+    service.readiness.store({"results": results}, binding or service.report_binding())
+    return service.readiness_now()
+
+
 @pytest.fixture()
 def gateway():
     with tempfile.TemporaryDirectory() as td:
         state = GatewayState(td, version="test")
         backend = StandInBackend()
         service = GatewayService(state, backend=backend)
+        _store_measurement(service)
         server = make_server(service, port=0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -1093,6 +1123,185 @@ class TestAskingTwiceGivesTheSameAnswer:
             gc.status_of(conn, "never-existed")
 
 
+# ------------------------------------------------- a gateway that cannot say what it enforces
+
+class TestNothingRunsOnAnUnmeasuredGateway:
+    """`bool(runtime_is_installed)` was being reported as proof that the runtime isolates.
+
+    That is what `measured_properties` used to return: container_isolation and verified_cleanup
+    were both `availability.available`. A client asking for verified cleanup was checked against
+    that claim and told yes. These tests are about the gate that replaced it.
+    """
+
+    def _fresh(self, td, backend=None):
+        state = GatewayState(td, version="test")
+        service = GatewayService(state, backend=backend or StandInBackend())
+        server = make_server(service, port=0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return state, service, server, "http://127.0.0.1:%d" % server.server_address[1]
+
+    def test_an_unmeasured_gateway_is_not_ready_and_runs_nothing(self):
+        with tempfile.TemporaryDirectory() as td:
+            state, service, server, base = self._fresh(td)
+            try:
+                hello = gc.hello(base)
+                assert hello["ready"] is False
+                assert "has not been measured" in hello["reason"]
+                assert hello["next_steps"], "a refusal must name a way through"
+                assert all(v is False for v in hello["properties"].values()), hello["properties"]
+
+                conn = gc.pair(base, state.start_pairing())
+                answer = gc.submit(conn, b"x", network="none")
+                assert answer["state"] == "refused"
+                assert "has not been measured" in answer["refusal"]
+                assert "gateway doctor" in answer["refusal"]
+                assert service.backend.specs == [], "an unmeasured gateway ran a job"
+            finally:
+                server.shutdown()
+
+    def test_a_measurement_of_something_else_does_not_count(self):
+        """A report copied from another machine describes that machine."""
+        from agentnode_sdk.gateway.readiness import ReportBinding
+
+        with tempfile.TemporaryDirectory() as td:
+            state, service, server, base = self._fresh(td)
+            try:
+                foreign = ReportBinding(gateway_id="somebody-elses-gateway",
+                                        gateway_version="test", backend="docker",
+                                        image_digest="")
+                _store_measurement(service, binding=foreign)
+                hello = gc.hello(base)
+                assert hello["ready"] is False
+                assert "describes something else" in hello["reason"]
+                assert "gateway_id" in hello["reason"]
+            finally:
+                server.shutdown()
+
+    def test_a_measurement_against_a_different_image_does_not_count(self):
+        from agentnode_sdk.gateway.readiness import ReportBinding
+
+        with tempfile.TemporaryDirectory() as td:
+            state, service, server, base = self._fresh(td)
+            try:
+                current = service.report_binding()
+                other = ReportBinding(gateway_id=current.gateway_id,
+                                      gateway_version=current.gateway_version,
+                                      backend=current.backend,
+                                      image_digest="sha256:something-else")
+                _store_measurement(service, binding=other)
+                assert gc.hello(base)["ready"] is False
+                assert "image_digest" in gc.hello(base)["reason"]
+            finally:
+                server.shutdown()
+
+    def test_a_stale_measurement_does_not_count(self):
+        with tempfile.TemporaryDirectory() as td:
+            state, service, server, base = self._fresh(td)
+            try:
+                _store_measurement(service)
+                service.readiness.max_age_seconds = 0.0   # everything is now too old
+                hello = gc.hello(base)
+                assert hello["ready"] is False
+                assert "too old" in hello["reason"]
+            finally:
+                server.shutdown()
+
+    def test_a_self_reported_report_is_not_a_measurement(self):
+        """`observed` and `self-reported` are different words on purpose."""
+        with tempfile.TemporaryDirectory() as td:
+            state, service, server, base = self._fresh(td)
+            try:
+                _store_measurement(service, observed=False)
+                hello = gc.hello(base)
+                assert hello["ready"] is False
+                assert hello["properties"]["container_isolation"] is False
+            finally:
+                server.shutdown()
+
+    def test_a_property_that_failed_is_absent_and_a_job_needing_it_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            state, service, server, base = self._fresh(td)
+            try:
+                # everything measured except the cleanup checks
+                _store_measurement(service, only=("outside-host-process", "not-root",
+                                                  "network-mode", "limit-memory",
+                                                  "egress-allowlist"))
+                hello = gc.hello(base)
+                assert hello["ready"] is True, hello["reason"]
+                assert hello["properties"]["verified_cleanup"] is False
+                assert "verified_cleanup" in hello["unproven"]
+
+                conn = gc.pair(base, state.start_pairing())
+                answer = gc.submit(conn, b"x", network="none",
+                                   required_properties=("verified_cleanup",))
+                assert answer["state"] == "refused"
+                assert service.backend.specs == []
+            finally:
+                server.shutdown()
+
+    def test_every_mapped_check_is_one_the_suite_really_emits(self):
+        """A mapping naming a check the suite does not produce would make its property
+        permanently unreachable -- which reads as "not ready" and gets explained away."""
+        from agentnode_sdk.conformance.doubles import GoodBackendDouble
+        from agentnode_sdk.conformance.runner import run_conformance
+
+        # The real suite, run against the double it already ships, so the ids compared are the
+        # ids it actually emits rather than a second list that could drift from the first.
+        report = run_conformance(GoodBackendDouble(), generated_at="1970-01-01T00:00:00+00:00")
+        emitted = {r.check_id for r in report.results}
+        mapped = {c for ids in readiness.PROPERTY_CHECKS.values() for c in ids}
+        assert mapped <= emitted, f"not produced by the suite: {sorted(mapped - emitted)}"
+
+
+class TestUnknownCleanupIsNotSuccess:
+
+    def test_a_job_requiring_verified_cleanup_is_not_finished_when_cleanup_is_unknown(self):
+        class CannotSay(StandInBackend):
+            def containers_named(self, prefix):
+                return False, []          # the runtime could not be asked
+
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            service = GatewayService(state, backend=CannotSay())
+            _store_measurement(service)
+            server = make_server(service, port=0)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = "http://127.0.0.1:%d" % server.server_address[1]
+            try:
+                conn = gc.pair(base, state.start_pairing())
+                answer = gc.submit(conn, b"x", network="none",
+                                   required_properties=("verified_cleanup",))
+                assert answer["state"] != "refused", answer.get("refusal")
+                final = gc.wait_for(conn, answer["run_id"], timeout=60)
+                assert final["cleanup_verified"] is None
+                assert final["state"] == "unverified", final["state"]
+                assert "could not confirm" in final["refusal"]
+                # what ran is not in question; what was left behind is
+                assert final["exit_code"] == 0
+            finally:
+                server.shutdown()
+
+    def test_a_job_that_did_not_ask_is_still_finished(self):
+        class CannotSay(StandInBackend):
+            def containers_named(self, prefix):
+                return False, []
+
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            service = GatewayService(state, backend=CannotSay())
+            _store_measurement(service)
+            server = make_server(service, port=0)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = "http://127.0.0.1:%d" % server.server_address[1]
+            try:
+                conn = gc.pair(base, state.start_pairing())
+                answer = gc.submit(conn, b"x", network="none")
+                final = gc.wait_for(conn, answer["run_id"], timeout=60)
+                assert final["state"] == "finished"
+            finally:
+                server.shutdown()
+
+
 # ----------------------------------------------------- what must outlive the process itself
 
 class TestARestartDoesNotForget:
@@ -1106,6 +1315,9 @@ class TestARestartDoesNotForget:
         """A gateway on an existing directory. Calling it twice is the restart."""
         state = GatewayState(root, version="test")
         service = GatewayService(state, backend=backend or StandInBackend())
+        # Stored on the first call and still there on the second: the measurement outlives the
+        # process too, and the restarted gateway recognises it as its own rather than re-running.
+        _store_measurement(service)
         server = make_server(service, port=0)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return state, service, server, "http://127.0.0.1:%d" % server.server_address[1]
@@ -1225,7 +1437,10 @@ class TestTheVerticalFlowForReal:
     foreign payload and its output came back over HTTP.
     """
 
-    @pytest.fixture()
+    # Class-scoped: measuring for real means running the whole conformance suite against the
+    # runtime, and doing that once per test would triple a lane that already runs containers.
+    # The three tests use distinct run ids and each verifies its own cleanup.
+    @pytest.fixture(scope="class")
     def real_gateway(self):
         from agentnode_sdk.sandbox.container_backend import ContainerBackend
 
@@ -1235,6 +1450,15 @@ class TestTheVerticalFlowForReal:
         with tempfile.TemporaryDirectory() as td:
             state = GatewayState(td, version="test")
             service = GatewayService(state, backend=backend)
+            # The gateway will not run anything until it has been measured, so the lane measures
+            # it -- with the real suite, against the real runtime. This is the remediation the
+            # refusal names, exercised rather than described.
+            readiness = service.measure()
+            if not readiness.ready:
+                # Not a skip. The runtime is present -- the fixture already skipped otherwise --
+                # so a gateway that still cannot be measured is a real failure, and a silent
+                # skip here would let the one lane that can measure for real report nothing.
+                pytest.fail("conformance could not be measured: " + readiness.reason)
             server = make_server(service, port=0)
             threading.Thread(target=server.serve_forever, daemon=True).start()
             base = f"http://127.0.0.1:{server.server_address[1]}"

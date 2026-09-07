@@ -24,6 +24,7 @@ from agentnode_sdk.gateway.transport import check_client_url
 
 from agentnode_sdk.gateway.protocol import (
     JobRequest,
+    TERMINAL_STATES,
     canonical_bytes,
     digest,
     sign,
@@ -253,7 +254,7 @@ def wait_for(connection: GatewayConnection, run_id: str, timeout: float = 120.0,
     last: dict[str, Any] = {}
     while time.monotonic() < deadline:
         last = status_of(connection, run_id)
-        if last.get("state") in ("finished", "refused", "cancelled"):
+        if last.get("state") in TERMINAL_STATES:
             return last
         time.sleep(poll)
     raise GatewayClientError(
