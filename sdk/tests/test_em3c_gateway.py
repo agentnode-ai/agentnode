@@ -1964,7 +1964,7 @@ class TestAMeasurementBelongsToOneBoot:
 
         value, method = boot_identity()
         assert value
-        assert method in ("kernel-boot-id", "derived-boot-time")
+        assert method in ("kernel-boot-id", "process-lifetime")
         assert describe(method)
         again, method_again = boot_identity()
         assert (value, method) == (again, method_again), "the boot identity is not stable"
@@ -2531,12 +2531,31 @@ class TestAControlledDestinationWithNoInternet:
             print("  [observed] destination container: %s" % started.stdout.strip()[:12])
 
             probe = (
-                "import urllib.request\n"
+                "import urllib.error, urllib.request\n"
                 "try:\n"
                 "    with urllib.request.urlopen('http://controlled.test:8000/', timeout=20) as r:\n"
                 "        print('REACHED', r.status)\n"
+                "except urllib.error.HTTPError as e:\n"
+                "    print('ANSWERED-AND-REFUSED', e.code)\n"
                 "except Exception as e:\n"
-                "    print('REFUSED', type(e).__name__)\n"
+                "    print('NO-ANSWER', type(e).__name__)\n"
+            )
+
+            # Positive control first. Without it, "the job could not reach the destination" is
+            # satisfied just as well by a destination that never came up -- EM3C-EXTERNAL-0001
+            # found that this test accepted any exception at all, so it could not tell a policy
+            # refusal from a broken server. From the proxy's own network the destination must be
+            # reachable; only then does a refusal on the inside mean something.
+            reachable = self._run([
+                handle.runtime, "run", "--rm", "--network", handle.ext_net,
+                image, "python", "-c", probe,
+            ])
+            control = (reachable.stdout or "").strip()
+            print("  [observed] from the proxy's own network: %r" % control)
+            assert control.startswith("REACHED"), (
+                "the controlled destination was not reachable even from the network it sits on, "
+                "so nothing below can be attributed to policy: " + control
+                + " / " + (reachable.stderr or "")[:200]
             )
             out = self._run([
                 handle.runtime, "run", "--rm", "--network", handle.int_net,
@@ -2546,9 +2565,11 @@ class TestAControlledDestinationWithNoInternet:
             ])
             said = (out.stdout or "").strip()
             print("  [observed] through the proxy, to an allowlisted private address: %r" % said)
-            assert said.startswith("REFUSED"), (
-                "the proxy connected to a private address because it was on the allowlist: "
-                + said + " / " + (out.stderr or "")[:200]
+            # The proxy must have ANSWERED and refused. "Could not connect" would be the same
+            # observation a dead proxy produces, and the destination is provably alive.
+            assert said.startswith("ANSWERED-AND-REFUSED"), (
+                "the proxy did not answer with a refusal for a private address that was on the "
+                "allowlist: " + said + " / " + (out.stderr or "")[:200]
             )
 
             # and with no proxy at all there is no route to it either
@@ -2558,7 +2579,9 @@ class TestAControlledDestinationWithNoInternet:
             ])
             said_direct = (direct.stdout or "").strip()
             print("  [observed] with no proxy at all: %r" % said_direct)
-            assert said_direct.startswith("REFUSED"), said_direct
+            # Here the opposite is required: with no proxy there is nothing to answer, so the
+            # right observation is that nothing did.
+            assert said_direct.startswith("NO-ANSWER"), said_direct
         finally:
             self._run([handle.runtime, "rm", "-f", server], timeout=60)
             stop_egress_proxy(handle)

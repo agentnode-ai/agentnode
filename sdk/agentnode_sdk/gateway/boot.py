@@ -12,27 +12,32 @@ So the boot is part of the binding, and the only interesting question is how to 
 
 * **Linux** has `/proc/sys/kernel/random/boot_id`: a UUID the kernel generates at boot. Exact,
   free, and unambiguous. It is what the deployment target uses.
-* **Elsewhere** there is no equivalent that can be read without shelling out, so the boot time is
-  *derived*: `time.time() - time.monotonic()` is approximately the moment the clock started
-  counting, and on both Linux and Windows the monotonic clock counts from boot. It is rounded to
-  a minute so that ordinary jitter does not make it look like a new boot.
+* **Elsewhere** there is no equivalent that can be read without shelling out, and the first
+  attempt here derived one from `time.time() - time.monotonic()`, rounded to a minute.
+  `EM3C-EXTERNAL-0001` rejected that, correctly: rounding lets two different boots share an
+  identity, and a value derived from the wall clock can be reproduced deliberately by setting the
+  clock back, so a stale report could be made to look current by the one party who would want to.
 
-The derived form is weaker and is labelled as such rather than being quietly presented as the same
-thing. A wall-clock adjustment -- an NTP step, a manual change, a daylight-saving move on a machine
-that keeps local time in the RTC -- shifts it and will read as a reboot that did not happen. That
-direction is the safe one: it forces a re-measurement rather than accepting a stale report. The
-method travels with the value so that a reader can tell which of the two they are looking at.
+  What replaces it is not a better estimate. It is a value generated fresh in this process and
+  never written down. Every restart therefore looks like a new boot, which on a machine with no
+  boot identifier is exactly the truth: this build cannot tell whether the machine rebooted, so it
+  assumes it did and re-measures. That costs a measurement per gateway restart on those platforms
+  and cannot be forged, which is the trade worth making -- a gateway runs on Linux, where the
+  kernel answers the question properly.
+
+The method travels with the value so a reader can tell which of the two they have.
 """
 from __future__ import annotations
 
-import time
+import uuid
 from pathlib import Path
 
-#: How coarsely the derived boot time is rounded, in seconds. A minute is far longer than the
-#: jitter between two readings and far shorter than any real uptime worth confusing with it.
-DERIVED_ROUNDING_SECONDS = 60
-
 LINUX_BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
+
+#: Generated once, here, and never persisted. On a platform with no boot identifier this is what
+#: stands in for one, so a restart is indistinguishable from a reboot -- which is the honest answer
+#: when the machine cannot be asked.
+_THIS_PROCESS = uuid.uuid4().hex
 
 
 def boot_identity() -> tuple[str, str]:
@@ -45,9 +50,7 @@ def boot_identity() -> tuple[str, str]:
     except OSError:
         pass
 
-    approximate = time.time() - time.monotonic()
-    rounded = int(approximate // DERIVED_ROUNDING_SECONDS) * DERIVED_ROUNDING_SECONDS
-    return str(rounded), "derived-boot-time"
+    return _THIS_PROCESS, "process-lifetime"
 
 
 def describe(method: str) -> str:
@@ -55,7 +58,6 @@ def describe(method: str) -> str:
     if method == "kernel-boot-id":
         return "the kernel's own boot identifier"
     return (
-        "an estimate of when this machine started, since it offers no boot identifier. A clock "
-        "change can make this look like a restart, which forces a fresh measurement rather than "
-        "trusting an old one"
+        "this gateway process, because the machine offers no boot identifier. It cannot tell a "
+        "restart from a reboot, so it treats every restart as one and measures again"
     )

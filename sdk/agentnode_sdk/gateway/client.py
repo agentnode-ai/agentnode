@@ -258,19 +258,31 @@ def assert_same_gateway(connection: GatewayConnection, body: dict) -> None:
     ever pointed somewhere else -- a changed tunnel route, a proxy reconfigured, a name that now
     resolves elsewhere -- the answer stops being accepted rather than being quietly used.
 
-    Only checked when there is something to check against: a connection saved before fingerprints
-    were recorded has none, and refusing those would break every existing pairing to add a check
-    it cannot perform. Both fields are compared when both are known.
+    A connection that pinned nothing cannot check anything, and refusing those would break every
+    pairing saved before fingerprints were recorded. But once a connection HAS pinned a value, an
+    answer that simply omits the field is refused rather than skipped -- `EM3C-EXTERNAL-0001` found
+    that the earlier "compare only when both are present" rule handed an attacker the bypass, since
+    the field is theirs to leave out.
     """
     said = body.get("gateway") or {}
     seen_id = str(said.get("gateway_id", "") or body.get("gateway_id", "") or "")
     seen_print = str(body.get("fingerprint", "") or "")
 
+    if connection.gateway_id and not seen_id:
+        raise GatewayClientError(
+            "the answer from " + connection.base_url + " does not say which gateway it came from, "
+            "and this connection is paired with a particular one. Nothing was accepted from it."
+        )
     if connection.gateway_id and seen_id and seen_id != connection.gateway_id:
         raise GatewayClientError(
             "the machine answering at " + connection.base_url + " is not the sandbox you paired "
             "with. Nothing was sent to it. If the gateway genuinely moved, connect to it again; "
             "if it did not, something else is answering on that address."
+        )
+    if connection.fingerprint and not seen_print:
+        raise GatewayClientError(
+            "the answer from " + connection.base_url + " carries no gateway fingerprint, and this "
+            "connection recorded one when it paired. Nothing was accepted from it."
         )
     if connection.fingerprint and seen_print and seen_print != connection.fingerprint:
         raise GatewayClientError(
@@ -310,11 +322,14 @@ def rotate(connection: GatewayConnection) -> GatewayConnection:
 def status_of(connection: GatewayConnection, run_id: str, verify: bool = True) -> dict[str, Any]:
     """Idempotent: asking twice gives the same answer, and asking is free."""
     status, body = _get(f"{connection.base_url}/v1/jobs/{run_id}", token=connection.token)
-    assert_same_gateway(connection, body)
     if status == 404:
         raise GatewayClientError(f"the gateway does not know a run {run_id}")
     if status != 200:
         raise GatewayClientError(body.get("error", f"the gateway answered {status}"))
+    # After the status, not before: a refusal is a refusal, and demanding that an error body carry
+    # a gateway stamp would replace "you are not paired" with a confusing complaint about identity.
+    # The check belongs on answers this would otherwise go on to trust.
+    assert_same_gateway(connection, body)
     return verify_answer(connection, body) if verify else body
 
 

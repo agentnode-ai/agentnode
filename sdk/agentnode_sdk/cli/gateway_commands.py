@@ -289,8 +289,17 @@ def _say_remote_access(root: Path, config: dict) -> None:
         print("  The simplest route needs no domain name and no open port:")
         print("    install Tailscale (or another private tunnel), then:")
         print("      tailscale serve --bg 8099")
-        print("  If you already run Caddy or nginx with a certificate, put it in front instead")
-        print("  and leave this gateway on 127.0.0.1.")
+        print()
+        print("  If you would rather use a reverse proxy you already run, leave the gateway on")
+        print("  127.0.0.1 and give Caddy this, replacing the name with your own:")
+        print()
+        print("      sandbox.example.com {")
+        print("          reverse_proxy 127.0.0.1:8099")
+        print("      }")
+        print()
+        print("  Caddy obtains and renews the certificate itself. The equivalent for nginx needs")
+        print("  proxy_pass http://127.0.0.1:8099; inside a server block that already terminates")
+        print("  TLS. Either way the gateway keeps its default address and is never exposed.")
 
 
 def cmd_pair(args) -> int:

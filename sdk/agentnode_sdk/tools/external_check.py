@@ -140,7 +140,12 @@ def client_role(args) -> int:
         encoding="utf-8")
     out = run("remote", "run", str(offline))
     print((out.stdout or "")[-600:])
-    step("a job with no network really has none", "NO ROUTE" in (out.stdout or ""))
+    blocked = "NO ROUTE" in (out.stdout or "")
+    # A sandbox that is simply broken also fails to reach anything, so being blocked is only
+    # meaningful next to something that succeeds. The allowed-host step below is that control; if
+    # it fails too, this result says nothing and is reported as such rather than as a pass.
+    step("a job with no network reported no route", blocked,
+         "meaningful only if the allowed-host step below succeeds")
 
     heading("a job allowed to reach exactly one host")
     limited = Path("external-limited.py")
@@ -162,6 +167,9 @@ def client_role(args) -> int:
     line = next((ln for ln in (egress.stdout or "").splitlines() if "EGRESS " in ln), "")
     if step("the restricted-network job reported a result", bool(line), line.strip()):
         seen = json.loads(line.split("EGRESS ", 1)[1])
+        # This is the control for the no-network step above as well: if an allowed host is
+        # reachable, then the earlier "no route" was policy rather than a sandbox that cannot
+        # reach anything at all.
         step("the allowed host was reachable", seen.get("allowed") == 200, str(seen.get("allowed")))
         step("a host that was not allowed was refused",
              str(seen.get("denied")).startswith("ERR"), str(seen.get("denied")))
@@ -187,8 +195,14 @@ def client_role(args) -> int:
         time.sleep(4)
         cancelled = run("remote", "cancel", "--run", run_id)
         step("cancelling it was accepted", cancelled.returncode == 0)
+    tail = (started.stdout.read() or "") if started.stdout else ""
     started.wait(timeout=300)
-    step("the cancelled run came back", True)
+    whole = buffered + tail
+    # This used to be step(..., True), which is not a check: it recorded a pass whatever happened.
+    step("the cancelled run came back, and said so",
+         started.returncode is not None and (
+             "cancel" in whole.lower() or "did not finish" in whole.lower()),
+         (whole.strip().splitlines() or ["(no output)"])[-1][:120])
 
     heading("a job that outruns its limit")
     forever = Path("external-forever.py")

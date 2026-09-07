@@ -277,6 +277,7 @@ class GatewayService:
     # ------------------------------------------------------------------ admission
 
     def authenticate(self, token: str, payload: dict[str, Any], signature: str) -> bytes:
+        self.require_private_state()
         secret = self.state.token_secret(token)
         if secret is None:
             raise ProtocolError("this client is not paired with this gateway")
@@ -308,6 +309,19 @@ class GatewayService:
             self.runs[run_id] = record
             self.ledger.note_state(run_id, "interrupted")
 
+    def require_private_state(self) -> None:
+        """Re-check that the gateway's files are still private, on every path that reads them.
+
+        `EM3C-EXTERNAL-0001` found that checking once before binding leaves two windows: between
+        the check and the socket, and every moment after. Permissions are not a property of
+        startup, so this runs where the tokens are actually read. A stat is cheap; being wrong
+        here means somebody else has been able to read every token for as long as it took anyone
+        to notice.
+        """
+        from agentnode_sdk.gateway.statedir import require_private
+
+        require_private(self.state.root)
+
     def require_client(self, token: str) -> str:
         """The token hash for a paired client, or a refusal. No signature involved.
 
@@ -315,6 +329,7 @@ class GatewayService:
         still prove which client is asking, because a run's output is the output of somebody's
         code. This is the check that the status endpoint previously did not have at all.
         """
+        self.require_private_state()
         client_id = self.state.client_id_for(token)
         if client_id is None or self.state.token_secret(token) is None:
             raise ProtocolError("this client is not paired with this gateway")
@@ -928,6 +943,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         if self.path == "/v1/pair":
             try:
+                self.service.require_private_state()
                 token = self.service.state.redeem_pairing(
                     body.get("code", ""), client_name=body.get("client_name", ""),
                     source=self.client_address[0] if self.client_address else "",
