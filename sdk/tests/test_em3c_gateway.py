@@ -112,6 +112,9 @@ def _self_signed(tmp_path):
     return str(cert_path), str(key_path)
 
 
+NEWLINE = chr(10)
+
+
 def _raw_get(base, path, token):
     """The gateway's own answer, before the client turns it into a message."""
     import urllib.error
@@ -1440,8 +1443,9 @@ class TestTheVerticalFlowForReal:
     # Class-scoped: measuring for real means running the whole conformance suite against the
     # runtime, and doing that once per test would triple a lane that already runs containers.
     # The three tests use distinct run ids and each verifies its own cleanup.
+    @staticmethod
     @pytest.fixture(scope="class")
-    def real_gateway(self):
+    def real_gateway():
         from agentnode_sdk.sandbox.container_backend import ContainerBackend
 
         backend = ContainerBackend()
@@ -1456,9 +1460,29 @@ class TestTheVerticalFlowForReal:
             readiness = service.measure()
             if not readiness.ready:
                 # Not a skip. The runtime is present -- the fixture already skipped otherwise --
-                # so a gateway that still cannot be measured is a real failure, and a silent
-                # skip here would let the one lane that can measure for real report nothing.
-                pytest.fail("conformance could not be measured: " + readiness.reason)
+                # so a gateway that still cannot be measured is a real failure, and a silent skip
+                # here would let the one lane that can measure for real report nothing.
+                #
+                # The report's own words, not a summary of them. A failure saying only "not
+                # measured" sends the next person guessing at precisely what the report knows.
+                stored = (service.readiness.load() or {}).get("report") or {}
+                lines = []
+                for result in stored.get("results") or []:
+                    lines.append(
+                        "    {i:<24} ok={o!s:<6} {a:<14} {c:<12} {e}".format(
+                            i=str(result.get("check_id"))[:24],
+                            o=result.get("ok"),
+                            a=str(result.get("assurance")),
+                            c=str(result.get("outcome")),
+                            e=str(result.get("evidence"))[:120],
+                        )
+                    )
+                pytest.fail(
+                    "conformance could not be measured: " + readiness.reason
+                    + NEWLINE + "  unproven: " + ", ".join(readiness.unproven)
+                    + NEWLINE + "  the suite reported:" + NEWLINE
+                    + (NEWLINE.join(lines) or "    (no results at all)")
+                )
             server = make_server(service, port=0)
             threading.Thread(target=server.serve_forever, daemon=True).start()
             base = f"http://127.0.0.1:{server.server_address[1]}"
