@@ -39,6 +39,11 @@ BASE = f"http://127.0.0.1:{PORT}"
 
 failures: list[str] = []
 
+#: The last command either helper ran. check() reports it when an assertion fails, so a failing
+#: step says what the command said rather than only that it failed -- without every call site
+#: having to remember to pass it along.
+last_result: subprocess.CompletedProcess | None = None
+
 
 def say(step: str, detail: str = "") -> None:
     print(f"\n=== {step} ===", flush=True)
@@ -46,28 +51,29 @@ def say(step: str, detail: str = "") -> None:
         print(detail, flush=True)
 
 
-def check(label: str, condition: bool, detail: str = "",
-          result: subprocess.CompletedProcess | None = None) -> bool:
+def check(label: str, condition: bool, detail: str = "") -> bool:
     mark = "ok  " if condition else "FAIL"
     print(f"  [{mark}] {label}" + (f" -- {detail}" if detail else ""), flush=True)
     if not condition:
         failures.append(label)
         # A failed step that says only that it failed sends the next person guessing at exactly
         # what the command already told us.
-        if result is not None:
-            print("        exit %s" % result.returncode, flush=True)
-            for stream, text in (("out", result.stdout), ("err", result.stderr)):
-                for line in (text or "").strip().splitlines()[-12:]:
+        if last_result is not None:
+            print("        exit %s" % last_result.returncode, flush=True)
+            for stream, text in (("out", last_result.stdout), ("err", last_result.stderr)):
+                for line in (text or "").strip().splitlines()[-15:]:
                     print(f"        {stream}| {line}", flush=True)
     return condition
 
 
 def gateway(*args, timeout: int = 600) -> subprocess.CompletedProcess:
     """A gateway-side command, as the runner's own user."""
-    return subprocess.run(
+    global last_result
+    last_result = subprocess.run(
         [sys.executable, "-m", "agentnode_sdk.cli", "gateway", *args, "--dir", str(GATEWAY_DIR)],
         capture_output=True, text=True, timeout=timeout,
     )
+    return last_result
 
 
 def client(*args, timeout: int = 600, extra_env: dict | None = None) -> subprocess.CompletedProcess:
@@ -75,11 +81,13 @@ def client(*args, timeout: int = 600, extra_env: dict | None = None) -> subproce
     env_bits = [f"AGENTNODE_HOME={CLIENT_HOME}/.agentnode", f"HOME={CLIENT_HOME}"]
     for key, value in (extra_env or {}).items():
         env_bits.append(f"{key}={value}")
-    return subprocess.run(
+    global last_result
+    last_result = subprocess.run(
         ["sudo", "-n", "-u", CLIENT_USER, "env", *env_bits,
          sys.executable, "-m", "agentnode_sdk.cli", "remote", *args],
         capture_output=True, text=True, timeout=timeout,
     )
+    return last_result
 
 
 def pairing_code() -> str:

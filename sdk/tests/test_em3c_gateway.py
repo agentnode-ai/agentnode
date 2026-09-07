@@ -2516,9 +2516,9 @@ class TestAControlledDestinationWithNoInternet:
     def test_nothing_of_the_controlled_run_is_left_behind(self):
         import subprocess
 
-        from agentnode_sdk.sandbox.backend import get_default_backend
+        from agentnode_sdk.sandbox.container_backend import ContainerBackend
 
-        runtime = get_default_backend().check_available().backend
+        runtime = ContainerBackend().check_available().backend
         for kind, field in (("container", "{{.Names}}"), ("network", "{{.Name}}")):
             listed = subprocess.run(
                 [runtime, kind, "ls", "-a" if kind == "container" else "--no-trunc",
