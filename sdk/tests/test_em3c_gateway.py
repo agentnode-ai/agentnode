@@ -1123,6 +1123,33 @@ class TestPairingIsWorthGuessingOnlyOnce:
             with pytest.raises(PairingError, match="failed pairing attempts"):
                 state.redeem_pairing(good, now=now)
 
+    def test_the_lockout_survives_a_restart(self):
+        """EM3C-GATEWAY-0008 blocked on this: the lock lived in memory.
+
+        Restarting the gateway constructed an empty Throttle and cleared it, so anyone who could
+        cause or simply wait for a restart got their attempts back. A limit that resets when the
+        process does is not a limit, it is a delay.
+        """
+        from agentnode_sdk.gateway.identity import GatewayState
+
+        with tempfile.TemporaryDirectory() as td:
+            now = 5_000.0
+            first = GatewayState(td, version="test")
+            for _ in range(first._throttle.allowed_failures + 1):
+                first.start_pairing(now=now)
+                with pytest.raises(PairingError):
+                    first.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now)
+            assert first._throttle.locked_for(now) > 0.0
+
+            # the restart: a new process, a new state object, the same directory
+            second = GatewayState(td, version="test")
+            assert second._throttle.locked_for(now) > 0.0, (
+                "restarting the gateway cleared the lockout"
+            )
+            good = second.start_pairing(now=now)
+            with pytest.raises(PairingError, match="failed pairing attempts"):
+                second.redeem_pairing(good, now=now)
+
     def test_the_lock_lengthens_rather_than_staying_a_speed_bump(self):
         from agentnode_sdk.gateway.throttle import Throttle
 

@@ -119,7 +119,7 @@ class GatewayState:
         # twice -- the exact property the code is supposed to have.
         self._pairing_lock = threading.Lock()
         self._pairing_path = self.root / "pairing.json"
-        self._throttle = Throttle()
+        self._throttle = Throttle(path=self.root / "pairing-throttle.json")
 
     @staticmethod
     def _harden(path: Path) -> None:
