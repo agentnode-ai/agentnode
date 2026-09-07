@@ -376,8 +376,8 @@ class TestTheVerticalFlowForReal:
         final = gc.wait_for(conn, answer["run_id"], timeout=180)
         # Printed so the LANE OUTPUT carries the observation, not only the fact that an assertion
         # passed. A reviewer reading the log should be able to see the container's own words.
-        print(f"
-  [observed] state={final['state']} exit={final['exit_code']} "
+        print("")
+        print(f"  [observed] state={final['state']} exit={final['exit_code']} "
               f"stdout={final['stdout']!r} cleanup_verified={final['cleanup_verified']} "
               f"gateway={final.get('gateway')} fingerprint={str(final.get('fingerprint'))[:16]}…",
               flush=True)
@@ -408,8 +408,8 @@ class TestTheVerticalFlowForReal:
             time.sleep(0.25)
         gc.cancel(conn, run_id)
         final = gc.wait_for(conn, run_id, timeout=180)
-        print(f"
-  [observed] cancelled run: state={final['state']} "
+        print("")
+        print(f"  [observed] cancelled run: state={final['state']} "
               f"cleanup_verified={final['cleanup_verified']}", flush=True)
         assert final["state"] in ("cancelled", "finished"), final
         assert final["cleanup_verified"] is True, "a cancelled run must leave nothing behind"
@@ -422,8 +422,8 @@ class TestTheVerticalFlowForReal:
                            wall_clock_s=8)
         assert answer["state"] != "refused", answer.get("refusal")
         final = gc.wait_for(conn, answer["run_id"], timeout=180)
-        print(f"
-  [observed] timed-out run: state={final['state']} exit={final['exit_code']} "
+        print("")
+        print(f"  [observed] timed-out run: state={final['state']} exit={final['exit_code']} "
               f"cleanup_verified={final['cleanup_verified']}", flush=True)
         assert final["state"] in ("finished", "cancelled"), final
         assert final["exit_code"] != 0, "a timed-out run must not report success"
