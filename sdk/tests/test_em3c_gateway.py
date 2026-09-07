@@ -304,6 +304,58 @@ class TestTheOperatorPolicyWins:
                                              "allowed_domains": ("a.example",)})(), conn.token)
         assert network_mode(granted) == ("none", ())
 
+    def test_the_operator_ceiling_binds_the_wall_clock_too(self, gateway):
+        """Not only the network. An operator limit must bind every limit, or it binds none.
+
+        EM3C-GATEWAY-0004: the composed policy decided the network while the client's requested
+        wall_clock_s went straight to the backend, so a signed request could buy itself a longer
+        run than the operator allowed -- and the policy digest could not catch it, because the
+        digested value was not the enforced one.
+        """
+        base, state, service, _ = gateway
+        from agentnode_sdk.sandbox.contract import Limits, SandboxPolicy
+
+        conn = _paired(base, state)
+        operator = SandboxPolicy(limits=Limits(wall_clock_s=5))
+        svc = GatewayService(state, backend=StandInBackend(), operator_policy=operator)
+        request = type("R", (), {"network": "none", "allowed_domains": (),
+                                 "wall_clock_s": 3600})()
+        granted = svc.compose(request, conn.token)
+        assert granted.limits.wall_clock_s == 5, (
+            "a client asking for an hour under a five-second operator ceiling must get five"
+        )
+
+    def test_a_job_cannot_ask_for_more_runtime_than_it_is_given(self, gateway):
+        """The enforced timeout is the composed one, observed at the backend call."""
+        base, state, service, _ = gateway
+        from agentnode_sdk.sandbox.contract import Limits, SandboxPolicy
+
+        conn = _paired(base, state)
+        recorded: dict = {}
+
+        class RecordingBackend(StandInBackend):
+            def run_process(self, spec, input_text=None, timeout=120.0):
+                recorded["timeout"] = timeout
+                return super().run_process(spec, input_text=input_text, timeout=timeout)
+
+        svc = GatewayService(state, backend=RecordingBackend(),
+                             operator_policy=SandboxPolicy(limits=Limits(wall_clock_s=7)))
+        server = make_server(svc, port=0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            conn2 = gc.pair(url, state.start_pairing())
+            granted = svc.compose(type("R", (), {
+                "network": "none", "allowed_domains": (), "wall_clock_s": 3600})(), conn2.token)
+            answer = gc.submit(conn2, b"x", granted=granted, network="none", wall_clock_s=3600)
+            assert answer["state"] != "refused", answer.get("refusal")
+            gc.wait_for(conn2, answer["run_id"], timeout=30)
+            assert recorded["timeout"] == 7.0, (
+                f"the backend was given {recorded['timeout']}s; the operator ceiling is 7"
+            )
+        finally:
+            server.shutdown()
+
     def test_an_operator_who_allows_a_host_still_bounds_the_job(self, gateway):
         base, state, _, _ = gateway
         from agentnode_sdk.sandbox.composition import network_mode

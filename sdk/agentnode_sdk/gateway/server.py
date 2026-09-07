@@ -224,6 +224,7 @@ class GatewayService:
     def compose(self, request: JobRequest, token: str = ""):
         """The fold, server-side. The operator is above the client, and the job is below both."""
         from agentnode_sdk.sandbox.contract import (
+            Limits,
             NetworkRules,
             SandboxPolicy,
             Scope,
@@ -240,7 +241,12 @@ class GatewayService:
         return merge_policies({
             Scope.ORGANISATION: self.operator_policy(),
             Scope.USER: self.client_policy(token),
-            Scope.PACKAGE: SandboxPolicy(network=asked),
+            # The requested wall clock is a REQUEST at the lowest scope, not a setting. Limits
+            # narrow by minimum as scopes descend, so an operator's ceiling binds it.
+            Scope.PACKAGE: SandboxPolicy(
+                network=asked,
+                limits=Limits(wall_clock_s=max(1, int(getattr(request, "wall_clock_s", 60)))),
+            ),
         })
 
     # ------------------------------------------------------------------ execution
@@ -327,8 +333,13 @@ class GatewayService:
         try:
             if record.cancel_requested.is_set():
                 raise _Cancelled()
+            # The composed limit, not the requested one. An earlier version passed
+            # request.wall_clock_s straight through, so the fold decided the network and the
+            # client decided how long its code could run -- the operator ceiling bound one and
+            # not the other, and the policy digest could not catch it because the digested value
+            # was not the enforced one. EM3C-GATEWAY-0004 found it.
             rc, out, err = self.backend.run_process(
-                spec, input_text=payload, timeout=float(request.wall_clock_s)
+                spec, input_text=payload, timeout=float(granted.limits.wall_clock_s)
             )
             record.exit_code = rc
             record.stdout = out or ""
