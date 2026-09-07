@@ -1,0 +1,101 @@
+# EM-3C: the vertical flow, with a real gateway, a real socket and a real container.
+#
+# The security tests in this module run everywhere and use a stand-in backend, because what they
+# establish is that a bad job is refused BEFORE anything runs. This lane exists for the three that
+# a stand-in cannot establish: foreign code actually executing in a container on the gateway's own
+# machine, a cancellation actually ending it, and a wall-clock limit actually stopping it -- each
+# with the container then shown to be gone.
+#
+# Exactly one test class is named, so enabling the E2E flag here cannot quietly switch on other
+# suites nobody has vetted. Same pinned runtime and digest-pinned image as every other lane, so a
+# drifting runtime fails rather than silently changing what is measured.
+#
+# pytest exits 0 when a test SKIPS, and these skip themselves when no runtime is present. A lane
+# that accepted that would report the acceptance as met without ever running it, so the step
+# demands the passed count and fails on anything else.
+name: EM-3C gateway (container-present)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  DOCKER_SERVER_VERSION: "28.0.4"
+  DOCKER_APT_VERSION: "5:28.0.4-1~ubuntu.24.04~noble"
+  SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
+
+jobs:
+  vertical-flow:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+
+      - name: Select and VERIFY the pinned container runtime
+        run: |
+          set -eu
+          got="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo none)"
+          echo "runner provides docker server: ${got}; pin is ${DOCKER_SERVER_VERSION}"
+          if [ "${got}" != "${DOCKER_SERVER_VERSION}" ]; then
+            sudo install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            sudo chmod a+r /etc/apt/keyrings/docker.gpg
+            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+            sudo apt-get update
+            sudo apt-get install -y --allow-downgrades "docker-ce=${DOCKER_APT_VERSION}" "docker-ce-cli=${DOCKER_APT_VERSION}"
+            sudo systemctl start docker
+            got="$(docker version --format '{{.Server.Version}}')"
+          fi
+          test "${got}" = "${DOCKER_SERVER_VERSION}"
+          docker info --format '{{.OSType}}/{{.Architecture}}'
+
+      - name: Pull the pinned sandbox image by digest
+        run: docker pull "${SANDBOX_IMAGE}"
+
+      - run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
+
+      - name: The admission rules, which must hold with or without a runtime
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_em3c_gateway.py \
+            -k "not TestTheVerticalFlowForReal" 2>&1 | tee em3c-admission.txt
+          grep -qE "^18 passed" em3c-admission.txt || {
+            echo "the admission tests did not all pass"; exit 1; }
+
+      - name: The vertical flow, for real
+        env:
+          AGENTNODE_SANDBOX_E2E: "1"
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly \
+            "tests/test_em3c_gateway.py::TestTheVerticalFlowForReal" \
+            2>&1 | tee em3c-vertical.txt
+          grep -qE "^3 passed" em3c-vertical.txt || {
+            echo "the vertical flow did not run: it skipped, failed or errored"
+            exit 1
+          }
+
+      - name: Nothing of the run may be left behind
+        if: always()
+        run: |
+          set -eu
+          left="$(docker ps -a --filter 'name=agentnode-em3c-' --format '{{.Names}}' | wc -l)"
+          echo "containers still named agentnode-em3c-*: ${left}"
+          docker ps -a --filter 'name=agentnode-em3c-' --format '{{.Names}} {{.Status}}'
+          test "${left}" = "0"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: em3c-gateway-evidence
+          path: |
+            sdk/em3c-admission.txt
+            sdk/em3c-vertical.txt
