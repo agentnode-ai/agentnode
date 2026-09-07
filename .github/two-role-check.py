@@ -46,11 +46,19 @@ def say(step: str, detail: str = "") -> None:
         print(detail, flush=True)
 
 
-def check(label: str, condition: bool, detail: str = "") -> bool:
+def check(label: str, condition: bool, detail: str = "",
+          result: subprocess.CompletedProcess | None = None) -> bool:
     mark = "ok  " if condition else "FAIL"
     print(f"  [{mark}] {label}" + (f" -- {detail}" if detail else ""), flush=True)
     if not condition:
         failures.append(label)
+        # A failed step that says only that it failed sends the next person guessing at exactly
+        # what the command already told us.
+        if result is not None:
+            print("        exit %s" % result.returncode, flush=True)
+            for stream, text in (("out", result.stdout), ("err", result.stderr)):
+                for line in (text or "").strip().splitlines()[-12:]:
+                    print(f"        {stream}| {line}", flush=True)
     return condition
 
 
