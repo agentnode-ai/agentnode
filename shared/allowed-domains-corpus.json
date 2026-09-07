@@ -1,0 +1,37 @@
+{
+  "_note": "Shared corpus for allowed_domains. The backend registry validator and the SDK sandbox each have their own canonicaliser -- two rule sets that must not drift, or a package would pass submission and refuse to run. ONE test, in the backend suite, loads BOTH implementations by file path and holds each to this file, so Backend CI fails if either side diverges on a listed host. It binds these inputs only: a host outside this corpus could still be treated differently by the two.",
+  "accepted": {
+    " example.com": "example.com",
+    "API.Example.com": "api.example.com",
+    "a.b.c.example.com": "a.b.c.example.com",
+    "api.example.com": "api.example.com",
+    "api.example.com.": "api.example.com",
+    "example.com ": "example.com",
+    "sub-domain.example.co.uk": "sub-domain.example.co.uk",
+    "x1.example.com": "x1.example.com",
+    "xn--bcher-kva.example.com": "xn--bcher-kva.example.com"
+  },
+  "rejected": [
+    "",
+    "  ",
+    "*.example.com",
+    "-lead.example.com",
+    "0.0.0.0",
+    "10.0.0.1",
+    "127.0.0.1",
+    "169.254.169.254",
+    "192.168.1.1",
+    "::1",
+    "[::1]",
+    "a..b.com",
+    "api.example.com/path",
+    "api.example.com:443",
+    "ex ample.com",
+    "example..com",
+    "ex\u00e4mple.com",
+    "https://api.example.com",
+    "localhost",
+    "single",
+    "user@api.example.com"
+  ]
+}
