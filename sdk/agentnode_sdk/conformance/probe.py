@@ -297,11 +297,14 @@ def via_proxy(url, key):
 direct_ip("1.1.1.1", "direct_1_1_1_1")
 direct_ip("8.8.8.8", "direct_8_8_8_8")
 ALLOWED = json.loads(%(allowed_json)r)
+# Recorded so a reader can tell WHICH destinations were measured, not merely how many results
+# there are. A count on its own cannot distinguish a complete matrix from a partial one.
+R["allowed_hosts"] = list(ALLOWED)
 direct_name("https://" + ALLOWED[0], "direct_unproxied")
 for _i, _host in enumerate(ALLOWED):
     # Every permitted destination, not just the first. A policy naming three hosts and
     # measuring one leaves two permitted paths nobody exercised.
-    via_proxy("https://" + _host, "allowed_via_proxy" if _i == 0 else "allowed_via_proxy_%%d" %% _i)
+    via_proxy("https://" + _host, "allowed:" + _host)
 via_proxy("https://%(denied)s", "denied_via_proxy")
 print("AGENTNODE_EGRESS_MATRIX " + json.dumps(R))
 '''

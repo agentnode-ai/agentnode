@@ -244,7 +244,13 @@ class ActivationStore:
             raise SnapshotUnusable("the active state has no report and binding to go with it.")
 
         if generation > highest:
-            self.protected.remember_generation(generation)
+            # Repairing the anchor for a snapshot that is already committed. If the anchor cannot
+            # be written the snapshot is still valid -- it is newer than what is recorded -- so
+            # this must not turn a readable state into an unreadable one.
+            try:
+                self.protected.remember_generation(generation)
+            except OSError:
+                pass
 
         return ActiveState(generation=generation, policy=policy, policy_digest=recomputed,
                            report=report, binding=binding,
@@ -290,11 +296,28 @@ class ActivationStore:
         document["tag"] = _tag(self.protected.key(), body)
 
         self.root.mkdir(parents=True, exist_ok=True)
+
+        # THE COMMIT POINT. Everything before this can fail and leave the previous state exactly
+        # as it was; nothing after it can un-commit.
         _write_atomic(self.active_path, json.dumps(document, indent=2, sort_keys=True))
-        # Only after the rename has succeeded does the anchor move. Remembering first would mean
-        # a crash here left a gateway that refuses its own current state.
-        self.protected.remember_generation(generation)
-        self.clear_pending()
+
+        # After the rename, the anchor and the pending file are housekeeping. `EM3C-FINAL-0003`
+        # found the earlier version letting a failure here propagate, which sent the caller down
+        # a rollback path that restored the previous *intent* while the new snapshot was already
+        # in place -- the transaction stopped being all-or-nothing precisely where it mattered.
+        #
+        # The anchor is a monotone cache, not the record: `load_active` raises it to the
+        # snapshot's generation on every read, so a failure to write it here is repaired the
+        # next time anything looks. Losing it costs one generation of rollback protection until
+        # that repair happens, which is why it is still attempted, and why it is not fatal.
+        try:
+            self.protected.remember_generation(generation)
+        except OSError:
+            pass
+        try:
+            self.clear_pending()
+        except OSError:
+            pass
         return state
 
 

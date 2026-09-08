@@ -3973,3 +3973,109 @@ class TestOneLockCoversTheWholeChange:
             service.activate(opol.build(opol.RESTRICTED, ("example.com",)))
         after = path.read_text(encoding="utf-8") if path.is_file() else None
         assert after == before, "a failed activation left its proposal in the config file"
+
+
+class TestTheCommitPointIsTheRename:
+    """EM3C-FINAL-0003.
+
+    A failure after the active snapshot had been replaced propagated to the transaction's
+    handler, which restored the previous *intent* while the new snapshot stayed in place. The
+    change stopped being all-or-nothing exactly where it mattered, and the command still said
+    nothing had changed.
+
+    The rule now: the rename commits. The generation anchor is a monotone cache repaired on every
+    read, so failing to write it cannot un-commit anything, and the intent is restored only when
+    the commit did not happen.
+    """
+
+    def _measured(self, root):
+        service = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(service)
+        return service
+
+    def _reopen(self, root):
+        return GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+
+    @staticmethod
+    def _matrix(service, envelope):
+        return {"allowed_hosts": list(envelope.allowed_destinations),
+                "allowed:" + envelope.allowed_destinations[0]: "ALLOWED:200",
+                "denied_via_proxy": "refused"}
+
+    def _break_the_anchor(self, monkeypatch):
+        from agentnode_sdk.gateway.activation import Protected
+
+        def refuse(self, generation):
+            raise OSError("the key directory is read-only")
+
+        monkeypatch.setattr(Protected, "remember_generation", refuse)
+
+    def test_an_anchor_failure_after_the_rename_still_commits(self, tmp_path, monkeypatch):
+        import agentnode_sdk.conformance.runner as runner_mod
+
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        service = self._measured(tmp_path / "gw")
+        monkeypatch.setattr(type(service), "_egress_matrix_for", self._matrix)
+        monkeypatch.setattr(runner_mod, "run_conformance", _passing_report)
+        self._break_the_anchor(monkeypatch)
+
+        proposal = opol.build(opol.RESTRICTED, ("mine.example",))
+        verdict = service.activate(proposal)
+        assert verdict.ready is True, verdict.reason
+
+        fresh = self._reopen(service.state.root)
+        assert fresh.operator_envelope().digest() == proposal.digest(), (
+            "the commit was undone by a failure that happened after it")
+        assert fresh.configured_envelope().digest() == proposal.digest(), (
+            "the intent was rolled back while the snapshot stayed committed")
+
+    def test_a_committed_change_leaves_the_gateway_usable(self, tmp_path, monkeypatch):
+        """Intent and snapshot have to agree afterwards, or nothing runs under the policy that
+        was just put in force."""
+        import agentnode_sdk.conformance.runner as runner_mod
+
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        service = self._measured(tmp_path / "gw")
+        monkeypatch.setattr(type(service), "_egress_matrix_for", self._matrix)
+        monkeypatch.setattr(runner_mod, "run_conformance", _passing_report)
+        self._break_the_anchor(monkeypatch)
+
+        service.activate(opol.build(opol.RESTRICTED, ("mine.example",)))
+        assert self._reopen(service.state.root).readiness_now().ready is True, (
+            "a committed change left the gateway unable to run anything")
+
+    def test_the_anchor_is_repaired_the_next_time_anything_reads(self, tmp_path):
+        """It is a cache. A read that finds it behind brings it forward."""
+        from agentnode_sdk.gateway.activation import ActivationStore, Protected
+
+        service = self._measured(tmp_path / "gw")
+        store = ActivationStore(service.state.root)
+        generation = store.load_active().generation
+
+        (Protected(service.state.root).dir / "generation.anchor").write_text("0", encoding="utf-8")
+        assert Protected(service.state.root).accepted_generation() == 0
+
+        store.load_active()
+        assert Protected(service.state.root).accepted_generation() == generation, (
+            "reading a committed snapshot did not bring the anchor forward")
+
+    def test_a_failure_before_the_rename_restores_the_intent(self, tmp_path, monkeypatch):
+        """The other half of the rule, and the control for the tests above."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / "config.json"
+        before = path.read_text(encoding="utf-8") if path.is_file() else None
+
+        def boom(self, envelope):
+            raise RuntimeError("the runtime went away before anything was committed")
+
+        monkeypatch.setattr(type(service), "_egress_matrix_for", boom)
+        with pytest.raises(RuntimeError):
+            service.activate(opol.build(opol.RESTRICTED, ("example.com",)))
+
+        after = path.read_text(encoding="utf-8") if path.is_file() else None
+        assert after == before
+        assert self._reopen(service.state.root).operator_envelope().mode == "none"

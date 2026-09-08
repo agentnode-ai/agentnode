@@ -322,6 +322,10 @@ def cmd_egress(args) -> int:
         verdict = service.activate(proposed)
     except Exception as exc:                                      # noqa: BLE001
         print(f"  The measurement could not be run: {exc}")
+        # Accurate because the change is committed by a single rename that this path never
+        # reached. EM3C-FINAL-0003 found this sentence being printed on a path where the
+        # snapshot HAD been replaced and only the operator's intent was rolled back, which made
+        # it false at the one moment it mattered.
         print("  The previous policy remains in force. Nothing was changed.")
         return 1
 

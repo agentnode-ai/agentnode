@@ -393,8 +393,12 @@ class GatewayService:
                 # was being measured if the process dies before it finishes.
                 store.write_pending(envelope)
 
-                report = run_conformance(self.backend, generated_at=stamp, options=options,
-                                         egress_matrix=self._egress_matrix_for(envelope))
+                report = run_conformance(
+                    self.backend, generated_at=stamp, options=options,
+                    egress_matrix=self._egress_matrix_for(envelope),
+                    # The policy's own destinations, so the check compares the matrix against
+                    # what is being permitted rather than against what the run happened to do.
+                    egress_expected=(envelope.allowed_destinations or None))
                 binding = self.report_binding(envelope.digest())
                 document = {"measured_at": now if now is not None else time.time(),
                             "binding": binding.as_dict(), "report": report.to_dict()}
@@ -409,6 +413,9 @@ class GatewayService:
                     self._restore_config(previous)
                     store.clear_pending()
                     return verdict
+                # Past this call the change is committed: `activate` treats its own rename as
+                # the commit point and cannot raise after it. So anything that reaches the
+                # handler below happened BEFORE the commit, and restoring the intent is right.
                 store.activate(envelope, report.to_dict(), binding.as_dict(), now)
             except BaseException:
                 self._restore_config(previous)

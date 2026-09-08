@@ -30,7 +30,9 @@ GOOD_HOST = {
     "refusal_message": "no container runtime found. Install Docker or Podman, then run "
                        "agentnode sandbox pull",
     "egress_matrix": {"direct_1_1_1_1": "blocked:OSError", "direct_8_8_8_8": "blocked:OSError",
-                      "allowed_via_proxy": "ALLOWED:200", "denied_via_proxy": "refused:HTTPError"},
+                      "allowed_hosts": ["example.com"],
+                      "allowed:example.com": "ALLOWED:200",
+                      "denied_via_proxy": "refused:HTTPError"},
     "env_baseline": ["HOME", "HOSTNAME", "LANG", "PATH", "PYTHON_VERSION"],
     "cancel": {"name": "c", "was_running": True, "gone_after": True, "still_listed": ""},
     "credential_lifecycle": {"name": "AGENTNODE_CONFORMANCE_RELEASED",
@@ -67,7 +69,13 @@ def bad_context():
               "backend_loss": {"available": True, "refused": False, "error_type": None,
                                "reason": ""},
               "refusal_message": "error",
-              "egress_matrix": {"direct_1_1_1_1": "BYPASS", "allowed_via_proxy": "refused:X",
+              # A run that DID measure, and measured a backend that is not sealing anything:
+              # a direct route open, the sealed destination unreachable, the unsealed one
+              # allowed. Leaving out `allowed_hosts` here would make the check say "not
+              # measured", which is a different answer from "measured and bad".
+              "egress_matrix": {"direct_1_1_1_1": "BYPASS",
+                                "allowed_hosts": ["example.com"],
+                                "allowed:example.com": "refused:X",
                                 "denied_via_proxy": "ALLOWED:200"},
               "env_baseline": ["HOME", "PATH"],
               "cancel": {"name": "c", "was_running": True, "gone_after": False,
@@ -681,35 +689,67 @@ class TestAnAllowlistIsOnlyAsMeasuredAsItsWorstEntry:
 
     BLOCKED = {"direct_1_1_1_1": "blocked:OSError", "direct_8_8_8_8": "blocked:OSError",
                "direct_unproxied": "blocked:OSError", "denied_via_proxy": "refused:URLError"}
+    THREE = ["a.example", "b.example", "c.example"]
+
+    def _matrix(self, results, hosts=None):
+        matrix = dict(self.BLOCKED)
+        matrix["allowed_hosts"] = list(self.THREE if hosts is None else hosts)
+        matrix.update({"allowed:" + h: v for h, v in results.items()})
+        return matrix
 
     def test_all_three_reachable_passes(self):
-        """The control. Without it, a check that failed everything would pass the next test."""
-        result = self._result({**self.BLOCKED,
-                               "allowed_via_proxy": "ALLOWED:200",
-                               "allowed_via_proxy_1": "ALLOWED:200",
-                               "allowed_via_proxy_2": "ALLOWED:200"})
+        """The control. Without it, a check that failed everything would pass every test below."""
+        result = self._result(self._matrix({h: "ALLOWED:200" for h in self.THREE}))
         assert result.outcome == "pass", result.detail
 
     def test_one_unreachable_of_three_fails(self):
-        result = self._result({**self.BLOCKED,
-                               "allowed_via_proxy": "ALLOWED:200",
-                               "allowed_via_proxy_1": "ALLOWED:200",
-                               "allowed_via_proxy_2": "refused:URLError"})
-        assert result.outcome != "pass",             "a destination that was never reachable was passed over"
+        results = {h: "ALLOWED:200" for h in self.THREE}
+        results["c.example"] = "refused:URLError"
+        assert self._result(self._matrix(results)).outcome != "pass",             "a destination that was never reachable was passed over"
 
     def test_the_first_one_failing_also_fails(self):
-        result = self._result({**self.BLOCKED,
-                               "allowed_via_proxy": "refused:URLError",
-                               "allowed_via_proxy_1": "ALLOWED:200"})
-        assert result.outcome != "pass"
+        results = {h: "ALLOWED:200" for h in self.THREE}
+        results["a.example"] = "refused:URLError"
+        assert self._result(self._matrix(results)).outcome != "pass"
+
+    def test_a_destination_with_no_result_at_all_fails(self):
+        """The half EM3C-FINAL-0003 found: a partial matrix is not a complete one, and counting
+        the results present can never notice the one that is absent."""
+        results = {h: "ALLOWED:200" for h in self.THREE if h != "c.example"}
+        assert self._result(self._matrix(results)).outcome != "pass",             "a policy naming three destinations passed on two results"
 
     def test_a_matrix_naming_no_allowed_destination_fails(self):
-        """An empty allowlist result is not a passing one."""
-        assert self._result(dict(self.BLOCKED)).outcome != "pass"
+        assert self._result(self._matrix({}, hosts=[])).outcome != "pass"
+
+    def test_a_matrix_that_never_says_what_it_measured_is_not_checked(self):
+        """Without the list, complete and partial look identical, so neither is claimed."""
+        result = self._result(dict(self.BLOCKED))
+        assert result.outcome != "pass"
+        assert result.outcome == "not_checked", result.outcome
+
+    def test_measuring_hosts_the_policy_did_not_name_fails(self):
+        """A run that wandered off the policy is not evidence about the policy."""
+        matrix = self._matrix({h: "ALLOWED:200" for h in self.THREE})
+        host = dict(GOOD_HOST)
+        host["egress_matrix"] = matrix
+        host["egress_expected"] = ["a.example", "b.example"]
+        from agentnode_sdk.conformance.checks import check_egress_allowlist
+        result = check_egress_allowlist(Context(readings=copy.deepcopy(doubles.GOOD_READINGS),
+                                                declared=dict(GOOD_DECLARED), host=host))
+        assert result.outcome != "pass"
+
+    def test_the_expected_set_matching_passes(self):
+        """The control for the one above."""
+        matrix = self._matrix({h: "ALLOWED:200" for h in self.THREE})
+        host = dict(GOOD_HOST)
+        host["egress_matrix"] = matrix
+        host["egress_expected"] = list(self.THREE)
+        from agentnode_sdk.conformance.checks import check_egress_allowlist
+        result = check_egress_allowlist(Context(readings=copy.deepcopy(doubles.GOOD_READINGS),
+                                                declared=dict(GOOD_DECLARED), host=host))
+        assert result.outcome == "pass", result.detail
 
     def test_a_bypass_still_fails_even_when_every_destination_worked(self):
-        result = self._result({**self.BLOCKED,
-                               "direct_1_1_1_1": "BYPASS",
-                               "allowed_via_proxy": "ALLOWED:200",
-                               "allowed_via_proxy_1": "ALLOWED:200"})
-        assert result.outcome != "pass"
+        matrix = self._matrix({h: "ALLOWED:200" for h in self.THREE})
+        matrix["direct_1_1_1_1"] = "BYPASS"
+        assert self._result(matrix).outcome != "pass"

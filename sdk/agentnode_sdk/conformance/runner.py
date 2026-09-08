@@ -293,6 +293,7 @@ def _backend_loss(backend) -> dict:
 
 def run_conformance(backend, *, generated_at: str, options: SuiteOptions | None = None,
                     egress_matrix: dict | None = None,
+                    egress_expected=None,
                     credential_lifecycle: dict | None = None) -> ConformanceReport:
     """Measure what this backend actually does, and report what could not be measured as such.
 
@@ -327,6 +328,13 @@ def run_conformance(backend, *, generated_at: str, options: SuiteOptions | None 
     host = _host_observations(backend, runtime, run_id)
     if egress_matrix is not None:
         host["egress_matrix"] = egress_matrix
+        # What the POLICY permits, so the check can compare the matrix against it rather than
+        # against itself. A run that measured a subset would otherwise look complete.
+        declared_hosts = egress_matrix.get("allowed_hosts")
+        if egress_expected is not None:
+            host["egress_expected"] = list(egress_expected)
+        elif declared_hosts is not None:
+            host["egress_expected"] = list(declared_hosts)
     if not probe_failure:
         # setdefault, not assignment: a test double may have supplied these through the
         # double-only hook, and a real backend never reaches that hook at all.

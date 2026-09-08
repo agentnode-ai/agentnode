@@ -257,20 +257,39 @@ def check_egress_allowlist(ctx: Context) -> CheckResult:
             "egress-allowlist", "Only the sealed destinations are reachable", "egress",
             "no egress run was performed: it needs a container runtime and an internal network, "
             "so it is measured on Linux CI rather than wherever the suite happens to run")
-    bypassed = [k for k, v in matrix.items() if str(v).startswith("BYPASS")]
-    # Every permitted destination, not just the first measured. EM3C-FINAL-0001 found a policy
-    # naming several hosts reported as measured after one was exercised, which left the rest
-    # permitted and untried. An allowlist is only as measured as its worst entry.
-    allowed_keys = [k for k in matrix
-                    if k == "allowed_via_proxy" or k.startswith("allowed_via_proxy_")]
-    allowed_ok = bool(allowed_keys) and all(
-        str(matrix[k]).startswith("ALLOWED") for k in allowed_keys)
+    bypassed = [k for k, v in matrix.items()
+                if k != "allowed_hosts" and str(v).startswith("BYPASS")]
+
+    # Every permitted destination, and the SAME destinations the policy names.
+    #
+    # EM3C-FINAL-0001 found a policy naming several hosts reported as measured after one had been
+    # tried. Counting whatever result keys happened to be present fixed half of that, and
+    # EM3C-FINAL-0003 found the other half: a count cannot tell a complete matrix from a partial
+    # one, because it never knew how many there should have been. The run now records the hosts
+    # it measured, every one of them must have a result, and where the caller states which hosts
+    # the policy permits the two sets have to be equal.
+    measured = {k[len("allowed:"):]: v for k, v in matrix.items() if k.startswith("allowed:")}
+    declared = matrix.get("allowed_hosts")
+    expected = ctx.host.get("egress_expected")
+
+    if declared is None:
+        return CheckResult.not_checked(
+            "egress-allowlist", "Only the sealed destinations are reachable", "egress",
+            "the egress run did not record which destinations it measured, so a complete matrix "
+            "cannot be told apart from a partial one")
+
+    declared_set = {str(h) for h in declared}
+    complete = bool(declared_set) and declared_set == set(measured)
+    bound = True if expected is None else ({str(h) for h in expected} == declared_set)
+    allowed_ok = complete and bound and all(
+        str(v).startswith("ALLOWED") for v in measured.values())
     denied_ok = not str(matrix.get("denied_via_proxy", "")).startswith("ALLOWED")
     return CheckResult.measured(
         "egress-allowlist", "Only the sealed destinations are reachable", "egress",
         not bypassed and allowed_ok and denied_ok, Vantage.INSIDE,
         (f"inside the internal network: direct routes {'all blocked' if not bypassed else bypassed}, "
-         f"all {len(allowed_keys)} sealed destination(s) {'reachable through the proxy' if allowed_ok else 'NOT all reachable'}, "
+         f"the {len(declared_set)} sealed destination(s) named by the policy "
+         f"{'were all measured and all reachable through the proxy' if allowed_ok else 'were NOT all measured and reachable'}, "
          f"an unsealed one {'was refused' if denied_ok else 'was ALLOWED'}"),
         detail=dict(matrix))
 
