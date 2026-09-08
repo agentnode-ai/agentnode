@@ -34,6 +34,18 @@ OK_RECORD = {
 }
 
 
+def crossing(made_on, value_sha256, **overrides):
+    """A sentinel that crosses properly. `in_request` is what makes the origin checkable: a value
+    the client sent is the client's, one it never sent is not."""
+    sentinel = {"generated_on": made_on,
+                "carried_over": "agentnode-job", "confirmed_over": "ssh",
+                "value_sha256": value_sha256,
+                "in_request": made_on == "client",
+                "in_response": True, "in_other_channel": True, "matched": True}
+    sentinel.update(overrides)
+    return sentinel
+
+
 def two_machines(recorder):
     """The pair of identity steps and the two crossed sentinels every record needs.
 
@@ -53,13 +65,11 @@ def two_machines(recorder):
     recorder.record(evidence.Step(
         name="a sentinel made on the client, read back over the gateway",
         role="client", argv=["(sentinel)"], started_at=1.4, ended_at=1.5, exit_code=0,
-        sentinel={"generated_on": "client", "verified_over": "gateway",
-                  "value_sha256": "1" * 64, "matched": True}))
+        sentinel=crossing("client", "1" * 64)))
     recorder.record(evidence.Step(
         name="a sentinel made on the gateway, read back over the client",
         role="gateway", argv=["(sentinel)"], started_at=1.6, ended_at=1.7, exit_code=0,
-        sentinel={"generated_on": "gateway", "verified_over": "client",
-                  "value_sha256": "2" * 64, "matched": True}))
+        sentinel=crossing("gateway", "2" * 64)))
 
 
 def _recorded(tmp_path, steps, *, secrets=(), with_machines=True):
@@ -378,17 +388,64 @@ class TestTwoMachinesAreShownToBeTwo:
         found = evidence.check_file(path)
         assert "same host identity" in messages(found)
 
-    def test_a_sentinel_read_back_over_its_own_channel_fails(self, tmp_path):
+    def test_a_sentinel_carried_and_confirmed_over_one_channel_fails(self, tmp_path):
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client")
         two_machines(recorder)
         recorder.record(evidence.Step(
-            name="a sentinel vouching for itself", role="client", argv=["(sentinel)"],
+            name="a sentinel that only one path ever saw", role="client", argv=["(sentinel)"],
             started_at=3.0, ended_at=3.1, exit_code=0,
-            sentinel={"generated_on": "client", "verified_over": "client",
-                      "value_sha256": "3" * 64, "matched": True}))
+            sentinel=crossing("client", "3" * 64, confirmed_over="agentnode-job")))
         found = evidence.check_file(path)
-        assert "vouching for itself" in messages(found)
+        assert "same channel" in messages(found)
+
+    def test_a_label_that_disagrees_with_the_record_fails(self, tmp_path):
+        """The founder's concern, and the one that matters: a sentinel calling itself the
+        gateway's while sitting in what the client sent is claiming its own provenance."""
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        two_machines(recorder)
+        recorder.record(evidence.Step(
+            name="a value the client sent, calling itself the gateway's", role="gateway",
+            argv=["(sentinel)"], started_at=3.0, ended_at=3.1, exit_code=0,
+            sentinel=crossing("gateway", "4" * 64, in_request=True)))
+        found = evidence.check_file(path)
+        assert "The label is not evidence" in messages(found)
+
+    def test_a_client_value_that_was_never_sent_fails(self, tmp_path):
+        """The mirror. A value the client did not send is not the client's."""
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        two_machines(recorder)
+        recorder.record(evidence.Step(
+            name="a value the client never sent, calling itself the client's", role="client",
+            argv=["(sentinel)"], started_at=3.0, ended_at=3.1, exit_code=0,
+            sentinel=crossing("client", "5" * 64, in_request=False)))
+        found = evidence.check_file(path)
+        assert "The label is not evidence" in messages(found)
+
+    def test_a_sentinel_with_no_provenance_fields_is_an_evidence_error(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        two_machines(recorder)
+        bare = {"generated_on": "client", "carried_over": "agentnode-job",
+                "confirmed_over": "ssh", "value_sha256": "6" * 64, "matched": True}
+        recorder.record(evidence.Step(
+            name="a sentinel that only says what it is", role="client", argv=["(sentinel)"],
+            started_at=3.0, ended_at=3.1, exit_code=0, sentinel=bare))
+        found = evidence.check_file(path)
+        assert "rests on what it calls itself" in messages(found)
+
+    def test_a_value_not_seen_on_the_other_channel_fails(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        two_machines(recorder)
+        recorder.record(evidence.Step(
+            name="a value only one channel saw", role="client", argv=["(sentinel)"],
+            started_at=3.0, ended_at=3.1, exit_code=0,
+            sentinel=crossing("client", "7" * 64, in_other_channel=False)))
+        found = evidence.check_file(path)
+        assert "not found over ssh" in messages(found)
 
     def test_a_sentinel_that_did_not_come_back_fails(self, tmp_path):
         path = tmp_path / "e.jsonl"
@@ -406,10 +463,9 @@ class TestTwoMachinesAreShownToBeTwo:
         recorder.record(evidence.Step(
             name="a sentinel that never arrived", role="client", argv=["(sentinel)"],
             started_at=1.4, ended_at=1.5, exit_code=0,
-            sentinel={"generated_on": "client", "verified_over": "gateway",
-                      "value_sha256": "1" * 64, "matched": False}))
+            sentinel=crossing("client", "1" * 64, in_response=False, matched=False)))
         found = evidence.check_file(path)
-        assert "did not come back" in messages(found)
+        assert "never came back" in messages(found)
 
     def test_one_direction_only_is_an_evidence_error(self, tmp_path):
         path = tmp_path / "e.jsonl"
@@ -427,8 +483,7 @@ class TestTwoMachinesAreShownToBeTwo:
         recorder.record(evidence.Step(
             name="only one direction", role="client", argv=["(sentinel)"],
             started_at=1.4, ended_at=1.5, exit_code=0,
-            sentinel={"generated_on": "client", "verified_over": "gateway",
-                      "value_sha256": "1" * 64, "matched": True}))
+            sentinel=crossing("client", "1" * 64, confirmed_over="ssh", matched=True)))
         found = evidence.check_file(path)
         assert "both directions" in messages(found)
 
@@ -449,8 +504,7 @@ class TestTwoMachinesAreShownToBeTwo:
             recorder.record(evidence.Step(
                 name=f"sentinel {made}", role=made, argv=["(sentinel)"],
                 started_at=1.4, ended_at=1.5, exit_code=0,
-                sentinel={"generated_on": made, "verified_over": checked,
-                          "value_sha256": "same" * 16, "matched": True}))
+                sentinel=crossing(made, "same" * 16)))
         found = evidence.check_file(path)
         assert "generated independently" in messages(found)
 

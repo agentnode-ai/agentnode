@@ -533,6 +533,64 @@ def verify(steps, secrets=()) -> list[Finding]:
     return problems
 
 
+#: Where a sentinel travelled. Two different names are required for a crossing: a value carried
+#: and confirmed over the same channel has only been seen by one path.
+_CHANNELS = ("agentnode-job", "ssh")
+
+
+def _sentinel_findings(sentinel: dict, crossed: dict) -> list[Finding]:
+    """Whether one sentinel establishes a crossing, from what is recorded rather than from what
+    it says about itself.
+
+    `generated_on` is a label, and a label is not provenance. What makes the origin checkable is
+    `in_request`: whether the value appeared in what the CLIENT sent. A value the client sent and
+    the gateway echoed came from the client. A value the client never sent, which came back in the
+    response and is also present on the gateway host, did not -- the client could not have
+    produced it. So the origin is derived here, and a record whose label disagrees with its own
+    fields is refused rather than believed.
+    """
+    where = "two machines"
+    made = str(sentinel.get("generated_on") or "")
+    carried = str(sentinel.get("carried_over") or "")
+    confirmed = str(sentinel.get("confirmed_over") or "")
+
+    if made not in ("client", "gateway"):
+        return [Finding(where, EVIDENCE_ERROR, "a sentinel does not say where it was made")]
+    if carried not in _CHANNELS or confirmed not in _CHANNELS:
+        return [Finding(where, EVIDENCE_ERROR,
+                        f"a sentinel does not name two known channels (carried over {carried!r}, "
+                        f"confirmed over {confirmed!r})")]
+    if carried == confirmed:
+        return [Finding(where, FAIL,
+                        f"a sentinel was carried and confirmed over the same channel ({carried}), "
+                        "so only one path ever saw it")]
+
+    for field_name in ("in_request", "in_response", "in_other_channel"):
+        if not isinstance(sentinel.get(field_name), bool):
+            return [Finding(where, EVIDENCE_ERROR,
+                            f"a sentinel does not record {field_name}, so its origin rests on "
+                            "what it calls itself")]
+
+    if sentinel.get("in_response") is not True:
+        return [Finding(where, FAIL,
+                        f"the sentinel said to be made on {made} never came back over {carried}")]
+    if sentinel.get("in_other_channel") is not True:
+        return [Finding(where, FAIL,
+                        f"the sentinel said to be made on {made} was not found over {confirmed}, "
+                        "so only one channel ever saw it")]
+
+    # The origin, derived. A value the client sent is the client's; one it never sent is not.
+    derived = "client" if sentinel.get("in_request") else "gateway"
+    if derived != made:
+        return [Finding(where, FAIL,
+                        f"a sentinel calls itself made on {made}, but it was "
+                        f"{'in' if sentinel.get('in_request') else 'not in'} what the client sent, "
+                        f"which makes it {derived}'s. The label is not evidence")]
+
+    crossed[made] = str(sentinel.get("value_sha256") or "")
+    return []
+
+
 def verify_two_machines(steps) -> list[Finding]:
     """Whether the record shows two different hosts rather than one machine describing itself.
 
@@ -577,24 +635,7 @@ def verify_two_machines(steps) -> list[Finding]:
         sentinel = raw.get("sentinel")
         if not isinstance(sentinel, dict):
             continue
-        made = str(sentinel.get("generated_on") or "")
-        checked = str(sentinel.get("verified_over") or "")
-        if not made or not checked:
-            problems.append(Finding("two machines", EVIDENCE_ERROR,
-                                    "a sentinel does not say where it was made or where it was "
-                                    "read back"))
-            continue
-        if made == checked:
-            problems.append(Finding("two machines", FAIL,
-                                    f"a sentinel made on {made} was read back over {checked}, "
-                                    "which is that machine vouching for itself"))
-            continue
-        if sentinel.get("matched") is not True:
-            problems.append(Finding("two machines", FAIL,
-                                    f"the sentinel made on {made} did not come back over "
-                                    f"{checked}"))
-            continue
-        crossed[made] = str(sentinel.get("value_sha256") or "")
+        problems.extend(_sentinel_findings(sentinel, crossed))
 
     if len(crossed) < 2:
         problems.append(Finding("two machines", EVIDENCE_ERROR,
