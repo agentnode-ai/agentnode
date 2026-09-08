@@ -92,9 +92,11 @@ jobs:
       - name: Wait for the runtime to be reachable again
         run: |
           set -eu
-          for _ in $(seq 1 60); do
+          attempt=0
+          while [ "${attempt}" -lt 60 ]; do
+            attempt=$((attempt + 1))
             if docker info >/dev/null 2>&1; then
-              echo "the daemon answered after ${_} attempt(s)"
+              echo "the daemon answered on attempt ${attempt}"
               docker version --format 'server {{.Server.Version}}'
               exit 0
             fi
