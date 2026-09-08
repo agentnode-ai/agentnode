@@ -34,6 +34,16 @@ OK_RECORD = {
 }
 
 
+STATED = {"expected_exit": None, "expected_refusal": "", "expect_output": False,
+          "expect_cleanup": False, "expect_container_gone": False}
+
+
+def a_step(**values):
+    """A Step with every expectation stated. The recorder refuses one that leaves any unset, so
+    a test that did not think about them would fail for that rather than for its own reason."""
+    return evidence.Step(**{**STATED, **values})
+
+
 def digest_for(name):
     return ("1" if name == "client" else "2") * 64
 
@@ -68,19 +78,19 @@ def two_machines(recorder):
     Added by every test that is not about machine separation, so those tests fail for their own
     reason rather than for a missing precondition.
     """
-    recorder.record(evidence.Step(
+    recorder.record(a_step(
         name="client identity", role="client", argv=["(identity)"],
         started_at=1.0, ended_at=1.1, exit_code=0,
         machine=identity("client", "c" * 64, "cf" * 32, "Windows")))
-    recorder.record(evidence.Step(
+    recorder.record(a_step(
         name="gateway identity", role="gateway", argv=["(identity)"],
         started_at=1.2, ended_at=1.3, exit_code=0,
         machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
-    recorder.record(evidence.Step(
+    recorder.record(a_step(
         name="a sentinel made on the client, read back over the gateway",
         role="client", argv=["(sentinel)"], started_at=1.4, ended_at=1.5, exit_code=0,
         sentinel=crossing("client", "1" * 64)))
-    recorder.record(evidence.Step(
+    recorder.record(a_step(
         name="a sentinel made on the gateway, read back over the client",
         role="gateway", argv=["(sentinel)"], started_at=1.6, ended_at=1.7, exit_code=0,
         sentinel=crossing("gateway", "2" * 64)))
@@ -95,7 +105,7 @@ BINDING = {"generation": "1", "policy_digest": "a" * 64, "configured_digest": "a
 def bindings(recorder, times=2):
     """The binding, captured before and after, as every record must carry it."""
     for n in range(times):
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name=f"the operator-policy binding, capture {n + 1}", role="gateway",
             argv=["(gateway egress --verbose)"], started_at=1.8 + n, ended_at=1.9 + n,
             exit_code=0, binding=dict(BINDING)))
@@ -130,7 +140,7 @@ def good_step(**overrides) -> evidence.Step:
         gateway_record=dict(OK_RECORD),
     )
     values.update(overrides)
-    return evidence.Step(**values)
+    return a_step(**values)
 
 
 def kinds(findings):
@@ -381,25 +391,35 @@ was read as absence."""
         ({"exit_code": 1}, "only a zero answer"),
         ({"error_class": "TimeoutExpired"}, "the query failed"),
         ({"parsed": False}, "was not parsed"),
-        ({"stdout": None}, "two streams"),
         ({"complete": False}, "ran to the end"),
         ({"stdout": "   "}, "unknown answer"),
-        ({"names": None}, "list of container names"),
+        ({"names": "__absent__"}, "list of container names"),
     ])
     def test_every_way_of_not_knowing_is_an_evidence_error(self, tmp_path, defect, expected):
         """Each query is complete except for the one thing it is about, so it reaches the rule it
         names rather than being turned away at the door."""
         query = {**self.GOOD_QUERY, **defect}
+        for key, value in list(query.items()):
+            if value == "__absent__":
+                del query[key]
         found = self._found(tmp_path, query)
         assert evidence.EVIDENCE_ERROR in kinds(found), messages(found)
         assert expected in messages(found)
         assert evidence.FAIL not in kinds(found), (
             "not knowing was reported as the container being there")
 
-    def test_looking_for_nothing_is_an_evidence_error(self, tmp_path):
-        query = {**self.GOOD_QUERY, "sought_id": ""}
-        found = self._found(tmp_path, query, container="")
-        assert "nothing was named" in messages(found)
+    @pytest.mark.parametrize("missing", ["sought_id", "container"])
+    def test_absence_needs_both_the_name_and_the_id(self, tmp_path, missing):
+        """A name can be reused and an id cannot, so absence of one is weaker than absence of
+        both -- and the criterion asks for both."""
+        query = dict(self.GOOD_QUERY)
+        overrides = {}
+        if missing == "sought_id":
+            query["sought_id"] = ""
+        else:
+            overrides["container"] = ""
+        found = self._found(tmp_path, query, **overrides)
+        assert "never named" in messages(found)
 
 
 class TestTwoMachinesAreShownToBeTwo:
@@ -413,7 +433,7 @@ class TestTwoMachinesAreShownToBeTwo:
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client")
         two_machines(recorder)
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="gateway identity again", role="gateway", argv=["(identity)"],
             started_at=2.0, ended_at=2.1, exit_code=0,
             machine=identity("gateway", "c" * 64, "gf" * 32, "Linux")))
@@ -424,7 +444,7 @@ class TestTwoMachinesAreShownToBeTwo:
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client")
         two_machines(recorder)
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="a sentinel that only one path ever saw", role="client", argv=["(sentinel)"],
             started_at=3.0, ended_at=3.1, exit_code=0,
             sentinel=crossing("client", "3" * 64, confirmed_over="agentnode-job")))
@@ -437,7 +457,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client")
         two_machines(recorder)
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="a value the client sent, calling itself the gateway's", role="gateway",
             argv=["(sentinel)"], started_at=3.0, ended_at=3.1, exit_code=0,
             sentinel=crossing("gateway", "4" * 64, in_request=True)))
@@ -449,7 +469,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client")
         two_machines(recorder)
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="a value the client never sent, calling itself the client's", role="client",
             argv=["(sentinel)"], started_at=3.0, ended_at=3.1, exit_code=0,
             sentinel=crossing("client", "5" * 64, in_request=False)))
@@ -476,7 +496,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client")
         two_machines(recorder)
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="a value only one channel saw", role="client", argv=["(sentinel)"],
             started_at=3.0, ended_at=3.1, exit_code=0,
             sentinel=crossing("client", "7" * 64, in_other_channel=False)))
@@ -486,15 +506,15 @@ gateway's while sitting in what the client sent is claiming its own provenance."
     def test_a_sentinel_that_did_not_come_back_fails(self, tmp_path):
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client")
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="client identity", role="client", argv=["(identity)"],
             started_at=1.0, ended_at=1.1, exit_code=0,
             machine=identity("client", "c" * 64, "cf" * 32, "Windows")))
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="gateway identity", role="gateway", argv=["(identity)"],
             started_at=1.2, ended_at=1.3, exit_code=0,
             machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="a sentinel that never arrived", role="client", argv=["(sentinel)"],
             started_at=1.4, ended_at=1.5, exit_code=0,
             sentinel=crossing("client", "1" * 64, in_response=False, matched=False)))
@@ -504,15 +524,15 @@ gateway's while sitting in what the client sent is claiming its own provenance."
     def test_one_direction_only_is_an_evidence_error(self, tmp_path):
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client")
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="client identity", role="client", argv=["(identity)"],
             started_at=1.0, ended_at=1.1, exit_code=0,
             machine=identity("client", "c" * 64, "cf" * 32, "Windows")))
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="gateway identity", role="gateway", argv=["(identity)"],
             started_at=1.2, ended_at=1.3, exit_code=0,
             machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="only one direction", role="client", argv=["(sentinel)"],
             started_at=1.4, ended_at=1.5, exit_code=0,
             sentinel=crossing("client", "1" * 64, confirmed_over="ssh", matched=True)))
@@ -522,16 +542,16 @@ gateway's while sitting in what the client sent is claiming its own provenance."
     def test_the_same_sentinel_value_both_ways_fails(self, tmp_path):
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client")
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="client identity", role="client", argv=["(identity)"],
             started_at=1.0, ended_at=1.1, exit_code=0,
             machine=identity("client", "c" * 64, "cf" * 32, "Windows")))
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="gateway identity", role="gateway", argv=["(identity)"],
             started_at=1.2, ended_at=1.3, exit_code=0,
             machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
         for made, checked in (("client", "gateway"), ("gateway", "client")):
-            recorder.record(evidence.Step(
+            recorder.record(a_step(
                 name=f"sentinel {made}", role=made, argv=["(sentinel)"],
                 started_at=1.4, ended_at=1.5, exit_code=0,
                 sentinel=crossing(made, "same" * 16)))
@@ -544,16 +564,16 @@ gateway's while sitting in what the client sent is claiming its own provenance."
         identities are what separate them."""
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client")
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="client identity", role="client", argv=["(identity)"],
             started_at=1.0, ended_at=1.1, exit_code=0,
             machine=identity("client", "c" * 64, "cf" * 32, "Linux")))
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="gateway identity", role="gateway", argv=["(identity)"],
             started_at=1.2, ended_at=1.3, exit_code=0,
             machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
         for made, checked in (("client", "gateway"), ("gateway", "client")):
-            recorder.record(evidence.Step(
+            recorder.record(a_step(
                 name=f"sentinel {made}", role=made, argv=["(sentinel)"],
                 started_at=1.4, ended_at=1.5, exit_code=0,
                 sentinel=crossing(made, digest_for(made))))
@@ -567,10 +587,10 @@ gateway's while sitting in what the client sent is claiming its own provenance."
         recorder = evidence.Recorder(path, role="client")
         broken = identity("client", "c" * 64, "cf" * 32, "Windows")
         broken["commands"][0]["exit_code"] = 1
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="client identity", role="client", argv=["(identity)"],
             started_at=1.0, ended_at=1.1, exit_code=0, machine=broken))
-        recorder.record(evidence.Step(
+        recorder.record(a_step(
             name="gateway identity", role="gateway", argv=["(identity)"],
             started_at=1.2, ended_at=1.3, exit_code=0,
             machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
@@ -693,13 +713,10 @@ class TestThePolicyBindingIsChecked:
         recorder = evidence.Recorder(path, role="client")
         two_machines(recorder)
         for n in range(times):
-            recorder.record(evidence.Step(
+            recorder.record(a_step(
                 name=f"binding {n + 1}", role="gateway", argv=["(egress --verbose)"],
                 started_at=2.0 + n, ended_at=2.1 + n, exit_code=0, binding=dict(binding)))
         return evidence.check_file(path)
-
-    def test_a_complete_binding_captured_twice_is_accepted(self):
-        pass
 
     def test_a_record_with_no_binding_at_all_is_an_evidence_error(self, tmp_path):
         path = tmp_path / "e.jsonl"

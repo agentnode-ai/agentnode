@@ -53,6 +53,18 @@ _SECRET_FLAGS = ("--code", "--token", "--secret", "--password", "--key")
 REDACTED = "[redacted]"
 
 
+class _Unset:
+    """A value that means nobody said, distinct from every value anyone could say."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:                                    # pragma: no cover - debugging
+        return "UNSET"
+
+
+UNSET = _Unset()
+
+
 class EvidenceError(Exception):
     """The evidence does not establish what it claims, or cannot be read at all."""
 
@@ -106,11 +118,15 @@ class Step:
     notes: str = ""
 
     # -- what was expected, declared before the step ran ---------------------------------------
-    expected_exit: int | None = None
-    expected_refusal: str = ""
-    expect_output: bool = False
-    expect_cleanup: bool = False
-    expect_container_gone: bool = False
+    #: `UNSET` rather than a value. `EM3C-EVIDENCE-0002`: with ordinary defaults, a caller who
+    #: never thought about the question produced a record identical to one that had considered it
+    #: and said no. The recorder refuses a step that left any of these unset, so the difference
+    #: between "not required" and "nobody said" survives all the way to the file.
+    expected_exit: Any = UNSET
+    expected_refusal: Any = UNSET
+    expect_output: Any = UNSET
+    expect_cleanup: Any = UNSET
+    expect_container_gone: Any = UNSET
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -149,17 +165,39 @@ RECORDED_ONLY = ("job_id", "client_id", "policy_deltas", "cleanup_verified", "no
 #: rules below read specific keys out of these.
 _NESTED: dict[str, dict] = {
     "machine": {"required": ("role", "host_sha256", "filesystem_sha256", "os", "commands"),
-                "optional": ()},
+                "optional": (),
+                "types": {"role": (str,), "host_sha256": (str,), "filesystem_sha256": (str,),
+                          "os": (str,), "commands": (list,)}},
     "sentinel": {"required": ("generated_on", "carried_over", "confirmed_over", "value_sha256",
                               "in_request", "in_response", "in_other_channel", "matched"),
-                 "optional": ()},
+                 "optional": (),
+                 "types": {"generated_on": (str,), "carried_over": (str,),
+                           "confirmed_over": (str,), "value_sha256": (str,),
+                           "in_request": (bool,), "in_response": (bool,),
+                           "in_other_channel": (bool,), "matched": (bool,)}},
     "container_query": {"required": ("ran", "exit_code", "stdout", "stderr", "error_class",
                                      "parsed", "command"),
-                        "optional": ("names", "ids", "sought_id", "complete")},
+                        "optional": ("names", "ids", "sought_id", "complete"),
+                        "types": {"ran": (bool,), "exit_code": (int, type(None)),
+                                  "stdout": (str,), "stderr": (str,), "error_class": (str,),
+                                  "parsed": (bool,), "command": (str,), "names": (list,),
+                                  "ids": (list,), "sought_id": (str,), "complete": (bool,)}},
     "binding": {"required": ("generation", "policy_digest", "configured_digest", "digests_agree",
                              "required_properties", "allowlist", "runtime", "backend",
                              "conformance_digest"),
-                "optional": ()},
+                "optional": (),
+                "types": {"generation": (str,), "policy_digest": (str,),
+                          "configured_digest": (str,), "digests_agree": (str,),
+                          "required_properties": (str,), "allowlist": (list,),
+                          "runtime": (str,), "backend": (str,), "conformance_digest": (str,)}},
+}
+
+#: The keys the rules read out of the gateway's own record. Its shape belongs to the gateway, so
+#: unknown keys are its business -- but a wrong type in one of these would be read as an answer.
+_GATEWAY_RECORD_TYPES: dict[str, tuple] = {
+    "run_id": (str,), "request_policy_sha256": (str,), "effective_policy_sha256": (str,),
+    "policy_deltas": (list, type(None)), "refusal": (str,), "error": (str,),
+    "status": (int,), "cleanup_verified": (bool, str, type(None)),
 }
 
 _TYPES: dict[str, tuple] = {
@@ -264,6 +302,26 @@ def parse_step(text_or_mapping) -> dict:
         if absent:
             raise EvidenceError(
                 f"{name} has no " + ", ".join(absent) + ", so it cannot be read.")
+        for key, value in nested.items():
+            allowed = shape["types"].get(key)
+            if allowed is None:
+                continue
+            if isinstance(value, bool) and bool not in allowed:
+                raise EvidenceError(f"{name}.{key} is a boolean and its shape says otherwise.")
+            if not isinstance(value, allowed):
+                raise EvidenceError(
+                    f"{name}.{key} is {type(value).__name__} and its shape says "
+                    + " or ".join(t.__name__ for t in allowed) + ".")
+
+    # The gateway's own record is not this module's document, so its shape is not closed -- but
+    # the keys the rules READ out of it are, and a wrong type there would be read as an answer.
+    record = document.get("gateway_record")
+    if isinstance(record, dict):
+        for key, allowed in _GATEWAY_RECORD_TYPES.items():
+            if key in record and not isinstance(record[key], allowed):
+                raise EvidenceError(
+                    f"gateway_record.{key} is {type(record[key]).__name__} and the rules read it "
+                    "as " + " or ".join(t.__name__ for t in allowed) + ".")
     return document
 
 
@@ -382,12 +440,27 @@ class Recorder:
         except OSError as exc:
             code, out, err, error_class = None, "", str(exc), type(exc).__name__
 
+        # Calling `run` without an expectation STATES that none applies. That is a contract, not
+        # an omission: the raw `record` path refuses an unset expectation, and this one fills them
+        # in deliberately so the ergonomic path cannot leave the question unanswered by accident.
+        stated = {name: getattr(Step, "__dataclass_fields__")[name].default
+                  for name in EXPECTATIONS}
+        stated.update({"expected_exit": None, "expected_refusal": "", "expect_output": False,
+                       "expect_cleanup": False, "expect_container_gone": False})
+        stated.update({k: v for k, v in extra.items() if k in EXPECTATIONS})
+        rest = {k: v for k, v in extra.items() if k not in EXPECTATIONS}
         return self.record(Step(name=name, role=self.role, argv=safe,
                                 started_at=started, ended_at=time.time(),
                                 exit_code=code, stdout=out, stderr=err,
-                                error_class=error_class, **extra))
+                                error_class=error_class, **stated, **rest))
 
     def record(self, step: Step) -> Step:
+        unstated = [name for name in EXPECTATIONS if getattr(step, name) is UNSET]
+        if unstated:
+            raise EvidenceError(
+                "this step never said whether " + ", ".join(unstated) + " applied. An unstated "
+                "expectation and one deliberately set to nothing are different, and a record "
+                "cannot carry the difference unless the caller states it.")
         self.steps.append(step)
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         with open(self.path, "a", encoding="utf-8") as handle:
@@ -462,8 +535,6 @@ def _container_findings(step, where) -> list[Finding]:
     if query.get("exit_code") != 0:
         return [Finding(where, EVIDENCE_ERROR,
                         f"the query exited {query.get('exit_code')!r}; only a zero answer can be read")]
-    if not isinstance(query.get("stdout"), str) or not isinstance(query.get("stderr"), str):
-        return [Finding(where, EVIDENCE_ERROR, "the query's two streams were not both captured")]
     if query.get("parsed") is not True:
         return [Finding(where, EVIDENCE_ERROR, "the query's answer was not parsed")]
 
@@ -482,10 +553,13 @@ def _container_findings(step, where) -> list[Finding]:
                         "the query did not yield a list of container names and a list of ids")]
     sought_name = str(step.get("container") or "")
     sought_id = str(query.get("sought_id") or "")
-    if not sought_name and not sought_id:
+    if not sought_name or not sought_id:
+        # Both, not either. A name can be reused and an id cannot, so absence of one is a
+        # weaker claim than absence of the two together -- and the criterion asks for the two.
+        missing = "name" if not sought_name else "id"
         return [Finding(where, EVIDENCE_ERROR,
-                        "nothing was named as the container to look for, so its absence means "
-                        "nothing")]
+                        f"the container's {missing} was never named, so what was looked for is "
+                        "not established")]
 
     still_there = []
     if sought_name and sought_name in names:
@@ -621,6 +695,42 @@ def verify_bindings(steps) -> list[Finding]:
         problems.append(Finding("policy binding", EVIDENCE_ERROR,
                                 "the binding was captured once, so it was never compared before "
                                 "and after"))
+        return problems
+
+    # Counting the captures says nothing. What matters is whether the LAST one still describes
+    # the policy the run finished under, and whether every change between them was a change the
+    # record accounts for. `EM3C-EVIDENCE-0002`: two identical-looking captures were being
+    # accepted without either being compared to the other.
+    first, last = seen[0], seen[-1]
+    changed = [k for k in ("policy_digest", "generation")
+               if str(first.get(k)) != str(last.get(k))]
+    if changed:
+        # A change is legitimate only when the record contains a capture that announced it: the
+        # generation must move forward, never back, and the digest must move with it.
+        try:
+            before_generation = int(str(first.get("generation") or 0))
+            after_generation = int(str(last.get("generation") or 0))
+        except ValueError:
+            return problems + [Finding("policy binding", FAIL,
+                                       "a generation is not a number, so no comparison is possible")]
+        if after_generation < before_generation:
+            problems.append(Finding(
+                "policy binding", FAIL,
+                f"the generation went backwards, {before_generation} to {after_generation}: the "
+                "run finished under an older activation than it started with"))
+        elif after_generation == before_generation and "policy_digest" in changed:
+            problems.append(Finding(
+                "policy binding", FAIL,
+                "the policy digest changed while the generation did not, so a policy was "
+                "substituted without an activation"))
+    else:
+        for key in ("configured_digest", "required_properties", "runtime", "backend",
+                    "conformance_digest"):
+            if str(first.get(key)) != str(last.get(key)):
+                problems.append(Finding(
+                    "policy binding", FAIL,
+                    f"{key} changed while the policy digest and generation did not, so the "
+                    "binding does not describe one state"))
     return problems
 
 
