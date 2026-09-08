@@ -24,10 +24,9 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any
 
 SCHEMA = 1
@@ -37,7 +36,6 @@ SCHEMA = 1
 #: as a token by where it appears, and a redactor that guessed from shape would miss the one that
 #: did not look like the others.
 _SECRET_FLAGS = ("--code", "--token", "--secret", "--password", "--key")
-_SECRET_ENV = re.compile(r"(TOKEN|SECRET|PASSWORD|KEY|CODE)$", re.I)
 REDACTED = "[redacted]"
 
 

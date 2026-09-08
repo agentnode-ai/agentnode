@@ -43,7 +43,6 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from agentnode_sdk.gateway.operator_policy import (
     OperatorPolicyEnvelope,
@@ -334,7 +333,7 @@ class ActivationLock:
         self.stale_after = stale_after
         self._fd: int | None = None
 
-    def __enter__(self) -> "ActivationLock":
+    def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self._fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -364,4 +363,3 @@ class ActivationLock:
             finally:
                 self._fd = None
         _quiet_unlink(self.path)
-        return None
