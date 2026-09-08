@@ -218,7 +218,13 @@ def client_role(args) -> int:
     forever.write_text("import time\nprint('going', flush=True)\ntime.sleep(600)\n",
                        encoding="utf-8")
     overran = run("remote", "run", str(forever), "--max-seconds", "10", "--timeout", "200")
-    step("a job past its limit does not report success", overran.returncode != 0)
+    text = (overran.stdout or "")
+    print(text[-500:])
+    # A nonzero exit is also what a job that never started produces, which is the opposite of what
+    # this step claims to show. It must have started and then been stopped.
+    step("a job past its limit started and was then stopped",
+         overran.returncode != 0 and "going" in text
+         and ("did not finish" in text or "unverified" in text or "cancelled" in text))
 
     heading("replacing and withdrawing access")
     rotated = run("remote", "rotate")

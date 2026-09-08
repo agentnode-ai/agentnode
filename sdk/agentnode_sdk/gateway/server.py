@@ -1032,6 +1032,30 @@ def make_server(
     from agentnode_sdk.gateway.statedir import require_private
 
     require_private(service.state.root)
+
+    def _watch_permissions(target) -> None:
+        """Stop serving if the gateway's directory is widened while it is up.
+
+        The check before binding is a point in time, and `EM3C-EXTERNAL-0003` was right that a
+        point in time says nothing about the next one. Reading a token already re-checks, so a
+        widened directory cannot be USED -- but the socket would stay open, accepting and refusing
+        forever without telling anyone why. This closes it instead, which is both the safer state
+        and the one an operator will notice.
+        """
+        from agentnode_sdk.gateway.statedir import inspect as inspect_dir
+
+        while getattr(target, "agentnode_serving", False):
+            time.sleep(5.0)
+            verdict = inspect_dir(service.state.root)
+            if not verdict.ok:
+                sys.stderr.write(
+                    "\nThe gateway's files stopped being private while it was running:\n  "
+                    + verdict.reason + "\n\nIt has stopped. To fix it:\n  "
+                    + verdict.remedy + "\n"
+                )
+                target.agentnode_serving = False
+                threading.Thread(target=target.shutdown, daemon=True).start()
+                return
     handler = type("_BoundHandler", (_Handler,), {"service": service})
     server = ThreadingHTTPServer((host, port), handler)
     # Off unless asked for. A gateway that logs every request by default writes a record of who
@@ -1045,6 +1069,8 @@ def make_server(
         server.agentnode_tls = True
     else:
         server.agentnode_tls = False
+    server.agentnode_serving = True
+    threading.Thread(target=_watch_permissions, args=(server,), daemon=True).start()
     return server
 
 

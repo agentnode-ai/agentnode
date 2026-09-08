@@ -145,10 +145,26 @@ def main() -> int:
     check("the client cannot list the gateway's directory", listing.returncode != 0,
           (listing.stderr or "").strip()[:120])
 
+    # A nonzero exit is not specific enough: a missing docker binary would satisfy it just as
+    # well as a denied one, and would prove nothing about access. EM3C-EXTERNAL-0003 found that.
+    # So: the binary must exist, the refusal must be a permission refusal, and the client must not
+    # be in a group that would grant it another way.
+    which = subprocess.run(["sudo", "-n", "-u", CLIENT_USER, "which", "docker"],
+                           capture_output=True, text=True)
+    check("the docker client is installed for the client user", which.returncode == 0,
+          (which.stdout or "").strip())
     docker = subprocess.run(["sudo", "-n", "-u", CLIENT_USER, "docker", "ps"],
                             capture_output=True, text=True)
-    check("the client cannot use the container runtime", docker.returncode != 0,
-          (docker.stderr or "").strip()[:120])
+    denied = "permission denied" in (docker.stderr or "").lower()
+    check("the container runtime refuses the client for lack of permission",
+          docker.returncode != 0 and denied, (docker.stderr or "").strip()[:140])
+    groups = subprocess.run(["id", "-nG", CLIENT_USER], capture_output=True, text=True)
+    check("the client is in no group that would grant the runtime",
+          "docker" not in (groups.stdout or "").split(), (groups.stdout or "").strip())
+    socket_read = subprocess.run(
+        ["sudo", "-n", "-u", CLIENT_USER, "test", "-r", "/var/run/docker.sock"],
+        capture_output=True, text=True)
+    check("the client cannot read the runtime socket", socket_read.returncode != 0)
 
     say("the gateway measures itself and starts")
     doctor = gateway("doctor", "--measure")
@@ -208,8 +224,13 @@ def main() -> int:
                        input="import time\nprint('going', flush=True)\ntime.sleep(600)\n",
                        capture_output=True, text=True)
         overran = client("run", str(forever), "--max-seconds", "10", "--timeout", "200")
-        check("a job past its limit does not report success", overran.returncode != 0,
-              (overran.stdout or "").strip().replace("\n", " | ")[:200])
+        # Nonzero alone would also be satisfied by the job never starting, which is the opposite
+        # of what this claims. It has to have STARTED and then been stopped.
+        text = (overran.stdout or "")
+        check("a job past its limit started and was then stopped",
+              overran.returncode != 0 and "going" in text
+              and ("did not finish" in text or "unverified" in text or "cancelled" in text),
+              text.strip().replace("\n", " | ")[:220])
 
         say("the credential can be replaced and withdrawn")
         rotated = client("rotate")

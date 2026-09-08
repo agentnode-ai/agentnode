@@ -143,10 +143,11 @@ agentnode remote disconnect                        # forget it here
 
 ## Reaching it from somewhere else
 
-Everything above assumes the two are on the same machine or the same private network, over
-`http://`. **Plain HTTP works only to `127.0.0.1`.** Anything else is refused, because your pairing
-code and your access token cross that link first and neither survives being read on the way. There
-is no setting that changes this.
+Everything above assumes the client and the gateway are on the same machine, reached over
+`http://127.0.0.1`. **That is the only address plain HTTP is accepted for** — not "the same
+network", not "a private network", not a VPN address. Anything else is refused, because your
+pairing code and your access token cross that link first and neither survives being read on the
+way. There is no setting that changes this.
 
 To use a gateway that is genuinely elsewhere, the connection has to be encrypted. In order of how
 easy they are:
