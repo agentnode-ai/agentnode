@@ -694,9 +694,27 @@ class TestAnOperatorCanOpenEgressFromTheCommandLine:
                      "--allow", "example.com", "--none"]) == 2
         assert "opposite things" in capsys.readouterr().out
 
-    def test_it_says_it_is_measuring_and_never_that_it_has_finished(self, home, tmp_path, capsys):
-        """There is no runtime here, so the measurement cannot succeed. What the command may not
-        do is say the policy is saved, active or protecting anything on the way past."""
+    def _measurement_fails(self, monkeypatch):
+        """Make the measurement fail on purpose.
+
+        These two tests first got their failure from the machine having no container runtime,
+        which is true on a laptop and false in CI -- so in CI the measurement succeeded and both
+        failed for the opposite of the reason they were about.
+        """
+        from agentnode_sdk.gateway.readiness import Readiness
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        def fake(self, options=None, now=None):
+            return Readiness(False, "the allowlist could not be measured on this machine.",
+                             {}, ("egress_allowlist",),
+                             ("agentnode gateway doctor --measure",))
+
+        monkeypatch.setattr(Service, "measure", fake)
+
+    def test_it_says_it_is_measuring_and_never_that_it_has_finished(self, home, tmp_path,
+                                                                    capsys, monkeypatch):
+        """The command may not say the policy is saved, active or protecting on the way past."""
+        self._measurement_fails(monkeypatch)
         root = tmp_path / "gw"
         rc = main(["gateway", "egress", "--dir", str(root), "--allow", "example.com"])
         out = capsys.readouterr().out
@@ -707,14 +725,42 @@ class TestAnOperatorCanOpenEgressFromTheCommandLine:
         for premature in ("is now in force", "Saved. It takes effect", "may reach:"):
             assert premature not in out, f"the command claimed {premature!r} without having done it"
 
-    def test_a_gateway_that_cannot_measure_does_not_get_the_policy(self, home, tmp_path):
-        from agentnode_sdk.gateway import operator_policy as opol
+    def test_a_gateway_that_cannot_measure_does_not_get_the_policy(self, home, tmp_path,
+                                                                   monkeypatch):
         from agentnode_sdk.gateway.activation import ActivationStore
 
+        self._measurement_fails(monkeypatch)
         root = tmp_path / "gw"
         main(["gateway", "egress", "--dir", str(root), "--allow", "example.com"])
         assert ActivationStore(root).load_active() is None, \
             "a policy was put in force on a machine that could not measure it"
+
+    def test_a_measurement_that_passes_does_report_the_policy_in_force(self, home, tmp_path,
+                                                                       capsys, monkeypatch):
+        """The control. Without it, both tests above would pass on a command that could never
+        activate anything, which is not the behaviour being described."""
+        from agentnode_sdk.gateway.activation import ActivationStore
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.readiness import Readiness
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        root = tmp_path / "gw"
+        seeded = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(seeded)
+
+        def fake(self, options=None, now=None):
+            envelope = self.configured_envelope()
+            active = ActivationStore(self.state.root).load_active()
+            binding = self.report_binding(envelope.digest())
+            ActivationStore(self.state.root).activate(envelope, active.report, binding.as_dict())
+            return Readiness(True, "", {}, (), ())
+
+        monkeypatch.setattr(Service, "measure", fake)
+        assert main(["gateway", "egress", "--dir", str(root), "--allow", "example.com"]) == 0
+        out = capsys.readouterr().out
+        assert "Measurements passed" in out, out
+        assert "example.com" in out, out
+        assert ActivationStore(root).load_active().policy.mode == "restricted"
 
     def test_the_required_properties_are_named_before_measuring(self, home, tmp_path, capsys):
         """An operator is told what is about to be checked, not just that something is."""

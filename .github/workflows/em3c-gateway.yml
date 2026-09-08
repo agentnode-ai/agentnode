@@ -74,7 +74,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_em3c_cli.py 2>&1 | tee em3c-cli.txt
-          grep -qE "^36 passed" em3c-cli.txt || {
+          grep -qE "^37 passed" em3c-cli.txt || {
             echo "the CLI tests did not all pass"; exit 1; }
 
       # The evidence runner has to be shown to CATCH things before any external run leans on
