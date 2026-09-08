@@ -3713,3 +3713,99 @@ class TestAnAllowlistIsMeasuredBeforeItIsPermitted:
             document, binding, opol.build(opol.RESTRICTED, ("example.com",)).required_properties)
         assert verdict.ready is False
         assert "egress_allowlist" in verdict.unproven
+
+
+class TestTheOperatorSurfaceShowsTheRightAmount:
+    """EM3C-Y6-DECISION-0001 D6: digests are diagnostic, not everyday reading."""
+
+    def _args(self, root, verbose):
+        class Args:
+            pass
+
+        args = Args()
+        args.dir = str(root)
+        args.allow = None
+        args.none = False
+        args.verbose = verbose
+        return args
+
+    def _measured(self, root):
+        service = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(service)
+        return service
+
+    def _output(self, root, verbose):
+        import contextlib
+        import io as _io
+
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        buffer = _io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            gwc.cmd_egress(self._args(root, verbose))
+        return buffer.getvalue()
+
+    @staticmethod
+    def _has_digest(text):
+        return any(len(word) == 64 and all(c in "0123456789abcdef" for c in word)
+                   for word in text.split())
+
+    def test_ordinary_output_carries_no_digests(self, tmp_path):
+        service = self._measured(tmp_path / "gw")
+        assert not self._has_digest(self._output(service.state.root, verbose=False))
+
+    def test_the_diagnostic_view_carries_them(self, tmp_path):
+        """The control: without this, a command that printed nothing would pass the test above."""
+        service = self._measured(tmp_path / "gw")
+        text = self._output(service.state.root, verbose=True)
+        assert self._has_digest(text)
+        assert "digests agree" in text
+        assert "activation generation" in text
+
+
+class TestAnUnreadablePolicyFailsClosed:
+    """A policy that cannot be read is an unknown policy, and an unknown policy is not something
+    to run foreign code under. It is specifically NOT treated as the closed default, because the
+    closed default is a valid state that a broken one must not be able to impersonate."""
+
+    def _measured(self, root):
+        service = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(service)
+        return service
+
+    def _reopen(self, root):
+        return GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+
+    def test_a_config_that_is_not_json_stops_the_gateway(self, tmp_path):
+        service = self._measured(tmp_path / "gw")
+        (service.state.root / "config.json").write_text("{not json", encoding="utf-8")
+        verdict = self._reopen(service.state.root).readiness_now()
+        assert verdict.ready is False
+        assert "cannot read the policy" in verdict.reason
+
+    def test_a_config_with_a_duplicated_key_stops_the_gateway(self, tmp_path):
+        service = self._measured(tmp_path / "gw")
+        (service.state.root / "config.json").write_text(
+            '{"egress_allowed": ["a.example"], "egress_allowed": ["b.example"]}',
+            encoding="utf-8")
+        verdict = self._reopen(service.state.root).readiness_now()
+        assert verdict.ready is False
+        assert "cannot read the policy" in verdict.reason
+
+    def test_a_valid_config_does_not_stop_it(self, tmp_path):
+        """The control. A gateway that refused every config would pass both tests above."""
+        service = self._measured(tmp_path / "gw")
+        assert self._reopen(service.state.root).readiness_now().ready is True
+
+    def test_a_half_written_active_state_is_not_read_as_absent(self, tmp_path):
+        """A torn write must look broken, not look like a gateway that was never measured --
+        the two lead to different sentences and only one of them is honest."""
+        from agentnode_sdk.gateway.activation import ACTIVE_NAME, SnapshotUnusable
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / ACTIVE_NAME
+        whole = path.read_text(encoding="utf-8")
+        path.write_text(whole[: len(whole) // 2], encoding="utf-8")
+        with pytest.raises(SnapshotUnusable):
+            self._reopen(service.state.root).active_state()
+        assert self._reopen(service.state.root).readiness_now().ready is False
