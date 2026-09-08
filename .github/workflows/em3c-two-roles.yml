@@ -84,6 +84,26 @@ jobs:
           sudo -n -u "${TWO_ROLE_CLIENT_USER}" "${TWO_ROLE_CLIENT_HOME}/venv/bin/python"             -m agentnode_sdk.cli remote list || true
           echo "TWO_ROLE_CLIENT_PYTHON=${TWO_ROLE_CLIENT_HOME}/venv/bin/python" >> "$GITHUB_ENV"
 
+      # Installing docker-ce restarts the daemon, and the version check above can pass while it
+      # is still settling. Twice this lane then failed minutes later with "docker found but its
+      # daemon is not reachable" -- not a defect in what is being tested, but a precondition
+      # nobody re-checked. Waiting for it is bounded and says so if it never arrives; this is
+      # the lane's own precondition, not the thing under test.
+      - name: Wait for the runtime to be reachable again
+        run: |
+          set -eu
+          for _ in $(seq 1 60); do
+            if docker info >/dev/null 2>&1; then
+              echo "the daemon answered after ${_} attempt(s)"
+              docker version --format 'server {{.Server.Version}}'
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the container runtime never became reachable; the two-role check needs one"
+          docker info || true
+          exit 1
+
       - name: Set the gateway up as its own user
         run: python -m agentnode_sdk.cli gateway init --dir "${TWO_ROLE_GATEWAY_DIR}"
 
