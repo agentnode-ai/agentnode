@@ -33,6 +33,12 @@ import sys
 import time
 from pathlib import Path
 
+#: What "the sandbox stopped it" actually looks like in the output. The timeout marker arrives on
+#: STDERR, which the first version of this check did not read -- so a job that had correctly
+#: started and been stopped was recorded as a failure. The behaviour was right; the assertion was
+#: looking in one of the two places the evidence could appear.
+STOPPED_MARKERS = ("did not finish", "unverified", "cancelled", "timed out")
+
 results: list[tuple[str, bool, str]] = []
 
 
@@ -218,13 +224,14 @@ def client_role(args) -> int:
     forever.write_text("import time\nprint('going', flush=True)\ntime.sleep(600)\n",
                        encoding="utf-8")
     overran = run("remote", "run", str(forever), "--max-seconds", "10", "--timeout", "200")
-    text = (overran.stdout or "")
+    text = (overran.stdout or "") + (overran.stderr or "")
     print(text[-500:])
     # A nonzero exit is also what a job that never started produces, which is the opposite of what
-    # this step claims to show. It must have started and then been stopped.
+    # this step claims to show. It must have started and then been stopped -- and the
+    # evidence of being stopped can arrive on either stream.
     step("a job past its limit started and was then stopped",
          overran.returncode != 0 and "going" in text
-         and ("did not finish" in text or "unverified" in text or "cancelled" in text))
+         and any(m in text.lower() for m in STOPPED_MARKERS))
 
     heading("replacing and withdrawing access")
     rotated = run("remote", "rotate")

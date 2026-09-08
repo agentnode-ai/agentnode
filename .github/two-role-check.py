@@ -42,6 +42,12 @@ PORT = int(os.environ.get("TWO_ROLE_PORT", "8399"))
 CLIENT_PYTHON = os.environ.get("TWO_ROLE_CLIENT_PYTHON", sys.executable)
 BASE = f"http://127.0.0.1:{PORT}"
 
+#: What "the sandbox stopped it" actually looks like in the output. The timeout marker arrives on
+#: STDERR, which the first version of this check did not read -- so a job that had correctly
+#: started and been stopped was recorded as a failure. The behaviour was right; the assertion was
+#: looking in one of the two places the evidence could appear.
+STOPPED_MARKERS = ("did not finish", "unverified", "cancelled", "timed out")
+
 failures: list[str] = []
 
 #: The last command either helper ran. check() reports it when an assertion fails, so a failing
@@ -226,10 +232,10 @@ def main() -> int:
         overran = client("run", str(forever), "--max-seconds", "10", "--timeout", "200")
         # Nonzero alone would also be satisfied by the job never starting, which is the opposite
         # of what this claims. It has to have STARTED and then been stopped.
-        text = (overran.stdout or "")
+        text = (overran.stdout or "") + (overran.stderr or "")
         check("a job past its limit started and was then stopped",
               overran.returncode != 0 and "going" in text
-              and ("did not finish" in text or "unverified" in text or "cancelled" in text),
+              and any(m in text.lower() for m in STOPPED_MARKERS),
               text.strip().replace("\n", " | ")[:220])
 
         say("the credential can be replaced and withdrawn")
