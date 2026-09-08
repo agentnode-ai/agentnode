@@ -77,6 +77,19 @@ def check(label: str, condition: bool, detail: str = "") -> bool:
     return condition
 
 
+def refused_because(result, *phrases) -> bool:
+    """True when the command failed AND said one of these things.
+
+    `EM3C-EXTERNAL-0004`: a nonzero exit on its own is satisfied by an unreachable gateway, a
+    broken invocation, or any unrelated error, so a check written that way reports the protection
+    it names without ever establishing it. The refusal has to be the one that was expected.
+    """
+    if result.returncode == 0:
+        return False
+    said = ((result.stdout or "") + (result.stderr or "")).lower()
+    return any(phrase.lower() in said for phrase in phrases)
+
+
 def gateway(*args, timeout: int = 600) -> subprocess.CompletedProcess:
     """A gateway-side command, as the runner's own user."""
     global last_result
@@ -251,7 +264,8 @@ def main() -> int:
         if found:
             revoked = gateway("revoke", "--client", found.group(1))
             check("the operator revoked it", revoked.returncode == 0)
-            check("the revoked client is refused at once", client("test").returncode != 0)
+            check("the revoked client is refused at once, and says why",
+                  refused_because(client("test"), "not paired", "refused"))
 
         say("what must fail, and did")
         code2 = pairing_code()
@@ -259,11 +273,14 @@ def main() -> int:
         check("a fresh pairing works", again.returncode == 0)
 
         reused = client("connect", BASE, "--code", code2, "--as", "third")
-        check("a pairing code cannot be used twice", reused.returncode != 0,
+        check("a pairing code cannot be used twice, and says why",
+              refused_because(reused, "not accepting pairings", "does not match",
+                              "did not pair"),
               (reused.stdout or "").strip().replace("\n", " | ")[:160])
 
         plain = client("connect", "http://10.0.0.4:8099", "--code", "ABCD-EFGH-JKLM")
-        check("an unencrypted address off this machine is refused", plain.returncode != 0,
+        check("an unencrypted address off this machine is refused, and says why",
+              refused_because(plain, "would not be encrypted", "refusing to connect"),
               (plain.stdout or "").strip().replace("\n", " | ")[:160])
         check("and the refusal explains how to do it properly",
               "--tls-cert" in (plain.stdout or ""))
@@ -271,7 +288,7 @@ def main() -> int:
         legacy = client("connect", "http://10.0.0.4:8099", "--code", "ABCD-EFGH-JKLM",
                         extra_env={"AGENTNODE_GATEWAY_ALLOW_PLAINTEXT": "1"})
         check("the retired plaintext variable still changes nothing",
-              legacy.returncode != 0)
+              refused_because(legacy, "would not be encrypted", "refusing to connect"))
 
         say("a restart does not forget")
         stop_gateway(process)

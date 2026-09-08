@@ -42,6 +42,19 @@ STOPPED_MARKERS = ("did not finish", "unverified", "cancelled", "timed out")
 results: list[tuple[str, bool, str]] = []
 
 
+def refused_because(result, *phrases) -> bool:
+    """True when the command failed AND said one of these things.
+
+    `EM3C-EXTERNAL-0004`: a nonzero exit on its own is satisfied by an unreachable gateway, a
+    broken invocation, or any unrelated error, so a check written that way reports the protection
+    it names without ever establishing it. The refusal has to be the one that was expected.
+    """
+    if result.returncode == 0:
+        return False
+    said = ((result.stdout or "") + (result.stderr or "")).lower()
+    return any(phrase.lower() in said for phrase in phrases)
+
+
 def step(label: str, ok: bool, detail: str = "") -> bool:
     results.append((label, ok, detail))
     print(f"  [{'ok  ' if ok else 'FAIL'}] {label}" + (f" -- {detail}" if detail else ""),
@@ -240,12 +253,15 @@ def client_role(args) -> int:
 
     heading("what must fail")
     plain = run("remote", "connect", "http://198.51.100.9:8099", "--code", "ABCD-EFGH-JKLM")
-    step("plain http to another machine is refused", plain.returncode != 0)
+    step("plain http to another machine is refused, and says why",
+         refused_because(plain, "would not be encrypted", "refusing to connect"))
     step("and the refusal names a way through",
          "tailscale" in (plain.stdout or "") or "--tls-cert" in (plain.stdout or ""))
 
     reused = run("remote", "connect", url, "--code", args.code, "--as", "again")
-    step("the pairing code cannot be used twice", reused.returncode != 0)
+    step("the pairing code cannot be used twice, and says why",
+         refused_because(reused, "not accepting pairings", "does not match",
+                         "did not pair"))
 
     print("\n  Confirm by hand, because no script can:")
     print("    [ ] ask the operator to run `agentnode gateway revoke --client <id>`,")

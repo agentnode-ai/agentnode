@@ -353,10 +353,27 @@ class GatewayState:
         `EM3C-EXTERNAL-0002` found the service-level checks were in the wrong place: they covered
         requests, and `agentnode gateway clients` and `gateway revoke` read and write this file
         without going through a request at all. The chokepoint is the file, so the check is here.
-        """
-        from agentnode_sdk.gateway.statedir import require_private
 
-        require_private(self.root)
+        `EM3C-EXTERNAL-0004` then found that checking a path and opening it are two operations on
+        two possibly-different objects. The directory is opened once and the OPEN DESCRIPTOR is
+        judged, so what was inspected and what is about to be used are the same thing.
+        """
+        import os as _os
+
+        from agentnode_sdk.gateway.statedir import InsecureStateDirectory, inspect_fd
+
+        if _os.name != "posix":
+            return
+        fd = _os.open(str(self.root), _os.O_RDONLY)
+        try:
+            verdict = inspect_fd(fd, str(self.root))
+        finally:
+            _os.close(fd)
+        if not verdict.ok:
+            raise InsecureStateDirectory(
+                verdict.reason + "\n\nNothing was read or written. To fix it:\n  "
+                + verdict.remedy
+            )
 
     def _read_tokens(self) -> dict[str, dict]:
         self._guard_private()

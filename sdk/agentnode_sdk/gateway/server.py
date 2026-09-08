@@ -914,7 +914,24 @@ class _Handler(BaseHTTPRequestHandler):
             raise ProtocolError("the request body is larger than this gateway accepts")
         return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
 
+    def _state_is_private(self) -> bool:
+        """Re-checked per request, so the exposure is one request rather than one poll interval.
+
+        The watcher below closes the socket, but polls; `EM3C-EXTERNAL-0004` was right that a poll
+        interval is a window. This makes the window a single request, and the token file checks its
+        own directory again before it is read, so nothing is disclosed inside that window either.
+        """
+        from agentnode_sdk.gateway.statedir import inspect as inspect_dir
+
+        verdict = inspect_dir(self.service.state.root)
+        if verdict.ok:
+            return True
+        self._send(503, {"error": "this gateway has stopped accepting work: " + verdict.reason})
+        return False
+
     def do_GET(self):
+        if not self._state_is_private():
+            return None
         if self.path == "/v1/hello":
             return self._send(200, self.service.hello())
         if self.path.startswith("/v1/jobs/"):
@@ -936,6 +953,8 @@ class _Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "no such endpoint"})
 
     def do_POST(self):
+        if not self._state_is_private():
+            return None
         try:
             body = self._read_json()
         except (ProtocolError, ValueError) as exc:
@@ -1044,8 +1063,11 @@ def make_server(
         """
         from agentnode_sdk.gateway.statedir import inspect as inspect_dir
 
+        # A backstop, not the boundary: every request re-checks, and the token file re-checks
+        # its own directory before it is read. This exists so a gateway nobody is using does not
+        # sit there exposed until somebody happens to call it.
         while getattr(target, "agentnode_serving", False):
-            time.sleep(5.0)
+            time.sleep(2.0)
             verdict = inspect_dir(service.state.root)
             if not verdict.ok:
                 sys.stderr.write(

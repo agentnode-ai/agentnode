@@ -39,8 +39,27 @@ class DirectoryVerdict:
                 "reason": self.reason, "remedy": self.remedy}
 
 
+_UNVERIFIABLE = (
+    "file permissions cannot be checked on this platform, so it is not known whether other "
+    "accounts on this machine can read the gateway's tokens"
+)
+
+
 class InsecureStateDirectory(Exception):
     """The gateway's own directory is readable or writable by someone else."""
+
+
+def inspect_fd(fd: int, shown_as: str) -> DirectoryVerdict:
+    """The same judgement, about an already-open descriptor.
+
+    `EM3C-EXTERNAL-0004` found that checking a path and then opening it are two operations on two
+    possibly-different objects: whatever the name referred to at the moment of the check need not
+    be what the next open returns. Checking the descriptor that is about to be used removes the
+    gap, because there is only one object and it is already held.
+    """
+    if os.name != "posix":
+        return DirectoryVerdict(True, False, _UNVERIFIABLE, "")
+    return _judge(os.fstat(fd), shown_as)
 
 
 def inspect(root: str | os.PathLike[str]) -> DirectoryVerdict:
@@ -50,17 +69,12 @@ def inspect(root: str | os.PathLike[str]) -> DirectoryVerdict:
         return DirectoryVerdict(True, True, "", "")
 
     if os.name != "posix":
-        return DirectoryVerdict(
-            ok=True,
-            verifiable=False,
-            reason=(
-                "file permissions cannot be checked on this platform, so it is not known whether "
-                "other accounts on this machine can read the gateway's tokens"
-            ),
-            remedy="",
-        )
+        return DirectoryVerdict(True, False, _UNVERIFIABLE, "")
 
-    info = path.stat()
+    return _judge(path.stat(), str(path))
+
+
+def _judge(info, shown_as: str) -> DirectoryVerdict:
     problems = []
     mode = stat.S_IMODE(info.st_mode)
     if mode & 0o077:
@@ -80,12 +94,12 @@ def inspect(root: str | os.PathLike[str]) -> DirectoryVerdict:
         ok=False,
         verifiable=True,
         reason=(
-            f"the gateway's files at {path} are not private: " + ", ".join(problems) +
+            f"the gateway's files at {shown_as} are not private: " + ", ".join(problems) +
             f" (mode {oct(mode)}). They hold the access tokens for every paired client, the "
             "record of which jobs have run, and the pairing lockout."
         ),
-        remedy=f"chmod 700 {path}" + (
-            f" && chown $(id -un) {path}" if info.st_uid != os.getuid() else ""
+        remedy=f"chmod 700 {shown_as}" + (
+            f" && chown $(id -un) {shown_as}" if info.st_uid != os.getuid() else ""
         ),
     )
 
