@@ -156,9 +156,19 @@ On the gateway machine, once:
 
 ```
 agentnode gateway egress --allow api.example.com   # the ceiling: what jobs MAY reach
-agentnode gateway egress                           # show what is allowed today
+agentnode gateway egress                           # show what is in force today
 agentnode gateway egress --none                    # back to nothing, the default
 ```
+
+That command does not simply write a setting. It saves the proposal, measures the protections
+the proposal needs on this machine -- including actually leaving the sandbox to the host you
+named and confirming it cannot reach one you did not -- and puts the new policy in force only if
+every one of those measurements passed. If any of them fails, the previous policy stays exactly
+as it was and the command says so.
+
+This is why a gateway that cannot measure cannot open egress. It is also why editing the config
+file by hand does nothing: the file is what you asked for, the measurement is what decides, and
+a gateway whose file and measurement disagree runs nothing until they agree again.
 
 Then, from your laptop:
 

@@ -666,23 +666,20 @@ class TestTheCommandsSayWhatWasGrantedNotWhatWasAsked:
 
 
 class TestAnOperatorCanOpenEgressFromTheCommandLine:
-    """The other half of the same finding: `--allow` on the client was unreachable because no
-    published gateway command could raise the operator ceiling that denies it.
+    """The other half of EM3C-EGRESS-CLASSIFY-0001: `--allow` on the client was unreachable
+    because no published gateway command could raise the operator ceiling that denies it.
+
+    EM3C-Y6-DECISION-0001 then made opening it a measured transaction, so what these tests check
+    is that the command exists, that it never claims a change it has not made, and that a
+    machine which cannot measure the change does not get the change.
     """
 
-    def test_the_egress_command_exists_and_starts_closed(self, home, tmp_path, capsys):
+    def test_the_egress_command_exists(self, home, tmp_path, capsys):
         root = tmp_path / "gw"
-        assert main(["gateway", "egress", "--dir", str(root)]) == 0
+        main(["gateway", "egress", "--dir", str(root)])
         out = capsys.readouterr().out
-        assert "reach nothing" in out, out
-
-    def test_allowing_a_host_is_shown_back(self, home, tmp_path, capsys):
-        root = tmp_path / "gw"
-        assert main(["gateway", "egress", "--dir", str(root),
-                     "--allow", "example.com"]) == 0
-        out = capsys.readouterr().out
-        assert "example.com" in out
-        assert "may reach" in out, out
+        assert "not been measured" in out, out
+        assert "doctor --measure" in out, out
 
     def test_a_host_that_cannot_be_enforced_is_refused(self, home, tmp_path, capsys):
         root = tmp_path / "gw"
@@ -691,13 +688,38 @@ class TestAnOperatorCanOpenEgressFromTheCommandLine:
         assert "cannot be enforced" in out, out
         assert "Nothing was changed" in out, out
 
-    def test_the_setting_reaches_a_gateway_started_from_the_command_line(self, home, tmp_path):
-        """A setting that the start path ignores would be worse than none at all."""
-        from agentnode_sdk.cli import gateway_commands as gwc
+    def test_opposite_flags_are_refused_rather_than_guessed(self, home, tmp_path, capsys):
+        root = tmp_path / "gw"
+        assert main(["gateway", "egress", "--dir", str(root),
+                     "--allow", "example.com", "--none"]) == 2
+        assert "opposite things" in capsys.readouterr().out
+
+    def test_it_says_it_is_measuring_and_never_that_it_has_finished(self, home, tmp_path, capsys):
+        """There is no runtime here, so the measurement cannot succeed. What the command may not
+        do is say the policy is saved, active or protecting anything on the way past."""
+        root = tmp_path / "gw"
+        rc = main(["gateway", "egress", "--dir", str(root), "--allow", "example.com"])
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "Measuring the protections" in out, out
+        assert "still the one in force" in out, out
+        assert "remains in force" in out, out
+        for premature in ("is now in force", "Saved. It takes effect", "may reach:"):
+            assert premature not in out, f"the command claimed {premature!r} without having done it"
+
+    def test_a_gateway_that_cannot_measure_does_not_get_the_policy(self, home, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.activation import ActivationStore
 
         root = tmp_path / "gw"
-        assert main(["gateway", "egress", "--dir", str(root), "--allow", "example.com"]) == 0
-        _state, service = gwc._service(root)
-        ceiling = service.operator_policy()
-        assert ceiling.network.enabled is True
-        assert set(ceiling.network.allowed_destinations) == {"example.com"}
+        main(["gateway", "egress", "--dir", str(root), "--allow", "example.com"])
+        assert ActivationStore(root).load_active() is None, \
+            "a policy was put in force on a machine that could not measure it"
+
+    def test_the_required_properties_are_named_before_measuring(self, home, tmp_path, capsys):
+        """An operator is told what is about to be checked, not just that something is."""
+        root = tmp_path / "gw"
+        main(["gateway", "egress", "--dir", str(root), "--allow", "example.com"])
+        out = capsys.readouterr().out
+        assert "egress_allowlist" in out, out
+        assert "container_isolation" in out, out

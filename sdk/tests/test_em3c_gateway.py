@@ -18,6 +18,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import contextlib
+import dataclasses
 import tempfile
 from pathlib import Path
 import threading
@@ -159,7 +161,15 @@ def _store_measurement(service, ok=True, observed=True, only=None, binding=None)
     report = ConformanceReport(
         backend_identity="StandInBackend", backend_version="test", runtime="docker",
         image="", generated_at="1970-01-01T00:00:00+00:00", results=tuple(results))
-    service.readiness.store(report.to_dict(), binding or service.report_binding())
+    # Readiness reads the authenticated snapshot, not the loose file, so a helper that wrote
+    # only the file would be testing a path nothing uses. Both are written: the snapshot because
+    # it is what decides, the file because it is the diagnostic copy the real measurement leaves.
+    from agentnode_sdk.gateway.activation import ActivationStore
+
+    envelope = service.configured_envelope()
+    stamped = binding or service.report_binding(envelope.digest())
+    service.readiness.store(report.to_dict(), stamped)
+    ActivationStore(service.state.root).activate(envelope, report.to_dict(), stamped.as_dict())
     return service.readiness_now()
 
 
@@ -1590,18 +1600,21 @@ class TestNothingRunsOnAnUnmeasuredGateway:
         with tempfile.TemporaryDirectory() as td:
             state, service, server, base = self._fresh(td)
             try:
-                # everything measured except the cleanup checks
+                # Everything measured except the egress check. A closed policy does not require
+                # `egress_allowlist`, so the gateway stays ready -- which is the point: an
+                # unproven property has to be absent from what is offered without taking the
+                # whole gateway down, or a job could not be refused for needing it specifically.
                 _store_measurement(service, only=("outside-host-process", "not-root",
                                                   "network-mode", "limit-memory",
-                                                  "egress-allowlist"))
+                                                  "run-leaves-nothing", "cancel-and-kill"))
                 hello = gc.hello(base)
                 assert hello["ready"] is True, hello["reason"]
-                assert hello["properties"]["verified_cleanup"] is False
-                assert "verified_cleanup" in hello["unproven"]
+                assert hello["properties"]["egress_allowlist"] is False
+                assert "egress_allowlist" in hello["unproven"]
 
                 conn = gc.pair(base, state.start_pairing())
                 answer = gc.submit(conn, b"x", network="none",
-                                   required_properties=("verified_cleanup",))
+                                   required_properties=("egress_allowlist",))
                 assert answer["state"] == "refused"
                 assert service.backend.specs == []
             finally:
@@ -1626,7 +1639,12 @@ class TestNothingRunsOnAnUnmeasuredGateway:
         with tempfile.TemporaryDirectory() as td:
             state = GatewayState(td, version="test")
             service = GatewayService(state, backend=StandInBackend())
-            service.readiness.store(report.to_dict(), service.report_binding())
+            from agentnode_sdk.gateway.activation import ActivationStore
+
+            envelope = service.configured_envelope()
+            binding = service.report_binding(envelope.digest())
+            service.readiness.store(report.to_dict(), binding)
+            ActivationStore(state.root).activate(envelope, report.to_dict(), binding.as_dict())
             result = service.readiness_now()
 
         proven = [name for name, held in result.properties.items() if held]
@@ -1949,11 +1967,9 @@ class TestAMeasurementBelongsToOneBoot:
             current = service.report_binding()
             assert current.boot_id, "the binding does not record a boot at all"
 
-            earlier = ReportBinding(gateway_id=current.gateway_id,
-                                    gateway_version=current.gateway_version,
-                                    backend=current.backend,
-                                    image_digest=current.image_digest,
-                                    boot_id="some-previous-boot")
+            # Derived from the current binding and altered in exactly one field, so a drift in
+            # any other one cannot be what this test actually observes.
+            earlier = dataclasses.replace(current, boot_id="some-previous-boot")
             _store_measurement(service, binding=earlier)
             result = service.readiness_now()
             assert result.ready is False
@@ -3092,9 +3108,13 @@ class TestAnOperatorCanPermitEgress:
     """EM3C-EGRESS-CLASSIFY-0001: the gateway defaulted to no network and documented that the
     operator opens it deliberately -- while publishing no command that could open it. The
     restricted-egress option on the client was unreachable through the shipped surface.
+
+    EM3C-Y6-DECISION-0001 then made opening it a transaction rather than a setting: the policy
+    that is in force is the one that was measured, and a policy nobody measured is not in force
+    however plainly it is written in a file.
     """
 
-    def _args(self, root, allow=None, none=False):
+    def _args(self, root, allow=None, none=False, verbose=False):
         class Args:
             pass
 
@@ -3102,90 +3122,86 @@ class TestAnOperatorCanPermitEgress:
         args.dir = str(root)
         args.allow = allow
         args.none = none
+        args.verbose = verbose
         return args
 
-    def test_a_new_gateway_allows_nothing(self, tmp_path):
+    def test_a_new_gateway_allows_nothing_and_is_not_ready(self, tmp_path):
         from agentnode_sdk.cli import gateway_commands as gwc
 
         root = tmp_path / "gw"
-        assert gwc.cmd_egress(self._args(root)) == 0
-        assert gwc._operator_policy(root) is None, "a new gateway must not permit egress"
+        # Nothing measured, so nothing in force -- and saying so is a refusal, not a report.
+        assert gwc.cmd_egress(self._args(root)) == 1
+        state = GatewayState(root, version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        assert service.active_state() is None
+        assert service.readiness_now().ready is False
 
-    def test_an_allowed_host_becomes_the_operator_ceiling(self, tmp_path):
+    def test_the_policy_in_force_is_the_measured_one_not_the_written_one(self, tmp_path):
+        """The whole finding, in one test: a file is an input, a measurement is the decision."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        assert service.readiness_now().ready is True
+        assert service.operator_envelope().mode == opol.NONE
+
+        # An operator edits the config by hand and restarts nothing.
+        (state.root / "config.json").write_text(
+            json.dumps({"egress_allowed": ["example.com"]}), encoding="utf-8")
+
+        assert service.configured_envelope().mode == opol.RESTRICTED
+        assert service.operator_envelope().mode == opol.NONE, \
+            "a hand-edited file must not become the policy in force"
+        verdict = service.readiness_now()
+        assert verdict.ready is False
+        assert "measured" in verdict.reason
+        # And the policy actually handed to the fold is still the closed one.
+        assert service.operator_policy().network.enabled is False
+
+    def test_a_value_that_cannot_be_enforced_is_refused_before_anything_is_measured(self, tmp_path):
         from agentnode_sdk.cli import gateway_commands as gwc
 
         root = tmp_path / "gw"
-        assert gwc.cmd_egress(self._args(root, allow=["example.com"])) == 0
-        policy = gwc._operator_policy(root)
-        assert policy is not None
-        assert policy.network.enabled is True
-        assert set(policy.network.allowed_destinations) == {"example.com"}
+        for bad in ("*", "http://example.com", "example.com:443", "example.com/path", ""):
+            assert gwc.cmd_egress(self._args(root, allow=[bad])) == 2, bad
+        assert not (root / "active-state.json").exists()
 
-    def test_the_service_is_built_with_that_ceiling(self, tmp_path):
-        """The setting has to reach the service, or it is decoration."""
+    def test_a_measurement_that_fails_leaves_the_previous_policy_in_force(self, tmp_path):
+        """The gateway has no runtime here, so the egress measurement cannot succeed."""
         from agentnode_sdk.cli import gateway_commands as gwc
 
-        root = tmp_path / "gw"
-        gwc.cmd_egress(self._args(root, allow=["example.com"]))
-        _state, service = gwc._service(root)
-        ceiling = service.operator_policy()
-        assert ceiling.network.enabled is True
-        assert set(ceiling.network.allowed_destinations) == {"example.com"}
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        before = service.active_state()
+        assert before is not None and before.policy.mode == "none"
 
-    def test_without_the_setting_the_service_keeps_the_closed_default(self, tmp_path):
-        """The control: the built-in default must survive an operator who set nothing."""
+        rc = gwc.cmd_egress(self._args(state.root, allow=["example.com"]))
+        assert rc == 1, "a policy that could not be measured must not be reported as in force"
+
+        after = GatewayService(GatewayState(state.root, version="test"),
+                               backend=StandInBackend()).active_state()
+        assert after is not None
+        assert after.policy.mode == "none", "the previous policy did not survive a failed change"
+        assert after.generation == before.generation, "a failed change must not advance anything"
+
+    def test_a_failed_change_does_not_leave_the_gateway_blocked(self, tmp_path):
+        """A proposal left behind in the file would disagree with the snapshot for ever."""
         from agentnode_sdk.cli import gateway_commands as gwc
 
-        _state, service = gwc._service(tmp_path / "gw")
-        ceiling = service.operator_policy()
-        assert ceiling.network.enabled is False
-        assert set(ceiling.network.allowed_destinations) == set()
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        gwc.cmd_egress(self._args(state.root, allow=["example.com"]))
 
-    @pytest.mark.parametrize("bad", ["*", "http://example.com", "example.com:443",
-                                     "example.com/path", ""])
-    def test_a_value_that_cannot_be_enforced_is_refused_and_changes_nothing(self, tmp_path, bad):
-        from agentnode_sdk.cli import gateway_commands as gwc
-
-        root = tmp_path / "gw"
-        gwc.cmd_egress(self._args(root, allow=["good.example"]))
-        assert gwc.cmd_egress(self._args(root, allow=[bad])) == 2
-        still = gwc._operator_policy(root)
-        assert set(still.network.allowed_destinations) == {"good.example"}, \
-            "a refused setting must not have been written"
-
-    def test_a_hand_edited_config_cannot_start_an_unenforceable_gateway(self, tmp_path):
-        """The file is editable by hand between the command and the start."""
-        import json
-
-        from agentnode_sdk.cli import gateway_commands as gwc
-
-        root = tmp_path / "gw"
-        gwc.cmd_egress(self._args(root, allow=["example.com"]))
-        path = gwc._config_path(root)
-        config = json.loads(path.read_text(encoding="utf-8"))
-        config["egress_allowed"] = ["*"]
-        path.write_text(json.dumps(config), encoding="utf-8")
-        with pytest.raises(ValueError):
-            gwc._operator_policy(root)
-
-    def test_clearing_it_returns_to_no_network(self, tmp_path):
-        from agentnode_sdk.cli import gateway_commands as gwc
-
-        root = tmp_path / "gw"
-        gwc.cmd_egress(self._args(root, allow=["example.com"]))
-        assert gwc.cmd_egress(self._args(root, none=True)) == 0
-        assert gwc._operator_policy(root) is None
-
-    def test_opposite_flags_are_refused_rather_than_guessed(self, tmp_path):
-        from agentnode_sdk.cli import gateway_commands as gwc
-
-        root = tmp_path / "gw"
-        assert gwc.cmd_egress(self._args(root, allow=["example.com"], none=True)) == 2
-        assert gwc._operator_policy(root) is None
+        fresh = GatewayService(GatewayState(state.root, version="test"), backend=StandInBackend())
+        assert fresh.readiness_now().ready is True, \
+            "a change that failed left the gateway unable to run anything"
 
     def test_a_job_cannot_be_granted_a_host_the_operator_did_not_allow(self, tmp_path):
         """The ceiling is the point. Permitting one host must not permit the next."""
-        from agentnode_sdk.cli import gateway_commands as gwc
+        from agentnode_sdk.gateway import operator_policy as opol
         from agentnode_sdk.gateway.policy_paths import policy_shape
         from agentnode_sdk.sandbox.contract import (
             NetworkRules,
@@ -3194,9 +3210,9 @@ class TestAnOperatorCanPermitEgress:
             merge_policies,
         )
 
-        root = tmp_path / "gw"
-        gwc.cmd_egress(self._args(root, allow=["example.com"]))
-        ceiling = gwc._operator_policy(root)
+        envelope = opol.build(opol.RESTRICTED, ("example.com",))
+        ceiling = SandboxPolicy(network=NetworkRules(
+            enabled=True, allowed_destinations=frozenset(envelope.allowed_destinations)))
 
         for asked in (frozenset({"evil.example"}),
                       frozenset({"example.com", "evil.example"}),
@@ -3205,3 +3221,441 @@ class TestAnOperatorCanPermitEgress:
             shape = policy_shape(merge_policies({Scope.ORGANISATION: ceiling, Scope.USER: job}))
             assert "evil.example" not in (shape["network.allowed_destinations"] or []), \
                 f"a job asking for {asked} was granted a host off the ceiling"
+
+
+class TestAReportIsAboutOnePolicy:
+    """EM3C-Y6: readiness used to say nothing about the policy underneath it.
+
+    A report taken while the gateway allowed no network at all was accepted as evidence that it
+    was ready after the operator opened an allowlist -- two different enforcement modes, one
+    measurement, and nothing between them that noticed. Each test here changes exactly one thing
+    about the policy and asks whether the old report still counts.
+    """
+
+    def _measured(self, root, allow=None):
+        """A gateway measured under one policy, returned with that policy in force."""
+        state = GatewayState(root, version="test")
+        if allow:
+            (state.root).mkdir(parents=True, exist_ok=True)
+            (state.root / "config.json").write_text(
+                json.dumps({"egress_allowed": list(allow)}), encoding="utf-8")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        return state, service
+
+    def _reopen(self, root):
+        return GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+
+    def test_an_unchanged_policy_with_its_own_report_is_ready(self, tmp_path):
+        """The control. Without it, a gate that refused everything would pass every test below."""
+        _state, service = self._measured(tmp_path / "gw")
+        assert service.readiness_now().ready is True
+
+    def test_a_changed_allowlist_with_the_old_report_is_not_ready(self, tmp_path):
+        state, service = self._measured(tmp_path / "gw", allow=["example.com"])
+        assert service.readiness_now().ready is True
+        (state.root / "config.json").write_text(
+            json.dumps({"egress_allowed": ["example.com", "other.example"]}), encoding="utf-8")
+        verdict = self._reopen(state.root).readiness_now()
+        assert verdict.ready is False
+        assert "measured" in verdict.reason
+
+    def test_going_from_no_network_to_an_allowlist_with_the_old_report_is_not_ready(self, tmp_path):
+        """The exact shape of the finding."""
+        state, service = self._measured(tmp_path / "gw")
+        assert service.readiness_now().ready is True
+        (state.root / "config.json").write_text(
+            json.dumps({"egress_allowed": ["example.com"]}), encoding="utf-8")
+        assert self._reopen(state.root).readiness_now().ready is False
+
+    def test_going_from_an_allowlist_to_no_network_with_the_old_report_is_not_ready(self, tmp_path):
+        """Narrowing is still a change. A report is about one policy, not about a direction."""
+        state, _service = self._measured(tmp_path / "gw", allow=["example.com"])
+        (state.root / "config.json").write_text(json.dumps({}), encoding="utf-8")
+        assert self._reopen(state.root).readiness_now().ready is False
+
+    def test_an_unrestricted_policy_is_never_ready_because_nothing_measures_it(self, tmp_path):
+        """`network_unrestricted` has no check in this build, so it cannot be observed and passed.
+
+        A mode nobody has implemented a measurement for must not become ready by omission. The
+        gate is asked directly here, with a report that passes everything it CAN measure and a
+        binding that matches, so the only reason left for a refusal is the missing measurement.
+        """
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.readiness import PROPERTY_CHECKS, ReadinessGate
+
+        envelope = opol.build(opol.UNRESTRICTED)
+        assert "network_unrestricted" in envelope.required_properties
+        assert "network_unrestricted" not in PROPERTY_CHECKS,             "this build gained the check -- the test now has to measure it rather than assume"
+
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        active = service.active_state()
+
+        document = {"measured_at": active.activated_at,
+                    "binding": active.binding, "report": active.report}
+        binding = service.report_binding(active.policy_digest)
+        gate = ReadinessGate(state.root)
+
+        # The control: everything this build CAN measure is proven under the same document.
+        assert gate.evaluate_document(
+            document, binding, opol.build(opol.NONE).required_properties).ready is True
+
+        verdict = gate.evaluate_document(document, binding, envelope.required_properties)
+        assert verdict.ready is False
+        assert "network_unrestricted" in verdict.unproven
+
+    def test_the_same_policy_written_differently_has_the_same_digest(self, tmp_path):
+        """Order and case are not policy. If they moved the digest, every restart would look
+        like a change and the check would be trained out of people."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        one = opol.build(opol.RESTRICTED, ("b.example", "A.EXAMPLE"))
+        two = opol.build(opol.RESTRICTED, ("a.example", "b.example", "a.example"))
+        assert one.digest() == two.digest()
+        assert one.allowed_destinations == ("a.example", "b.example")
+
+    def test_a_different_policy_has_a_different_digest(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        assert (opol.build(opol.RESTRICTED, ("a.example",)).digest()
+                != opol.build(opol.RESTRICTED, ("b.example",)).digest())
+        assert (opol.build(opol.NONE).digest()
+                != opol.build(opol.RESTRICTED, ("a.example",)).digest())
+
+    def test_a_changed_limit_changes_the_digest(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        a = opol.build(opol.NONE, limits={"memory_mb": 512})
+        b = opol.build(opol.NONE, limits={"memory_mb": 1024})
+        assert a.digest() != b.digest()
+
+    def test_a_whole_float_and_an_integer_limit_are_one_policy(self, tmp_path):
+        """Otherwise 512 and 512.0 would be two policies, and one of them would never be ready."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        assert (opol.build(opol.NONE, limits={"memory_mb": 512}).digest()
+                == opol.build(opol.NONE, limits={"memory_mb": 512.0}).digest())
+
+    def test_a_configured_limit_pulls_in_the_property_that_measures_it(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        assert "memory_ceiling_enforceable" in opol.build(
+            opol.NONE, limits={"memory_mb": 512}).required_properties
+
+    @pytest.mark.parametrize("mode,expected", [
+        ("none", "network_none"),
+        ("restricted", "egress_allowlist"),
+        ("unrestricted", "network_unrestricted"),
+    ])
+    def test_each_mode_requires_its_own_measurement(self, mode, expected):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        dests = ("a.example",) if mode == "restricted" else ()
+        required = opol.build(mode, dests).required_properties
+        assert expected in required
+        others = {"network_none", "egress_allowlist", "network_unrestricted"} - {expected}
+        assert not (others & set(required)), \
+            "one mode's requirement was satisfied by another mode's measurement"
+
+
+class TestAPolicyThatCannotBeReadIsNotAPolicy:
+    """Unknown, duplicated or unrepresentable fields fail closed rather than being interpreted."""
+
+    def test_a_duplicated_key_is_refused_rather_than_silently_resolved(self):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        with pytest.raises(opol.OperatorPolicyError) as caught:
+            opol.loads_strict('{"egress_allowed": ["a.example"], "egress_allowed": ["b.example"]}')
+        assert "more than once" in str(caught.value)
+
+    def test_a_duplicated_key_deeper_in_is_also_refused(self):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        with pytest.raises(opol.OperatorPolicyError):
+            opol.loads_strict('{"network": {"mode": "none", "mode": "restricted"}}')
+
+    def test_an_unknown_field_is_refused_rather_than_ignored(self):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        good = opol.build(opol.NONE).as_canonical()
+        good["surprise"] = True
+        with pytest.raises(opol.OperatorPolicyError) as caught:
+            opol.from_document(json.dumps(good))
+        assert "does not understand" in str(caught.value)
+
+    def test_a_missing_field_is_refused_rather_than_defaulted(self):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        good = opol.build(opol.NONE).as_canonical()
+        del good["limits"]
+        with pytest.raises(opol.OperatorPolicyError):
+            opol.from_document(json.dumps(good))
+
+    def test_a_policy_cannot_lower_its_own_required_set(self, tmp_path):
+        """A file that listed fewer properties than its mode demands would lower its own bar."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        doc = opol.build(opol.RESTRICTED, ("a.example",)).as_canonical()
+        doc["required_properties"] = ["container_isolation"]
+        with pytest.raises(opol.OperatorPolicyError) as caught:
+            opol.from_document(json.dumps(doc))
+        assert "required properties" in str(caught.value)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), 0, -1, "512"])
+    def test_a_limit_with_no_canonical_form_is_refused(self, bad):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        with pytest.raises(opol.OperatorPolicyError):
+            opol.build(opol.NONE, limits={"memory_mb": bad})
+
+    def test_a_restricted_policy_with_no_destination_is_refused(self):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        with pytest.raises(opol.OperatorPolicyError):
+            opol.build(opol.RESTRICTED, ())
+
+    def test_a_schema_from_another_version_is_not_read_approximately(self):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        doc = opol.build(opol.NONE).as_canonical()
+        doc["schema_version"] = opol.SCHEMA_VERSION + 1
+        with pytest.raises(opol.OperatorPolicyError):
+            opol.from_document(json.dumps(doc))
+
+
+class TestPolicyAndReportMoveTogether:
+    """EM3C-Y6-DECISION-0001 D4: one document, one rename, or nothing."""
+
+    def _service(self, root):
+        return GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+
+    def test_a_successful_activation_puts_both_in_place(self, tmp_path):
+        from agentnode_sdk.gateway.activation import ActivationStore
+
+        service = self._service(tmp_path / "gw")
+        _store_measurement(service)
+        state = ActivationStore(service.state.root).load_active()
+        assert state is not None
+        assert state.policy_digest == state.policy.digest()
+        assert state.report and state.binding
+        assert state.generation >= 1
+
+    def test_a_crash_between_measuring_and_activating_leaves_the_old_state(self, tmp_path):
+        """Simulated by writing the pending file and then not activating."""
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.activation import ActivationStore
+
+        service = self._service(tmp_path / "gw")
+        _store_measurement(service)
+        before = ActivationStore(service.state.root).load_active()
+
+        store = ActivationStore(service.state.root)
+        store.write_pending(opol.build(opol.RESTRICTED, ("example.com",)))
+
+        after = ActivationStore(service.state.root).load_active()
+        assert after.policy_digest == before.policy_digest
+        assert after.generation == before.generation
+        assert self._service(service.state.root).operator_envelope().mode == "none", \
+            "a pending policy was treated as though it were in force"
+
+    def test_a_pending_policy_is_never_what_admission_reads(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.activation import ActivationStore
+
+        service = self._service(tmp_path / "gw")
+        _store_measurement(service)
+        ActivationStore(service.state.root).write_pending(
+            opol.build(opol.RESTRICTED, ("example.com",)))
+        assert service.operator_policy().network.enabled is False
+
+    def test_activation_advances_the_generation(self, tmp_path):
+        from agentnode_sdk.gateway.activation import ActivationStore
+
+        service = self._service(tmp_path / "gw")
+        _store_measurement(service)
+        first = ActivationStore(service.state.root).load_active().generation
+        _store_measurement(service)
+        second = ActivationStore(service.state.root).load_active().generation
+        assert second == first + 1
+
+    def test_two_activations_at_once_are_serialised(self, tmp_path):
+        from agentnode_sdk.gateway.activation import ActivationError, ActivationLock
+
+        root = tmp_path / "gw"
+        with ActivationLock(root):
+            with pytest.raises(ActivationError):
+                with ActivationLock(root):
+                    pass
+
+    def test_the_lock_is_released_even_when_the_work_raises(self, tmp_path):
+        from agentnode_sdk.gateway.activation import ActivationLock
+
+        root = tmp_path / "gw"
+        with contextlib.suppress(RuntimeError):
+            with ActivationLock(root):
+                raise RuntimeError("boom")
+        with ActivationLock(root):
+            pass
+
+
+class TestTamperingWithTheStateIsRefused:
+    """D7. What this exercises is an attacker who can write the STATE directory.
+
+    It is not a claim about someone who can also read the key directory beside it: that is the
+    gateway's own user, and no arrangement of files on one machine defends against it. The
+    gateway's documentation has always said whoever can write its directory can forge its
+    identity; this narrows that, and these tests say exactly which half they cover.
+    """
+
+    def _measured(self, root):
+        service = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(service)
+        return service
+
+    def _reopen(self, root):
+        return GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+
+    def test_widening_the_policy_in_the_active_file_is_refused(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.activation import ACTIVE_NAME, SnapshotUnusable
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / ACTIVE_NAME
+        document = json.loads(path.read_text(encoding="utf-8"))
+        wider = opol.build(opol.RESTRICTED, ("attacker.example",))
+        document["policy"] = wider.as_canonical()
+        document["policy_digest"] = wider.digest()
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+        with pytest.raises(SnapshotUnusable):
+            self._reopen(service.state.root).active_state()
+        assert self._reopen(service.state.root).readiness_now().ready is False
+
+    def test_a_report_swapped_for_another_is_refused(self, tmp_path):
+        from agentnode_sdk.gateway.activation import ACTIVE_NAME, SnapshotUnusable
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / ACTIVE_NAME
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["report"] = {"results": []}
+        path.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(SnapshotUnusable):
+            self._reopen(service.state.root).active_state()
+
+    def test_rolling_back_to_an_earlier_activation_is_refused(self, tmp_path):
+        """The old document is genuinely authentic. It is simply not the current one."""
+        from agentnode_sdk.gateway.activation import ACTIVE_NAME, SnapshotUnusable
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / ACTIVE_NAME
+        first = path.read_text(encoding="utf-8")
+
+        _store_measurement(service)
+        assert self._reopen(service.state.root).active_state().generation == 2
+
+        path.write_text(first, encoding="utf-8")
+        with pytest.raises(SnapshotUnusable) as caught:
+            self._reopen(service.state.root).active_state()
+        assert "rollback" in str(caught.value)
+
+    def test_removing_the_tag_is_refused(self, tmp_path):
+        from agentnode_sdk.gateway.activation import ACTIVE_NAME, SnapshotUnusable
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / ACTIVE_NAME
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document.pop("tag")
+        path.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(SnapshotUnusable):
+            self._reopen(service.state.root).active_state()
+
+    def test_the_key_is_not_inside_the_state_directory(self, tmp_path):
+        """If it were, writing the state directory would be enough to re-sign anything."""
+        from agentnode_sdk.gateway.activation import key_dir_for
+
+        service = self._measured(tmp_path / "gw")
+        key_dir = key_dir_for(service.state.root).resolve()
+        state_dir = service.state.root.resolve()
+        assert key_dir != state_dir
+        assert state_dir not in key_dir.parents, "the key lives under the directory it protects"
+
+    def test_an_unreadable_state_is_not_treated_as_no_state(self, tmp_path):
+        """"No policy" is a valid closed state. A tampered one must not be able to look like it."""
+        from agentnode_sdk.gateway.activation import ACTIVE_NAME, SnapshotUnusable
+
+        service = self._measured(tmp_path / "gw")
+        (service.state.root / ACTIVE_NAME).write_text("{not json", encoding="utf-8")
+        with pytest.raises(SnapshotUnusable):
+            self._reopen(service.state.root).active_state()
+        assert self._reopen(service.state.root).readiness_now().ready is False
+
+
+class TestAnAllowlistIsMeasuredBeforeItIsPermitted:
+    """EM3C-Y6-DECISION-0001 D3-a.
+
+    `check_egress_allowlist` returns `not_checked` unless a matrix reaches it, and the gateway
+    supplied none -- so a gateway that permitted egress was ready on a report that had never
+    tried to leave it. These tests are about the matrix being built from the policy's own
+    destinations, which is the only thing that makes the resulting report about that policy.
+    """
+
+    def _service(self, root, allow):
+        state = GatewayState(root, version="test")
+        state.root.mkdir(parents=True, exist_ok=True)
+        (state.root / "config.json").write_text(
+            json.dumps({"egress_allowed": list(allow)}), encoding="utf-8")
+        return GatewayService(state, backend=StandInBackend())
+
+    def test_a_restricted_policy_is_measured_against_its_own_destinations(self, tmp_path,
+                                                                          monkeypatch):
+        seen = {}
+
+        def fake(backend, *, allowed, denied, **kw):
+            seen["allowed"] = allowed
+            seen["denied"] = denied
+            return {"allowed_via_proxy": "ALLOWED:200", "denied_via_proxy": "refused"}
+
+        import agentnode_sdk.conformance.runner as runner_mod
+        monkeypatch.setattr(runner_mod, "measure_egress", fake)
+
+        service = self._service(tmp_path / "gw", ["example.com"])
+        matrix = service._egress_matrix_for(service.configured_envelope())
+        assert matrix is not None, "an allowlist policy was activated without measuring it"
+        assert seen["allowed"] == "example.com"
+        assert seen["denied"] != "example.com",             "the control was on the allowlist, so a refusal proves nothing"
+
+    def test_a_closed_policy_has_no_allowlist_to_measure(self, tmp_path):
+        """The control. Inventing a passing matrix for a policy with no allowlist would be the
+        exact failure this exists to prevent."""
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        assert service._egress_matrix_for(service.configured_envelope()) is None
+
+    def test_a_report_with_no_measured_allowlist_cannot_make_an_allowlist_ready(self, tmp_path):
+        """Whatever else passed, `egress_allowlist` unmeasured means this policy is not ready."""
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.readiness import ReadinessGate
+
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        # everything measured EXCEPT the egress check, which is what a gateway that never
+        # built a matrix would have
+        _store_measurement(service, only=("outside-host-process", "not-root", "network-mode",
+                                          "limit-memory", "run-leaves-nothing",
+                                          "cancel-and-kill"))
+        active = service.active_state()
+        document = {"measured_at": active.activated_at,
+                    "binding": active.binding, "report": active.report}
+        binding = service.report_binding(active.policy_digest)
+        gate = ReadinessGate(state.root)
+
+        # The control: the closed policy this report WAS taken for is ready.
+        assert gate.evaluate_document(
+            document, binding, opol.build(opol.NONE).required_properties).ready is True
+
+        verdict = gate.evaluate_document(
+            document, binding, opol.build(opol.RESTRICTED, ("example.com",)).required_properties)
+        assert verdict.ready is False
+        assert "egress_allowlist" in verdict.unproven

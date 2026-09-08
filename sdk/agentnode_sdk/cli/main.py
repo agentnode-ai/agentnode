@@ -265,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
                                 "for less, but never for more.")
     gw_egress.add_argument("--none", dest="none", action="store_true",
                            help="Allow nothing. This is the default for a new gateway.")
+    gw_egress.add_argument("--verbose", action="store_true",
+                           help="Show the underlying detail, including the policy digests")
     gw_status = gw_sub.add_parser("status", help="Is it running, and is it protecting anything")
     gw_status.add_argument("--dir", default=None)
     # --verbose is per-command rather than global: the V1 top-level surface is frozen, and

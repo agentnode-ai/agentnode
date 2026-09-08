@@ -39,6 +39,7 @@ from typing import Any
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
 from agentnode_sdk.gateway.ledger import Ledger
 from agentnode_sdk.gateway.readiness import (
+    Readiness,
     ReadinessGate,
     ReportBinding,
     describe_missing,
@@ -56,6 +57,11 @@ from agentnode_sdk.gateway.protocol import (
     sign,
     verify_signature,
 )
+
+
+#: The one command that closes every refusal below. A gate that names no way through is a
+#: wall, so the remediation is a command that really runs and really changes the answer.
+_MEASURE = "agentnode gateway doctor --measure"
 
 MAX_BODY_BYTES = 32 * 1024 * 1024
 
@@ -180,21 +186,96 @@ class GatewayService:
             self._backend = ContainerBackend()
         return self._backend
 
+    def active_state(self):
+        """The authenticated policy-and-report pair currently in force, or None.
+
+        Read on every admission rather than held from construction (`EM3C-Y6-DECISION-0001`,
+        `D4`): a gateway that cached the policy it started with would keep admitting jobs under
+        it after the operator changed it, which is the same class of staleness the digest exists
+        to catch, just moved into memory.
+
+        A snapshot that fails any of its checks raises, and the caller treats that as not ready.
+        It is never downgraded to "no policy", because "no policy" is a *valid* closed state and
+        a tampered one must not be able to impersonate it.
+        """
+        from agentnode_sdk.gateway.activation import ActivationStore
+
+        return ActivationStore(self.state.root).load_active()
+
+    def configured_envelope(self):
+        """What the operator has ASKED for, read from the config file.
+
+        Deliberately not the same thing as what is in force. The config file is an input; the
+        authenticated snapshot is the decision. Editing the file by hand therefore changes what
+        this returns and does NOT change what runs -- it makes the two disagree, and a
+        disagreement is refused rather than resolved in the file's favour.
+        """
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        if self._operator_policy is not None:
+            return self._explicit_envelope()
+        path = self.state.root / "config.json"
+        if not path.is_file():
+            return opol.build(opol.NONE)
+        try:
+            config = opol.loads_strict(path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise opol.OperatorPolicyError(f"the gateway config cannot be read: {exc}") from None
+        return opol.from_config(config)
+
+    def _explicit_envelope(self):
+        """A policy handed in at construction, described in the same envelope as a configured one."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        net = getattr(self._operator_policy, "network", None)
+        enabled = bool(getattr(net, "enabled", False))
+        dests = getattr(net, "allowed_destinations", None)
+        if not enabled:
+            return opol.build(opol.NONE)
+        if dests is None:
+            return opol.build(opol.UNRESTRICTED)
+        return opol.build(opol.RESTRICTED, tuple(dests))
+
+    def operator_envelope(self):
+        """The operator policy actually IN FORCE -- from the authenticated snapshot."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        if self._operator_policy is not None:
+            return self._explicit_envelope()
+        state = self.active_state()
+        if state is None:
+            return opol.build(opol.NONE)
+        return state.policy
+
     def operator_policy(self):
         """What this machine's owner allows. The highest scope in the fold."""
         if self._operator_policy is not None:
             return self._operator_policy
         from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+        from agentnode_sdk.gateway import operator_policy as opol
 
-        # A gateway defaults to no network for foreign code. The operator opens it deliberately.
-        return SandboxPolicy(network=NetworkRules(enabled=False,
-                                                  allowed_destinations=frozenset()))
+        envelope = self.operator_envelope()
+        if envelope.mode == opol.NONE:
+            # A gateway defaults to no network for foreign code. The operator opens it
+            # deliberately, and only after the opening has been measured.
+            return SandboxPolicy(network=NetworkRules(enabled=False,
+                                                      allowed_destinations=frozenset()))
+        if envelope.mode == opol.UNRESTRICTED:
+            return SandboxPolicy(network=NetworkRules(enabled=True, allowed_destinations=None))
+        return SandboxPolicy(network=NetworkRules(
+            enabled=True, allowed_destinations=frozenset(envelope.allowed_destinations)))
 
     # ------------------------------------------------------------------ capabilities
 
-    def report_binding(self) -> ReportBinding:
-        """What a conformance report about this gateway would have to be about."""
+    def report_binding(self, policy_digest: str = "") -> ReportBinding:
+        """What a conformance report about this gateway would have to be about.
+
+        `policy_digest` is supplied while a *pending* policy is being measured, so the report is
+        stamped with the policy it was taken for rather than with the one still in force.
+        """
         from agentnode_sdk.gateway.boot import boot_identity
+
+        from agentnode_sdk.conformance.report import SUITE_VERSION
 
         identity = self.state.identity
         availability = self.backend.check_available()
@@ -205,7 +286,37 @@ class GatewayService:
             backend=str(availability.backend or ""),
             image_digest=str(availability.image_digest or ""),
             boot_id=boot_value,
+            backend_version=self.runtime_version(),
+            conformance_schema=str(SUITE_VERSION),
+            operator_policy_digest=policy_digest or self.operator_envelope().digest(),
         )
+
+    def runtime_version(self) -> str:
+        """The container runtime's own version, asked once per process.
+
+        Process-lifetime rather than per-admission, and deliberately the same lifetime as
+        `check_available`, which this gateway has always cached the same way: asking a runtime
+        for its version is a subprocess, and doing that on every job would be a real cost for a
+        value that changes when a daemon is upgraded -- which restarts the daemon and, in
+        practice, the gateway with it. A runtime upgraded underneath a still-running gateway is
+        caught at its next start or measurement, not mid-process. That is a stated limit, not an
+        assumption that it cannot happen.
+        """
+        cached = getattr(self, "_runtime_version_cache", None)
+        if cached is not None:
+            return cached
+        from agentnode_sdk.conformance.runner import _runtime_version
+
+        availability = self.backend.check_available()
+        runtime = str(availability.backend or "")
+        value = ""
+        if runtime and runtime != "none":
+            try:
+                value = str(_runtime_version(runtime) or "")
+            except Exception:                                     # noqa: BLE001
+                value = ""
+        self._runtime_version_cache = value
+        return value
 
     def measure(self, options=None, now: float | None = None):
         """Run the conformance suite against this backend and keep the result.
@@ -222,14 +333,110 @@ class GatewayService:
 
         from agentnode_sdk.conformance.runner import run_conformance
 
+        from agentnode_sdk.gateway.activation import ActivationLock, ActivationStore
+
+        envelope = self.configured_envelope()
+        store = ActivationStore(self.state.root)
         stamp = datetime.fromtimestamp(now or time.time(), tz=timezone.utc).isoformat()
-        report = run_conformance(self.backend, generated_at=stamp, options=options)
-        self.readiness.store(report.to_dict(), self.report_binding(), now)
+
+        with ActivationLock(self.state.root):
+            # Written first, and never consulted by admission. Its only job is to say what is
+            # being measured if the process dies before it finishes.
+            store.write_pending(envelope)
+
+            report = run_conformance(self.backend, generated_at=stamp, options=options,
+                                     egress_matrix=self._egress_matrix_for(envelope))
+            binding = self.report_binding(envelope.digest())
+            document = {"measured_at": now if now is not None else time.time(),
+                        "binding": binding.as_dict(), "report": report.to_dict()}
+
+            # Kept as a diagnostic copy. Readiness does not read it -- it reads the snapshot --
+            # so a stale file here can never make a gateway look ready.
+            self.readiness.store(report.to_dict(), binding, now)
+
+            verdict = self.readiness.evaluate_document(document, binding,
+                                                       envelope.required_properties, now)
+            if not verdict.ready:
+                # The measurement did not establish what this policy needs. Nothing is activated,
+                # and whatever was in force stays in force.
+                store.clear_pending()
+                return verdict
+            store.activate(envelope, report.to_dict(), binding.as_dict(), now)
         return self.readiness_now()
 
+    def _egress_matrix_for(self, envelope):
+        """Measure the allowlist this policy actually names, or return nothing measured.
+
+        `EM3C-Y6-DECISION-0001`, `D3-a`. The suite reports `egress-allowlist` as `not_checked`
+        when no matrix reaches it, and the gateway supplied none -- so a gateway that permitted
+        egress was ready on a report that had never tried to leave it. The matrix is now built
+        from the policy's own destinations, with a control that is deliberately NOT among them,
+        so the run distinguishes "the allowlist works" from "nothing has a route anywhere".
+
+        Returns None for a closed policy: there is no allowlist to measure, and inventing a
+        passing matrix for one would be the failure this exists to prevent.
+        """
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        if envelope.mode != opol.RESTRICTED or not envelope.allowed_destinations:
+            return None
+        from agentnode_sdk.conformance.runner import measure_egress
+
+        allowed = envelope.allowed_destinations[0]
+        denied = next((c for c in ("example.org", "example.net", "iana.org")
+                       if c not in envelope.allowed_destinations), None)
+        if denied is None:
+            # Every control this build knows is on the allowlist, so a denial could not be told
+            # apart from a failure to reach anything. Unmeasured, and therefore not ready.
+            return None
+        return measure_egress(self.backend, allowed=allowed, denied=denied)
+
     def readiness_now(self):
-        """The current answer to whether this gateway may take work, with its reason."""
-        return self.readiness.evaluate(self.report_binding())
+        """The current answer to whether this gateway may take work, with its reason.
+
+        Every part of this is recomputed: the policy is re-read and re-digested, and the report
+        is judged against the properties THAT policy requires. Nothing here is remembered from
+        when the process started.
+        """
+        from agentnode_sdk.gateway.activation import SnapshotUnusable
+        from agentnode_sdk.gateway.operator_policy import OperatorPolicyError
+
+        try:
+            state = self.active_state()
+            configured = self.configured_envelope()
+        except (SnapshotUnusable, OperatorPolicyError) as exc:
+            # A policy that cannot be read is not a closed policy. It is an unknown one, and an
+            # unknown policy is not something to run foreign code under.
+            return Readiness(
+                False,
+                "this gateway cannot read the policy it is supposed to be enforcing: "
+                + str(exc) + " Nothing will be run until that is resolved.",
+                {}, (), (_MEASURE,),
+            )
+
+        if state is None:
+            return Readiness(
+                False,
+                "this gateway has not been measured yet, so it cannot say what it enforces. "
+                "Nothing will be run until it has been.",
+                {}, tuple(configured.required_properties), (_MEASURE,),
+            )
+
+        if configured.digest() != state.policy_digest:
+            # The config file was changed without going through an activation. The file is an
+            # input, not the decision -- so this is refused rather than obeyed.
+            return Readiness(
+                False,
+                "what this gateway is configured to allow is not what was measured and put into "
+                "force. A policy takes effect only after it has been measured as itself.",
+                {}, tuple(configured.required_properties), (_MEASURE,),
+            )
+
+        document = {"measured_at": state.activated_at,
+                    "binding": state.binding, "report": state.report}
+        return self.readiness.evaluate_document(
+            document, self.report_binding(state.policy_digest),
+            state.policy.required_properties)
 
     def measured_properties(self) -> dict[str, bool]:
         """What this gateway has been SHOWN to do -- from measurements, not from its own say-so.

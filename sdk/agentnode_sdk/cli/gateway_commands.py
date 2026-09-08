@@ -34,6 +34,11 @@ def _root(args) -> Path:
     return (Path(home) if home else Path.home() / ".agentnode") / "gateway"
 
 
+#: The one command that closes every refusal here. A gate that names no way through is a
+#: wall, so the remediation is a command that really runs and really changes the answer.
+_MEASURE_CMD = "agentnode gateway doctor --measure"
+
+
 def _config_path(root: Path) -> Path:
     return root / "config.json"
 
@@ -213,40 +218,36 @@ def cmd_start(args) -> int:
     return 0
 
 
-def cmd_egress(args) -> int:
-    """Show or set what jobs on this gateway may reach."""
-    root = _root(args)
-    config = _load_config(root)
-    allow = tuple(getattr(args, "allow", None) or ())
-    clear = bool(getattr(args, "none", False))
+def _egress_show(root, verbose: bool = False) -> int:
+    """What is actually in force, and whether it matches what is configured."""
+    from agentnode_sdk.gateway import operator_policy as opol
+    from agentnode_sdk.gateway.activation import ActivationStore, SnapshotUnusable
 
-    if allow and clear:
-        print()
-        print("  --allow and --none ask for opposite things. Pick one.")
-        return 2
-
-    if clear or allow:
-        if allow:
-            from agentnode_sdk.sandbox.egress import validate_allowed_domains
-            try:
-                validate_allowed_domains(allow)
-            except ValueError as exc:
-                print()
-                print(f"  That cannot be enforced as an allowlist: {exc}")
-                print("  Nothing was changed.")
-                return 2
-            config["egress_allowed"] = sorted(set(allow))
-        else:
-            config.pop("egress_allowed", None)
-        _save_config(root, config)
-        print()
-        print("  Saved. It takes effect the next time the gateway starts.")
-
-    current = _load_config(root).get("egress_allowed") or []
     print()
-    if current:
+    try:
+        state = ActivationStore(root).load_active()
+    except SnapshotUnusable as exc:
+        print(f"  This gateway's active state cannot be trusted: {exc}")
+        print("  Nothing runs until it has been measured again.")
+        print(f"  Next:  {_MEASURE_CMD}")
+        return 1
+
+    try:
+        configured = opol.from_config(_load_config(root))
+    except opol.OperatorPolicyError as exc:
+        print(f"  The saved policy cannot be read: {exc}")
+        return 1
+
+    if state is None:
+        print("  Nothing is in force yet: this gateway has not been measured.")
+        print("  Jobs reach nothing until it has been.")
+        print(f"  Next:  {_MEASURE_CMD}")
+        return 1
+
+    active = state.policy
+    if active.mode == opol.RESTRICTED:
         print("  Jobs on this gateway may reach:")
-        for host in current:
+        for host in active.allowed_destinations:
             print(f"    {host}")
         print()
         print("  A job still has to ask for a host, and may ask for fewer than these.")
@@ -254,7 +255,95 @@ def cmd_egress(args) -> int:
     else:
         print("  Jobs on this gateway reach nothing. No network at all.")
         print("  To allow a host:  agentnode gateway egress --allow example.com")
+
+    if configured.digest() != state.policy_digest:
+        print()
+        print("  A different policy is saved than the one in force. The saved one has not been")
+        print("  measured, so it is not being enforced and nothing will run under it.")
+        print(f"  Next:  {_MEASURE_CMD}")
+        return 1
+
+    if verbose:
+        print()
+        print(f"  activation generation : {state.generation}")
+        print(f"  policy digest         : {state.policy_digest}")
+        print(f"  configured digest     : {configured.digest()}")
+        print(f"  digests agree         : {configured.digest() == state.policy_digest}")
+        print(f"  measured properties   : {', '.join(active.required_properties)}")
     return 0
+
+
+def cmd_egress(args) -> int:
+    """Show or set what jobs on this gateway may reach.
+
+    Setting is one operation for the person typing it and a transaction underneath
+    (`EM3C-Y6-DECISION-0001`): the proposal is saved as pending, the protections that proposal
+    needs are measured against it, and only a complete measurement puts it into force. Nothing
+    here says the change is saved, active or protecting anything until that has happened -- the
+    whole finding this answers was a command stating a grant it did not have.
+    """
+    root = _root(args)
+    allow = tuple(getattr(args, "allow", None) or ())
+    clear = bool(getattr(args, "none", False))
+    verbose = bool(getattr(args, "verbose", False))
+
+    if allow and clear:
+        print()
+        print("  --allow and --none ask for opposite things. Pick one.")
+        return 2
+
+    if not allow and not clear:
+        return _egress_show(root, verbose)
+
+    from agentnode_sdk.gateway import operator_policy as opol
+
+    try:
+        proposed = (opol.build(opol.RESTRICTED, allow) if allow else opol.build(opol.NONE))
+    except opol.OperatorPolicyError as exc:
+        print()
+        print(f"  That cannot be enforced as an allowlist: {exc}")
+        print("  Nothing was changed.")
+        return 2
+
+    config = _load_config(root)
+    previous = dict(config)
+    if allow:
+        config["egress_allowed"] = list(proposed.allowed_destinations)
+    else:
+        config.pop("egress_allowed", None)
+    _save_config(root, config)
+
+    print()
+    print("  Proposed policy saved as pending. The current policy is still the one in force.")
+    print("  Measuring the protections this policy needs before anything changes:")
+    for name in proposed.required_properties:
+        print(f"    {name}")
+    print()
+
+    state, service = _service(root)
+    try:
+        verdict = service.measure()
+    except Exception as exc:                                      # noqa: BLE001
+        _save_config(root, previous)
+        print(f"  The measurement could not be run: {exc}")
+        print("  The previous policy remains in force. Nothing was changed.")
+        return 1
+
+    if not verdict.ready:
+        # The config file is put back, so what is saved and what is in force agree again rather
+        # than leaving a proposal behind that quietly blocks every later job.
+        _save_config(root, previous)
+        print(f"  Measurement failed: {verdict.reason}")
+        if verdict.unproven:
+            print("  Not established:")
+            for name in verdict.unproven:
+                print(f"    {name}")
+        print()
+        print("  The previous policy remains in force. Nothing was changed.")
+        return 1
+
+    print("  Measurements passed. The new policy is now in force.")
+    return _egress_show(root, verbose)
 
 
 def cmd_status(args) -> int:
