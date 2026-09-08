@@ -201,9 +201,9 @@ def submit(connection: GatewayConnection, artifact: bytes, *, granted=None,
         "artifact_b64": base64.b64encode(artifact).decode("ascii"),
     }
     status, answer = _post(connection.base_url + "/v1/jobs", body)
+    assert_same_gateway(connection, answer)
     if status not in (200, 202, 409):
         raise GatewayClientError(answer.get("error", f"the gateway answered {status}"))
-    assert_same_gateway(connection, answer)
     return answer
 
 
@@ -305,11 +305,12 @@ def rotate(connection: GatewayConnection) -> GatewayConnection:
         "payload": payload,
         "signature": sign(client_token_secret(connection.token), payload),
     })
+    # Checked before the body is read at all: taking a credential -- or an error message -- from
+    # a machine that is not the one you paired with is how you end up holding somebody else's key
+    # and calling it yours.
+    assert_same_gateway(connection, body)
     if status != 200 or not body.get("token"):
         raise GatewayClientError(str(body.get("error") or "the gateway would not rotate the token"))
-    # Checked BEFORE the new token is adopted: taking a credential from a machine that is not the
-    # one you paired with is how you end up holding somebody else's key and calling it yours.
-    assert_same_gateway(connection, body)
     return GatewayConnection(
         base_url=connection.base_url,
         token=str(body["token"]),
@@ -322,14 +323,15 @@ def rotate(connection: GatewayConnection) -> GatewayConnection:
 def status_of(connection: GatewayConnection, run_id: str, verify: bool = True) -> dict[str, Any]:
     """Idempotent: asking twice gives the same answer, and asking is free."""
     status, body = _get(f"{connection.base_url}/v1/jobs/{run_id}", token=connection.token)
+    # BEFORE the status is interpreted. An earlier version checked afterwards, reasoning that a
+    # refusal should read as a refusal rather than as a complaint about identity -- but that let a
+    # server at a changed address supply the error text a person then read and acted on. Every
+    # answer is stamped now, including refusals, so there is nothing to trade off.
+    assert_same_gateway(connection, body)
     if status == 404:
         raise GatewayClientError(f"the gateway does not know a run {run_id}")
     if status != 200:
         raise GatewayClientError(body.get("error", f"the gateway answered {status}"))
-    # After the status, not before: a refusal is a refusal, and demanding that an error body carry
-    # a gateway stamp would replace "you are not paired" with a confusing complaint about identity.
-    # The check belongs on answers this would otherwise go on to trust.
-    assert_same_gateway(connection, body)
     return verify_answer(connection, body) if verify else body
 
 
@@ -343,9 +345,9 @@ def cancel(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
         "signature": sign(client_token_secret(connection.token), payload),
     }
     status, answer = _post(f"{connection.base_url}/v1/jobs/{run_id}/cancel", body)
+    assert_same_gateway(connection, answer)
     if status != 200:
         raise GatewayClientError(answer.get("error", f"the gateway answered {status}"))
-    assert_same_gateway(connection, answer)
     return answer
 
 

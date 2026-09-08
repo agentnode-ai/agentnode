@@ -879,6 +879,15 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
     def _send(self, code: int, body: dict) -> None:
+        # Every answer carries the gateway's identity, including refusals. `EM3C-EXTERNAL-0008`
+        # found that error bodies were consumed before the client checked who sent them, so a
+        # server at a changed address could hand back text that a person would read and act on.
+        # An error is a message like any other, and the client cannot check what is not there.
+        if isinstance(body, dict) and "gateway" not in body:
+            try:
+                body = self.service.stamp(dict(body))
+            except Exception:                                 # noqa: BLE001
+                pass
         data = json.dumps(body).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")

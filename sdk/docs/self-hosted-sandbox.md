@@ -61,7 +61,24 @@ agentnode gateway start
 
 It listens on `127.0.0.1:8099`. That is the safe default: nothing else can reach it yet.
 
-### 5. Let your laptop in
+### 5. Make it reachable from your laptop
+
+Your laptop cannot reach `127.0.0.1:8099` on this machine — on the laptop, that address is the
+laptop. And plain HTTP is refused to anything else, because your pairing code and your access token
+cross that link first.
+
+The shortest route needs no domain name and no open port. Install Tailscale on both machines, then
+here:
+
+```
+tailscale serve --bg 8099
+```
+
+It prints an `https://` address on your own private network. That is the address your laptop uses.
+`agentnode gateway doctor` shows this too, and names the alternatives if you would rather use a
+reverse proxy or your own certificate.
+
+### 6. Let your laptop in
 
 In another terminal:
 
@@ -99,11 +116,15 @@ You do **not** need Docker here. The containers run on the other machine; that i
 ### 2. Connect
 
 ```
-agentnode remote connect http://127.0.0.1:8099 --code KQ7M-3PXA-9TDF
+agentnode remote connect https://your-gateway.example.ts.net --code KQ7M-3PXA-9TDF
 ```
 
-Use whatever address reaches the gateway. Your access is saved on this machine only, in a file
-readable by you alone. It is never printed and never put in a URL.
+Use the address the gateway printed in step 5 — the `https://` one. Your access is saved on this
+machine only, in a file readable by you alone. It is never printed and never put in a URL.
+
+If you are trying this out with both roles on **one** machine, and only then, the address is
+`http://127.0.0.1:8099`. That is the single case where plain HTTP is accepted, and it tells you
+nothing about whether a second machine can reach it.
 
 ### 3. Check it works
 
@@ -111,8 +132,12 @@ readable by you alone. It is never printed and never put in a URL.
 agentnode remote test
 ```
 
-This sends a tiny program, runs it in a container on the other machine, and shows you what came
-back. If it says *It works*, everything between the two machines is set up.
+This sends a tiny program, runs it in a container on the gateway, and shows you what came back.
+
+If it says *It works*, then everything along the path you just used is set up — pairing, the
+sandbox, and the result coming back. What that path was depends on the address you connected to: an
+`https://` address means it crossed the network to the other machine; `127.0.0.1` means it did not
+leave this one.
 
 ### 4. Run something
 
@@ -188,5 +213,7 @@ What it does not protect against: someone who can write to the gateway's directo
 tokens, replace its identity, or clear its records. Keep that machine's accounts to people you
 would trust with the sandbox itself.
 
-This is a self-hosted beta. It has not been used by anyone outside the project, and the remote path
-has been tested between two accounts on one machine rather than across a real network.
+This is a self-hosted beta. It has not been used by anyone outside the project. The remote path has
+been tested between two separated accounts on one machine — different user, no access to the
+gateway's files, no container runtime of its own — and **not yet between two real machines**. Real
+TLS to a real peer, a routed network and DNS are exactly what that arrangement cannot exercise.
