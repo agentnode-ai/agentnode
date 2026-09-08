@@ -149,6 +149,16 @@ def cmd_status(args) -> int:
     print(f"  {bold(saved.name)}  {dim(saved.url)}")
     try:
         hello = gc.hello(saved.url)
+        # `hello` is unauthenticated -- it has to be, since it is what an unpaired client asks
+        # first. But this connection already knows which gateway it paired with, and
+        # EM3C-EXTERNAL-0011 found the answer being read out to the user without that comparison:
+        # a substituted endpoint could have reported itself protected and measured. Anything this
+        # command is about to repeat has to come from the gateway it belongs to.
+        gc.assert_same_gateway(connection, hello)
+    except gc.GatewayClientError as exc:
+        print(f"  {bold('That is not the sandbox you paired with.')}")
+        print(f"  {exc}")
+        return 1
     except Exception as exc:                                  # noqa: BLE001
         print(f"  Cannot reach it right now: {exc}")
         print("  Your access is still saved; try again when it is back.")
