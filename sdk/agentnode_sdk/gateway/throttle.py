@@ -254,6 +254,96 @@ class Throttle:
             self._write_locked()
 
 
+@dataclass
+class Budget:
+    """How many attempts the gateway will consider at all, in a window.
+
+    `EM3C-STATEDIR-DECISION-0001` chose P2-A: no source identity anywhere. The per-origin counter
+    it replaces keyed on the immediate TCP peer, which behind a reverse proxy is the proxy -- so
+    every client shared one allowance and any of them could lock out the rest. Trusting a
+    forwarding header instead would mean trusting whoever can set one.
+
+    So nothing here depends on where an attempt came from. The Throttle beside this counts
+    FAILURES and locks after too many; this counts ATTEMPTS, successful or not, and simply stops
+    considering them past a ceiling. Between them, an attacker who can reach the gateway is bounded
+    without anyone having to decide whose address to believe.
+
+    What it deliberately does not give is per-user isolation: this ceiling is shared, and exhausting
+    it denies pairing to everyone until the window passes. That is the trade P2-A makes, and the
+    allowance is set high enough that ordinary use never approaches it while grinding does.
+    """
+
+    allowance: int = 30
+    window_seconds: float = 10 * 60.0
+    path: str | os.PathLike[str] | None = None
+
+    _spent: list = field(default_factory=list, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def _across_processes(self):
+        if self.path is None:
+            return _NoLock()
+        return ProcessLock(self.path)
+
+    def _read(self, now: float) -> None:
+        if self.path is None:
+            return
+        target = Path(self.path)
+        if not target.exists():
+            return
+        try:
+            loaded = json.loads(target.read_text(encoding="utf-8"))
+            self._spent = [float(t) for t in (loaded.get("spent") or [])]
+        except (OSError, ValueError, TypeError):
+            # Unreadable is not empty. An attempt budget that forgets is not a budget, so the
+            # window is treated as fully spent until it would have expired anyway.
+            self._spent = [now] * self.allowance
+
+    def _write(self) -> None:
+        if self.path is None:
+            return
+        target = Path(self.path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        handle, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".budget-")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as fh:
+                json.dump({"spent": self._spent}, fh)
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        try:
+            os.chmod(target, 0o600)
+        except OSError:
+            pass
+
+    def spend(self, now: float | None = None) -> None:
+        """Record one attempt, or raise if the window has no room left."""
+        now = time.time() if now is None else now
+        with self._lock, self._across_processes():
+            self._read(now)
+            cutoff = now - self.window_seconds
+            self._spent = [t for t in self._spent if t > cutoff]
+            if len(self._spent) >= self.allowance:
+                oldest = min(self._spent)
+                raise Locked(max(1.0, (oldest + self.window_seconds) - now))
+            self._spent.append(now)
+            try:
+                self._write()
+            except OSError:
+                pass
+
+    def remaining(self, now: float | None = None) -> int:
+        now = time.time() if now is None else now
+        with self._lock, self._across_processes():
+            self._read(now)
+            cutoff = now - self.window_seconds
+            return max(0, self.allowance - len([t for t in self._spent if t > cutoff]))
+
+
 class _NoLock:
     """What `_across_processes` returns when the throttle is memory-only."""
 

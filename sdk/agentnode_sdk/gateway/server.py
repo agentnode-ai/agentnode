@@ -963,9 +963,11 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/pair":
             try:
                 self.service.require_private_state()
+                # No source is passed, and that is the decision rather than an omission: the
+                # limits it feeds are address-free, because behind a reverse proxy every client
+                # shares the peer address and a forwarding header is set by whoever can set one.
                 token = self.service.state.redeem_pairing(
                     body.get("code", ""), client_name=body.get("client_name", ""),
-                    source=self.client_address[0] if self.client_address else "",
                 )
             except PairingError as exc:
                 return self._send(403, {"error": str(exc)})

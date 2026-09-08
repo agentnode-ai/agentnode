@@ -32,7 +32,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from agentnode_sdk.gateway.throttle import Locked, Throttle
+from agentnode_sdk.gateway import securedir
+from agentnode_sdk.gateway.throttle import Budget, Locked, Throttle
 
 #: A pairing code is typed by a human, so it avoids characters that look alike in most fonts.
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -117,6 +118,15 @@ class GatewayState:
         # One lock covers issuing and redeeming. Without it two concurrent redemptions can
         # both read the live code before either clears it, and a single-use code is used
         # twice -- the exact property the code is supposed to have.
+        # P1-A (EM3C-STATEDIR-DECISION-0001): the directory is opened and judged once, and the
+        # DESCRIPTOR is kept. Every secret operation is relative to it, so renaming, replacing or
+        # symlinking the path afterwards changes nothing about which inode is read -- and the
+        # descriptor is re-judged before each use, so a change of owner or mode on that inode is
+        # caught before the next secret is touched.
+        self._dir_fd = None
+        self.state_verifiable = securedir.SUPPORTED
+        if securedir.SUPPORTED:
+            self._dir_fd = securedir.open_state_dir(self.root)
         self._pairing_lock = threading.Lock()
         self._pairing_path = self.root / "pairing.json"
         self._throttle = Throttle(
@@ -125,6 +135,9 @@ class GatewayState:
             # presence separates "never had a failed attempt" from "someone removed the record".
             established_marker=self._identity_path,
         )
+        # Counts attempts rather than failures, so grinding is bounded even when every guess is
+        # wrong in a way that would not trip the failure lockout.
+        self._admission = Budget(path=self.root / "pairing-admission.json")
 
     @staticmethod
     def _harden(path: Path) -> None:
@@ -183,11 +196,6 @@ class GatewayState:
             self._write_pairing({"code_sha256": hash_token(code), "expires": expires})
         return code
 
-    def _record_failure(self, now: float, by_source) -> None:
-        self._throttle.record_failure(now)
-        if by_source is not None:
-            by_source.record_failure(now)
-
     def pairing_active(self, now: float | None = None) -> bool:
         now = time.time() if now is None else now
         if self._pairing is not None and self._pairing[1] > now:
@@ -221,7 +229,41 @@ class GatewayState:
         both read it first, which is the cross-process version of the two-step bug the in-memory
         path already had -- and a single-use code that two callers can use is not single-use.
         """
-        claimed = self.root / (".pairing-claimed-" + secrets.token_hex(8))
+        claimed = ".pairing-claimed-" + secrets.token_hex(8)
+        if securedir.SUPPORTED:
+            return self._claim_relative(claimed)
+        return self._claim_by_path(self.root / claimed)
+
+    def _claim_relative(self, claimed: str) -> dict | None:
+        """Claim and read the live pairing record without ever going through a name twice.
+
+        `EM3C-EXTERNAL-0007` found this operating on pathnames while the rest had moved to
+        descriptors, which meant the one secret with the shortest life and the highest value was
+        the one still reachable by replacing a path.
+        """
+        fd = self._fd()
+        if not securedir.claim_secret(fd, "pairing.json", claimed):
+            return None                              # somebody else got there first, or none
+        try:
+            deadline = time.monotonic() + 2.0
+            while True:
+                try:
+                    raw = securedir.read_secret(fd, claimed)
+                except securedir.UnverifiableState:
+                    if time.monotonic() >= deadline:
+                        return None
+                    time.sleep(0.02)
+                    continue
+                if raw is None:
+                    return None
+                try:
+                    return json.loads(raw)
+                except ValueError:
+                    return None
+        finally:
+            securedir.remove_secret(fd, claimed)
+
+    def _claim_by_path(self, claimed) -> dict | None:
         try:
             os.rename(self._pairing_path, claimed)
         except OSError:
@@ -250,29 +292,8 @@ class GatewayState:
             except OSError:
                 pass
 
-    def _source_throttle(self, source: str) -> Throttle:
-        """A second counter, for one origin. Both must allow the attempt.
-
-        The gateway-wide counter is what stops an attacker grinding, and it is deliberately not
-        reset by issuing a new code -- otherwise an operator being helpful ("here, try this one")
-        would hand back the attempts the limit had just taken away. But one global counter also
-        means anyone who fails a few times slows down everyone else, so a per-origin counter sits
-        beside it with a tighter allowance. An attacker with many addresses still meets the global
-        one; an ordinary person mistyping from one address meets only their own.
-        """
-        digest = hashlib.sha256(str(source or "unknown").encode("utf-8")).hexdigest()[:32]
-        # No established_marker here, and that is the difference between the two counters. A
-        # source that has never failed legitimately has no file, so "missing" cannot mean
-        # "deleted" for this one -- treating it that way locked every first pairing attempt on
-        # the planet out at once. Deleting a per-source file therefore resets that one source,
-        # and the gateway-wide counter, which does carry the marker, is what still holds.
-        return Throttle(
-            allowed_failures=3,
-            path=self.root / "pairing-by-source" / (digest + ".json"),
-        )
-
     def redeem_pairing(self, presented: str, client_name: str = "",
-                       now: float | None = None, source: str = "") -> str:
+                       now: float | None = None) -> str:
         """Exchange a valid code for a token. The code is consumed whether or not it matched.
 
         Consuming on failure is what stops a wrong guess being cheap: an attacker gets one attempt
@@ -281,11 +302,17 @@ class GatewayState:
         now = time.time() if now is None else now
         # Checked before the attempt is even looked at, so a locked-out caller learns nothing
         # about whether a pairing is live.
-        by_source = self._source_throttle(source) if source else None
+        # P2-A (EM3C-STATEDIR-DECISION-0001): nothing here depends on where the attempt came
+        # from. The per-origin counter this replaces keyed on the immediate TCP peer, which behind
+        # a reverse proxy is the proxy -- so one client shared, and could exhaust, everyone's
+        # allowance. Trusting a forwarding header instead would mean trusting whoever can set one.
+        #
+        # Three limits, none of them an address. Every attempt costs budget whether it succeeds or
+        # not; failures additionally accumulate towards a lockout; and a code is consumed by one
+        # attempt, so a wrong guess spends that code and nobody else's.
         try:
+            self._admission.spend(now)
             self._throttle.check(now)
-            if by_source is not None:
-                by_source.check(now)
         except Locked as exc:
             raise PairingError(str(exc)) from None
 
@@ -308,14 +335,14 @@ class GatewayState:
             expected_hash = str(on_disk.get("code_sha256", ""))
 
         if pending is None:
-            self._record_failure(now, by_source)
+            self._throttle.record_failure(now)
             raise PairingError(
                 "this gateway is not accepting pairings right now. Run `agentnode gateway pair` "
                 "on the server to show a new code."
             )
         _code, expires = pending
         if expires <= now:
-            self._record_failure(now, by_source)
+            self._throttle.record_failure(now)
             raise PairingError(
                 "that pairing code has expired. Run `agentnode gateway pair` on the server for a "
                 "new one -- codes last 15 minutes on purpose."
@@ -323,23 +350,32 @@ class GatewayState:
         try:
             presented_norm = normalise_code(presented)
         except PairingError:
-            self._record_failure(now, by_source)
+            self._throttle.record_failure(now)
             raise
         if not hmac.compare_digest(hash_token(presented_norm), expected_hash):
-            self._record_failure(now, by_source)
+            self._throttle.record_failure(now)
             raise PairingError(
                 "that pairing code does not match. The code can be used once, so ask the server "
                 "for a new one with `agentnode gateway pair`."
             )
         # Someone who proved they know the code is not who the throttle guards against.
         self._throttle.record_success(now)
-        if by_source is not None:
-            by_source.record_success(now)
         return self._issue_token(client_name=client_name, now=now)
 
     # ---------------------------------------------------------------- tokens
 
     def _read_private(self, name: str) -> str | None:
+        if securedir.SUPPORTED:
+            return securedir.read_secret(self._fd(), name)
+        return self._read_private_by_path(name)
+
+    def _write_private(self, name: str, text: str) -> None:
+        if securedir.SUPPORTED:
+            securedir.write_secret(self._fd(), name, text)
+            return
+        self._write_private_by_path(name, text)
+
+    def _read_private_by_path(self, name: str) -> str | None:
         """Read a file inside the gateway directory, through the descriptor that was judged.
 
         `EM3C-EXTERNAL-0006` found that judging a descriptor and then opening by pathname is still
@@ -347,42 +383,52 @@ class GatewayState:
         held descriptor means the file comes from the directory that was inspected, whatever the
         name points at now.
         """
-        import os as _os
+        self._guard_private()
+        path = self.root / name
+        return path.read_text(encoding="utf-8") if path.is_file() else None
 
-        if _os.name != "posix":
-            self._guard_private()
-            path = self.root / name
-            return path.read_text(encoding="utf-8") if path.is_file() else None
-        dir_fd = self._guard_private()
-        try:
+    def _write_private_by_path(self, name: str, text: str) -> None:
+        """The fallback where descriptor-relative work is unavailable.
+
+        Named honestly: this is a pathname operation and offers none of the protection the
+        descriptor path does. It exists so a gateway on such a platform still functions, and the
+        gateway reports its state as unverifiable rather than claiming otherwise.
+        """
+        self._guard_private()
+        path = self.root / name
+        path.write_text(text, encoding="utf-8")
+        self._harden(path)
+
+    def close(self) -> None:
+        """Give up the held descriptor. Safe to call twice."""
+        fd, self._dir_fd = self._dir_fd, None
+        if fd is not None:
             try:
-                fd = _os.open(name, _os.O_RDONLY, dir_fd=dir_fd)
-            except FileNotFoundError:
-                return None
-            with _os.fdopen(fd, "r", encoding="utf-8") as handle:
-                return handle.read()
-        finally:
-            _os.close(dir_fd)
+                import os as _os
 
-    def _write_private(self, name: str, text: str) -> None:
-        """Write a file inside the judged directory, atomically, through that descriptor."""
-        import os as _os
+                _os.close(fd)
+            except OSError:
+                pass
 
-        if _os.name != "posix":
-            self._guard_private()
-            path = self.root / name
-            path.write_text(text, encoding="utf-8")
-            self._harden(path)
-            return
-        dir_fd = self._guard_private()
-        try:
-            tmp = "." + name + ".new"
-            fd = _os.open(tmp, _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600, dir_fd=dir_fd)
-            with _os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(text)
-            _os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-        finally:
-            _os.close(dir_fd)
+    def _fd(self) -> int:
+        """The held descriptor, re-judged, and confirmed to still be what the name refers to.
+
+        Two separate questions. Re-judging catches a change of owner or permissions on the inode
+        this gateway is using. The identity comparison catches the directory having been swapped
+        for a different one behind the name -- by device and inode, never by comparing strings,
+        because one path can name two directories at different moments.
+        """
+        if self._dir_fd is None:
+            raise securedir.UnverifiableState(
+                "this gateway has no verified state directory, so it will not touch its secrets"
+            )
+        securedir.verify_still_private(self._dir_fd, self.root)
+        if not securedir.same_object(self._dir_fd, self.root):
+            raise securedir.InsecureState(
+                f"{self.root} no longer refers to the directory this gateway opened. Something "
+                "replaced it while the gateway was running, and nothing was read or written."
+            )
+        return self._dir_fd
 
     def _guard_private(self):
         """Refuse to touch the token file while anyone else can read the directory.

@@ -30,6 +30,7 @@ from agentnode_sdk.conformance.report import Vantage
 from agentnode_sdk.gateway import readiness
 from agentnode_sdk.gateway import transport as tr
 from agentnode_sdk.gateway.identity import (
+    hash_token,
     PairingError,
     GatewayState,
     client_token_secret,
@@ -2019,11 +2020,138 @@ class TestTheGatewaysOwnFilesArePrivate:
             assert "cannot be checked" in verdict.reason
 
 
-class TestOneOriginCannotSpendEveryoneElsesAttempts:
-    """Two counters: one for the gateway, one for each origin."""
+posix_only = pytest.mark.skipif(
+    os.name != "posix", reason="descriptor-relative work is a POSIX facility")
+
+
+class TestASwappedPathCannotRedirectASecret:
+    """The attacks the descriptor work exists to stop, actually attempted.
+
+    `EM3C-EXTERNAL-0007` found the pairing claim working through pathnames while everything else
+    had moved to descriptors. A name is not an object: between checking a path and opening it, the
+    name can be made to refer to something else. These tests do the swapping rather than reasoning
+    about it.
+    """
+
+    @posix_only
+    def test_replacing_the_directory_is_noticed_before_a_secret_is_touched(self, tmp_path):
+        real = tmp_path / "gw"
+        state = GatewayState(real, version="test")
+        assert state.identity.gateway_id
+        state.start_pairing()
+
+        # the attacker's directory, in place of the gateway's, with a pairing record of their own
+        impostor = tmp_path / "impostor"
+        impostor.mkdir(mode=0o700)
+        (impostor / "pairing.json").write_text(
+            json.dumps({"code_sha256": "0" * 64, "expires": 9e9}), encoding="utf-8")
+        real.rename(tmp_path / "moved-aside")
+        impostor.rename(real)
+
+        from agentnode_sdk.gateway.securedir import InsecureState
+
+        with pytest.raises((InsecureState, PairingError)):
+            state.redeem_pairing("AAAA-AAAA-AAAA")
+        with pytest.raises(InsecureState):
+            state._read_tokens()
+
+    @posix_only
+    def test_a_symlink_in_place_of_a_secret_is_refused_not_followed(self, tmp_path):
+        elsewhere = tmp_path / "somebody-elses.json"
+        elsewhere.write_text(json.dumps({"stolen": True}), encoding="utf-8")
+
+        root = tmp_path / "gw"
+        state = GatewayState(root, version="test")
+        assert state.identity.gateway_id
+
+        (root / "tokens.json").unlink(missing_ok=True)
+        (root / "tokens.json").symlink_to(elsewhere)
+
+        from agentnode_sdk.gateway.securedir import UnverifiableState
+
+        with pytest.raises(UnverifiableState):
+            state._read_tokens()
+
+    @posix_only
+    def test_a_symlinked_pairing_record_yields_no_pairing(self, tmp_path):
+        planted = tmp_path / "planted.json"
+        planted.write_text(
+            json.dumps({"code_sha256": hash_token("AAAA-AAAA-AAAA"), "expires": 9e9}),
+            encoding="utf-8")
+
+        root = tmp_path / "gw"
+        state = GatewayState(root, version="test")
+        assert state.identity.gateway_id
+        (root / "pairing.json").unlink(missing_ok=True)
+        (root / "pairing.json").symlink_to(planted)
+
+        # The claim renames the link itself; reading through it must not succeed, so the planted
+        # code cannot buy a token.
+        with pytest.raises(PairingError):
+            state.redeem_pairing("AAAA-AAAA-AAAA")
+
+    @posix_only
+    def test_a_second_hard_link_to_a_secret_is_refused(self, tmp_path):
+        """Another name for the same bytes, in a directory whose permissions say nothing here."""
+        root = tmp_path / "gw"
+        state = GatewayState(root, version="test")
+        state._write_private("tokens.json", json.dumps({}))
+        os.link(root / "tokens.json", tmp_path / "second-door.json")
+
+        from agentnode_sdk.gateway.securedir import InsecureState
+
+        with pytest.raises(InsecureState):
+            state._read_tokens()
+
+    @posix_only
+    def test_widening_the_directory_refuses_the_next_secret_operation(self, tmp_path):
+        root = tmp_path / "gw"
+        state = GatewayState(root, version="test")
+        assert state.identity.gateway_id
+        assert state._read_tokens() == {}
+
+        os.chmod(root, 0o755)
+
+        from agentnode_sdk.gateway.securedir import InsecureState
+
+        with pytest.raises(InsecureState):
+            state._read_tokens()
+        with pytest.raises(InsecureState):
+            state._write_private("tokens.json", "{}")
+
+    @posix_only
+    def test_identity_is_the_inode_not_the_name(self, tmp_path):
+        """A test that compared two path strings would pass against every attack above."""
+        from agentnode_sdk.gateway import securedir
+
+        root = tmp_path / "gw"
+        root.mkdir(mode=0o700)
+        fd = securedir.open_state_dir(root)
+        try:
+            assert securedir.same_object(fd, root)
+            root.rename(tmp_path / "renamed")
+            (tmp_path / "other").mkdir(mode=0o700)
+            (tmp_path / "other").rename(root)
+            assert not securedir.same_object(fd, root), (
+                "a different directory under the same name was accepted as the same object"
+            )
+        finally:
+            os.close(fd)
+
+
+class TestPairingIsLimitedWithoutTrustingAnAddress:
+    """EM3C-STATEDIR-DECISION-0001 chose P2-A: no source identity anywhere.
+
+    The per-origin counter this replaces keyed on the immediate TCP peer. Behind a reverse proxy --
+    one of the supported remote-access routes -- that is the proxy for every client, so one client
+    could exhaust the allowance and lock out the rest. Trusting a forwarding header instead would
+    mean trusting whoever is able to set one.
+
+    What is left is three limits and not one of them is an address: every attempt spends a shared
+    budget, failures accumulate towards a lockout, and a code is consumed by a single attempt.
+    """
 
     def test_issuing_a_new_code_does_not_hand_back_spent_attempts(self):
-        """Otherwise an operator being helpful would undo the limit."""
         with tempfile.TemporaryDirectory() as td:
             now = 4_000.0
             state = GatewayState(td, version="test")
@@ -2031,41 +2159,108 @@ class TestOneOriginCannotSpendEveryoneElsesAttempts:
                 state.start_pairing(now=now)
                 with pytest.raises(PairingError):
                     state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now)
-            # a fresh code, which is exactly what an attacker would hope resets the count
             state.start_pairing(now=now)
             with pytest.raises(PairingError):
                 state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now)
             assert state._throttle.locked_for(now) > 0.0
 
-    def test_one_origin_locks_itself_before_it_locks_the_gateway(self):
+    def test_a_code_is_spent_by_one_attempt_and_takes_nobody_elses_with_it(self):
+        """A wrong guess costs that code. The next person's code is untouched."""
         with tempfile.TemporaryDirectory() as td:
             now = 4_000.0
             state = GatewayState(td, version="test")
-            noisy = "203.0.113.7"
-            for _ in range(4):                    # three are free; the fourth locks
-                state.start_pairing(now=now)
-                with pytest.raises(PairingError):
-                    state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now, source=noisy)
+            state.start_pairing(now=now)
+            with pytest.raises(PairingError):
+                state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now)
 
-            assert state._source_throttle(noisy).locked_for(now) > 0.0
-            assert state._throttle.locked_for(now) == 0.0, "the gateway locked on one origin"
+            fresh = state.start_pairing(now=now)
+            assert state.redeem_pairing(fresh, now=now), (
+                "one wrong guess against an earlier code prevented a later one from being used"
+            )
 
-            # somebody else, from another address, is not paying for that
-            good = state.start_pairing(now=now)
-            assert state.redeem_pairing(good, now=now, source="198.51.100.2")
+    def test_forwarding_headers_change_nothing(self, gateway):
+        """No header is read, so there is nothing to forge. The behaviour is identical."""
+        import urllib.request
 
-    def test_a_locked_origin_is_refused_even_with_the_right_code(self):
+        base, state, service, _ = gateway
+        code = state.start_pairing()
+        request = urllib.request.Request(
+            base + "/v1/pair", method="POST",
+            data=json.dumps({"code": code, "client_name": "via-proxy"}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Forwarded-For": "203.0.113.99, 198.51.100.4",
+                "Forwarded": 'for=203.0.113.99;proto=https',
+                "X-Real-IP": "203.0.113.99",
+            })
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = json.loads(response.read().decode())
+        assert body.get("token"), body
+
+    def test_many_clients_behind_one_proxy_do_not_lock_each_other_out(self, gateway):
+        """Every client arrives from the same peer address. Under P2-A that is not a limit."""
+        base, state, service, _ = gateway
+        for index in range(6):
+            wrong = gc.GatewayClientError
+            state.start_pairing()
+            with pytest.raises(wrong):
+                gc.pair(base, "ZZZZ-ZZZZ-ZZZZ")      # this client mistypes
+            good = state.start_pairing()
+            assert gc.pair(base, good).token, f"client {index} was locked out by the previous one"
+
+    def test_the_attempt_budget_bounds_grinding_whatever_the_address(self):
+        from agentnode_sdk.gateway.throttle import Budget, Locked
+
         with tempfile.TemporaryDirectory() as td:
-            now = 4_000.0
-            state = GatewayState(td, version="test")
-            noisy = "203.0.113.9"
+            budget = Budget(allowance=4, window_seconds=600.0,
+                            path=Path(td) / "admission.json")
+            now = 100.0
             for _ in range(4):
-                state.start_pairing(now=now)
-                with pytest.raises(PairingError):
-                    state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now, source=noisy)
-            good = state.start_pairing(now=now)
-            with pytest.raises(PairingError, match="failed pairing attempts"):
-                state.redeem_pairing(good, now=now, source=noisy)
+                budget.spend(now)
+            with pytest.raises(Locked):
+                budget.spend(now)
+            assert budget.remaining(now) == 0
+            # and it recovers once the window has passed
+            assert budget.remaining(now + 601.0) == 4
+
+    def test_the_budget_counts_successes_too(self):
+        """A grinder whose guesses happen to be right is still a grinder."""
+        from agentnode_sdk.gateway.throttle import Budget
+
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            state._admission = Budget(allowance=3, window_seconds=600.0,
+                                      path=Path(td) / "admission.json")
+            now = 100.0
+            for _ in range(3):
+                code = state.start_pairing(now=now)
+                assert state.redeem_pairing(code, now=now)
+            code = state.start_pairing(now=now)
+            with pytest.raises(PairingError, match="Try again"):
+                state.redeem_pairing(code, now=now)
+
+    def test_the_budget_survives_a_restart(self):
+        from agentnode_sdk.gateway.throttle import Budget, Locked
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "admission.json"
+            now = 100.0
+            first = Budget(allowance=2, window_seconds=600.0, path=path)
+            first.spend(now)
+            first.spend(now)
+            second = Budget(allowance=2, window_seconds=600.0, path=path)
+            with pytest.raises(Locked):
+                second.spend(now)
+
+    def test_an_unreadable_budget_is_treated_as_spent(self):
+        """Forgetting how many attempts have happened is not a budget."""
+        from agentnode_sdk.gateway.throttle import Budget, Locked
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "admission.json"
+            path.write_text("{ not json", encoding="utf-8")
+            with pytest.raises(Locked):
+                Budget(allowance=2, window_seconds=600.0, path=path).spend(100.0)
 
 
 # ----------------------------------------------------- what must outlive the process itself
