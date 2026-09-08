@@ -10,10 +10,10 @@ This is that run, and it is deliberately one command on each side so that a pers
 also debugging a test harness.
 
     # on the Linux machine with Docker
-    python -m agentnode_sdk.tools.external_check --role gateway
+    agentnode gateway verify
 
-    # on the Windows laptop, with the address the gateway printed
-    python -m agentnode_sdk.tools.external_check --role client --gateway https://...
+    # on the Windows laptop, with the address and code the gateway printed
+    agentnode remote verify --gateway https://... --code ABCD-EFGH-JKLM
 
 The gateway side prepares and then waits, printing a pairing code. The client side runs the whole
 journey against it and prints a result per step. Neither side reaches into the other: the client
@@ -112,8 +112,8 @@ def gateway_role(args) -> int:
 
     print("\n  Type that code on the other machine. Do not paste it into a chat.")
     print("  Then run there:")
-    print(f"      python -m agentnode_sdk.tools.external_check --role client "
-          f"--gateway <the https address> --code {found.group(0)}")
+    print(f"      agentnode remote verify --gateway <the https address> "
+          f"--code {found.group(0)}")
     print("\n  Confirm by hand, because no script can:")
     print("    [ ] the client is a different physical or virtual machine")
     print("    [ ] the address the client uses is https:// or a tunnel address")

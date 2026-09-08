@@ -385,6 +385,17 @@ def cmd_revoke(args) -> int:
     return 0
 
 
+def cmd_verify(args) -> int:
+    """The gateway half of the external run.
+
+    A single command, because the person running it is checking whether this works at all and
+    should not also be assembling one.
+    """
+    from agentnode_sdk.tools import external_check
+
+    return external_check.main(["--role", "gateway"])
+
+
 def dispatch(args) -> int:
     action = getattr(args, "gateway_command", None)
     handlers = {
@@ -395,10 +406,12 @@ def dispatch(args) -> int:
         "pair": cmd_pair,
         "clients": cmd_clients,
         "revoke": cmd_revoke,
+        "verify": cmd_verify,
     }
     handler = handlers.get(action)
     if handler is None:
-        print("  Usage: agentnode gateway {init|start|status|doctor|pair|clients|revoke}")
+        print("  Usage: agentnode gateway "
+              "{init|start|status|doctor|pair|clients|revoke|verify}")
         return 2
     try:
         return handler(args)

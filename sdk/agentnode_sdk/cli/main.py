@@ -273,6 +273,9 @@ def main(argv: list[str] | None = None) -> int:
     gw_revoke = gw_sub.add_parser("revoke", help="Disconnect a client, at once")
     gw_revoke.add_argument("--client", required=True, help="Its id or name")
     gw_revoke.add_argument("--dir", default=None)
+    gw_verify = gw_sub.add_parser(
+        "verify", help="Run the external check on this machine (the gateway half)")
+    gw_verify.add_argument("--dir", default=None)
 
     rm = sub.add_parser("remote", help="Send work to a sandbox on another machine")
     rm_sub = rm.add_subparsers(dest="remote_command")
@@ -304,6 +307,11 @@ def main(argv: list[str] | None = None) -> int:
     rm_rotate.add_argument("--name", default="")
     rm_disconnect = rm_sub.add_parser("disconnect", help="Forget a sandbox on this machine")
     rm_disconnect.add_argument("--name", default="")
+    rm_verify = rm_sub.add_parser(
+        "verify", help="Run the external check on this machine (the client half)")
+    rm_verify.add_argument("--gateway", default="", help="The gateway's address")
+    rm_verify.add_argument("--code", default="", help="The pairing code it printed")
+    rm_verify.add_argument("--name", default="")
 
     sandbox_parser = sub.add_parser("sandbox", help="Sandbox runtime image management")
     sandbox_sub = sandbox_parser.add_subparsers(dest="sandbox_action")

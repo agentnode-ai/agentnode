@@ -335,6 +335,22 @@ def cmd_disconnect(args) -> int:
     return 0
 
 
+def cmd_verify(args) -> int:
+    """The client half of the external run."""
+    from agentnode_sdk.tools import external_check
+
+    saved = _store(args).get(getattr(args, "name", "") or "")
+    url = getattr(args, "gateway", "") or (saved.url if saved else "")
+    if not url:
+        print("  Give the gateway's address with --gateway, or connect to it first.")
+        return 2
+    if not getattr(args, "code", ""):
+        print("  Give the pairing code with --code. The gateway prints one with")
+        print("    agentnode gateway pair")
+        return 2
+    return external_check.main(["--role", "client", "--gateway", url, "--code", args.code])
+
+
 def dispatch(args) -> int:
     action = getattr(args, "remote_command", None)
     handlers = {
@@ -347,11 +363,12 @@ def dispatch(args) -> int:
         "cancel": cmd_cancel,
         "rotate": cmd_rotate,
         "disconnect": cmd_disconnect,
+        "verify": cmd_verify,
     }
     handler = handlers.get(action)
     if handler is None:
         print("  Usage: agentnode remote "
-              "{connect|list|use|status|test|run|cancel|rotate|disconnect}")
+              "{connect|list|use|status|test|run|cancel|rotate|disconnect|verify}")
         return 2
     try:
         return handler(args)
