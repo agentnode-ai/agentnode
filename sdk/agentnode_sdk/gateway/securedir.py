@@ -25,6 +25,21 @@ Four things are checked, and each rules out a specific way of being handed the w
 `O_NOFOLLOW` closes the last gap: the final component may not be a symlink, so a name inside the
 verified directory cannot redirect the open somewhere outside it.
 
+## What this does not give
+
+Two things, and neither is achievable by ordering the checks differently.
+
+Re-judging the descriptor and then using it are separate operations, so a mode change in between is
+possible. What the check bounds is *this* process: it will not read a secret out of a directory
+that was not private a moment earlier, and the next operation refuses. It cannot freeze
+permissions, and it cannot stop somebody else opening a file once the directory has been widened --
+by then the exposure has already happened and no sequence of checks here would have prevented it.
+The protection is against being handed the wrong object, and against continuing to use a directory
+that has become readable; it is not a lock.
+
+The check also cannot help where the attacker already has write access to the directory. They can
+change the files this refuses to read.
+
 ## Where this cannot be done
 
 `dir_fd` is a POSIX facility; Windows has no equivalent in the standard library, and reparse points

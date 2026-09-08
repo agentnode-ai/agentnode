@@ -253,7 +253,9 @@ def assert_same_gateway(connection: GatewayConnection, body: dict) -> None:
     """Refuse an answer from a gateway that is not the one this connection was paired with.
 
     `EM3C-REMOTE-ACCESS-0001` asked for this as defence in depth, independent of which secure
-    transport is in front. The transport authenticates the channel; this authenticates the peer at
+    transport is in front. What it establishes is that nothing in a response is acted on before the
+    peer is confirmed. It is not a claim that the bytes were never received or parsed -- the
+    identity is inside them, so reading and parsing necessarily come first. The transport authenticates the channel; this authenticates the peer at
     the other end of it, using what was learned when the two were introduced. If the address is
     ever pointed somewhere else -- a changed tunnel route, a proxy reconfigured, a name that now
     resolves elsewhere -- the answer stops being accepted rather than being quietly used.
@@ -305,9 +307,9 @@ def rotate(connection: GatewayConnection) -> GatewayConnection:
         "payload": payload,
         "signature": sign(client_token_secret(connection.token), payload),
     })
-    # Checked before the body is read at all: taking a credential -- or an error message -- from
-    # a machine that is not the one you paired with is how you end up holding somebody else's key
-    # and calling it yours.
+    # Checked before anything in the body is used -- the token above all. Taking a credential, or
+    # an error message, from a machine that is not the one you paired with is how you end up
+    # holding somebody else's key and calling it yours.
     assert_same_gateway(connection, body)
     if status != 200 or not body.get("token"):
         raise GatewayClientError(str(body.get("error") or "the gateway would not rotate the token"))
@@ -323,10 +325,11 @@ def rotate(connection: GatewayConnection) -> GatewayConnection:
 def status_of(connection: GatewayConnection, run_id: str, verify: bool = True) -> dict[str, Any]:
     """Idempotent: asking twice gives the same answer, and asking is free."""
     status, body = _get(f"{connection.base_url}/v1/jobs/{run_id}", token=connection.token)
-    # BEFORE the status is interpreted. An earlier version checked afterwards, reasoning that a
-    # refusal should read as a refusal rather than as a complaint about identity -- but that let a
-    # server at a changed address supply the error text a person then read and acted on. Every
-    # answer is stamped now, including refusals, so there is nothing to trade off.
+    # Before any field of this response is used, including the status. Not before the body is
+    # read: finding the identity means parsing the body, so "read" and "used" are different
+    # moments and only the second one is ours to control. An earlier version checked after the
+    # status was interpreted, which let a server at a changed address supply error text a person
+    # then read and acted on; every answer is stamped now, refusals included.
     assert_same_gateway(connection, body)
     if status == 404:
         raise GatewayClientError(f"the gateway does not know a run {run_id}")
