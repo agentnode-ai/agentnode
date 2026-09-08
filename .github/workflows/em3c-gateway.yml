@@ -77,6 +77,17 @@ jobs:
           grep -qE "^36 passed" em3c-cli.txt || {
             echo "the CLI tests did not all pass"; exit 1; }
 
+      # The evidence runner has to be shown to CATCH things before any external run leans on
+      # it. EM3C-EXTERNAL-0017 blocked on evidence rather than on code, and a checker of
+      # evidence fails by passing what it cannot see -- so its own suite feeds it records that
+      # are each wrong in one named way and requires it to say so.
+      - name: The evidence runner, against deliberately broken evidence
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_evidence.py 2>&1 | tee em3c-evidence.txt
+          grep -qE "^36 passed" em3c-evidence.txt || {
+            echo "the evidence-runner tests did not all pass"; exit 1; }
+
       - name: The vertical flow, for real
         env:
           AGENTNODE_SANDBOX_E2E: "1"
