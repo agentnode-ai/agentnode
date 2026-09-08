@@ -3167,8 +3167,30 @@ class TestAnOperatorCanPermitEgress:
             assert gwc.cmd_egress(self._args(root, allow=[bad])) == 2, bad
         assert not (root / "active-state.json").exists()
 
-    def test_a_measurement_that_fails_leaves_the_previous_policy_in_force(self, tmp_path):
-        """The gateway has no runtime here, so the egress measurement cannot succeed."""
+    def _make_measurement_fail(self, monkeypatch, how):
+        """Make the measurement fail on purpose.
+
+        The first version of these two tests relied on the machine having no container runtime,
+        which is true on a developer's laptop and false in CI -- so in CI the measurement
+        succeeded and the tests failed for the opposite of the reason they were about. A test
+        that needs a failure has to cause one rather than hope for it.
+        """
+        from agentnode_sdk.gateway.readiness import Readiness
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        if how == "raises":
+            def fake(self, options=None, now=None):
+                raise RuntimeError("the runtime went away mid-measurement")
+        else:
+            def fake(self, options=None, now=None):
+                return Readiness(False, "the allowlist could not be measured on this machine.",
+                                 {}, ("egress_allowlist",),
+                                 ("agentnode gateway doctor --measure",))
+        monkeypatch.setattr(Service, "measure", fake)
+
+    @pytest.mark.parametrize("how", ["returns not ready", "raises"])
+    def test_a_measurement_that_fails_leaves_the_previous_policy_in_force(self, tmp_path,
+                                                                          monkeypatch, how):
         from agentnode_sdk.cli import gateway_commands as gwc
 
         state = GatewayState(tmp_path / "gw", version="test")
@@ -3177,6 +3199,7 @@ class TestAnOperatorCanPermitEgress:
         before = service.active_state()
         assert before is not None and before.policy.mode == "none"
 
+        self._make_measurement_fail(monkeypatch, how)
         rc = gwc.cmd_egress(self._args(state.root, allow=["example.com"]))
         assert rc == 1, "a policy that could not be measured must not be reported as in force"
 
@@ -3186,18 +3209,49 @@ class TestAnOperatorCanPermitEgress:
         assert after.policy.mode == "none", "the previous policy did not survive a failed change"
         assert after.generation == before.generation, "a failed change must not advance anything"
 
-    def test_a_failed_change_does_not_leave_the_gateway_blocked(self, tmp_path):
+    def test_a_failed_change_does_not_leave_the_gateway_blocked(self, tmp_path, monkeypatch):
         """A proposal left behind in the file would disagree with the snapshot for ever."""
         from agentnode_sdk.cli import gateway_commands as gwc
 
         state = GatewayState(tmp_path / "gw", version="test")
         service = GatewayService(state, backend=StandInBackend())
         _store_measurement(service)
-        gwc.cmd_egress(self._args(state.root, allow=["example.com"]))
+
+        self._make_measurement_fail(monkeypatch, "returns not ready")
+        assert gwc.cmd_egress(self._args(state.root, allow=["example.com"])) == 1
 
         fresh = GatewayService(GatewayState(state.root, version="test"), backend=StandInBackend())
         assert fresh.readiness_now().ready is True, \
             "a change that failed left the gateway unable to run anything"
+
+    def test_a_measurement_that_succeeds_does_put_the_policy_in_force(self, tmp_path, monkeypatch):
+        """The control. Without it, the two tests above would also pass on a gateway that could
+        never activate anything at all, which is a different thing entirely."""
+        from agentnode_sdk.cli import gateway_commands as gwc
+        from agentnode_sdk.gateway.activation import ActivationStore
+        from agentnode_sdk.gateway.readiness import Readiness
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        before = service.active_state()
+
+        def fake(self, options=None, now=None):
+            envelope = self.configured_envelope()
+            active = ActivationStore(self.state.root).load_active()
+            binding = self.report_binding(envelope.digest())
+            ActivationStore(self.state.root).activate(envelope, active.report, binding.as_dict())
+            return Readiness(True, "", {}, (), ())
+
+        monkeypatch.setattr(Service, "measure", fake)
+        assert gwc.cmd_egress(self._args(state.root, allow=["example.com"])) == 0
+
+        after = GatewayService(GatewayState(state.root, version="test"),
+                               backend=StandInBackend()).active_state()
+        assert after.policy.mode == "restricted"
+        assert after.policy.allowed_destinations == ("example.com",)
+        assert after.generation > before.generation
 
     def test_a_job_cannot_be_granted_a_host_the_operator_did_not_allow(self, tmp_path):
         """The ceiling is the point. Permitting one host must not permit the next."""
