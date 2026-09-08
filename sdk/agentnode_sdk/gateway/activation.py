@@ -69,6 +69,16 @@ class SnapshotUnusable(Exception):
     """A stored snapshot cannot be trusted, so it is treated as no snapshot at all."""
 
 
+class ActivationStranded(ActivationError):
+    """The generation was advanced, the snapshot was not replaced, and the advance could not be
+    undone -- so the snapshot still on disk is now behind the anchor and will be refused.
+
+    Its own class because it is the one failure that does NOT leave the previous state usable,
+    and a caller that reported it as "nothing changed" would be saying something false at the
+    only moment it matters. `EM3C-FINAL-0005` found exactly that being said.
+    """
+
+
 # --------------------------------------------------------------------------- protected material
 
 
@@ -305,11 +315,29 @@ class ActivationStore:
         # runs nothing until it is measured again. That is the safe direction: it costs
         # availability, which a command fixes, instead of costing the rollback guarantee, which
         # nothing fixes afterwards.
+        previous_generation = self.protected.accepted_generation()
         self.protected.remember_generation(generation)
 
-        # THE COMMIT POINT. Everything before this can fail and leave the previous state exactly
-        # as it was; nothing after it can un-commit.
-        _write_atomic(self.active_path, json.dumps(document, indent=2, sort_keys=True))
+        # THE COMMIT POINT. Nothing after it can un-commit.
+        #
+        # Advancing the anchor is itself durable, so a failure HERE is not free: the snapshot
+        # still on disk is now behind the anchor and would be refused as a rollback. The anchor
+        # is therefore put back. Lowering it is safe in exactly this case and no other -- no
+        # snapshot carrying the new generation was ever written, so there is nothing that
+        # lowering it could un-protect.
+        try:
+            _write_atomic(self.active_path, json.dumps(document, indent=2, sort_keys=True))
+        except BaseException:
+            try:
+                self.protected.remember_generation(previous_generation)
+            except OSError as restore_failed:
+                raise ActivationStranded(
+                    "this gateway recorded a new activation and then could not write the state "
+                    "that goes with it, and could not undo the record either. What is on disk is "
+                    "now behind what this gateway has accepted, so it will be refused. Nothing "
+                    "will run until the policy in force has been measured again."
+                ) from restore_failed
+            raise
 
         try:
             self.clear_pending()

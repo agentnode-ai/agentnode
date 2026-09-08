@@ -4112,3 +4112,169 @@ class TestTheCommitPointIsTheRename:
         after = path.read_text(encoding="utf-8") if path.is_file() else None
         assert after == before
         assert self._reopen(service.state.root).operator_envelope().mode == "none"
+
+
+class TestTheIntervalBetweenTheAnchorAndTheRename:
+    """EM3C-FINAL-0005.
+
+    Advancing the generation is itself a durable change. When the anchor had been advanced and
+    the snapshot replacement then failed, the snapshot still on disk was behind the anchor and
+    would be refused -- so the previous policy was not usable, while the command said nothing had
+    changed. Both halves of that are addressed here: the anchor is put back, and the one case
+    where it cannot be is reported as itself.
+    """
+
+    def _measured(self, root):
+        service = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(service)
+        return service
+
+    def _reopen(self, root):
+        return GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+
+    @staticmethod
+    def _matrix(service, envelope):
+        return {"allowed_hosts": list(envelope.allowed_destinations),
+                "allowed:" + envelope.allowed_destinations[0]: "ALLOWED:200",
+                "denied_via_proxy": "refused"}
+
+    def _arrange(self, service, monkeypatch):
+        import agentnode_sdk.conformance.runner as runner_mod
+
+        monkeypatch.setattr(type(service), "_egress_matrix_for", self._matrix)
+        monkeypatch.setattr(runner_mod, "run_conformance", _passing_report)
+
+    @staticmethod
+    def _fail_only_the_active_write(monkeypatch):
+        """Fail the snapshot replacement and nothing else.
+
+        A stub that failed every write would fire on the pending file, which is written before
+        the generation is advanced -- so the test would never reach the interval it is named
+        after, and would pass without exercising it.
+        """
+        from agentnode_sdk.gateway import activation as act
+
+        real = act._write_atomic
+
+        def selective(path, text):
+            if path.name == act.ACTIVE_NAME:
+                raise OSError("the state directory filled up")
+            return real(path, text)
+
+        monkeypatch.setattr(act, "_write_atomic", selective)
+
+    def test_a_rename_that_fails_leaves_the_previous_policy_usable(self, tmp_path, monkeypatch):
+        from agentnode_sdk.gateway import activation as act
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        service = self._measured(tmp_path / "gw")
+        self._arrange(service, monkeypatch)
+        before = service.active_state()
+        before_anchor = act.Protected(service.state.root).accepted_generation()
+
+        # Observed, so this test cannot pass by never reaching the interval it is named after.
+        # An anchor that was never advanced would satisfy every assertion below.
+        seen = []
+        real_remember = act.Protected.remember_generation
+
+        def watch(self, generation):
+            seen.append(generation)
+            return real_remember(self, generation)
+
+        monkeypatch.setattr(act.Protected, "remember_generation", watch)
+        self._fail_only_the_active_write(monkeypatch)
+        with pytest.raises(OSError):
+            service.activate(opol.build(opol.RESTRICTED, ("mine.example",)))
+
+        assert seen and max(seen) > before_anchor, (
+            "the generation was never advanced, so the interval under test was never entered")
+        assert seen[-1] == before_anchor, "the advance was not put back"
+
+        monkeypatch.undo()
+        after = self._reopen(service.state.root)
+        assert act.Protected(service.state.root).accepted_generation() == before_anchor, (
+            "the generation stayed advanced, so the snapshot on disk is now behind it")
+        assert after.active_state().policy_digest == before.policy_digest
+        assert after.readiness_now().ready is True, (
+            "a failed activation left the gateway unable to run anything")
+
+    def test_when_the_anchor_cannot_be_put_back_it_says_so(self, tmp_path, monkeypatch):
+        """The residual case. It is rare, it is not silently survivable, and it is named."""
+        from agentnode_sdk.gateway import activation as act
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        service = self._measured(tmp_path / "gw")
+        self._arrange(service, monkeypatch)
+
+        real_remember = act.Protected.remember_generation
+        calls = {"n": 0}
+
+        def remember_once_then_fail(self, generation):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real_remember(self, generation)
+            raise OSError("the key directory went read-only")
+
+        monkeypatch.setattr(act.Protected, "remember_generation", remember_once_then_fail)
+        self._fail_only_the_active_write(monkeypatch)
+
+        with pytest.raises(act.ActivationStranded) as caught:
+            service.activate(opol.build(opol.RESTRICTED, ("mine.example",)))
+        assert "measured again" in str(caught.value)
+
+    def test_the_command_does_not_claim_nothing_changed_when_stranded(self, tmp_path,
+                                                                      monkeypatch, capsys):
+        from agentnode_sdk.cli import gateway_commands as gwc
+        from agentnode_sdk.gateway import activation as act
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        service = self._measured(tmp_path / "gw")
+
+        def stranded(self, proposed=None, options=None, now=None):
+            raise act.ActivationStranded(
+                "this gateway recorded a new activation and then could not write the state that "
+                "goes with it. Nothing will run until the policy in force has been measured "
+                "again.")
+
+        monkeypatch.setattr(Service, "activate", stranded)
+
+        class Args:
+            pass
+
+        args = Args()
+        args.dir = str(service.state.root)
+        args.allow = ["example.com"]
+        args.none = False
+        args.verbose = False
+
+        assert gwc.cmd_egress(args) == 1
+        out = capsys.readouterr().out
+        assert "needs measuring again" in out, out
+        assert "Nothing was changed" not in out, (
+            "the command claimed nothing changed on the one path where something did")
+
+    def test_the_command_does_say_nothing_changed_when_that_is_true(self, tmp_path,
+                                                                    monkeypatch, capsys):
+        """The control. A command that never made the claim would pass the test above."""
+        from agentnode_sdk.cli import gateway_commands as gwc
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        service = self._measured(tmp_path / "gw")
+
+        def boom(self, proposed=None, options=None, now=None):
+            raise RuntimeError("the runtime went away before anything was recorded")
+
+        monkeypatch.setattr(Service, "activate", boom)
+
+        class Args:
+            pass
+
+        args = Args()
+        args.dir = str(service.state.root)
+        args.allow = ["example.com"]
+        args.none = False
+        args.verbose = False
+
+        assert gwc.cmd_egress(args) == 1
+        out = capsys.readouterr().out
+        assert "The previous policy remains in force. Nothing was changed." in out, out

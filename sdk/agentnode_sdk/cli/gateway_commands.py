@@ -317,15 +317,26 @@ def cmd_egress(args) -> int:
     # exact proposal. EM3C-FINAL-0001 found this command writing the config file before the lock
     # was taken and restoring it after the lock was released, so two operators changing the
     # policy at once could measure one proposal and activate another.
+    from agentnode_sdk.gateway.activation import ActivationStranded
+
     _state, service = _service(root)
     try:
         verdict = service.activate(proposed)
+    except ActivationStranded as exc:
+        # The one failure that does not leave the previous policy usable. Saying "nothing was
+        # changed" here would be false, which is what EM3C-FINAL-0005 found being said.
+        print()
+        print(f"  {bold('This gateway needs measuring again before it will run anything.')}")
+        print(f"  {exc}")
+        print(f"  Next:  {_MEASURE_CMD}")
+        return 1
     except Exception as exc:                                      # noqa: BLE001
         print(f"  The measurement could not be run: {exc}")
-        # Accurate because the change is committed by a single rename that this path never
-        # reached. EM3C-FINAL-0003 found this sentence being printed on a path where the
-        # snapshot HAD been replaced and only the operator's intent was rolled back, which made
-        # it false at the one moment it mattered.
+        # Accurate because the change commits at a single rename this path never reached, and
+        # because a rename that failed after the generation was advanced puts that advance back.
+        # EM3C-FINAL-0003 found this sentence printed where the snapshot HAD been replaced;
+        # EM3C-FINAL-0005 found it printed where the previous snapshot had been left behind the
+        # anchor. Both of those paths now say something else.
         print("  The previous policy remains in force. Nothing was changed.")
         return 1
 
