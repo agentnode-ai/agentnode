@@ -137,7 +137,10 @@ class GatewayState:
         )
         # Counts attempts rather than failures, so grinding is bounded even when every guess is
         # wrong in a way that would not trip the failure lockout.
-        self._admission = Budget(path=self.root / "pairing-admission.json")
+        self._admission = Budget(
+            path=self.root / "pairing-admission.json",
+            established_marker=self._identity_path,
+        )
 
     @staticmethod
     def _harden(path: Path) -> None:
@@ -170,6 +173,7 @@ class GatewayState:
             # Written together with the marker, so from here on an absent throttle file means
             # somebody removed it rather than that nothing has been recorded yet.
             self._throttle.ensure_initialised()
+            self._admission.ensure_initialised()
         return GatewayIdentity(gateway_id=gid, version=self.version)
 
     # ---------------------------------------------------------------- pairing

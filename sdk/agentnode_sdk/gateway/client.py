@@ -137,12 +137,36 @@ def hello(base_url: str) -> dict[str, Any]:
 
 
 def pair(base_url: str, code: str, client_name: str = "") -> GatewayConnection:
-    """Exchange a pairing code for a token. The code is spent either way."""
+    """Exchange a pairing code for a token. The code is spent either way.
+
+    This is the one exchange with nothing to compare against: pairing is where a client learns
+    which gateway it is talking to, so there is no pinned identity yet and cannot be. What can be
+    checked is that the answer is consistent with itself -- the fingerprint is a function of the
+    gateway id and version, so a response reporting one identity and the fingerprint of another is
+    not a gateway answering honestly, whatever else it is. `EM3C-EXTERNAL-0013` asked for that, and
+    it happens before the token is adopted rather than after.
+
+    What this does not do is authenticate the peer. Nothing at this point can: that is what the
+    out-of-band code and the encrypted transport are for.
+    """
+    import hashlib
+
     status, body = _post(base_url.rstrip("/") + "/v1/pair",
                          {"code": code, "client_name": client_name})
     if status != 200:
         raise GatewayClientError(body.get("error", f"pairing failed ({status})"))
     gateway = body.get("gateway") or {}
+    told = str(body.get("fingerprint", ""))
+    named = str(gateway.get("gateway_id", "")) + "\n" + str(gateway.get("version", ""))
+    computed = hashlib.sha256(named.encode()).hexdigest()
+    if not told or told != computed:
+        raise GatewayClientError(
+            "the sandbox at " + base_url.rstrip("/") + " gave an answer that does not describe "
+            "itself consistently, so nothing from it was saved. Your pairing code has been used; "
+            "ask for a new one before trying again."
+        )
+    if not body.get("token"):
+        raise GatewayClientError("the gateway did not return an access token")
     return GatewayConnection(
         base_url=base_url.rstrip("/"),
         token=body["token"],

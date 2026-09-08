@@ -1323,9 +1323,17 @@ class TestCorruptLockoutStateFailsClosed:
             throttle = Throttle(path=path)
             locked = throttle.locked_for(now=1000.0)
             assert locked > 0.0
-            # the fail-closed decision was written back as valid state, so it expires normally
+            # The fail-closed decision was written back as valid state, so it expires -- but only
+            # as time actually passes. A single leap past the deadline is not credited, so the
+            # clock is walked forward the way a clock does.
+            from agentnode_sdk.gateway.throttle import MAX_CREDITED_STEP
+
             later = Throttle(path=path)
-            assert later.locked_for(now=1000.0 + locked + 1.0) == 0.0
+            at = 1000.0
+            for _ in range(int(locked // MAX_CREDITED_STEP) + 2):
+                at += MAX_CREDITED_STEP
+                remaining = later.locked_for(now=at)
+            assert remaining == 0.0
 
     def test_state_that_exists_but_will_not_open_also_fails_closed(self):
         """EM3C-GATEWAY-0010: unparseable was handled; unreadable was not.
@@ -2141,6 +2149,46 @@ class TestASwappedPathCannotRedirectASecret:
             os.close(fd)
 
 
+class TestThePairingAnswerMustDescribeItself:
+    """The one exchange with nothing to pin against, so it is checked against itself."""
+
+    def test_a_fingerprint_that_does_not_match_the_identity_is_refused(self, gateway, monkeypatch):
+        base, state, service, _ = gateway
+        code = state.start_pairing()
+
+        real_post = gc._post
+
+        def bent(url, body, timeout=30.0):
+            status, answer = real_post(url, body, timeout)
+            if url.endswith("/v1/pair") and isinstance(answer, dict):
+                answer = dict(answer, fingerprint="0" * 64)
+            return status, answer
+
+        monkeypatch.setattr(gc, "_post", bent)
+        with pytest.raises(gc.GatewayClientError, match="does not describe itself"):
+            gc.pair(base, code)
+
+    def test_a_missing_fingerprint_is_refused_too(self, gateway, monkeypatch):
+        base, state, service, _ = gateway
+        code = state.start_pairing()
+        real_post = gc._post
+
+        def stripped(url, body, timeout=30.0):
+            status, answer = real_post(url, body, timeout)
+            if url.endswith("/v1/pair") and isinstance(answer, dict):
+                answer = {k: v for k, v in answer.items() if k != "fingerprint"}
+            return status, answer
+
+        monkeypatch.setattr(gc, "_post", stripped)
+        with pytest.raises(gc.GatewayClientError, match="does not describe itself"):
+            gc.pair(base, code)
+
+    def test_an_honest_answer_still_pairs(self, gateway):
+        base, state, service, _ = gateway
+        connection = gc.pair(base, state.start_pairing())
+        assert connection.token and connection.gateway_id and connection.fingerprint
+
+
 class TestPairingIsLimitedWithoutTrustingAnAddress:
     """EM3C-STATEDIR-DECISION-0001 chose P2-A: no source identity anywhere.
 
@@ -2222,8 +2270,15 @@ class TestPairingIsLimitedWithoutTrustingAnAddress:
             with pytest.raises(Locked):
                 budget.spend(now)
             assert budget.remaining(now) == 0
-            # and it recovers once the window has passed
-            assert budget.remaining(now + 601.0) == 4
+            # It recovers as the window passes, walked forward rather than jumped: a single leap
+            # past the window is exactly what setting the clock forward looks like.
+            from agentnode_sdk.gateway.throttle import MAX_CREDITED_STEP
+
+            at = now
+            for _ in range(int(600.0 // MAX_CREDITED_STEP) + 2):
+                at += MAX_CREDITED_STEP
+                left = budget.remaining(at)
+            assert left == 4
 
     def test_the_budget_counts_successes_too(self):
         """A grinder whose guesses happen to be right is still a grinder."""
@@ -2240,6 +2295,48 @@ class TestPairingIsLimitedWithoutTrustingAnAddress:
             code = state.start_pairing(now=now)
             with pytest.raises(PairingError, match="Try again"):
                 state.redeem_pairing(code, now=now)
+
+    def test_moving_the_clock_forward_does_not_buy_back_attempts(self):
+        """EM3C-EXTERNAL-0013: both counters ran on the wall clock, which can be set."""
+        from agentnode_sdk.gateway.throttle import Budget, Locked
+
+        with tempfile.TemporaryDirectory() as td:
+            budget = Budget(allowance=2, window_seconds=600.0, path=Path(td) / "b.json")
+            now = 1_000.0
+            budget.spend(now)
+            budget.spend(now)
+            with pytest.raises(Locked):
+                budget.spend(now)
+            # a year later, according to the clock
+            with pytest.raises(Locked):
+                budget.spend(now + 365 * 24 * 3600.0)
+
+    def test_moving_the_clock_backwards_does_not_help_either(self):
+        from agentnode_sdk.gateway.throttle import Budget, Locked
+
+        with tempfile.TemporaryDirectory() as td:
+            budget = Budget(allowance=2, window_seconds=600.0, path=Path(td) / "b.json")
+            now = 10_000.0
+            budget.spend(now)
+            budget.spend(now)
+            with pytest.raises(Locked):
+                budget.spend(now - 100_000.0)
+
+    def test_deleting_the_budget_of_a_gateway_that_has_run_restores_nothing(self):
+        """The failure counter had this marker; the budget did not."""
+        from agentnode_sdk.gateway.throttle import Locked
+
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            assert state.identity.gateway_id
+            now = 2_000.0
+            for _ in range(state._admission.allowance):
+                state._admission.spend(now)
+            (Path(td) / "pairing-admission.json").unlink()
+
+            reopened = GatewayState(td, version="test")
+            with pytest.raises(Locked):
+                reopened._admission.spend(now)
 
     def test_the_budget_survives_a_restart(self):
         from agentnode_sdk.gateway.throttle import Budget, Locked
