@@ -2636,7 +2636,10 @@ class TestTheVerticalFlowForReal:
         print("")
         print(f"  [observed] cancelled run: state={final['state']} "
               f"cleanup_verified={final['cleanup_verified']}", flush=True)
-        assert final["state"] in ("cancelled", "finished"), final
+        # Not ("cancelled", "finished"): the payload sleeps for ten minutes under a five-minute
+        # ceiling, so it cannot finish on its own, and accepting "finished" would let a run that
+        # ended for any other reason satisfy a test named for cancellation.
+        assert final["state"] == "cancelled", final
         assert final["cleanup_verified"] is True, "a cancelled run must leave nothing behind"
 
     def test_a_run_that_exceeds_its_wall_clock_is_ended(self, real_gateway):

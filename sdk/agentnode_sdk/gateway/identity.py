@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agentnode_sdk.gateway import securedir
-from agentnode_sdk.gateway.throttle import Budget, Locked, Throttle
+from agentnode_sdk.gateway.throttle import Budget, Locked, Store, Throttle
 
 #: A pairing code is typed by a human, so it avoids characters that look alike in most fonts.
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -129,7 +129,14 @@ class GatewayState:
             self._dir_fd = securedir.open_state_dir(self.root)
         self._pairing_lock = threading.Lock()
         self._pairing_path = self.root / "pairing.json"
+        # The counters go through the same verified descriptor as every other secret: one of
+        # them decides whether pairing is locked, so a pathname was the wrong footing for it.
+        counters = Store(
+            read=lambda name: self._read_private(name),
+            write=lambda name, text: self._write_private(name, text),
+        ) if securedir.SUPPORTED else None
         self._throttle = Throttle(
+            store=counters,
             path=self.root / "pairing-throttle.json",
             # identity.json exists from the first time this gateway answered for itself, so its
             # presence separates "never had a failed attempt" from "someone removed the record".
@@ -138,6 +145,7 @@ class GatewayState:
         # Counts attempts rather than failures, so grinding is bounded even when every guess is
         # wrong in a way that would not trip the failure lockout.
         self._admission = Budget(
+            store=counters,
             path=self.root / "pairing-admission.json",
             established_marker=self._identity_path,
         )

@@ -83,6 +83,8 @@ class Throttle:
     #: cheaper move -- delete one file -- and nothing more, which is worth having and worth not
     #: overstating.
     established_marker: str | os.PathLike[str] | None = None
+    #: Supplied by a gateway, so reads and writes go through its verified directory descriptor.
+    store: "Store | None" = None
 
     _failures: list[float] = field(default_factory=list, repr=False)
     _locked_until: float = field(default=0.0, repr=False)
@@ -114,7 +116,7 @@ class Throttle:
         if self.path is None:
             return
         target = Path(self.path)
-        if not target.exists():
+        if not self._exists(target):
             marker = Path(self.established_marker) if self.established_marker else None
             if marker is not None and marker.exists():
                 # This gateway has run before, so an absent state file was removed rather than
@@ -127,7 +129,8 @@ class Throttle:
         deadline = time.monotonic() + 1.0
         while True:
             try:
-                raw = target.read_text(encoding="utf-8")
+                raw = (self.store.read(target.name) if self.store is not None
+                       else target.read_text(encoding="utf-8"))
                 break
             except OSError:
                 if time.monotonic() >= deadline:
@@ -159,10 +162,26 @@ class Throttle:
         except (TypeError, ValueError):
             self._fail_closed(now)
 
+    def _exists(self, target: Path) -> bool:
+        if self.store is None:
+            return target.exists()
+        try:
+            return self.store.read(target.name) is not None
+        except OSError:
+            return True                           # cannot tell: treated as present, not absent
+
     def _write_locked(self) -> None:
         if self.path is None:
             return
         target = Path(self.path)
+        if self.store is not None:
+            self.store.write(target.name, json.dumps({
+                "failures": self._failures,
+                "locked_until": self._locked_until,
+                "consecutive_locks": self._consecutive_locks,
+                "last_seen": self._last_seen,
+            }))
+            return
         target.parent.mkdir(parents=True, exist_ok=True)
         handle, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".throttle-")
         try:
@@ -193,14 +212,13 @@ class Throttle:
         every gateway that has simply never had a failed attempt look tampered with -- which it
         did, and which locked three tests out of pairing immediately.
         """
-        if self.path is None or Path(self.path).exists():
+        if self.path is None or self._exists(Path(self.path)):
             return
         with self._lock, self._across_processes():
-            if not Path(self.path).exists():
-                try:
-                    self._write_locked()
-                except OSError:
-                    pass
+            try:
+                self._write_locked()
+            except OSError:
+                pass
 
     def _prune(self, now: float) -> None:
         cutoff = now - self.window_seconds
@@ -284,6 +302,7 @@ class Budget:
     #: from first use and hands back every attempt -- which `EM3C-EXTERNAL-0013` found, and which
     #: the failure counter beside this one had already been given a marker to prevent.
     established_marker: str | os.PathLike[str] | None = None
+    store: "Store | None" = None
 
     _spent: list = field(default_factory=list, repr=False)
     _last_seen: float = field(default=0.0, repr=False)
@@ -298,7 +317,13 @@ class Budget:
         if self.path is None:
             return
         target = Path(self.path)
-        if not target.exists():
+        try:
+            raw = (self.store.read(target.name) if self.store is not None
+                   else (target.read_text(encoding="utf-8") if target.exists() else None))
+        except OSError:
+            self._spent = [now] * self.allowance
+            return
+        if raw is None:
             marker = Path(self.established_marker) if self.established_marker else None
             if marker is not None and marker.exists():
                 # It was removed rather than never written: the same reasoning, and the same
@@ -306,7 +331,7 @@ class Budget:
                 self._spent = [now] * self.allowance
             return
         try:
-            loaded = json.loads(target.read_text(encoding="utf-8"))
+            loaded = json.loads(raw)
             self._spent = [float(t) for t in (loaded.get("spent") or [])]
             self._last_seen = float(loaded.get("last_seen") or 0.0)
         except (OSError, ValueError, TypeError):
@@ -318,6 +343,10 @@ class Budget:
         if self.path is None:
             return
         target = Path(self.path)
+        if self.store is not None:
+            self.store.write(target.name,
+                             json.dumps({"spent": self._spent, "last_seen": self._last_seen}))
+            return
         target.parent.mkdir(parents=True, exist_ok=True)
         handle, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".budget-")
         try:
@@ -342,14 +371,21 @@ class Budget:
         never had a pairing attempt would look tampered with, which is the mistake the failure
         counter beside this one already made once.
         """
-        if self.path is None or Path(self.path).exists():
+        if self.path is None or self._exists(Path(self.path)):
             return
         with self._lock, self._across_processes():
-            if not Path(self.path).exists():
-                try:
-                    self._write()
-                except OSError:
-                    pass
+            try:
+                self._write()
+            except OSError:
+                pass
+
+    def _exists(self, target: Path) -> bool:
+        if self.store is None:
+            return target.exists()
+        try:
+            return self.store.read(target.name) is not None
+        except OSError:
+            return True
 
     def spend(self, now: float | None = None) -> None:
         """Record one attempt, or raise if the window has no room left."""
@@ -407,6 +443,25 @@ class _NoLock:
 #: so the answer is not to trust a large one: time never runs backwards here, and a forward jump is
 #: worth at most one window per operation, each of which already costs budget.
 MAX_CREDITED_STEP = 5 * 60.0
+
+
+class Store:
+    """How a counter reaches its file.
+
+    `EM3C-EXTERNAL-0014` found the pairing failure counter and the attempt budget resolving the
+    state directory by pathname while every other secret had moved to the held descriptor. They are
+    gateway security state -- one of them decides whether pairing is locked -- so they belong on the
+    same footing. A gateway supplies a store that reads and writes relative to its verified
+    descriptor; anything constructed without one falls back to the path, which is what a standalone
+    unit test wants and what a gateway never uses.
+
+    The lock file beside them is still addressed by name, and that is deliberate: it holds nothing.
+    Its whole content is the fact that somebody has it open.
+    """
+
+    def __init__(self, read, write):
+        self.read = read
+        self.write = write
 
 
 def steady(last_seen: float, now: float, max_step: float = MAX_CREDITED_STEP) -> float:
