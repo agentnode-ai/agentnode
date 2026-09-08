@@ -33,6 +33,9 @@ GOOD_HOST = {
                       "allowed_hosts": ["example.com"],
                       "allowed:example.com": "ALLOWED:200",
                       "denied_via_proxy": "refused:HTTPError"},
+    # What the POLICY permits, stated by the caller. Without it the check has nothing to hold the
+    # run against and reports that, rather than accepting the run's own account of itself.
+    "egress_expected": ["example.com"],
     "env_baseline": ["HOME", "HOSTNAME", "LANG", "PATH", "PYTHON_VERSION"],
     "cancel": {"name": "c", "was_running": True, "gone_after": True, "still_listed": ""},
     "credential_lifecycle": {"name": "AGENTNODE_CONFORMANCE_RELEASED",
@@ -77,6 +80,7 @@ def bad_context():
                                 "allowed_hosts": ["example.com"],
                                 "allowed:example.com": "refused:X",
                                 "denied_via_proxy": "ALLOWED:200"},
+              "egress_expected": ["example.com"],
               "env_baseline": ["HOME", "PATH"],
               "cancel": {"name": "c", "was_running": True, "gone_after": False,
                          "still_listed": "agentnode-conformance-x-cancel"},
@@ -161,14 +165,16 @@ class TestTheRunnerAgainstDoubles:
     def test_a_good_double_passes_every_check_it_can_reach(self):
         report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
                                  options=SuiteOptions(include_outside=False),
-                                 egress_matrix=GOOD_HOST["egress_matrix"])
+                                 egress_matrix=GOOD_HOST["egress_matrix"],
+                                 egress_expected=GOOD_HOST["egress_expected"])
         unproven = [(r.check_id, r.outcome.value, r.evidence) for r in report.unproven]
         assert unproven == []
 
     def test_but_a_double_is_never_conformant(self):
         report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
                                  options=SuiteOptions(include_outside=False),
-                                 egress_matrix=GOOD_HOST["egress_matrix"])
+                                 egress_matrix=GOOD_HOST["egress_matrix"],
+                                 egress_expected=GOOD_HOST["egress_expected"])
         assert report.is_test_double
         assert not report.is_conformant
         assert "TEST DOUBLE" in report.summary_line()
@@ -439,7 +445,8 @@ class TestTheCheckInventoryCannotShrinkQuietly:
     def test_a_report_covers_every_required_check(self):
         report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
                                  options=SuiteOptions(include_outside=False),
-                                 egress_matrix=GOOD_HOST["egress_matrix"])
+                                 egress_matrix=GOOD_HOST["egress_matrix"],
+                                 egress_expected=GOOD_HOST["egress_expected"])
         produced = [r.check_id for r in report.results]
         assert produced == list(REQUIRED_CHECK_IDS), (
             "a run produced a different set of checks than the suite is required to make")
@@ -548,7 +555,8 @@ class TestAConfiguredCeilingIsNotAnEnforcedOne:
     def test_a_report_missing_the_stress_run_is_not_conformant(self):
         report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
                                  options=SuiteOptions(include_outside=False, include_stress=False),
-                                 egress_matrix=GOOD_HOST["egress_matrix"])
+                                 egress_matrix=GOOD_HOST["egress_matrix"],
+                                 egress_expected=GOOD_HOST["egress_expected"])
         assert not report.is_conformant
         # a double is never conformant anyway, so the substantive claim is that the check itself
         # is unproven rather than passing
@@ -679,11 +687,13 @@ class TestAnAllowlistIsOnlyAsMeasuredAsItsWorstEntry:
     was exercised, leaving every other permitted destination an open path nobody had tried.
     """
 
-    def _result(self, matrix):
+    def _result(self, matrix, expected=None):
         from agentnode_sdk.conformance.checks import check_egress_allowlist
 
         host = dict(GOOD_HOST)
         host["egress_matrix"] = matrix
+        host["egress_expected"] = (list(matrix.get("allowed_hosts") or [])
+                                   if expected is None else list(expected))
         return check_egress_allowlist(Context(readings=copy.deepcopy(doubles.GOOD_READINGS),
                                               declared=dict(GOOD_DECLARED), host=host))
 
@@ -723,9 +733,22 @@ class TestAnAllowlistIsOnlyAsMeasuredAsItsWorstEntry:
 
     def test_a_matrix_that_never_says_what_it_measured_is_not_checked(self):
         """Without the list, complete and partial look identical, so neither is claimed."""
-        result = self._result(dict(self.BLOCKED))
-        assert result.outcome != "pass"
+        result = self._result(dict(self.BLOCKED), expected=self.THREE)
         assert result.outcome == "not_checked", result.outcome
+
+    def test_a_run_with_no_stated_policy_is_not_checked(self):
+        """EM3C-FINAL-0004: filling the expectation in from the matrix made the comparison
+        compare the run with itself, so omitting it silently weakened the binding."""
+        from agentnode_sdk.conformance.checks import check_egress_allowlist
+
+        matrix = self._matrix({h: "ALLOWED:200" for h in self.THREE})
+        host = dict(GOOD_HOST)
+        host["egress_matrix"] = matrix
+        host.pop("egress_expected", None)
+        result = check_egress_allowlist(Context(readings=copy.deepcopy(doubles.GOOD_READINGS),
+                                                declared=dict(GOOD_DECLARED), host=host))
+        assert result.outcome == "not_checked", result.outcome
+        assert "which destinations the policy permits" in result.evidence
 
     def test_measuring_hosts_the_policy_did_not_name_fails(self):
         """A run that wandered off the policy is not evidence about the policy."""
@@ -753,3 +776,37 @@ class TestAnAllowlistIsOnlyAsMeasuredAsItsWorstEntry:
         matrix = self._matrix({h: "ALLOWED:200" for h in self.THREE})
         matrix["direct_1_1_1_1"] = "BYPASS"
         assert self._result(matrix).outcome != "pass"
+
+
+class TestTheRunnerDoesNotInventThePolicy:
+    """EM3C-FINAL-0004: `run_conformance` filled `egress_expected` in from the matrix's own
+    `allowed_hosts` when the caller omitted it, so the policy comparison compared the run with
+    itself. A caller could weaken the binding by leaving it out, which is the opposite of what a
+    binding is for.
+    """
+
+    def _egress(self, report):
+        return next(r for r in report.results if r.check_id == "egress-allowlist")
+
+    def test_a_run_with_no_stated_policy_is_not_checked(self):
+        report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False),
+                                 egress_matrix=GOOD_HOST["egress_matrix"])
+        result = self._egress(report)
+        assert result.outcome.value == "not_checked", result.outcome.value
+        assert "which destinations the policy permits" in result.evidence
+
+    def test_a_run_with_a_stated_policy_is_checked(self):
+        """The control. Without it, a runner that never checked egress would pass the test above."""
+        report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False),
+                                 egress_matrix=GOOD_HOST["egress_matrix"],
+                                 egress_expected=GOOD_HOST["egress_expected"])
+        assert self._egress(report).outcome.value == "pass"
+
+    def test_a_stated_policy_the_run_did_not_cover_is_refused(self):
+        report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False),
+                                 egress_matrix=GOOD_HOST["egress_matrix"],
+                                 egress_expected=["example.com", "other.example"])
+        assert self._egress(report).outcome.value != "pass"

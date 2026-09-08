@@ -35,9 +35,14 @@ def main() -> int:
         print("FAIL: this lane exists to measure a real container backend and none is available")
         return 2
 
+    # The destinations this lane is asking the sandbox to be able to reach. Stated separately
+    # from the run so the check compares the run against them rather than against its own
+    # account of itself -- EM3C-FINAL-0004 found that filling this in from the matrix made the
+    # comparison tautological.
+    egress_allowed = ["example.com"]
     egress = None
     try:
-        egress = measure_egress(backend)
+        egress = measure_egress(backend, allowed=egress_allowed)
         print("egress matrix: " + json.dumps(egress, sort_keys=True))
     except Exception as exc:                                        # noqa: BLE001 - reported
         print(f"the egress matrix could not be measured: {type(exc).__name__}: {exc}")
@@ -54,6 +59,7 @@ def main() -> int:
         generated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         options=SuiteOptions(),
         egress_matrix=egress,
+        egress_expected=(egress_allowed if egress is not None else None),
         credential_lifecycle=lifecycle,
     )
     OUT.write_text(report.to_json(), encoding="utf-8")

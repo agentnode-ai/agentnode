@@ -329,12 +329,16 @@ def run_conformance(backend, *, generated_at: str, options: SuiteOptions | None 
     if egress_matrix is not None:
         host["egress_matrix"] = egress_matrix
         # What the POLICY permits, so the check can compare the matrix against it rather than
-        # against itself. A run that measured a subset would otherwise look complete.
-        declared_hosts = egress_matrix.get("allowed_hosts")
+        # against itself.
+        #
+        # There is deliberately no fallback here. The first version filled this in from the
+        # matrix's own `allowed_hosts` when the caller omitted it, which made the comparison
+        # compare the matrix with itself -- EM3C-FINAL-0004 pointed out that a caller could then
+        # weaken the binding simply by not supplying it. A caller that does not say what the
+        # policy permits gets no verdict about a policy; the check reports that it could not be
+        # established rather than passing on a self-comparison.
         if egress_expected is not None:
             host["egress_expected"] = list(egress_expected)
-        elif declared_hosts is not None:
-            host["egress_expected"] = list(declared_hosts)
     if not probe_failure:
         # setdefault, not assignment: a test double may have supplied these through the
         # double-only hook, and a real backend never reaches that hook at all.

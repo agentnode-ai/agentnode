@@ -278,9 +278,18 @@ def check_egress_allowlist(ctx: Context) -> CheckResult:
             "the egress run did not record which destinations it measured, so a complete matrix "
             "cannot be told apart from a partial one")
 
+    if expected is None:
+        # Nobody said which destinations the policy permits, so there is nothing to hold this
+        # run against. Comparing the matrix with its own declaration would only show that it is
+        # self-consistent, which a partial or dishonest run also is.
+        return CheckResult.not_checked(
+            "egress-allowlist", "Only the sealed destinations are reachable", "egress",
+            "the caller did not say which destinations the policy permits, so this run cannot be "
+            "shown to be about that policy")
+
     declared_set = {str(h) for h in declared}
     complete = bool(declared_set) and declared_set == set(measured)
-    bound = True if expected is None else ({str(h) for h in expected} == declared_set)
+    bound = {str(h) for h in expected} == declared_set
     allowed_ok = complete and bound and all(
         str(v).startswith("ALLOWED") for v in measured.values())
     denied_ok = not str(matrix.get("denied_via_proxy", "")).startswith("ALLOWED")
