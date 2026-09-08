@@ -2489,11 +2489,14 @@ class TestAControlledDestinationWithNoInternet:
     the wrong thing through. This one creates its own destination on the proxy's own network, so
     the answer comes from the code under test and nothing else.
 
-    What it establishes is the screening rather than the allowlist. The destination is on a private
-    address, and the proxy refuses private addresses whatever the allowlist says -- which is the
-    property worth pinning, because an allowlist alone would let a hostname an attacker controls
-    resolve to something inside the network it is supposed to be kept out of. Being on the
-    allowlist is exactly what makes the refusal meaningful here.
+    What it establishes, precisely: the destination is alive on the proxy's own network, the proxy
+    ANSWERS and refuses a plain HTTP request to it, and there is no route to it without the proxy.
+
+    What it does NOT establish, and used to claim: that private-address screening caused the
+    refusal. `EM3C-EXTERNAL-0006` was right -- the proxy returns 405 for a non-CONNECT method and
+    403 for a denied host or port, so a 405 to an http:// URL proves the method policy and nothing
+    about addresses. Screening is tested where it can be attributed, against real addresses, in
+    TestPrivateAddressesAreScreened below.
     """
 
     IMAGE_ENV = "AGENTNODE_SANDBOX_IMAGE"
@@ -2514,7 +2517,7 @@ class TestAControlledDestinationWithNoInternet:
 
         return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
 
-    def test_the_proxy_refuses_a_private_address_even_when_it_is_allowlisted(self):
+    def test_the_proxy_answers_and_refuses_and_there_is_no_way_around_it(self):
         from agentnode_sdk.sandbox.egress import start_egress_proxy, stop_egress_proxy
 
         image = self._image()
@@ -2565,11 +2568,16 @@ class TestAControlledDestinationWithNoInternet:
             ])
             said = (out.stdout or "").strip()
             print("  [observed] through the proxy, to an allowlisted private address: %r" % said)
-            # The proxy must have ANSWERED and refused. "Could not connect" would be the same
-            # observation a dead proxy produces, and the destination is provably alive.
+            # The proxy must have ANSWERED and refused. "Could not connect" is what a dead proxy
+            # produces, and the destination is provably alive, so this separates the two. 405 is
+            # the method refusal specifically: this proxy forwards nothing in plaintext.
             assert said.startswith("ANSWERED-AND-REFUSED"), (
-                "the proxy did not answer with a refusal for a private address that was on the "
-                "allowlist: " + said + " / " + (out.stderr or "")[:200]
+                "the proxy did not answer at all for a destination that is provably alive: "
+                + said + " / " + (out.stderr or "")[:200]
+            )
+            assert said.endswith("405"), (
+                "expected the method refusal a CONNECT-only proxy gives a plaintext request; "
+                "got " + said
             )
 
             # and with no proxy at all there is no route to it either
@@ -2603,3 +2611,53 @@ class TestAControlledDestinationWithNoInternet:
             left = [n for n in listed.stdout.split() if n.strip()]
             print("  [observed] leftover %ss: %s" % (kind, left or "none"))
             assert not left, left
+
+
+class TestPrivateAddressesAreScreened:
+    """Where the screening can be attributed: the function that does it, on real addresses.
+
+    The container lane cannot separate this from the proxy's other refusals, because a denied host,
+    a denied port and a screened address all answer 403 and a plaintext request answers 405. Here
+    there is only one rule in play, so a refusal means what it says.
+    """
+
+    @pytest.mark.parametrize("address", [
+        "127.0.0.1",        # loopback
+        "10.0.0.7",         # private
+        "192.168.1.4",      # private
+        "172.16.0.9",       # private
+        "169.254.10.1",     # link-local, which is where cloud metadata lives
+        "::1",              # loopback again, the other family
+        "fd00::1",          # unique local
+    ])
+    def test_a_non_public_address_is_refused(self, address):
+        import socket
+
+        from agentnode_sdk.sandbox.egress_proxy import EgressBlocked, screen_addrinfos
+
+        family = socket.AF_INET6 if ":" in address else socket.AF_INET
+        infos = [(family, socket.SOCK_STREAM, 6, "", (address, 443))]
+        with pytest.raises(EgressBlocked):
+            screen_addrinfos(infos)
+
+    def test_a_public_address_is_allowed(self):
+        """The control: without this, a screen that refused everything would look correct."""
+        import socket
+
+        from agentnode_sdk.sandbox.egress_proxy import screen_addrinfos
+
+        infos = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        assert screen_addrinfos(infos), "a public address was screened out"
+
+    def test_one_private_address_among_public_ones_still_refuses(self):
+        """A name that resolves to several addresses is only as safe as its worst answer."""
+        import socket
+
+        from agentnode_sdk.sandbox.egress_proxy import EgressBlocked, screen_addrinfos
+
+        infos = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 443)),
+        ]
+        with pytest.raises(EgressBlocked):
+            screen_addrinfos(infos)

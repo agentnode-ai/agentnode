@@ -140,9 +140,10 @@ class GatewayState:
     @property
     def identity(self) -> GatewayIdentity:
         """Stable across restarts, generated once. The version comes from the running build."""
-        if self._identity_path.is_file():
+        existing = self._read_private("identity.json")
+        if existing is not None:
             try:
-                data = json.loads(self._identity_path.read_text(encoding="utf-8"))
+                data = json.loads(existing)
                 gid = str(data["gateway_id"])
             except (OSError, ValueError, KeyError) as exc:
                 raise PairingError(
@@ -152,10 +153,7 @@ class GatewayState:
                 ) from exc
         else:
             gid = secrets.token_hex(16)
-            self._identity_path.write_text(
-                json.dumps({"gateway_id": gid}, indent=2), encoding="utf-8"
-            )
-            self._harden(self._identity_path)
+            self._write_private("identity.json", json.dumps({"gateway_id": gid}, indent=2))
             # Written together with the marker, so from here on an absent throttle file means
             # somebody removed it rather than that nothing has been recorded yet.
             self._throttle.ensure_initialised()
@@ -200,25 +198,19 @@ class GatewayState:
     # ---------------------------------------------------------- pairing, on disk
 
     def _write_pairing(self, document: dict) -> None:
-        handle, tmp = tempfile.mkstemp(dir=str(self.root), prefix=".pairing-")
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as fh:
-                json.dump(document, fh)
-            os.replace(tmp, self._pairing_path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-        self._harden(self._pairing_path)
+        # Through the guarded writer: the live code's hash is a secret like any other here.
+        self._write_private("pairing.json", json.dumps(document))
 
     def _read_pairing(self) -> dict | None:
-        if not self._pairing_path.is_file():
+        try:
+            raw = self._read_private("pairing.json")
+        except OSError:
+            return None
+        if raw is None:
             return None
         try:
-            loaded = json.loads(self._pairing_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            loaded = json.loads(raw)
+        except ValueError:
             return None
         return loaded if isinstance(loaded, dict) else None
 
@@ -347,7 +339,52 @@ class GatewayState:
 
     # ---------------------------------------------------------------- tokens
 
-    def _guard_private(self) -> None:
+    def _read_private(self, name: str) -> str | None:
+        """Read a file inside the gateway directory, through the descriptor that was judged.
+
+        `EM3C-EXTERNAL-0006` found that judging a descriptor and then opening by pathname is still
+        two objects: the check applied to the directory that WAS there. Opening relative to the
+        held descriptor means the file comes from the directory that was inspected, whatever the
+        name points at now.
+        """
+        import os as _os
+
+        if _os.name != "posix":
+            self._guard_private()
+            path = self.root / name
+            return path.read_text(encoding="utf-8") if path.is_file() else None
+        dir_fd = self._guard_private()
+        try:
+            try:
+                fd = _os.open(name, _os.O_RDONLY, dir_fd=dir_fd)
+            except FileNotFoundError:
+                return None
+            with _os.fdopen(fd, "r", encoding="utf-8") as handle:
+                return handle.read()
+        finally:
+            _os.close(dir_fd)
+
+    def _write_private(self, name: str, text: str) -> None:
+        """Write a file inside the judged directory, atomically, through that descriptor."""
+        import os as _os
+
+        if _os.name != "posix":
+            self._guard_private()
+            path = self.root / name
+            path.write_text(text, encoding="utf-8")
+            self._harden(path)
+            return
+        dir_fd = self._guard_private()
+        try:
+            tmp = "." + name + ".new"
+            fd = _os.open(tmp, _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600, dir_fd=dir_fd)
+            with _os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            _os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        finally:
+            _os.close(dir_fd)
+
+    def _guard_private(self):
         """Refuse to touch the token file while anyone else can read the directory.
 
         `EM3C-EXTERNAL-0002` found the service-level checks were in the wrong place: they covered
@@ -367,28 +404,29 @@ class GatewayState:
         fd = _os.open(str(self.root), _os.O_RDONLY)
         try:
             verdict = inspect_fd(fd, str(self.root))
+            if not verdict.ok:
+                raise InsecureStateDirectory(
+                    verdict.reason + "\n\nNothing was read or written. To fix it:\n  "
+                    + verdict.remedy
+                )
+            return _os.dup(fd)
         finally:
             _os.close(fd)
-        if not verdict.ok:
-            raise InsecureStateDirectory(
-                verdict.reason + "\n\nNothing was read or written. To fix it:\n  "
-                + verdict.remedy
-            )
 
     def _read_tokens(self) -> dict[str, dict]:
-        self._guard_private()
-        if not self._tokens_path.is_file():
+        try:
+            raw = self._read_private("tokens.json")
+        except OSError:
+            return {}
+        if raw is None:
             return {}
         try:
-            return json.loads(self._tokens_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            return json.loads(raw)
+        except ValueError:
             return {}
 
     def _write_tokens(self, tokens: dict[str, dict]) -> None:
-        self._guard_private()
-        self._tokens_path.write_text(json.dumps(tokens, indent=2, sort_keys=True),
-                                     encoding="utf-8")
-        self._harden(self._tokens_path)
+        self._write_private("tokens.json", json.dumps(tokens, indent=2, sort_keys=True))
 
     def set_client_allowance(self, token: str, allowance) -> bool:
         """Record what a client may reach, against its token.

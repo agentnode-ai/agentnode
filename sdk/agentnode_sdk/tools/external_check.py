@@ -204,11 +204,13 @@ def client_role(args) -> int:
 
     heading("stopping a job from here")
     slow = Path("external-slow.py")
-    slow.write_text("import time\nprint('started', flush=True)\ntime.sleep(120)\n",
+    # Deliberately far inside its own limit: if the run could end on its own, "it stopped" would
+    # not distinguish cancellation from the time limit -- EM3C-EXTERNAL-0006 found exactly that.
+    slow.write_text("import time\nprint('started', flush=True)\ntime.sleep(600)\n",
                     encoding="utf-8")
     started = subprocess.Popen(
         [sys.executable, "-u", "-m", "agentnode_sdk.cli", "remote", "run", str(slow),
-         "--max-seconds", "150", "--timeout", "200"],
+         "--max-seconds", "900", "--timeout", "300"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     run_id, buffered, deadline = "", "", time.monotonic() + 90
     while time.monotonic() < deadline and not run_id:
@@ -226,11 +228,13 @@ def client_role(args) -> int:
     tail = (started.stdout.read() or "") if started.stdout else ""
     started.wait(timeout=300)
     whole = buffered + tail
-    # This used to be step(..., True), which is not a check: it recorded a pass whatever happened.
-    step("the cancelled run came back, and said so",
-         started.returncode is not None and (
-             "cancel" in whole.lower() or "did not finish" in whole.lower()),
-         (whole.strip().splitlines() or ["(no output)"])[-1][:120])
+    # This used to be step(..., True), which is not a check at all. It then accepted "did not
+    # finish", which the time limit satisfies just as well as a cancellation -- so it could
+    # not attribute the ending to the thing it names. The job now sleeps ten minutes under a
+    # fifteen-minute limit, so nothing but the cancel could have ended it in a few seconds.
+    step("the run ended because it was cancelled, not because it ran out of time",
+         started.returncode is not None and "cancelled" in whole.lower(),
+         (whole.strip().splitlines() or ["(no output)"])[-1][:140])
 
     heading("a job that outruns its limit")
     forever = Path("external-forever.py")
