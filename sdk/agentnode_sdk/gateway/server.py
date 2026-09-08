@@ -319,49 +319,101 @@ class GatewayService:
         return value
 
     def measure(self, options=None, now: float | None = None):
-        """Run the conformance suite against this backend and keep the result.
+        """Re-measure the policy currently configured, and put it in force if it holds.
 
         This is what closes the loop. A gate that can refuse but offers no way through is not a
         gate, it is a wall -- and the remediation the refusal names has to be a command that
-        really runs and really changes the answer, not a label. `agentnode gateway doctor
-        --measure` is this method.
-
-        The report is stored with what it is about, so it cannot later be read as evidence for a
-        different gateway, a different image, or a version that has since been upgraded.
+        really runs and really changes the answer.
         """
+        return self._transact(None, options=options, now=now)
+
+    def activate(self, proposed, options=None, now: float | None = None):
+        """Propose a policy, measure THAT policy, and put it in force only if it holds.
+
+        `EM3C-FINAL-0001` found the earlier arrangement writing the proposal to the config file
+        before the lock was held and restoring it after the lock was released, with the envelope
+        captured earlier still. Two operators changing the policy at once could therefore measure
+        one proposal and activate another, or restore a config belonging to the other command.
+        Everything that reads or writes the operator's intent now happens inside one lock, and
+        the policy that is measured is the object passed in rather than whatever the file says by
+        the time the measurement starts.
+        """
+        return self._transact(proposed, options=options, now=now)
+
+    def _config_path(self):
+        return self.state.root / "config.json"
+
+    def _write_config_for(self, envelope) -> None:
+        """Record the operator's intent, keeping every setting that is not about egress."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        path = self._config_path()
+        config = {}
+        if path.is_file():
+            try:
+                config = opol.loads_strict(path.read_text(encoding="utf-8"))
+            except (OSError, opol.OperatorPolicyError):
+                config = {}
+        if envelope.mode == opol.RESTRICTED:
+            config["egress_allowed"] = list(envelope.allowed_destinations)
+        else:
+            config.pop("egress_allowed", None)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _restore_config(self, previous: str | None) -> None:
+        path = self._config_path()
+        if previous is None:
+            if path.is_file():
+                path.unlink()
+        else:
+            path.write_text(previous, encoding="utf-8")
+
+    def _transact(self, proposed, options=None, now: float | None = None):
+        """One lock around the whole change: intent, measurement, and what becomes of both."""
         from datetime import datetime, timezone
 
         from agentnode_sdk.conformance.runner import run_conformance
-
         from agentnode_sdk.gateway.activation import ActivationLock, ActivationStore
 
-        envelope = self.configured_envelope()
         store = ActivationStore(self.state.root)
         stamp = datetime.fromtimestamp(now or time.time(), tz=timezone.utc).isoformat()
+        path = self._config_path()
 
         with ActivationLock(self.state.root):
-            # Written first, and never consulted by admission. Its only job is to say what is
-            # being measured if the process dies before it finishes.
-            store.write_pending(envelope)
+            previous = path.read_text(encoding="utf-8") if path.is_file() else None
+            try:
+                if proposed is not None:
+                    self._write_config_for(proposed)
+                    envelope = proposed
+                else:
+                    envelope = self.configured_envelope()
 
-            report = run_conformance(self.backend, generated_at=stamp, options=options,
-                                     egress_matrix=self._egress_matrix_for(envelope))
-            binding = self.report_binding(envelope.digest())
-            document = {"measured_at": now if now is not None else time.time(),
-                        "binding": binding.as_dict(), "report": report.to_dict()}
+                # Written first, and never consulted by admission. Its only job is to say what
+                # was being measured if the process dies before it finishes.
+                store.write_pending(envelope)
 
-            # Kept as a diagnostic copy. Readiness does not read it -- it reads the snapshot --
-            # so a stale file here can never make a gateway look ready.
-            self.readiness.store(report.to_dict(), binding, now)
+                report = run_conformance(self.backend, generated_at=stamp, options=options,
+                                         egress_matrix=self._egress_matrix_for(envelope))
+                binding = self.report_binding(envelope.digest())
+                document = {"measured_at": now if now is not None else time.time(),
+                            "binding": binding.as_dict(), "report": report.to_dict()}
 
-            verdict = self.readiness.evaluate_document(document, binding,
-                                                       envelope.required_properties, now)
-            if not verdict.ready:
-                # The measurement did not establish what this policy needs. Nothing is activated,
-                # and whatever was in force stays in force.
+                # Kept as a diagnostic copy. Readiness does not read it -- it reads the snapshot
+                # -- so a stale file here can never make a gateway look ready.
+                self.readiness.store(report.to_dict(), binding, now)
+
+                verdict = self.readiness.evaluate_document(document, binding,
+                                                           envelope.required_properties)
+                if not verdict.ready:
+                    self._restore_config(previous)
+                    store.clear_pending()
+                    return verdict
+                store.activate(envelope, report.to_dict(), binding.as_dict(), now)
+            except BaseException:
+                self._restore_config(previous)
                 store.clear_pending()
-                return verdict
-            store.activate(envelope, report.to_dict(), binding.as_dict(), now)
+                raise
         return self.readiness_now()
 
     def _egress_matrix_for(self, envelope):
@@ -382,14 +434,17 @@ class GatewayService:
             return None
         from agentnode_sdk.conformance.runner import measure_egress
 
-        allowed = envelope.allowed_destinations[0]
         denied = next((c for c in ("example.org", "example.net", "iana.org")
                        if c not in envelope.allowed_destinations), None)
         if denied is None:
             # Every control this build knows is on the allowlist, so a denial could not be told
             # apart from a failure to reach anything. Unmeasured, and therefore not ready.
             return None
-        return measure_egress(self.backend, allowed=allowed, denied=denied)
+        # ALL of them. Measuring the first and permitting the rest was what EM3C-FINAL-0001
+        # found: the policy was reported as measured while every destination after the first
+        # was an open path nobody had tried.
+        return measure_egress(self.backend, allowed=envelope.allowed_destinations,
+                              denied=denied)
 
     def readiness_now(self):
         """The current answer to whether this gateway may take work, with its reason.

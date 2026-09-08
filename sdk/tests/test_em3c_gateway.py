@@ -3178,14 +3178,18 @@ class TestAnOperatorCanPermitEgress:
         from agentnode_sdk.gateway.readiness import Readiness
         from agentnode_sdk.gateway.server import GatewayService as Service
 
+        # `activate` is what the command calls. Patching `measure` here left the real
+        # activation running and the test passing only because this machine has no runtime --
+        # the same environment dependence these tests were rewritten to remove.
         if how == "raises":
-            def fake(self, options=None, now=None):
+            def fake(self, proposed=None, options=None, now=None):
                 raise RuntimeError("the runtime went away mid-measurement")
         else:
-            def fake(self, options=None, now=None):
+            def fake(self, proposed=None, options=None, now=None):
                 return Readiness(False, "the allowlist could not be measured on this machine.",
                                  {}, ("egress_allowlist",),
                                  ("agentnode gateway doctor --measure",))
+        monkeypatch.setattr(Service, "activate", fake)
         monkeypatch.setattr(Service, "measure", fake)
 
     @pytest.mark.parametrize("how", ["returns not ready", "raises"])
@@ -3237,14 +3241,15 @@ class TestAnOperatorCanPermitEgress:
         _store_measurement(service)
         before = service.active_state()
 
-        def fake(self, options=None, now=None):
-            envelope = self.configured_envelope()
+        def fake(self, proposed=None, options=None, now=None):
+            envelope = proposed or self.configured_envelope()
             active = ActivationStore(self.state.root).load_active()
+            self._write_config_for(envelope)
             binding = self.report_binding(envelope.digest())
             ActivationStore(self.state.root).activate(envelope, active.report, binding.as_dict())
             return Readiness(True, "", {}, (), ())
 
-        monkeypatch.setattr(Service, "measure", fake)
+        monkeypatch.setattr(Service, "activate", fake)
         assert gwc.cmd_egress(self._args(state.root, allow=["example.com"])) == 0
 
         after = GatewayService(GatewayState(state.root, version="test"),
@@ -3667,7 +3672,7 @@ class TestAnAllowlistIsMeasuredBeforeItIsPermitted:
         seen = {}
 
         def fake(backend, *, allowed, denied, **kw):
-            seen["allowed"] = allowed
+            seen["allowed"] = tuple(allowed) if not isinstance(allowed, str) else (allowed,)
             seen["denied"] = denied
             return {"allowed_via_proxy": "ALLOWED:200", "denied_via_proxy": "refused"}
 
@@ -3677,8 +3682,8 @@ class TestAnAllowlistIsMeasuredBeforeItIsPermitted:
         service = self._service(tmp_path / "gw", ["example.com"])
         matrix = service._egress_matrix_for(service.configured_envelope())
         assert matrix is not None, "an allowlist policy was activated without measuring it"
-        assert seen["allowed"] == "example.com"
-        assert seen["denied"] != "example.com",             "the control was on the allowlist, so a refusal proves nothing"
+        assert seen["allowed"] == ("example.com",)
+        assert seen["denied"] not in seen["allowed"],             "the control was on the allowlist, so a refusal proves nothing"
 
     def test_a_closed_policy_has_no_allowlist_to_measure(self, tmp_path):
         """The control. Inventing a passing matrix for a policy with no allowlist would be the
@@ -3809,3 +3814,162 @@ class TestAnUnreadablePolicyFailsClosed:
         with pytest.raises(SnapshotUnusable):
             self._reopen(service.state.root).active_state()
         assert self._reopen(service.state.root).readiness_now().ready is False
+
+
+class TestEveryPermittedDestinationIsMeasured:
+    """EM3C-FINAL-0001: a policy naming several hosts was reported as measured after one of them
+    was exercised, which left every other permitted destination an open path nobody had tried.
+    """
+
+    def _service(self, root, allow):
+        state = GatewayState(root, version="test")
+        state.root.mkdir(parents=True, exist_ok=True)
+        (state.root / "config.json").write_text(
+            json.dumps({"egress_allowed": list(allow)}), encoding="utf-8")
+        return GatewayService(state, backend=StandInBackend())
+
+    def test_all_of_them_reach_the_measurement(self, tmp_path, monkeypatch):
+        seen = {}
+
+        def fake(backend, *, allowed, denied, **kw):
+            seen["allowed"] = tuple(allowed) if not isinstance(allowed, str) else (allowed,)
+            seen["denied"] = denied
+            return {"allowed_via_proxy": "ALLOWED:200",
+                    "allowed_via_proxy_1": "ALLOWED:200",
+                    "allowed_via_proxy_2": "ALLOWED:200",
+                    "denied_via_proxy": "refused"}
+
+        import agentnode_sdk.conformance.runner as runner_mod
+        monkeypatch.setattr(runner_mod, "measure_egress", fake)
+
+        service = self._service(tmp_path / "gw", ["a.example", "b.example", "c.example"])
+        matrix = service._egress_matrix_for(service.configured_envelope())
+        assert matrix is not None
+        assert seen["allowed"] == ("a.example", "b.example", "c.example"), seen
+        assert seen["denied"] not in seen["allowed"]
+
+    def test_the_probe_tries_each_one(self):
+        from agentnode_sdk.conformance.probe import egress_matrix_source
+
+        source = egress_matrix_source(["a.example", "b.example"], "denied.example")
+        compile(source, "<probe>", "exec")
+        assert '"a.example", "b.example"' in source
+        assert "for _i, _host in enumerate(ALLOWED)" in source
+
+
+
+def _passing_report(backend, *, generated_at, options=None, egress_matrix=None, **kw):
+    """A conformance report in which everything this build can measure passed.
+
+    Built from real `CheckResult`s and serialised by the real report, for the same reason
+    `_store_measurement` is: a double that does not produce what the real thing produces tests
+    the double. Used where a test needs an activation to SUCCEED without a container runtime.
+    """
+    from agentnode_sdk.conformance.report import CheckResult, ConformanceReport, Vantage
+    from agentnode_sdk.gateway.readiness import PROPERTY_CHECKS
+
+    results = tuple(
+        CheckResult.measured(check_id, check_id, "test", True, Vantage.INSIDE, "stated by the test")
+        for check_id in sorted({c for ids in PROPERTY_CHECKS.values() for c in ids}))
+    return ConformanceReport(backend_identity="StandInBackend", backend_version="test",
+                             runtime="docker", image="", generated_at=generated_at,
+                             results=results)
+
+
+class TestOneLockCoversTheWholeChange:
+    """EM3C-FINAL-0001: the config file was written before the lock was taken and restored after
+    it was released, so two operators changing the policy at once could measure one proposal and
+    activate another.
+    """
+
+    def _measured(self, root):
+        service = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(service)
+        return service
+
+    def test_the_policy_measured_is_the_one_passed_in(self, tmp_path, monkeypatch):
+        """Not whatever the file happens to say by the time the measurement starts."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        import agentnode_sdk.conformance.runner as runner_mod
+
+        service = self._measured(tmp_path / "gw")
+        measured = {}
+
+        def watch(self, envelope):
+            measured["mode"] = envelope.mode
+            measured["hosts"] = envelope.allowed_destinations
+            # somebody else rewrites the operator's intent mid-transaction
+            (self.state.root / "config.json").write_text(
+                json.dumps({"egress_allowed": ["someone.else"]}), encoding="utf-8")
+            return {"allowed_via_proxy": "ALLOWED:200", "denied_via_proxy": "refused"}
+
+        monkeypatch.setattr(type(service), "_egress_matrix_for", watch)
+        monkeypatch.setattr(runner_mod, "run_conformance", _passing_report)
+        service.activate(opol.build(opol.RESTRICTED, ("mine.example",)))
+        assert measured["hosts"] == ("mine.example",), measured
+
+    def test_a_successful_activation_records_the_intent_it_acted_on(self, tmp_path, monkeypatch):
+        """Activation has to leave the file and the snapshot agreeing.
+
+        If the proposal is never written to the config file, the gateway ends up enforcing a
+        policy that its own configuration does not describe -- and `readiness_now` refuses that,
+        so the gateway would activate a policy and then refuse to run anything under it.
+        """
+        import agentnode_sdk.conformance.runner as runner_mod
+
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        service = self._measured(tmp_path / "gw")
+
+        def matrix(self, envelope):
+            return {"allowed_via_proxy": "ALLOWED:200", "denied_via_proxy": "refused"}
+
+        monkeypatch.setattr(type(service), "_egress_matrix_for", matrix)
+        monkeypatch.setattr(runner_mod, "run_conformance", _passing_report)
+
+        proposal = opol.build(opol.RESTRICTED, ("mine.example",))
+        service.activate(proposal)
+
+        fresh = GatewayService(GatewayState(service.state.root, version="test"),
+                               backend=StandInBackend())
+        assert fresh.configured_envelope().digest() == proposal.digest(),             "the policy that was acted on was not recorded as the operator's intent"
+
+    def test_a_second_activation_while_one_runs_is_refused(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.activation import ActivationError, ActivationLock
+
+        service = self._measured(tmp_path / "gw")
+        with ActivationLock(service.state.root):
+            with pytest.raises(ActivationError):
+                service.activate(opol.build(opol.RESTRICTED, ("example.com",)))
+
+    def test_a_refused_second_activation_changes_nothing(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.activation import ActivationError, ActivationLock
+
+        service = self._measured(tmp_path / "gw")
+        before = (service.state.root / "config.json").read_text(encoding="utf-8") \
+            if (service.state.root / "config.json").is_file() else None
+        with ActivationLock(service.state.root):
+            with contextlib.suppress(ActivationError):
+                service.activate(opol.build(opol.RESTRICTED, ("example.com",)))
+        after = (service.state.root / "config.json").read_text(encoding="utf-8") \
+            if (service.state.root / "config.json").is_file() else None
+        assert after == before, "a refused activation still wrote the operator's intent"
+
+    def test_a_raising_measurement_puts_the_config_back(self, tmp_path, monkeypatch):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / "config.json"
+        before = path.read_text(encoding="utf-8") if path.is_file() else None
+
+        def boom(self, envelope):
+            raise RuntimeError("the runtime went away")
+
+        monkeypatch.setattr(type(service), "_egress_matrix_for", boom)
+        with pytest.raises(RuntimeError):
+            service.activate(opol.build(opol.RESTRICTED, ("example.com",)))
+        after = path.read_text(encoding="utf-8") if path.is_file() else None
+        assert after == before, "a failed activation left its proposal in the config file"

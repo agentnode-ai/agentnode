@@ -664,3 +664,52 @@ class TestAnEndingMustBeAttributableToTheCeiling:
                           "ended_by_the_ceiling": True, "killed": True,
                           "stderr_tail": "MemoryError"})
         assert r.outcome is Outcome.PASS
+
+
+class TestAnAllowlistIsOnlyAsMeasuredAsItsWorstEntry:
+    """EM3C-FINAL-0001: a policy naming several hosts was reported as measured after one of them
+    was exercised, leaving every other permitted destination an open path nobody had tried.
+    """
+
+    def _result(self, matrix):
+        from agentnode_sdk.conformance.checks import check_egress_allowlist
+
+        host = dict(GOOD_HOST)
+        host["egress_matrix"] = matrix
+        return check_egress_allowlist(Context(readings=copy.deepcopy(doubles.GOOD_READINGS),
+                                              declared=dict(GOOD_DECLARED), host=host))
+
+    BLOCKED = {"direct_1_1_1_1": "blocked:OSError", "direct_8_8_8_8": "blocked:OSError",
+               "direct_unproxied": "blocked:OSError", "denied_via_proxy": "refused:URLError"}
+
+    def test_all_three_reachable_passes(self):
+        """The control. Without it, a check that failed everything would pass the next test."""
+        result = self._result({**self.BLOCKED,
+                               "allowed_via_proxy": "ALLOWED:200",
+                               "allowed_via_proxy_1": "ALLOWED:200",
+                               "allowed_via_proxy_2": "ALLOWED:200"})
+        assert result.outcome == "pass", result.detail
+
+    def test_one_unreachable_of_three_fails(self):
+        result = self._result({**self.BLOCKED,
+                               "allowed_via_proxy": "ALLOWED:200",
+                               "allowed_via_proxy_1": "ALLOWED:200",
+                               "allowed_via_proxy_2": "refused:URLError"})
+        assert result.outcome != "pass",             "a destination that was never reachable was passed over"
+
+    def test_the_first_one_failing_also_fails(self):
+        result = self._result({**self.BLOCKED,
+                               "allowed_via_proxy": "refused:URLError",
+                               "allowed_via_proxy_1": "ALLOWED:200"})
+        assert result.outcome != "pass"
+
+    def test_a_matrix_naming_no_allowed_destination_fails(self):
+        """An empty allowlist result is not a passing one."""
+        assert self._result(dict(self.BLOCKED)).outcome != "pass"
+
+    def test_a_bypass_still_fails_even_when_every_destination_worked(self):
+        result = self._result({**self.BLOCKED,
+                               "direct_1_1_1_1": "BYPASS",
+                               "allowed_via_proxy": "ALLOWED:200",
+                               "allowed_via_proxy_1": "ALLOWED:200"})
+        assert result.outcome != "pass"

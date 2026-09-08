@@ -704,11 +704,14 @@ class TestAnOperatorCanOpenEgressFromTheCommandLine:
         from agentnode_sdk.gateway.readiness import Readiness
         from agentnode_sdk.gateway.server import GatewayService as Service
 
-        def fake(self, options=None, now=None):
+        # `activate` is what the command calls; patching only `measure` left the real
+        # activation running and the test passing because this machine has no runtime.
+        def fake(self, proposed=None, options=None, now=None):
             return Readiness(False, "the allowlist could not be measured on this machine.",
                              {}, ("egress_allowlist",),
                              ("agentnode gateway doctor --measure",))
 
+        monkeypatch.setattr(Service, "activate", fake)
         monkeypatch.setattr(Service, "measure", fake)
 
     def test_it_says_it_is_measuring_and_never_that_it_has_finished(self, home, tmp_path,
@@ -748,14 +751,15 @@ class TestAnOperatorCanOpenEgressFromTheCommandLine:
         seeded = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
         _store_measurement(seeded)
 
-        def fake(self, options=None, now=None):
-            envelope = self.configured_envelope()
+        def fake(self, proposed=None, options=None, now=None):
+            envelope = proposed or self.configured_envelope()
             active = ActivationStore(self.state.root).load_active()
+            self._write_config_for(envelope)
             binding = self.report_binding(envelope.digest())
             ActivationStore(self.state.root).activate(envelope, active.report, binding.as_dict())
             return Readiness(True, "", {}, (), ())
 
-        monkeypatch.setattr(Service, "measure", fake)
+        monkeypatch.setattr(Service, "activate", fake)
         assert main(["gateway", "egress", "--dir", str(root), "--allow", "example.com"]) == 0
         out = capsys.readouterr().out
         assert "Measurements passed" in out, out

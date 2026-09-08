@@ -72,6 +72,21 @@ def redact_text(text: str, secrets) -> str:
     return text
 
 
+def redact_deep(value, secrets):
+    """Redact through every value that will be serialised, at any depth.
+
+    A redactor that covers three fields out of sixteen is not a redactor; it is three fields
+    that happen to be safe.
+    """
+    if isinstance(value, str):
+        return redact_text(value, secrets)
+    if isinstance(value, dict):
+        return {redact_deep(k, secrets): redact_deep(v, secrets) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_deep(v, secrets) for v in value]
+    return value
+
+
 @dataclass
 class Step:
     """One command, and everything needed to tell whether it did what is claimed."""
@@ -143,20 +158,15 @@ class Recorder:
             name=name, role=self.role, argv=safe,
             started_at=started, ended_at=time.time(),
             exit_code=code,
-            stdout=redact_text(out, self.secrets),
-            stderr=redact_text(err, self.secrets),
+            stdout=out, stderr=err,
             expected_exit=expected_exit,
             error_class=error_class,
             **fields,
         )
-        self.steps.append(step)
-        self._append(step)
-        return step
+        return self.record(step)
 
     def record(self, step: Step) -> Step:
-        """Write down a step assembled by the caller (an in-process action, not a command)."""
-        step.stdout = redact_text(step.stdout, self.secrets)
-        step.stderr = redact_text(step.stderr, self.secrets)
+        """Write down a step. Redaction covers the whole document, not three chosen fields."""
         self.steps.append(step)
         self._append(step)
         return step
@@ -164,8 +174,19 @@ class Recorder:
     def _append(self, step: Step) -> None:
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         with open(self.path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"schema": SCHEMA, **step.as_dict()},
+            fh.write(json.dumps(self.serialise(step),
                                 sort_keys=True, ensure_ascii=False) + "\n")
+
+    def serialise(self, step: Step) -> dict:
+        """The exact document written for one step.
+
+        Redaction happens here, once, over the finished document. Doing it per field at each
+        call site is what `EM3C-FINAL-0001` found broken: the command line and the two streams
+        were covered and the other thirteen fields were not, so a token arriving in a note or a
+        gateway record went to disk in full. Redacting the whole document means the next field
+        someone adds is covered without anyone remembering to cover it.
+        """
+        return redact_deep({"schema": SCHEMA, **step.as_dict()}, self.secrets)
 
 
 # --------------------------------------------------------------------------- verification

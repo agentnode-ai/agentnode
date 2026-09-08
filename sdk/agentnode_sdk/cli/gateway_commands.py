@@ -305,14 +305,6 @@ def cmd_egress(args) -> int:
         print("  Nothing was changed.")
         return 2
 
-    config = _load_config(root)
-    previous = dict(config)
-    if allow:
-        config["egress_allowed"] = list(proposed.allowed_destinations)
-    else:
-        config.pop("egress_allowed", None)
-    _save_config(root, config)
-
     print()
     print("  Proposed policy saved as pending. The current policy is still the one in force.")
     print("  Measuring the protections this policy needs before anything changes:")
@@ -320,19 +312,20 @@ def cmd_egress(args) -> int:
         print(f"    {name}")
     print()
 
-    state, service = _service(root)
+    # The whole change -- recording the intent, measuring it, and putting it in force or putting
+    # the previous one back -- happens inside the gateway's own activation lock, against this
+    # exact proposal. EM3C-FINAL-0001 found this command writing the config file before the lock
+    # was taken and restoring it after the lock was released, so two operators changing the
+    # policy at once could measure one proposal and activate another.
+    _state, service = _service(root)
     try:
-        verdict = service.measure()
+        verdict = service.activate(proposed)
     except Exception as exc:                                      # noqa: BLE001
-        _save_config(root, previous)
         print(f"  The measurement could not be run: {exc}")
         print("  The previous policy remains in force. Nothing was changed.")
         return 1
 
     if not verdict.ready:
-        # The config file is put back, so what is saved and what is in force agree again rather
-        # than leaving a proposal behind that quietly blocks every later job.
-        _save_config(root, previous)
         print(f"  Measurement failed: {verdict.reason}")
         if verdict.unproven:
             print("  Not established:")

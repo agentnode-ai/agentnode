@@ -344,7 +344,7 @@ def run_conformance(backend, *, generated_at: str, options: SuiteOptions | None 
         generated_at=generated_at, results=run_all(ctx), is_test_double=is_double)
 
 
-def measure_egress(backend, *, allowed: str = "example.com", denied: str = "google.com",
+def measure_egress(backend, *, allowed="example.com", denied: str = "google.com",
                    timeout: float = 120.0) -> dict:
     """Run the bypass matrix inside a container on the internal network. Needs a real runtime.
 
@@ -354,10 +354,11 @@ def measure_egress(backend, *, allowed: str = "example.com", denied: str = "goog
     """
     from agentnode_sdk.sandbox import egress as egress_mod
 
-    handle = egress_mod.start_egress_proxy([allowed])
+    hosts = [allowed] if isinstance(allowed, str) else list(allowed)
+    handle = egress_mod.start_egress_proxy(hosts)
     try:
         spec = ProcessSpec(
-            command=["python", "-c", probe_mod.egress_matrix_source(allowed, denied)],
+            command=["python", "-c", probe_mod.egress_matrix_source(hosts, denied)],
             network="egress", egress=handle.spec, clean_home=True,
             name=f"agentnode-conformance-egress-{uuid.uuid4().hex[:8]}")
         result = _run(backend, spec, timeout)

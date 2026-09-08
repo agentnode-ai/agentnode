@@ -276,3 +276,59 @@ class TestTheCommandLineEntryPoint:
     def test_a_missing_file_is_not_a_pass(self, tmp_path):
         with pytest.raises((OSError, SystemExit)):
             evidence.main([str(tmp_path / "nope.jsonl")])
+
+
+class TestRedactionCoversEveryFieldNotThreeOfThem:
+    """EM3C-FINAL-0001: only argv, stdout and stderr were redacted, so a token arriving in a
+    note, a gateway record or a policy delta was written to disk in full."""
+
+    SECRET = "tok_9f8e7d6c5b4a3210fedcba"
+
+    def _written(self, tmp_path, step):
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[self.SECRET])
+        recorder.record(step)
+        return (tmp_path / "e.jsonl").read_text(encoding="utf-8")
+
+    def test_a_secret_in_a_note_is_removed(self, tmp_path):
+        step = evidence.Step(name="n", role="client", argv=["x"], started_at=1.0, ended_at=2.0,
+                             exit_code=0, stdout="", stderr="",
+                             notes=f"the token was {self.SECRET}")
+        written = self._written(tmp_path, step)
+        assert self.SECRET not in written
+        assert evidence.REDACTED in written
+
+    def test_a_secret_nested_in_a_gateway_record_is_removed(self, tmp_path):
+        step = evidence.Step(name="n", role="client", argv=["x"], started_at=1.0, ended_at=2.0,
+                             exit_code=0, stdout="", stderr="",
+                             gateway_record={"auth": {"token": self.SECRET},
+                                             "list": [{"deep": self.SECRET}]})
+        assert self.SECRET not in self._written(tmp_path, step)
+
+    def test_a_secret_in_a_policy_delta_is_removed(self, tmp_path):
+        step = evidence.Step(name="n", role="client", argv=["x"], started_at=1.0, ended_at=2.0,
+                             exit_code=0, stdout="", stderr="",
+                             policy_deltas=[{"field": "x", "requested": self.SECRET}])
+        assert self.SECRET not in self._written(tmp_path, step)
+
+    def test_a_secret_in_a_run_id_field_is_removed(self, tmp_path):
+        step = evidence.Step(name="n", role="client", argv=["x"], started_at=1.0, ended_at=2.0,
+                             exit_code=0, stdout="", stderr="", client_id=self.SECRET)
+        assert self.SECRET not in self._written(tmp_path, step)
+
+    def test_the_rest_of_the_record_survives_redaction(self, tmp_path):
+        """The control. A redactor that emptied the document would pass everything above."""
+        step = evidence.Step(name="a distinctive step name", role="client",
+                             argv=["agentnode", "remote", "run"], started_at=1.0, ended_at=2.0,
+                             exit_code=7, stdout="ordinary output", stderr="",
+                             notes=f"the token was {self.SECRET}")
+        written = self._written(tmp_path, step)
+        assert "a distinctive step name" in written
+        assert "ordinary output" in written
+        assert '"exit_code": 7' in written
+
+    def test_a_secret_reaching_the_recorder_through_run_is_removed_everywhere(self, tmp_path):
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[self.SECRET])
+        recorder.run("echo", [sys.executable, "-c", f"print('{self.SECRET}')"],
+                     notes=f"note holding {self.SECRET}",
+                     gateway_record={"nested": self.SECRET})
+        assert self.SECRET not in (tmp_path / "e.jsonl").read_text(encoding="utf-8")

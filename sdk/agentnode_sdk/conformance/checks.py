@@ -258,13 +258,19 @@ def check_egress_allowlist(ctx: Context) -> CheckResult:
             "no egress run was performed: it needs a container runtime and an internal network, "
             "so it is measured on Linux CI rather than wherever the suite happens to run")
     bypassed = [k for k, v in matrix.items() if str(v).startswith("BYPASS")]
-    allowed_ok = str(matrix.get("allowed_via_proxy", "")).startswith("ALLOWED")
+    # Every permitted destination, not just the first measured. EM3C-FINAL-0001 found a policy
+    # naming several hosts reported as measured after one was exercised, which left the rest
+    # permitted and untried. An allowlist is only as measured as its worst entry.
+    allowed_keys = [k for k in matrix
+                    if k == "allowed_via_proxy" or k.startswith("allowed_via_proxy_")]
+    allowed_ok = bool(allowed_keys) and all(
+        str(matrix[k]).startswith("ALLOWED") for k in allowed_keys)
     denied_ok = not str(matrix.get("denied_via_proxy", "")).startswith("ALLOWED")
     return CheckResult.measured(
         "egress-allowlist", "Only the sealed destinations are reachable", "egress",
         not bypassed and allowed_ok and denied_ok, Vantage.INSIDE,
         (f"inside the internal network: direct routes {'all blocked' if not bypassed else bypassed}, "
-         f"the sealed destination {'was reachable through the proxy' if allowed_ok else 'was NOT'}, "
+         f"all {len(allowed_keys)} sealed destination(s) {'reachable through the proxy' if allowed_ok else 'NOT all reachable'}, "
          f"an unsealed one {'was refused' if denied_ok else 'was ALLOWED'}"),
         detail=dict(matrix))
 
