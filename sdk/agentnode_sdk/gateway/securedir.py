@@ -38,9 +38,13 @@ import os
 import stat
 
 #: Whether the descriptor-relative facilities this module needs exist at all.
+#: os.replace is deliberately not in this set. It is not listed in os.supports_dir_fd on Linux, so
+#: requiring it made the whole module report itself unsupported on the one platform it is for --
+#: and the descriptor path silently never engaged. On POSIX os.rename already replaces atomically,
+#: which is the property that was wanted.
 SUPPORTED = (
     os.name == "posix"
-    and {os.open, os.rename, os.unlink, os.replace} <= set(os.supports_dir_fd)
+    and {os.open, os.rename, os.unlink, os.stat} <= set(os.supports_dir_fd)
 )
 
 
@@ -156,7 +160,7 @@ def write_secret(fd: int, name: str, text: str) -> None:
             writer.write(text)
     finally:
         os.close(handle)
-    os.replace(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
+    os.rename(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
 
 
 def claim_secret(fd: int, name: str, into: str) -> bool:

@@ -2113,10 +2113,12 @@ class TestASwappedPathCannotRedirectASecret:
         os.chmod(root, 0o755)
 
         from agentnode_sdk.gateway.securedir import InsecureState
+        from agentnode_sdk.gateway.statedir import InsecureStateDirectory
 
-        with pytest.raises(InsecureState):
+        refuses = (InsecureState, InsecureStateDirectory)
+        with pytest.raises(refuses):
             state._read_tokens()
-        with pytest.raises(InsecureState):
+        with pytest.raises(refuses):
             state._write_private("tokens.json", "{}")
 
     @posix_only
