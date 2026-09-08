@@ -1,24 +1,34 @@
 """Recording an external run so the record can be checked rather than believed.
 
-`EM3C-EXTERNAL-0017` blocked on the evidence, not on the code. The findings were specific and
-they are the specification for this module:
+`EM3C-EXTERNAL-0017` blocked on the evidence, not on the code, and the findings were specific: a
+transcript naming one run while the record beside it was about another; exit statuses read from the
+end of a pipe, which is always zero and therefore always looked like success; summarised output that
+could not be told apart from a check that never ran.
 
-* a transcript recorded one run id while the record beside it was about another, so the claimed
-  end-to-end trace was never established;
-* exit statuses were reported from the end of a pipe rather than from the command that mattered,
-  which is always zero and therefore always looked like success;
-* summarised output ("none above means none") could not be told apart from a check that failed to
-  run at all.
+`EM3C-E2-CLASSIFY-0001` then found the contract itself broken. The verifier read `expect_output` and
+`expect_cleanup`; the `Step` could carry neither. Omitting them silently disabled both rules and
+passing them raised, so no recorder could satisfy the contract by any route. The module's own suite
+passed throughout, because its verifier tests built dictionaries by hand containing fields the
+recorder could not produce -- a double that does not produce what the real thing produces tests the
+double.
 
-So this module records, and then a separate pass verifies. The two are deliberately not the same
-code path: a recorder that also judged would report the verdict it was built to reach.
+So this module now has ONE closed schema. The dataclass below is the whole vocabulary. What the
+recorder writes, what the file holds, what a reader may load and what the verifier may read are the
+same names with the same types, and every entry point refuses anything else.
 
-## What "not proven" means here
+## Two kinds of field, kept apart
 
-Every rule below treats absence as failure. A missing field, an HTTP 404, an empty stdout, a check
-command that itself exited non-zero, and a JSON `null` are each a reason to fail — never a match.
-That is the whole lesson of the earlier rounds: the defect was never a check that said no, it was
-a check that could not see its input and said yes.
+`Step` is divided deliberately. The expectation fields are declared before a step runs and say what
+it was supposed to establish. Everything else is what happened. Nothing here derives one from the
+other: an expectation that quietly became an observation is exactly the "synthetic success" that
+made two external runs worthless, and `expected_exit` sitting beside `exit_code` in one record is
+only safe while nothing writes the second from the first.
+
+## Three outcomes, not two
+
+A rule can fail, and a rule can be unable to see its input. Those are different, and collapsing them
+is how "the container is gone" came to mean "the command that would have told us failed". Findings
+carry `FAIL` or `EVIDENCE_ERROR`, and neither is a pass.
 """
 from __future__ import annotations
 
@@ -26,21 +36,187 @@ import json
 import os
 import subprocess
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Any
 
-SCHEMA = 1
+SCHEMA = 2
 
-#: Anything matching these is replaced before a command line is written down. The list is
-#: deliberately about argument NAMES rather than about value shapes: a token is only recognisable
-#: as a token by where it appears, and a redactor that guessed from shape would miss the one that
-#: did not look like the others.
+#: A rule that was not satisfied.
+FAIL = "fail"
+#: A rule that could not be evaluated, because what it needed was missing, unreadable or never
+#: obtained. Never a pass, and never reported as a failure of the thing under test.
+EVIDENCE_ERROR = "evidence_error"
+
+#: Redaction by argument NAME, for values this code has never seen. Value-based redaction covers
+#: the ones it has been told about; neither alone is enough.
 _SECRET_FLAGS = ("--code", "--token", "--secret", "--password", "--key")
 REDACTED = "[redacted]"
 
 
 class EvidenceError(Exception):
-    """The evidence does not establish what it claims."""
+    """The evidence does not establish what it claims, or cannot be read at all."""
+
+
+@dataclass
+class Finding:
+    """One reason a record does not establish what it claims."""
+
+    step: str
+    kind: str
+    message: str
+
+    def __str__(self) -> str:
+        return f"[{self.kind}] {self.step}: {self.message}"
+
+
+# --------------------------------------------------------------------------- the schema
+
+
+@dataclass
+class Step:
+    """One recorded action. This dataclass IS the schema; nothing else defines it."""
+
+    # -- what identifies the step ------------------------------------------------------------
+    name: str
+    role: str
+    argv: list
+    started_at: float
+    ended_at: float
+    #: The command's OWN status. None when it never produced one -- a missing executable, a
+    #: timeout -- which is unknown, not zero.
+    exit_code: int | None
+
+    # -- what was observed --------------------------------------------------------------------
+    stdout: str = ""
+    stderr: str = ""
+    error_class: str = ""
+    run_id: str = ""
+    job_id: str = ""
+    client_id: str = ""
+    request_policy_sha256: str = ""
+    effective_policy_sha256: str = ""
+    policy_deltas: list | None = None
+    gateway_record: dict | None = None
+    container: str = ""
+    container_query: dict | None = None
+    cleanup_verified: Any = None
+    machine: dict | None = None
+    sentinel: dict | None = None
+    binding: dict | None = None
+    notes: str = ""
+
+    # -- what was expected, declared before the step ran ---------------------------------------
+    expected_exit: int | None = None
+    expected_refusal: str = ""
+    expect_output: bool = False
+    expect_cleanup: bool = False
+    expect_container_gone: bool = False
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+#: Declared before the step ran. Nothing may write these from what happened.
+EXPECTATIONS = ("expected_exit", "expected_refusal", "expect_output", "expect_cleanup",
+                "expect_container_gone")
+
+#: Written by the recorder from what happened. A caller may not supply these to `run()`.
+OBSERVED_BY_RUNNING = ("exit_code", "stdout", "stderr", "error_class")
+
+#: Without these a step says nothing, so their absence is refused rather than defaulted.
+MANDATORY = ("name", "role", "argv", "started_at", "ended_at", "exit_code")
+
+_TYPES: dict[str, tuple] = {
+    "name": (str,), "role": (str,), "argv": (list,),
+    "started_at": (int, float), "ended_at": (int, float),
+    "exit_code": (int, type(None)),
+    "stdout": (str,), "stderr": (str,), "error_class": (str,),
+    "run_id": (str,), "job_id": (str,), "client_id": (str,),
+    "request_policy_sha256": (str,), "effective_policy_sha256": (str,),
+    "policy_deltas": (list, type(None)),
+    "gateway_record": (dict, type(None)),
+    "container": (str,),
+    "container_query": (dict, type(None)),
+    "cleanup_verified": (bool, str, type(None)),
+    "machine": (dict, type(None)),
+    "sentinel": (dict, type(None)),
+    "binding": (dict, type(None)),
+    "notes": (str,),
+    "expected_exit": (int, type(None)),
+    "expected_refusal": (str,),
+    "expect_output": (bool,), "expect_cleanup": (bool,), "expect_container_gone": (bool,),
+}
+
+FIELD_NAMES = tuple(f.name for f in fields(Step))
+
+if set(FIELD_NAMES) != set(_TYPES):                               # pragma: no cover - a guard
+    raise RuntimeError("the schema and its declared types have drifted apart")
+
+
+def _no_duplicates(pairs):
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise EvidenceError(
+                f"the key {key!r} appears more than once in one record. One value would have been "
+                "kept and the other dropped, so neither is trusted.")
+        seen[key] = value
+    return seen
+
+
+def parse_step(text_or_mapping) -> dict:
+    """Read one recorded step, refusing anything the schema does not describe.
+
+    Unknown, missing, duplicated and wrongly typed all fail closed here. A reader that quietly
+    filled in a default would make a record that never carried a field indistinguishable from one
+    that carried it false -- the difference between "cleanup was not required" and "cleanup was
+    required and nobody looked".
+    """
+    if isinstance(text_or_mapping, str):
+        try:
+            document = json.loads(text_or_mapping, object_pairs_hook=_no_duplicates)
+        except EvidenceError:
+            raise
+        except ValueError as exc:
+            raise EvidenceError(f"this is not readable as JSON: {exc}") from None
+    else:
+        document = dict(text_or_mapping)
+
+    if not isinstance(document, dict):
+        raise EvidenceError("a step has to be an object.")
+
+    schema = document.pop("schema", None)
+    if schema is not None and schema != SCHEMA:
+        raise EvidenceError(
+            f"this record is schema {schema!r} and this build reads {SCHEMA}. It is not read "
+            "approximately.")
+
+    unknown = sorted(set(document) - set(FIELD_NAMES))
+    if unknown:
+        raise EvidenceError(
+            "this record carries " + ", ".join(repr(u) for u in unknown) +
+            ", which the schema does not describe. An unrecognised field reads as recorded and is "
+            "never checked, so it is refused rather than ignored.")
+
+    missing = [name for name in MANDATORY if name not in document]
+    if missing:
+        raise EvidenceError(
+            "this record has no " + ", ".join(missing) + ", so nothing about it is established.")
+
+    for name, value in document.items():
+        allowed = _TYPES[name]
+        if isinstance(value, bool) and bool not in allowed:
+            raise EvidenceError(
+                f"{name} is a boolean and the schema says "
+                + " or ".join(t.__name__ for t in allowed) + ".")
+        if not isinstance(value, allowed):
+            raise EvidenceError(
+                f"{name} is {type(value).__name__} and the schema says "
+                + " or ".join(t.__name__ for t in allowed) + ".")
+    return document
+
+
+# --------------------------------------------------------------------------- redaction
 
 
 def redact_argv(argv) -> list[str]:
@@ -65,7 +241,6 @@ def redact_argv(argv) -> list[str]:
 
 
 def redact_text(text: str, secrets) -> str:
-    """Remove known secret VALUES from captured output."""
     for secret in secrets or ():
         if secret and len(str(secret)) >= 8:
             text = text.replace(str(secret), REDACTED)
@@ -75,8 +250,9 @@ def redact_text(text: str, secrets) -> str:
 def redact_deep(value, secrets):
     """Redact through every value that will be serialised, at any depth.
 
-    A redactor that covers three fields out of sixteen is not a redactor; it is three fields
-    that happen to be safe.
+    A redactor covering chosen fields is not a redactor; it is chosen fields that happen to be
+    safe. Doing it once over the finished document means a field added later is covered without
+    anyone remembering to cover it.
     """
     if isinstance(value, str):
         return redact_text(value, secrets)
@@ -87,37 +263,7 @@ def redact_deep(value, secrets):
     return value
 
 
-@dataclass
-class Step:
-    """One command, and everything needed to tell whether it did what is claimed."""
-
-    name: str
-    role: str
-    argv: list[str]
-    started_at: float
-    ended_at: float
-    exit_code: int | None
-    stdout: str
-    stderr: str
-    #: What the step was supposed to do, so a pass can be distinguished from a coincidence.
-    expected_exit: int | None = None
-    expected_refusal: str = ""
-    #: The one run this step is about. A step that mixes two is refused by the verifier.
-    run_id: str = ""
-    job_id: str = ""
-    client_id: str = ""
-    request_policy_sha256: str = ""
-    effective_policy_sha256: str = ""
-    policy_deltas: list | None = None
-    #: The gateway's own record of the SAME run id, fetched from the gateway.
-    gateway_record: dict | None = None
-    container: str = ""
-    cleanup_verified: Any = None
-    error_class: str = ""
-    notes: str = ""
-
-    def as_dict(self) -> dict:
-        return asdict(self)
+# --------------------------------------------------------------------------- recording
 
 
 class Recorder:
@@ -129,211 +275,339 @@ class Recorder:
         self.secrets = list(secrets)
         self.steps: list[Step] = []
 
-    def run(self, name: str, argv, *, expected_exit: int | None = 0, timeout: float = 600.0,
-            **fields) -> Step:
-        """Execute one command. The exit code recorded is this command's own."""
-        # Two layers, because neither alone is enough. Flag-based redaction removes values this
-        # code has never seen, by knowing WHERE a secret goes. Value-based redaction removes the
-        # ones it has been told about, wherever they happen to sit -- the self-test found a
-        # secret surviving inside a `-c` script argument, which no flag rule would ever have
-        # caught.
+    def run(self, name: str, argv, *, timeout: float = 600.0, **extra) -> Step:
+        """Execute one command. The exit code recorded is this command's own.
+
+        Never raises for a missing executable or a timeout: both are OUTCOMES, and a recorder that
+        propagated them would stop at the first step whose expected condition is that something is
+        absent. That is how the first external run ended.
+        """
+        for reserved in OBSERVED_BY_RUNNING:
+            if reserved in extra:
+                raise EvidenceError(
+                    f"{reserved} is an observation and cannot be supplied to run(): it is what the "
+                    "command did, not what the caller expected of it.")
         safe = [redact_text(item, self.secrets) for item in redact_argv(argv)]
         started = time.time()
         try:
-            completed = subprocess.run(list(argv), capture_output=True, text=True,
-                                       timeout=timeout, check=False)
-            code, out, err = completed.returncode, completed.stdout, completed.stderr
-            error_class = ""
+            done = subprocess.run(list(argv), capture_output=True, text=True,
+                                  timeout=timeout, check=False)
+            code, out, err, error_class = done.returncode, done.stdout or "", done.stderr or "", ""
+        except FileNotFoundError as exc:
+            code, out, err, error_class = None, "", str(exc), "FileNotFoundError"
         except subprocess.TimeoutExpired as exc:
-            code, out, err = None, (exc.stdout or ""), (exc.stderr or "")
-            if isinstance(out, bytes):
-                out = out.decode("utf-8", "replace")
-            if isinstance(err, bytes):
-                err = err.decode("utf-8", "replace")
-            error_class = "TimeoutExpired"
+            raw_out, raw_err = exc.stdout or "", exc.stderr or ""
+            code, error_class = None, "TimeoutExpired"
+            out = raw_out.decode("utf-8", "replace") if isinstance(raw_out, bytes) else raw_out
+            err = raw_err.decode("utf-8", "replace") if isinstance(raw_err, bytes) else raw_err
         except OSError as exc:
             code, out, err, error_class = None, "", str(exc), type(exc).__name__
 
-        step = Step(
-            name=name, role=self.role, argv=safe,
-            started_at=started, ended_at=time.time(),
-            exit_code=code,
-            stdout=out, stderr=err,
-            expected_exit=expected_exit,
-            error_class=error_class,
-            **fields,
-        )
-        return self.record(step)
+        return self.record(Step(name=name, role=self.role, argv=safe,
+                                started_at=started, ended_at=time.time(),
+                                exit_code=code, stdout=out, stderr=err,
+                                error_class=error_class, **extra))
 
     def record(self, step: Step) -> Step:
-        """Write down a step. Redaction covers the whole document, not three chosen fields."""
         self.steps.append(step)
-        self._append(step)
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        with open(self.path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(self.serialise(step), sort_keys=True,
+                                    ensure_ascii=False) + "\n")
         return step
 
-    def _append(self, step: Step) -> None:
-        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-        with open(self.path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(self.serialise(step),
-                                sort_keys=True, ensure_ascii=False) + "\n")
-
     def serialise(self, step: Step) -> dict:
-        """The exact document written for one step.
+        """The exact document written. Redaction happens here, once, over the whole record.
 
-        Redaction happens here, once, over the finished document. Doing it per field at each
-        call site is what `EM3C-FINAL-0001` found broken: the command line and the two streams
-        were covered and the other thirteen fields were not, so a token arriving in a note or a
-        gateway record went to disk in full. Redacting the whole document means the next field
-        someone adds is covered without anyone remembering to cover it.
+        What is written is then parsed by the same reader a verifier would use, so a recorder that
+        produced something unreadable fails here rather than at the far end of a run.
         """
-        return redact_deep({"schema": SCHEMA, **step.as_dict()}, self.secrets)
+        document = redact_deep({"schema": SCHEMA, **step.as_dict()}, self.secrets)
+        parse_step(dict(document))
+        return document
 
 
 # --------------------------------------------------------------------------- verification
 
 
-REQUIRED_FIELDS = ("name", "role", "argv", "started_at", "ended_at", "exit_code")
-
-
 def load(path) -> list[dict]:
     steps = []
-    with open(path, encoding="utf-8") as fh:
-        for number, line in enumerate(fh, 1):
+    with open(path, encoding="utf-8") as handle:
+        for number, line in enumerate(handle, 1):
             line = line.strip()
             if not line:
                 continue
             try:
-                steps.append(json.loads(line))
-            except ValueError as exc:
-                raise EvidenceError(f"line {number} of the evidence is not readable: {exc}") from None
+                steps.append(parse_step(line))
+            except EvidenceError as exc:
+                raise EvidenceError(f"line {number} of the evidence: {exc}") from None
     if not steps:
         raise EvidenceError("the evidence file records no steps at all.")
     return steps
 
 
-def verify(steps, secrets=()) -> list[str]:
-    """Every way this evidence fails to establish what it claims. Empty means it holds."""
-    problems: list[str] = []
+def _container_findings(step, where) -> list[Finding]:
+    """Whether a container may be concluded gone.
 
-    for index, step in enumerate(steps):
-        where = f"step {index + 1} ({step.get('name') or 'unnamed'})"
+    Absence is the strongest claim in this file, because nothing is there to look at. It holds only
+    when the query demonstrably ran and its answer was read. Every other outcome -- a timeout, no
+    runtime, an SSH failure, a refusal, an unparseable or empty answer -- is an evidence error.
+    `EM3C-E2-CLASSIFY-0001` found a harness turning all of those into an empty string and reading
+    the empty string as "gone".
+    """
+    if not step.get("expect_container_gone"):
+        return []
+    query = step.get("container_query")
+    if not isinstance(query, dict):
+        return [Finding(where, EVIDENCE_ERROR,
+                        "a container was supposed to be shown gone and no query was recorded")]
+    if query.get("ran") is not True:
+        return [Finding(where, EVIDENCE_ERROR, "the query for the container never ran")]
+    if query.get("error_class"):
+        return [Finding(where, EVIDENCE_ERROR,
+                        f"the query failed ({query['error_class']}), so absence was never observed")]
+    if query.get("exit_code") != 0:
+        return [Finding(where, EVIDENCE_ERROR,
+                        f"the query exited {query.get('exit_code')!r}; only a zero answer can be read")]
+    if not isinstance(query.get("stdout"), str) or not isinstance(query.get("stderr"), str):
+        return [Finding(where, EVIDENCE_ERROR, "the query's two streams were not both captured")]
+    if query.get("parsed") is not True:
+        return [Finding(where, EVIDENCE_ERROR, "the query's answer was not parsed")]
 
-        for name in REQUIRED_FIELDS:
-            if name not in step:
-                problems.append(f"{where}: no {name} was recorded, so nothing about it is established")
+    names, ids = query.get("names"), query.get("ids")
+    if not isinstance(names, list) or not isinstance(ids, list):
+        return [Finding(where, EVIDENCE_ERROR,
+                        "the query did not yield a list of container names and a list of ids")]
+    sought_name = str(step.get("container") or "")
+    sought_id = str(query.get("sought_id") or "")
+    if not sought_name and not sought_id:
+        return [Finding(where, EVIDENCE_ERROR,
+                        "nothing was named as the container to look for, so its absence means "
+                        "nothing")]
 
-        # 1. the exit code has to be the command's own, and has to be the expected one
-        expected = step.get("expected_exit", 0)
-        actual = step.get("exit_code")
-        if actual is None:
-            problems.append(
-                f"{where}: no exit code was captured"
-                + (f" ({step['error_class']})" if step.get("error_class") else "")
-                + ", so whether the command succeeded is unknown")
-        elif expected is not None and actual != expected:
-            problems.append(f"{where}: exited {actual}, and {expected} was required")
+    still_there = []
+    if sought_name and sought_name in names:
+        still_there.append(f"name {sought_name}")
+    if sought_id and sought_id in ids:
+        still_there.append(f"id {sought_id}")
+    if still_there:
+        return [Finding(where, FAIL, "the container is still there: " + ", ".join(still_there))]
+    return []
 
-        # 2. output that was supposed to say something has to have said it
-        if step.get("expect_output") and not (step.get("stdout") or "").strip():
-            problems.append(
-                f"{where}: stdout is empty. An empty capture and a check that never ran look "
-                "the same, so it is not accepted as either")
 
-        # 3. a refusal has to be the refusal that was expected, not any refusal
-        wanted = (step.get("expected_refusal") or "").strip()
-        if wanted:
-            seen = (step.get("stdout") or "") + (step.get("stderr") or "")
-            record = step.get("gateway_record") or {}
-            seen += str(record.get("refusal") or "")
-            if wanted.lower() not in seen.lower():
-                problems.append(
-                    f"{where}: was supposed to be refused because {wanted!r}, and that reason "
-                    "does not appear. A refusal for another reason is not this test passing")
+def _run_findings(step, where) -> list[Finding]:
+    problems: list[Finding] = []
+    run_id = (step.get("run_id") or "").strip()
+    record = step.get("gateway_record")
+    if not run_id:
+        if step.get("expect_cleanup"):
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                "cleanup was supposed to be established and the step names no run"))
+        return problems
+    if record is None:
+        return [Finding(where, EVIDENCE_ERROR,
+                        f"names run {run_id} and carries no gateway record for it, so only one "
+                        "side of the run is evidenced")]
 
-        # 4. one step is about one run
-        run_id = (step.get("run_id") or "").strip()
-        record = step.get("gateway_record")
-        if run_id:
-            if record is None:
-                problems.append(
-                    f"{where}: names run {run_id} and carries no gateway record for it, so only "
-                    "one side of the run is evidenced")
-            else:
-                if not isinstance(record, dict):
-                    problems.append(f"{where}: the gateway record is not a record")
-                else:
-                    if record.get("error") or record.get("status") == 404:
-                        problems.append(
-                            f"{where}: the gateway had no record of run {run_id} "
-                            f"({record.get('error') or 'HTTP 404'}); an absent record is not a match")
-                    recorded = str(record.get("run_id") or "")
-                    if recorded and recorded != run_id:
-                        problems.append(
-                            f"{where}: the step is about run {run_id} and the record is about "
-                            f"{recorded}. Two runs in one piece of evidence establish neither")
-                    elif not recorded:
-                        problems.append(
-                            f"{where}: the gateway record does not say which run it is about")
+    if record.get("error") or record.get("status") == 404:
+        problems.append(Finding(
+            where, EVIDENCE_ERROR,
+            f"the gateway had no record of run {run_id} "
+            f"({record.get('error') or 'HTTP 404'}); an absent record is not a match"))
+    recorded = str(record.get("run_id") or "")
+    if recorded and recorded != run_id:
+        problems.append(Finding(
+            where, FAIL,
+            f"the step is about run {run_id} and the record is about {recorded}. Two runs in one "
+            "piece of evidence establish neither"))
+    elif not recorded and not record.get("error"):
+        problems.append(Finding(where, EVIDENCE_ERROR,
+                                "the gateway record does not say which run it is about"))
 
-                    # 5. the digests recorded must be the ones the gateway holds
-                    for field_name in ("request_policy_sha256", "effective_policy_sha256"):
-                        claimed = (step.get(field_name) or "").strip()
-                        held = str(record.get(field_name) or "")
-                        if claimed and held and claimed != held:
-                            problems.append(
-                                f"{where}: {field_name} recorded as {claimed[:12]}... and the "
-                                f"gateway says {held[:12]}...")
-                        if claimed and not held:
-                            problems.append(
-                                f"{where}: {field_name} was recorded but the gateway record has "
-                                "none to compare it with")
+    for field_name in ("request_policy_sha256", "effective_policy_sha256"):
+        claimed = (step.get(field_name) or "").strip()
+        held = str(record.get(field_name) or "")
+        if claimed and held and claimed != held:
+            problems.append(Finding(
+                where, FAIL,
+                f"{field_name} recorded as {claimed[:12]}... and the gateway says {held[:12]}..."))
+        elif claimed and not held:
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                f"{field_name} was recorded but the gateway record has none to compare it with"))
+        elif held and not claimed:
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                f"the gateway record carries {field_name} and the step recorded none, so the two "
+                "were never compared"))
 
-                    # 6. narrowing has to be reported wherever the digests differ
-                    req = str(record.get("request_policy_sha256") or "")
-                    eff = str(record.get("effective_policy_sha256") or "")
-                    deltas = record.get("policy_deltas")
-                    if req and eff and req != eff:
-                        if deltas is None:
-                            problems.append(
-                                f"{where}: the policy digests differ and the record carries no "
-                                "policy_deltas at all")
-                        elif not deltas:
-                            problems.append(
-                                f"{where}: the policy digests differ and no narrowing was "
-                                "reported, so the caller was not told what changed")
+    req = str(record.get("request_policy_sha256") or "")
+    eff = str(record.get("effective_policy_sha256") or "")
+    deltas = record.get("policy_deltas")
+    if req and eff and req != eff:
+        if deltas is None:
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                "the policy digests differ and the record carries no policy_deltas at all"))
+        elif not deltas:
+            problems.append(Finding(
+                where, FAIL,
+                "the policy digests differ and no narrowing was reported, so the caller was not "
+                "told what changed"))
 
-                    # 7. cleanup has to have been asked and answered
-                    if step.get("expect_cleanup"):
-                        cleanup = record.get("cleanup_verified", "__absent__")
-                        if cleanup == "__absent__":
-                            problems.append(
-                                f"{where}: cleanup was supposed to be established and the record "
-                                "does not mention it")
-                        elif cleanup is None:
-                            problems.append(
-                                f"{where}: cleanup is unknown, which is not the same as clean")
-                        elif cleanup is not True:
-                            problems.append(f"{where}: cleanup was not verified ({cleanup!r})")
-
-        # 8. a container named in evidence has to belong to this run
-        container = (step.get("container") or "").strip()
-        if container and run_id:
-            short = run_id[:12]
-            if short and short not in container:
-                problems.append(
-                    f"{where}: container {container!r} does not carry run {short}, so it is not "
-                    "shown to be this run's")
-
-        # 9. nothing secret may appear in what was written down
-        blob = json.dumps(step, ensure_ascii=False)
-        for secret in secrets or ():
-            if secret and len(str(secret)) >= 8 and str(secret) in blob:
-                problems.append(f"{where}: a live secret value was written into the evidence")
-
+    if step.get("expect_cleanup"):
+        cleanup = record.get("cleanup_verified", "__absent__")
+        if cleanup == "__absent__":
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                "cleanup was supposed to be established and the record does not mention it"))
+        elif cleanup is None:
+            problems.append(Finding(where, EVIDENCE_ERROR,
+                                    "cleanup is unknown, which is not the same as clean"))
+        elif cleanup is not True:
+            problems.append(Finding(where, FAIL, f"cleanup was not verified ({cleanup!r})"))
     return problems
 
 
-def check_file(path, secrets=()) -> list[str]:
+def verify(steps, secrets=()) -> list[Finding]:
+    """Every way this evidence fails to establish what it claims. Empty means it holds."""
+    problems: list[Finding] = []
+
+    for index, raw in enumerate(steps):
+        try:
+            step = parse_step(dict(raw))
+        except EvidenceError as exc:
+            problems.append(Finding(f"step {index + 1}", EVIDENCE_ERROR, str(exc)))
+            continue
+        where = f"step {index + 1} ({step.get('name') or 'unnamed'})"
+
+        expected = step.get("expected_exit", None)
+        actual = step.get("exit_code")
+        if actual is None:
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                "no exit code was captured"
+                + (f" ({step['error_class']})" if step.get("error_class") else "")
+                + ", so whether the command succeeded is unknown"))
+        elif expected is not None and actual != expected:
+            problems.append(Finding(where, FAIL, f"exited {actual}, and {expected} was required"))
+
+        if step.get("expect_output") and not (step.get("stdout") or "").strip():
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                "stdout is empty. An empty capture and a check that never ran look the same, so it "
+                "is not accepted as either"))
+
+        wanted = (step.get("expected_refusal") or "").strip()
+        if wanted:
+            record = step.get("gateway_record") or {}
+            seen = (step.get("stdout") or "") + (step.get("stderr") or "") \
+                + str(record.get("refusal") or "")
+            if wanted.lower() not in seen.lower():
+                problems.append(Finding(
+                    where, FAIL,
+                    f"was supposed to be refused because {wanted!r}, and that reason does not "
+                    "appear. A refusal for another reason is not this test passing"))
+
+        problems.extend(_run_findings(step, where))
+        problems.extend(_container_findings(step, where))
+
+        container = (step.get("container") or "").strip()
+        run_id = (step.get("run_id") or "").strip()
+        if container and run_id:
+            short = run_id[:12]
+            if short and short not in container:
+                problems.append(Finding(
+                    where, FAIL,
+                    f"container {container!r} does not carry run {short}, so it is not shown to be "
+                    "this run's"))
+
+        blob = json.dumps(step, ensure_ascii=False, sort_keys=True)
+        for secret in secrets or ():
+            if secret and len(str(secret)) >= 8 and str(secret) in blob:
+                problems.append(Finding(where, FAIL,
+                                        "a live secret value was written into the evidence"))
+
+    problems.extend(verify_two_machines(steps))
+    return problems
+
+
+def verify_two_machines(steps) -> list[Finding]:
+    """Whether the record shows two different hosts rather than one machine describing itself.
+
+    `EM3C-E2-CLASSIFY-0001`: a local `ls` that failed proves only that a local `ls` failed.
+    Separation is established here by each machine describing itself over its own channel, and by
+    a random value made on one being read back over the other -- so neither side's claim rests on
+    its own account.
+    """
+    problems: list[Finding] = []
+    machines: dict[str, dict] = {}
+    for raw in steps:
+        machine = raw.get("machine")
+        if isinstance(machine, dict) and machine.get("role"):
+            machines[str(machine["role"])] = machine
+
+    if len(machines) < 2:
+        return [Finding("two machines", EVIDENCE_ERROR,
+                        "fewer than two machines described themselves, so nothing here shows the "
+                        "client and the gateway are different hosts")]
+
+    roles = sorted(machines)
+    first, second = machines[roles[0]], machines[roles[1]]
+    for key, what in (("host_sha256", "host identity"),
+                      ("filesystem_sha256", "filesystem identity")):
+        one, two = str(first.get(key) or ""), str(second.get(key) or "")
+        if not one or not two:
+            problems.append(Finding("two machines", EVIDENCE_ERROR,
+                                    f"one of the machines did not report its {what}"))
+        elif one == two:
+            problems.append(Finding("two machines", FAIL,
+                                    f"both machines report the same {what}, so they are one"))
+    one_os, two_os = str(first.get("os") or ""), str(second.get("os") or "")
+    if not one_os or not two_os:
+        problems.append(Finding("two machines", EVIDENCE_ERROR,
+                                "one of the machines did not report its operating system"))
+    elif one_os == two_os:
+        problems.append(Finding("two machines", FAIL,
+                                "both machines report the same operating system"))
+
+    crossed: dict[str, str] = {}
+    for raw in steps:
+        sentinel = raw.get("sentinel")
+        if not isinstance(sentinel, dict):
+            continue
+        made = str(sentinel.get("generated_on") or "")
+        checked = str(sentinel.get("verified_over") or "")
+        if not made or not checked:
+            problems.append(Finding("two machines", EVIDENCE_ERROR,
+                                    "a sentinel does not say where it was made or where it was "
+                                    "read back"))
+            continue
+        if made == checked:
+            problems.append(Finding("two machines", FAIL,
+                                    f"a sentinel made on {made} was read back over {checked}, "
+                                    "which is that machine vouching for itself"))
+            continue
+        if sentinel.get("matched") is not True:
+            problems.append(Finding("two machines", FAIL,
+                                    f"the sentinel made on {made} did not come back over "
+                                    f"{checked}"))
+            continue
+        crossed[made] = str(sentinel.get("value_sha256") or "")
+
+    if len(crossed) < 2:
+        problems.append(Finding("two machines", EVIDENCE_ERROR,
+                                "a sentinel was not carried in both directions, so only one side "
+                                "was ever confirmed by the other"))
+    elif len(set(crossed.values())) < 2:
+        problems.append(Finding("two machines", FAIL,
+                                "both sentinels carried the same value, so they cannot have been "
+                                "generated independently"))
+    return problems
+
+
+def check_file(path, secrets=()) -> list[Finding]:
     return verify(load(path), secrets)
 
 
@@ -342,8 +616,7 @@ def main(argv=None) -> int:
 
     parser = argparse.ArgumentParser(description="Check an external-run evidence file.")
     parser.add_argument("path")
-    parser.add_argument("--secret", action="append", default=[],
-                        help="A value that must not appear anywhere in the evidence")
+    parser.add_argument("--secret", action="append", default=[])
     args = parser.parse_args(argv)
     try:
         problems = check_file(args.path, args.secret)
@@ -351,7 +624,10 @@ def main(argv=None) -> int:
         print(f"  {exc}")
         return 2
     if problems:
-        print(f"  This evidence does not establish what it claims ({len(problems)}):")
+        failures = [p for p in problems if p.kind == FAIL]
+        errors = [p for p in problems if p.kind == EVIDENCE_ERROR]
+        print(f"  This evidence does not establish what it claims "
+              f"({len(failures)} failed, {len(errors)} could not be evaluated):")
         for problem in problems:
             print(f"    {problem}")
         return 1

@@ -1,15 +1,15 @@
-"""The evidence runner, proved against deliberately broken evidence.
+"""The evidence contract, exercised on the path a real run takes.
 
-`EM3C-EXTERNAL-0017` blocked on evidence rather than on code, and the way a checker of evidence
-fails is by passing things it cannot see. So every test here builds a record that is wrong in one
-specific way and requires the checker to say so — and each is paired with the same record made
-correct, because a checker that refused everything would pass the first half of this file and
-prove nothing.
+`EM3C-E2-CLASSIFY-0001` found the previous version of this file passing while the module it tested
+was unusable: the verifier read `expect_output` and `expect_cleanup`, the `Step` could carry
+neither, and every verifier test here built its input as a dictionary by hand. The tests therefore
+exercised the verifier with records the recorder could not produce, and the one path that mattered
+-- record, write, read, judge -- was never travelled.
 
-The ten classes are the ones named when this work was commissioned: a swapped run id, a missing
-gateway record, a wrong exit code, empty output, a mismatched request or effective digest, missing
-policy deltas, the wrong refusal reason, a failed cleanup query, a container from another run, and
-a secret in a log.
+So the acceptance tests below go through `Recorder`, through the file, back through `load`, and into
+`verify`. `_recorded()` is the only way they construct a record. Where a test needs a malformed
+document, it writes malformed TEXT, because that is what a reader must survive and no recorder can
+produce it.
 """
 from __future__ import annotations
 
@@ -23,264 +23,455 @@ from agentnode_sdk.tools import evidence
 
 RUN = "beeac323964d45d8b1c8ef90fb51bc30"
 OTHER_RUN = "d06a38ad43e54e3ab39ec18a18dcbbe6"
+OK_RECORD = {
+    "run_id": RUN,
+    "request_policy_sha256": "a" * 64,
+    "effective_policy_sha256": "a" * 64,
+    "policy_deltas": [],
+    "cleanup_verified": True,
+    "state": "finished",
+    "refusal": "",
+}
 
 
-def good_step(**overrides) -> dict:
+def two_machines(recorder):
+    """The pair of identity steps and the two crossed sentinels every record needs.
+
+    Added by every test that is not about machine separation, so those tests fail for their own
+    reason rather than for a missing precondition.
+    """
+    recorder.record(evidence.Step(
+        name="client identity", role="client", argv=["(identity)"],
+        started_at=1.0, ended_at=1.1, exit_code=0,
+        machine={"role": "client", "host_sha256": "c" * 64,
+                 "filesystem_sha256": "cf" * 32, "os": "Windows"}))
+    recorder.record(evidence.Step(
+        name="gateway identity", role="gateway", argv=["(identity)"],
+        started_at=1.2, ended_at=1.3, exit_code=0,
+        machine={"role": "gateway", "host_sha256": "g" * 64,
+                 "filesystem_sha256": "gf" * 32, "os": "Linux"}))
+    recorder.record(evidence.Step(
+        name="a sentinel made on the client, read back over the gateway",
+        role="client", argv=["(sentinel)"], started_at=1.4, ended_at=1.5, exit_code=0,
+        sentinel={"generated_on": "client", "verified_over": "gateway",
+                  "value_sha256": "1" * 64, "matched": True}))
+    recorder.record(evidence.Step(
+        name="a sentinel made on the gateway, read back over the client",
+        role="gateway", argv=["(sentinel)"], started_at=1.6, ended_at=1.7, exit_code=0,
+        sentinel={"generated_on": "gateway", "verified_over": "client",
+                  "value_sha256": "2" * 64, "matched": True}))
+
+
+def _recorded(tmp_path, steps, *, secrets=(), with_machines=True):
+    """Record, write, read back, and judge. The only route these tests use.
+
+    Returns the findings. Nothing here hands `verify` a dictionary the recorder never wrote.
+    """
+    path = tmp_path / "evidence.jsonl"
+    recorder = evidence.Recorder(path, role="client", secrets=secrets)
+    if with_machines:
+        two_machines(recorder)
+    for step in steps:
+        recorder.record(step)
+    return evidence.check_file(path, secrets)
+
+
+def good_step(**overrides) -> evidence.Step:
     """One step that is complete, self-consistent, and about the run it names."""
-    step = {
-        "name": "run a job",
-        "role": "client",
-        "argv": ["agentnode", "remote", "run", "job.py"],
-        "started_at": 1.0,
-        "ended_at": 2.0,
-        "exit_code": 0,
-        "expected_exit": 0,
-        "stdout": "EXT-OK\n",
-        "stderr": "",
-        "run_id": RUN,
-        "job_id": "job-1",
-        "client_id": "client-1",
-        "request_policy_sha256": "a" * 64,
-        "effective_policy_sha256": "a" * 64,
-        "policy_deltas": [],
-        "container": f"agentnode-em3c-{RUN[:12]}-abc",
-        "cleanup_verified": True,
-        "error_class": "",
-        "expect_output": True,
-        "gateway_record": {
-            "run_id": RUN,
-            "request_policy_sha256": "a" * 64,
-            "effective_policy_sha256": "a" * 64,
-            "policy_deltas": [],
-            "cleanup_verified": True,
-            "state": "finished",
-            "refusal": "",
-        },
-    }
-    step.update(overrides)
-    return step
+    values = dict(
+        name="run a job", role="client",
+        argv=["agentnode", "remote", "run", "job.py"],
+        started_at=2.0, ended_at=3.0, exit_code=0, expected_exit=0,
+        stdout="EXT-OK\n", stderr="",
+        run_id=RUN, job_id="job-1", client_id="client-1",
+        request_policy_sha256="a" * 64, effective_policy_sha256="a" * 64,
+        policy_deltas=[], container=f"agentnode-em3c-{RUN[:12]}-abc",
+        cleanup_verified=True, expect_output=True,
+        gateway_record=dict(OK_RECORD),
+    )
+    values.update(overrides)
+    return evidence.Step(**values)
 
 
-def problems(step) -> list[str]:
-    return evidence.verify([step])
+def kinds(findings):
+    return {f.kind for f in findings}
+
+
+def messages(findings):
+    return " | ".join(f.message for f in findings)
 
 
 class TestTheControlPasses:
-    """Without this, a checker that refused everything would pass every test below."""
+    """Without these, a verifier that refused everything would pass every test below."""
 
-    def test_a_complete_and_consistent_step_is_accepted(self):
-        assert problems(good_step()) == []
+    def test_a_complete_record_is_accepted(self, tmp_path):
+        assert _recorded(tmp_path, [good_step()]) == []
 
-    def test_a_step_that_is_expected_to_be_refused_and_is_refused_correctly_passes(self):
+    def test_a_correctly_refused_step_is_accepted(self, tmp_path):
         step = good_step(
-            expected_exit=1,
-            exit_code=1,
+            expected_exit=1, exit_code=1,
             expected_refusal="already been used (replay)",
-            gateway_record={**good_step()["gateway_record"],
-                            "state": "refused",
-                            "refusal": "this request has already been used (replay)"},
-        )
-        assert problems(step) == []
+            gateway_record={**OK_RECORD, "state": "refused",
+                            "refusal": "this request has already been used (replay)"})
+        assert _recorded(tmp_path, [step]) == []
+
+    def test_a_step_expecting_cleanup_and_getting_it_is_accepted(self, tmp_path):
+        assert _recorded(tmp_path, [good_step(expect_cleanup=True)]) == []
 
 
-class TestTheTenFailuresAreDetected:
+class TestTheContractIsOneClosedSchema:
+    """EM3C-E2-CLASSIFY-0001: the verifier read two fields the Step could not carry."""
 
-    def test_1_a_swapped_run_id_is_detected(self):
-        record = {**good_step()["gateway_record"], "run_id": OTHER_RUN}
-        found = problems(good_step(gateway_record=record))
-        assert found and any("two runs in one piece of evidence" in p.lower()
-                             or "is about" in p.lower() for p in found), found
+    def test_every_field_the_verifier_reads_can_be_recorded(self):
+        """The defect itself. Read the module's source for `step.get("...")` and require each
+        name to be a field a Step can carry."""
+        import inspect
+        import re
 
-    def test_2_a_missing_gateway_record_is_detected(self):
-        found = problems(good_step(gateway_record=None))
-        assert any("carries no gateway record" in p for p in found), found
+        source = inspect.getsource(evidence)
+        read = set(re.findall(r'step\.get\(\s*"([a-z_]+)"', source))
+        unreachable = sorted(read - set(evidence.FIELD_NAMES))
+        assert not unreachable, (
+            "the verifier reads fields no recorded step can carry: " + str(unreachable))
 
-    def test_2b_a_404_is_not_a_match(self):
-        found = problems(good_step(gateway_record={"error": "no such run", "status": 404}))
-        assert any("absent record is not a match" in p for p in found), found
+    def test_expect_output_and_expect_cleanup_are_carriable(self):
+        assert "expect_output" in evidence.FIELD_NAMES
+        assert "expect_cleanup" in evidence.FIELD_NAMES
 
-    def test_3_a_wrong_exit_code_is_detected(self):
-        found = problems(good_step(exit_code=1, expected_exit=0))
-        assert any("exited 1" in p for p in found), found
+    def test_the_declared_types_cover_exactly_the_fields(self):
+        assert set(evidence.FIELD_NAMES) == set(evidence._TYPES)
 
-    def test_3b_an_exit_code_from_a_pipe_is_not_accepted_as_the_commands_own(self):
-        """A step whose exit code was never captured is unknown, not zero."""
-        found = problems(good_step(exit_code=None, error_class="OSError"))
-        assert any("no exit code was captured" in p for p in found), found
+    def test_the_module_refuses_to_load_if_the_schema_and_its_types_drift(self):
+        """The guard that made the first counter-check for this fail to collect rather than fail
+        a test. It is a stronger outcome than a test noticing, so it gets its own cover."""
+        import inspect
 
-    def test_4_empty_output_is_detected(self):
-        found = problems(good_step(stdout="   \n", expect_output=True))
-        assert any("stdout is empty" in p for p in found), found
+        source = inspect.getsource(evidence)
+        assert "if set(FIELD_NAMES) != set(_TYPES):" in source
+        assert "drifted apart" in source
 
-    def test_5_a_mismatched_request_digest_is_detected(self):
-        found = problems(good_step(request_policy_sha256="b" * 64))
-        assert any("request_policy_sha256" in p for p in found), found
+    def test_what_the_recorder_writes_is_what_the_reader_accepts(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        recorder.record(good_step())
+        loaded = evidence.load(path)
+        assert set(loaded[0]) <= set(evidence.FIELD_NAMES)
+        assert loaded[0]["expect_output"] is True
 
-    def test_5b_a_mismatched_effective_digest_is_detected(self):
-        found = problems(good_step(effective_policy_sha256="c" * 64))
-        assert any("effective_policy_sha256" in p for p in found), found
+    def test_an_unknown_field_is_refused(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        path.write_text(json.dumps({"schema": evidence.SCHEMA, "name": "x", "role": "client",
+                                    "argv": [], "started_at": 1.0, "ended_at": 2.0,
+                                    "exit_code": 0, "surprise": True}) + "\n", encoding="utf-8")
+        with pytest.raises(evidence.EvidenceError) as caught:
+            evidence.load(path)
+        assert "does not describe" in str(caught.value)
 
-    def test_6_missing_policy_deltas_are_detected(self):
-        """The exact defect the external run found: digests differ, nothing reported."""
-        record = {**good_step()["gateway_record"],
-                  "effective_policy_sha256": "b" * 64, "policy_deltas": []}
-        found = problems(good_step(gateway_record=record,
-                                   effective_policy_sha256="b" * 64))
-        assert any("no narrowing was reported" in p for p in found), found
+    @pytest.mark.parametrize("field", ["name", "role", "argv", "started_at", "ended_at",
+                                       "exit_code"])
+    def test_a_missing_mandatory_field_is_refused(self, tmp_path, field):
+        document = {"schema": evidence.SCHEMA, "name": "x", "role": "client", "argv": [],
+                    "started_at": 1.0, "ended_at": 2.0, "exit_code": 0}
+        del document[field]
+        path = tmp_path / "e.jsonl"
+        path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+        with pytest.raises(evidence.EvidenceError) as caught:
+            evidence.load(path)
+        assert field in str(caught.value)
 
-    def test_6b_an_absent_deltas_field_is_detected(self):
-        record = {k: v for k, v in good_step()["gateway_record"].items() if k != "policy_deltas"}
-        record["effective_policy_sha256"] = "b" * 64
-        found = problems(good_step(gateway_record=record, effective_policy_sha256="b" * 64))
-        assert any("no policy_deltas at all" in p for p in found), found
+    def test_a_duplicated_key_is_refused(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        path.write_text('{"schema": 2, "name": "a", "name": "b", "role": "client", "argv": [],'
+                        ' "started_at": 1.0, "ended_at": 2.0, "exit_code": 0}\n', encoding="utf-8")
+        with pytest.raises(evidence.EvidenceError) as caught:
+            evidence.load(path)
+        assert "more than once" in str(caught.value)
 
-    def test_7_the_wrong_refusal_reason_is_detected(self):
-        """A refusal for another reason is not the test passing."""
-        record = {**good_step()["gateway_record"],
-                  "state": "refused",
-                  "refusal": "this request is 880s old; the limit is 120s"}
-        found = problems(good_step(exit_code=1, expected_exit=1,
-                                   expected_refusal="already been used (replay)",
-                                   gateway_record=record))
-        assert any("does not appear" in p for p in found), found
+    @pytest.mark.parametrize("field,value", [
+        ("expect_output", "yes"), ("expect_cleanup", 1), ("exit_code", "0"),
+        ("argv", "a string"), ("run_id", 7), ("policy_deltas", {}),
+    ])
+    def test_a_wrongly_typed_field_is_refused(self, tmp_path, field, value):
+        document = {"schema": evidence.SCHEMA, "name": "x", "role": "client", "argv": [],
+                    "started_at": 1.0, "ended_at": 2.0, "exit_code": 0}
+        document[field] = value
+        path = tmp_path / "e.jsonl"
+        path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+        with pytest.raises(evidence.EvidenceError):
+            evidence.load(path)
 
-    def test_8_a_failed_cleanup_query_is_detected(self):
-        record = {**good_step()["gateway_record"], "cleanup_verified": None}
-        found = problems(good_step(gateway_record=record, expect_cleanup=True))
-        assert any("cleanup is unknown" in p for p in found), found
+    def test_a_record_from_another_schema_is_not_read_approximately(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        path.write_text(json.dumps({"schema": evidence.SCHEMA + 1, "name": "x", "role": "c",
+                                    "argv": [], "started_at": 1.0, "ended_at": 2.0,
+                                    "exit_code": 0}) + "\n", encoding="utf-8")
+        with pytest.raises(evidence.EvidenceError):
+            evidence.load(path)
 
-    def test_8b_an_absent_cleanup_field_is_detected(self):
-        record = {k: v for k, v in good_step()["gateway_record"].items()
-                  if k != "cleanup_verified"}
-        found = problems(good_step(gateway_record=record, expect_cleanup=True))
-        assert any("does not mention it" in p for p in found), found
 
-    def test_8c_a_cleanup_that_failed_is_detected(self):
-        record = {**good_step()["gateway_record"], "cleanup_verified": False}
-        found = problems(good_step(gateway_record=record, expect_cleanup=True))
-        assert any("not verified" in p for p in found), found
+class TestAnExpectationNeverBecomesAnObservation:
 
-    def test_9_a_container_from_another_run_is_detected(self):
-        found = problems(good_step(container=f"agentnode-em3c-{OTHER_RUN[:12]}-zzz"))
-        assert any("does not carry run" in p for p in found), found
+    @pytest.mark.parametrize("field", evidence.OBSERVED_BY_RUNNING)
+    def test_the_recorder_refuses_to_be_told_what_it_observed(self, tmp_path, field):
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client")
+        with pytest.raises(evidence.EvidenceError):
+            recorder.run("x", [sys.executable, "-c", "pass"], **{field: 0})
 
-    def test_10_a_secret_in_the_evidence_is_detected(self):
+    def test_a_failing_command_records_its_real_status_not_the_expected_one(self, tmp_path):
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client")
+        step = recorder.run("fails", [sys.executable, "-c", "raise SystemExit(3)"],
+                            expected_exit=0)
+        assert step.exit_code == 3
+        assert step.expected_exit == 0
+
+    def test_the_two_kinds_of_field_do_not_overlap(self):
+        assert not set(evidence.EXPECTATIONS) & set(evidence.OBSERVED_BY_RUNNING)
+
+
+class TestTheRulesFireOnRecordedSteps:
+    """Each rule, on the real path. The previous file proved these only against hand-built dicts."""
+
+    def test_a_wrong_exit_code_fails(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(exit_code=1, expected_exit=0)])
+        assert evidence.FAIL in kinds(found) and "exited 1" in messages(found)
+
+    def test_an_uncaptured_exit_code_is_an_evidence_error(self, tmp_path):
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client")
+        two_machines(recorder)
+        recorder.run("a binary that is not there", ["definitely-not-a-real-binary-xyz"])
+        found = evidence.check_file(tmp_path / "e.jsonl")
+        assert evidence.EVIDENCE_ERROR in kinds(found)
+        assert "no exit code was captured" in messages(found)
+
+    def test_empty_output_where_output_was_required_is_an_evidence_error(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(stdout="   \n", expect_output=True)])
+        assert "stdout is empty" in messages(found)
+
+    def test_a_swapped_run_id_fails(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(
+            gateway_record={**OK_RECORD, "run_id": OTHER_RUN})])
+        assert evidence.FAIL in kinds(found) and "is about" in messages(found)
+
+    def test_a_missing_gateway_record_is_an_evidence_error(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(gateway_record=None)])
+        assert "carries no gateway record" in messages(found)
+
+    def test_a_404_is_not_a_match(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(
+            gateway_record={"error": "no such run", "status": 404})])
+        assert "absent record is not a match" in messages(found)
+
+    def test_a_mismatched_digest_fails(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(request_policy_sha256="b" * 64)])
+        assert "request_policy_sha256" in messages(found)
+
+    def test_a_digest_the_step_never_recorded_is_an_evidence_error(self, tmp_path):
+        """EM3C-E2-CLASSIFY-0001 noted the comparison was skipped when the claim was empty."""
+        found = _recorded(tmp_path, [good_step(request_policy_sha256="")])
+        assert "never compared" in messages(found)
+
+    def test_missing_deltas_where_the_digests_differ_fails(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(
+            effective_policy_sha256="b" * 64,
+            gateway_record={**OK_RECORD, "effective_policy_sha256": "b" * 64,
+                            "policy_deltas": []})])
+        assert "no narrowing was reported" in messages(found)
+
+    def test_the_wrong_refusal_reason_fails(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(
+            exit_code=1, expected_exit=1, expected_refusal="already been used (replay)",
+            gateway_record={**OK_RECORD, "state": "refused",
+                            "refusal": "this request is 880s old; the limit is 120s"})])
+        assert "does not appear" in messages(found)
+
+    def test_unknown_cleanup_where_cleanup_was_required_is_an_evidence_error(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(
+            expect_cleanup=True, gateway_record={**OK_RECORD, "cleanup_verified": None})])
+        assert "cleanup is unknown" in messages(found)
+
+    def test_absent_cleanup_where_cleanup_was_required_is_an_evidence_error(self, tmp_path):
+        record = {k: v for k, v in OK_RECORD.items() if k != "cleanup_verified"}
+        found = _recorded(tmp_path, [good_step(expect_cleanup=True, gateway_record=record)])
+        assert "does not mention it" in messages(found)
+
+    def test_a_container_from_another_run_fails(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(
+            container=f"agentnode-em3c-{OTHER_RUN[:12]}-zzz")])
+        assert "does not carry run" in messages(found)
+
+    def test_a_secret_in_the_record_fails(self, tmp_path):
         secret = "s3cr3t-token-value-0123456789"
-        step = good_step(stdout=f"token={secret}\n")
-        found = evidence.verify([step], secrets=[secret])
-        assert any("live secret value" in p for p in found), found
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[])
+        two_machines(recorder)
+        recorder.record(good_step(stdout=f"token={secret}\n"))
+        found = evidence.check_file(tmp_path / "e.jsonl", [secret])
+        assert "live secret value" in messages(found)
 
 
-class TestMissingStructureIsNotAPass:
+class TestAContainerIsOnlyGoneWhenSomebodyLooked:
+    """EM3C-E2-CLASSIFY-0001: every remote failure became an empty string, and the empty string
+    was read as absence."""
 
-    @pytest.mark.parametrize("field", ["name", "role", "argv", "exit_code"])
-    def test_a_missing_required_field_is_detected(self, field):
-        step = good_step()
-        del step[field]
-        found = problems(step)
-        assert any(field in p for p in found), found
+    GOOD_QUERY = {"ran": True, "exit_code": 0, "stdout": "", "stderr": "", "parsed": True,
+                  "names": [], "ids": [], "sought_id": "abc123def456", "error_class": ""}
 
-    def test_an_empty_evidence_file_is_refused(self, tmp_path):
-        path = tmp_path / "evidence.jsonl"
-        path.write_text("", encoding="utf-8")
-        with pytest.raises(evidence.EvidenceError):
-            evidence.check_file(path)
+    def _found(self, tmp_path, query, **overrides):
+        values = {"expect_container_gone": True, "container_query": query,
+                  "container": f"agentnode-em3c-{RUN[:12]}-abc"}
+        values.update(overrides)
+        return _recorded(tmp_path, [good_step(**values)])
 
-    def test_unreadable_evidence_is_refused(self, tmp_path):
-        path = tmp_path / "evidence.jsonl"
-        path.write_text("{not json\n", encoding="utf-8")
-        with pytest.raises(evidence.EvidenceError):
-            evidence.check_file(path)
+    def test_a_query_that_ran_and_found_nothing_passes(self, tmp_path):
+        """The control. Without it a rule that refused everything would pass the rest."""
+        assert self._found(tmp_path, dict(self.GOOD_QUERY)) == []
+
+    def test_the_container_still_being_there_fails(self, tmp_path):
+        query = {**self.GOOD_QUERY, "names": [f"agentnode-em3c-{RUN[:12]}-abc"]}
+        found = self._found(tmp_path, query)
+        assert evidence.FAIL in kinds(found) and "still there" in messages(found)
+
+    def test_the_id_still_being_there_fails(self, tmp_path):
+        query = {**self.GOOD_QUERY, "ids": ["abc123def456"]}
+        found = self._found(tmp_path, query)
+        assert evidence.FAIL in kinds(found)
+
+    @pytest.mark.parametrize("query,expected", [
+        ({}, "no query was recorded"),
+        ({"ran": False}, "never ran"),
+        ({"ran": True, "exit_code": 1}, "only a zero answer"),
+        ({"ran": True, "exit_code": 0, "error_class": "TimeoutExpired"}, "the query failed"),
+        ({"ran": True, "exit_code": 0, "stdout": "", "stderr": "", "parsed": False},
+         "was not parsed"),
+        ({"ran": True, "exit_code": 0, "stdout": "", "parsed": True}, "two streams"),
+        ({"ran": True, "exit_code": 0, "stdout": "", "stderr": "", "parsed": True},
+         "list of container names"),
+    ])
+    def test_every_way_of_not_knowing_is_an_evidence_error(self, tmp_path, query, expected):
+        found = self._found(tmp_path, query or None)
+        assert evidence.EVIDENCE_ERROR in kinds(found), messages(found)
+        assert expected in messages(found)
+        assert evidence.FAIL not in kinds(found), (
+            "not knowing was reported as the container being there")
+
+    def test_looking_for_nothing_is_an_evidence_error(self, tmp_path):
+        query = {**self.GOOD_QUERY, "sought_id": ""}
+        found = self._found(tmp_path, query, container="")
+        assert "nothing was named" in messages(found)
+
+
+class TestTwoMachinesAreShownToBeTwo:
+    """EM3C-E2-CLASSIFY-0001: a locally failed `ls` proves only that a local `ls` failed."""
+
+    def test_a_record_with_no_machines_cannot_establish_separation(self, tmp_path):
+        found = _recorded(tmp_path, [good_step()], with_machines=False)
+        assert "fewer than two machines" in messages(found)
+
+    def test_two_machines_with_the_same_host_identity_fail(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        two_machines(recorder)
+        recorder.record(evidence.Step(
+            name="gateway identity again", role="gateway", argv=["(identity)"],
+            started_at=2.0, ended_at=2.1, exit_code=0,
+            machine={"role": "gateway", "host_sha256": "c" * 64,
+                     "filesystem_sha256": "gf" * 32, "os": "Linux"}))
+        found = evidence.check_file(path)
+        assert "same host identity" in messages(found)
+
+    def test_a_sentinel_read_back_over_its_own_channel_fails(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        two_machines(recorder)
+        recorder.record(evidence.Step(
+            name="a sentinel vouching for itself", role="client", argv=["(sentinel)"],
+            started_at=3.0, ended_at=3.1, exit_code=0,
+            sentinel={"generated_on": "client", "verified_over": "client",
+                      "value_sha256": "3" * 64, "matched": True}))
+        found = evidence.check_file(path)
+        assert "vouching for itself" in messages(found)
+
+    def test_a_sentinel_that_did_not_come_back_fails(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        recorder.record(evidence.Step(
+            name="client identity", role="client", argv=["(identity)"],
+            started_at=1.0, ended_at=1.1, exit_code=0,
+            machine={"role": "client", "host_sha256": "c" * 64,
+                     "filesystem_sha256": "cf" * 32, "os": "Windows"}))
+        recorder.record(evidence.Step(
+            name="gateway identity", role="gateway", argv=["(identity)"],
+            started_at=1.2, ended_at=1.3, exit_code=0,
+            machine={"role": "gateway", "host_sha256": "g" * 64,
+                     "filesystem_sha256": "gf" * 32, "os": "Linux"}))
+        recorder.record(evidence.Step(
+            name="a sentinel that never arrived", role="client", argv=["(sentinel)"],
+            started_at=1.4, ended_at=1.5, exit_code=0,
+            sentinel={"generated_on": "client", "verified_over": "gateway",
+                      "value_sha256": "1" * 64, "matched": False}))
+        found = evidence.check_file(path)
+        assert "did not come back" in messages(found)
+
+    def test_one_direction_only_is_an_evidence_error(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        recorder.record(evidence.Step(
+            name="client identity", role="client", argv=["(identity)"],
+            started_at=1.0, ended_at=1.1, exit_code=0,
+            machine={"role": "client", "host_sha256": "c" * 64,
+                     "filesystem_sha256": "cf" * 32, "os": "Windows"}))
+        recorder.record(evidence.Step(
+            name="gateway identity", role="gateway", argv=["(identity)"],
+            started_at=1.2, ended_at=1.3, exit_code=0,
+            machine={"role": "gateway", "host_sha256": "g" * 64,
+                     "filesystem_sha256": "gf" * 32, "os": "Linux"}))
+        recorder.record(evidence.Step(
+            name="only one direction", role="client", argv=["(sentinel)"],
+            started_at=1.4, ended_at=1.5, exit_code=0,
+            sentinel={"generated_on": "client", "verified_over": "gateway",
+                      "value_sha256": "1" * 64, "matched": True}))
+        found = evidence.check_file(path)
+        assert "both directions" in messages(found)
+
+    def test_the_same_sentinel_value_both_ways_fails(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        recorder.record(evidence.Step(
+            name="client identity", role="client", argv=["(identity)"],
+            started_at=1.0, ended_at=1.1, exit_code=0,
+            machine={"role": "client", "host_sha256": "c" * 64,
+                     "filesystem_sha256": "cf" * 32, "os": "Windows"}))
+        recorder.record(evidence.Step(
+            name="gateway identity", role="gateway", argv=["(identity)"],
+            started_at=1.2, ended_at=1.3, exit_code=0,
+            machine={"role": "gateway", "host_sha256": "g" * 64,
+                     "filesystem_sha256": "gf" * 32, "os": "Linux"}))
+        for made, checked in (("client", "gateway"), ("gateway", "client")):
+            recorder.record(evidence.Step(
+                name=f"sentinel {made}", role=made, argv=["(sentinel)"],
+                started_at=1.4, ended_at=1.5, exit_code=0,
+                sentinel={"generated_on": made, "verified_over": checked,
+                          "value_sha256": "same" * 16, "matched": True}))
+        found = evidence.check_file(path)
+        assert "generated independently" in messages(found)
+
+    def test_the_same_operating_system_on_both_fails(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        recorder.record(evidence.Step(
+            name="client identity", role="client", argv=["(identity)"],
+            started_at=1.0, ended_at=1.1, exit_code=0,
+            machine={"role": "client", "host_sha256": "c" * 64,
+                     "filesystem_sha256": "cf" * 32, "os": "Linux"}))
+        recorder.record(evidence.Step(
+            name="gateway identity", role="gateway", argv=["(identity)"],
+            started_at=1.2, ended_at=1.3, exit_code=0,
+            machine={"role": "gateway", "host_sha256": "g" * 64,
+                     "filesystem_sha256": "gf" * 32, "os": "Linux"}))
+        found = evidence.check_file(path)
+        assert "same operating system" in messages(found)
 
 
 class TestSecretsNeverReachTheRecord:
-
-    def test_a_pairing_code_argument_is_redacted(self):
-        argv = ["agentnode", "remote", "connect", "http://x", "--code", "ABCD-EFGH-IJKL"]
-        assert evidence.redact_argv(argv) == [
-            "agentnode", "remote", "connect", "http://x", "--code", evidence.REDACTED]
-
-    def test_an_equals_form_is_redacted(self):
-        assert evidence.redact_argv(["x", "--token=abcdef123456"]) == ["x", "--token=[redacted]"]
-
-    def test_the_command_itself_survives_redaction(self):
-        """Redaction that removed the command would make the evidence useless."""
-        argv = ["agentnode", "remote", "run", "job.py", "--allow", "example.com"]
-        assert evidence.redact_argv(argv) == argv
-
-    def test_a_recorded_command_has_its_secret_values_removed(self, tmp_path):
-        secret = "tok_abcdef0123456789"
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[secret])
-        recorder.run("echo the secret", [sys.executable, "-c",
-                                         f"print('value={secret}')"], expected_exit=0)
-        written = (tmp_path / "e.jsonl").read_text(encoding="utf-8")
-        assert secret not in written
-        assert evidence.REDACTED in written
-
-
-class TestTheRecorderCapturesWhatItMustCapture:
-
-    def test_the_exit_code_is_the_commands_own(self, tmp_path):
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client")
-        step = recorder.run("fail on purpose", [sys.executable, "-c", "raise SystemExit(3)"],
-                            expected_exit=3)
-        assert step.exit_code == 3
-
-    def test_stdout_and_stderr_are_kept_apart(self, tmp_path):
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client")
-        step = recorder.run("both streams", [
-            sys.executable, "-c",
-            "import sys; sys.stdout.write('OUT'); sys.stderr.write('ERR')"])
-        assert step.stdout.strip() == "OUT"
-        assert step.stderr.strip() == "ERR"
-
-    def test_a_command_that_does_not_exist_is_recorded_as_unknown_not_as_success(self, tmp_path):
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client")
-        step = recorder.run("missing binary", ["definitely-not-a-real-binary-xyz"])
-        assert step.exit_code is None
-        assert step.error_class
-        assert any("no exit code was captured" in p for p in evidence.verify([step.as_dict()]))
-
-    def test_each_step_is_one_line_of_readable_json(self, tmp_path):
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client")
-        recorder.run("one", [sys.executable, "-c", "print(1)"])
-        recorder.run("two", [sys.executable, "-c", "print(2)"])
-        lines = [ln for ln in (tmp_path / "e.jsonl").read_text(encoding="utf-8").splitlines() if ln]
-        assert len(lines) == 2
-        assert all(json.loads(ln)["schema"] == evidence.SCHEMA for ln in lines)
-
-    def test_the_times_are_recorded_and_ordered(self, tmp_path):
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client")
-        step = recorder.run("timed", [sys.executable, "-c", "pass"])
-        assert step.ended_at >= step.started_at > 0
-
-
-class TestTheCommandLineEntryPoint:
-
-    def _write(self, path, steps):
-        path.write_text("\n".join(json.dumps({"schema": 1, **s}) for s in steps) + "\n",
-                        encoding="utf-8")
-
-    def test_good_evidence_exits_zero(self, tmp_path, capsys):
-        path = tmp_path / "e.jsonl"
-        self._write(path, [good_step()])
-        assert evidence.main([str(path)]) == 0
-        assert "about the run it names" in capsys.readouterr().out
-
-    def test_bad_evidence_exits_non_zero_and_says_why(self, tmp_path, capsys):
-        path = tmp_path / "e.jsonl"
-        self._write(path, [good_step(gateway_record=None)])
-        assert evidence.main([str(path)]) == 1
-        assert "no gateway record" in capsys.readouterr().out
-
-    def test_a_missing_file_is_not_a_pass(self, tmp_path):
-        with pytest.raises((OSError, SystemExit)):
-            evidence.main([str(tmp_path / "nope.jsonl")])
-
-
-class TestRedactionCoversEveryFieldNotThreeOfThem:
-    """EM3C-FINAL-0001: only argv, stdout and stderr were redacted, so a token arriving in a
-    note, a gateway record or a policy delta was written to disk in full."""
 
     SECRET = "tok_9f8e7d6c5b4a3210fedcba"
 
@@ -289,46 +480,65 @@ class TestRedactionCoversEveryFieldNotThreeOfThem:
         recorder.record(step)
         return (tmp_path / "e.jsonl").read_text(encoding="utf-8")
 
-    def test_a_secret_in_a_note_is_removed(self, tmp_path):
-        step = evidence.Step(name="n", role="client", argv=["x"], started_at=1.0, ended_at=2.0,
-                             exit_code=0, stdout="", stderr="",
-                             notes=f"the token was {self.SECRET}")
+    def test_a_pairing_code_argument_is_redacted(self):
+        assert evidence.redact_argv(
+            ["agentnode", "remote", "connect", "http://x", "--code", "ABCD-EFGH-IJKL"]) == [
+            "agentnode", "remote", "connect", "http://x", "--code", evidence.REDACTED]
+
+    def test_the_command_itself_survives_redaction(self):
+        argv = ["agentnode", "remote", "run", "job.py", "--allow", "example.com"]
+        assert evidence.redact_argv(argv) == argv
+
+    @pytest.mark.parametrize("field,value", [
+        ("notes", "the token was {s}"),
+        ("client_id", "{s}"),
+        ("stdout", "value={s}\n"),
+    ])
+    def test_a_secret_in_any_string_field_is_removed(self, tmp_path, field, value):
+        step = good_step(**{field: value.format(s=self.SECRET)})
         written = self._written(tmp_path, step)
         assert self.SECRET not in written
         assert evidence.REDACTED in written
 
-    def test_a_secret_nested_in_a_gateway_record_is_removed(self, tmp_path):
-        step = evidence.Step(name="n", role="client", argv=["x"], started_at=1.0, ended_at=2.0,
-                             exit_code=0, stdout="", stderr="",
-                             gateway_record={"auth": {"token": self.SECRET},
-                                             "list": [{"deep": self.SECRET}]})
+    def test_a_secret_nested_in_a_record_is_removed(self, tmp_path):
+        step = good_step(gateway_record={**OK_RECORD, "auth": {"token": self.SECRET},
+                                         "list": [{"deep": self.SECRET}]})
         assert self.SECRET not in self._written(tmp_path, step)
 
-    def test_a_secret_in_a_policy_delta_is_removed(self, tmp_path):
-        step = evidence.Step(name="n", role="client", argv=["x"], started_at=1.0, ended_at=2.0,
-                             exit_code=0, stdout="", stderr="",
-                             policy_deltas=[{"field": "x", "requested": self.SECRET}])
-        assert self.SECRET not in self._written(tmp_path, step)
+    def test_a_secret_in_a_command_line_is_removed(self, tmp_path):
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[self.SECRET])
+        recorder.run("echo", [sys.executable, "-c", f"print('{self.SECRET}')"])
+        assert self.SECRET not in (tmp_path / "e.jsonl").read_text(encoding="utf-8")
 
-    def test_a_secret_in_a_run_id_field_is_removed(self, tmp_path):
-        step = evidence.Step(name="n", role="client", argv=["x"], started_at=1.0, ended_at=2.0,
-                             exit_code=0, stdout="", stderr="", client_id=self.SECRET)
-        assert self.SECRET not in self._written(tmp_path, step)
-
-    def test_the_rest_of_the_record_survives_redaction(self, tmp_path):
+    def test_the_rest_of_the_record_survives(self, tmp_path):
         """The control. A redactor that emptied the document would pass everything above."""
-        step = evidence.Step(name="a distinctive step name", role="client",
-                             argv=["agentnode", "remote", "run"], started_at=1.0, ended_at=2.0,
-                             exit_code=7, stdout="ordinary output", stderr="",
-                             notes=f"the token was {self.SECRET}")
+        step = good_step(notes=f"the token was {self.SECRET}", name="a distinctive step name")
         written = self._written(tmp_path, step)
         assert "a distinctive step name" in written
-        assert "ordinary output" in written
-        assert '"exit_code": 7' in written
+        assert "EXT-OK" in written
 
-    def test_a_secret_reaching_the_recorder_through_run_is_removed_everywhere(self, tmp_path):
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[self.SECRET])
-        recorder.run("echo", [sys.executable, "-c", f"print('{self.SECRET}')"],
-                     notes=f"note holding {self.SECRET}",
-                     gateway_record={"nested": self.SECRET})
-        assert self.SECRET not in (tmp_path / "e.jsonl").read_text(encoding="utf-8")
+
+class TestTheCommandLineEntryPoint:
+
+    def test_good_evidence_exits_zero(self, tmp_path, capsys):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        two_machines(recorder)
+        recorder.record(good_step())
+        assert evidence.main([str(path)]) == 0
+        assert "about the run it names" in capsys.readouterr().out
+
+    def test_bad_evidence_exits_non_zero_and_separates_the_two_kinds(self, tmp_path, capsys):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        two_machines(recorder)
+        recorder.record(good_step(gateway_record=None))
+        recorder.record(good_step(exit_code=9, expected_exit=0))
+        assert evidence.main([str(path)]) == 1
+        out = capsys.readouterr().out
+        assert "failed" in out and "could not be evaluated" in out
+
+    def test_an_unreadable_file_exits_two(self, tmp_path, capsys):
+        path = tmp_path / "e.jsonl"
+        path.write_text("{not json\n", encoding="utf-8")
+        assert evidence.main([str(path)]) == 2
