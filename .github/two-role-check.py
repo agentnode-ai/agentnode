@@ -209,13 +209,13 @@ def main() -> int:
         say("a job that is cancelled from the other side")
         script = CLIENT_HOME / "slow.py"
         subprocess.run(["sudo", "-n", "-u", CLIENT_USER, "tee", str(script)],
-                       input="import time\nprint('started', flush=True)\ntime.sleep(120)\n",
+                       input="import time\nprint('started', flush=True)\ntime.sleep(600)\n",
                        capture_output=True, text=True)
         runner = subprocess.Popen(
             ["sudo", "-n", "-u", CLIENT_USER, "env",
              f"AGENTNODE_HOME={CLIENT_HOME}/.agentnode", f"HOME={CLIENT_HOME}",
              CLIENT_PYTHON, "-m", "agentnode_sdk.cli", "remote", "run", str(script),
-             "--max-seconds", "150", "--timeout", "200"],
+             "--max-seconds", "900", "--timeout", "300"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         run_id = ""
         deadline = time.monotonic() + 90
@@ -234,8 +234,16 @@ def main() -> int:
             cancelled = client("cancel", "--run", run_id)
             check("cancel was accepted", cancelled.returncode == 0,
                   (cancelled.stdout or "").strip().replace("\n", " | ")[:160])
-        runner.wait(timeout=240)
-        check("the cancelled run returned", runner.returncode is not None)
+        rest = (runner.stdout.read() or "") if runner.stdout else ""
+        runner.wait(timeout=300)
+        whole = (buffered + rest).lower()
+        # EM3C-EXTERNAL-0009: "the cancel was accepted and the process later ended" is also what
+        # happens when the cancel does nothing and something else stops the job. The payload now
+        # sleeps ten minutes under a fifteen-minute ceiling, so nothing else could have ended it
+        # in the seconds this takes, and the word required is the one that names the cause.
+        check("the run ended because it was cancelled, not for some other reason",
+              runner.returncode is not None and "cancelled" in whole,
+              (whole.strip().splitlines() or ["(no output)"])[-1][:140])
 
         say("a job that outruns its limit")
         forever = CLIENT_HOME / "forever.py"
