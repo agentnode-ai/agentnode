@@ -124,7 +124,43 @@ EXPECTATIONS = ("expected_exit", "expected_refusal", "expect_output", "expect_cl
 OBSERVED_BY_RUNNING = ("exit_code", "stdout", "stderr", "error_class")
 
 #: Without these a step says nothing, so their absence is refused rather than defaulted.
-MANDATORY = ("name", "role", "argv", "started_at", "ended_at", "exit_code")
+#: The expectations are here too: the recorder always writes them, so a record that omits one did
+#: not come from a recorder, and defaulting it to false would make "the check was not required"
+#: and "nobody said" the same thing. `EM3C-EVIDENCE-0001` named that ambiguity.
+MANDATORY = ("name", "role", "argv", "started_at", "ended_at", "exit_code",
+             "expected_exit", "expected_refusal", "expect_output", "expect_cleanup",
+             "expect_container_gone")
+
+#: Fields the verifier reads. Every other field must appear in `RECORDED_ONLY` below, so a field
+#: added with no rule behind it is caught by a test rather than sitting unread for a release.
+READ_BY_RULES = (
+    "name", "role", "argv", "started_at", "ended_at", "exit_code", "stdout", "stderr",
+    "error_class", "run_id", "gateway_record", "container", "container_query", "machine",
+    "sentinel", "binding", "request_policy_sha256", "effective_policy_sha256",
+    "expected_exit", "expected_refusal", "expect_output", "expect_cleanup",
+    "expect_container_gone",
+)
+
+#: Fields kept for a reader and deliberately not used by any rule. Naming them is the point: an
+#: unread field is a decision, not an oversight.
+RECORDED_ONLY = ("job_id", "client_id", "policy_deltas", "cleanup_verified", "notes")
+
+#: The shapes of the nested structures. `dict` alone says nothing about what is inside, and the
+#: rules below read specific keys out of these.
+_NESTED: dict[str, dict] = {
+    "machine": {"required": ("role", "host_sha256", "filesystem_sha256", "os", "commands"),
+                "optional": ()},
+    "sentinel": {"required": ("generated_on", "carried_over", "confirmed_over", "value_sha256",
+                              "in_request", "in_response", "in_other_channel", "matched"),
+                 "optional": ()},
+    "container_query": {"required": ("ran", "exit_code", "stdout", "stderr", "error_class",
+                                     "parsed", "command"),
+                        "optional": ("names", "ids", "sought_id", "complete")},
+    "binding": {"required": ("generation", "policy_digest", "configured_digest", "digests_agree",
+                             "required_properties", "allowlist", "runtime", "backend",
+                             "conformance_digest"),
+                "optional": ()},
+}
 
 _TYPES: dict[str, tuple] = {
     "name": (str,), "role": (str,), "argv": (list,),
@@ -213,6 +249,21 @@ def parse_step(text_or_mapping) -> dict:
             raise EvidenceError(
                 f"{name} is {type(value).__name__} and the schema says "
                 + " or ".join(t.__name__ for t in allowed) + ".")
+
+    for name, shape in _NESTED.items():
+        nested = document.get(name)
+        if nested is None:
+            continue
+        known = set(shape["required"]) | set(shape["optional"])
+        strange = sorted(set(nested) - known)
+        if strange:
+            raise EvidenceError(
+                f"{name} carries " + ", ".join(repr(x) for x in strange) +
+                ", which its shape does not describe.")
+        absent = [k for k in shape["required"] if k not in nested]
+        if absent:
+            raise EvidenceError(
+                f"{name} has no " + ", ".join(absent) + ", so it cannot be read.")
     return document
 
 
@@ -247,19 +298,47 @@ def redact_text(text: str, secrets) -> str:
     return text
 
 
-def redact_deep(value, secrets):
+#: Key names whose VALUES are removed wherever they appear, whatever they contain. Value-list
+#: redaction only removes what somebody thought to collect; this removes what sits in a place
+#: secrets sit. `EM3C-EVIDENCE-0001` was right that neither alone is enough, and that the two
+#: together still cannot reach a secret nobody named in a place nobody expected.
+_SECRET_KEYS = ("token", "secret", "password", "passwd", "credential", "private_key",
+                "privatekey", "api_key", "apikey", "pairing_code", "auth")
+
+#: Anything shaped like private key material, wherever it turns up.
+_KEY_MATERIAL = ("BEGIN OPENSSH PRIVATE KEY", "BEGIN RSA PRIVATE KEY", "BEGIN PRIVATE KEY",
+                 "BEGIN EC PRIVATE KEY", "BEGIN PGP PRIVATE KEY")
+
+
+def _is_secret_key(name) -> bool:
+    lowered = str(name).lower()
+    return any(marker in lowered for marker in _SECRET_KEYS)
+
+
+def redact_deep(value, secrets, *, under_secret_key=False):
     """Redact through every value that will be serialised, at any depth.
 
-    A redactor covering chosen fields is not a redactor; it is chosen fields that happen to be
-    safe. Doing it once over the finished document means a field added later is covered without
-    anyone remembering to cover it.
+    Three layers, because each misses what the others catch. Known VALUES are removed wherever
+    they appear. Values under a key that NAMES a secret are removed whatever they contain, so a
+    token nobody collected still goes. And anything carrying a private-key header is removed on
+    sight, because that material is recognisable without being known.
+
+    What none of them reaches is a secret with an unremarkable name, an unremarkable shape, and
+    a value nobody collected. That is a real limit, and `verify` reports the known values it can
+    still find rather than implying there are none.
     """
     if isinstance(value, str):
+        if under_secret_key and value.strip():
+            return REDACTED
+        if any(marker in value for marker in _KEY_MATERIAL):
+            return REDACTED
         return redact_text(value, secrets)
     if isinstance(value, dict):
-        return {redact_deep(k, secrets): redact_deep(v, secrets) for k, v in value.items()}
+        return {redact_deep(k, secrets): redact_deep(v, secrets,
+                                                    under_secret_key=_is_secret_key(k))
+                for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [redact_deep(v, secrets) for v in value]
+        return [redact_deep(v, secrets, under_secret_key=under_secret_key) for v in value]
     return value
 
 
@@ -324,6 +403,20 @@ class Recorder:
         """
         document = redact_deep({"schema": SCHEMA, **step.as_dict()}, self.secrets)
         parse_step(dict(document))
+
+        # The redactor's own failure has to be visible. If a value it was given survives its own
+        # pass, nothing is written: a record that quietly contains a credential is worse than no
+        # record, and finding out later from the file is finding out too late.
+        blob = json.dumps(document, ensure_ascii=False, sort_keys=True)
+        for secret in self.secrets:
+            if secret and len(str(secret)) >= 8 and str(secret) in blob:
+                raise EvidenceError(
+                    "a value this recorder was told to redact survived its own pass, so nothing "
+                    "was written. This is the redactor failing, not the step.")
+        for marker in _KEY_MATERIAL:
+            if marker in blob:
+                raise EvidenceError(
+                    "private key material reached a record, so nothing was written.")
         return document
 
 
@@ -373,6 +466,15 @@ def _container_findings(step, where) -> list[Finding]:
         return [Finding(where, EVIDENCE_ERROR, "the query's two streams were not both captured")]
     if query.get("parsed") is not True:
         return [Finding(where, EVIDENCE_ERROR, "the query's answer was not parsed")]
+
+    if query.get("complete") is not True:
+        return [Finding(where, EVIDENCE_ERROR,
+                        "the listing did not show that it ran to the end, so an empty answer "
+                        "cannot be told apart from a truncated one")]
+    if not str(query.get("stdout") or "").strip():
+        return [Finding(where, EVIDENCE_ERROR,
+                        "the listing produced nothing at all, which is an unknown answer rather "
+                        "than an empty one")]
 
     names, ids = query.get("names"), query.get("ids")
     if not isinstance(names, list) or not isinstance(ids, list):
@@ -470,6 +572,58 @@ def _run_findings(step, where) -> list[Finding]:
     return problems
 
 
+_HEX64 = ("0123456789abcdef", 64)
+
+
+def _looks_like_a_digest(value) -> bool:
+    text = str(value or "")
+    return len(text) == _HEX64[1] and all(c in _HEX64[0] for c in text)
+
+
+def verify_bindings(steps) -> list[Finding]:
+    """Whether the operator-policy binding was captured, and stayed the same across the run.
+
+    `EM3C-EVIDENCE-0001`: the snapshots were recorded and never checked, so a missing, stale or
+    divergent binding produced no finding at all. A binding nobody reads is a field, not a rule.
+    """
+    problems: list[Finding] = []
+    seen: list[dict] = []
+    for index, raw in enumerate(steps):
+        binding = raw.get("binding")
+        if not isinstance(binding, dict):
+            continue
+        where = f"step {index + 1} ({raw.get('name') or 'unnamed'})"
+        for field_name in ("generation", "policy_digest", "configured_digest", "runtime",
+                           "backend", "conformance_digest"):
+            if not str(binding.get(field_name) or "").strip():
+                problems.append(Finding(where, EVIDENCE_ERROR,
+                                        f"the binding records no {field_name}"))
+        for field_name in ("policy_digest", "configured_digest", "conformance_digest"):
+            value = binding.get(field_name)
+            if value and not _looks_like_a_digest(value):
+                problems.append(Finding(where, FAIL,
+                                        f"{field_name} is not a digest: {str(value)[:24]!r}"))
+        if str(binding.get("digests_agree")) != "True":
+            problems.append(Finding(
+                where, FAIL,
+                "what is configured and what is in force do not agree, so nothing under this "
+                "policy was running as configured"))
+        if not binding.get("required_properties"):
+            problems.append(Finding(where, EVIDENCE_ERROR,
+                                    "the binding records no required-property set"))
+        seen.append({"where": where, **binding})
+
+    if not seen:
+        return [Finding("policy binding", EVIDENCE_ERROR,
+                        "no operator-policy binding was captured, so nothing here says which "
+                        "policy the run happened under")]
+    if len(seen) < 2:
+        problems.append(Finding("policy binding", EVIDENCE_ERROR,
+                                "the binding was captured once, so it was never compared before "
+                                "and after"))
+    return problems
+
+
 def verify(steps, secrets=()) -> list[Finding]:
     """Every way this evidence fails to establish what it claims. Empty means it holds."""
     problems: list[Finding] = []
@@ -530,6 +684,7 @@ def verify(steps, secrets=()) -> list[Finding]:
                                         "a live secret value was written into the evidence"))
 
     problems.extend(verify_two_machines(steps))
+    problems.extend(verify_bindings(steps))
     return problems
 
 
@@ -635,13 +790,38 @@ def verify_two_machines(steps) -> list[Finding]:
         elif one == two:
             problems.append(Finding("two machines", FAIL,
                                     f"both machines report the same {what}, so they are one"))
-    one_os, two_os = str(first.get("os") or ""), str(second.get("os") or "")
-    if not one_os or not two_os:
-        problems.append(Finding("two machines", EVIDENCE_ERROR,
-                                "one of the machines did not report its operating system"))
-    elif one_os == two_os:
-        problems.append(Finding("two machines", FAIL,
-                                "both machines report the same operating system"))
+    # The operating system is recorded because a reader wants it, NOT as a discriminator: two
+    # distinct hosts may perfectly well run the same one, and failing on that would be a rule
+    # about a coincidence. `EM3C-EVIDENCE-0001` was right to call that out. What separates them
+    # is the host and filesystem identities above.
+    for machine in (first, second):
+        if not str(machine.get("os") or ""):
+            problems.append(Finding("two machines", EVIDENCE_ERROR,
+                                    "a machine did not report its operating system"))
+        commands = machine.get("commands")
+        if not isinstance(commands, list) or not commands:
+            problems.append(Finding(
+                "two machines", EVIDENCE_ERROR,
+                f"the {machine.get('role')} identity carries no record of the commands that "
+                "produced it, so it cannot be told apart from an assertion"))
+            continue
+        for entry in commands:
+            if not isinstance(entry, dict):
+                problems.append(Finding("two machines", EVIDENCE_ERROR,
+                                        "an identity command is not a record"))
+                continue
+            missing = [k for k in ("command", "exit_code", "stdout", "stderr")
+                       if k not in entry]
+            if missing:
+                problems.append(Finding(
+                    "two machines", EVIDENCE_ERROR,
+                    f"an identity command on the {machine.get('role')} does not record "
+                    + ", ".join(missing)))
+            elif entry.get("exit_code") != 0:
+                problems.append(Finding(
+                    "two machines", EVIDENCE_ERROR,
+                    f"an identity command on the {machine.get('role')} exited "
+                    f"{entry.get('exit_code')!r}, so what it reported was never established"))
 
     crossed: dict[str, str] = {}
     for raw in steps:

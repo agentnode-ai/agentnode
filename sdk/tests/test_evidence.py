@@ -34,9 +34,25 @@ OK_RECORD = {
 }
 
 
+def digest_for(name):
+    return ("1" if name == "client" else "2") * 64
+
+
+def identity(role, host, filesystem, os_name, **overrides):
+    """A machine describing itself, with the commands that produced each value."""
+    machine = {"role": role, "host_sha256": host, "filesystem_sha256": filesystem,
+               "os": os_name,
+               "commands": [{"command": "hostname", "exit_code": 0,
+                             "stdout": "a-host", "stderr": ""},
+                            {"command": "filesystem id", "exit_code": 0,
+                             "stdout": "an-id", "stderr": ""}]}
+    machine.update(overrides)
+    return machine
+
+
 def crossing(made_on, value_sha256, **overrides):
     """A sentinel that crosses properly. `in_request` is what makes the origin checkable: a value
-    the client sent is the client's, one it never sent is not."""
+the client sent is the client's, one it never sent is not."""
     sentinel = {"generated_on": made_on,
                 "carried_over": "agentnode-job", "confirmed_over": "ssh",
                 "value_sha256": value_sha256,
@@ -55,13 +71,11 @@ def two_machines(recorder):
     recorder.record(evidence.Step(
         name="client identity", role="client", argv=["(identity)"],
         started_at=1.0, ended_at=1.1, exit_code=0,
-        machine={"role": "client", "host_sha256": "c" * 64,
-                 "filesystem_sha256": "cf" * 32, "os": "Windows"}))
+        machine=identity("client", "c" * 64, "cf" * 32, "Windows")))
     recorder.record(evidence.Step(
         name="gateway identity", role="gateway", argv=["(identity)"],
         started_at=1.2, ended_at=1.3, exit_code=0,
-        machine={"role": "gateway", "host_sha256": "g" * 64,
-                 "filesystem_sha256": "gf" * 32, "os": "Linux"}))
+        machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
     recorder.record(evidence.Step(
         name="a sentinel made on the client, read back over the gateway",
         role="client", argv=["(sentinel)"], started_at=1.4, ended_at=1.5, exit_code=0,
@@ -70,6 +84,21 @@ def two_machines(recorder):
         name="a sentinel made on the gateway, read back over the client",
         role="gateway", argv=["(sentinel)"], started_at=1.6, ended_at=1.7, exit_code=0,
         sentinel=crossing("gateway", "2" * 64)))
+
+
+BINDING = {"generation": "1", "policy_digest": "a" * 64, "configured_digest": "a" * 64,
+           "digests_agree": "True", "required_properties": "container_isolation",
+           "allowlist": [], "runtime": "docker 29.8.0", "backend": "docker",
+           "conformance_digest": "b" * 64}
+
+
+def bindings(recorder, times=2):
+    """The binding, captured before and after, as every record must carry it."""
+    for n in range(times):
+        recorder.record(evidence.Step(
+            name=f"the operator-policy binding, capture {n + 1}", role="gateway",
+            argv=["(gateway egress --verbose)"], started_at=1.8 + n, ended_at=1.9 + n,
+            exit_code=0, binding=dict(BINDING)))
 
 
 def _recorded(tmp_path, steps, *, secrets=(), with_machines=True):
@@ -81,6 +110,7 @@ def _recorded(tmp_path, steps, *, secrets=(), with_machines=True):
     recorder = evidence.Recorder(path, role="client", secrets=secrets)
     if with_machines:
         two_machines(recorder)
+        bindings(recorder)
     for step in steps:
         recorder.record(step)
     return evidence.check_file(path, secrets)
@@ -134,7 +164,7 @@ class TestTheContractIsOneClosedSchema:
 
     def test_every_field_the_verifier_reads_can_be_recorded(self):
         """The defect itself. Read the module's source for `step.get("...")` and require each
-        name to be a field a Step can carry."""
+name to be a field a Step can carry."""
         import inspect
         import re
 
@@ -153,7 +183,7 @@ class TestTheContractIsOneClosedSchema:
 
     def test_the_module_refuses_to_load_if_the_schema_and_its_types_drift(self):
         """The guard that made the first counter-check for this fail to collect rather than fail
-        a test. It is a stronger outcome than a test noticing, so it gets its own cover."""
+a test. It is a stronger outcome than a test noticing, so it gets its own cover."""
         import inspect
 
         source = inspect.getsource(evidence)
@@ -320,10 +350,11 @@ class TestTheRulesFireOnRecordedSteps:
 
 class TestAContainerIsOnlyGoneWhenSomebodyLooked:
     """EM3C-E2-CLASSIFY-0001: every remote failure became an empty string, and the empty string
-    was read as absence."""
+was read as absence."""
 
-    GOOD_QUERY = {"ran": True, "exit_code": 0, "stdout": "", "stderr": "", "parsed": True,
-                  "names": [], "ids": [], "sought_id": "abc123def456", "error_class": ""}
+    GOOD_QUERY = {"ran": True, "exit_code": 0, "stdout": "END-OF-LISTING\n", "stderr": "",
+                  "parsed": True, "complete": True, "names": [], "ids": [],
+                  "sought_id": "abc123def456", "error_class": "", "command": "docker ps -a"}
 
     def _found(self, tmp_path, query, **overrides):
         values = {"expect_container_gone": True, "container_query": query,
@@ -345,19 +376,21 @@ class TestAContainerIsOnlyGoneWhenSomebodyLooked:
         found = self._found(tmp_path, query)
         assert evidence.FAIL in kinds(found)
 
-    @pytest.mark.parametrize("query,expected", [
-        ({}, "no query was recorded"),
+    @pytest.mark.parametrize("defect,expected", [
         ({"ran": False}, "never ran"),
-        ({"ran": True, "exit_code": 1}, "only a zero answer"),
-        ({"ran": True, "exit_code": 0, "error_class": "TimeoutExpired"}, "the query failed"),
-        ({"ran": True, "exit_code": 0, "stdout": "", "stderr": "", "parsed": False},
-         "was not parsed"),
-        ({"ran": True, "exit_code": 0, "stdout": "", "parsed": True}, "two streams"),
-        ({"ran": True, "exit_code": 0, "stdout": "", "stderr": "", "parsed": True},
-         "list of container names"),
+        ({"exit_code": 1}, "only a zero answer"),
+        ({"error_class": "TimeoutExpired"}, "the query failed"),
+        ({"parsed": False}, "was not parsed"),
+        ({"stdout": None}, "two streams"),
+        ({"complete": False}, "ran to the end"),
+        ({"stdout": "   "}, "unknown answer"),
+        ({"names": None}, "list of container names"),
     ])
-    def test_every_way_of_not_knowing_is_an_evidence_error(self, tmp_path, query, expected):
-        found = self._found(tmp_path, query or None)
+    def test_every_way_of_not_knowing_is_an_evidence_error(self, tmp_path, defect, expected):
+        """Each query is complete except for the one thing it is about, so it reaches the rule it
+        names rather than being turned away at the door."""
+        query = {**self.GOOD_QUERY, **defect}
+        found = self._found(tmp_path, query)
         assert evidence.EVIDENCE_ERROR in kinds(found), messages(found)
         assert expected in messages(found)
         assert evidence.FAIL not in kinds(found), (
@@ -383,8 +416,7 @@ class TestTwoMachinesAreShownToBeTwo:
         recorder.record(evidence.Step(
             name="gateway identity again", role="gateway", argv=["(identity)"],
             started_at=2.0, ended_at=2.1, exit_code=0,
-            machine={"role": "gateway", "host_sha256": "c" * 64,
-                     "filesystem_sha256": "gf" * 32, "os": "Linux"}))
+            machine=identity("gateway", "c" * 64, "gf" * 32, "Linux")))
         found = evidence.check_file(path)
         assert "same host identity" in messages(found)
 
@@ -401,7 +433,7 @@ class TestTwoMachinesAreShownToBeTwo:
 
     def test_a_label_that_disagrees_with_the_record_fails(self, tmp_path):
         """The founder's concern, and the one that matters: a sentinel calling itself the
-        gateway's while sitting in what the client sent is claiming its own provenance."""
+gateway's while sitting in what the client sent is claiming its own provenance."""
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client")
         two_machines(recorder)
@@ -424,17 +456,21 @@ class TestTwoMachinesAreShownToBeTwo:
         found = evidence.check_file(path)
         assert "The label is not evidence" in messages(found)
 
-    def test_a_sentinel_with_no_provenance_fields_is_an_evidence_error(self, tmp_path):
+    def test_a_sentinel_with_no_provenance_fields_is_refused_when_read(self, tmp_path):
+        """Stronger than a finding: the shape requires the fields, so such a record cannot even
+        be read. A recorder cannot produce one, so this is written as text."""
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
-        two_machines(recorder)
         bare = {"generated_on": "client", "carried_over": "agentnode-job",
                 "confirmed_over": "ssh", "value_sha256": "6" * 64, "matched": True}
-        recorder.record(evidence.Step(
-            name="a sentinel that only says what it is", role="client", argv=["(sentinel)"],
-            started_at=3.0, ended_at=3.1, exit_code=0, sentinel=bare))
-        found = evidence.check_file(path)
-        assert "rests on what it calls itself" in messages(found)
+        document = {"schema": evidence.SCHEMA, "name": "x", "role": "client", "argv": [],
+                    "started_at": 1.0, "ended_at": 2.0, "exit_code": 0,
+                    "expected_exit": None, "expected_refusal": "", "expect_output": False,
+                    "expect_cleanup": False, "expect_container_gone": False,
+                    "sentinel": bare}
+        path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+        with pytest.raises(evidence.EvidenceError) as caught:
+            evidence.load(path)
+        assert "sentinel has no" in str(caught.value)
 
     def test_a_value_not_seen_on_the_other_channel_fails(self, tmp_path):
         path = tmp_path / "e.jsonl"
@@ -453,13 +489,11 @@ class TestTwoMachinesAreShownToBeTwo:
         recorder.record(evidence.Step(
             name="client identity", role="client", argv=["(identity)"],
             started_at=1.0, ended_at=1.1, exit_code=0,
-            machine={"role": "client", "host_sha256": "c" * 64,
-                     "filesystem_sha256": "cf" * 32, "os": "Windows"}))
+            machine=identity("client", "c" * 64, "cf" * 32, "Windows")))
         recorder.record(evidence.Step(
             name="gateway identity", role="gateway", argv=["(identity)"],
             started_at=1.2, ended_at=1.3, exit_code=0,
-            machine={"role": "gateway", "host_sha256": "g" * 64,
-                     "filesystem_sha256": "gf" * 32, "os": "Linux"}))
+            machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
         recorder.record(evidence.Step(
             name="a sentinel that never arrived", role="client", argv=["(sentinel)"],
             started_at=1.4, ended_at=1.5, exit_code=0,
@@ -473,13 +507,11 @@ class TestTwoMachinesAreShownToBeTwo:
         recorder.record(evidence.Step(
             name="client identity", role="client", argv=["(identity)"],
             started_at=1.0, ended_at=1.1, exit_code=0,
-            machine={"role": "client", "host_sha256": "c" * 64,
-                     "filesystem_sha256": "cf" * 32, "os": "Windows"}))
+            machine=identity("client", "c" * 64, "cf" * 32, "Windows")))
         recorder.record(evidence.Step(
             name="gateway identity", role="gateway", argv=["(identity)"],
             started_at=1.2, ended_at=1.3, exit_code=0,
-            machine={"role": "gateway", "host_sha256": "g" * 64,
-                     "filesystem_sha256": "gf" * 32, "os": "Linux"}))
+            machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
         recorder.record(evidence.Step(
             name="only one direction", role="client", argv=["(sentinel)"],
             started_at=1.4, ended_at=1.5, exit_code=0,
@@ -493,13 +525,11 @@ class TestTwoMachinesAreShownToBeTwo:
         recorder.record(evidence.Step(
             name="client identity", role="client", argv=["(identity)"],
             started_at=1.0, ended_at=1.1, exit_code=0,
-            machine={"role": "client", "host_sha256": "c" * 64,
-                     "filesystem_sha256": "cf" * 32, "os": "Windows"}))
+            machine=identity("client", "c" * 64, "cf" * 32, "Windows")))
         recorder.record(evidence.Step(
             name="gateway identity", role="gateway", argv=["(identity)"],
             started_at=1.2, ended_at=1.3, exit_code=0,
-            machine={"role": "gateway", "host_sha256": "g" * 64,
-                     "filesystem_sha256": "gf" * 32, "os": "Linux"}))
+            machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
         for made, checked in (("client", "gateway"), ("gateway", "client")):
             recorder.record(evidence.Step(
                 name=f"sentinel {made}", role=made, argv=["(sentinel)"],
@@ -508,21 +538,44 @@ class TestTwoMachinesAreShownToBeTwo:
         found = evidence.check_file(path)
         assert "generated independently" in messages(found)
 
-    def test_the_same_operating_system_on_both_fails(self, tmp_path):
+    def test_the_same_operating_system_on_both_is_allowed(self, tmp_path):
+        """Two distinct hosts may run the same operating system. Failing on that would be a rule
+        about a coincidence -- EM3C-EVIDENCE-0001 was right to say so. The host and filesystem
+        identities are what separate them."""
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client")
         recorder.record(evidence.Step(
             name="client identity", role="client", argv=["(identity)"],
             started_at=1.0, ended_at=1.1, exit_code=0,
-            machine={"role": "client", "host_sha256": "c" * 64,
-                     "filesystem_sha256": "cf" * 32, "os": "Linux"}))
+            machine=identity("client", "c" * 64, "cf" * 32, "Linux")))
         recorder.record(evidence.Step(
             name="gateway identity", role="gateway", argv=["(identity)"],
             started_at=1.2, ended_at=1.3, exit_code=0,
-            machine={"role": "gateway", "host_sha256": "g" * 64,
-                     "filesystem_sha256": "gf" * 32, "os": "Linux"}))
+            machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
+        for made, checked in (("client", "gateway"), ("gateway", "client")):
+            recorder.record(evidence.Step(
+                name=f"sentinel {made}", role=made, argv=["(sentinel)"],
+                started_at=1.4, ended_at=1.5, exit_code=0,
+                sentinel=crossing(made, digest_for(made))))
+        bindings(recorder)
         found = evidence.check_file(path)
-        assert "same operating system" in messages(found)
+        assert "operating system" not in messages(found), messages(found)
+
+    def test_an_identity_command_that_failed_is_an_evidence_error(self, tmp_path):
+        """An identity built from a command that did not succeed is an assertion."""
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        broken = identity("client", "c" * 64, "cf" * 32, "Windows")
+        broken["commands"][0]["exit_code"] = 1
+        recorder.record(evidence.Step(
+            name="client identity", role="client", argv=["(identity)"],
+            started_at=1.0, ended_at=1.1, exit_code=0, machine=broken))
+        recorder.record(evidence.Step(
+            name="gateway identity", role="gateway", argv=["(identity)"],
+            started_at=1.2, ended_at=1.3, exit_code=0,
+            machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
+        found = evidence.check_file(path)
+        assert "never established" in messages(found)
 
 
 class TestSecretsNeverReachTheRecord:
@@ -564,6 +617,38 @@ class TestSecretsNeverReachTheRecord:
         recorder.run("echo", [sys.executable, "-c", f"print('{self.SECRET}')"])
         assert self.SECRET not in (tmp_path / "e.jsonl").read_text(encoding="utf-8")
 
+    def test_a_value_nobody_collected_under_a_secret_named_key_is_removed(self, tmp_path):
+        """The layer the value list cannot reach. This value is not in `secrets`, so only the key
+        it sits under can save it -- which is the point of having that layer at all."""
+        never_collected = "unknown-value-nobody-told-the-recorder-about"
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[])
+        recorder.record(good_step(gateway_record={**OK_RECORD,
+                                                  "auth": {"token": never_collected}}))
+        written = (tmp_path / "e.jsonl").read_text(encoding="utf-8")
+        assert never_collected not in written
+        assert evidence.REDACTED in written
+
+    def test_private_key_material_is_removed_wherever_it_appears(self, tmp_path):
+        """Recognisable without being known: no value list can contain a key nobody collected."""
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[])
+        recorder.record(good_step(notes="-----BEGIN OPENSSH PRIVATE KEY----- abc"))
+        written = (tmp_path / "e.jsonl").read_text(encoding="utf-8")
+        assert "BEGIN OPENSSH PRIVATE KEY" not in written
+        assert evidence.REDACTED in written
+
+    def test_a_secret_that_survives_its_own_redaction_stops_the_record(self, tmp_path,
+                                                                        monkeypatch):
+        """The redactor's failure has to be visible. A record quietly containing a credential is
+        worse than no record, so the check is made against a redactor that does nothing."""
+        monkeypatch.setattr(evidence, "redact_deep",
+                            lambda value, secrets, **kw: value)
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client",
+                                     secrets=["a-live-credential-value"])
+        with pytest.raises(evidence.EvidenceError) as caught:
+            recorder.record(good_step(notes="a-live-credential-value is here"))
+        assert "survived its own pass" in str(caught.value)
+        assert not (tmp_path / "e.jsonl").exists() or             "a-live-credential-value" not in (tmp_path / "e.jsonl").read_text(encoding="utf-8")
+
     def test_the_rest_of_the_record_survives(self, tmp_path):
         """The control. A redactor that emptied the document would pass everything above."""
         step = good_step(notes=f"the token was {self.SECRET}", name="a distinctive step name")
@@ -578,6 +663,7 @@ class TestTheCommandLineEntryPoint:
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client")
         two_machines(recorder)
+        bindings(recorder)
         recorder.record(good_step())
         assert evidence.main([str(path)]) == 0
         assert "about the run it names" in capsys.readouterr().out
@@ -596,3 +682,51 @@ class TestTheCommandLineEntryPoint:
         path = tmp_path / "e.jsonl"
         path.write_text("{not json\n", encoding="utf-8")
         assert evidence.main([str(path)]) == 2
+
+
+class TestThePolicyBindingIsChecked:
+    """EM3C-EVIDENCE-0001: the binding was captured and never read, so a missing, stale or
+    divergent one produced no finding at all. A binding nobody checks is a field, not a rule."""
+
+    def _with(self, tmp_path, binding, times=2):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        two_machines(recorder)
+        for n in range(times):
+            recorder.record(evidence.Step(
+                name=f"binding {n + 1}", role="gateway", argv=["(egress --verbose)"],
+                started_at=2.0 + n, ended_at=2.1 + n, exit_code=0, binding=dict(binding)))
+        return evidence.check_file(path)
+
+    def test_a_complete_binding_captured_twice_is_accepted(self):
+        pass
+
+    def test_a_record_with_no_binding_at_all_is_an_evidence_error(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client")
+        two_machines(recorder)
+        found = evidence.check_file(path)
+        assert "no operator-policy binding was captured" in messages(found)
+
+    def test_a_binding_captured_once_was_never_compared(self, tmp_path):
+        found = self._with(tmp_path, BINDING, times=1)
+        assert "never compared" in messages(found)
+
+    @pytest.mark.parametrize("field", ["generation", "policy_digest", "configured_digest",
+                                       "runtime", "backend", "conformance_digest"])
+    def test_an_empty_required_field_is_an_evidence_error(self, tmp_path, field):
+        found = self._with(tmp_path, {**BINDING, field: ""})
+        assert f"records no {field}" in messages(found)
+
+    def test_a_digest_that_is_not_one_fails(self, tmp_path):
+        found = self._with(tmp_path, {**BINDING, "policy_digest": "not-a-digest"})
+        assert "is not a digest" in messages(found)
+
+    def test_digests_that_do_not_agree_fail(self, tmp_path):
+        found = self._with(tmp_path, {**BINDING, "digests_agree": "False"})
+        assert "do not agree" in messages(found)
+
+    def test_a_complete_binding_produces_no_binding_finding(self, tmp_path):
+        """The control. Without it, a rule that rejected every binding would pass the rest."""
+        found = self._with(tmp_path, BINDING)
+        assert not [f for f in found if "binding" in f.message], messages(found)
