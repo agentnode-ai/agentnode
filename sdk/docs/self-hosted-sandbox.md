@@ -258,5 +258,9 @@ would trust with the sandbox itself.
 
 This is a self-hosted beta. It has not been used by anyone outside the project. The remote path has
 been tested between two separated accounts on one machine — different user, no access to the
-gateway's files, no container runtime of its own — and **not yet between two real machines**. Real
-TLS to a real peer, a routed network and DNS are exactly what that arrangement cannot exercise.
+gateway's files, no container runtime of its own — and once between two real machines: a Linux
+gateway on one host and a Windows client on another, with an SSH port-forward between them.
+
+Both ends of that forward were loopback addresses, so it does not stand in for the parts that
+still have not been exercised: **real TLS to a real peer, a routed network, and DNS**. Those
+remain untested, and this page does not claim otherwise.
