@@ -2183,6 +2183,32 @@ class TestThePairingAnswerMustDescribeItself:
         with pytest.raises(gc.GatewayClientError, match="does not describe itself"):
             gc.pair(base, code)
 
+    def test_a_refusal_that_cannot_describe_itself_is_not_repeated(self, gateway, monkeypatch):
+        """The refusal path was presented before any check ran."""
+        base, state, service, _ = gateway
+        state.start_pairing()
+        real_post = gc._post
+
+        def hostile(url, body, timeout=30.0):
+            if url.endswith("/v1/pair"):
+                return 403, {"error": "PLAUSIBLE-SOUNDING-LIE",
+                             "gateway": {"gateway_id": "someone", "version": "1"},
+                             "fingerprint": "0" * 64}
+            return real_post(url, body, timeout)
+
+        monkeypatch.setattr(gc, "_post", hostile)
+        with pytest.raises(gc.GatewayClientError) as exc:
+            gc.pair(base, "ABCD-EFGH-JKLM")
+        assert "PLAUSIBLE-SOUNDING-LIE" not in str(exc.value)
+        assert "does not describe itself" in str(exc.value)
+
+    def test_a_consistent_refusal_is_still_reported(self, gateway):
+        """A real gateway refusing a wrong code must still say so in its own words."""
+        base, state, service, _ = gateway
+        state.start_pairing()
+        with pytest.raises(gc.GatewayClientError, match="does not match"):
+            gc.pair(base, "ZZZZ-ZZZZ-ZZZZ")
+
     def test_an_honest_answer_still_pairs(self, gateway):
         base, state, service, _ = gateway
         connection = gc.pair(base, state.start_pairing())

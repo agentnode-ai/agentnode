@@ -132,9 +132,21 @@ def client_role(args) -> int:
     print(f"  python {platform.python_version()}")
 
     url = args.gateway.rstrip("/")
-    step("the gateway address is not plain http to another machine",
-         url.startswith("https://") or "127.0.0.1" in url or "localhost" in url,
-         url)
+    # Parsed, not searched. `http://127.0.0.1.example.com/` contains "127.0.0.1" and is a hostname
+    # somebody else controls; EM3C-EXTERNAL-0015 found this step accepting exactly that. The same
+    # judgement the client itself uses decides it here.
+    from urllib.parse import urlparse
+
+    from agentnode_sdk.gateway.transport import is_loopback
+
+    parsed = urlparse(url)
+    encrypted = parsed.scheme == "https"
+    local = parsed.scheme == "http" and is_loopback(parsed.hostname or "")
+    step("the gateway address is encrypted, or is this machine",
+         encrypted or local,
+         f"{url} (scheme={parsed.scheme}, host={parsed.hostname})")
+    if local:
+        print("  NOTE: this is a loopback address, so nothing below crosses a network.")
 
     heading("connecting")
     connected = run("remote", "connect", url, "--code", args.code, "--as", "external")

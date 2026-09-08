@@ -153,8 +153,11 @@ def pair(base_url: str, code: str, client_name: str = "") -> GatewayConnection:
 
     status, body = _post(base_url.rstrip("/") + "/v1/pair",
                          {"code": code, "client_name": client_name})
-    if status != 200:
-        raise GatewayClientError(body.get("error", f"pairing failed ({status})"))
+    # Before the status, and before any error text is repeated to the caller. Every answer this
+    # gateway gives is stamped, refusals included, so a response that cannot describe itself is
+    # not one to read anything out of -- EM3C-EXTERNAL-0015 found the refusal path being presented
+    # first. What this establishes is self-consistency; it cannot authenticate a peer there is
+    # nothing yet to compare against.
     gateway = body.get("gateway") or {}
     told = str(body.get("fingerprint", ""))
     named = str(gateway.get("gateway_id", "")) + "\n" + str(gateway.get("version", ""))
@@ -165,6 +168,8 @@ def pair(base_url: str, code: str, client_name: str = "") -> GatewayConnection:
             "itself consistently, so nothing from it was saved. Your pairing code has been used; "
             "ask for a new one before trying again."
         )
+    if status != 200:
+        raise GatewayClientError(body.get("error", f"pairing failed ({status})"))
     if not body.get("token"):
         raise GatewayClientError("the gateway did not return an access token")
     return GatewayConnection(
