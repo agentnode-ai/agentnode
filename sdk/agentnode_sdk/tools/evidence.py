@@ -548,6 +548,19 @@ def _sentinel_findings(sentinel: dict, crossed: dict) -> list[Finding]:
     response and is also present on the gateway host, did not -- the client could not have
     produced it. So the origin is derived here, and a record whose label disagrees with its own
     fields is refused rather than believed.
+
+    ## What this is, and what it is not
+
+    This is OBSERVED provenance. It establishes that a value moved between two machines over two
+    separate channels, and that the record's own fields agree about which direction it moved. It
+    is NOT remote attestation: nothing here is signed by the far machine, and nothing proves the
+    far machine is the hardware or image it claims to be. An operator who controls both ends could
+    produce a record that satisfies every rule below.
+
+    That is adequate for a gateway whose operator runs both machines and is checking their
+    separation, which is what these runs do. It would not be adequate for a managed service
+    accepting a stranger's claim about their own sandbox -- see `docs/managed-sandbox-binding.md`,
+    which records what such a service would additionally need.
     """
     where = "two machines"
     made = str(sentinel.get("generated_on") or "")

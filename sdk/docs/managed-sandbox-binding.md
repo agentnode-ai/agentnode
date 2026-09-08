@@ -38,6 +38,19 @@ that a class of job run without network at all, introduces a new mandatory prope
 happens the existing conformance report no longer establishes what is now required, and it must be
 invalidated exactly as an operator-policy change invalidates it.
 
+## A third thing, about the evidence rather than the policy
+
+The external runs establish that the client and the gateway are two machines by observing a value
+cross between them over two separate channels, and by deriving which direction it moved from the
+record rather than from a label. That is **observed provenance**.
+
+It is not remote attestation. Nothing in it is signed by the far machine, and nothing establishes
+that the far machine is the hardware or image it says it is. An operator who controls both ends
+could produce a record satisfying every rule. For a gateway whose owner runs both machines and is
+checking their separation, that is the right instrument. For a managed service accepting somebody
+else's claim about their own sandbox, it is not, and the gap is attestation rather than more
+careful bookkeeping.
+
 ## Why it is recorded rather than started
 
 The current arc is the evidence contract for external verification. Building a second binding level
