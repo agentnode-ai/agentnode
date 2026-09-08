@@ -550,3 +550,154 @@ class TestTheWholeJourneyThroughThePublishedCommands:
         leftovers = [n for n in listed.stdout.split() if n.strip()]
         print("  [observed] leftover run containers:", leftovers or "none")
         assert not leftovers, leftovers
+
+
+class TestTheCommandsSayWhatWasGrantedNotWhatWasAsked:
+    """EM3C-EGRESS-CLASSIFY-0001.
+
+    In the external two-machine run the client printed "It may reach: example.com -- and
+    nothing else." and the run then executed with no network at all. The sentence was printed
+    before the job had been submitted, so it described a request as though it were a grant.
+    A person reading it had no way to tell that the destination was never allowed.
+    """
+
+    @pytest.fixture()
+    def closed_gateway(self, tmp_path):
+        """A gateway whose operator permits no egress -- the shipped default."""
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        closed = SandboxPolicy(
+            network=NetworkRules(enabled=False, allowed_destinations=frozenset()))
+        state = GatewayState(tmp_path / "gw-closed", version="test")
+        service = GatewayService(state, backend=StandInBackend(), operator_policy=closed)
+        _store_measurement(service)
+        server = make_server(service, port=0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        url = "http://127.0.0.1:%d" % server.server_address[1]
+        try:
+            yield url, state, service
+        finally:
+            server.shutdown()
+
+    def test_the_request_is_not_worded_as_a_grant(self, home, closed_gateway, tmp_path, capsys):
+        url, state, _service = closed_gateway
+        _connect(url, state)
+        capsys.readouterr()
+        script = tmp_path / "reach.py"
+        script.write_text("print('x')\n", encoding="utf-8")
+
+        main(["remote", "run", str(script), "--allow", "example.com"])
+        out = capsys.readouterr().out
+
+        assert "Asking to reach: example.com" in out, out
+        assert "It may reach: example.com" not in out, \
+            "the client stated a grant it had not been given"
+
+    def test_what_was_actually_granted_is_printed(self, home, closed_gateway, tmp_path, capsys):
+        """The point is not to say less. It is to say the true thing."""
+        url, state, _service = closed_gateway
+        _connect(url, state)
+        capsys.readouterr()
+        script = tmp_path / "reach.py"
+        script.write_text("print('x')\n", encoding="utf-8")
+
+        main(["remote", "run", str(script), "--allow", "example.com"])
+        out = capsys.readouterr().out
+
+        assert "Granted: no network access." in out, out
+
+    def test_the_narrowing_is_reported_to_the_person(self, home, closed_gateway, tmp_path,
+                                                     capsys):
+        """The server now discloses every narrowing; the client has to show it."""
+        url, state, _service = closed_gateway
+        _connect(url, state)
+        capsys.readouterr()
+        script = tmp_path / "reach.py"
+        script.write_text("print('x')\n", encoding="utf-8")
+
+        main(["remote", "run", str(script), "--allow", "example.com"])
+        out = capsys.readouterr().out
+
+        assert "stricter than asked" in out, out
+        assert "network.allowed_destinations" in out, out
+
+    def test_a_granted_destination_is_named_as_granted(self, home, tmp_path, capsys):
+        """The control. Without it, a client that always said "no network" would pass."""
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        open_policy = SandboxPolicy(
+            network=NetworkRules(enabled=True,
+                                 allowed_destinations=frozenset({"example.com"})))
+        state = GatewayState(tmp_path / "gw-open", version="test")
+        service = GatewayService(state, backend=StandInBackend(), operator_policy=open_policy)
+        _store_measurement(service)
+        server = make_server(service, port=0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        url = "http://127.0.0.1:%d" % server.server_address[1]
+        try:
+            _connect(url, state)
+            capsys.readouterr()
+            script = tmp_path / "reach.py"
+            script.write_text("print('x')\n", encoding="utf-8")
+            main(["remote", "run", str(script), "--allow", "example.com"])
+            out = capsys.readouterr().out
+            assert "Granted: example.com -- and nothing else." in out, out
+            assert "stricter than asked" not in out, \
+                "nothing was narrowed, so nothing should have been reported as narrowed"
+        finally:
+            server.shutdown()
+
+    def test_the_test_command_reads_cleanup_rather_than_asserting_it(self, home,
+                                                                     running_gateway, capsys):
+        """`remote test` used to state that the sandbox was removed afterwards without ever
+        looking at whether that had been established."""
+        url, state, _service = running_gateway
+        _connect(url, state)
+        capsys.readouterr()
+
+        assert main(["remote", "test"]) == 0
+        out = capsys.readouterr().out
+        assert "It works" in out
+        assert "was removed afterwards, and that was confirmed." in out \
+            or "could not be confirmed" in out \
+            or "was NOT removed afterwards" in out, out
+        assert "It had no network access and was removed afterwards." not in out, \
+            "removal was asserted rather than read from the record"
+
+
+class TestAnOperatorCanOpenEgressFromTheCommandLine:
+    """The other half of the same finding: `--allow` on the client was unreachable because no
+    published gateway command could raise the operator ceiling that denies it.
+    """
+
+    def test_the_egress_command_exists_and_starts_closed(self, home, tmp_path, capsys):
+        root = tmp_path / "gw"
+        assert main(["gateway", "egress", "--dir", str(root)]) == 0
+        out = capsys.readouterr().out
+        assert "reach nothing" in out, out
+
+    def test_allowing_a_host_is_shown_back(self, home, tmp_path, capsys):
+        root = tmp_path / "gw"
+        assert main(["gateway", "egress", "--dir", str(root),
+                     "--allow", "example.com"]) == 0
+        out = capsys.readouterr().out
+        assert "example.com" in out
+        assert "may reach" in out, out
+
+    def test_a_host_that_cannot_be_enforced_is_refused(self, home, tmp_path, capsys):
+        root = tmp_path / "gw"
+        assert main(["gateway", "egress", "--dir", str(root), "--allow", "*"]) == 2
+        out = capsys.readouterr().out
+        assert "cannot be enforced" in out, out
+        assert "Nothing was changed" in out, out
+
+    def test_the_setting_reaches_a_gateway_started_from_the_command_line(self, home, tmp_path):
+        """A setting that the start path ignores would be worse than none at all."""
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        root = tmp_path / "gw"
+        assert main(["gateway", "egress", "--dir", str(root), "--allow", "example.com"]) == 0
+        _state, service = gwc._service(root)
+        ceiling = service.operator_policy()
+        assert ceiling.network.enabled is True
+        assert set(ceiling.network.allowed_destinations) == {"example.com"}

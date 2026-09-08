@@ -210,7 +210,19 @@ def cmd_test(args) -> int:
     if final.get("state") == "finished":
         print(f"  {bold('It works.')}")
         print(f"  The sandbox ran the program and sent back: {(final.get('stdout') or '').strip()!r}")
-        print("  It had no network access and was removed afterwards.")
+        # Read from the record rather than asserted from what was asked for. The two are not the
+        # same thing, and saying the second while meaning the first is what C3 was about.
+        eff = final.get("effective_policy") or {}
+        if "network.enabled" in eff:
+            print("  It had no network access."
+                  if not eff.get("network.enabled") else "  It had network access.")
+        cleaned = final.get("cleanup_verified")
+        if cleaned is True:
+            print("  It was removed afterwards, and that was confirmed.")
+        elif cleaned is False:
+            print("  It was NOT removed afterwards.")
+        else:
+            print("  Whether it was removed afterwards could not be confirmed.")
         return 0
     if final.get("state") == "unverified":
         print(f"  {bold('It ran, but not everything could be confirmed.')}")
@@ -236,10 +248,13 @@ def cmd_run(args) -> int:
     network = "restricted" if allow else "none"
     print()
     print(f"  Sending {bold(path.name)} to {bold(saved.name)}.")
+    # What follows is what is being ASKED for. What is granted is not known until the gateway
+    # has composed the policy, and it can be narrower -- EM3C-EGRESS-CLASSIFY-0001 saw this line
+    # promise a destination the run never got. The grant is printed below, from the answer.
     if allow:
-        print(f"  It may reach: {', '.join(allow)} -- and nothing else.")
+        print(f"  Asking to reach: {', '.join(allow)} -- and nothing else.")
     else:
-        print("  It has no network access.")
+        print("  Asking for no network access.")
 
     try:
         answer = gc.submit(connection, artifact, network=network,
@@ -260,6 +275,16 @@ def cmd_run(args) -> int:
     # in a buffer until the job ended, which is exactly when it stops being useful. The two-role
     # check found that by trying to read it the way a person would.
     print(f"  run: {answer['run_id']}", flush=True)
+
+    # Now the grant can be stated, because the gateway has answered with what it composed.
+    granted_net = (answer.get("effective_policy") or {})
+    if "network.enabled" in granted_net:
+        if not granted_net.get("network.enabled"):
+            print("  Granted: no network access.")
+        else:
+            hosts = granted_net.get("network.allowed_destinations") or []
+            print("  Granted: " + (", ".join(hosts) + " -- and nothing else."
+                                   if hosts else "network access with no destination allowed."))
 
     try:
         final = gc.wait_for(connection, answer["run_id"],

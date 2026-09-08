@@ -105,7 +105,7 @@ class RunRecord:
             "refusal": self.refusal,
             "artifact_sha256": self.artifact_sha256,
             "cleanup_verified": self.cleanup_verified,
-            # Invariant 5: an optional narrowing may run, but the answer has to SAY what changed.
+            # Invariant 5: a narrowing may run, but the answer has to SAY what changed.
             "requested_policy": self.requested_policy,
             "effective_policy": self.effective_policy,
             "request_policy_sha256": self.request_policy_sha256,
@@ -415,7 +415,9 @@ class GatewayService:
         )
 
         try:
-            mandatory, optional = validate_paths(request.mandatory, request.optional)
+            # Both lists are still validated: an unknown path name is refused either way.
+            # Only `mandatory` is consulted afterwards -- see the disclosure note in admit().
+            mandatory, _optional = validate_paths(request.mandatory, request.optional)
         except PolicyPathError as exc:
             raise ProtocolError(f"this job's requirements cannot be enforced: {exc}") from exc
 
@@ -482,8 +484,13 @@ class GatewayService:
                 "the policy digest does not match the policy this job describes. "
                 "The job was not started."
             )
+        # Every narrowing is reported, not only the ones the job thought to list as optional.
+        # EM3C-EGRESS-CLASSIFY-0001 found the earlier rule hid real narrowing: a field in
+        # neither list was reduced with no delta and no refusal, so a caller holding two
+        # unequal policy digests had nothing that said which field moved. `mandatory` still
+        # decides what is REFUSED, above; it was never meant to decide what is DISCLOSED.
         return granted, properties, requested_shape, effective_shape, describe_deltas(
-            tuple(p for p in narrowed if p in optional), requested_shape, effective_shape)
+            tuple(narrowed), requested_shape, effective_shape)
 
 
     def client_policy(self, token: str):

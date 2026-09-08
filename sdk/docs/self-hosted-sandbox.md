@@ -149,14 +149,37 @@ hand that the two are actually different machines.
 agentnode remote run ./script.py
 ```
 
-By default the code has no network access at all. To let it reach specific hosts and nothing else:
+By default the code has no network access at all, and that default is set on the gateway, not
+here. Reaching a host takes both halves: the operator allows it, and the job asks for it.
+
+On the gateway machine, once:
+
+```
+agentnode gateway egress --allow api.example.com   # the ceiling: what jobs MAY reach
+agentnode gateway egress                           # show what is allowed today
+agentnode gateway egress --none                    # back to nothing, the default
+```
+
+Then, from your laptop:
 
 ```
 agentnode remote run ./script.py --allow api.example.com
 ```
 
-It gets no route to the internet — only a proxy that will connect to the hosts you named. Anything
-else, including an address it makes up itself, fails.
+A job may ask for fewer hosts than the ceiling allows, never more. Asking for a host the operator
+did not allow is not an error — the job runs without it, and the command says so rather than
+letting you assume otherwise:
+
+```
+  Asking to reach: api.example.com -- and nothing else.
+  Granted: no network access.
+
+  The sandbox was stricter than asked:
+    network.allowed_destinations: asked ['api.example.com'], got []
+```
+
+When a host is allowed, the code still gets no route to the internet — only a proxy that will
+connect to the hosts named. Anything else, including an address it makes up itself, fails.
 
 Useful while it runs:
 
@@ -224,9 +247,10 @@ the code was read from a screen — as items for you to confirm.
 
 ## What this protects, and what it does not
 
-Code you send runs in a container, as a user with no privileges, with no network unless you asked
-for specific hosts, under limits on memory, processes and time, and it is removed afterwards — and
-the gateway has *measured* each of those on your machine rather than assuming them.
+Code you send runs in a container, as a user with no privileges, with no network unless the
+gateway's operator allowed specific hosts *and* the job asked for them, under limits on memory,
+processes and time, and it is removed afterwards — and the gateway has *measured* each of those
+on your machine rather than assuming them.
 
 What it does not protect against: someone who can write to the gateway's directory. They can forge
 tokens, replace its identity, or clear its records. Keep that machine's accounts to people you

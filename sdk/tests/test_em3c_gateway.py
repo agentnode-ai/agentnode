@@ -2984,3 +2984,224 @@ class TestPrivateAddressesAreScreened:
         ]
         with pytest.raises(EgressBlocked):
             screen_addrinfos(infos)
+
+
+class TestEveryNarrowingIsDisclosed:
+    """EM3C-EGRESS-CLASSIFY-0001.
+
+    A real two-machine run asked for one reachable host and executed with no network. The
+    gateway was right to narrow it -- the operator ceiling said no network -- but it reported
+    an empty policy_deltas list while three fields differed and the two policy digests
+    disagreed. The caller was left holding two unequal digests and nothing that said which
+    field had moved.
+
+    The cause was that disclosure was gated on the job's own optional list. A field in neither
+    mandatory nor optional was narrowed with no refusal and no delta. The mandatory list
+    decides what is REFUSED; it was never meant to decide what is DISCLOSED.
+    """
+
+    def _serve(self, state, operator):
+        svc = GatewayService(state, backend=StandInBackend(), operator_policy=operator)
+        _store_measurement(svc)
+        server = make_server(svc, port=0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return svc, server, f"http://127.0.0.1:{server.server_address[1]}"
+
+    def _ceiling(self):
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        return SandboxPolicy(
+            network=NetworkRules(enabled=False, allowed_destinations=frozenset()))
+
+    def test_a_narrowed_field_in_neither_list_is_still_reported(self, gateway):
+        """The exact shape of the external run: nothing declared, network taken away."""
+        _, state, _, _ = gateway
+        _svc, server, url = self._serve(state, self._ceiling())
+        try:
+            conn = gc.pair(url, state.start_pairing())
+            answer = gc.submit(conn, b"x", network="restricted",
+                               allowed_domains=("example.com",))
+            assert answer["state"] != "refused", answer.get("refusal")
+            final = gc.wait_for(conn, answer["run_id"], timeout=20)
+
+            fields = {d["field"] for d in final["policy_deltas"]}
+            assert "network.enabled" in fields, final["policy_deltas"]
+            assert "network.allowed_destinations" in fields, final["policy_deltas"]
+
+            # What makes this test mean something: the digests really did differ, so an empty
+            # delta list here would have been the defect rather than a job that simply got
+            # what it asked for.
+            assert final["request_policy_sha256"] != final["effective_policy_sha256"]
+            assert final["requested_policy"]["network.enabled"] is True
+            assert final["effective_policy"]["network.enabled"] is False
+        finally:
+            server.shutdown()
+
+    def test_the_delta_says_what_was_asked_and_what_was_granted(self, gateway):
+        """A delta that only named the field would not tell a caller what ran."""
+        _, state, _, _ = gateway
+        _svc, server, url = self._serve(state, self._ceiling())
+        try:
+            conn = gc.pair(url, state.start_pairing())
+            answer = gc.submit(conn, b"x", network="restricted",
+                               allowed_domains=("example.com",))
+            final = gc.wait_for(conn, answer["run_id"], timeout=20)
+            deltas = {d["field"]: d for d in final["policy_deltas"]}
+            dest = deltas["network.allowed_destinations"]
+            assert dest["requested"] == ["example.com"]
+            assert dest["effective"] == []
+        finally:
+            server.shutdown()
+
+    def test_a_job_that_was_not_narrowed_still_reports_nothing(self, gateway):
+        """The control. Without it, a change that reported every field always would pass."""
+        base, state = gateway[0], gateway[1]
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none", wall_clock_s=60)
+        final = gc.wait_for(conn, answer["run_id"], timeout=20)
+        assert final["policy_deltas"] == []
+        assert final["request_policy_sha256"] == final["effective_policy_sha256"]
+
+    def test_a_narrowed_mandatory_field_is_still_refused_not_merely_reported(self, gateway):
+        """Disclosure must not have replaced the refusal boundary."""
+        _, state, _, _ = gateway
+        svc, server, url = self._serve(state, self._ceiling())
+        try:
+            conn = gc.pair(url, state.start_pairing())
+            answer = gc.submit(conn, b"x", network="restricted",
+                               allowed_domains=("example.com",),
+                               mandatory=("network.enabled",))
+            assert answer["state"] == "refused"
+            assert "network.enabled" in answer["refusal"]
+            assert "mandatory" in answer["refusal"]
+            assert svc.backend.specs == [], "nothing may start when a mandatory field is narrowed"
+        finally:
+            server.shutdown()
+
+    def test_an_unknown_optional_path_is_still_refused(self, gateway):
+        """The optional list no longer gates disclosure, but it is still validated."""
+        base, state, _, backend = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none", optional=("network.nope",))
+        assert answer["state"] == "refused"
+        assert "cannot be enforced" in answer["refusal"]
+        assert backend.specs == []
+
+
+class TestAnOperatorCanPermitEgress:
+    """EM3C-EGRESS-CLASSIFY-0001: the gateway defaulted to no network and documented that the
+    operator opens it deliberately -- while publishing no command that could open it. The
+    restricted-egress option on the client was unreachable through the shipped surface.
+    """
+
+    def _args(self, root, allow=None, none=False):
+        class Args:
+            pass
+
+        args = Args()
+        args.dir = str(root)
+        args.allow = allow
+        args.none = none
+        return args
+
+    def test_a_new_gateway_allows_nothing(self, tmp_path):
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        root = tmp_path / "gw"
+        assert gwc.cmd_egress(self._args(root)) == 0
+        assert gwc._operator_policy(root) is None, "a new gateway must not permit egress"
+
+    def test_an_allowed_host_becomes_the_operator_ceiling(self, tmp_path):
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        root = tmp_path / "gw"
+        assert gwc.cmd_egress(self._args(root, allow=["example.com"])) == 0
+        policy = gwc._operator_policy(root)
+        assert policy is not None
+        assert policy.network.enabled is True
+        assert set(policy.network.allowed_destinations) == {"example.com"}
+
+    def test_the_service_is_built_with_that_ceiling(self, tmp_path):
+        """The setting has to reach the service, or it is decoration."""
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        root = tmp_path / "gw"
+        gwc.cmd_egress(self._args(root, allow=["example.com"]))
+        _state, service = gwc._service(root)
+        ceiling = service.operator_policy()
+        assert ceiling.network.enabled is True
+        assert set(ceiling.network.allowed_destinations) == {"example.com"}
+
+    def test_without_the_setting_the_service_keeps_the_closed_default(self, tmp_path):
+        """The control: the built-in default must survive an operator who set nothing."""
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        _state, service = gwc._service(tmp_path / "gw")
+        ceiling = service.operator_policy()
+        assert ceiling.network.enabled is False
+        assert set(ceiling.network.allowed_destinations) == set()
+
+    @pytest.mark.parametrize("bad", ["*", "http://example.com", "example.com:443",
+                                     "example.com/path", ""])
+    def test_a_value_that_cannot_be_enforced_is_refused_and_changes_nothing(self, tmp_path, bad):
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        root = tmp_path / "gw"
+        gwc.cmd_egress(self._args(root, allow=["good.example"]))
+        assert gwc.cmd_egress(self._args(root, allow=[bad])) == 2
+        still = gwc._operator_policy(root)
+        assert set(still.network.allowed_destinations) == {"good.example"}, \
+            "a refused setting must not have been written"
+
+    def test_a_hand_edited_config_cannot_start_an_unenforceable_gateway(self, tmp_path):
+        """The file is editable by hand between the command and the start."""
+        import json
+
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        root = tmp_path / "gw"
+        gwc.cmd_egress(self._args(root, allow=["example.com"]))
+        path = gwc._config_path(root)
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["egress_allowed"] = ["*"]
+        path.write_text(json.dumps(config), encoding="utf-8")
+        with pytest.raises(ValueError):
+            gwc._operator_policy(root)
+
+    def test_clearing_it_returns_to_no_network(self, tmp_path):
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        root = tmp_path / "gw"
+        gwc.cmd_egress(self._args(root, allow=["example.com"]))
+        assert gwc.cmd_egress(self._args(root, none=True)) == 0
+        assert gwc._operator_policy(root) is None
+
+    def test_opposite_flags_are_refused_rather_than_guessed(self, tmp_path):
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        root = tmp_path / "gw"
+        assert gwc.cmd_egress(self._args(root, allow=["example.com"], none=True)) == 2
+        assert gwc._operator_policy(root) is None
+
+    def test_a_job_cannot_be_granted_a_host_the_operator_did_not_allow(self, tmp_path):
+        """The ceiling is the point. Permitting one host must not permit the next."""
+        from agentnode_sdk.cli import gateway_commands as gwc
+        from agentnode_sdk.gateway.policy_paths import policy_shape
+        from agentnode_sdk.sandbox.contract import (
+            NetworkRules,
+            SandboxPolicy,
+            Scope,
+            merge_policies,
+        )
+
+        root = tmp_path / "gw"
+        gwc.cmd_egress(self._args(root, allow=["example.com"]))
+        ceiling = gwc._operator_policy(root)
+
+        for asked in (frozenset({"evil.example"}),
+                      frozenset({"example.com", "evil.example"}),
+                      None):
+            job = SandboxPolicy(network=NetworkRules(enabled=True, allowed_destinations=asked))
+            shape = policy_shape(merge_policies({Scope.ORGANISATION: ceiling, Scope.USER: job}))
+            assert "evil.example" not in (shape["network.allowed_destinations"] or []), \
+                f"a job asking for {asked} was granted a host off the ceiling"

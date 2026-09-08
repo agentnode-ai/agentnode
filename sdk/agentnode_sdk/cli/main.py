@@ -256,6 +256,15 @@ def main(argv: list[str] | None = None) -> int:
     gw_start.add_argument("--port", type=int, default=None, help="Port (default 8099)")
     gw_start.add_argument("--tls-cert", dest="tls_cert", default=None)
     gw_start.add_argument("--tls-key", dest="tls_key", default=None)
+    gw_egress = gw_sub.add_parser(
+        "egress", help="What the code this gateway runs is allowed to reach")
+    gw_egress.add_argument("--dir", default=None)
+    gw_egress.add_argument("--allow", action="append", default=None, metavar="HOST",
+                           help="A host jobs on this gateway may reach. Repeatable. "
+                                "This is a ceiling: a job still has to ask, and can ask "
+                                "for less, but never for more.")
+    gw_egress.add_argument("--none", dest="none", action="store_true",
+                           help="Allow nothing. This is the default for a new gateway.")
     gw_status = gw_sub.add_parser("status", help="Is it running, and is it protecting anything")
     gw_status.add_argument("--dir", default=None)
     # --verbose is per-command rather than global: the V1 top-level surface is frozen, and

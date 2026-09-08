@@ -67,14 +67,14 @@ jobs:
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_em3c_gateway.py \
             -k "not TestTheVerticalFlowForReal" 2>&1 | tee em3c-admission.txt
-          grep -qE "^165 passed" em3c-admission.txt || {
+          grep -qE "^183 passed" em3c-admission.txt || {
             echo "the admission tests did not all pass"; exit 1; }
 
       - name: The commands a person actually types
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_em3c_cli.py 2>&1 | tee em3c-cli.txt
-          grep -qE "^25 passed" em3c-cli.txt || {
+          grep -qE "^34 passed" em3c-cli.txt || {
             echo "the CLI tests did not all pass"; exit 1; }
 
       - name: The vertical flow, for real

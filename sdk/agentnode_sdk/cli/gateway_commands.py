@@ -54,6 +54,32 @@ def _save_config(root: Path, config: dict) -> None:
     _config_path(root).write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _operator_policy(root: Path):
+    """The ceiling this machine's owner set, or None to keep the built-in default.
+
+    EM3C-EGRESS-CLASSIFY-0001 found the gateway had a deliberate "the operator opens it"
+    default with no way for an operator to open it: `gateway start` never passed a policy, so
+    the no-network default was the only reachable setting and `remote run --allow` could not
+    be granted by any published command. This reads the setting the operator saved.
+
+    Returning None rather than an all-denying policy matters: it keeps the default in ONE
+    place, in the service, instead of restating it here where the two could drift apart.
+    """
+    allowed = _load_config(root).get("egress_allowed")
+    if not allowed:
+        return None
+
+    from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+    from agentnode_sdk.sandbox.egress import validate_allowed_domains
+
+    hosts = tuple(str(h) for h in allowed)
+    # Validated on the way in AND here, because a config file can be edited by hand between
+    # the two. An unenforceable ceiling must not become a running gateway.
+    validate_allowed_domains(hosts)
+    return SandboxPolicy(network=NetworkRules(enabled=True,
+                                              allowed_destinations=frozenset(hosts)))
+
+
 def _service(root: Path):
     from agentnode_sdk.gateway.identity import GatewayState
     from agentnode_sdk.gateway.server import GatewayService
@@ -62,7 +88,8 @@ def _service(root: Path):
     from agentnode_sdk import __version__ as version
 
     state = GatewayState(root, version=str(version))
-    return state, GatewayService(state, backend=ContainerBackend())
+    return state, GatewayService(state, backend=ContainerBackend(),
+                                 operator_policy=_operator_policy(root))
 
 
 def _tls_from(config: dict, args):
@@ -183,6 +210,50 @@ def cmd_start(args) -> int:
         print("  Stopped. Nothing is listening any more.")
     finally:
         server.server_close()
+    return 0
+
+
+def cmd_egress(args) -> int:
+    """Show or set what jobs on this gateway may reach."""
+    root = _root(args)
+    config = _load_config(root)
+    allow = tuple(getattr(args, "allow", None) or ())
+    clear = bool(getattr(args, "none", False))
+
+    if allow and clear:
+        print()
+        print("  --allow and --none ask for opposite things. Pick one.")
+        return 2
+
+    if clear or allow:
+        if allow:
+            from agentnode_sdk.sandbox.egress import validate_allowed_domains
+            try:
+                validate_allowed_domains(allow)
+            except ValueError as exc:
+                print()
+                print(f"  That cannot be enforced as an allowlist: {exc}")
+                print("  Nothing was changed.")
+                return 2
+            config["egress_allowed"] = sorted(set(allow))
+        else:
+            config.pop("egress_allowed", None)
+        _save_config(root, config)
+        print()
+        print("  Saved. It takes effect the next time the gateway starts.")
+
+    current = _load_config(root).get("egress_allowed") or []
+    print()
+    if current:
+        print("  Jobs on this gateway may reach:")
+        for host in current:
+            print(f"    {host}")
+        print()
+        print("  A job still has to ask for a host, and may ask for fewer than these.")
+        print("  It can never be granted one that is not on this list.")
+    else:
+        print("  Jobs on this gateway reach nothing. No network at all.")
+        print("  To allow a host:  agentnode gateway egress --allow example.com")
     return 0
 
 
@@ -402,6 +473,7 @@ def dispatch(args) -> int:
         "init": cmd_init,
         "start": cmd_start,
         "status": cmd_status,
+        "egress": cmd_egress,
         "doctor": cmd_doctor,
         "pair": cmd_pair,
         "clients": cmd_clients,
@@ -411,7 +483,7 @@ def dispatch(args) -> int:
     handler = handlers.get(action)
     if handler is None:
         print("  Usage: agentnode gateway "
-              "{init|start|status|doctor|pair|clients|revoke|verify}")
+              "{init|start|status|egress|doctor|pair|clients|revoke|verify}")
         return 2
     try:
         return handler(args)
