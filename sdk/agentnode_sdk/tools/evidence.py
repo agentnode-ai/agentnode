@@ -239,7 +239,8 @@ def _production() -> dict:
     if not _PRODUCTION:
         from agentnode_sdk.gateway.policy_paths import policy_shape
         from agentnode_sdk.gateway.protocol import (
-            PROTOCOL_VERSION, SIGNATURE_FIELDS, STAMP_FIELDS, binding_fields, response_binding,
+            ERROR_FIELDS, PROTOCOL_VERSION, SIGNATURE_FIELDS, STAMP_FIELDS, binding_fields,
+            refusal, response_binding,
         )
         from agentnode_sdk.gateway.server import RunRecord
 
@@ -260,7 +261,8 @@ def _production() -> dict:
         types.update({key: (type(value),) for key, value in stamped.items()})
         types["binding"] = (dict,)
         types["signature"] = (str,)
-        types["error"] = (str,)
+        # From a real refusal, so its type is the one the gateway really writes.
+        types.update({k: (type(v),) for k, v in refusal("").items()})
 
         _PRODUCTION.update({
             "inner": inner,
@@ -269,6 +271,7 @@ def _production() -> dict:
             "binding": tuple(binding_fields()),
             "policy": tuple(policy_shape(None)),
             "protocol": PROTOCOL_VERSION,
+            "error": tuple(ERROR_FIELDS),
             "response_binding": response_binding,
             "types": types,
             "seal": lambda answer: digest(canonical_bytes(answer)),
@@ -276,16 +279,16 @@ def _production() -> dict:
     return _PRODUCTION
 
 
-#: The one field a gateway answer carries that is in neither the run record nor the envelope:
-#: what it says when there is no such run. Not derivable from a function, so it is named -- and
-#: `test_a_real_not_found_answer_carries_exactly_this` holds it against a real endpoint.
-ERROR_FIELDS = ("error",)
-
-
 def answer_fields() -> tuple[str, ...]:
-    """Every key a client-visible answer may carry, from the code that puts them there."""
+    """Every key a client-visible answer may carry, from the code that puts them there.
+
+    Four groups, four production sources: the run record, the stamp, the signature, and what an
+    answer carries instead of a run when there is no run to describe. `EM3C-EVIDENCE-0014`: the
+    last of those was named here, which made this a second declaration of the protocol however
+    carefully it was held against a real answer.
+    """
     p = _production()
-    return tuple(p["inner"]) + tuple(p["stamp"]) + tuple(p["signature"]) + ERROR_FIELDS
+    return tuple(p["inner"]) + tuple(p["stamp"]) + tuple(p["signature"]) + tuple(p["error"])
 
 
 def _runtime_types(hint) -> tuple:

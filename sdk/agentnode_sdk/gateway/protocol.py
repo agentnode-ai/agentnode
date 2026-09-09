@@ -100,6 +100,17 @@ STAMP_FIELDS = ("gateway", "fingerprint", "protocol")
 SIGNATURE_FIELDS = ("binding", "signature")
 
 
+#: What an answer carries INSTEAD of a run when there is no run to describe. Named here for the
+#: same reason as the stamp: the gateway writes it and something else reads it back, and two
+#: lists of one thing drift. `EM3C-EVIDENCE-0014`: the reader had this one of its own.
+ERROR_FIELDS = ("error",)
+
+
+def refusal(reason: str) -> dict[str, Any]:
+    """The body of an answer that has no run to describe. The only place it is built."""
+    return {"error": str(reason)}
+
+
 def stamp_fields(identity) -> dict[str, Any]:
     """The three fields `GatewayService.stamp` adds. The only place they are built."""
     return {"gateway": identity.as_dict(),

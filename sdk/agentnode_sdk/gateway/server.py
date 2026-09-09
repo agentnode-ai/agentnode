@@ -46,6 +46,7 @@ from agentnode_sdk.gateway.readiness import (
 )
 from agentnode_sdk.gateway.transport import TlsFiles, check_bind_address
 from agentnode_sdk.gateway.protocol import (
+    refusal,
     PROTOCOL_VERSION,
     JobRequest,
     NonceCache,
@@ -1213,7 +1214,7 @@ class _Handler(BaseHTTPRequestHandler):
         verdict = inspect_dir(self.service.state.root)
         if verdict.ok:
             return True
-        self._send(503, {"error": "this gateway has stopped accepting work: " + verdict.reason})
+        self._send(503, refusal("this gateway has stopped accepting work: " + verdict.reason))
         return False
 
     def do_GET(self):
@@ -1231,13 +1232,13 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 self.service.require_client(token)
             except ProtocolError as exc:
-                return self._send(403, {"error": str(exc)})
+                return self._send(403, refusal(str(exc)))
             record = self.service.owned_run(run_id, token)
             if record is None:
-                return self._send(404, self.service.stamp({"error": "no such run"}))
+                return self._send(404, self.service.stamp(refusal("no such run")))
             return self._send(200, self.service.sign_answer(
                 self.service.stamp(record.public()), token))
-        return self._send(404, {"error": "no such endpoint"})
+        return self._send(404, refusal("no such endpoint"))
 
     def do_POST(self):
         if not self._state_is_private():
@@ -1245,7 +1246,7 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             body = self._read_json()
         except (ProtocolError, ValueError) as exc:
-            return self._send(400, {"error": str(exc)})
+            return self._send(400, refusal(str(exc)))
 
         if self.path == "/v1/pair":
             try:
@@ -1257,7 +1258,7 @@ class _Handler(BaseHTTPRequestHandler):
                     body.get("code", ""), client_name=body.get("client_name", ""),
                 )
             except PairingError as exc:
-                return self._send(403, {"error": str(exc)})
+                return self._send(403, refusal(str(exc)))
             identity = self.service.state.identity
             return self._send(200, {"token": token, "gateway": identity.as_dict(),
                                     "fingerprint": identity.fingerprint})
@@ -1270,7 +1271,7 @@ class _Handler(BaseHTTPRequestHandler):
                 request = JobRequest.from_payload(payload)
                 artifact = base64.b64decode(body.get("artifact_b64", "") or "")
             except (ProtocolError, ValueError) as exc:
-                return self._send(403, {"error": str(exc)})
+                return self._send(403, refusal(str(exc)))
             record = self.service.submit(request, artifact, body.get("token", ""))
             return self._send(202 if record.state != "refused" else 409,
                               self.service.sign_answer(
@@ -1287,10 +1288,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self.service.authenticate(token, body.get("payload") or {},
                                           body.get("signature", ""))
             except ProtocolError as exc:
-                return self._send(403, {"error": str(exc)})
+                return self._send(403, refusal(str(exc)))
             replacement = self.service.state.rotate_token(token)
             if replacement is None:
-                return self._send(403, {"error": "this client is not paired with this gateway"})
+                return self._send(403, refusal("this client is not paired with this gateway"))
             identity = self.service.state.identity
             return self._send(200, {"token": replacement, "gateway": identity.as_dict(),
                                     "fingerprint": identity.fingerprint})
@@ -1302,21 +1303,21 @@ class _Handler(BaseHTTPRequestHandler):
                 self.service.authenticate(token, body.get("payload") or {},
                                           body.get("signature", ""))
             except ProtocolError as exc:
-                return self._send(403, {"error": str(exc)})
+                return self._send(403, refusal(str(exc)))
             # Being paired was never enough to cancel somebody else's run; it only looked like it
             # was, because nothing checked. Ownership is checked BEFORE the cancel, so a stranger
             # cannot stop a run and then be told it was not theirs.
             if self.service.owned_run(run_id, token) is None:
-                return self._send(404, self.service.stamp({"error": "no such run"}))
+                return self._send(404, self.service.stamp(refusal("no such run")))
             record = self.service.cancel(run_id)
             if record is None:
-                return self._send(404, self.service.stamp({"error": "no such run"}))
+                return self._send(404, self.service.stamp(refusal("no such run")))
             # Signed with the token that authenticated, not with whatever a header claimed. The
             # two were different variables, and only one of them had been checked.
             return self._send(200, self.service.sign_answer(
                 self.service.stamp(record.public()), token))
 
-        return self._send(404, {"error": "no such endpoint"})
+        return self._send(404, refusal("no such endpoint"))
 
 
 def make_server(

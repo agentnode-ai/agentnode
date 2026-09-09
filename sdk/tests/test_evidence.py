@@ -1248,12 +1248,12 @@ class TestTheGatewayRecordIsClosedToo:
             sorted(set(real_answer) - set(evidence.answer_fields()))
 
     def test_a_real_not_found_answer_carries_exactly_this(self, real_gateway):
-        """The one field named rather than derived, held against a real endpoint."""
+        """What the gateway writes when there is no run, held against a real endpoint."""
         status, body = real_gateway.an_absent_run()
         assert status == 404
-        from agentnode_sdk.gateway.protocol import STAMP_FIELDS
+        from agentnode_sdk.gateway.protocol import ERROR_FIELDS, STAMP_FIELDS
 
-        assert set(body) == set(evidence.ERROR_FIELDS) | set(STAMP_FIELDS), sorted(body)
+        assert set(body) == set(ERROR_FIELDS) | set(STAMP_FIELDS), sorted(body)
         assert set(body) - set(evidence.answer_fields()) == set()
 
     def test_the_reader_takes_a_real_answer_whole(self, tmp_path, real_answer):
