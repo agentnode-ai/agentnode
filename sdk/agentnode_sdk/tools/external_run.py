@@ -229,7 +229,8 @@ def gateway_record(run_id):
     asked = f"/v1/jobs/{run_id}" if run_id else "(no run id was printed)"
     if not run_id:
         return None, {"http_status": None, "verified": False, "asked_for": asked,
-                      "refusal": "the client never printed a run id, so nothing was asked"}
+                      "refusal": "the client never printed a run id, so nothing was asked",
+                      "verified_sha256": ""}
     # `gc.status_of` IS the way the product asks: it reads the answer, refuses one from a
     # gateway this connection did not pair with, refuses a status that is not 200, and returns
     # only what `verify_answer` accepted. Asking any other way would be this driver deciding
@@ -238,13 +239,15 @@ def gateway_record(run_id):
         conn, _saved = connection()
     except Exception as exc:                                       # noqa: BLE001
         return None, {"http_status": None, "verified": False, "asked_for": asked,
-                      "refusal": f"{type(exc).__name__}: {exc}"}
+                      "refusal": f"{type(exc).__name__}: {exc}",
+                      "verified_sha256": ""}
     status = None
     try:
         status, raw = gc._get(f"{conn.base_url}{asked}", token=conn.token)
     except Exception as exc:                                       # noqa: BLE001
         return None, {"http_status": None, "verified": False, "asked_for": asked,
-                      "refusal": f"{type(exc).__name__}: {exc}"}
+                      "refusal": f"{type(exc).__name__}: {exc}",
+                      "verified_sha256": ""}
     try:
         accepted = gc.status_of(conn, run_id)
     except Exception as exc:                                       # noqa: BLE001
@@ -252,8 +255,13 @@ def gateway_record(run_id):
         # is the separate observation beside it.
         return (raw if isinstance(raw, dict) else None), {
             "http_status": status, "verified": False, "asked_for": asked,
-            "refusal": f"{type(exc).__name__}: {exc}"}
-    return accepted, {"http_status": status, "verified": True, "asked_for": asked, "refusal": ""}
+            "refusal": f"{type(exc).__name__}: {exc}", "verified_sha256": ""}
+    from agentnode_sdk.gateway.protocol import canonical_bytes, digest
+
+    return accepted, {"http_status": status, "verified": True, "asked_for": asked, "refusal": "",
+                      # The whole answer, as accepted, canonically. Anything that changes in the
+                      # record afterwards -- including the signature -- stops matching this.
+                      "verified_sha256": digest(canonical_bytes(accepted))}
 
 
 def live_secrets():

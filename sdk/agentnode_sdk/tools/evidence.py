@@ -243,14 +243,35 @@ def _production() -> dict:
         )
         from agentnode_sdk.gateway.server import RunRecord
 
+        import typing
+
+        from agentnode_sdk.gateway.identity import GatewayIdentity
+        from agentnode_sdk.gateway.protocol import canonical_bytes, digest, stamp_fields
+
+        hints = typing.get_type_hints(RunRecord)
+        inner = tuple(RunRecord(run_id="", job_id="").public())
+        # `policy_deltas` is the only public key whose attribute is named differently.
+        attribute = {"policy_deltas": "deltas"}
+        types = {key: _runtime_types(hints[attribute.get(key, key)]) for key in inner}
+
+        # The envelope's types come from a real stamp over a real identity, so they are the
+        # types the gateway really puts there rather than the ones this file expects.
+        stamped = stamp_fields(GatewayIdentity(gateway_id="0" * 32, version="0"))
+        types.update({key: (type(value),) for key, value in stamped.items()})
+        types["binding"] = (dict,)
+        types["signature"] = (str,)
+        types["error"] = (str,)
+
         _PRODUCTION.update({
-            "inner": tuple(RunRecord(run_id="", job_id="").public()),
+            "inner": inner,
             "stamp": tuple(STAMP_FIELDS),
             "signature": tuple(SIGNATURE_FIELDS),
             "binding": tuple(binding_fields()),
             "policy": tuple(policy_shape(None)),
             "protocol": PROTOCOL_VERSION,
             "response_binding": response_binding,
+            "types": types,
+            "seal": lambda answer: digest(canonical_bytes(answer)),
         })
     return _PRODUCTION
 
@@ -267,21 +288,39 @@ def answer_fields() -> tuple[str, ...]:
     return tuple(p["inner"]) + tuple(p["stamp"]) + tuple(p["signature"]) + ERROR_FIELDS
 
 
-#: Extra strictness on keys whose type this module relies on. Deliberately NOT a description of
-#: the answer: a key the gateway adds and this map does not mention is accepted, whatever it
-#: holds, because the answer's shape is the gateway's to define and only its strictness is ours.
-_ANSWER_TYPES: dict[str, tuple] = {
-    "run_id": (str,), "job_id": (str,), "state": (str,),
-    "exit_code": (int, type(None)), "stdout": (str,), "stderr": (str,),
-    "refusal": (str,), "artifact_sha256": (str,),
-    "cleanup_verified": (bool, str, type(None)),
-    "requested_policy": (dict,), "effective_policy": (dict,),
-    "request_policy_sha256": (str,), "effective_policy_sha256": (str,),
-    "policy_deltas": (list, type(None)),
-    "started_at": (int, float, type(None)), "finished_at": (int, float, type(None)),
-    "gateway": (dict,), "fingerprint": (str,), "protocol": (str,),
-    "binding": (dict,), "signature": (str,), "error": (str,),
-}
+def _runtime_types(hint) -> tuple:
+    """The runtime types an annotation admits.
+
+    `float` also admits `int`, because JSON has one number type and a whole number comes back as
+    an int. Nothing else is widened: this is the gateway's declaration, read rather than guessed.
+    """
+    import types as _types
+    import typing
+
+    if typing.get_origin(hint) in (typing.Union, getattr(_types, "UnionType", None)):
+        found: tuple = ()
+        for part in typing.get_args(hint):
+            found += _runtime_types(part)
+        return found
+    if hint is float:
+        return (int, float)
+    return (hint,) if isinstance(hint, type) else (object,)
+
+
+def answer_types() -> dict:
+    """The type of every key an answer may carry, from the code that declares them.
+
+    `EM3C-EVIDENCE-0013`: the names were derived and the types were not, so a key nobody had
+    thought about was accepted whatever it held. Nothing is open now, and a key that cannot be
+    resolved to a declared type makes this refuse rather than wave it through.
+    """
+    types = dict(_production()["types"])
+    missing = [k for k in answer_fields() if k not in types]
+    if missing:
+        raise EvidenceError(
+            "the gateway declares fields whose type this reader cannot resolve: "
+            + ", ".join(sorted(missing)) + ". Nothing is read until it can.")
+    return types
 
 #: A delta says which policy field changed and what it held on each side. The two values are
 #: whatever that field's type is, so they are deliberately not typed -- but the entry around
@@ -292,10 +331,10 @@ _DELTA = {"required": ("path", "requested", "effective"), "optional": (), "types
 #: purpose: an answer is the gateway's, and whether the client's own verification accepted it is
 #: the client's. Mixing the two is how a self-made answer gets recorded as a received one.
 _ANSWER_OBSERVED = {
-    "required": ("http_status", "verified", "refusal", "asked_for"),
+    "required": ("http_status", "verified", "refusal", "asked_for", "verified_sha256"),
     "optional": (),
     "types": {"http_status": (int, type(None)), "verified": (bool,), "refusal": (str,),
-              "asked_for": (str,)},
+              "asked_for": (str,), "verified_sha256": (str,)},
 }
 
 
@@ -376,8 +415,9 @@ def _closed(where: str, value, shape: dict) -> None:
                 + " or ".join(t.__name__ for t in allowed) + ".")
 
 
-#: The flat view the older rules use, over the keys this module relies on the type of.
-_GATEWAY_RECORD_TYPES: dict[str, tuple] = dict(_ANSWER_TYPES)
+#: The flat view the older rules use. A function, because the types come from the gateway.
+def _gateway_record_types() -> dict:
+    return answer_types()
 
 
 def _no_duplicates(pairs):
@@ -478,7 +518,7 @@ def parse_step(text_or_mapping) -> dict:
     record = document.get("gateway_record")
     if isinstance(record, dict):
         _closed("gateway_record", record, {"required": (), "optional": answer_fields(),
-                                           "types": _ANSWER_TYPES,
+                                           "types": answer_types(),
                                            "elements": {"policy_deltas": _DELTA}})
         for key in ("requested_policy", "effective_policy"):
             if isinstance(record.get(key), dict):
@@ -1373,6 +1413,24 @@ def verify_answers(steps) -> list[Finding]:
                         where, FAIL,
                         f"the stamp says the {key} is {str(said.get(key))[:24]!r} and the signed "
                         f"binding says {str(binding.get(key))[:24]!r}"))
+
+        # The signature cannot be checked here, so what is checked is that NOTHING in the answer
+        # changed after the client checked it. The client sealed the whole answer, canonically,
+        # at the moment its verification accepted it; recomputing that seal over what is in the
+        # record catches a signature exchanged afterwards, which recomputing the binding cannot
+        # (`EM3C-EVIDENCE-0013`).
+        sealed = str(observed.get("verified_sha256") or "") if isinstance(observed, dict) else ""
+        if isinstance(observed, dict) and observed.get("verified") is True:
+            if not sealed:
+                problems.append(Finding(
+                    where, EVIDENCE_ERROR,
+                    "the client accepted this answer and recorded nothing that would show it is "
+                    "still the answer it accepted"))
+            elif sealed != production["seal"](record):
+                problems.append(Finding(
+                    where, FAIL,
+                    "this is not the answer the client verified: something in it changed after "
+                    "it was accepted"))
 
         if not str(record.get("signature") or "").strip():
             problems.append(Finding(

@@ -50,6 +50,29 @@ class RealGateway:
         run_id = answer["run_id"]
         return gc.wait_for(self.connection, run_id, timeout=30.0)
 
+    def resigned(self, answer: dict, **changes) -> dict:
+        """A real answer with something changed, signed and stamped by the production code.
+
+        `EM3C-EVIDENCE-0013`: an earlier version recomputed the binding by hand and left the
+        signature belonging to the answer before the change, so the object was not one the
+        gateway would ever have sent. This goes through `sign_answer` and `stamp`, which are the
+        two functions that turn a run record into an answer -- so what comes out is what that
+        gateway would send if the run had been this one.
+
+        For tests about something OTHER than the tie between an answer's outside and its inside.
+        A test about the tie changes a field WITHOUT re-signing, and must go red.
+        """
+        inner = {k: v for k, v in answer.items()
+                 if k not in ("binding", "signature", "gateway", "fingerprint", "protocol")}
+        inner.update(changes)
+        return self.service.stamp(
+            self.service.sign_answer(inner, self.connection.token))
+
+    def accepted(self, answer: dict) -> dict:
+        """What the production client says about an answer: it takes it, or it refuses it."""
+        gc.assert_same_gateway(self.connection, answer)
+        return gc.verify_answer(self.connection, answer)
+
     def an_absent_run(self, run_id: str = "0" * 32):
         """What the gateway says about a run it does not know. Returned raw: `status_of` refuses
         it, and refusing it is the point."""

@@ -41,7 +41,8 @@ OTHER_RUN = "d06a38ad43e54e3ab39ec18a18dcbbe6"
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _the_answer_these_tests_use(real_answer):
+def _the_answer_these_tests_use(real_gateway, real_answer):
+    GATEWAY[:] = [real_gateway]
     OK_RECORD.clear()
     OK_RECORD.update(real_answer)
 
@@ -55,34 +56,40 @@ def container_for(run: str) -> str:
     return f"agentnode-em3c-{run[:12]}-abc"
 
 
+#: The gateway that gave the answer these tests use. Set with it, so a test that needs a
+#: variant can ask that gateway to sign one rather than assembling it here.
+GATEWAY: list = []
+
+
 def resigned(**changes) -> dict:
-    """A real answer with something changed, and the binding recomputed to match.
+    """A real answer with something changed, signed and stamped by the gateway that gave it.
 
     For tests about something OTHER than the tie between an answer's outside and its inside: a
-    changed field would otherwise break the binding and every such test would fail for that
-    instead of for its own reason. The binding is recomputed with the gateway's own function, so
-    this is still the production shape -- what it is not is a signature, and no test here claims
-    one. Tests that ARE about the tie change a field WITHOUT this, and must go red.
+    changed field would otherwise break the tie and every such test would fail for that rather
+    than for its own reason. `EM3C-EVIDENCE-0013`: this used to recompute the binding by hand
+    and leave the old signature, which made it an object no gateway would ever send.
     """
-    from agentnode_sdk.gateway.protocol import response_binding
-
-    answer = dict(OK_RECORD)
-    answer.update(changes)
-    binding = dict(answer.get("binding") or {})
-    answer["binding"] = response_binding(
-        gateway_id=binding.get("gateway_id", ""), version=binding.get("version", ""),
-        job_id=answer.get("job_id", ""), run_id=answer.get("run_id", ""),
-        artifact_sha256=answer.get("artifact_sha256", ""),
-        request_policy_sha256=answer.get("request_policy_sha256", ""),
-        effective_policy_sha256=answer.get("effective_policy_sha256", ""),
-        result=answer.get("stdout", ""))
-    return answer
+    return GATEWAY[0].resigned(OK_RECORD, **changes)
 
 
-#: What the client observed about a real, accepted answer.
+def sealed(answer: dict) -> str:
+    """The digest the client records when its verification accepts an answer."""
+    from agentnode_sdk.gateway.protocol import canonical_bytes, digest
+
+    return digest(canonical_bytes(answer))
+
+
 def accepted(**changes) -> dict:
-    return {"http_status": 200, "verified": True, "refusal": "",
-            "asked_for": "/v1/jobs/" + OK_RECORD.get("run_id", ""), **changes}
+    """What the client observed about an answer it accepted. `verified_sha256` is over the
+    answer as accepted, so anything changed in the record afterwards stops matching."""
+    answer = changes.pop("over", None) or OK_RECORD
+    observed = {"http_status": 200, "verified": True, "refusal": "",
+                "asked_for": "/v1/jobs/" + answer.get("run_id", ""),
+                "verified_sha256": sealed(answer)}
+    observed.update(changes)
+    if observed["verified"] is not True:
+        observed["verified_sha256"] = ""
+    return observed
 
 
 STATED = {"expected_exit": None, "expected_refusal": "", "expect_output": False,
@@ -230,7 +237,7 @@ def good_step(**overrides) -> evidence.Step:
         policy_deltas=answer.get("policy_deltas"),
         container=container_for(answer.get("run_id", "")),
         cleanup_verified=answer.get("cleanup_verified"), expect_output=True,
-        gateway_record=dict(OK_RECORD), answer=accepted(),
+        gateway_record=dict(OK_RECORD), answer=accepted(over=answer),
     )
     values.update(overrides)
     return a_step(**values)
@@ -291,7 +298,7 @@ def wrong_values() -> dict:
         "expected_refusal": {"expected_refusal": "a reason that appears nowhere"},
         "expect_output": {"expect_output": True, "stdout": ""},
         "expect_cleanup": {"expect_cleanup": True,
-                           "gateway_record": resigned(cleanup_verified="unknown"),
+                           "gateway_record": resigned(cleanup_verified=None),
                            "cleanup_verified": None},
         "expect_container_gone": {"expect_container_gone": True},
     }
@@ -498,6 +505,7 @@ a test. It is a stronger outcome than a test noticing, so it gets its own cover.
         with pytest.raises(evidence.EvidenceError) as caught:
             evidence.load(path)
         assert expected in str(caught.value), str(caught.value)
+
 
     def test_a_well_formed_identity_command_is_accepted(self, tmp_path):
         """The control for the five above."""
@@ -1162,6 +1170,23 @@ class TestTheGatewayRecordIsClosedToo:
         """The control for everything below."""
         assert len(evidence.load(self._written(tmp_path, dict(OK_RECORD)))) == 1
 
+    @pytest.mark.parametrize("key,value", [
+        ("state", 7), ("exit_code", "0"), ("started_at", "soon"), ("cleanup_verified", "maybe"),
+        ("gateway", "a-gateway"), ("fingerprint", 1), ("binding", []), ("signature", 3),
+    ])
+    def test_a_wrongly_typed_key_is_refused_whatever_it_is(self, tmp_path, key, value):
+        """`EM3C-EVIDENCE-0013`: the names were derived from the gateway and the types were not,
+        so a key nobody had thought about was accepted whatever it held."""
+        path = self._written(tmp_path, dict(OK_RECORD))
+        document = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        document["gateway_record"][key] = value
+        path.write_text(json.dumps(document) + chr(10), encoding="utf-8")
+        with pytest.raises(evidence.EvidenceError):
+            evidence.load(path)
+
+    def test_every_key_an_answer_may_carry_has_a_declared_type(self):
+        assert set(evidence.answer_types()) >= set(evidence.answer_fields())
+
     def test_a_key_the_gateway_does_not_emit_is_refused(self, tmp_path):
         path = self._written(tmp_path, dict(OK_RECORD))
         document = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
@@ -1494,6 +1519,35 @@ class TestTheOutsideOfAnAnswerIsTiedToItsInside:
     def test_a_signed_answer_with_nothing_said_about_it_is_refused(self, tmp_path, real_answer):
         found = self._found(tmp_path, dict(real_answer), answer=None)
         assert "nothing says whether the client" in messages(found)
+
+    def test_a_resigned_answer_is_one_the_gateway_would_send(self, tmp_path, real_gateway):
+        """The control for `resigned`: what it returns is accepted by the production client,
+        which is what makes it a fixture rather than an object of this file's making."""
+        variant = real_gateway.resigned(OK_RECORD, stdout="something else")
+        assert real_gateway.accepted(variant) == variant
+        assert self._found(tmp_path, variant,
+                           answer=accepted(over=variant)) == []
+
+    def test_a_signature_swapped_after_it_was_accepted_is_refused(self, tmp_path, real_gateway):
+        """`EM3C-EVIDENCE-0013`: recomputing the binding cannot see this, because the signature
+        is not part of what the binding is over. The client sealed the whole answer."""
+        other = real_gateway.resigned(OK_RECORD, stdout="a different result")
+        assert other["signature"] != OK_RECORD["signature"]
+        found = self._found(tmp_path, {**OK_RECORD, "signature": other["signature"]},
+                            answer=accepted(over=OK_RECORD))
+        assert "changed after it was accepted" in messages(found)
+
+    @pytest.mark.parametrize("field", ["state", "refusal", "started_at"])
+    def test_a_field_outside_the_binding_changed_afterwards_is_refused(self, tmp_path, field):
+        """The binding covers six fields. The seal covers all of them."""
+        changed = {**OK_RECORD, field: 0 if field == "started_at" else "something else"}
+        found = self._found(tmp_path, changed, answer=accepted(over=OK_RECORD))
+        assert "changed after it was accepted" in messages(found)
+
+    def test_an_accepted_answer_with_no_seal_is_an_evidence_error(self, tmp_path):
+        found = self._found(tmp_path, dict(OK_RECORD),
+                            answer=accepted(verified_sha256=""))
+        assert "still the answer it accepted" in messages(found)
 
     def test_two_gateways_in_one_record_are_refused(self, tmp_path, real_gateway, real_answer):
         """Two real answers, from two real gateways, in one file."""
