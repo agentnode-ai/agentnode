@@ -95,7 +95,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_external_run.py 2>&1 | tee em3c-driver.txt
-          grep -qE "^20 passed" em3c-driver.txt || {
+          grep -qE "^30 passed" em3c-driver.txt || {
             echo "the external-run driver tests did not all pass"; exit 1; }
 
       - name: The vertical flow, for real

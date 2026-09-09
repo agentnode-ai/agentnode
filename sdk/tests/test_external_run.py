@@ -18,10 +18,12 @@ is the driver's own.
 """
 from __future__ import annotations
 
+import importlib
 import json
 
 import pytest
 
+from agentnode_sdk.gateway.connections import ConnectionStore, SavedGateway
 from agentnode_sdk.tools import evidence
 from agentnode_sdk.tools import external_run as driver
 
@@ -33,6 +35,21 @@ CONTAINER = f"agentnode-em3c-{RUN_ID[:16]}"
 CONTAINER_ID = "0f1e2d3c4b5a"
 POLICY_A, POLICY_B = "a" * 64, "b" * 64
 CONFORMANCE = "c" * 64
+PORT = "18099"
+
+#: Everything the driver needs to be told. Nothing is defaulted in the driver itself, so this is
+#: also the list a real operator has to supply.
+SETTINGS = {
+    "EM3C_AGENTNODE": "agentnode",
+    "EM3C_WORK": "work",
+    "EM3C_SSH_KEY": "a-key",
+    "EM3C_SERVER": "someone@a-gateway-machine",
+    "EM3C_GATEWAY_BIN": "agentnode",
+    "EM3C_GATEWAY_STATE": "/somewhere/state",
+    "EM3C_GATEWAY_LOG": "/somewhere/gateway.log",
+    "EM3C_GATEWAY_USER": "a-service-account",
+    "EM3C_GATEWAY_PORT": PORT,
+}
 
 
 class World:
@@ -56,6 +73,10 @@ class World:
         self.client_sentinel = ""
         self.gateway_sentinel = ""
         self.token = "t" * 32
+        self.runs: dict[str, dict] = {}
+        self.granted = {"network.enabled": False, "network.allowed_destinations": [],
+                        "limits.cpu": 1, "limits.memory_mb": 512, "limits.processes": 64,
+                        "limits.wall_clock_s": 120}
 
     # -- what the client runs locally ---------------------------------------------------------
     def launch(self, argv, timeout=600.0):
@@ -77,6 +98,9 @@ class World:
             return 0, "cancelled\n", "", ""
         if "rotate" in parts:
             self.token = "r" * 32
+            self.store.save(SavedGateway(name="e3", url=self.url, token=self.token,
+                                         gateway_id="a-gateway",
+                                         fingerprint="a-fingerprint"))
             return 0, "rotated\n", "", ""
         return 0, "ok\n", "", ""
 
@@ -95,6 +119,7 @@ class World:
         if asked and not reachable and self.allowlist:
             return 1, ("refused: this job named no host it may reach ("
                        + ", ".join(asked) + " is not allowed)" + chr(10)), "", ""
+        self.start_run(RUN_ID)
         out = f"run: {RUN_ID}\n"
         payload = parts[-3] if len(parts) >= 3 else ""
         source = ""
@@ -115,6 +140,26 @@ class World:
         else:
             out += "it ran\n"
         return 0, out, "", ""
+
+    # -- what the gateway answers over HTTP ---------------------------------------------------
+    def serve(self, url, token):
+        """The gateway's own answer about a run, as its HTTP API returns it."""
+        if token != self.token:
+            return 401, {"error": "this credential is not the one this gateway knows"}
+        run_id = url.rstrip("/").rsplit("/", 1)[-1]
+        if run_id not in self.runs:
+            return 404, {"error": f"no run {run_id}"}
+        return 200, dict(self.runs[run_id])
+
+    def start_run(self, run_id):
+        self.runs[run_id] = {
+            "run_id": run_id, "job_id": "job-1", "state": "finished", "exit_code": 0,
+            "stdout": "", "stderr": "", "refusal": "", "artifact_sha256": "a" * 64,
+            "cleanup_verified": True, "policy_deltas": [],
+            "request_policy_sha256": "d" * 64, "effective_policy_sha256": "d" * 64,
+            "requested_policy": dict(self.granted), "effective_policy": dict(self.granted),
+            "started_at": 1.0, "finished_at": 2.0,
+        }
 
     # -- what the gateway answers over SSH ----------------------------------------------------
     def query(self, command, timeout=300.0):
@@ -170,7 +215,7 @@ class World:
         if "gateway start" in command:
             return ""
         if "ss -ltn" in command:
-            return "LISTEN 0 128 127.0.0.1:8099 0.0.0.0:*\n"
+            return f"LISTEN 0 128 127.0.0.1:{PORT} 0.0.0.0:*" + chr(10)
         if command.startswith("grep -c"):
             needle = command.split("--")[1].split()[0] if "--" in command else ""
             return "1\n" if needle and needle in self.gateway_log else ""
@@ -200,6 +245,7 @@ def world(monkeypatch, tmp_path):
             import io as _io
             self.stdout = _io.StringIO(f"run: {RUN_ID}\nstill going\n")
             self.stderr = _io.StringIO("")
+            w.start_run(RUN_ID)
             w.container_present = True
 
         def wait(self, timeout=None):
@@ -208,25 +254,38 @@ def world(monkeypatch, tmp_path):
         def kill(self):
             return None
 
-    class Saved:
-        url, gateway_id, fingerprint = "http://127.0.0.1:8099", "gw", "fp"
 
-        @property
-        def token(self):
-            return w.token
+    # The gateway record is NOT stubbed. Finding out what the gateway says about a run is one of
+    # the driver's own decisions -- which URL, which credential, what an error means -- and
+    # replacing it would leave exactly that untested (`EM3C-EVIDENCE-0007`). What is replaced is
+    # the HTTP call itself, one function at the network boundary, and the connection the driver
+    # reads is a real one written to a real store under a temporary home.
+    def fake_http(url, timeout=30.0, token=""):
+        return w.serve(url, token)
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("AGENTNODE_HOME", str(home))
+    w.store = ConnectionStore()          # AGENTNODE_HOME above, resolved the way the driver does
+    w.url = f"http://127.0.0.1:{PORT}"
+    w.store.save(SavedGateway(name="e3", url=w.url, token=w.token,
+                              gateway_id="a-gateway", fingerprint="a-fingerprint"))
+
+    # The settings are read when the module is loaded, so they are set and the module is
+    # re-read before anything is patched onto it. Setting the environment alone would leave the
+    # driver holding the values it was imported with, and the suite would then be testing a
+    # driver configured by nobody.
+    for name, value in SETTINGS.items():
+        monkeypatch.setenv(name, value)
+    importlib.reload(driver)
+    assert driver.PORT == PORT and driver.SERVER == SETTINGS["EM3C_SERVER"]
 
     monkeypatch.setattr(driver, "launch", fake_launch)
     monkeypatch.setattr(driver, "server_query", fake_query)
     monkeypatch.setattr(driver.subprocess, "Popen", Popen)
     monkeypatch.setattr(driver, "live_secrets", lambda: [])
-    monkeypatch.setattr(driver, "connection", lambda: (Saved(), Saved()))
-    monkeypatch.setattr(driver, "gateway_record", lambda run_id: {
-        "run_id": run_id, "state": "finished", "exit_code": 0, "refusal": "",
-        "cleanup_verified": True, "policy_deltas": [],
-        "request_policy_sha256": "d" * 64, "effective_policy_sha256": "d" * 64,
-        "requested_policy": {"network.enabled": False, "network.allowed_destinations": []},
-        "effective_policy": {"network.enabled": False, "network.allowed_destinations": []},
-    } if run_id else {"error": "the client never printed a run id"})
+    monkeypatch.setattr(driver.gc, "_get", fake_http)
+    monkeypatch.setattr(driver, "HOME", home)
     monkeypatch.setattr(driver.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(driver, "WORK", tmp_path / "work")
     (tmp_path / "work").mkdir()
@@ -397,9 +456,25 @@ class TestNothingLocalLeaksIntoThePackagedDriver:
         import inspect
 
         lines = inspect.getsource(driver).splitlines()
-        ports = [line for line in lines if "8099" in line]
-        assert ports == ['PORT = _setting("EM3C_GATEWAY_PORT", "8099")'], ports
+        assert not [line for line in lines if "8099" in line], "a port is written into the driver"
         assert not [line for line in lines if "sudo -u em" in line]
+        assert 'PORT = _setting("EM3C_GATEWAY_PORT", "")' in lines
+
+    def test_a_run_that_was_not_told_where_it_is_happening_refuses(self, tmp_path,
+                                                                   monkeypatch):
+        """No setting has a default that describes one pair of machines, so a run that is not
+        told refuses instead of quietly using somebody else's."""
+        for name in driver.REQUIRED_SETTINGS:
+            monkeypatch.delenv(name, raising=False)
+        assert driver.main(tmp_path / "e.jsonl") == 2
+        assert not (tmp_path / "e.jsonl").exists()
+
+    @pytest.mark.parametrize("left_out", list(driver.REQUIRED_SETTINGS))
+    def test_leaving_out_any_one_setting_refuses_and_names_it(self, monkeypatch, left_out):
+        for name, value in SETTINGS.items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.delenv(left_out)
+        assert left_out in driver.unset_settings()
 
     def test_every_setting_comes_from_the_environment(self, monkeypatch):
         import importlib

@@ -59,7 +59,20 @@ LOG = _setting("EM3C_GATEWAY_LOG", "")
 #: rather than literals: a driver carrying one operator's account name is a driver about that
 #: operator's machine, and this one has to be about whichever two machines it is pointed at.
 GATEWAY_USER = _setting("EM3C_GATEWAY_USER", "")
-PORT = _setting("EM3C_GATEWAY_PORT", "8099")
+PORT = _setting("EM3C_GATEWAY_PORT", "")
+
+#: Nothing here has a default that describes one particular pair of machines. A port carried in
+#: the source is a port belonging to whoever wrote it (`EM3C-EVIDENCE-0007`), and a driver that
+#: silently used it would be about that machine while claiming to be about whichever two it was
+#: pointed at. Every one of these has to be supplied, and a run that is not told refuses.
+REQUIRED_SETTINGS = ("EM3C_AGENTNODE", "EM3C_WORK", "EM3C_SSH_KEY", "EM3C_SERVER",
+                     "EM3C_GATEWAY_BIN", "EM3C_GATEWAY_STATE", "EM3C_GATEWAY_LOG",
+                     "EM3C_GATEWAY_USER", "EM3C_GATEWAY_PORT")
+
+
+def unset_settings() -> list[str]:
+    """Which of the settings this run needs were never given."""
+    return [name for name in REQUIRED_SETTINGS if not os.environ.get(name, "").strip()]
 
 from agentnode_sdk.gateway import client as gc                     # noqa: E402
 from agentnode_sdk.gateway.connections import ConnectionStore      # noqa: E402
@@ -489,6 +502,12 @@ def container_gone(run_id, container, sought_id):
 
 def main(path=None) -> int:
     global rec
+    missing = unset_settings()
+    if missing:
+        print("  This run has not been told where it is happening. Missing: "
+              + ", ".join(missing))
+        print("  Set each of them and run again. Nothing was recorded.")
+        return 2
     os.environ.setdefault("AGENTNODE_HOME", str(HOME))
     destination = Path(path) if path else EVIDENCE
     destination.parent.mkdir(parents=True, exist_ok=True)
