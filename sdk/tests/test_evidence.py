@@ -159,6 +159,19 @@ def good_step(**overrides) -> evidence.Step:
     return a_step(**values)
 
 
+def _a_real_document(tmp_path) -> dict:
+    """One complete record, as a recorder wrote it, read back as a plain document.
+
+    The malformed-input tests need text no recorder can produce, and they need it to differ from
+    a real record in exactly one way. Building the base by hand made that untrue twice over: it
+    omitted fields the recorder always writes, and it was not what the reader would ever see.
+    """
+    path = tmp_path / "base.jsonl"
+    recorder = evidence.Recorder(path, role="client", announce=False)
+    recorder.record(good_step())
+    return json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+
+
 def kinds(findings):
     return {f.kind for f in findings}
 
@@ -233,17 +246,75 @@ a test. It is a stronger outcome than a test noticing, so it gets its own cover.
             evidence.load(path)
         assert "does not describe" in str(caught.value)
 
-    @pytest.mark.parametrize("field", ["name", "role", "argv", "started_at", "ended_at",
-                                       "exit_code"])
+    @pytest.mark.parametrize("field", list(evidence.MANDATORY))
     def test_a_missing_mandatory_field_is_refused(self, tmp_path, field):
-        document = {"schema": evidence.SCHEMA, "name": "x", "role": "client", "argv": [],
-                    "started_at": 1.0, "ended_at": 2.0, "exit_code": 0}
+        """Every mandatory field, one at a time, over a document a recorder really wrote.
+
+        `EM3C-EVIDENCE-0005`: the matrix named six of the eleven, and its base document omitted
+        all five expectations -- so the five that were missing anyway were never shown to be
+        refused for being missing, and the six that were tested were removed from a document
+        that no recorder could have produced. The base is now taken from a real record, so the
+        removal is the only thing wrong with it.
+        """
+        document = _a_real_document(tmp_path)
+        assert field in document, "the base document does not carry the field being removed"
         del document[field]
-        path = tmp_path / "e.jsonl"
+        path = tmp_path / "broken.jsonl"
         path.write_text(json.dumps(document) + "\n", encoding="utf-8")
         with pytest.raises(evidence.EvidenceError) as caught:
             evidence.load(path)
         assert field in str(caught.value)
+
+    def test_the_base_of_that_matrix_is_itself_accepted(self, tmp_path):
+        """The control. Without it, every case above could pass on a document refused for some
+        reason that has nothing to do with the field that was removed."""
+        path = tmp_path / "whole.jsonl"
+        path.write_text(json.dumps(_a_real_document(tmp_path)) + "\n", encoding="utf-8")
+        assert len(evidence.load(path)) == 1
+
+    def test_the_matrix_covers_every_mandatory_field(self):
+        """A field added to MANDATORY without a case above would go untested while the parametrise
+        stayed green. Read off the marker itself, so this cannot drift from what actually runs."""
+        cases = [mark for mark in
+                 self.test_a_missing_mandatory_field_is_refused.pytestmark
+                 if mark.name == "parametrize"]
+        assert len(cases) == 1
+        assert list(cases[0].args[1]) == list(evidence.MANDATORY)
+        assert len(evidence.MANDATORY) == 11
+
+    # -- the shapes inside a nested list ------------------------------------------------------
+
+    @pytest.mark.parametrize("entry,expected", [
+        ("not a record", "says a record"),
+        ({"command": "hostname", "exit_code": 0, "stdout": "h"}, "has no stderr"),
+        ({"command": "hostname", "exit_code": 0, "stdout": "h", "stderr": "", "extra": 1},
+         "does not describe"),
+        ({"command": 7, "exit_code": 0, "stdout": "h", "stderr": ""}, "is int"),
+        ({"command": "hostname", "exit_code": "0", "stdout": "h", "stderr": ""}, "is str"),
+    ])
+    def test_an_identity_command_that_is_not_one_is_refused(self, tmp_path, entry, expected):
+        """`EM3C-EVIDENCE-0005`: `commands` was closed as a list and open in its elements, so a
+        reader accepted anything inside it while the rules read four keys out of each entry."""
+        document = _a_real_document(tmp_path)
+        document["machine"] = {"role": "client", "host_sha256": "c" * 64,
+                               "filesystem_sha256": "f" * 64, "os": "Windows",
+                               "commands": [entry]}
+        path = tmp_path / "broken.jsonl"
+        path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+        with pytest.raises(evidence.EvidenceError) as caught:
+            evidence.load(path)
+        assert expected in str(caught.value), str(caught.value)
+
+    def test_a_well_formed_identity_command_is_accepted(self, tmp_path):
+        """The control for the five above."""
+        document = _a_real_document(tmp_path)
+        document["machine"] = {"role": "client", "host_sha256": "c" * 64,
+                               "filesystem_sha256": "f" * 64, "os": "Windows",
+                               "commands": [{"command": "hostname", "exit_code": 0,
+                                             "stdout": "a-host", "stderr": ""}]}
+        path = tmp_path / "whole.jsonl"
+        path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+        assert len(evidence.load(path)) == 1
 
     def test_a_duplicated_key_is_refused(self, tmp_path):
         path = tmp_path / "e.jsonl"
@@ -839,6 +910,41 @@ class TestTheCommandLineEntryPoint:
         path = tmp_path / "e.jsonl"
         path.write_text("{not json\n", encoding="utf-8")
         assert evidence.main([str(path)]) == 2
+
+
+class TestAHashOfNothingIsNotAnIdentity:
+    """`EM3C-EVIDENCE-0005`: a machine that could not read its own identity and hashed the
+    nothing it got produced a perfectly ordinary-looking digest, which passed the presence
+    check -- and two machines that failed differently could even look like two."""
+
+    EMPTY = evidence.DIGEST_OF_NOTHING
+
+    def _pair(self, tmp_path, **client):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        recorder.record(a_step(name="client identity", role="client", argv=["(identity)"],
+                               started_at=1.0, ended_at=1.1, exit_code=0,
+                               machine=identity("client", "c" * 64, "cf" * 32, "Windows",
+                                                **client)))
+        recorder.record(a_step(name="gateway identity", role="gateway", argv=["(identity)"],
+                               started_at=1.2, ended_at=1.3, exit_code=0,
+                               machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
+        return evidence.verify_two_machines(evidence.load(path))
+
+    def test_the_known_digest_of_nothing_is_what_it_says_it_is(self):
+        import hashlib
+
+        assert hashlib.sha256(b"").hexdigest() == self.EMPTY
+
+    @pytest.mark.parametrize("field", ["host_sha256", "filesystem_sha256"])
+    def test_a_hashed_empty_identity_is_an_evidence_error(self, tmp_path, field):
+        found = self._pair(tmp_path, **{field: self.EMPTY})
+        assert "digest of an empty value" in messages(found)
+
+    def test_a_real_pair_is_still_accepted(self, tmp_path):
+        """The control: without it a rule refusing every identity would pass both cases above."""
+        found = self._pair(tmp_path)
+        assert not [f for f in found if "empty value" in f.message], messages(found)
 
 
 class TestThePolicyBindingIsChecked:

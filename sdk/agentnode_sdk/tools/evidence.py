@@ -172,7 +172,16 @@ _NESTED: dict[str, dict] = {
     "machine": {"required": ("role", "host_sha256", "filesystem_sha256", "os", "commands"),
                 "optional": (),
                 "types": {"role": (str,), "host_sha256": (str,), "filesystem_sha256": (str,),
-                          "os": (str,), "commands": (list,)}},
+                          "os": (str,), "commands": (list,)},
+                # `commands` was closed as a list and open in its elements, so a reader accepted
+                # anything inside it while the rules read four particular keys out of every
+                # entry (`EM3C-EVIDENCE-0005`). Each element is a record of one command, and the
+                # reader checks that rather than leaving the rule to second-guess it.
+                "elements": {"commands": {
+                    "required": ("command", "exit_code", "stdout", "stderr"),
+                    "optional": (),
+                    "types": {"command": (str,), "exit_code": (int, type(None)),
+                              "stdout": (str,), "stderr": (str,)}}}},
     "sentinel": {"required": ("generated_on", "carried_over", "confirmed_over", "value_sha256",
                               "in_request", "in_response", "in_other_channel", "matched"),
                  "optional": (),
@@ -231,6 +240,38 @@ FIELD_NAMES = tuple(f.name for f in fields(Step))
 
 if set(FIELD_NAMES) != set(_TYPES):                               # pragma: no cover - a guard
     raise RuntimeError("the schema and its declared types have drifted apart")
+
+
+#: The digest of nothing at all. A recorder that hashed an absent value produced exactly this,
+#: and it is indistinguishable from the digest of a real one -- so a presence check passes and an
+#: identity nobody established becomes an identity (`EM3C-EVIDENCE-0005`). Refused by value,
+#: wherever it appears, because nothing worth recording has this digest.
+DIGEST_OF_NOTHING = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
+def _closed(where: str, value, shape: dict) -> None:
+    """One object against one declared shape: no unknown key, no missing one, no wrong type."""
+    if not isinstance(value, dict):
+        raise EvidenceError(f"{where} is {type(value).__name__} and the schema says a record.")
+    known = set(shape["required"]) | set(shape.get("optional", ()))
+    strange = sorted(set(value) - known)
+    if strange:
+        raise EvidenceError(
+            f"{where} carries " + ", ".join(repr(x) for x in strange) +
+            ", which its shape does not describe.")
+    absent = [k for k in shape["required"] if k not in value]
+    if absent:
+        raise EvidenceError(f"{where} has no " + ", ".join(absent) + ", so it cannot be read.")
+    for key, item in value.items():
+        allowed = shape["types"].get(key)
+        if allowed is None:
+            continue
+        if isinstance(item, bool) and bool not in allowed:
+            raise EvidenceError(f"{where}.{key} is a boolean and its shape says otherwise.")
+        if not isinstance(item, allowed):
+            raise EvidenceError(
+                f"{where}.{key} is {type(item).__name__} and its shape says "
+                + " or ".join(t.__name__ for t in allowed) + ".")
 
 
 def _no_duplicates(pairs):
@@ -296,6 +337,8 @@ def parse_step(text_or_mapping) -> dict:
 
     for name, shape in _NESTED.items():
         nested = document.get(name)
+        # (`_closed` below is the same check, so a nested list and a nested object are read by
+        # one rule rather than by two that can drift apart.)
         if nested is None:
             continue
         known = set(shape["required"]) | set(shape["optional"])
@@ -318,6 +361,10 @@ def parse_step(text_or_mapping) -> dict:
                 raise EvidenceError(
                     f"{name}.{key} is {type(value).__name__} and its shape says "
                     + " or ".join(t.__name__ for t in allowed) + ".")
+
+        for key, inner in shape.get("elements", {}).items():
+            for index, entry in enumerate(nested.get(key) or ()):
+                _closed(f"{name}.{key}[{index}]", entry, inner)
 
     # The gateway's own record is not this module's document, so its shape is not closed -- but
     # the keys the rules READ out of it are, and a wrong type there would be read as an answer.
@@ -1071,7 +1118,15 @@ def verify_two_machines(steps) -> list[Finding]:
     for key, what in (("host_sha256", "host identity"),
                       ("filesystem_sha256", "filesystem identity")):
         one, two = str(first.get(key) or ""), str(second.get(key) or "")
-        if not one or not two:
+        if DIGEST_OF_NOTHING in (one, two):
+            # The digest of an empty string. A machine that could not read its own identity and
+            # hashed the nothing it got produces a value that looks exactly like a real one, and
+            # two machines that both failed differently can even look distinct.
+            problems.append(Finding(
+                "two machines", EVIDENCE_ERROR,
+                f"a machine's {what} is the digest of an empty value, so it reports the hash of "
+                "having found nothing rather than an identity"))
+        elif not one or not two:
             problems.append(Finding("two machines", EVIDENCE_ERROR,
                                     f"one of the machines did not report its {what}"))
         elif one == two:

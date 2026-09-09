@@ -70,7 +70,16 @@ rec = None
 
 
 def digest(text: str) -> str:
-    return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
+    """The digest of a value, or nothing at all when there was no value.
+
+    `EM3C-EVIDENCE-0005`: hashing an empty string yields a perfectly ordinary-looking digest, so
+    a machine that could not read its own identity reported one anyway -- and two machines that
+    each failed in a different way could even look like two. An absent value stays absent.
+    """
+    text = str(text).strip()
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def launch(argv, timeout=600.0):
@@ -194,6 +203,11 @@ def live_secrets():
 # --------------------------------------------------------------------------- identity
 
 
+def _both(one: str, two: str) -> str:
+    """Two values joined, or nothing when either is missing."""
+    return (one + two) if (one and two) else ""
+
+
 def as_command(query):
     """One identity command, with its own status and both streams, as the record requires."""
     return {"command": query.get("command", ""), "exit_code": query.get("exit_code"),
@@ -240,9 +254,13 @@ def machines():
     observed("gateway identity, reported by the gateway over its own channel",
              ssh_argv("hostname; machine-id; uname; findmnt"), ok,
              f"kernel={kernel['stdout'].strip()}\n", role="gateway",
-             machine={"role": "gateway", "host_sha256": digest(host["stdout"].strip()),
-                      "filesystem_sha256": digest(machine_id["stdout"].strip()
-                                                  + fs["stdout"].strip()),
+             machine={"role": "gateway", "host_sha256": digest(host["stdout"].replace(MARKER, "").strip()),
+                      # Both halves, or neither: concatenating a value with
+                      # a missing one gives a digest unlike every other, which is
+                      # exactly what makes it look like an identity.
+                      "filesystem_sha256": digest(_both(
+                          machine_id["stdout"].replace(MARKER, "").strip(),
+                          fs["stdout"].replace(MARKER, "").strip())),
                       "os": kernel["stdout"].replace(MARKER, "").strip(),
                       "commands": [as_command(q) for q in (host, machine_id, kernel, fs)]})
 
