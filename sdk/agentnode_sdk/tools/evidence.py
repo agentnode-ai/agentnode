@@ -64,6 +64,11 @@ class _Unset:
 
 UNSET = _Unset()
 
+#: "the key was not in the document". Distinct from None, which is a real policy value here:
+#: for a destination set None means UNRESTRICTED, so collapsing the two would read a record that
+#: never said what it granted as one that granted everything.
+_ABSENT = _Unset()
+
 
 class EvidenceError(Exception):
     """The evidence does not establish what it claims, or cannot be read at all."""
@@ -182,11 +187,11 @@ _NESTED: dict[str, dict] = {
                                   "stdout": (str,), "stderr": (str,), "error_class": (str,),
                                   "parsed": (bool,), "command": (str,), "names": (list,),
                                   "ids": (list,), "sought_id": (str,), "complete": (bool,)}},
-    "binding": {"required": ("generation", "policy_digest", "configured_digest", "digests_agree",
-                             "required_properties", "allowlist", "runtime", "backend",
-                             "conformance_digest"),
+    "binding": {"required": ("mode", "generation", "policy_digest", "configured_digest",
+                             "digests_agree", "required_properties", "allowlist", "runtime",
+                             "backend", "conformance_digest"),
                 "optional": (),
-                "types": {"generation": (str,), "policy_digest": (str,),
+                "types": {"mode": (str,), "generation": (str,), "policy_digest": (str,),
                           "configured_digest": (str,), "digests_agree": (str,),
                           "required_properties": (str,), "allowlist": (list,),
                           "runtime": (str,), "backend": (str,), "conformance_digest": (str,)}},
@@ -198,6 +203,7 @@ _GATEWAY_RECORD_TYPES: dict[str, tuple] = {
     "run_id": (str,), "request_policy_sha256": (str,), "effective_policy_sha256": (str,),
     "policy_deltas": (list, type(None)), "refusal": (str,), "error": (str,),
     "status": (int,), "cleanup_verified": (bool, str, type(None)),
+    "requested_policy": (dict,), "effective_policy": (dict,),
 }
 
 _TYPES: dict[str, tuple] = {
@@ -464,14 +470,13 @@ class Recorder:
         except OSError as exc:
             code, out, err, error_class = None, "", str(exc), type(exc).__name__
 
-        # Calling `run` without an expectation STATES that none applies. That is a contract, not
-        # an omission: the raw `record` path refuses an unset expectation, and this one fills them
-        # in deliberately so the ergonomic path cannot leave the question unanswered by accident.
-        stated = {name: getattr(Step, "__dataclass_fields__")[name].default
-                  for name in EXPECTATIONS}
-        stated.update({"expected_exit": None, "expected_refusal": "", "expect_output": False,
-                       "expect_cleanup": False, "expect_container_gone": False})
-        stated.update({k: v for k, v in extra.items() if k in EXPECTATIONS})
+        # Nothing is filled in here. `EM3C-EVIDENCE-0003`: this path used to state, on the
+        # caller's behalf, every expectation the caller had not -- which made "no check applies
+        # to this step" and "nobody considered the question" the same record again, the exact
+        # ambiguity the UNSET defaults exist to keep apart. Running a command for someone does
+        # not include answering their question for them, so an expectation left out arrives at
+        # `record` unset and is refused there, by name.
+        stated = {k: v for k, v in extra.items() if k in EXPECTATIONS}
         rest = {k: v for k, v in extra.items() if k not in EXPECTATIONS}
         return self.record(Step(name=name, role=self.role, argv=safe,
                                 started_at=started, ended_at=time.time(),
@@ -678,6 +683,152 @@ def _looks_like_a_digest(value) -> bool:
     return len(text) == _HEX64[1] and all(c in _HEX64[0] for c in text)
 
 
+#: The three network modes an operator policy can be in. A fourth value is not a stricter or a
+#: looser policy, it is a policy this rule cannot place, and it is treated as such.
+_MODES = ("none", "restricted", "unrestricted")
+
+
+def _allowlist_findings(binding: dict, where: str) -> list[Finding]:
+    """What the allowlist SAYS, rather than that the field was there.
+
+    `EM3C-EVIDENCE-0003`: the allowlist was captured and never read. A list nobody looks at
+    cannot contradict anything, so a policy listing hosts under a mode that reaches nothing, or
+    listing a host in a spelling the digest was never taken over, produced no finding at all.
+    """
+    problems: list[Finding] = []
+    mode = str(binding.get("mode") or "").strip().lower()
+    if mode not in _MODES:
+        problems.append(Finding(
+            where, EVIDENCE_ERROR,
+            "the binding names no network mode this rule knows: "
+            f"{str(binding.get('mode'))[:24]!r}"))
+
+    listed = binding.get("allowlist")
+    if not isinstance(listed, list):
+        return problems + [Finding(where, EVIDENCE_ERROR, "the binding records no allowlist")]
+
+    hosts = [str(host) for host in listed]
+    if any(not host.strip() for host in hosts):
+        problems.append(Finding(
+            where, FAIL,
+            "the allowlist contains an empty entry, which names no host and can never be matched"))
+    unnormalised = [host for host in hosts if host != host.strip().lower()]
+    if unnormalised:
+        problems.append(Finding(
+            where, FAIL,
+            "the allowlist is not in the form the policy digest is taken over: "
+            f"{unnormalised[0]!r}. Two spellings of one host digest differently, so this list "
+            "and that digest are not about the same policy"))
+    if len(set(hosts)) != len(hosts):
+        problems.append(Finding(
+            where, FAIL,
+            "the allowlist names a host twice, so it is not the canonical set the digest covers"))
+    if hosts != sorted(hosts):
+        problems.append(Finding(
+            where, FAIL,
+            "the allowlist is not in canonical order, so it is not the list the digest covers"))
+
+    if mode == "restricted" and not hosts:
+        problems.append(Finding(
+            where, FAIL,
+            "the policy restricts egress to a list of hosts and the list is empty. The mode and "
+            "the list describe two different policies, and only one of them can be in force"))
+    if mode in ("none", "unrestricted") and hosts:
+        problems.append(Finding(
+            where, FAIL,
+            f"the mode is {mode}, under which a per-host list decides nothing, and "
+            f"{len(hosts)} host(s) are listed. One of the two is not the policy in force"))
+    return problems
+
+
+def _containment_findings(effective: dict, binding: dict, where: str) -> list[Finding]:
+    """Whether what one job was granted is inside what the machine allows.
+
+    The two digests cannot be compared for equality: a job digest is taken over what that job
+    asked for and was granted, an operator digest over what this machine permits anyone at all.
+    They are different documents and will never match, so an equality check between them would
+    either always fail or, written defensively, always pass. What binds them is containment.
+    """
+    problems: list[Finding] = []
+    mode = str(binding.get("mode") or "").strip().lower()
+    allowed = [str(host) for host in (binding.get("allowlist") or ())]
+
+    enabled = effective.get("network.enabled")
+    granted = effective.get("network.allowed_destinations", _ABSENT)
+    if enabled is None or granted is _ABSENT:
+        return [Finding(where, EVIDENCE_ERROR,
+                        "the policy this job ran under does not say what network it was granted, "
+                        "so it cannot be placed inside or outside the policy in force")]
+
+    if mode == "none":
+        if enabled:
+            problems.append(Finding(
+                where, FAIL,
+                "this job was granted network under a policy that reaches nothing. Either the job "
+                "ran outside the policy or this capture is not of the policy it ran under"))
+    elif mode == "restricted":
+        if granted is None:
+            problems.append(Finding(
+                where, FAIL,
+                "this job was granted every destination under a policy that permits a named list, "
+                "which is wider than what the machine allows"))
+        elif isinstance(granted, (list, tuple, set)):
+            outside = sorted({str(host) for host in granted} - set(allowed))
+            if outside:
+                problems.append(Finding(
+                    where, FAIL,
+                    f"this job was granted {', '.join(outside)}, which the policy in force does "
+                    "not permit"))
+        else:
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                "what this job was granted is not a set of destinations, so it cannot be compared "
+                f"with the allowlist: {str(granted)[:32]!r}"))
+    return problems
+
+
+def verify_jobs_under_policy(steps) -> list[Finding]:
+    """Whether every job that ran was inside the operator policy in force when it ran.
+
+    `EM3C-EVIDENCE-0003`: the binding was checked for its own consistency, the jobs were checked
+    against the gateway's own answer, and nothing held the two together. A binding that was
+    stale, or about another machine entirely, could sit in the same record as a job that ran with
+    network the policy forbade, and no rule looked across.
+
+    The policy in force for a step is the last one captured before it. A job with no binding
+    before it is an evidence error rather than a pass: nothing in the record then says what the
+    machine allowed at the time.
+    """
+    problems: list[Finding] = []
+    in_force: dict | None = None
+    for index, raw in enumerate(steps):
+        binding = raw.get("binding")
+        if isinstance(binding, dict):
+            in_force = binding
+            continue
+        record = raw.get("gateway_record")
+        if not isinstance(record, dict):
+            continue
+        where = f"step {index + 1} ({raw.get('name') or 'unnamed'})"
+        effective = record.get("effective_policy")
+        if not isinstance(effective, dict):
+            if str(record.get("effective_policy_sha256") or "").strip():
+                problems.append(Finding(
+                    where, EVIDENCE_ERROR,
+                    "the record carries a digest of the policy this job ran under and not the "
+                    "policy itself, so what that digest is over was never held against what the "
+                    "machine allows"))
+            continue
+        if in_force is None:
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                "a job ran and no operator policy was captured before it, so nothing here says "
+                "what this machine allowed at the time"))
+            continue
+        problems.extend(_containment_findings(effective, in_force, where))
+    return problems
+
+
 def verify_bindings(steps) -> list[Finding]:
     """Whether the operator-policy binding was captured, and stayed the same across the run.
 
@@ -709,6 +860,7 @@ def verify_bindings(steps) -> list[Finding]:
         if not binding.get("required_properties"):
             problems.append(Finding(where, EVIDENCE_ERROR,
                                     "the binding records no required-property set"))
+        problems.extend(_allowlist_findings(binding, where))
         seen.append({"where": where, **binding})
 
     if not seen:
@@ -748,8 +900,8 @@ def verify_bindings(steps) -> list[Finding]:
                 "the policy digest changed while the generation did not, so a policy was "
                 "substituted without an activation"))
     else:
-        for key in ("configured_digest", "required_properties", "runtime", "backend",
-                    "conformance_digest"):
+        for key in ("mode", "allowlist", "configured_digest", "required_properties", "runtime",
+                    "backend", "conformance_digest"):
             if str(first.get(key)) != str(last.get(key)):
                 problems.append(Finding(
                     "policy binding", FAIL,
@@ -819,6 +971,7 @@ def verify(steps, secrets=()) -> list[Finding]:
 
     problems.extend(verify_two_machines(steps))
     problems.extend(verify_bindings(steps))
+    problems.extend(verify_jobs_under_policy(steps))
     return problems
 
 

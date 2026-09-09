@@ -766,6 +766,57 @@ class TestAnOperatorCanOpenEgressFromTheCommandLine:
         assert "example.com" in out, out
         assert ActivationStore(root).load_active().policy.mode == "restricted"
 
+    def _measured_gateway(self, tmp_path, monkeypatch, allow):
+        """A gateway with a policy really in force, so the diagnostic block has one to show."""
+        from agentnode_sdk.gateway.activation import ActivationStore
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.readiness import Readiness
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        root = tmp_path / "gw"
+        seeded = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(seeded)
+
+        def fake(self, proposed=None, options=None, now=None):
+            envelope = proposed or self.configured_envelope()
+            active = ActivationStore(self.state.root).load_active()
+            self._write_config_for(envelope)
+            binding = self.report_binding(envelope.digest())
+            ActivationStore(self.state.root).activate(envelope, active.report, binding.as_dict())
+            return Readiness(True, "", {}, (), ())
+
+        monkeypatch.setattr(Service, "activate", fake)
+        assert main(["gateway", "egress", "--dir", str(root), *allow]) == 0
+        return root
+
+    def test_the_diagnostic_block_names_the_mode_in_force(self, home, tmp_path, capsys,
+                                                          monkeypatch):
+        """`EM3C-EVIDENCE-0003`: an external record has to note which mode was in force, and the
+        prose above this block is a sentence that could be reworded without the policy changing.
+        The mode is printed as the policy's own word for it, beside the digests."""
+        root = self._measured_gateway(tmp_path, monkeypatch, ["--allow", "example.com"])
+        capsys.readouterr()
+        assert main(["gateway", "egress", "--dir", str(root), "--verbose"]) == 0
+        out = capsys.readouterr().out
+        assert "network mode          : restricted" in out, out
+
+    def test_the_mode_follows_the_policy_rather_than_being_a_constant(self, home, tmp_path,
+                                                                      capsys, monkeypatch):
+        """The control. A line printing one fixed word would satisfy the test above."""
+        root = self._measured_gateway(tmp_path, monkeypatch, ["--none"])
+        capsys.readouterr()
+        assert main(["gateway", "egress", "--dir", str(root), "--verbose"]) == 0
+        out = capsys.readouterr().out
+        assert "network mode          : none" in out, out
+
+    def test_the_mode_is_not_shown_without_the_flag(self, home, tmp_path, capsys, monkeypatch):
+        """A digest-adjacent detail stays in the diagnostic block: the plain command is for the
+        person who wants to know what jobs may reach, not what the policy is called."""
+        root = self._measured_gateway(tmp_path, monkeypatch, ["--allow", "example.com"])
+        capsys.readouterr()
+        assert main(["gateway", "egress", "--dir", str(root)]) == 0
+        assert "network mode" not in capsys.readouterr().out
+
     def test_the_required_properties_are_named_before_measuring(self, home, tmp_path, capsys):
         """An operator is told what is about to be checked, not just that something is."""
         root = tmp_path / "gw"

@@ -43,6 +43,15 @@ thing.
   The redactor's failure stops the record rather than producing one that quietly contains a
   credential.
 
+### Where the record keeps text, and therefore where redaction has to reach
+
+Both streams, the class of the exception that ended a command, the command line, the refusal a
+step expected, every identifier, and every string inside a nested structure. Each of those is a
+place a real run puts text, so each is exercised: some by placing a value in the field, and two --
+the stream a failing subprocess writes to, and the OS error text produced when the named
+executable does not exist -- by running a real command that produces it. A location that were
+only asserted to be covered would be the same claim in a weaker form.
+
 ## What it does not guarantee
 
 A credential nobody named, with an unremarkable name and an unremarkable shape, sitting in the
@@ -51,6 +60,20 @@ middle of ordinary command output, is not reached by any of those layers.
 Whoever runs the recording carries that. It is stated at the moment a recording starts, not only
 here and not only in the module, because the risk arrives when commands run rather than when
 documentation is read.
+
+## A separate limit, about the policy rather than the secrets
+
+The record binds each job to the operator policy in force by **containment**, not by equality of
+digests. The two digests are taken over different documents -- a job digest over what that job
+asked for and was granted, an operator digest over what the machine permits anyone -- so they
+never match, and an equality check between them would either always fail or, written to
+accommodate that, always pass. What the rules check instead is that the network a job was granted
+lies inside what the policy in force permits: nothing under a policy that reaches nothing, and a
+subset of the named hosts under a policy that names hosts.
+
+That is a real constraint and it is not the same as proof that the sandbox enforced it. It is a
+statement about two records agreeing. Whether the container could actually reach only those hosts
+is what the conformance measurement establishes, and the binding is what ties one to the other.
 
 ## Where this is acceptable and where it is not
 

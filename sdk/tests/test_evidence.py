@@ -31,6 +31,12 @@ OK_RECORD = {
     "cleanup_verified": True,
     "state": "finished",
     "refusal": "",
+    "requested_policy": {"network.enabled": False, "network.allowed_destinations": [],
+                         "limits.cpu": 1, "limits.memory_mb": 512, "limits.processes": 64,
+                         "limits.wall_clock_s": 120},
+    "effective_policy": {"network.enabled": False, "network.allowed_destinations": [],
+                         "limits.cpu": 1, "limits.memory_mb": 512, "limits.processes": 64,
+                         "limits.wall_clock_s": 120},
 }
 
 
@@ -96,10 +102,20 @@ def two_machines(recorder):
         sentinel=crossing("gateway", "2" * 64)))
 
 
-BINDING = {"generation": "1", "policy_digest": "a" * 64, "configured_digest": "a" * 64,
+BINDING = {"mode": "none",
+           "generation": "1", "policy_digest": "a" * 64, "configured_digest": "a" * 64,
            "digests_agree": "True", "required_properties": "container_isolation",
            "allowlist": [], "runtime": "docker 29.8.0", "backend": "docker",
            "conformance_digest": "b" * 64}
+
+#: What one job was granted, in the gateway's own shape. Recorded because a digest of it says
+#: nothing about whether it was inside what the machine allows.
+#: The same binding, opened to one host. Used by the allowlist and containment rules below.
+RESTRICTED = dict(BINDING, mode="restricted", allowlist=["api.example.com"])
+
+NO_NETWORK = {"network.enabled": False, "network.allowed_destinations": [],
+              "limits.cpu": 1, "limits.memory_mb": 512, "limits.processes": 64,
+              "limits.wall_clock_s": 120}
 
 
 def bindings(recorder, times=2):
@@ -263,19 +279,68 @@ class TestAnExpectationNeverBecomesAnObservation:
 
     @pytest.mark.parametrize("field", evidence.OBSERVED_BY_RUNNING)
     def test_the_recorder_refuses_to_be_told_what_it_observed(self, tmp_path, field):
+        """Every expectation is stated, so this refusal is about the observation being supplied
+        and not about an expectation left out -- which is a different rule with its own tests."""
         recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=False)
-        with pytest.raises(evidence.EvidenceError):
-            recorder.run("x", [sys.executable, "-c", "pass"], **{field: 0})
+        with pytest.raises(evidence.EvidenceError) as caught:
+            recorder.run("x", [sys.executable, "-c", "pass"], **{**STATED, field: 0})
+        assert field in str(caught.value) and "observation" in str(caught.value)
 
     def test_a_failing_command_records_its_real_status_not_the_expected_one(self, tmp_path):
         recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=False)
         step = recorder.run("fails", [sys.executable, "-c", "raise SystemExit(3)"],
-                            expected_exit=0)
+                            **{**STATED, "expected_exit": 0})
         assert step.exit_code == 3
         assert step.expected_exit == 0
 
     def test_the_two_kinds_of_field_do_not_overlap(self):
         assert not set(evidence.EXPECTATIONS) & set(evidence.OBSERVED_BY_RUNNING)
+
+
+class TestRunStatesNothingOnTheCallersBehalf:
+    """EM3C-EVIDENCE-0003: `run()` used to fill in every expectation the caller had not, which
+    put back the ambiguity the UNSET defaults exist to remove. A convenience that answers the
+    caller's question for them makes "no check applies" and "nobody said" the same record."""
+
+    def _recorder(self, tmp_path):
+        return evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=False)
+
+    def test_running_a_command_without_stating_the_expectations_is_refused(self, tmp_path):
+        with pytest.raises(evidence.EvidenceError) as caught:
+            self._recorder(tmp_path).run("x", [sys.executable, "-c", "pass"])
+        assert "never said whether" in str(caught.value)
+
+    @pytest.mark.parametrize("left_out", list(evidence.EXPECTATIONS))
+    def test_leaving_out_any_one_of_them_is_refused_by_name(self, tmp_path, left_out):
+        stated = {k: v for k, v in STATED.items() if k != left_out}
+        with pytest.raises(evidence.EvidenceError) as caught:
+            self._recorder(tmp_path).run("x", [sys.executable, "-c", "pass"], **stated)
+        assert left_out in str(caught.value)
+
+    def test_nothing_is_written_when_a_step_was_refused(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        with pytest.raises(evidence.EvidenceError):
+            recorder.run("x", [sys.executable, "-c", "pass"])
+        assert not path.exists() or path.read_text(encoding="utf-8") == ""
+
+    def test_stating_them_all_records_the_step(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        step = recorder.run("x", [sys.executable, "-c", "print('hi')"], **STATED)
+        assert step.expect_output is False
+        assert json.loads(path.read_text(encoding="utf-8").splitlines()[0])["stdout"].strip() \
+            == "hi"
+
+    def test_what_the_caller_states_is_what_is_written(self, tmp_path):
+        """The control against a `run` that refused everything: a stated expectation has to
+        arrive in the file as stated, not merely be accepted."""
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        recorder.run("x", [sys.executable, "-c", "print('hi')"],
+                     **{**STATED, "expect_output": True, "expected_exit": 0})
+        written = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        assert written["expect_output"] is True and written["expected_exit"] == 0
 
 
 class TestTheRulesFireOnRecordedSteps:
@@ -288,7 +353,8 @@ class TestTheRulesFireOnRecordedSteps:
     def test_an_uncaptured_exit_code_is_an_evidence_error(self, tmp_path):
         recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=False)
         two_machines(recorder)
-        recorder.run("a binary that is not there", ["definitely-not-a-real-binary-xyz"])
+        recorder.run("a binary that is not there", ["definitely-not-a-real-binary-xyz"],
+                     **STATED)
         found = evidence.check_file(tmp_path / "e.jsonl")
         assert evidence.EVIDENCE_ERROR in kinds(found)
         assert "no exit code was captured" in messages(found)
@@ -620,10 +686,59 @@ class TestSecretsNeverReachTheRecord:
         ("notes", "the token was {s}"),
         ("client_id", "{s}"),
         ("stdout", "value={s}\n"),
+        # EM3C-EVIDENCE-0003: the parametrisation stopped at stdout, so the two places a failure
+        # actually puts text -- the other stream, and the class of the exception that ended the
+        # command -- were not shown to be reached.
+        ("stderr", "Traceback: connecting with {s} failed\n"),
+        ("error_class", "CalledProcessError: {s}"),
+        ("expected_refusal", "the token {s} has already been used"),
+        ("container", "agentnode-em3c-{s}"),
+        ("job_id", "{s}"),
+        ("run_id", "{s}"),
     ])
     def test_a_secret_in_any_string_field_is_removed(self, tmp_path, field, value):
         step = good_step(**{field: value.format(s=self.SECRET)})
         written = self._written(tmp_path, step)
+        assert self.SECRET not in written
+        assert evidence.REDACTED in written
+
+    @pytest.mark.parametrize("where", [
+        {"machine": {"role": "gateway", "host_sha256": "g" * 64, "filesystem_sha256": "f" * 64,
+                     "os": "Linux",
+                     "commands": [{"command": "ssh --key {s}", "exit_code": 1,
+                                   "stdout": "", "stderr": "permission denied for {s}"}]}},
+        {"container_query": {"ran": True, "exit_code": 1, "stdout": "",
+                             "stderr": "docker: error response: {s}", "error_class": "",
+                             "parsed": True, "command": "docker ps --filter {s}"}},
+        {"sentinel": {"generated_on": "client", "carried_over": "agentnode-job",
+                      "confirmed_over": "ssh", "value_sha256": "{s}", "in_request": True,
+                      "in_response": True, "in_other_channel": True, "matched": True}},
+    ])
+    def test_a_secret_inside_a_nested_structure_is_removed(self, tmp_path, where):
+        filled = json.loads(json.dumps(where).replace("{s}", self.SECRET))
+        assert self.SECRET not in self._written(tmp_path, good_step(**filled))
+
+    def test_a_secret_a_real_command_printed_to_stderr_is_removed(self, tmp_path):
+        """Through `run`, so the stream is what a subprocess actually wrote rather than a value
+        this test placed in the field itself."""
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", secrets=[self.SECRET], announce=False)
+        recorder.run("a command that fails loudly",
+                     [sys.executable, "-c",
+                      f"import sys; sys.stderr.write('failed: {self.SECRET}'); sys.exit(2)"],
+                     **STATED)
+        written = path.read_text(encoding="utf-8")
+        assert self.SECRET not in written
+        assert evidence.REDACTED in written and "failed:" in written
+
+    def test_a_secret_in_the_text_of_an_exception_is_removed(self, tmp_path):
+        """A missing executable puts the OS error text into the record. When the thing that is
+        missing is named with a credential, that text is where it arrives."""
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", secrets=[self.SECRET], announce=False)
+        recorder.run("a binary named with a credential",
+                     [f"no-such-binary-{self.SECRET}"], **STATED)
+        written = path.read_text(encoding="utf-8")
         assert self.SECRET not in written
         assert evidence.REDACTED in written
 
@@ -634,7 +749,7 @@ class TestSecretsNeverReachTheRecord:
 
     def test_a_secret_in_a_command_line_is_removed(self, tmp_path):
         recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[self.SECRET], announce=False)
-        recorder.run("echo", [sys.executable, "-c", f"print('{self.SECRET}')"])
+        recorder.run("echo", [sys.executable, "-c", f"print('{self.SECRET}')"], **STATED)
         assert self.SECRET not in (tmp_path / "e.jsonl").read_text(encoding="utf-8")
 
     def test_a_value_nobody_collected_under_a_secret_named_key_is_removed(self, tmp_path):
@@ -667,7 +782,29 @@ class TestSecretsNeverReachTheRecord:
         with pytest.raises(evidence.EvidenceError) as caught:
             recorder.record(good_step(notes="a-live-credential-value is here"))
         assert "survived its own pass" in str(caught.value)
-        assert not (tmp_path / "e.jsonl").exists() or             "a-live-credential-value" not in (tmp_path / "e.jsonl").read_text(encoding="utf-8")
+        # Not "the value is absent from the file" -- an empty file satisfies that by accident.
+        # NOTHING was written: no record at all, not a record with a hole in it.
+        path = tmp_path / "e.jsonl"
+        assert not path.exists() or path.read_text(encoding="utf-8") == ""
+
+    def test_the_same_holds_for_key_material_the_redactor_let_through(self, tmp_path,
+                                                                     monkeypatch):
+        monkeypatch.setattr(evidence, "redact_deep", lambda value, secrets, **kw: value)
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", secrets=[], announce=False)
+        with pytest.raises(evidence.EvidenceError) as caught:
+            recorder.record(good_step(notes="-----BEGIN OPENSSH PRIVATE KEY----- abc"))
+        assert "nothing was written" in str(caught.value)
+        assert not path.exists() or path.read_text(encoding="utf-8") == ""
+
+    def test_a_working_redactor_does_write(self, tmp_path):
+        """The control for the two above: they must fail because the redactor was broken, not
+        because the recorder writes nothing under these conditions anyway."""
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", secrets=["a-live-credential-value"],
+                                     announce=False)
+        recorder.record(good_step(notes="a-live-credential-value is here"))
+        assert path.read_text(encoding="utf-8").strip() != ""
 
     def test_the_rest_of_the_record_survives(self, tmp_path):
         """The control. A redactor that emptied the document would pass everything above."""
@@ -747,6 +884,130 @@ class TestThePolicyBindingIsChecked:
         """The control. Without it, a rule that rejected every binding would pass the rest."""
         found = self._with(tmp_path, BINDING)
         assert not [f for f in found if "binding" in f.message], messages(found)
+
+    # -- what the allowlist itself says -------------------------------------------------------
+    # EM3C-EVIDENCE-0003: it was captured and never read, so it could contradict the mode beside
+    # it, or be in a spelling the digest was never taken over, and no rule noticed.
+
+    def test_a_restricted_policy_with_its_hosts_is_accepted(self, tmp_path):
+        """The control for the allowlist rules below."""
+        found = self._with(tmp_path, RESTRICTED)
+        assert not [f for f in found if "allowlist" in f.message], messages(found)
+
+    def test_a_restricted_policy_with_an_empty_list_fails(self, tmp_path):
+        found = self._with(tmp_path, dict(RESTRICTED, allowlist=[]))
+        assert "the list is empty" in messages(found)
+
+    @pytest.mark.parametrize("mode", ["none", "unrestricted"])
+    def test_hosts_listed_under_a_mode_that_does_not_use_them_fail(self, tmp_path, mode):
+        found = self._with(tmp_path, dict(BINDING, mode=mode, allowlist=["api.example.com"]))
+        assert "is not the policy in force" in messages(found)
+
+    def test_a_mode_nobody_knows_is_an_evidence_error(self, tmp_path):
+        found = self._with(tmp_path, dict(BINDING, mode="permissive"))
+        assert "names no network mode" in messages(found)
+
+    def test_a_missing_mode_is_refused_before_any_rule_reads_it(self, tmp_path):
+        binding = {k: v for k, v in BINDING.items() if k != "mode"}
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        with pytest.raises(evidence.EvidenceError) as caught:
+            recorder.record(a_step(name="b", role="gateway", argv=["x"], started_at=1.0,
+                                   ended_at=1.1, exit_code=0, binding=binding))
+        assert "mode" in str(caught.value)
+
+    @pytest.mark.parametrize("listed,expected", [
+        (["API.example.com"], "not in the form the policy digest"),
+        (["  api.example.com"], "not in the form the policy digest"),
+        (["api.example.com", "api.example.com"], "names a host twice"),
+        (["z.example.com", "a.example.com"], "not in canonical order"),
+        (["api.example.com", ""], "contains an empty entry"),
+    ])
+    def test_a_list_that_is_not_the_one_the_digest_covers_fails(self, tmp_path, listed, expected):
+        found = self._with(tmp_path, dict(RESTRICTED, allowlist=listed))
+        assert expected in messages(found)
+
+    def test_an_allowlist_that_changed_without_the_digest_fails(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        two_machines(recorder)
+        for index, listed in enumerate([["a.example.com"], ["a.example.com", "b.example.com"]]):
+            recorder.record(a_step(
+                name=f"binding {index + 1}", role="gateway", argv=["(egress --verbose)"],
+                started_at=2.0 + index, ended_at=2.1 + index, exit_code=0,
+                binding=dict(RESTRICTED, allowlist=listed)))
+        assert "allowlist changed while the policy digest" in messages(evidence.check_file(path))
+
+
+class TestAJobIsInsideThePolicyInForce:
+    """EM3C-EVIDENCE-0003: the binding was checked against itself and the jobs against the
+    gateway's own answer, and nothing held the two together. The digests cannot be compared --
+    a job digest is over what that job was granted, an operator digest over what the machine
+    allows anyone -- so what binds them is containment."""
+
+    def _run_under(self, tmp_path, binding, effective, *, before=True):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        two_machines(recorder)
+        if before:
+            for index in range(2):
+                recorder.record(a_step(
+                    name=f"binding {index + 1}", role="gateway", argv=["(egress --verbose)"],
+                    started_at=2.0 + index, ended_at=2.1 + index, exit_code=0,
+                    binding=dict(binding)))
+        record = dict(OK_RECORD)
+        if effective is None:
+            record.pop("effective_policy")
+        else:
+            record["effective_policy"] = effective
+        recorder.record(good_step(gateway_record=record))
+        return evidence.check_file(path)
+
+    def test_a_job_with_no_network_under_a_policy_that_allows_none_is_accepted(self, tmp_path):
+        """The control. Without it a rule that failed every job would pass everything below."""
+        found = self._run_under(tmp_path, BINDING, NO_NETWORK)
+        assert found == [], messages(found)
+
+    def test_a_job_granted_network_under_a_policy_that_reaches_nothing_fails(self, tmp_path):
+        found = self._run_under(tmp_path, BINDING,
+                                dict(NO_NETWORK, **{"network.enabled": True}))
+        assert "under a policy that reaches nothing" in messages(found)
+
+    def test_a_job_granted_a_host_the_policy_does_not_list_fails(self, tmp_path):
+        binding = dict(BINDING, mode="restricted", allowlist=["api.example.com"])
+        found = self._run_under(tmp_path, binding, {
+            **NO_NETWORK, "network.enabled": True,
+            "network.allowed_destinations": ["evil.example.com"]})
+        assert "evil.example.com" in messages(found)
+        assert "does not permit" in messages(found)
+
+    def test_a_job_granted_a_listed_host_is_accepted(self, tmp_path):
+        binding = dict(BINDING, mode="restricted", allowlist=["api.example.com"])
+        found = self._run_under(tmp_path, binding, {
+            **NO_NETWORK, "network.enabled": True,
+            "network.allowed_destinations": ["api.example.com"]})
+        assert found == [], messages(found)
+
+    def test_a_job_granted_everything_under_a_named_list_fails(self, tmp_path):
+        """`None` is the shape that means unrestricted, and it is deliberately not an empty set.
+        Under a policy that names hosts it is wider than the policy, not narrower."""
+        binding = dict(BINDING, mode="restricted", allowlist=["api.example.com"])
+        found = self._run_under(tmp_path, binding, {
+            **NO_NETWORK, "network.enabled": True, "network.allowed_destinations": None})
+        assert "granted every destination" in messages(found)
+
+    def test_a_record_that_carries_only_a_digest_of_its_policy_is_an_evidence_error(self,
+                                                                                    tmp_path):
+        found = self._run_under(tmp_path, BINDING, None)
+        assert "and not the policy itself" in messages(found)
+
+    def test_a_policy_that_does_not_say_what_it_granted_is_an_evidence_error(self, tmp_path):
+        found = self._run_under(tmp_path, BINDING, {"limits.memory_mb": 512})
+        assert "does not say what network it was granted" in messages(found)
+
+    def test_a_job_with_no_binding_before_it_cannot_be_placed(self, tmp_path):
+        found = self._run_under(tmp_path, BINDING, NO_NETWORK, before=False)
+        assert "no operator policy was captured before it" in messages(found)
 
 
 class TestTheOperatorIsToldWhatTheRecordKeeps:

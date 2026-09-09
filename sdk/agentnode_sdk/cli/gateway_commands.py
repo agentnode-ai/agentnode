@@ -265,6 +265,11 @@ def _egress_show(root, verbose: bool = False) -> int:
 
     if verbose:
         print()
+        # The mode belongs in the diagnostic block for the same reason the digests do: the prose
+        # above says what a job may reach, and prose is what a reader has to interpret. External
+        # evidence has to record the policy's own word for its mode rather than derive it from a
+        # sentence that could be reworded (`EM3C-EVIDENCE-0003`).
+        print(f"  network mode          : {active.mode}")
         print(f"  activation generation : {state.generation}")
         print(f"  policy digest         : {state.policy_digest}")
         print(f"  configured digest     : {configured.digest()}")
