@@ -426,6 +426,26 @@ class TestTheDriverReactsToTheWorldRatherThanAsserting:
         assert evidence.verify_two_machines(steps), \
             "a value that never appeared on the other machine was accepted as having crossed"
 
+    def test_an_identity_attached_to_the_wrong_channel_is_caught(self, world, tmp_path):
+        """`EM3C-EVIDENCE-0011`: the suite proved a good world passes and several broken ones
+        fail, and none of them broke provenance. A driver that recorded one machine's identity
+        over the other machine's channel satisfied every control it had."""
+        real = driver.observed
+
+        def swap_the_channel(name, argv, holds, detail, *, role="client", **fields):
+            if isinstance(fields.get("machine"), dict):
+                role = "gateway" if role == "client" else "client"
+            return real(name, argv, holds, detail, role=role, **fields)
+
+        driver.observed = swap_the_channel
+        try:
+            code, steps = drive(tmp_path)
+        finally:
+            driver.observed = real
+        problems = evidence.verify_two_machines(steps)
+        assert any("channel" in p.message for p in problems),             "an identity carried on the other machine's channel was accepted"
+        assert code != 0
+
     def test_the_verdict_is_not_a_constant(self, world, tmp_path):
         """Without this, every control above could be satisfied by a driver that always failed."""
         code, _steps = drive(tmp_path)

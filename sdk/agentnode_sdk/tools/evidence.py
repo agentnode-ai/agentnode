@@ -1250,15 +1250,45 @@ def verify_two_machines(steps) -> list[Finding]:
     """
     problems: list[Finding] = []
     machines: dict[str, dict] = {}
-    for raw in steps:
+    for index, raw in enumerate(steps):
         machine = raw.get("machine")
-        if isinstance(machine, dict) and machine.get("role"):
-            machines[str(machine["role"])] = machine
+        if not isinstance(machine, dict) or not machine.get("role"):
+            continue
+        where = f"step {index + 1} ({raw.get('name') or 'unnamed'})"
+        claimed = str(machine["role"])
+        channel = str(raw.get("role") or "")
+
+        # `EM3C-EVIDENCE-0011`: the identity was indexed by the label inside it, and nothing
+        # required that label to match the channel the step was recorded over. So both machines
+        # could describe themselves over ONE channel -- the whole point of asking each to speak
+        # for itself -- and the record would still show two identities. A machine describes
+        # itself over its own channel or it has not described itself.
+        if claimed != channel:
+            problems.append(Finding(
+                where, FAIL,
+                f"this identity says it is the {claimed} and it was recorded over the "
+                f"{channel or 'unnamed'} channel. An identity carried on the other machine's "
+                "channel is that machine's account of its neighbour, not the neighbour's own"))
+            continue
+
+        # And two identities under one name is not two machines. Taking the last silently made
+        # a later, weaker or wrong identity replace an earlier one with no finding at all.
+        if claimed in machines:
+            problems.append(Finding(
+                where, FAIL,
+                f"a second identity claims to be the {claimed}. Two accounts of one machine are "
+                "not two machines, and nothing here says which of them is this run's"))
+            continue
+        machines[claimed] = machine
 
     if len(machines) < 2:
-        return [Finding("two machines", EVIDENCE_ERROR,
-                        "fewer than two machines described themselves, so nothing here shows the "
-                        "client and the gateway are different hosts")]
+        # `problems +`, not instead of: a record where an identity arrived on the wrong channel
+        # would otherwise report only that two machines are missing, and the reason they are
+        # missing is the finding worth having.
+        return problems + [Finding(
+            "two machines", EVIDENCE_ERROR,
+            "fewer than two machines described themselves over their own channels, so nothing "
+            "here shows the client and the gateway are different hosts")]
 
     roles = sorted(machines)
     first, second = machines[roles[0]], machines[roles[1]]

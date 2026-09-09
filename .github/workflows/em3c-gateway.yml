@@ -85,7 +85,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_evidence.py 2>&1 | tee em3c-evidence.txt
-          grep -qE "^226 passed" em3c-evidence.txt || {
+          grep -qE "^232 passed" em3c-evidence.txt || {
             echo "the evidence-runner tests did not all pass"; exit 1; }
 
       # And the driver that produces the external record, driven offline over the whole matrix.
@@ -95,7 +95,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_external_run.py 2>&1 | tee em3c-driver.txt
-          grep -qE "^30 passed" em3c-driver.txt || {
+          grep -qE "^31 passed" em3c-driver.txt || {
             echo "the external-run driver tests did not all pass"; exit 1; }
 
       - name: The vertical flow, for real

@@ -694,13 +694,28 @@ class TestTwoMachinesAreShownToBeTwo:
         assert "fewer than two machines" in messages(found)
 
     def test_two_machines_with_the_same_host_identity_fail(self, tmp_path):
+        """Each machine reports once, over its own channel, and they report the same host.
+
+        It used to add a THIRD identity that replaced the gateway's, which worked only because
+        a later identity silently won. `EM3C-EVIDENCE-0011` closed that, so this describes the
+        state it is about instead of arriving at it by replacement.
+        """
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client", announce=False)
-        two_machines(recorder)
         recorder.record(a_step(
-            name="gateway identity again", role="gateway", argv=["(identity)"],
-            started_at=2.0, ended_at=2.1, exit_code=0,
+            name="client identity", role="client", argv=["(identity)"],
+            started_at=1.0, ended_at=1.1, exit_code=0,
+            machine=identity("client", "c" * 64, "cf" * 32, "Windows")))
+        recorder.record(a_step(
+            name="gateway identity", role="gateway", argv=["(identity)"],
+            started_at=1.2, ended_at=1.3, exit_code=0,
             machine=identity("gateway", "c" * 64, "gf" * 32, "Linux")))
+        recorder.record(a_step(
+            name="a crossing", role="client", argv=["x"], started_at=1.4, ended_at=1.5,
+            exit_code=0, sentinel=crossing("client")))
+        recorder.record(a_step(
+            name="the other way", role="gateway", argv=["x"], started_at=1.6, ended_at=1.7,
+            exit_code=0, sentinel=crossing("gateway")))
         found = evidence.check_file(path)
         assert "same host identity" in messages(found)
 
@@ -1172,6 +1187,66 @@ class TestTheFieldsThatUsedToBeUnread:
     def test_one_client_and_agreeing_fields_are_accepted(self, tmp_path):
         """The control for all five."""
         assert _recorded(tmp_path, [good_step(), good_step()]) == []
+
+
+class TestAnIdentityBelongsToTheChannelThatCarriedIt:
+    """`EM3C-EVIDENCE-0011`: the identity was indexed by the label inside it, and nothing made
+    that label agree with the channel the step was recorded over. Both machines could therefore
+    describe themselves over one channel and the record would still show two."""
+
+    def _record(self, tmp_path, *identities):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        for index, (channel, machine) in enumerate(identities):
+            recorder.record(a_step(name=f"identity {index + 1}", role=channel, argv=["(identity)"],
+                                   started_at=1.0 + index, ended_at=1.1 + index, exit_code=0,
+                                   machine=machine))
+        recorder.record(a_step(name="a crossing", role="client", argv=["x"], started_at=3.0,
+                               ended_at=3.1, exit_code=0, sentinel=crossing("client")))
+        recorder.record(a_step(name="the other way", role="gateway", argv=["x"], started_at=3.2,
+                               ended_at=3.3, exit_code=0, sentinel=crossing("gateway")))
+        return evidence.verify_two_machines(evidence.load(path))
+
+    CLIENT = ("client", identity("client", "c" * 64, "cf" * 32, "Windows"))
+    GATEWAY = ("gateway", identity("gateway", "g" * 64, "gf" * 32, "Linux"))
+
+    def test_each_identity_on_its_own_channel_is_accepted(self, tmp_path):
+        """The control for everything below."""
+        assert self._record(tmp_path, self.CLIENT, self.GATEWAY) == []
+
+    def test_the_gateway_describing_itself_over_the_client_channel_fails(self, tmp_path):
+        found = self._record(tmp_path, self.CLIENT,
+                             ("client", identity("gateway", "g" * 64, "gf" * 32, "Linux")))
+        assert "recorded over the client channel" in messages(found)
+
+    def test_the_client_describing_itself_over_the_gateway_channel_fails(self, tmp_path):
+        found = self._record(tmp_path,
+                             ("gateway", identity("client", "c" * 64, "cf" * 32, "Windows")),
+                             self.GATEWAY)
+        assert "recorded over the gateway channel" in messages(found)
+
+    def test_both_identities_over_one_channel_do_not_make_two_machines(self, tmp_path):
+        """The defect exactly: one machine, two nested labels, and a record that used to read as
+        two machines."""
+        found = self._record(tmp_path, self.CLIENT,
+                             ("client", identity("gateway", "g" * 64, "gf" * 32, "Linux")))
+        assert found, "one machine wearing two labels was accepted as two"
+        assert "fewer than two machines" in messages(found) \
+            or "recorded over the client channel" in messages(found)
+
+    def test_a_second_identity_for_one_machine_is_not_silently_taken(self, tmp_path):
+        """It used to replace the first, so a later, weaker or wrong identity won with no
+        finding at all."""
+        found = self._record(
+            tmp_path, self.CLIENT, self.GATEWAY,
+            ("gateway", identity("gateway", "9" * 64, "99" * 32, "Linux")))
+        assert "a second identity claims to be the gateway" in messages(found)
+
+    def test_an_identity_whose_step_names_no_channel_fails(self, tmp_path):
+        """A step with no role is refused for that on its own; here it must not be able to carry
+        an identity past this rule either."""
+        found = self._record(tmp_path, self.CLIENT, ("", self.GATEWAY[1]))
+        assert found
 
 
 class TestASentinelsRequestIsRead:
