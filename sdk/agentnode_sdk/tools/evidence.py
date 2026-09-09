@@ -64,10 +64,6 @@ class _Unset:
 
 UNSET = _Unset()
 
-#: "the key was not in the document". Distinct from None, which is a real policy value here:
-#: for a destination set None means UNRESTRICTED, so collapsing the two would read a record that
-#: never said what it granted as one that granted everything.
-_ABSENT = _Unset()
 
 
 class EvidenceError(Exception):
@@ -206,14 +202,56 @@ _NESTED: dict[str, dict] = {
                           "runtime": (str,), "backend": (str,), "conformance_digest": (str,)}},
 }
 
-#: The keys the rules read out of the gateway's own record. Its shape belongs to the gateway, so
-#: unknown keys are its business -- but a wrong type in one of these would be read as an answer.
-_GATEWAY_RECORD_TYPES: dict[str, tuple] = {
-    "run_id": (str,), "request_policy_sha256": (str,), "effective_policy_sha256": (str,),
-    "policy_deltas": (list, type(None)), "refusal": (str,), "error": (str,),
-    "status": (int,), "cleanup_verified": (bool, str, type(None)),
-    "requested_policy": (dict,), "effective_policy": (dict,),
+#: A policy as the gateway describes one: exactly the fields its own canonical shape can pin.
+#: `dict` said nothing about what was inside, and the containment rule reads two of these keys,
+#: so a map that had drifted -- or that was never a policy at all -- reached the rule as one
+#: (`EM3C-EVIDENCE-0006`). A field added on the gateway side lands here as a refusal rather than
+#: as a silently unread value, which is the direction this has to fail.
+_POLICY_MAP = {
+    "required": ("network.enabled", "network.allowed_destinations"),
+    "optional": ("limits.cpu", "limits.memory_mb", "limits.processes", "limits.wall_clock_s"),
+    "types": {"network.enabled": (bool,),
+              "network.allowed_destinations": (list, type(None)),
+              "limits.cpu": (int, float, type(None)),
+              "limits.memory_mb": (int, float, type(None)),
+              "limits.processes": (int, type(None)),
+              "limits.wall_clock_s": (int, float, type(None))},
 }
+
+#: The gateway's own record, closed. It was left open on the reasoning that its shape belongs to
+#: the gateway -- but a rule reads it, and a field a rule reads is this module's business
+#: whoever wrote it. `test_the_declared_shape_is_the_one_the_gateway_emits` holds this against
+#: `RunRecord.public()`, so the two cannot drift apart quietly.
+_GATEWAY_RECORD = {
+    "required": (),
+    "optional": ("run_id", "job_id", "state", "exit_code", "stdout", "stderr", "refusal",
+                 "artifact_sha256", "cleanup_verified", "requested_policy", "effective_policy",
+                 "request_policy_sha256", "effective_policy_sha256", "policy_deltas",
+                 "started_at", "finished_at",
+                 # Not from the gateway: what a client writes down when it could not get a
+                 # record at all. Named here so an absent record is a described thing rather
+                 # than an unknown key.
+                 "error", "status"),
+    "types": {"run_id": (str,), "job_id": (str,), "state": (str,),
+              "exit_code": (int, type(None)), "stdout": (str,), "stderr": (str,),
+              "refusal": (str,), "artifact_sha256": (str,),
+              "cleanup_verified": (bool, str, type(None)),
+              "requested_policy": (dict,), "effective_policy": (dict,),
+              "request_policy_sha256": (str,), "effective_policy_sha256": (str,),
+              "policy_deltas": (list, type(None)),
+              "started_at": (int, float, type(None)),
+              "finished_at": (int, float, type(None)),
+              "error": (str,), "status": (int,)},
+    # A delta says which policy field changed and what it held on each side. The two values are
+    # whatever that field's type is, so they are deliberately not typed here -- but the entry
+    # around them is, so this is an arbitrary VALUE rather than an arbitrary record.
+    "elements": {"policy_deltas": {"required": ("path", "requested", "effective"),
+                                   "optional": (),
+                                   "types": {"path": (str,)}}},
+}
+
+#: Kept as the flat view the older rules use. Derived, so it cannot disagree with the shape.
+_GATEWAY_RECORD_TYPES: dict[str, tuple] = dict(_GATEWAY_RECORD["types"])
 
 _TYPES: dict[str, tuple] = {
     "name": (str,), "role": (str,), "argv": (list,),
@@ -366,15 +404,15 @@ def parse_step(text_or_mapping) -> dict:
             for index, entry in enumerate(nested.get(key) or ()):
                 _closed(f"{name}.{key}[{index}]", entry, inner)
 
-    # The gateway's own record is not this module's document, so its shape is not closed -- but
-    # the keys the rules READ out of it are, and a wrong type there would be read as an answer.
+    # The gateway's own record, and the two policy maps inside it that the containment rule
+    # reads. Closed like everything else: a rule reads them, so what they may contain is this
+    # module's business whoever wrote them (`EM3C-EVIDENCE-0006`).
     record = document.get("gateway_record")
     if isinstance(record, dict):
-        for key, allowed in _GATEWAY_RECORD_TYPES.items():
-            if key in record and not isinstance(record[key], allowed):
-                raise EvidenceError(
-                    f"gateway_record.{key} is {type(record[key]).__name__} and the rules read it "
-                    "as " + " or ".join(t.__name__ for t in allowed) + ".")
+        _closed("gateway_record", record, _GATEWAY_RECORD)
+        for key in ("requested_policy", "effective_policy"):
+            if isinstance(record.get(key), dict):
+                _closed(f"gateway_record.{key}", record[key], _POLICY_MAP)
     return document
 
 
@@ -800,12 +838,11 @@ def _containment_findings(effective: dict, binding: dict, where: str) -> list[Fi
     mode = str(binding.get("mode") or "").strip().lower()
     allowed = [str(host) for host in (binding.get("allowlist") or ())]
 
-    enabled = effective.get("network.enabled")
-    granted = effective.get("network.allowed_destinations", _ABSENT)
-    if enabled is None or granted is _ABSENT:
-        return [Finding(where, EVIDENCE_ERROR,
-                        "the policy this job ran under does not say what network it was granted, "
-                        "so it cannot be placed inside or outside the policy in force")]
+    # Both keys are required by the shape, and a policy map that lacks either is refused when
+    # the record is READ. There is no guard here for that: a branch no input can reach reads as
+    # cover for a case that is handled, and this one is handled earlier and harder.
+    enabled = effective["network.enabled"]
+    granted = effective["network.allowed_destinations"]
 
     if mode == "none":
         if enabled:
@@ -819,18 +856,13 @@ def _containment_findings(effective: dict, binding: dict, where: str) -> list[Fi
                 where, FAIL,
                 "this job was granted every destination under a policy that permits a named list, "
                 "which is wider than what the machine allows"))
-        elif isinstance(granted, (list, tuple, set)):
+        else:
             outside = sorted({str(host) for host in granted} - set(allowed))
             if outside:
                 problems.append(Finding(
                     where, FAIL,
                     f"this job was granted {', '.join(outside)}, which the policy in force does "
                     "not permit"))
-        else:
-            problems.append(Finding(
-                where, EVIDENCE_ERROR,
-                "what this job was granted is not a set of destinations, so it cannot be compared "
-                f"with the allowlist: {str(granted)[:32]!r}"))
     return problems
 
 

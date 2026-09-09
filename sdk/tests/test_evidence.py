@@ -37,6 +37,8 @@ OK_RECORD = {
     "effective_policy": {"network.enabled": False, "network.allowed_destinations": [],
                          "limits.cpu": 1, "limits.memory_mb": 512, "limits.processes": 64,
                          "limits.wall_clock_s": 120},
+    "started_at": 2.0,
+    "finished_at": 3.0,
 }
 
 
@@ -814,8 +816,13 @@ class TestSecretsNeverReachTheRecord:
         assert evidence.REDACTED in written
 
     def test_a_secret_nested_in_a_record_is_removed(self, tmp_path):
-        step = good_step(gateway_record={**OK_RECORD, "auth": {"token": self.SECRET},
-                                         "list": [{"deep": self.SECRET}]})
+        """A policy delta holds whatever the field it is about held, at whatever depth. That is
+        the one place in the record where an arbitrary value legitimately lives."""
+        step = good_step(gateway_record={
+            **OK_RECORD,
+            "policy_deltas": [{"path": "network.allowed_destinations",
+                               "requested": {"auth": {"token": self.SECRET}},
+                               "effective": [{"deep": self.SECRET}]}]})
         assert self.SECRET not in self._written(tmp_path, step)
 
     def test_a_secret_in_a_command_line_is_removed(self, tmp_path):
@@ -828,8 +835,10 @@ class TestSecretsNeverReachTheRecord:
         it sits under can save it -- which is the point of having that layer at all."""
         never_collected = "unknown-value-nobody-told-the-recorder-about"
         recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[], announce=False)
-        recorder.record(good_step(gateway_record={**OK_RECORD,
-                                                  "auth": {"token": never_collected}}))
+        recorder.record(good_step(gateway_record={
+            **OK_RECORD,
+            "policy_deltas": [{"path": "network.enabled", "requested": True,
+                               "effective": {"auth": {"token": never_collected}}}]}))
         written = (tmp_path / "e.jsonl").read_text(encoding="utf-8")
         assert never_collected not in written
         assert evidence.REDACTED in written
@@ -910,6 +919,85 @@ class TestTheCommandLineEntryPoint:
         path = tmp_path / "e.jsonl"
         path.write_text("{not json\n", encoding="utf-8")
         assert evidence.main([str(path)]) == 2
+
+
+class TestTheGatewayRecordIsClosedToo:
+    """`EM3C-EVIDENCE-0006`: it was left open on the reasoning that its shape belongs to the
+    gateway. A rule reads it, and what a rule reads is this module's business whoever wrote it."""
+
+    def _written(self, tmp_path, record):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        recorder.record(good_step(gateway_record=record))
+        return path
+
+    def test_a_complete_record_is_accepted(self, tmp_path):
+        """The control for everything below."""
+        assert len(evidence.load(self._written(tmp_path, dict(OK_RECORD)))) == 1
+
+    def test_a_key_the_gateway_does_not_emit_is_refused(self, tmp_path):
+        path = self._written(tmp_path, dict(OK_RECORD))
+        document = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        document["gateway_record"]["surprise"] = 1
+        path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+        with pytest.raises(evidence.EvidenceError) as caught:
+            evidence.load(path)
+        assert "does not describe" in str(caught.value)
+
+    @pytest.mark.parametrize("key,value", [
+        ("cleanup_verified", 7), ("policy_deltas", {}), ("state", 3), ("exit_code", "0"),
+        ("requested_policy", []), ("started_at", "soon"),
+    ])
+    def test_a_wrongly_typed_key_is_refused(self, tmp_path, key, value):
+        path = self._written(tmp_path, dict(OK_RECORD))
+        document = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        document["gateway_record"][key] = value
+        path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+        with pytest.raises(evidence.EvidenceError):
+            evidence.load(path)
+
+    @pytest.mark.parametrize("policy,expected", [
+        ({"network.enabled": False}, "has no network.allowed_destinations"),
+        ({"network.enabled": False, "network.allowed_destinations": [], "limits.pids": 3},
+         "does not describe"),
+        ({"network.enabled": "no", "network.allowed_destinations": []}, "is str"),
+        ({"network.enabled": False, "network.allowed_destinations": "example.com"}, "is str"),
+    ])
+    def test_a_policy_map_that_is_not_one_is_refused(self, tmp_path, policy, expected):
+        """The containment rule reads two of these keys, so a map that drifted, or that was
+        never a policy, must not arrive at it looking like one."""
+        path = self._written(tmp_path, dict(OK_RECORD))
+        document = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        document["gateway_record"]["effective_policy"] = policy
+        path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+        with pytest.raises(evidence.EvidenceError) as caught:
+            evidence.load(path)
+        assert expected in str(caught.value), str(caught.value)
+
+    @pytest.mark.parametrize("absent", [
+        {"error": "the client never printed a run id"},
+        {"status": 404, "error": "HTTP 404"},
+    ])
+    def test_an_absent_record_is_a_described_thing(self, tmp_path, absent):
+        """What a client writes when it could not get one. Not an unknown key."""
+        assert len(evidence.load(self._written(tmp_path, absent))) == 1
+
+    def test_the_declared_shape_is_the_one_the_gateway_emits(self):
+        """The guard against a claim slightly ahead of the code. If `RunRecord.public()` grows a
+        field, this fails here rather than at the far end of an external run."""
+        from agentnode_sdk.gateway.server import RunRecord
+
+        emitted = set(RunRecord(run_id="r", job_id="j").public())
+        declared = set(evidence._GATEWAY_RECORD["optional"])
+        assert emitted - declared == set(), sorted(emitted - declared)
+        assert declared - emitted == {"error", "status"}, sorted(declared - emitted)
+
+    def test_the_declared_policy_map_is_the_one_the_gateway_pins(self):
+        from agentnode_sdk.gateway.policy_paths import policy_shape
+
+        pinned = set(policy_shape(None))
+        declared = set(evidence._POLICY_MAP["required"]) | set(evidence._POLICY_MAP["optional"])
+        assert pinned == declared, sorted(pinned ^ declared)
 
 
 class TestAHashOfNothingIsNotAnIdentity:
@@ -1107,9 +1195,19 @@ class TestAJobIsInsideThePolicyInForce:
         found = self._run_under(tmp_path, BINDING, None)
         assert "and not the policy itself" in messages(found)
 
-    def test_a_policy_that_does_not_say_what_it_granted_is_an_evidence_error(self, tmp_path):
-        found = self._run_under(tmp_path, BINDING, {"limits.memory_mb": 512})
-        assert "does not say what network it was granted" in messages(found)
+    def test_a_policy_that_does_not_say_what_it_granted_never_reaches_the_rule(self, tmp_path):
+        """It is refused when the record is READ, which is earlier and harder than a finding.
+        The rule has no branch for it, because a branch nothing can reach reads as cover."""
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        recorder.record(good_step())
+        document = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        document["gateway_record"]["effective_policy"] = {"limits.memory_mb": 512}
+        broken = tmp_path / "broken.jsonl"
+        broken.write_text(json.dumps(document) + "\n", encoding="utf-8")
+        with pytest.raises(evidence.EvidenceError) as caught:
+            evidence.load(broken)
+        assert "has no network.enabled" in str(caught.value)
 
     def test_a_job_with_no_binding_before_it_cannot_be_placed(self, tmp_path):
         found = self._run_under(tmp_path, BINDING, NO_NETWORK, before=False)
