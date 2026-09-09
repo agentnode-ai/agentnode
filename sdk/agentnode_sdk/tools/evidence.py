@@ -403,14 +403,38 @@ def redact_deep(value, secrets, *, under_secret_key=False):
 # --------------------------------------------------------------------------- recording
 
 
+#: Shown to whoever starts a recording, at the moment they start it.
+#:
+#: `EM3C-V8-DECISION-0001` chose to keep real command output in the record and to state the
+#: exposure that comes with it, rather than to stop recording output or filter it to a shape
+#: somebody predicted. It also decided that saying this in a module docstring and a documentation
+#: page is not enough: the risk arrives when commands run and records are made, so it is said
+#: then, to the person doing it.
+RUN_NOTICE = (
+    "This recording keeps the real output of every command it runs.\n"
+    "  Values you name as secrets are removed wherever they appear, values under a key "
+    "that names a secret are removed whatever they contain, and private-key material is "
+    "removed on sight. If any secret you named survives that, nothing is written at all.\n"
+    "  What is NOT removed is a credential nobody named, with an unremarkable name and "
+    "shape, sitting in the middle of ordinary output. Treat the evidence file as you would "
+    "treat the output of the commands themselves."
+)
+
+
 class Recorder:
     """Runs commands and writes down what happened, without judging any of it."""
 
-    def __init__(self, path, role: str, secrets=()) -> None:
+    def __init__(self, path, role: str, secrets=(), announce=None) -> None:
         self.path = str(path)
         self.role = role
         self.secrets = list(secrets)
         self.steps: list[Step] = []
+        #: Whether the notice was actually put in front of somebody. Recorded, so a run can show
+        #: it rather than assert it, and so a run that suppressed it says so.
+        self.announced = False
+        if announce is not False:
+            (announce or print)(RUN_NOTICE)
+            self.announced = True
 
     def run(self, name: str, argv, *, timeout: float = 600.0, **extra) -> Step:
         """Execute one command. The exit code recorded is this command's own.

@@ -117,7 +117,7 @@ def _recorded(tmp_path, steps, *, secrets=(), with_machines=True):
     Returns the findings. Nothing here hands `verify` a dictionary the recorder never wrote.
     """
     path = tmp_path / "evidence.jsonl"
-    recorder = evidence.Recorder(path, role="client", secrets=secrets)
+    recorder = evidence.Recorder(path, role="client", secrets=secrets, announce=False)
     if with_machines:
         two_machines(recorder)
         bindings(recorder)
@@ -202,7 +202,7 @@ a test. It is a stronger outcome than a test noticing, so it gets its own cover.
 
     def test_what_the_recorder_writes_is_what_the_reader_accepts(self, tmp_path):
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         recorder.record(good_step())
         loaded = evidence.load(path)
         assert set(loaded[0]) <= set(evidence.FIELD_NAMES)
@@ -263,12 +263,12 @@ class TestAnExpectationNeverBecomesAnObservation:
 
     @pytest.mark.parametrize("field", evidence.OBSERVED_BY_RUNNING)
     def test_the_recorder_refuses_to_be_told_what_it_observed(self, tmp_path, field):
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client")
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=False)
         with pytest.raises(evidence.EvidenceError):
             recorder.run("x", [sys.executable, "-c", "pass"], **{field: 0})
 
     def test_a_failing_command_records_its_real_status_not_the_expected_one(self, tmp_path):
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client")
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=False)
         step = recorder.run("fails", [sys.executable, "-c", "raise SystemExit(3)"],
                             expected_exit=0)
         assert step.exit_code == 3
@@ -286,7 +286,7 @@ class TestTheRulesFireOnRecordedSteps:
         assert evidence.FAIL in kinds(found) and "exited 1" in messages(found)
 
     def test_an_uncaptured_exit_code_is_an_evidence_error(self, tmp_path):
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client")
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=False)
         two_machines(recorder)
         recorder.run("a binary that is not there", ["definitely-not-a-real-binary-xyz"])
         found = evidence.check_file(tmp_path / "e.jsonl")
@@ -351,7 +351,7 @@ class TestTheRulesFireOnRecordedSteps:
 
     def test_a_secret_in_the_record_fails(self, tmp_path):
         secret = "s3cr3t-token-value-0123456789"
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[])
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[], announce=False)
         two_machines(recorder)
         recorder.record(good_step(stdout=f"token={secret}\n"))
         found = evidence.check_file(tmp_path / "e.jsonl", [secret])
@@ -431,7 +431,7 @@ class TestTwoMachinesAreShownToBeTwo:
 
     def test_two_machines_with_the_same_host_identity_fail(self, tmp_path):
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         two_machines(recorder)
         recorder.record(a_step(
             name="gateway identity again", role="gateway", argv=["(identity)"],
@@ -442,7 +442,7 @@ class TestTwoMachinesAreShownToBeTwo:
 
     def test_a_sentinel_carried_and_confirmed_over_one_channel_fails(self, tmp_path):
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         two_machines(recorder)
         recorder.record(a_step(
             name="a sentinel that only one path ever saw", role="client", argv=["(sentinel)"],
@@ -455,7 +455,7 @@ class TestTwoMachinesAreShownToBeTwo:
         """The founder's concern, and the one that matters: a sentinel calling itself the
 gateway's while sitting in what the client sent is claiming its own provenance."""
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         two_machines(recorder)
         recorder.record(a_step(
             name="a value the client sent, calling itself the gateway's", role="gateway",
@@ -467,7 +467,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
     def test_a_client_value_that_was_never_sent_fails(self, tmp_path):
         """The mirror. A value the client did not send is not the client's."""
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         two_machines(recorder)
         recorder.record(a_step(
             name="a value the client never sent, calling itself the client's", role="client",
@@ -494,7 +494,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
 
     def test_a_value_not_seen_on_the_other_channel_fails(self, tmp_path):
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         two_machines(recorder)
         recorder.record(a_step(
             name="a value only one channel saw", role="client", argv=["(sentinel)"],
@@ -505,7 +505,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
 
     def test_a_sentinel_that_did_not_come_back_fails(self, tmp_path):
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         recorder.record(a_step(
             name="client identity", role="client", argv=["(identity)"],
             started_at=1.0, ended_at=1.1, exit_code=0,
@@ -523,7 +523,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
 
     def test_one_direction_only_is_an_evidence_error(self, tmp_path):
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         recorder.record(a_step(
             name="client identity", role="client", argv=["(identity)"],
             started_at=1.0, ended_at=1.1, exit_code=0,
@@ -541,7 +541,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
 
     def test_the_same_sentinel_value_both_ways_fails(self, tmp_path):
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         recorder.record(a_step(
             name="client identity", role="client", argv=["(identity)"],
             started_at=1.0, ended_at=1.1, exit_code=0,
@@ -563,7 +563,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
         about a coincidence -- EM3C-EVIDENCE-0001 was right to say so. The host and filesystem
         identities are what separate them."""
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         recorder.record(a_step(
             name="client identity", role="client", argv=["(identity)"],
             started_at=1.0, ended_at=1.1, exit_code=0,
@@ -584,7 +584,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
     def test_an_identity_command_that_failed_is_an_evidence_error(self, tmp_path):
         """An identity built from a command that did not succeed is an assertion."""
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         broken = identity("client", "c" * 64, "cf" * 32, "Windows")
         broken["commands"][0]["exit_code"] = 1
         recorder.record(a_step(
@@ -603,7 +603,7 @@ class TestSecretsNeverReachTheRecord:
     SECRET = "tok_9f8e7d6c5b4a3210fedcba"
 
     def _written(self, tmp_path, step):
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[self.SECRET])
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[self.SECRET], announce=False)
         recorder.record(step)
         return (tmp_path / "e.jsonl").read_text(encoding="utf-8")
 
@@ -633,7 +633,7 @@ class TestSecretsNeverReachTheRecord:
         assert self.SECRET not in self._written(tmp_path, step)
 
     def test_a_secret_in_a_command_line_is_removed(self, tmp_path):
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[self.SECRET])
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[self.SECRET], announce=False)
         recorder.run("echo", [sys.executable, "-c", f"print('{self.SECRET}')"])
         assert self.SECRET not in (tmp_path / "e.jsonl").read_text(encoding="utf-8")
 
@@ -641,7 +641,7 @@ class TestSecretsNeverReachTheRecord:
         """The layer the value list cannot reach. This value is not in `secrets`, so only the key
         it sits under can save it -- which is the point of having that layer at all."""
         never_collected = "unknown-value-nobody-told-the-recorder-about"
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[])
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[], announce=False)
         recorder.record(good_step(gateway_record={**OK_RECORD,
                                                   "auth": {"token": never_collected}}))
         written = (tmp_path / "e.jsonl").read_text(encoding="utf-8")
@@ -650,7 +650,7 @@ class TestSecretsNeverReachTheRecord:
 
     def test_private_key_material_is_removed_wherever_it_appears(self, tmp_path):
         """Recognisable without being known: no value list can contain a key nobody collected."""
-        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[])
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[], announce=False)
         recorder.record(good_step(notes="-----BEGIN OPENSSH PRIVATE KEY----- abc"))
         written = (tmp_path / "e.jsonl").read_text(encoding="utf-8")
         assert "BEGIN OPENSSH PRIVATE KEY" not in written
@@ -663,7 +663,7 @@ class TestSecretsNeverReachTheRecord:
         monkeypatch.setattr(evidence, "redact_deep",
                             lambda value, secrets, **kw: value)
         recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client",
-                                     secrets=["a-live-credential-value"])
+                                     secrets=["a-live-credential-value"], announce=False)
         with pytest.raises(evidence.EvidenceError) as caught:
             recorder.record(good_step(notes="a-live-credential-value is here"))
         assert "survived its own pass" in str(caught.value)
@@ -681,7 +681,7 @@ class TestTheCommandLineEntryPoint:
 
     def test_good_evidence_exits_zero(self, tmp_path, capsys):
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         two_machines(recorder)
         bindings(recorder)
         recorder.record(good_step())
@@ -690,7 +690,7 @@ class TestTheCommandLineEntryPoint:
 
     def test_bad_evidence_exits_non_zero_and_separates_the_two_kinds(self, tmp_path, capsys):
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         two_machines(recorder)
         recorder.record(good_step(gateway_record=None))
         recorder.record(good_step(exit_code=9, expected_exit=0))
@@ -710,7 +710,7 @@ class TestThePolicyBindingIsChecked:
 
     def _with(self, tmp_path, binding, times=2):
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         two_machines(recorder)
         for n in range(times):
             recorder.record(a_step(
@@ -720,7 +720,7 @@ class TestThePolicyBindingIsChecked:
 
     def test_a_record_with_no_binding_at_all_is_an_evidence_error(self, tmp_path):
         path = tmp_path / "e.jsonl"
-        recorder = evidence.Recorder(path, role="client")
+        recorder = evidence.Recorder(path, role="client", announce=False)
         two_machines(recorder)
         found = evidence.check_file(path)
         assert "no operator-policy binding was captured" in messages(found)
@@ -747,3 +747,54 @@ class TestThePolicyBindingIsChecked:
         """The control. Without it, a rule that rejected every binding would pass the rest."""
         found = self._with(tmp_path, BINDING)
         assert not [f for f in found if "binding" in f.message], messages(found)
+
+
+class TestTheOperatorIsToldWhatTheRecordKeeps:
+    """EM3C-V8-DECISION-0001 chose to keep real command output and to state the exposure that
+    comes with it -- and decided that a docstring and a documentation page are not enough,
+    because the risk arrives when commands run."""
+
+    def test_starting_a_recording_shows_the_notice(self, tmp_path):
+        seen = []
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=seen.append)
+        assert recorder.announced is True
+        assert len(seen) == 1
+
+    def test_the_notice_names_what_is_not_removed(self, tmp_path):
+        seen = []
+        evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=seen.append)
+        text = seen[0]
+        assert "nobody named" in text
+        assert "unremarkable" in text
+        assert "nothing is written at all" in text
+
+    def test_the_notice_does_not_promise_more_than_it_can(self, tmp_path):
+        """A notice that claimed everything was removed would be worse than none."""
+        seen = []
+        evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=seen.append)
+        text = seen[0].lower()
+        for overclaim in ("all secrets are removed", "no credential", "guarantee"):
+            assert overclaim not in text
+
+    def test_suppressing_the_notice_is_recorded_as_suppressed(self, tmp_path):
+        """A run that did not show it says so, rather than looking like one that did."""
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=False)
+        assert recorder.announced is False
+
+
+class TestUnexpectedOutputStaysVisible:
+    """The reason Option A was chosen over filtering: an anomaly is the case most worth seeing,
+    and a per-step allowlist would turn exactly that into a blank."""
+
+    def test_output_nobody_predicted_is_kept(self, tmp_path):
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=False)
+        surprising = "Traceback: something nobody wrote a rule for, at 0xdeadbeef"
+        recorder.record(good_step(stdout=surprising))
+        assert surprising in (tmp_path / "e.jsonl").read_text(encoding="utf-8")
+
+    def test_a_stream_is_not_truncated_to_a_shape(self, tmp_path):
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=False)
+        long_output = ("line %d" + chr(10)) * 40
+        recorder.record(good_step(stdout=long_output))
+        written = (tmp_path / "e.jsonl").read_text(encoding="utf-8")
+        assert written.count("line %d") == 40
