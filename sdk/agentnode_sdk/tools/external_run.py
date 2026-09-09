@@ -336,9 +336,8 @@ def sentinels():
         started_at=time.time(), ended_at=time.time(), exit_code=code, stdout=out, stderr=err,
         expected_exit=0, expect_output=True, error_class=cls,
         run_id=run_id, gateway_record=record, **from_record(record),
-        notes=("the payload the client sent is below. The client's value is IN it, which is what "
-               "makes this origin checkable rather than asserted.\n" + source),
-        sentinel={"generated_on": "client",
+        sentinel={"request_text": source,
+                  "generated_on": "client",
                   "carried_over": "agentnode-job", "confirmed_over": "ssh",
                   "value_sha256": digest(made_here),
                   "in_request": made_here in source,
@@ -356,9 +355,10 @@ def sentinels():
         stdout=gateway_query.get("stdout", ""), stderr=gateway_query.get("stderr", ""),
         expected_exit=None, error_class=str(gateway_query.get("error_class", "")),
         run_id=run_id, gateway_record=record, **from_record(record),
-        notes=("the payload recorded on the previous step does NOT contain this value: the job "
-               "generated it, on the gateway, so the client cannot have produced it.\n"),
-        sentinel={"generated_on": "gateway",
+        # The same payload, deliberately. This value is NOT in it -- the job made it on the
+        # gateway -- and the rule reads that rather than taking the label's word for it.
+        sentinel={"request_text": source,
+                  "generated_on": "gateway",
                   "carried_over": "agentnode-job", "confirmed_over": "ssh",
                   "value_sha256": digest(from_gateway),
                   "in_request": bool(from_gateway) and from_gateway in source,

@@ -29,6 +29,7 @@ OK_RECORD = {
     "effective_policy_sha256": "a" * 64,
     "policy_deltas": [],
     "cleanup_verified": True,
+    "job_id": "job-1",
     "state": "finished",
     "refusal": "",
     "requested_policy": {"network.enabled": False, "network.allowed_destinations": [],
@@ -68,12 +69,36 @@ def identity(role, host, filesystem, os_name, **overrides):
     return machine
 
 
-def crossing(made_on, value_sha256, **overrides):
-    """A sentinel that crosses properly. `in_request` is what makes the origin checkable: a value
-the client sent is the client's, one it never sent is not."""
+#: What the client sent. The client's value is in it and the gateway's is not, which is the whole
+#: of the two-machine argument -- and since `EM3C-EVIDENCE-0009` the rule reads this rather than
+#: taking `in_request` at its word, so a helper that only set the boolean would now be refused.
+CLIENT_VALUE = "a1b2c3d4e5f6071829"
+GATEWAY_VALUE = "998877665544332211"
+PAYLOAD = "print('E3-FROM-CLIENT " + CLIENT_VALUE + "')"
+
+
+def value_for(made_on):
+    return CLIENT_VALUE if made_on == "client" else GATEWAY_VALUE
+
+
+def digest_of(text):
+    import hashlib
+
+    return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
+
+
+def crossing(made_on, value=None, request_text=PAYLOAD, **overrides):
+    """A sentinel that crosses properly.
+
+    `in_request` is what makes the origin checkable: a value the client sent is the client's, one
+    it never sent is not. The request itself is carried too, so that claim can be read rather
+    than believed.
+    """
+    raw = value_for(made_on) if value is None else value
     sentinel = {"generated_on": made_on,
                 "carried_over": "agentnode-job", "confirmed_over": "ssh",
-                "value_sha256": value_sha256,
+                "value_sha256": digest_of(raw),
+                "request_text": request_text,
                 "in_request": made_on == "client",
                 "in_response": True, "in_other_channel": True, "matched": True}
     sentinel.update(overrides)
@@ -97,11 +122,11 @@ def two_machines(recorder):
     recorder.record(a_step(
         name="a sentinel made on the client, read back over the gateway",
         role="client", argv=["(sentinel)"], started_at=1.4, ended_at=1.5, exit_code=0,
-        sentinel=crossing("client", "1" * 64)))
+        sentinel=crossing("client")))
     recorder.record(a_step(
         name="a sentinel made on the gateway, read back over the client",
         role="gateway", argv=["(sentinel)"], started_at=1.6, ended_at=1.7, exit_code=0,
-        sentinel=crossing("gateway", "2" * 64)))
+        sentinel=crossing("gateway")))
 
 
 BINDING = {"mode": "none",
@@ -174,6 +199,46 @@ def _a_real_document(tmp_path) -> dict:
     return json.loads(path.read_text(encoding="utf-8").splitlines()[0])
 
 
+#: One wrong value per field, chosen so a rule that reads that field has to object. Written out
+#: rather than generated, because a generated one would be as blind as the field it is checking.
+WRONG = {
+    "name": {"name": "  "},
+    "role": {"role": "somewhere-else"},
+    "argv": {"argv": []},
+    "started_at": {"started_at": 9.0, "ended_at": 3.0},
+    "ended_at": {"ended_at": 1.0},
+    "exit_code": {"exit_code": None},
+    "stdout": {"stdout": "", "expect_output": True},
+    "stderr": {"stderr": "", "exit_code": 1, "expected_exit": 1,
+               "expected_refusal": "a reason that appears nowhere"},
+    "error_class": {"error_class": "FileNotFoundError", "exit_code": 0},
+    "run_id": {"run_id": OTHER_RUN},
+    "job_id": {"job_id": "another-job"},
+    # Two steps: one client per record is a property OF the record, not of a step.
+    "client_id": [{"client_id": "client-1"}, {"client_id": "client-2"}],
+    "request_policy_sha256": {"request_policy_sha256": "b" * 64},
+    "effective_policy_sha256": {"effective_policy_sha256": "b" * 64},
+    "policy_deltas": {"policy_deltas": [{"path": "network.enabled", "requested": True,
+                                         "effective": False}]},
+    "gateway_record": {"gateway_record": {"error": "no such run"}},
+    "container": {"container": "agentnode-em3c-somebody-elses-run"},
+    "container_query": {"expect_container_gone": True, "container_query": None},
+    "cleanup_verified": {"cleanup_verified": False},
+    "machine": {"machine": identity("client", "c" * 64, "cf" * 32, "Windows",
+                                    commands=[{"command": "hostname", "exit_code": 1,
+                                               "stdout": "", "stderr": "no"}])},
+    "sentinel": {"sentinel": crossing("client", request_text="nothing was sent")},
+    "binding": {"binding": {**BINDING, "digests_agree": "False"}},
+    "expected_exit": {"expected_exit": 9},
+    "expected_refusal": {"expected_refusal": "a reason that appears nowhere"},
+    "expect_output": {"expect_output": True, "stdout": ""},
+    "expect_cleanup": {"expect_cleanup": True,
+                       "gateway_record": {**OK_RECORD, "cleanup_verified": "unknown"},
+                       "cleanup_verified": None},
+    "expect_container_gone": {"expect_container_gone": True},
+}
+
+
 def kinds(findings):
     return {f.kind for f in findings}
 
@@ -214,6 +279,38 @@ name to be a field a Step can carry."""
         unreachable = sorted(read - set(evidence.FIELD_NAMES))
         assert not unreachable, (
             "the verifier reads fields no recorded step can carry: " + str(unreachable))
+
+    def test_every_field_a_step_carries_is_read(self):
+        """The other direction, which the parity test used not to check.
+
+        `EM3C-EVIDENCE-0009`: five fields were carried and read by nothing, listed in a constant
+        and defended as a decision. An unread field is one no evidence can contradict, so it is
+        not a weaker version of a checked field -- it is a place where the record can say
+        anything. `notes` had no rule that could be written for it and is gone; the rest have
+        one.
+        """
+        assert set(evidence.FIELD_NAMES) == set(evidence.READ_BY_RULES)
+        assert not hasattr(evidence, "RECORDED_ONLY")
+
+    @pytest.mark.parametrize("field,broken", list(WRONG.items()))
+    def test_each_field_a_step_carries_is_really_read(self, tmp_path, field, broken):  # noqa: D
+        """Not by reading the source for the field's name -- a list kept by hand passes that.
+
+        Each field is given a value a rule should object to, on the real path, and the record
+        must come back with at least one finding. A field nothing objects to is a field the
+        record can say anything in, which is what `EM3C-EVIDENCE-0009` found five of.
+        """
+        cases = broken if isinstance(broken, list) else [broken]
+        found = _recorded(tmp_path, [good_step(**case) for case in cases])
+        assert found, f"{field} was made wrong and no rule said anything"
+
+    def test_the_matrix_covers_every_field(self):
+        assert set(WRONG) == set(evidence.FIELD_NAMES), \
+            sorted(set(WRONG) ^ set(evidence.FIELD_NAMES))
+
+    def test_the_unbroken_step_is_accepted(self, tmp_path):
+        """The control: those findings are about what was broken, not about the step itself."""
+        assert _recorded(tmp_path, [good_step()]) == []
 
     def test_expect_output_and_expect_cleanup_are_carriable(self):
         assert "expect_output" in evidence.FIELD_NAMES
@@ -266,6 +363,34 @@ a test. It is a stronger outcome than a test noticing, so it gets its own cover.
         with pytest.raises(evidence.EvidenceError) as caught:
             evidence.load(path)
         assert field in str(caught.value)
+
+    @pytest.mark.parametrize("field", list(evidence.MANDATORY))
+    def test_the_recorder_cannot_be_asked_for_a_step_without_one(self, tmp_path, field):
+        """The same matrix on the other entry point.
+
+        `EM3C-EVIDENCE-0009`: the negatives above start from a real record and then edit it as
+        text, which is the reader's side. This is the recorder's: a step missing a mandatory
+        field cannot be recorded either, and the two together are what "at every entry point"
+        means. The five expectations are refused by the recorder, the six that identify a step
+        cannot be left out of a `Step` at all -- and both are a refusal, not a default.
+        """
+        recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=False)
+        values = dict(name="x", role="client", argv=[], started_at=1.0, ended_at=1.1,
+                      exit_code=0, **STATED)
+        del values[field]
+        with pytest.raises((evidence.EvidenceError, TypeError)) as caught:
+            recorder.record(evidence.Step(**values))
+        assert field in str(caught.value), str(caught.value)
+        assert not (tmp_path / "e.jsonl").exists()
+
+    def test_the_recorder_does_record_the_same_step_when_it_is_whole(self, tmp_path):
+        """The control for the matrix above: those refusals are about the missing field, not
+        about a recorder that refuses this shape of step whatever it is given."""
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        recorder.record(evidence.Step(name="x", role="client", argv=[], started_at=1.0,
+                                      ended_at=1.1, exit_code=0, **STATED))
+        assert len(evidence.load(path)) == 1
 
     def test_the_base_of_that_matrix_is_itself_accepted(self, tmp_path):
         """The control. Without it, every case above could pass on a document refused for some
@@ -586,7 +711,7 @@ class TestTwoMachinesAreShownToBeTwo:
         recorder.record(a_step(
             name="a sentinel that only one path ever saw", role="client", argv=["(sentinel)"],
             started_at=3.0, ended_at=3.1, exit_code=0,
-            sentinel=crossing("client", "3" * 64, confirmed_over="agentnode-job")))
+            sentinel=crossing("client", confirmed_over="agentnode-job")))
         found = evidence.check_file(path)
         assert "same channel" in messages(found)
 
@@ -599,7 +724,9 @@ gateway's while sitting in what the client sent is claiming its own provenance."
         recorder.record(a_step(
             name="a value the client sent, calling itself the gateway's", role="gateway",
             argv=["(sentinel)"], started_at=3.0, ended_at=3.1, exit_code=0,
-            sentinel=crossing("gateway", "4" * 64, in_request=True)))
+            # The label says gateway and the value IS in what the client sent, so the client
+            # could have produced it. The request in the record is what makes that visible.
+            sentinel=crossing("gateway", CLIENT_VALUE, in_request=True)))
         found = evidence.check_file(path)
         assert "The label is not evidence" in messages(found)
 
@@ -611,7 +738,8 @@ gateway's while sitting in what the client sent is claiming its own provenance."
         recorder.record(a_step(
             name="a value the client never sent, calling itself the client's", role="client",
             argv=["(sentinel)"], started_at=3.0, ended_at=3.1, exit_code=0,
-            sentinel=crossing("client", "5" * 64, in_request=False)))
+            # The label says client and the value was never in what the client sent.
+            sentinel=crossing("client", GATEWAY_VALUE, in_request=False)))
         found = evidence.check_file(path)
         assert "The label is not evidence" in messages(found)
 
@@ -638,7 +766,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
         recorder.record(a_step(
             name="a value only one channel saw", role="client", argv=["(sentinel)"],
             started_at=3.0, ended_at=3.1, exit_code=0,
-            sentinel=crossing("client", "7" * 64, in_other_channel=False)))
+            sentinel=crossing("client", in_other_channel=False)))
         found = evidence.check_file(path)
         assert "not found over ssh" in messages(found)
 
@@ -656,7 +784,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
         recorder.record(a_step(
             name="a sentinel that never arrived", role="client", argv=["(sentinel)"],
             started_at=1.4, ended_at=1.5, exit_code=0,
-            sentinel=crossing("client", "1" * 64, in_response=False, matched=False)))
+            sentinel=crossing("client", in_response=False, matched=False)))
         found = evidence.check_file(path)
         assert "never came back" in messages(found)
 
@@ -674,7 +802,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
         recorder.record(a_step(
             name="only one direction", role="client", argv=["(sentinel)"],
             started_at=1.4, ended_at=1.5, exit_code=0,
-            sentinel=crossing("client", "1" * 64, confirmed_over="ssh", matched=True)))
+            sentinel=crossing("client", confirmed_over="ssh", matched=True)))
         found = evidence.check_file(path)
         assert "both directions" in messages(found)
 
@@ -693,7 +821,13 @@ gateway's while sitting in what the client sent is claiming its own provenance."
             recorder.record(a_step(
                 name=f"sentinel {made}", role=made, argv=["(sentinel)"],
                 started_at=1.4, ended_at=1.5, exit_code=0,
-                sentinel=crossing(made, "same" * 16)))
+                # The same value both ways. The gateway's copy records a request that does NOT
+                # contain it, so it still derives as the gateway's and the rule about two
+                # values being one is the rule that fires.
+                sentinel=crossing(made, CLIENT_VALUE,
+                                  **({} if made == "client"
+                                     else {"request_text": "print('nothing of the sort')",
+                                           "in_request": False}))))
         found = evidence.check_file(path)
         assert "generated independently" in messages(found)
 
@@ -715,7 +849,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
             recorder.record(a_step(
                 name=f"sentinel {made}", role=made, argv=["(sentinel)"],
                 started_at=1.4, ended_at=1.5, exit_code=0,
-                sentinel=crossing(made, digest_for(made))))
+                sentinel=crossing(made)))
         bindings(recorder)
         found = evidence.check_file(path)
         assert "operating system" not in messages(found), messages(found)
@@ -756,7 +890,7 @@ class TestSecretsNeverReachTheRecord:
         assert evidence.redact_argv(argv) == argv
 
     @pytest.mark.parametrize("field,value", [
-        ("notes", "the token was {s}"),
+        ("stderr", "the token was {s}" + chr(10)),
         ("client_id", "{s}"),
         ("stdout", "value={s}\n"),
         # EM3C-EVIDENCE-0003: the parametrisation stopped at stdout, so the two places a failure
@@ -785,6 +919,7 @@ class TestSecretsNeverReachTheRecord:
                              "parsed": True, "command": "docker ps --filter {s}"}},
         {"sentinel": {"generated_on": "client", "carried_over": "agentnode-job",
                       "confirmed_over": "ssh", "value_sha256": "{s}", "in_request": True,
+                      "request_text": "sent {s}",
                       "in_response": True, "in_other_channel": True, "matched": True}},
     ])
     def test_a_secret_inside_a_nested_structure_is_removed(self, tmp_path, where):
@@ -846,7 +981,7 @@ class TestSecretsNeverReachTheRecord:
     def test_private_key_material_is_removed_wherever_it_appears(self, tmp_path):
         """Recognisable without being known: no value list can contain a key nobody collected."""
         recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", secrets=[], announce=False)
-        recorder.record(good_step(notes="-----BEGIN OPENSSH PRIVATE KEY----- abc"))
+        recorder.record(good_step(stderr="-----BEGIN OPENSSH PRIVATE KEY----- abc"))
         written = (tmp_path / "e.jsonl").read_text(encoding="utf-8")
         assert "BEGIN OPENSSH PRIVATE KEY" not in written
         assert evidence.REDACTED in written
@@ -860,7 +995,7 @@ class TestSecretsNeverReachTheRecord:
         recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client",
                                      secrets=["a-live-credential-value"], announce=False)
         with pytest.raises(evidence.EvidenceError) as caught:
-            recorder.record(good_step(notes="a-live-credential-value is here"))
+            recorder.record(good_step(stderr="a-live-credential-value is here"))
         assert "survived its own pass" in str(caught.value)
         # Not "the value is absent from the file" -- an empty file satisfies that by accident.
         # NOTHING was written: no record at all, not a record with a hole in it.
@@ -873,7 +1008,7 @@ class TestSecretsNeverReachTheRecord:
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client", secrets=[], announce=False)
         with pytest.raises(evidence.EvidenceError) as caught:
-            recorder.record(good_step(notes="-----BEGIN OPENSSH PRIVATE KEY----- abc"))
+            recorder.record(good_step(stderr="-----BEGIN OPENSSH PRIVATE KEY----- abc"))
         assert "nothing was written" in str(caught.value)
         assert not path.exists() or path.read_text(encoding="utf-8") == ""
 
@@ -883,12 +1018,13 @@ class TestSecretsNeverReachTheRecord:
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client", secrets=["a-live-credential-value"],
                                      announce=False)
-        recorder.record(good_step(notes="a-live-credential-value is here"))
+        recorder.record(good_step(stderr="a-live-credential-value is here"))
         assert path.read_text(encoding="utf-8").strip() != ""
 
     def test_the_rest_of_the_record_survives(self, tmp_path):
         """The control. A redactor that emptied the document would pass everything above."""
-        step = good_step(notes=f"the token was {self.SECRET}", name="a distinctive step name")
+        step = good_step(stderr=f"the token was {self.SECRET}",
+                         name="a distinctive step name")
         written = self._written(tmp_path, step)
         assert "a distinctive step name" in written
         assert "EXT-OK" in written
@@ -998,6 +1134,113 @@ class TestTheGatewayRecordIsClosedToo:
         pinned = set(policy_shape(None))
         declared = set(evidence._POLICY_MAP["required"]) | set(evidence._POLICY_MAP["optional"])
         assert pinned == declared, sorted(pinned ^ declared)
+
+
+class TestTheFieldsThatUsedToBeUnread:
+    """`EM3C-EVIDENCE-0009`: job_id, client_id, policy_deltas and cleanup_verified were recorded
+    and read by nothing, so the record could say anything in them and no rule would notice."""
+
+    def test_a_job_id_that_disagrees_with_the_gateway_fails(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(
+            job_id="job-1", gateway_record={**OK_RECORD, "job_id": "job-2"})])
+        assert "is about job job-1" in messages(found)
+
+    def test_a_gateway_job_the_step_never_recorded_is_an_evidence_error(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(
+            job_id="", gateway_record={**OK_RECORD, "job_id": "job-2"})])
+        assert "never compared" in messages(found)
+
+    def test_deltas_that_are_not_the_gateway_s_deltas_fail(self, tmp_path):
+        delta = {"path": "network.enabled", "requested": True, "effective": False}
+        found = _recorded(tmp_path, [good_step(
+            policy_deltas=[delta],
+            gateway_record={**OK_RECORD, "policy_deltas": [],
+                            "request_policy_sha256": "a" * 64,
+                            "effective_policy_sha256": "a" * 64})])
+        assert "is not the narrowing the gateway reported" in messages(found)
+
+    def test_cleanup_that_disagrees_with_the_gateway_fails(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(
+            cleanup_verified=True, gateway_record={**OK_RECORD, "cleanup_verified": False})])
+        assert "and the gateway says" in messages(found)
+
+    def test_two_clients_in_one_record_fail(self, tmp_path):
+        found = _recorded(tmp_path, [good_step(client_id="client-1"),
+                                     good_step(client_id="client-2")])
+        assert "more than one client" in messages(found)
+
+    def test_one_client_and_agreeing_fields_are_accepted(self, tmp_path):
+        """The control for all five."""
+        assert _recorded(tmp_path, [good_step(), good_step()]) == []
+
+
+class TestASentinelsRequestIsRead:
+    """`EM3C-EVIDENCE-0009`: `in_request` decided which way a value travelled and was a boolean
+    the recorder asserted. What the client sent is in the record, and the claim is read from it."""
+
+    PAYLOAD = "print('E3-FROM-CLIENT {v}')"
+
+    def _pair(self, tmp_path, first, second):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        recorder.record(a_step(name="client identity", role="client", argv=["x"],
+                               started_at=1.0, ended_at=1.1, exit_code=0,
+                               machine=identity("client", "c" * 64, "cf" * 32, "Windows")))
+        recorder.record(a_step(name="gateway identity", role="gateway", argv=["x"],
+                               started_at=1.2, ended_at=1.3, exit_code=0,
+                               machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
+        for index, sentinel in enumerate((first, second)):
+            recorder.record(a_step(name=f"sentinel {index + 1}", role="client", argv=["x"],
+                                   started_at=2.0 + index, ended_at=2.1 + index, exit_code=0,
+                                   sentinel=sentinel))
+        return evidence.verify_two_machines(evidence.load(path))
+
+    def _sentinel(self, made_on, value, payload):
+        import hashlib
+
+        return {"generated_on": made_on, "carried_over": "agentnode-job",
+                "confirmed_over": "ssh",
+                "value_sha256": hashlib.sha256(value.encode()).hexdigest(),
+                "request_text": payload,
+                "in_request": made_on == "client", "in_response": True,
+                "in_other_channel": True, "matched": True}
+
+    def test_a_real_crossing_is_accepted(self, tmp_path):
+        """The control. The client's value is in the payload; the gateway's is not."""
+        mine, theirs = "a1b2c3d4e5f60718", "99887766554433221100"
+        assert self._pair(tmp_path,
+                          self._sentinel("client", mine, self.PAYLOAD.format(v=mine)),
+                          self._sentinel("gateway", theirs, self.PAYLOAD.format(v=mine))) == []
+
+    def test_a_client_value_that_is_not_in_what_was_sent_fails(self, tmp_path):
+        mine, theirs = "a1b2c3d4e5f60718", "99887766554433221100"
+        found = self._pair(tmp_path,
+                           self._sentinel("client", mine, self.PAYLOAD.format(v="something-else")),
+                           self._sentinel("gateway", theirs, self.PAYLOAD.format(v=mine)))
+        assert "the recorded request says the opposite" in messages(found)
+
+    def test_a_gateway_value_that_was_in_what_was_sent_fails(self, tmp_path):
+        """The client could have produced it, so it establishes nothing about the gateway."""
+        mine, theirs = "a1b2c3d4e5f60718", "99887766554433221100"
+        found = self._pair(tmp_path,
+                           self._sentinel("client", mine, self.PAYLOAD.format(v=mine)),
+                           self._sentinel("gateway", theirs, self.PAYLOAD.format(v=theirs)))
+        assert "the recorded request says the opposite" in messages(found)
+
+    def test_a_sentinel_with_no_record_of_the_request_cannot_be_read(self, tmp_path):
+        mine, theirs = "a1b2c3d4e5f60718", "99887766554433221100"
+        found = self._pair(tmp_path,
+                           self._sentinel("client", mine, ""),
+                           self._sentinel("gateway", theirs, self.PAYLOAD.format(v=mine)))
+        assert "records nothing of what the client sent" in messages(found)
+
+    def test_a_sentinel_whose_value_is_not_a_digest_cannot_be_read(self, tmp_path):
+        mine, theirs = "a1b2c3d4e5f60718", "99887766554433221100"
+        broken = {**self._sentinel("client", mine, self.PAYLOAD.format(v=mine)),
+                  "value_sha256": "not-a-digest"}
+        found = self._pair(tmp_path, broken,
+                           self._sentinel("gateway", theirs, self.PAYLOAD.format(v=mine)))
+        assert "is not a digest" in messages(found)
 
 
 class TestAHashOfNothingIsNotAnIdentity:

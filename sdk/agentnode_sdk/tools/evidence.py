@@ -32,8 +32,10 @@ carry `FAIL` or `EVIDENCE_ERROR`, and neither is a pass.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from dataclasses import asdict, dataclass, fields
@@ -116,7 +118,6 @@ class Step:
     machine: dict | None = None
     sentinel: dict | None = None
     binding: dict | None = None
-    notes: str = ""
 
     # -- what was expected, declared before the step ran ---------------------------------------
     #: `UNSET` rather than a value. `EM3C-EVIDENCE-0002`: with ordinary defaults, a caller who
@@ -148,19 +149,20 @@ MANDATORY = ("name", "role", "argv", "started_at", "ended_at", "exit_code",
              "expected_exit", "expected_refusal", "expect_output", "expect_cleanup",
              "expect_container_gone")
 
-#: Fields the verifier reads. Every other field must appear in `RECORDED_ONLY` below, so a field
-#: added with no rule behind it is caught by a test rather than sitting unread for a release.
+#: Fields the verifier reads. `EM3C-EVIDENCE-0009`: this used to be a subset, with the remainder
+#: named in a `RECORDED_ONLY` list and defended as a decision rather than an oversight. But an
+#: unread field is a field nothing can contradict, and the schema is closed in BOTH directions
+#: now: this tuple is the whole of `FIELD_NAMES`, and a test holds the two against each other.
+#: `notes` was the one field with no rule that could be written for it, so it is gone; what the
+#: driver kept there is in the sentinel, where `_sentinel_findings` reads it.
 READ_BY_RULES = (
     "name", "role", "argv", "started_at", "ended_at", "exit_code", "stdout", "stderr",
     "error_class", "run_id", "gateway_record", "container", "container_query", "machine",
     "sentinel", "binding", "request_policy_sha256", "effective_policy_sha256",
     "expected_exit", "expected_refusal", "expect_output", "expect_cleanup",
     "expect_container_gone",
+    "job_id", "client_id", "policy_deltas", "cleanup_verified",
 )
-
-#: Fields kept for a reader and deliberately not used by any rule. Naming them is the point: an
-#: unread field is a decision, not an oversight.
-RECORDED_ONLY = ("job_id", "client_id", "policy_deltas", "cleanup_verified", "notes")
 
 #: The shapes of the nested structures. `dict` alone says nothing about what is inside, and the
 #: rules below read specific keys out of these.
@@ -179,12 +181,18 @@ _NESTED: dict[str, dict] = {
                     "types": {"command": (str,), "exit_code": (int, type(None)),
                               "stdout": (str,), "stderr": (str,)}}}},
     "sentinel": {"required": ("generated_on", "carried_over", "confirmed_over", "value_sha256",
-                              "in_request", "in_response", "in_other_channel", "matched"),
+                              "in_request", "in_response", "in_other_channel", "matched",
+                              "request_text"),
                  "optional": (),
                  "types": {"generated_on": (str,), "carried_over": (str,),
                            "confirmed_over": (str,), "value_sha256": (str,),
                            "in_request": (bool,), "in_response": (bool,),
-                           "in_other_channel": (bool,), "matched": (bool,)}},
+                           "in_other_channel": (bool,), "matched": (bool,),
+                           # What the client actually sent. `in_request` decides the origin, and
+                           # until now it was a boolean the recorder asserted. With the request
+                           # itself in the record the rule can check it, so the direction a
+                           # value travelled is read out of the evidence rather than believed.
+                           "request_text": (str,)}},
     "container_query": {"required": ("ran", "exit_code", "stdout", "stderr", "error_class",
                                      "parsed", "command"),
                         "optional": ("names", "ids", "sought_id", "complete"),
@@ -268,7 +276,6 @@ _TYPES: dict[str, tuple] = {
     "machine": (dict, type(None)),
     "sentinel": (dict, type(None)),
     "binding": (dict, type(None)),
-    "notes": (str,),
     "expected_exit": (int, type(None)),
     "expected_refusal": (str,),
     "expect_output": (bool,), "expect_cleanup": (bool,), "expect_container_gone": (bool,),
@@ -715,6 +722,38 @@ def _run_findings(step, where) -> list[Finding]:
         problems.append(Finding(where, EVIDENCE_ERROR,
                                 "the gateway record does not say which run it is about"))
 
+    # `EM3C-EVIDENCE-0009`: these four were recorded and read by nothing, which made them
+    # fields no evidence could contradict. Each is now held against the gateway's own answer.
+    claimed_job = (step.get("job_id") or "").strip()
+    held_job = str(record.get("job_id") or "")
+    if claimed_job and held_job and claimed_job != held_job:
+        problems.append(Finding(
+            where, FAIL,
+            f"the step is about job {claimed_job} and the gateway's record is about {held_job}"))
+    elif held_job and not claimed_job:
+        problems.append(Finding(
+            where, EVIDENCE_ERROR,
+            "the gateway record names a job and the step recorded none, so the two were never "
+            "compared"))
+
+    claimed_deltas = step.get("policy_deltas")
+    held_deltas = record.get("policy_deltas")
+    if claimed_deltas is not None and held_deltas is not None \
+            and list(claimed_deltas) != list(held_deltas):
+        problems.append(Finding(
+            where, FAIL,
+            "the narrowing the step recorded is not the narrowing the gateway reported, so one "
+            "of the two is not about this run"))
+
+    claimed_cleanup = step.get("cleanup_verified")
+    held_cleanup = record.get("cleanup_verified", "__absent__")
+    if claimed_cleanup is not None and held_cleanup != "__absent__" \
+            and claimed_cleanup != held_cleanup:
+        problems.append(Finding(
+            where, FAIL,
+            f"the step recorded cleanup as {claimed_cleanup!r} and the gateway says "
+            f"{held_cleanup!r}"))
+
     for field_name in ("request_policy_sha256", "effective_policy_sha256"):
         claimed = (step.get(field_name) or "").strip()
         held = str(record.get(field_name) or "")
@@ -1001,8 +1040,39 @@ def verify(steps, secrets=()) -> list[Finding]:
             continue
         where = f"step {index + 1} ({step.get('name') or 'unnamed'})"
 
+        # What ran, who ran it, and when. `EM3C-EVIDENCE-0009`: these four identify the step and
+        # were read by nothing, so a record could carry an unnamed step with no command, run by
+        # nobody, in negative time, and every other rule would still have its say about it.
+        if not str(step.get("name") or "").strip():
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                "this step does not say what it is, so nothing it contains can be read as "
+                "evidence of anything in particular"))
+        if str(step.get("role") or "") not in _ROLES:
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                f"this step was run by {str(step.get('role'))[:24]!r}, which is neither of the "
+                "two machines this record is about"))
+        if not (step.get("argv") or []):
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                "this step records no command, so what it observed cannot be attributed to "
+                "anything that ran"))
+        began, finished = step.get("started_at"), step.get("ended_at")
+        if isinstance(began, (int, float)) and isinstance(finished, (int, float)) \
+                and finished < began:
+            problems.append(Finding(
+                where, FAIL,
+                f"this step ended before it started ({began} to {finished}), so its times are "
+                "not a record of when anything happened"))
+
         expected = step.get("expected_exit", None)
         actual = step.get("exit_code")
+        if step.get("error_class") and actual == 0:
+            problems.append(Finding(
+                where, FAIL,
+                f"this step reports {step['error_class']} and an exit code of 0. A command that "
+                "could not run has no successful status"))
         if actual is None:
             problems.append(Finding(
                 where, EVIDENCE_ERROR,
@@ -1048,6 +1118,7 @@ def verify(steps, secrets=()) -> list[Finding]:
                 problems.append(Finding(where, FAIL,
                                         "a live secret value was written into the evidence"))
 
+    problems.extend(verify_one_client(steps))
     problems.extend(verify_two_machines(steps))
     problems.extend(verify_bindings(steps))
     problems.extend(verify_jobs_under_policy(steps))
@@ -1056,6 +1127,9 @@ def verify(steps, secrets=()) -> list[Finding]:
 
 #: Where a sentinel travelled. Two different names are required for a crossing: a value carried
 #: and confirmed over the same channel has only been seen by one path.
+#: The two machines a record is about. A step run by anything else is not part of this evidence.
+_ROLES = ("client", "gateway")
+
 _CHANNELS = ("agentnode-job", "ssh")
 
 
@@ -1113,8 +1187,33 @@ def _sentinel_findings(sentinel: dict, crossed: dict) -> list[Finding]:
                         f"the sentinel said to be made on {made} was not found over {confirmed}, "
                         "so only one channel ever saw it")]
 
+    # `in_request` decided the origin and was, until now, a boolean the recorder asserted --
+    # so the derivation was only as good as the recorder's own bookkeeping. The request itself
+    # is in the record, and the claim is checked against it: the value is in what the client
+    # sent, or it is not, and no field gets to say otherwise (`EM3C-EVIDENCE-0009`).
+    sent = str(sentinel.get("request_text") or "")
+    value = str(sentinel.get("value_sha256") or "")
+    if not _looks_like_a_digest(value):
+        return [Finding(where, EVIDENCE_ERROR,
+                        f"a sentinel's value is not a digest: {value[:24]!r}")]
+    if not sent.strip():
+        return [Finding(where, EVIDENCE_ERROR,
+                        "a sentinel records nothing of what the client sent, so whether the "
+                        "value was in it cannot be checked and its origin rests on a label")]
+    really_in_request = any(
+        hashlib.sha256(token.encode("utf-8")).hexdigest() == value
+        for token in re.findall(r"[0-9a-zA-Z_-]{8,}", sent))
+    if bool(sentinel.get("in_request")) != really_in_request:
+        return [Finding(
+            where, FAIL,
+            "a sentinel says the value was "
+            + ("in" if sentinel.get("in_request") else "not in")
+            + " what the client sent, and the recorded request says the opposite. The origin of "
+            "the crossing is what that field decides, so it is read from the request rather "
+            "than believed")]
+
     # The origin, derived. A value the client sent is the client's; one it never sent is not.
-    derived = "client" if sentinel.get("in_request") else "gateway"
+    derived = "client" if really_in_request else "gateway"
     if derived != made:
         return [Finding(where, FAIL,
                         f"a sentinel calls itself made on {made}, but it was "
@@ -1122,6 +1221,22 @@ def _sentinel_findings(sentinel: dict, crossed: dict) -> list[Finding]:
                         f"which makes it {derived}'s. The label is not evidence")]
 
     crossed[made] = str(sentinel.get("value_sha256") or "")
+    return []
+
+
+def verify_one_client(steps) -> list[Finding]:
+    """Whether one client made this record.
+
+    `EM3C-EVIDENCE-0009`: `client_id` was recorded and read by nothing. A record that names two
+    clients is not one run seen from one side; it is two runs, or one run and something else, and
+    the two-machine argument -- which rests on what "the client" sent -- does not hold across it.
+    """
+    named = {str(raw.get("client_id") or "").strip() for raw in steps}
+    named.discard("")
+    if len(named) > 1:
+        return [Finding("one client", FAIL,
+                        "this record names more than one client (" + ", ".join(sorted(named))
+                        + "), so it is not one run seen from one side")]
     return []
 
 
