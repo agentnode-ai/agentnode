@@ -159,9 +159,11 @@ class GatewayService:
         so a job result could not be tied to the gateway that produced it -- the review was right
         that the claim was broader than the code. Every answer carries it now.
         """
-        identity = self.state.identity
-        return {**body, "gateway": identity.as_dict(), "fingerprint": identity.fingerprint,
-                "protocol": PROTOCOL_VERSION}
+        # Built by `protocol.stamp_fields`, which is also what anything reading an answer back
+        # is told an answer carries. Two lists of the same thing drift; one does not.
+        from agentnode_sdk.gateway.protocol import stamp_fields
+
+        return {**body, **stamp_fields(self.state.identity)}
 
     def __init__(self, state: GatewayState, backend=None, operator_policy=None) -> None:
         self.state = state

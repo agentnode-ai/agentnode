@@ -118,6 +118,8 @@ class Step:
     machine: dict | None = None
     sentinel: dict | None = None
     binding: dict | None = None
+    #: What the client observed about the answer beside it. Never part of the answer.
+    answer: dict | None = None
 
     # -- what was expected, declared before the step ran ---------------------------------------
     #: `UNSET` rather than a value. `EM3C-EVIDENCE-0002`: with ordinary defaults, a caller who
@@ -158,7 +160,7 @@ MANDATORY = ("name", "role", "argv", "started_at", "ended_at", "exit_code",
 READ_BY_RULES = (
     "name", "role", "argv", "started_at", "ended_at", "exit_code", "stdout", "stderr",
     "error_class", "run_id", "gateway_record", "container", "container_query", "machine",
-    "sentinel", "binding", "request_policy_sha256", "effective_policy_sha256",
+    "sentinel", "binding", "answer", "request_policy_sha256", "effective_policy_sha256",
     "expected_exit", "expected_refusal", "expect_output", "expect_cleanup",
     "expect_container_gone",
     "job_id", "client_id", "policy_deltas", "cleanup_verified",
@@ -210,56 +212,110 @@ _NESTED: dict[str, dict] = {
                           "runtime": (str,), "backend": (str,), "conformance_digest": (str,)}},
 }
 
-#: A policy as the gateway describes one: exactly the fields its own canonical shape can pin.
-#: `dict` said nothing about what was inside, and the containment rule reads two of these keys,
-#: so a map that had drifted -- or that was never a policy at all -- reached the rule as one
-#: (`EM3C-EVIDENCE-0006`). A field added on the gateway side lands here as a refusal rather than
-#: as a silently unread value, which is the direction this has to fail.
-_POLICY_MAP = {
-    "required": ("network.enabled", "network.allowed_destinations"),
-    "optional": ("limits.cpu", "limits.memory_mb", "limits.processes", "limits.wall_clock_s"),
-    "types": {"network.enabled": (bool,),
-              "network.allowed_destinations": (list, type(None)),
-              "limits.cpu": (int, float, type(None)),
-              "limits.memory_mb": (int, float, type(None)),
-              "limits.processes": (int, type(None)),
-              "limits.wall_clock_s": (int, float, type(None))},
+# --------------------------------------------------------- what the gateway actually answers
+#
+# NOTHING BELOW DESCRIBES THE GATEWAY'S ANSWER. It asks the code that produces one.
+#
+# `EM3C-E3-CLASSIFY-0001`: the one authorised external run died here. This module carried its
+# own list of fields, taken from `RunRecord.public()` -- an object that exists INSIDE the
+# gateway. What a client receives is that object inside an envelope the gateway stamps and
+# signs, so every real answer carried five fields this reader had never heard of and every real
+# answer was refused. A test was supposed to hold the list against the code; it held it against
+# the inner object, which is the wrong end of the same mistake.
+#
+# So there is no list. `_production()` calls the gateway's own functions and uses what they
+# return. A field added on the gateway side arrives here without anyone editing this file.
+
+_PRODUCTION: dict = {}
+
+
+def _production() -> dict:
+    """The shapes the gateway defines, from the gateway.
+
+    Imported lazily and once: this module is also the thing that reads a record back on a
+    machine that may not be a gateway, and paying for the gateway's imports at import time
+    would make that worse for no gain.
+    """
+    if not _PRODUCTION:
+        from agentnode_sdk.gateway.policy_paths import policy_shape
+        from agentnode_sdk.gateway.protocol import (
+            PROTOCOL_VERSION, SIGNATURE_FIELDS, STAMP_FIELDS, binding_fields, response_binding,
+        )
+        from agentnode_sdk.gateway.server import RunRecord
+
+        _PRODUCTION.update({
+            "inner": tuple(RunRecord(run_id="", job_id="").public()),
+            "stamp": tuple(STAMP_FIELDS),
+            "signature": tuple(SIGNATURE_FIELDS),
+            "binding": tuple(binding_fields()),
+            "policy": tuple(policy_shape(None)),
+            "protocol": PROTOCOL_VERSION,
+            "response_binding": response_binding,
+        })
+    return _PRODUCTION
+
+
+#: The one field a gateway answer carries that is in neither the run record nor the envelope:
+#: what it says when there is no such run. Not derivable from a function, so it is named -- and
+#: `test_a_real_not_found_answer_carries_exactly_this` holds it against a real endpoint.
+ERROR_FIELDS = ("error",)
+
+
+def answer_fields() -> tuple[str, ...]:
+    """Every key a client-visible answer may carry, from the code that puts them there."""
+    p = _production()
+    return tuple(p["inner"]) + tuple(p["stamp"]) + tuple(p["signature"]) + ERROR_FIELDS
+
+
+#: Extra strictness on keys whose type this module relies on. Deliberately NOT a description of
+#: the answer: a key the gateway adds and this map does not mention is accepted, whatever it
+#: holds, because the answer's shape is the gateway's to define and only its strictness is ours.
+_ANSWER_TYPES: dict[str, tuple] = {
+    "run_id": (str,), "job_id": (str,), "state": (str,),
+    "exit_code": (int, type(None)), "stdout": (str,), "stderr": (str,),
+    "refusal": (str,), "artifact_sha256": (str,),
+    "cleanup_verified": (bool, str, type(None)),
+    "requested_policy": (dict,), "effective_policy": (dict,),
+    "request_policy_sha256": (str,), "effective_policy_sha256": (str,),
+    "policy_deltas": (list, type(None)),
+    "started_at": (int, float, type(None)), "finished_at": (int, float, type(None)),
+    "gateway": (dict,), "fingerprint": (str,), "protocol": (str,),
+    "binding": (dict,), "signature": (str,), "error": (str,),
 }
 
-#: The gateway's own record, closed. It was left open on the reasoning that its shape belongs to
-#: the gateway -- but a rule reads it, and a field a rule reads is this module's business
-#: whoever wrote it. `test_the_declared_shape_is_the_one_the_gateway_emits` holds this against
-#: `RunRecord.public()`, so the two cannot drift apart quietly.
-_GATEWAY_RECORD = {
-    "required": (),
-    "optional": ("run_id", "job_id", "state", "exit_code", "stdout", "stderr", "refusal",
-                 "artifact_sha256", "cleanup_verified", "requested_policy", "effective_policy",
-                 "request_policy_sha256", "effective_policy_sha256", "policy_deltas",
-                 "started_at", "finished_at",
-                 # Not from the gateway: what a client writes down when it could not get a
-                 # record at all. Named here so an absent record is a described thing rather
-                 # than an unknown key.
-                 "error", "status"),
-    "types": {"run_id": (str,), "job_id": (str,), "state": (str,),
-              "exit_code": (int, type(None)), "stdout": (str,), "stderr": (str,),
-              "refusal": (str,), "artifact_sha256": (str,),
-              "cleanup_verified": (bool, str, type(None)),
-              "requested_policy": (dict,), "effective_policy": (dict,),
-              "request_policy_sha256": (str,), "effective_policy_sha256": (str,),
-              "policy_deltas": (list, type(None)),
-              "started_at": (int, float, type(None)),
-              "finished_at": (int, float, type(None)),
-              "error": (str,), "status": (int,)},
-    # A delta says which policy field changed and what it held on each side. The two values are
-    # whatever that field's type is, so they are deliberately not typed here -- but the entry
-    # around them is, so this is an arbitrary VALUE rather than an arbitrary record.
-    "elements": {"policy_deltas": {"required": ("path", "requested", "effective"),
-                                   "optional": (),
-                                   "types": {"path": (str,)}}},
+#: A delta says which policy field changed and what it held on each side. The two values are
+#: whatever that field's type is, so they are deliberately not typed -- but the entry around
+#: them is, so this is an arbitrary VALUE rather than an arbitrary record.
+_DELTA = {"required": ("path", "requested", "effective"), "optional": (), "types": {"path": (str,)}}
+
+#: What the CLIENT observed about an answer, which is not part of the answer. Kept apart on
+#: purpose: an answer is the gateway's, and whether the client's own verification accepted it is
+#: the client's. Mixing the two is how a self-made answer gets recorded as a received one.
+_ANSWER_OBSERVED = {
+    "required": ("http_status", "verified", "refusal", "asked_for"),
+    "optional": (),
+    "types": {"http_status": (int, type(None)), "verified": (bool,), "refusal": (str,),
+              "asked_for": (str,)},
 }
 
-#: Kept as the flat view the older rules use. Derived, so it cannot disagree with the shape.
-_GATEWAY_RECORD_TYPES: dict[str, tuple] = dict(_GATEWAY_RECORD["types"])
+
+def _policy_shape_for_reading() -> dict:
+    """The policy map a job ran under, with the keys the gateway's own canonical shape pins."""
+    return {
+        # The two the containment rule reads. Everything else the gateway pins is allowed.
+        "required": ("network.enabled", "network.allowed_destinations"),
+        "optional": tuple(k for k in _production()["policy"]
+                          if k not in ("network.enabled", "network.allowed_destinations")),
+        "types": {"network.enabled": (bool,),
+                  "network.allowed_destinations": (list, type(None)),
+                  "limits.cpu": (int, float, type(None)),
+                  "limits.memory_mb": (int, float, type(None)),
+                  "limits.processes": (int, type(None)),
+                  "limits.wall_clock_s": (int, float, type(None))},
+    }
+
+
+
 
 _TYPES: dict[str, tuple] = {
     "name": (str,), "role": (str,), "argv": (list,),
@@ -276,6 +332,7 @@ _TYPES: dict[str, tuple] = {
     "machine": (dict, type(None)),
     "sentinel": (dict, type(None)),
     "binding": (dict, type(None)),
+    "answer": (dict, type(None)),
     "expected_exit": (int, type(None)),
     "expected_refusal": (str,),
     "expect_output": (bool,), "expect_cleanup": (bool,), "expect_container_gone": (bool,),
@@ -317,6 +374,10 @@ def _closed(where: str, value, shape: dict) -> None:
             raise EvidenceError(
                 f"{where}.{key} is {type(item).__name__} and its shape says "
                 + " or ".join(t.__name__ for t in allowed) + ".")
+
+
+#: The flat view the older rules use, over the keys this module relies on the type of.
+_GATEWAY_RECORD_TYPES: dict[str, tuple] = dict(_ANSWER_TYPES)
 
 
 def _no_duplicates(pairs):
@@ -416,10 +477,15 @@ def parse_step(text_or_mapping) -> dict:
     # module's business whoever wrote them (`EM3C-EVIDENCE-0006`).
     record = document.get("gateway_record")
     if isinstance(record, dict):
-        _closed("gateway_record", record, _GATEWAY_RECORD)
+        _closed("gateway_record", record, {"required": (), "optional": answer_fields(),
+                                           "types": _ANSWER_TYPES,
+                                           "elements": {"policy_deltas": _DELTA}})
         for key in ("requested_policy", "effective_policy"):
             if isinstance(record.get(key), dict):
-                _closed(f"gateway_record.{key}", record[key], _POLICY_MAP)
+                _closed(f"gateway_record.{key}", record[key], _policy_shape_for_reading())
+    observed = document.get("answer")
+    if isinstance(observed, dict):
+        _closed("answer", observed, _ANSWER_OBSERVED)
     return document
 
 
@@ -1118,6 +1184,7 @@ def verify(steps, secrets=()) -> list[Finding]:
                 problems.append(Finding(where, FAIL,
                                         "a live secret value was written into the evidence"))
 
+    problems.extend(verify_answers(steps))
     problems.extend(verify_one_client(steps))
     problems.extend(verify_two_machines(steps))
     problems.extend(verify_bindings(steps))
@@ -1222,6 +1289,115 @@ def _sentinel_findings(sentinel: dict, crossed: dict) -> list[Finding]:
 
     crossed[made] = str(sentinel.get("value_sha256") or "")
     return []
+
+
+def verify_answers(steps) -> list[Finding]:
+    """Whether each recorded answer is the answer it says it is.
+
+    `EM3C-E3-CLASSIFY-0001` asked for the outside of an answer to be tied to its inside. The tie
+    is not checked here by hand: the gateway signs a binding over a named tuple of the answer's
+    own fields, and this recomputes that binding with the SAME function the gateway used. Change
+    the run id, the job id, the artifact digest, either policy digest or the result, or leave any
+    of them out, and the recomputed binding stops matching the recorded one.
+
+    What this cannot do is check the signature: that needs the paired client's secret, which is
+    not in the record and must not be. The client checked it at the moment it received the
+    answer, using the production verifier, and recorded whether that verifier accepted -- as an
+    observation, beside the answer rather than inside it. A record that carries a signed answer
+    the client's own verification did not accept is refused here.
+    """
+    problems: list[Finding] = []
+    gateways: set[str] = set()
+    for index, raw in enumerate(steps):
+        record = raw.get("gateway_record")
+        if not isinstance(record, dict):
+            continue
+        where = f"step {index + 1} ({raw.get('name') or 'unnamed'})"
+        production = _production()
+
+        for field_name in production["stamp"]:
+            if field_name not in record:
+                problems.append(Finding(
+                    where, EVIDENCE_ERROR,
+                    f"the answer carries no {field_name}, so it is not an answer this gateway "
+                    "stamped and nothing ties it to the build that produced it"))
+        if record.get("protocol") not in (None, production["protocol"]):
+            problems.append(Finding(
+                where, FAIL,
+                f"the answer says it speaks {str(record.get('protocol'))[:24]!r} and this build "
+                f"speaks {production['protocol']}. Two protocols are not one conversation"))
+
+        said = record.get("gateway")
+        if isinstance(said, dict):
+            expected_print = hashlib.sha256(
+                f"{said.get('gateway_id', '')}\n{said.get('version', '')}".encode()).hexdigest()
+            if str(record.get("fingerprint") or "") != expected_print:
+                problems.append(Finding(
+                    where, FAIL,
+                    "the fingerprint is not the one this gateway identity and version produce, "
+                    "so the stamp and what it stamps disagree"))
+            if said.get("gateway_id"):
+                gateways.add(str(said["gateway_id"]))
+
+        binding = record.get("binding")
+        observed = raw.get("answer")
+        if binding is None:
+            # Only an answer that says there is nothing to sign may be unsigned.
+            if not str(record.get("error") or "").strip():
+                problems.append(Finding(
+                    where, FAIL,
+                    "this answer is about a run and carries no binding, so nothing in it shows "
+                    "it came from the gateway this client paired with"))
+            continue
+
+        expected = production["response_binding"](
+            gateway_id=binding.get("gateway_id", ""), version=binding.get("version", ""),
+            job_id=record.get("job_id", ""), run_id=record.get("run_id", ""),
+            artifact_sha256=record.get("artifact_sha256", ""),
+            request_policy_sha256=record.get("request_policy_sha256", ""),
+            effective_policy_sha256=record.get("effective_policy_sha256", ""),
+            result=record.get("stdout", ""))
+        if expected != binding:
+            differing = sorted(k for k in set(expected) | set(binding)
+                               if expected.get(k) != binding.get(k))
+            problems.append(Finding(
+                where, FAIL,
+                "the answer's own fields do not produce the binding it carries; they disagree "
+                "about " + ", ".join(differing) + ". Either the answer was altered after it was "
+                "signed or the binding belongs to another answer"))
+
+        if isinstance(said, dict):
+            for key in ("gateway_id", "version"):
+                if str(said.get(key, "")) != str(binding.get(key, "")):
+                    problems.append(Finding(
+                        where, FAIL,
+                        f"the stamp says the {key} is {str(said.get(key))[:24]!r} and the signed "
+                        f"binding says {str(binding.get(key))[:24]!r}"))
+
+        if not str(record.get("signature") or "").strip():
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                "the answer carries a binding and no signature, so the binding is a claim rather "
+                "than a proof"))
+
+        if not isinstance(observed, dict):
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                "a signed answer was recorded and nothing says whether the client's own "
+                "verification accepted it"))
+        elif observed.get("verified") is not True:
+            problems.append(Finding(
+                where, FAIL,
+                "the client's own verification did not accept this answer"
+                + (": " + str(observed.get("refusal"))[:120] if observed.get("refusal") else "")
+                + ". An answer that failed verification is not evidence of what it says"))
+
+    if len(gateways) > 1:
+        problems.append(Finding(
+            "one gateway", FAIL,
+            "the answers in this record come from more than one gateway (" +
+            ", ".join(sorted(g[:12] for g in gateways)) + "), so they are not one run"))
+    return problems
 
 
 def verify_one_client(steps) -> list[Finding]:

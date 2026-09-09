@@ -24,15 +24,20 @@ import json
 import pytest
 
 from agentnode_sdk.gateway.connections import ConnectionStore, SavedGateway
+
+pytest_plugins = ("tests.real_answers",)
 from agentnode_sdk.tools import evidence
 from agentnode_sdk.tools import external_run as driver
 
 
 CLIENT_HOST = "a-client-machine"
 GATEWAY_HOST = "a-gateway-machine"
-RUN_ID = "beeac323964d45d8b1c8ef90fb51bc30"
-CONTAINER = f"agentnode-em3c-{RUN_ID[:16]}"
 CONTAINER_ID = "0f1e2d3c4b5a"
+
+
+def container_for(run_id: str) -> str:
+    """What the gateway names a container for a run. The driver looks for exactly this."""
+    return "agentnode-em3c-" + run_id[:16]
 POLICY_A, POLICY_B = "a" * 64, "b" * 64
 CONFORMANCE = "c" * 64
 PORT = "18099"
@@ -72,11 +77,16 @@ class World:
         self.fail = ()                # substrings of commands that cannot run at all
         self.client_sentinel = ""
         self.gateway_sentinel = ""
-        self.token = "t" * 32
-        self.runs: dict[str, dict] = {}
-        self.granted = {"network.enabled": False, "network.allowed_destinations": [],
-                        "limits.cpu": 1, "limits.memory_mb": 512, "limits.processes": 64,
-                        "limits.wall_clock_s": 120}
+        #: Set by the fixture from the real gateway this world stands beside. The world answers
+        #: for the LINUX HOST over ssh; it does not answer for the gateway, which answers for
+        #: itself over its own transport (`EM3C-E3-CLASSIFY-0001`).
+        self.gateway = None
+        self.run_id = ""
+        #: Every ssh invocation, with what went over stdin. What the far side really received.
+        self.sent: list = []
+        #: Commands that run and fail, by substring. Distinct from `fail`, which is the
+        #: transport not working at all -- a difference the driver has to keep.
+        self.exit_codes: dict = {}
 
     # -- what the client runs locally ---------------------------------------------------------
     def launch(self, argv, timeout=600.0):
@@ -97,12 +107,25 @@ class World:
             self.container_present = False
             return 0, "cancelled\n", "", ""
         if "rotate" in parts:
-            self.token = "r" * 32
-            self.store.save(SavedGateway(name="e3", url=self.url, token=self.token,
-                                         gateway_id="a-gateway",
-                                         fingerprint="a-fingerprint"))
-            return 0, "rotated\n", "", ""
+            # The real thing: the production client asks the gateway for a new credential and
+            # saves what it gets. Nothing here makes one up.
+            from agentnode_sdk.gateway import client as real_client
+
+            rotated = real_client.rotate(self.gateway.connection)
+            self.gateway.connection = rotated
+            self.token = rotated.token
+            self.store.save(SavedGateway(name="e3", url=self.url, token=rotated.token,
+                                         gateway_id=rotated.gateway_id,
+                                         fingerprint=rotated.fingerprint))
+            return 0, "rotated" + chr(10), "", ""
         return 0, "ok\n", "", ""
+
+    def submit(self) -> str:
+        """A real job, on the real gateway, over its real transport. What comes back is the
+        gateway's answer, and nothing in this file has an opinion about its shape."""
+        answer = self.gateway.a_finished_run()
+        self.run_id = answer["run_id"]
+        return self.run_id
 
     def _remote_run(self, parts):
         """A job.
@@ -119,8 +142,7 @@ class World:
         if asked and not reachable and self.allowlist:
             return 1, ("refused: this job named no host it may reach ("
                        + ", ".join(asked) + " is not allowed)" + chr(10)), "", ""
-        self.start_run(RUN_ID)
-        out = f"run: {RUN_ID}\n"
+        out = "run: " + self.submit() + chr(10)
         payload = parts[-3] if len(parts) >= 3 else ""
         source = ""
         try:
@@ -141,39 +163,24 @@ class World:
             out += "it ran\n"
         return 0, out, "", ""
 
-    # -- what the gateway answers over HTTP ---------------------------------------------------
-    def serve(self, url, token):
-        """The gateway's own answer about a run, as its HTTP API returns it."""
-        if token != self.token:
-            return 401, {"error": "this credential is not the one this gateway knows"}
-        run_id = url.rstrip("/").rsplit("/", 1)[-1]
-        if run_id not in self.runs:
-            return 404, {"error": f"no run {run_id}"}
-        return 200, dict(self.runs[run_id])
+    # -- what the LINUX HOST answers over ssh -------------------------------------------------
+    def over_ssh(self, script):
+        """A POSIX login shell, reading its work from stdin and answering as one would.
 
-    def start_run(self, run_id):
-        self.runs[run_id] = {
-            "run_id": run_id, "job_id": "job-1", "state": "finished", "exit_code": 0,
-            "stdout": "", "stderr": "", "refusal": "", "artifact_sha256": "a" * 64,
-            "cleanup_verified": True, "policy_deltas": [],
-            "request_policy_sha256": "d" * 64, "effective_policy_sha256": "d" * 64,
-            "requested_policy": dict(self.granted), "effective_policy": dict(self.granted),
-            "started_at": 1.0, "finished_at": 2.0,
-        }
-
-    # -- what the gateway answers over SSH ----------------------------------------------------
-    def query(self, command, timeout=300.0):
-        full = command + '; echo "' + driver.MARKER + '"'
+        This is the TRANSPORT and nothing else. `server_query` is the driver's own and really
+        runs: it builds the script, reads the status back, and decides what parsed and what did
+        not. Stubbing it would have left exactly the part that failed untested.
+        """
+        command = script.splitlines()[0] if script.strip() else ""
         for bad in self.fail:
             if bad in command:
-                return {"ran": True, "exit_code": None, "stdout": "", "stderr": "ssh died",
-                        "error_class": "OSError", "parsed": False, "complete": False,
-                        "command": full}
+                return None, "", "ssh: connect failed", "OSError"
         body = self._answer(command)
-        marker = "" if any(t in command for t in self.truncate) else driver.MARKER + "\n"
-        return {"ran": True, "exit_code": 0, "stdout": body + marker, "stderr": "",
-                "error_class": "", "parsed": True,
-                "complete": driver.MARKER in (body + marker), "command": full}
+        code = next((c for k, c in self.exit_codes.items() if k in command), 0)
+        marker = "" if any(t in command for t in self.truncate) else driver.MARKER + chr(10)
+        # The script takes the command's status BEFORE printing the marker and exits with it,
+        # so the marker appears even when the command failed.
+        return code, body + marker, "", ""
 
     def _answer(self, command):
         if command.startswith("hostname"):
@@ -191,7 +198,8 @@ class World:
         if "sha256sum" in command:
             return f"{CONFORMANCE}  conformance.json\n"
         if "docker ps" in command:
-            return f"{CONTAINER} {CONTAINER_ID}\n" if self.container_present else ""
+            return ((container_for(self.run_id) + " " + CONTAINER_ID + chr(10))
+                    if self.container_present else "")
         if "gateway egress" in command and "--allow" in command:
             self.generation += 1
             self.policy = POLICY_B
@@ -223,29 +231,29 @@ class World:
 
 
 @pytest.fixture
-def world(monkeypatch, tmp_path):
+def world(monkeypatch, tmp_path, real_gateway):
     """The driver, wired to a described world instead of to a network."""
     w = World()
 
-    def fake_launch(argv, timeout=600.0):
-        text = " ".join(str(a) for a in argv)
-        if text.startswith("ssh") or "ssh" in str(argv[0]):
-            command = str(argv[-1])
-            answer = w.query(command.rsplit(";", 1)[0].strip())
-            return answer["exit_code"], answer["stdout"], answer["stderr"], answer["error_class"]
-        return w.launch(argv, timeout)
+    def fake_launch(argv, timeout=600.0, script=None):
+        """The transport, and only the transport.
 
-    def fake_query(command, timeout=300.0):
-        return w.query(command, timeout)
+        What reaches the far machine is `script`, on stdin -- so this is where a test can see
+        exactly what was sent, byte for byte, and whether anything rewrote it on the way
+        (`EM3C-E3-CLASSIFY-0001`).
+        """
+        if str(argv[0]) == "ssh":
+            w.sent.append({"argv": list(argv), "script": script or ""})
+            return w.over_ssh(script or "")
+        return w.launch(argv, timeout)
 
     class Popen:
         """`remote run` for the long job, which the driver reads line by line."""
 
         def __init__(self, *a, **kw):
             import io as _io
-            self.stdout = _io.StringIO(f"run: {RUN_ID}\nstill going\n")
+            self.stdout = _io.StringIO("run: " + w.submit() + chr(10) + "still going" + chr(10))
             self.stderr = _io.StringIO("")
-            w.start_run(RUN_ID)
             w.container_present = True
 
         def wait(self, timeout=None):
@@ -260,16 +268,19 @@ def world(monkeypatch, tmp_path):
     # replacing it would leave exactly that untested (`EM3C-EVIDENCE-0007`). What is replaced is
     # the HTTP call itself, one function at the network boundary, and the connection the driver
     # reads is a real one written to a real store under a temporary home.
-    def fake_http(url, timeout=30.0, token=""):
-        return w.serve(url, token)
-
+    # A REAL gateway, on loopback, with a real pairing. The driver reads the connection store
+    # the same way it does on a real client, and every answer it gets about a run is one this
+    # gateway produced, stamped and signed by its own code.
+    w.gateway = real_gateway
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("AGENTNODE_HOME", str(home))
     w.store = ConnectionStore()          # AGENTNODE_HOME above, resolved the way the driver does
-    w.url = f"http://127.0.0.1:{PORT}"
+    w.url = real_gateway.base
+    w.token = real_gateway.connection.token
     w.store.save(SavedGateway(name="e3", url=w.url, token=w.token,
-                              gateway_id="a-gateway", fingerprint="a-fingerprint"))
+                              gateway_id=real_gateway.connection.gateway_id,
+                              fingerprint=real_gateway.connection.fingerprint))
 
     # The settings are read when the module is loaded, so they are set and the module is
     # re-read before anything is patched onto it. Setting the environment alone would leave the
@@ -281,10 +292,8 @@ def world(monkeypatch, tmp_path):
     assert driver.PORT == PORT and driver.SERVER == SETTINGS["EM3C_SERVER"]
 
     monkeypatch.setattr(driver, "launch", fake_launch)
-    monkeypatch.setattr(driver, "server_query", fake_query)
     monkeypatch.setattr(driver.subprocess, "Popen", Popen)
     monkeypatch.setattr(driver, "live_secrets", lambda: [])
-    monkeypatch.setattr(driver.gc, "_get", fake_http)
     monkeypatch.setattr(driver, "HOME", home)
     monkeypatch.setattr(driver.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(driver, "WORK", tmp_path / "work")
@@ -378,10 +387,10 @@ class TestTheDriverReactsToTheWorldRatherThanAsserting:
 
         real = driver.launch
 
-        def keep_it(argv, timeout=600.0):
-            if "remote cancel" in " ".join(str(a) for a in argv):
-                return 0, "cancelled\n", "", ""          # cancelled, and yet still there
-            return real(argv, timeout)
+        def keep_it(argv, timeout=600.0, script=None):
+            if "cancel" in [str(a) for a in argv]:
+                return 0, "cancelled" + chr(10), "", ""   # cancelled, and yet still there
+            return real(argv, timeout, script)
 
         driver.launch = keep_it
         try:
@@ -450,6 +459,79 @@ class TestTheDriverReactsToTheWorldRatherThanAsserting:
         """Without this, every control above could be satisfied by a driver that always failed."""
         code, _steps = drive(tmp_path)
         assert code == 0
+
+
+class TestRemoteWorkArrivesUnchanged:
+    """`EM3C-E3-CLASSIFY-0001`, the second defect: the command was the last argument on the ssh
+    command line, and on Windows the MSYS layer rewrites an argument that looks like an absolute
+    POSIX path before ssh.exe is started. A Linux path left this machine as a Windows one."""
+
+    A_PATH = "/home/a-service-account/em3c-state"
+
+    def test_no_argument_could_be_rewritten(self, world):
+        assert driver.check_argv() == [], driver.check_argv()
+        assert not any(str(a).startswith("/") for a in driver.ssh_argv())
+
+    def test_a_path_like_argument_is_refused_rather_than_sent(self, world, monkeypatch):
+        """The guarantee is mechanical, not a habit: if one ever appears, nothing is sent."""
+        monkeypatch.setattr(driver, "KEY", "/c/Users/somebody/.ssh/a-key")
+        assert driver.check_argv() == ["/c/Users/somebody/.ssh/a-key"]
+        answer = driver.server_query("ls " + self.A_PATH)
+        assert answer["ran"] is False
+        assert answer["error_class"] == "ArgumentWouldBeRewritten"
+        assert answer["parsed"] is False and answer["complete"] is False
+
+    def test_the_path_that_is_sent_is_the_path_that_was_asked_for(self, world):
+        """What crosses is stdin, and stdin is what this reads back."""
+        world.sent.clear()
+        driver.server_query("ls -la " + self.A_PATH)
+        assert len(world.sent) == 1
+        sent = world.sent[0]
+        assert self.A_PATH in sent["script"], sent["script"]
+        assert not any(self.A_PATH in str(a) for a in sent["argv"])
+        assert not any(str(a).startswith("/") for a in sent["argv"])
+
+    def test_the_script_keeps_the_command_s_own_status(self):
+        """Not the marker's. `cmd; echo MARKER` reports the echo's status, which is always 0."""
+        script = driver.one_command("exit 3")
+        assert script.splitlines()[0] == "exit 3"
+        assert "__status=$?" in script
+        assert script.rstrip().endswith("exit $__status")
+        assert driver.MARKER in script
+
+    def test_a_remote_step_records_the_command_s_own_status(self, world):
+        assert driver.server_query("hostname")["exit_code"] == 0        # the control
+        world.exit_codes = {"hostname": 3}
+        answer = driver.server_query("hostname")
+        assert answer["exit_code"] == 3, answer
+        assert answer["parsed"] is False
+        # and the marker is still there, so a failed command is not a truncated answer
+        assert answer["complete"] is True
+
+    def test_a_transport_failure_and_a_failed_command_are_different(self, world):
+        world.exit_codes = {"hostname": 3}
+        failed = driver.server_query("hostname")
+        world.exit_codes = {}
+        world.fail = ("hostname",)
+        unreachable = driver.server_query("hostname")
+        assert failed["error_class"] == "" and failed["exit_code"] == 3
+        assert unreachable["error_class"] and unreachable["exit_code"] is None
+        assert unreachable["complete"] is False
+
+    def test_the_two_streams_stay_apart(self, world):
+        answer = driver.server_query("hostname")
+        assert answer["stdout"] and answer["stderr"] == ""
+        world.fail = ("hostname",)
+        answer = driver.server_query("hostname")
+        assert answer["stdout"] == "" and answer["stderr"]
+
+    def test_a_transport_failure_is_not_an_answer(self, world):
+        """It cannot be read as the absence the step was looking for."""
+        world.fail = ("docker ps",)
+        listing, names, ids = driver.list_containers("a" * 32)
+        assert listing["parsed"] is False
+        assert names == [] and ids == []
+        assert listing["error_class"]
 
 
 class TestNothingLocalLeaksIntoThePackagedDriver:

@@ -21,26 +21,68 @@ import pytest
 from agentnode_sdk.tools import evidence
 
 
-RUN = "beeac323964d45d8b1c8ef90fb51bc30"
+# --------------------------------------------------------------- the answers these tests use
+#
+# NOT WRITTEN HERE. `EM3C-E3-CLASSIFY-0001`: the one authorised external run died because this
+# file built the gateway's answer by hand, as the inner object the gateway keeps rather than the
+# stamped and signed envelope a client receives -- so the reader and the recorder agreed with
+# each other and with nothing else.
+#
+# `real_answers.py` starts a real gateway, pairs a real client, submits a real job and fetches
+# the answer through the production client. `OK_RECORD` is that answer. A test that needs a
+# different run, a refusal or a broken field starts from it and changes what it is about.
+
+pytest_plugins = ("tests.real_answers",)
+
+#: Filled, before any test runs, with an answer a real gateway really gave.
+OK_RECORD: dict = {}
+#: A run this gateway never heard of. Used where a test is about the WRONG run.
 OTHER_RUN = "d06a38ad43e54e3ab39ec18a18dcbbe6"
-OK_RECORD = {
-    "run_id": RUN,
-    "request_policy_sha256": "a" * 64,
-    "effective_policy_sha256": "a" * 64,
-    "policy_deltas": [],
-    "cleanup_verified": True,
-    "job_id": "job-1",
-    "state": "finished",
-    "refusal": "",
-    "requested_policy": {"network.enabled": False, "network.allowed_destinations": [],
-                         "limits.cpu": 1, "limits.memory_mb": 512, "limits.processes": 64,
-                         "limits.wall_clock_s": 120},
-    "effective_policy": {"network.enabled": False, "network.allowed_destinations": [],
-                         "limits.cpu": 1, "limits.memory_mb": 512, "limits.processes": 64,
-                         "limits.wall_clock_s": 120},
-    "started_at": 2.0,
-    "finished_at": 3.0,
-}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _the_answer_these_tests_use(real_answer):
+    OK_RECORD.clear()
+    OK_RECORD.update(real_answer)
+
+
+def RUN() -> str:
+    """The run the real answer is about."""
+    return OK_RECORD["run_id"]
+
+
+def container_for(run: str) -> str:
+    return f"agentnode-em3c-{run[:12]}-abc"
+
+
+def resigned(**changes) -> dict:
+    """A real answer with something changed, and the binding recomputed to match.
+
+    For tests about something OTHER than the tie between an answer's outside and its inside: a
+    changed field would otherwise break the binding and every such test would fail for that
+    instead of for its own reason. The binding is recomputed with the gateway's own function, so
+    this is still the production shape -- what it is not is a signature, and no test here claims
+    one. Tests that ARE about the tie change a field WITHOUT this, and must go red.
+    """
+    from agentnode_sdk.gateway.protocol import response_binding
+
+    answer = dict(OK_RECORD)
+    answer.update(changes)
+    binding = dict(answer.get("binding") or {})
+    answer["binding"] = response_binding(
+        gateway_id=binding.get("gateway_id", ""), version=binding.get("version", ""),
+        job_id=answer.get("job_id", ""), run_id=answer.get("run_id", ""),
+        artifact_sha256=answer.get("artifact_sha256", ""),
+        request_policy_sha256=answer.get("request_policy_sha256", ""),
+        effective_policy_sha256=answer.get("effective_policy_sha256", ""),
+        result=answer.get("stdout", ""))
+    return answer
+
+
+#: What the client observed about a real, accepted answer.
+def accepted(**changes) -> dict:
+    return {"http_status": 200, "verified": True, "refusal": "",
+            "asked_for": "/v1/jobs/" + OK_RECORD.get("run_id", ""), **changes}
 
 
 STATED = {"expected_exit": None, "expected_refusal": "", "expect_output": False,
@@ -170,17 +212,25 @@ def _recorded(tmp_path, steps, *, secrets=(), with_machines=True):
 
 
 def good_step(**overrides) -> evidence.Step:
-    """One step that is complete, self-consistent, and about the run it names."""
+    """One step that is complete, self-consistent, and about the run it names.
+
+    Every identifier comes from the real answer, because a step and the answer it attaches have
+    to be about the same run and the answer is not this file's to invent.
+    """
+    answer = overrides.get("gateway_record", OK_RECORD) or {}
     values = dict(
         name="run a job", role="client",
         argv=["agentnode", "remote", "run", "job.py"],
         started_at=2.0, ended_at=3.0, exit_code=0, expected_exit=0,
         stdout="EXT-OK\n", stderr="",
-        run_id=RUN, job_id="job-1", client_id="client-1",
-        request_policy_sha256="a" * 64, effective_policy_sha256="a" * 64,
-        policy_deltas=[], container=f"agentnode-em3c-{RUN[:12]}-abc",
-        cleanup_verified=True, expect_output=True,
-        gateway_record=dict(OK_RECORD),
+        run_id=answer.get("run_id", ""), job_id=answer.get("job_id", ""),
+        client_id="client-1",
+        request_policy_sha256=answer.get("request_policy_sha256", ""),
+        effective_policy_sha256=answer.get("effective_policy_sha256", ""),
+        policy_deltas=answer.get("policy_deltas"),
+        container=container_for(answer.get("run_id", "")),
+        cleanup_verified=answer.get("cleanup_verified"), expect_output=True,
+        gateway_record=dict(OK_RECORD), answer=accepted(),
     )
     values.update(overrides)
     return a_step(**values)
@@ -199,44 +249,60 @@ def _a_real_document(tmp_path) -> dict:
     return json.loads(path.read_text(encoding="utf-8").splitlines()[0])
 
 
-#: One wrong value per field, chosen so a rule that reads that field has to object. Written out
-#: rather than generated, because a generated one would be as blind as the field it is checking.
-WRONG = {
-    "name": {"name": "  "},
-    "role": {"role": "somewhere-else"},
-    "argv": {"argv": []},
-    "started_at": {"started_at": 9.0, "ended_at": 3.0},
-    "ended_at": {"ended_at": 1.0},
-    "exit_code": {"exit_code": None},
-    "stdout": {"stdout": "", "expect_output": True},
-    "stderr": {"stderr": "", "exit_code": 1, "expected_exit": 1,
-               "expected_refusal": "a reason that appears nowhere"},
-    "error_class": {"error_class": "FileNotFoundError", "exit_code": 0},
-    "run_id": {"run_id": OTHER_RUN},
-    "job_id": {"job_id": "another-job"},
-    # Two steps: one client per record is a property OF the record, not of a step.
-    "client_id": [{"client_id": "client-1"}, {"client_id": "client-2"}],
-    "request_policy_sha256": {"request_policy_sha256": "b" * 64},
-    "effective_policy_sha256": {"effective_policy_sha256": "b" * 64},
-    "policy_deltas": {"policy_deltas": [{"path": "network.enabled", "requested": True,
-                                         "effective": False}]},
-    "gateway_record": {"gateway_record": {"error": "no such run"}},
-    "container": {"container": "agentnode-em3c-somebody-elses-run"},
-    "container_query": {"expect_container_gone": True, "container_query": None},
-    "cleanup_verified": {"cleanup_verified": False},
-    "machine": {"machine": identity("client", "c" * 64, "cf" * 32, "Windows",
-                                    commands=[{"command": "hostname", "exit_code": 1,
-                                               "stdout": "", "stderr": "no"}])},
-    "sentinel": {"sentinel": crossing("client", request_text="nothing was sent")},
-    "binding": {"binding": {**BINDING, "digests_agree": "False"}},
-    "expected_exit": {"expected_exit": 9},
-    "expected_refusal": {"expected_refusal": "a reason that appears nowhere"},
-    "expect_output": {"expect_output": True, "stdout": ""},
-    "expect_cleanup": {"expect_cleanup": True,
-                       "gateway_record": {**OK_RECORD, "cleanup_verified": "unknown"},
-                       "cleanup_verified": None},
-    "expect_container_gone": {"expect_container_gone": True},
-}
+def wrong_values() -> dict:
+    """One wrong value per field, chosen so a rule that reads that field has to object.
+
+    Written out rather than generated, because a generated one would be as blind as the field it
+    is checking. A function rather than a constant, because several of these are built from the
+    real answer, which does not exist until a real gateway has given one.
+    """
+    return {
+        "name": {"name": "  "},
+        "role": {"role": "somewhere-else"},
+        "argv": {"argv": []},
+        "started_at": {"started_at": 9.0, "ended_at": 3.0},
+        "ended_at": {"ended_at": 1.0},
+        "exit_code": {"exit_code": None},
+        "stdout": {"stdout": "", "expect_output": True},
+        "stderr": {"stderr": "", "exit_code": 1, "expected_exit": 1,
+                   "expected_refusal": "a reason that appears nowhere"},
+        "error_class": {"error_class": "FileNotFoundError", "exit_code": 0},
+        "run_id": {"run_id": OTHER_RUN},
+        "job_id": {"job_id": "another-job"},
+        # Two steps: one client per record is a property OF the record, not of a step.
+        "client_id": [{"client_id": "client-1"}, {"client_id": "client-2"}],
+        "request_policy_sha256": {"request_policy_sha256": "b" * 64},
+        "effective_policy_sha256": {"effective_policy_sha256": "b" * 64},
+        "policy_deltas": {"policy_deltas": [{"path": "network.enabled", "requested": True,
+                                             "effective": False}]},
+        # A real answer with one field changed and the binding NOT recomputed: the tie between
+        # an answer's outside and its inside is what must object here.
+        "gateway_record": {"gateway_record": {**OK_RECORD, "run_id": OTHER_RUN}},
+        "answer": {"answer": accepted(verified=False, refusal="it was not accepted")},
+        "container": {"container": "agentnode-em3c-somebody-elses-run"},
+        "container_query": {"expect_container_gone": True, "container_query": None},
+        "cleanup_verified": {"cleanup_verified": False},
+        "machine": {"machine": identity("client", "c" * 64, "cf" * 32, "Windows",
+                                        commands=[{"command": "hostname", "exit_code": 1,
+                                                   "stdout": "", "stderr": "no"}])},
+        "sentinel": {"sentinel": crossing("client", request_text="nothing was sent")},
+        "binding": {"binding": {**BINDING, "digests_agree": "False"}},
+        "expected_exit": {"expected_exit": 9},
+        "expected_refusal": {"expected_refusal": "a reason that appears nowhere"},
+        "expect_output": {"expect_output": True, "stdout": ""},
+        "expect_cleanup": {"expect_cleanup": True,
+                           "gateway_record": resigned(cleanup_verified="unknown"),
+                           "cleanup_verified": None},
+        "expect_container_gone": {"expect_container_gone": True},
+    }
+
+
+def _fingerprint_of(said: dict) -> str:
+    """The fingerprint that identity and version produce, the way the gateway produces it."""
+    import hashlib
+
+    return hashlib.sha256(
+        f"{said.get('gateway_id', '')}\n{said.get('version', '')}".encode()).hexdigest()
 
 
 def kinds(findings):
@@ -257,8 +323,8 @@ class TestTheControlPasses:
         step = good_step(
             expected_exit=1, exit_code=1,
             expected_refusal="already been used (replay)",
-            gateway_record={**OK_RECORD, "state": "refused",
-                            "refusal": "this request has already been used (replay)"})
+            gateway_record=resigned(state="refused",
+                            refusal="this request has already been used (replay)"))
         assert _recorded(tmp_path, [step]) == []
 
     def test_a_step_expecting_cleanup_and_getting_it_is_accepted(self, tmp_path):
@@ -292,21 +358,22 @@ name to be a field a Step can carry."""
         assert set(evidence.FIELD_NAMES) == set(evidence.READ_BY_RULES)
         assert not hasattr(evidence, "RECORDED_ONLY")
 
-    @pytest.mark.parametrize("field,broken", list(WRONG.items()))
-    def test_each_field_a_step_carries_is_really_read(self, tmp_path, field, broken):  # noqa: D
+    @pytest.mark.parametrize("field", list(evidence.FIELD_NAMES))
+    def test_each_field_a_step_carries_is_really_read(self, tmp_path, field):  # noqa: D
         """Not by reading the source for the field's name -- a list kept by hand passes that.
 
         Each field is given a value a rule should object to, on the real path, and the record
         must come back with at least one finding. A field nothing objects to is a field the
         record can say anything in, which is what `EM3C-EVIDENCE-0009` found five of.
         """
+        broken = wrong_values()[field]
         cases = broken if isinstance(broken, list) else [broken]
         found = _recorded(tmp_path, [good_step(**case) for case in cases])
         assert found, f"{field} was made wrong and no rule said anything"
 
     def test_the_matrix_covers_every_field(self):
-        assert set(WRONG) == set(evidence.FIELD_NAMES), \
-            sorted(set(WRONG) ^ set(evidence.FIELD_NAMES))
+        assert set(wrong_values()) == set(evidence.FIELD_NAMES), \
+            sorted(set(wrong_values()) ^ set(evidence.FIELD_NAMES))
 
     def test_the_unbroken_step_is_accepted(self, tmp_path):
         """The control: those findings are about what was broken, not about the step itself."""
@@ -562,17 +629,26 @@ class TestTheRulesFireOnRecordedSteps:
         assert "stdout is empty" in messages(found)
 
     def test_a_swapped_run_id_fails(self, tmp_path):
-        found = _recorded(tmp_path, [good_step(
-            gateway_record={**OK_RECORD, "run_id": OTHER_RUN})])
+        """The step is about one run and the answer about another. Resigned, so the tie between
+        an answer's outside and its inside is intact and this fails for the swap alone."""
+        answer = resigned(run_id=OTHER_RUN)
+        found = _recorded(tmp_path, [good_step(gateway_record=answer, run_id=RUN(),
+                                               container=container_for(RUN()))])
         assert evidence.FAIL in kinds(found) and "is about" in messages(found)
 
     def test_a_missing_gateway_record_is_an_evidence_error(self, tmp_path):
-        found = _recorded(tmp_path, [good_step(gateway_record=None)])
+        found = _recorded(tmp_path, [good_step(
+            gateway_record=None, run_id=RUN(), container=container_for(RUN()),
+            answer=accepted(verified=False, refusal="nothing came back"))])
         assert "carries no gateway record" in messages(found)
 
-    def test_a_404_is_not_a_match(self, tmp_path):
+    def test_a_404_is_not_a_match(self, tmp_path, real_gateway):
+        """A real not-found answer, from a real gateway."""
+        status, body = real_gateway.an_absent_run()
         found = _recorded(tmp_path, [good_step(
-            gateway_record={"error": "no such run", "status": 404})])
+            gateway_record=body, run_id=RUN(), container=container_for(RUN()),
+            answer=accepted(http_status=status, verified=False,
+                            refusal="the gateway does not know that run"))])
         assert "absent record is not a match" in messages(found)
 
     def test_a_mismatched_digest_fails(self, tmp_path):
@@ -587,20 +663,20 @@ class TestTheRulesFireOnRecordedSteps:
     def test_missing_deltas_where_the_digests_differ_fails(self, tmp_path):
         found = _recorded(tmp_path, [good_step(
             effective_policy_sha256="b" * 64,
-            gateway_record={**OK_RECORD, "effective_policy_sha256": "b" * 64,
-                            "policy_deltas": []})])
+            gateway_record=resigned(effective_policy_sha256="b" * 64,
+                            policy_deltas=[]))])
         assert "no narrowing was reported" in messages(found)
 
     def test_the_wrong_refusal_reason_fails(self, tmp_path):
         found = _recorded(tmp_path, [good_step(
             exit_code=1, expected_exit=1, expected_refusal="already been used (replay)",
-            gateway_record={**OK_RECORD, "state": "refused",
-                            "refusal": "this request is 880s old; the limit is 120s"})])
+            gateway_record=resigned(state="refused",
+                            refusal="this request is 880s old; the limit is 120s"))])
         assert "does not appear" in messages(found)
 
     def test_unknown_cleanup_where_cleanup_was_required_is_an_evidence_error(self, tmp_path):
         found = _recorded(tmp_path, [good_step(
-            expect_cleanup=True, gateway_record={**OK_RECORD, "cleanup_verified": None})])
+            expect_cleanup=True, gateway_record=resigned(cleanup_verified=None))])
         assert "cleanup is unknown" in messages(found)
 
     def test_absent_cleanup_where_cleanup_was_required_is_an_evidence_error(self, tmp_path):
@@ -632,7 +708,7 @@ was read as absence."""
 
     def _found(self, tmp_path, query, **overrides):
         values = {"expect_container_gone": True, "container_query": query,
-                  "container": f"agentnode-em3c-{RUN[:12]}-abc"}
+                  "container": f"agentnode-em3c-{RUN()[:12]}-abc"}
         values.update(overrides)
         return _recorded(tmp_path, [good_step(**values)])
 
@@ -641,7 +717,7 @@ was read as absence."""
         assert self._found(tmp_path, dict(self.GOOD_QUERY)) == []
 
     def test_the_container_still_being_there_fails(self, tmp_path):
-        query = {**self.GOOD_QUERY, "names": [f"agentnode-em3c-{RUN[:12]}-abc"]}
+        query = {**self.GOOD_QUERY, "names": [f"agentnode-em3c-{RUN()[:12]}-abc"]}
         found = self._found(tmp_path, query)
         assert evidence.FAIL in kinds(found) and "still there" in messages(found)
 
@@ -1125,30 +1201,52 @@ class TestTheGatewayRecordIsClosedToo:
             evidence.load(path)
         assert expected in str(caught.value), str(caught.value)
 
-    @pytest.mark.parametrize("absent", [
-        {"error": "the client never printed a run id"},
-        {"status": 404, "error": "HTTP 404"},
-    ])
-    def test_an_absent_record_is_a_described_thing(self, tmp_path, absent):
-        """What a client writes when it could not get one. Not an unknown key."""
-        assert len(evidence.load(self._written(tmp_path, absent))) == 1
+    def test_a_real_not_found_answer_is_readable(self, tmp_path, real_gateway):
+        """The gateway's own answer when there is no such run. Read whole, not approximately."""
+        _status, body = real_gateway.an_absent_run()
+        assert len(evidence.load(self._written(tmp_path, body))) == 1
 
-    def test_the_declared_shape_is_the_one_the_gateway_emits(self):
-        """The guard against a claim slightly ahead of the code. If `RunRecord.public()` grows a
-        field, this fails here rather than at the far end of an external run."""
-        from agentnode_sdk.gateway.server import RunRecord
+    def test_no_record_at_all_is_readable(self, tmp_path):
+        """Nothing came back, so nothing is attached -- and the client says so beside it."""
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        recorder.record(good_step(gateway_record=None,
+                                  answer=accepted(http_status=None, verified=False,
+                                                  refusal="nothing came back")))
+        assert len(evidence.load(path)) == 1
 
-        emitted = set(RunRecord(run_id="r", job_id="j").public())
-        declared = set(evidence._GATEWAY_RECORD["optional"])
-        assert emitted - declared == set(), sorted(emitted - declared)
-        assert declared - emitted == {"error", "status"}, sorted(declared - emitted)
+    def test_what_the_reader_accepts_is_what_a_real_answer_carries(self, real_answer):
+        """`EM3C-E3-CLASSIFY-0001`. The old version of this test held the declaration against
+        `RunRecord.public()` -- the object the gateway keeps, not the answer a client gets -- so
+        it passed while every real answer was refused. It is held against a real answer now."""
+        assert set(real_answer) - set(evidence.answer_fields()) == set(), \
+            sorted(set(real_answer) - set(evidence.answer_fields()))
+
+    def test_a_real_not_found_answer_carries_exactly_this(self, real_gateway):
+        """The one field named rather than derived, held against a real endpoint."""
+        status, body = real_gateway.an_absent_run()
+        assert status == 404
+        from agentnode_sdk.gateway.protocol import STAMP_FIELDS
+
+        assert set(body) == set(evidence.ERROR_FIELDS) | set(STAMP_FIELDS), sorted(body)
+        assert set(body) - set(evidence.answer_fields()) == set()
+
+    def test_the_reader_takes_a_real_answer_whole(self, tmp_path, real_answer):
+        """End to end: a real answer, recorded, written, read back, with nothing removed."""
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        recorder.record(good_step(gateway_record=dict(real_answer)))
+        back = evidence.load(path)[0]["gateway_record"]
+        assert set(back) == set(real_answer)
+        assert back["binding"] == real_answer["binding"]
+        assert back["signature"] == real_answer["signature"]
 
     def test_the_declared_policy_map_is_the_one_the_gateway_pins(self):
         from agentnode_sdk.gateway.policy_paths import policy_shape
 
-        pinned = set(policy_shape(None))
-        declared = set(evidence._POLICY_MAP["required"]) | set(evidence._POLICY_MAP["optional"])
-        assert pinned == declared, sorted(pinned ^ declared)
+        shape = evidence._policy_shape_for_reading()
+        declared = set(shape["required"]) | set(shape["optional"])
+        assert set(policy_shape(None)) == declared, sorted(set(policy_shape(None)) ^ declared)
 
 
 class TestTheFieldsThatUsedToBeUnread:
@@ -1157,26 +1255,26 @@ class TestTheFieldsThatUsedToBeUnread:
 
     def test_a_job_id_that_disagrees_with_the_gateway_fails(self, tmp_path):
         found = _recorded(tmp_path, [good_step(
-            job_id="job-1", gateway_record={**OK_RECORD, "job_id": "job-2"})])
+            job_id="job-1", gateway_record=resigned(job_id="job-2"))])
         assert "is about job job-1" in messages(found)
 
     def test_a_gateway_job_the_step_never_recorded_is_an_evidence_error(self, tmp_path):
         found = _recorded(tmp_path, [good_step(
-            job_id="", gateway_record={**OK_RECORD, "job_id": "job-2"})])
+            job_id="", gateway_record=resigned(job_id="job-2"))])
         assert "never compared" in messages(found)
 
     def test_deltas_that_are_not_the_gateway_s_deltas_fail(self, tmp_path):
         delta = {"path": "network.enabled", "requested": True, "effective": False}
         found = _recorded(tmp_path, [good_step(
             policy_deltas=[delta],
-            gateway_record={**OK_RECORD, "policy_deltas": [],
-                            "request_policy_sha256": "a" * 64,
-                            "effective_policy_sha256": "a" * 64})])
+            gateway_record=resigned(policy_deltas=[],
+                            request_policy_sha256="a" * 64,
+                            effective_policy_sha256="a" * 64))])
         assert "is not the narrowing the gateway reported" in messages(found)
 
     def test_cleanup_that_disagrees_with_the_gateway_fails(self, tmp_path):
         found = _recorded(tmp_path, [good_step(
-            cleanup_verified=True, gateway_record={**OK_RECORD, "cleanup_verified": False})])
+            cleanup_verified=True, gateway_record=resigned(cleanup_verified=False))])
         assert "and the gateway says" in messages(found)
 
     def test_two_clients_in_one_record_fail(self, tmp_path):
@@ -1316,6 +1414,106 @@ class TestASentinelsRequestIsRead:
         found = self._pair(tmp_path, broken,
                            self._sentinel("gateway", theirs, self.PAYLOAD.format(v=mine)))
         assert "is not a digest" in messages(found)
+
+
+class TestTheOutsideOfAnAnswerIsTiedToItsInside:
+    """`EM3C-E3-CLASSIFY-0001`. Every case starts from a REAL answer and changes one thing about
+    it. The binding is not recomputed, because the point is that changing anything the gateway
+    signed over stops the answer describing itself."""
+
+    def _found(self, tmp_path, record, **step):
+        return _recorded(tmp_path, [good_step(gateway_record=record, run_id=RUN(),
+                                              container=container_for(RUN()), **step)])
+
+    def test_a_real_answer_passes(self, tmp_path, real_answer):
+        """The control for every case below."""
+        assert self._found(tmp_path, dict(real_answer)) == []
+
+    @pytest.mark.parametrize("field", [
+        "run_id", "job_id", "artifact_sha256", "request_policy_sha256",
+        "effective_policy_sha256", "stdout",
+    ])
+    def test_changing_a_signed_field_stops_it_describing_itself(self, tmp_path, real_answer,
+                                                                field):
+        answer = {**real_answer, field: "something else entirely"}
+        found = self._found(tmp_path, answer)
+        assert "do not produce the binding it carries" in messages(found), messages(found)
+
+    @pytest.mark.parametrize("field", [
+        "run_id", "job_id", "artifact_sha256", "request_policy_sha256",
+        "effective_policy_sha256", "stdout",
+    ])
+    def test_leaving_a_signed_field_out_stops_it_too(self, tmp_path, real_answer, field):
+        answer = {k: v for k, v in real_answer.items() if k != field}
+        found = self._found(tmp_path, answer)
+        assert "do not produce the binding it carries" in messages(found), messages(found)
+
+    def test_a_binding_from_another_answer_is_refused(self, tmp_path, real_gateway, real_answer):
+        """Exchange, rather than change: a binding that is real and belongs elsewhere."""
+        other = real_gateway.a_finished_run()
+        assert other["run_id"] != real_answer["run_id"]
+        found = self._found(tmp_path, {**real_answer, "binding": other["binding"]})
+        assert "do not produce the binding it carries" in messages(found)
+
+    def test_an_answer_with_no_binding_is_refused(self, tmp_path, real_answer):
+        answer = {k: v for k, v in real_answer.items() if k != "binding"}
+        found = self._found(tmp_path, answer)
+        assert "carries no binding" in messages(found)
+
+    def test_an_answer_with_no_signature_is_refused(self, tmp_path, real_answer):
+        answer = {k: v for k, v in real_answer.items() if k != "signature"}
+        found = self._found(tmp_path, answer)
+        assert "a binding and no signature" in messages(found)
+
+    @pytest.mark.parametrize("field", ["gateway", "fingerprint", "protocol"])
+    def test_an_answer_the_gateway_did_not_stamp_is_refused(self, tmp_path, real_answer, field):
+        answer = {k: v for k, v in real_answer.items() if k != field}
+        found = self._found(tmp_path, answer)
+        assert f"carries no {field}" in messages(found)
+
+    def test_a_fingerprint_that_is_not_this_identity_s_is_refused(self, tmp_path, real_answer):
+        found = self._found(tmp_path, {**real_answer, "fingerprint": "0" * 64})
+        assert "not the one this gateway identity and version produce" in messages(found)
+
+    def test_a_stamp_naming_another_gateway_than_the_binding_is_refused(self, tmp_path,
+                                                                        real_answer):
+        said = {**real_answer["gateway"], "gateway_id": "f" * 32}
+        found = self._found(tmp_path, {**real_answer, "gateway": said,
+                                       "fingerprint": _fingerprint_of(said)})
+        assert "the signed binding says" in messages(found)
+
+    def test_another_protocol_is_refused(self, tmp_path, real_answer):
+        found = self._found(tmp_path, {**real_answer, "protocol": "em3c/999"})
+        assert "not one conversation" in messages(found)
+
+    def test_an_answer_the_client_did_not_accept_is_refused(self, tmp_path, real_answer):
+        found = self._found(tmp_path, dict(real_answer),
+                            answer=accepted(verified=False, refusal="it was discarded"))
+        assert "did not accept this answer" in messages(found)
+
+    def test_a_signed_answer_with_nothing_said_about_it_is_refused(self, tmp_path, real_answer):
+        found = self._found(tmp_path, dict(real_answer), answer=None)
+        assert "nothing says whether the client" in messages(found)
+
+    def test_two_gateways_in_one_record_are_refused(self, tmp_path, real_gateway, real_answer):
+        """Two real answers, from two real gateways, in one file."""
+        import tempfile
+
+        from tests.real_answers import RealGateway
+
+        another = RealGateway(tempfile.mkdtemp())
+        try:
+            theirs = another.a_finished_run()
+        finally:
+            another.close()
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        two_machines(recorder)
+        bindings(recorder)
+        for one in (real_answer, theirs):
+            recorder.record(good_step(gateway_record=dict(one), run_id=one["run_id"],
+                                      container=container_for(one["run_id"])))
+        assert "more than one gateway" in messages(evidence.check_file(path))
 
 
 class TestAHashOfNothingIsNotAnIdentity:

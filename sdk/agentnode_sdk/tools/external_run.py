@@ -95,11 +95,15 @@ def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def launch(argv, timeout=600.0):
-    """Run a command and always return (exit_code, stdout, stderr, error_class). Never raises."""
+def launch(argv, timeout=600.0, script=None):
+    """Run a command and always return (exit_code, stdout, stderr, error_class). Never raises.
+
+    `script`, when given, is what the process reads on stdin -- which is how remote work travels,
+    because an argument can be rewritten before the process starts and stdin cannot.
+    """
     try:
         done = subprocess.run(list(argv), capture_output=True, text=True,
-                              timeout=timeout, check=False)
+                              timeout=timeout, check=False, input=script)
         return done.returncode, done.stdout or "", done.stderr or "", ""
     except FileNotFoundError as exc:
         return None, "", str(exc), "FileNotFoundError"
@@ -111,12 +115,44 @@ def launch(argv, timeout=600.0):
         return None, "", str(exc), type(exc).__name__
 
 
-def ssh_argv(command):
-    return ["ssh", "-n", "-i", KEY, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
-            SERVER, command]
-
-
+#: A marker every remote answer ends with, so an empty answer and a truncated one are different.
 MARKER = "E3-END-OF-LISTING"
+
+
+def ssh_argv():
+    """The command line, with NOTHING on it that a shell environment would rewrite.
+
+    `EM3C-E3-CLASSIFY-0001`: the command used to be the last argument, and on Windows the MSYS
+    layer rewrites an argument that looks like an absolute POSIX path before ssh.exe ever sees
+    it. an absolute POSIX path left this machine rewritten as a Windows one, the far side
+    was asked about a directory that does not exist there, and the step recorded a
+    failure that was about the transport rather than about the gateway.
+
+    So the far side is given no command at all: the login shell reads its work from stdin. The
+    only remaining argument that could be rewritten is the key, which `check_argv` refuses if it
+    is path-like, because a setting is where that belongs and a Windows path is what it must be.
+    """
+    return ["ssh", "-T", "-i", KEY, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
+            "-o", "StrictHostKeyChecking=yes", SERVER]
+
+
+def check_argv(argv=None) -> list[str]:
+    """Which arguments a shell environment could rewrite. Empty means none of them."""
+    return [a for a in (argv if argv is not None else ssh_argv())
+            if a.startswith("/") or a.startswith("\\\\")]
+
+
+def one_command(command: str) -> str:
+    """A script that runs ONE command, keeps that command's own status, and says it finished.
+
+    Not `cmd; echo MARKER`: the status of that is the echo's. The command's status is taken
+    first, the marker is printed, and the script exits with the status that was taken -- so a
+    reader gets both the end of the answer and the status of the thing that produced it.
+    """
+    return (command + chr(10)
+            + "__status=$?" + chr(10)
+            + "printf '%s" + chr(92) + "n' " + repr(MARKER).replace("'", '"') + chr(10)
+            + "exit $__status" + chr(10))
 
 
 def server_query(command, timeout=300.0) -> dict:
@@ -126,20 +162,23 @@ def server_query(command, timeout=300.0) -> dict:
     was indistinguishable from one that found nothing. Everything a reader needs to tell those
     apart is kept.
     """
-    # Every listing ends with a marker, so an empty answer and a truncated one are different
-    # things. Without it, "nothing came back" and "nothing is there" are the same string.
-    full = command + '; echo "' + MARKER + '"'
-    code, out, err, error_class = launch(ssh_argv(full), timeout=timeout)
+    rewritable = check_argv()
+    if rewritable:
+        return {"ran": False, "exit_code": None, "stdout": "", "stderr": "",
+                "error_class": "ArgumentWouldBeRewritten", "parsed": False, "complete": False,
+                "command": command}
+    code, out, err, error_class = launch(ssh_argv(), timeout=timeout,
+                                         script=one_command(command))
     return {"ran": code is not None or bool(error_class),
             "exit_code": code, "stdout": out, "stderr": err,
             "error_class": error_class, "parsed": code == 0 and not error_class,
-            "complete": MARKER in out, "command": full}
+            "complete": MARKER in out, "command": command}
 
 
 def server_step(name, command, *, expected_exit=0, timeout=600.0, **fields):
-    code, out, err, error_class = launch(ssh_argv(command), timeout=timeout)
+    code, out, err, error_class = launch(ssh_argv(), timeout=timeout, script=one_command(command))
     return rec.record(step(
-        name=name, role="gateway", argv=evidence.redact_argv(ssh_argv(command)),
+        name=name, role="gateway", argv=evidence.redact_argv(ssh_argv() + [command]),
         started_at=time.time(), ended_at=time.time(), exit_code=code,
         stdout=out, stderr=err, expected_exit=expected_exit, error_class=error_class, **fields))
 
@@ -176,16 +215,45 @@ def connection():
 
 
 def gateway_record(run_id):
+    """Ask the gateway about a run, and check the answer the way the product checks it.
+
+    Returns `(answer, observed)`. `answer` is EXACTLY what came back, unmodified -- this driver
+    never builds one. `observed` is what this client noticed about it, which is a separate thing
+    and is recorded separately: the HTTP status, whether the production verifier accepted it, and
+    why not when it did not.
+
+    `EM3C-E3-CLASSIFY-0001`: this used to read the wire and hand back a body nobody had verified,
+    and to invent `{"status": ..., "error": ...}` of its own when something went wrong -- an
+    answer of the driver's own making, recorded in the place a gateway's answer goes.
+    """
+    asked = f"/v1/jobs/{run_id}" if run_id else "(no run id was printed)"
     if not run_id:
-        return {"error": "the client never printed a run id"}
+        return None, {"http_status": None, "verified": False, "asked_for": asked,
+                      "refusal": "the client never printed a run id, so nothing was asked"}
+    # `gc.status_of` IS the way the product asks: it reads the answer, refuses one from a
+    # gateway this connection did not pair with, refuses a status that is not 200, and returns
+    # only what `verify_answer` accepted. Asking any other way would be this driver deciding
+    # for itself what an acceptable answer is, which is the thing that went wrong before.
     try:
         conn, _saved = connection()
-        status, body = gc._get(f"{conn.base_url}/v1/jobs/{run_id}", token=conn.token)
     except Exception as exc:                                       # noqa: BLE001
-        return {"error": f"{type(exc).__name__}: {exc}"}
-    if status != 200:
-        return {"status": status, "error": body.get("error", f"HTTP {status}")}
-    return body
+        return None, {"http_status": None, "verified": False, "asked_for": asked,
+                      "refusal": f"{type(exc).__name__}: {exc}"}
+    status = None
+    try:
+        status, raw = gc._get(f"{conn.base_url}{asked}", token=conn.token)
+    except Exception as exc:                                       # noqa: BLE001
+        return None, {"http_status": None, "verified": False, "asked_for": asked,
+                      "refusal": f"{type(exc).__name__}: {exc}"}
+    try:
+        accepted = gc.status_of(conn, run_id)
+    except Exception as exc:                                       # noqa: BLE001
+        # What came back is still recorded, exactly as it came back. Whether it was acceptable
+        # is the separate observation beside it.
+        return (raw if isinstance(raw, dict) else None), {
+            "http_status": status, "verified": False, "asked_for": asked,
+            "refusal": f"{type(exc).__name__}: {exc}"}
+    return accepted, {"http_status": status, "verified": True, "asked_for": asked, "refusal": ""}
 
 
 def live_secrets():
@@ -265,7 +333,7 @@ def machines():
     fs = server_query("findmnt -no UUID /")
     ok = all(q["parsed"] for q in (host, machine_id, kernel, fs))
     observed("gateway identity, reported by the gateway over its own channel",
-             ssh_argv("hostname; machine-id; uname; findmnt"), ok,
+             ssh_argv() + ["hostname; machine-id; uname; findmnt"], ok,
              f"kernel={kernel['stdout'].strip()}\n", role="gateway",
              machine={"role": "gateway", "host_sha256": digest(host["stdout"].replace(MARKER, "").strip()),
                       # Both halves, or neither: concatenating a value with
@@ -315,7 +383,7 @@ def sentinels():
     code, out, err, cls = launch([AN, "remote", "run", str(payload), "--max-seconds", "120"])
     match = RUN_ID.search(out)
     run_id = match.group(1) if match else ""
-    record = gateway_record(run_id) if run_id else None
+    asked = about(run_id)
 
     from_gateway = ""
     found = re.search(r"E3-FROM-GATEWAY ([0-9a-f]{32})", out)
@@ -335,7 +403,7 @@ def sentinels():
         role="client", argv=evidence.redact_argv([AN, "remote", "run", "sentinel.py"]),
         started_at=time.time(), ended_at=time.time(), exit_code=code, stdout=out, stderr=err,
         expected_exit=0, expect_output=True, error_class=cls,
-        run_id=run_id, gateway_record=record, **from_record(record),
+        run_id=run_id, **asked,
         sentinel={"request_text": source,
                   "generated_on": "client",
                   "carried_over": "agentnode-job", "confirmed_over": "ssh",
@@ -349,12 +417,12 @@ def sentinels():
     rec.record(step(
         name="a value made inside the sandbox on the gateway reaches the client",
         role="gateway",
-        argv=evidence.redact_argv(ssh_argv(str(gateway_query.get("command", "")))),
+        argv=evidence.redact_argv(ssh_argv() + [str(gateway_query.get("command", ""))]),
         started_at=time.time(), ended_at=time.time(),
         exit_code=gateway_query.get("exit_code"),
         stdout=gateway_query.get("stdout", ""), stderr=gateway_query.get("stderr", ""),
         expected_exit=None, error_class=str(gateway_query.get("error_class", "")),
-        run_id=run_id, gateway_record=record, **from_record(record),
+        run_id=run_id, **asked,
         # The same payload, deliberately. This value is NOT in it -- the job made it on the
         # gateway -- and the rule reads that rather than taking the label's word for it.
         sentinel={"request_text": source,
@@ -410,13 +478,20 @@ def binding_now(label):
                                 ("mode", "generation", "policy_digest", "configured_digest",
                                  "runtime", "backend", "conformance_digest")) \
         and binding["digests_agree"] == "True"
-    observed(f"the operator-policy binding, {label}", ssh_argv("gateway egress --verbose"),
+    observed(f"the operator-policy binding, {label}", ssh_argv() + ["gateway egress --verbose"],
              complete, text or "no output", role="gateway", binding=binding,
              container_query=show)
     return binding
 
 
 # --------------------------------------------------------------------------- the matrix
+
+
+def about(run_id):
+    """The two fields every step that asks about a run carries: the answer, and what was noticed
+    about it. One call, so no step can record one without the other."""
+    answer, observed = gateway_record(run_id)
+    return {"gateway_record": answer, "answer": observed, **from_record(answer)}
 
 
 def from_record(record):
@@ -443,8 +518,7 @@ def cli(name, args, *, expected_exit=0, expected_refusal="", expect_cleanup=Fals
     code, out, err, error_class = launch(argv)
     match = RUN_ID.search(out)
     run_id = match.group(1) if match else ""
-    record = gateway_record(run_id) if run_id else None
-    fields = from_record(record)
+    asked = about(run_id)
     container = ""
     if want_container and run_id:
         # Through the same listing everything else uses. Its own inline version took the first
@@ -457,7 +531,7 @@ def cli(name, args, *, expected_exit=0, expected_refusal="", expect_cleanup=Fals
         started_at=started, ended_at=time.time(), exit_code=code, stdout=out, stderr=err,
         expected_exit=expected_exit, expected_refusal=expected_refusal,
         expect_cleanup=expect_cleanup, expect_output=True, error_class=error_class,
-        run_id=run_id, gateway_record=record, container=container, **fields))
+        run_id=run_id, container=container, **asked))
 
 
 def list_containers(run_id):
@@ -487,17 +561,17 @@ def container_gone(run_id, container, sought_id):
     """Absence, concluded only from a query that ran and was read."""
     listing, names, ids = list_containers(run_id)
     query = {**listing, "names": names, "ids": ids, "sought_id": sought_id}
-    final_record = gateway_record(run_id)
+    asked = about(run_id)
     rec.record(step(
         name="the cancelled job left no container behind", role="gateway",
-        argv=evidence.redact_argv(ssh_argv(listing["command"])),
+        argv=evidence.redact_argv(ssh_argv() + [listing["command"]]),
         started_at=time.time(), ended_at=time.time(),
         exit_code=listing["exit_code"], expected_exit=0,
         stdout=listing["stdout"], stderr=listing["stderr"],
         error_class=listing["error_class"],
         run_id=run_id, container=container, container_query=query,
         expect_container_gone=True,
-        gateway_record=final_record, **from_record(final_record)))
+        **asked))
 
 
 def main(path=None) -> int:
@@ -547,7 +621,7 @@ def main(path=None) -> int:
     time.sleep(10)
     listening = server_query("ss -ltn")
     observed("E4: the gateway listens again, on loopback only",
-             ssh_argv("ss -ltn"),
+             ssh_argv() + ["ss -ltn"],
              listening["parsed"] and f"127.0.0.1:{PORT}" in listening["stdout"]
              and f"0.0.0.0:{PORT}" not in listening["stdout"],
              listening["stdout"][:400] or "nothing", role="gateway")
@@ -612,23 +686,22 @@ def main(path=None) -> int:
         listing, names, ids = list_containers(run_id)
         container = names[0] if names else ""
         sought_id = ids[0] if ids else ""
-        running_record = gateway_record(run_id)
+        running = about(run_id)
         observed("H2b: the running job has a container, with a name and an id",
-                 ssh_argv(listing["command"]), bool(container) and bool(sought_id),
+                 ssh_argv() + [listing["command"]], bool(container) and bool(sought_id),
                  listing["stdout"][:400] or "nothing came back", role="gateway",
                  run_id=run_id, container=container,
                  container_query={**listing, "names": names, "ids": ids,
                                   "sought_id": sought_id},
-                 gateway_record=running_record, **from_record(running_record))
+                 **running)
         code, out, err, cls = launch([AN, "remote", "cancel", "--run", run_id])
-        cancel_record = gateway_record(run_id)
+        cancelled = about(run_id)
         rec.record(step(
             name="H3: cancel stops the job", role="client",
             argv=evidence.redact_argv([AN, "remote", "cancel", "--run", run_id]),
             started_at=time.time(), ended_at=time.time(), exit_code=code,
             stdout=out, stderr=err, expected_exit=0, expect_output=True, error_class=cls,
-            run_id=run_id, container=container, gateway_record=cancel_record,
-            **from_record(cancel_record)))
+            run_id=run_id, container=container, **cancelled))
         if slow is not None:
             try:
                 slow.wait(timeout=300)

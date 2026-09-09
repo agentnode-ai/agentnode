@@ -91,6 +91,29 @@ def policy_digest(granted: Any) -> str:
     return digest(canonical_bytes(policy_shape(granted)))
 
 
+#: What every answer carries because the gateway stamped it, and what it carries in addition
+#: when it belongs to a paired client. Named here, once, because two things need to agree about
+#: it: the gateway that adds them and anything that later reads an answer back. `EM3C-E3-CLASSIFY-0001`
+#: found an evidence reader that had been given its own list of an INNER object's fields while
+#: the client receives this envelope, so the reader refused every real answer.
+STAMP_FIELDS = ("gateway", "fingerprint", "protocol")
+SIGNATURE_FIELDS = ("binding", "signature")
+
+
+def stamp_fields(identity) -> dict[str, Any]:
+    """The three fields `GatewayService.stamp` adds. The only place they are built."""
+    return {"gateway": identity.as_dict(),
+            "fingerprint": identity.fingerprint,
+            "protocol": PROTOCOL_VERSION}
+
+
+def binding_fields() -> tuple[str, ...]:
+    """The keys of a response binding, from the function that builds one."""
+    return tuple(response_binding(
+        gateway_id="", version="", job_id="", run_id="", artifact_sha256="",
+        request_policy_sha256="", effective_policy_sha256="", result=""))
+
+
 def response_binding(*, gateway_id: str, version: str, job_id: str, run_id: str,
                      artifact_sha256: str, request_policy_sha256: str,
                      effective_policy_sha256: str, result: Any) -> dict[str, Any]:
