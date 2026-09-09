@@ -88,6 +88,16 @@ jobs:
           grep -qE "^140 passed" em3c-evidence.txt || {
             echo "the evidence-runner tests did not all pass"; exit 1; }
 
+      # And the driver that produces the external record, driven offline over the whole matrix.
+      # Three external runs have died inside it rather than in the product; none of those
+      # defects was findable by reading it, and all three are findable by running it.
+      - name: The external-run driver, over a described pair of machines
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_external_run.py 2>&1 | tee em3c-driver.txt
+          grep -qE "^20 passed" em3c-driver.txt || {
+            echo "the external-run driver tests did not all pass"; exit 1; }
+
       - name: The vertical flow, for real
         env:
           AGENTNODE_SANDBOX_E2E: "1"
