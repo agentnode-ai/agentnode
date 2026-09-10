@@ -116,7 +116,7 @@ class Step:
     container_query: dict | None = None
     cleanup_verified: Any = None
     machine: dict | None = None
-    sentinel: dict | None = None
+    crossing: dict | None = None
     binding: dict | None = None
     #: What the client observed about the answer beside it. Never part of the answer.
     answer: dict | None = None
@@ -159,11 +159,11 @@ MANDATORY = ("name", "role", "argv", "started_at", "ended_at", "exit_code",
 #: unread field is a field nothing can contradict, and the schema is closed in BOTH directions
 #: now: this tuple is the whole of `FIELD_NAMES`, and a test holds the two against each other.
 #: `notes` was the one field with no rule that could be written for it, so it is gone; what the
-#: driver kept there is in the sentinel, where `_sentinel_findings` reads it.
+#: driver kept there is in the crossing, where `_crossing_findings` reads it.
 READ_BY_RULES = (
     "name", "role", "argv", "started_at", "ended_at", "exit_code", "stdout", "stderr",
     "error_class", "run_id", "gateway_record", "container", "container_query", "machine",
-    "sentinel", "binding", "answer", "request_policy_sha256", "effective_policy_sha256",
+    "crossing", "binding", "answer", "request_policy_sha256", "effective_policy_sha256",
     "expected_exit", "expected_refusal", "expect_output", "expect_cleanup",
     "expect_container_gone", "expect_timeout",
     "job_id", "client_id", "policy_deltas", "cleanup_verified",
@@ -185,19 +185,21 @@ _NESTED: dict[str, dict] = {
                     "optional": (),
                     "types": {"command": (str,), "exit_code": (int, type(None)),
                               "stdout": (str,), "stderr": (str,)}}}},
-    "sentinel": {"required": ("generated_on", "carried_over", "confirmed_over", "value_sha256",
-                              "in_request", "in_response", "in_other_channel", "matched",
-                              "request_text"),
+    # One value going one way, and everything that makes finding it mean what it is taken to
+    # mean. `EM3C-E6-RECORD-0001`: what stood here before required a sentinel to name the channel
+    # it was carried over and the channel it was confirmed over -- two strings the recorder wrote
+    # about itself. The sixth external run wrote `confirmed_over: "ssh"` next to a grep of the
+    # gateway's log file, and the shape was satisfied while the confirmation was looking somewhere
+    # the value could not be. What is required now is what was ASKED, so a reader can see the
+    # question rather than a word for it.
+    "crossing": {"required": ("what", "made_on", "value", "run_id", "payload_text",
+                              "payload_sha256", "confirmed_by", "asked", "record_sha256",
+                              "holds", "decidable", "why"),
                  "optional": (),
-                 "types": {"generated_on": (str,), "carried_over": (str,),
-                           "confirmed_over": (str,), "value_sha256": (str,),
-                           "in_request": (bool,), "in_response": (bool,),
-                           "in_other_channel": (bool,), "matched": (bool,),
-                           # What the client actually sent. `in_request` decides the origin, and
-                           # until now it was a boolean the recorder asserted. With the request
-                           # itself in the record the rule can check it, so the direction a
-                           # value travelled is read out of the evidence rather than believed.
-                           "request_text": (str,)}},
+                 "types": {"what": (str,), "made_on": (str,), "value": (str,), "run_id": (str,),
+                           "payload_text": (str,), "payload_sha256": (str,),
+                           "confirmed_by": (str,), "asked": (str,), "record_sha256": (str,),
+                           "holds": (bool,), "decidable": (bool,), "why": (str,)}},
     "container_query": {"required": ("ran", "exit_code", "stdout", "stderr", "error_class",
                                      "parsed", "command"),
                         "optional": ("names", "ids", "sought_id", "complete"),
@@ -378,7 +380,7 @@ _TYPES: dict[str, tuple] = {
     "container_query": (dict, type(None)),
     "cleanup_verified": (bool, str, type(None)),
     "machine": (dict, type(None)),
-    "sentinel": (dict, type(None)),
+    "crossing": (dict, type(None)),
     "binding": (dict, type(None)),
     "answer": (dict, type(None)),
     "expected_exit": (int, type(None)),
@@ -1281,19 +1283,26 @@ def verify(steps, secrets=()) -> list[Finding]:
     return problems
 
 
-#: Where a sentinel travelled. Two different names are required for a crossing: a value carried
-#: and confirmed over the same channel has only been seen by one path.
 #: The two machines a record is about. A step run by anything else is not part of this evidence.
 _ROLES = ("client", "gateway")
 
-_CHANNELS = ("agentnode-job", "ssh")
+#: Where a value can have been made. Two crossings of one run must name different ones: a value
+#: made and confirmed on the same side has crossed nothing.
+_ORIGINS = ("the client", "the far machine")
+
+#: Shapes an `asked` must not have. A crossing records the question that confirmed it, and these
+#: are what a question looks like when it is a search of somewhere the answer was never going to
+#: be. `EM3C-E6-RECORD-0001`: three external runs recorded `grep -c -- <value> .../gateway.log`
+#: as a confirmation, and a sandbox job's output is not written to that file. A rule cannot know
+#: every wrong place to look; it can refuse the shape of looking rather than asking.
+_NOT_A_QUESTION = ("grep", "|", "awk", "sed", "find ", "cat ")
 
 
-def _sentinel_findings(sentinel: dict, crossed: dict) -> list[Finding]:
-    """Whether one sentinel establishes a crossing, from what is recorded rather than from what
-    it says about itself.
+def _crossing_findings(step: dict, crossing: dict, crossed: dict) -> list[Finding]:
+    """Whether one crossing establishes what it is taken to establish, from what is recorded
+    rather than from what it says about itself.
 
-    `generated_on` is a label, and a label is not provenance. What makes the origin checkable is
+    `made_on` is a label, and a label is not provenance. What makes the origin checkable is
     `in_request`: whether the value appeared in what the CLIENT sent. A value the client sent and
     the gateway echoed came from the client. A value the client never sent, which came back in the
     response and is also present on the gateway host, did not -- the client could not have
@@ -1314,69 +1323,85 @@ def _sentinel_findings(sentinel: dict, crossed: dict) -> list[Finding]:
     which records what such a service would additionally need.
     """
     where = "two machines"
-    made = str(sentinel.get("generated_on") or "")
-    carried = str(sentinel.get("carried_over") or "")
-    confirmed = str(sentinel.get("confirmed_over") or "")
+    made = str(crossing.get("made_on") or "")
+    asked = str(crossing.get("asked") or "")
+    value = str(crossing.get("value") or "")
+    payload = str(crossing.get("payload_text") or "")
+    digest = str(crossing.get("payload_sha256") or "")
 
-    if made not in ("client", "gateway"):
-        return [Finding(where, EVIDENCE_ERROR, "a sentinel does not say where it was made")]
-    if carried not in _CHANNELS or confirmed not in _CHANNELS:
+    if made not in _ORIGINS:
         return [Finding(where, EVIDENCE_ERROR,
-                        f"a sentinel does not name two known channels (carried over {carried!r}, "
-                        f"confirmed over {confirmed!r})")]
-    if carried == confirmed:
-        return [Finding(where, FAIL,
-                        f"a sentinel was carried and confirmed over the same channel ({carried}), "
-                        "so only one path ever saw it")]
-
-    for field_name in ("in_request", "in_response", "in_other_channel"):
-        if not isinstance(sentinel.get(field_name), bool):
-            return [Finding(where, EVIDENCE_ERROR,
-                            f"a sentinel does not record {field_name}, so its origin rests on "
-                            "what it calls itself")]
-
-    if sentinel.get("in_response") is not True:
-        return [Finding(where, FAIL,
-                        f"the sentinel said to be made on {made} never came back over {carried}")]
-    if sentinel.get("in_other_channel") is not True:
-        return [Finding(where, FAIL,
-                        f"the sentinel said to be made on {made} was not found over {confirmed}, "
-                        "so only one channel ever saw it")]
-
-    # `in_request` decided the origin and was, until now, a boolean the recorder asserted --
-    # so the derivation was only as good as the recorder's own bookkeeping. The request itself
-    # is in the record, and the claim is checked against it: the value is in what the client
-    # sent, or it is not, and no field gets to say otherwise (`EM3C-EVIDENCE-0009`).
-    sent = str(sentinel.get("request_text") or "")
-    value = str(sentinel.get("value_sha256") or "")
-    if not _looks_like_a_digest(value):
+                        f"a crossing says it was made on {made!r}, which is neither of the two "
+                        "places there are")]
+    if not value.strip():
+        return [Finding(where, EVIDENCE_ERROR, "a crossing carries no value, so there is nothing "
+                                               "for it to have found anywhere")]
+    if not asked.strip():
         return [Finding(where, EVIDENCE_ERROR,
-                        f"a sentinel's value is not a digest: {value[:24]!r}")]
-    if not sent.strip():
+                        "a crossing does not record what was asked, so whether the question could "
+                        "have been answered where it was put is not something a reader can see")]
+    # `EM3C-E6-RECORD-0001`: three external runs confirmed a sentinel by searching a file the
+    # value is never written to, and every rule of the day was satisfied. A rule cannot know every
+    # wrong place to look. It can refuse a confirmation that is a search rather than a question.
+    lowered = asked.lower()
+    for shape in _NOT_A_QUESTION:
+        if shape in lowered:
+            return [Finding(where, FAIL,
+                            f"a crossing was confirmed by {asked!r}, which searches rather than "
+                            "asks. A channel that is asked what it knows answers about it; one "
+                            "that is searched answers about the search")]
+    if not str(crossing.get("confirmed_by") or "").strip():
         return [Finding(where, EVIDENCE_ERROR,
-                        "a sentinel records nothing of what the client sent, so whether the "
-                        "value was in it cannot be checked and its origin rests on a label")]
-    really_in_request = any(
-        hashlib.sha256(token.encode("utf-8")).hexdigest() == value
-        for token in re.findall(r"[0-9a-zA-Z_-]{8,}", sent))
-    if bool(sentinel.get("in_request")) != really_in_request:
-        return [Finding(
-            where, FAIL,
-            "a sentinel says the value was "
-            + ("in" if sentinel.get("in_request") else "not in")
-            + " what the client sent, and the recorded request says the opposite. The origin of "
-            "the crossing is what that field decides, so it is read from the request rather "
-            "than believed")]
+                        "a crossing does not say which channel confirmed it")]
+    if not str(crossing.get("run_id") or "").strip():
+        return [Finding(where, EVIDENCE_ERROR,
+                        "a crossing names no run, so what it is about is not established")]
+    # A crossing always names the run it is about. The step recording it may or may not be the
+    # step that ran that job -- the tool records the decision separately from the job -- but when
+    # it names one, the two have to be the same run. An answer about another run says nothing
+    # about this one, and that is the whole of what the sixth external run got wrong one level up.
+    named_by_step = str(step.get("run_id") or "")
+    if named_by_step and str(crossing.get("run_id")) != named_by_step:
+        return [Finding(where, FAIL,
+                        "a crossing is about run " + str(crossing.get("run_id")) + " and the step "
+                        "recording it is about " + named_by_step
+                        + ". An answer about another run says nothing about this one")]
+    if not _looks_like_a_digest(digest):
+        return [Finding(where, EVIDENCE_ERROR,
+                        f"a crossing's payload digest is not a digest: {digest[:24]!r}")]
+    if hashlib.sha256(payload.encode("utf-8")).hexdigest() != digest:
+        return [Finding(where, FAIL,
+                        "a crossing's payload digest is not the digest of the payload it records, "
+                        "so which of the two a reader should believe is not decidable")]
+    if not str(crossing.get("record_sha256") or "").strip():
+        return [Finding(where, EVIDENCE_ERROR,
+                        "a crossing does not identify the record it was decided from")]
 
-    # The origin, derived. A value the client sent is the client's; one it never sent is not.
-    derived = "client" if really_in_request else "gateway"
+    # The origin, derived rather than believed. A value the client put in the payload is the
+    # client's. One the payload never carried was made where the job ran, because the client
+    # could not have produced it. A record whose own contents disagree with its label is refused,
+    # and the label never wins.
+    in_payload = value in payload
+    derived = _ORIGINS[0] if in_payload else _ORIGINS[1]
     if derived != made:
         return [Finding(where, FAIL,
-                        f"a sentinel calls itself made on {made}, but it was "
-                        f"{'in' if sentinel.get('in_request') else 'not in'} what the client sent, "
-                        f"which makes it {derived}'s. The label is not evidence")]
+                        f"a crossing says it was made on {made!r}, and the value is "
+                        + ("in" if in_payload else "not in")
+                        + f" the payload it records, which makes it {derived!r}'s. What is in the "
+                        "record decides, not what the record calls itself")]
 
-    crossed[made] = str(sentinel.get("value_sha256") or "")
+    if crossing.get("decidable") is not True:
+        # Not a failure. `EM3C-EVIDENCE-0002`: a channel that could not be reached has not said
+        # no, and the two were once the same answer here.
+        return [Finding(where, EVIDENCE_ERROR,
+                        f"a crossing made on {made} could not be decided: "
+                        + (str(crossing.get("why") or "") or "no reason recorded"))]
+    if crossing.get("holds") is not True:
+        return [Finding(where, FAIL,
+                        f"the value made on {made} did not cross: "
+                        + (str(crossing.get("why") or "") or "no reason recorded"))]
+
+    crossed[made] = value
     return []
 
 
@@ -1628,19 +1653,19 @@ def verify_two_machines(steps) -> list[Finding]:
 
     crossed: dict[str, str] = {}
     for raw in steps:
-        sentinel = raw.get("sentinel")
-        if not isinstance(sentinel, dict):
+        crossing = raw.get("crossing")
+        if not isinstance(crossing, dict):
             continue
-        problems.extend(_sentinel_findings(sentinel, crossed))
+        problems.extend(_crossing_findings(raw, crossing, crossed))
 
     if len(crossed) < 2:
         problems.append(Finding("two machines", EVIDENCE_ERROR,
-                                "a sentinel was not carried in both directions, so only one side "
-                                "was ever confirmed by the other"))
+                                "a value did not cross in both directions, so only one side was "
+                                "ever confirmed by the other"))
     elif len(set(crossed.values())) < 2:
         problems.append(Finding("two machines", FAIL,
-                                "both sentinels carried the same value, so they cannot have been "
-                                "generated independently"))
+                                "both crossings carried the same value, so they cannot have been "
+                                "made independently"))
     return problems
 
 

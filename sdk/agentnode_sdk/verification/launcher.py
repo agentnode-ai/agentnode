@@ -26,13 +26,7 @@ from agentnode_sdk.verification import config
 #: boundary here -- see `external_run.launch` and `EM3C-E4-CLASSIFY-0001`.
 WIRE = "utf-8"
 
-#: The module this launcher starts. It is still the previous runner: the configuration and
-#: this launcher have moved into this package ahead of it, because they are the parts the
-#: sixth external run established and the parts a replacement has to inherit rather than
-#: rewrite. The name changes in the commit that lands `verification.run` and freezes the
-#: old one -- not before, because a launcher that starts a module nobody has written yet
-#: is a worse state to leave a repository in than an honest sentence.
-RUNNER = "agentnode_sdk.tools.external_run"
+RUNNER = "agentnode_sdk.verification.run"
 
 
 class LaunchError(Exception):

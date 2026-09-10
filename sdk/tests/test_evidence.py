@@ -126,8 +126,14 @@ GATEWAY_VALUE = "998877665544332211"
 PAYLOAD = "print('E3-FROM-CLIENT " + CLIENT_VALUE + "')"
 
 
+#: Where a value can have been made. The same two the contract knows, and they are places
+#: rather than roles: what matters is which side produced the value, not which side reported it.
+HERE, THERE = "the client", "the far machine"
+A_RUN = "r" * 32
+
+
 def value_for(made_on):
-    return CLIENT_VALUE if made_on == "client" else GATEWAY_VALUE
+    return CLIENT_VALUE if made_on == HERE else GATEWAY_VALUE
 
 
 def digest_of(text):
@@ -136,26 +142,34 @@ def digest_of(text):
     return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
 
 
-def crossing(made_on, value=None, request_text=PAYLOAD, **overrides):
-    """A sentinel that crosses properly.
+def crossing(made_on, value=None, payload_text=PAYLOAD, **overrides):
+    """One value going one way, recorded the way the tool records it.
 
-    `in_request` is what makes the origin checkable: a value the client sent is the client's, one
-    it never sent is not. The request itself is carried too, so that claim can be read rather
-    than believed.
+    What makes the origin checkable is the payload: a value the client put in it is the client's,
+    one the payload never carried was made where the job ran. The payload itself is here, so that
+    is read rather than believed. And what confirmed the crossing is the QUESTION that was asked,
+    not a word for the channel -- `EM3C-E6-RECORD-0001` was a record that named its channel
+    correctly while the question searched a file the value could not be in.
     """
     raw = value_for(made_on) if value is None else value
-    sentinel = {"generated_on": made_on,
-                "carried_over": "agentnode-job", "confirmed_over": "ssh",
-                "value_sha256": digest_of(raw),
-                "request_text": request_text,
-                "in_request": made_on == "client",
-                "in_response": True, "in_other_channel": True, "matched": True}
-    sentinel.update(overrides)
-    return sentinel
+    one = {"what": "a value made on " + made_on,
+           "made_on": made_on,
+           "value": raw,
+           "run_id": A_RUN,
+           "payload_text": payload_text,
+           "payload_sha256": digest_of(payload_text),
+           "confirmed_by": "the gateway's signed answer",
+           "asked": "GET /v1/jobs/" + A_RUN,
+           "record_sha256": "d" * 64,
+           "holds": True,
+           "decidable": True,
+           "why": "the signed record of this run carries it"}
+    one.update(overrides)
+    return one
 
 
 def two_machines(recorder):
-    """The pair of identity steps and the two crossed sentinels every record needs.
+    """The pair of identity steps and the two crossings every record needs.
 
     Added by every test that is not about machine separation, so those tests fail for their own
     reason rather than for a missing precondition.
@@ -169,13 +183,13 @@ def two_machines(recorder):
         started_at=1.2, ended_at=1.3, exit_code=0,
         machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
     recorder.record(a_step(
-        name="a sentinel made on the client, read back over the gateway",
-        role="client", argv=["(sentinel)"], started_at=1.4, ended_at=1.5, exit_code=0,
-        sentinel=crossing("client")))
+        name="a value made here, found in the far side's signed record",
+        role="client", argv=["(a crossing)"], started_at=1.4, ended_at=1.5, exit_code=0,
+        crossing=crossing(HERE)))
     recorder.record(a_step(
-        name="a sentinel made on the gateway, read back over the client",
-        role="gateway", argv=["(sentinel)"], started_at=1.6, ended_at=1.7, exit_code=0,
-        sentinel=crossing("gateway")))
+        name="what the far machine is, carried back and confirmed separately",
+        role="gateway", argv=["(a crossing)"], started_at=1.6, ended_at=1.7, exit_code=0,
+        crossing=crossing(THERE)))
 
 
 BINDING = {"mode": "none",
@@ -292,7 +306,8 @@ def wrong_values() -> dict:
         "machine": {"machine": identity("client", "c" * 64, "cf" * 32, "Windows",
                                         commands=[{"command": "hostname", "exit_code": 1,
                                                    "stdout": "", "stderr": "no"}])},
-        "sentinel": {"sentinel": crossing("client", request_text="nothing was sent")},
+        "crossing": {"run_id": A_RUN,
+                     "crossing": crossing(HERE, payload_text="nothing was sent")},
         "binding": {"binding": {**BINDING, "digests_agree": "False"}},
         "expected_exit": {"expected_exit": 9},
         "expected_refusal": {"expected_refusal": "a reason that appears nowhere"},
@@ -798,38 +813,79 @@ class TestTwoMachinesAreShownToBeTwo:
             machine=identity("gateway", "c" * 64, "gf" * 32, "Linux")))
         recorder.record(a_step(
             name="a crossing", role="client", argv=["x"], started_at=1.4, ended_at=1.5,
-            exit_code=0, sentinel=crossing("client")))
+            exit_code=0, crossing=crossing(HERE)))
         recorder.record(a_step(
             name="the other way", role="gateway", argv=["x"], started_at=1.6, ended_at=1.7,
-            exit_code=0, sentinel=crossing("gateway")))
+            exit_code=0, crossing=crossing(THERE)))
         found = evidence.check_file(path)
         assert "same host identity" in messages(found)
 
-    def test_a_sentinel_carried_and_confirmed_over_one_channel_fails(self, tmp_path):
+    def test_a_confirmation_that_searches_instead_of_asking_fails(self, tmp_path):
+        """`EM3C-E6-RECORD-0001` itself. Three external runs recorded
+        `grep -c -- <value> /home/.../gateway.log` as a confirmation, and a sandbox job's output
+        is not written to that file. Every rule of the day was satisfied."""
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client", announce=False)
         two_machines(recorder)
         recorder.record(a_step(
-            name="a sentinel that only one path ever saw", role="client", argv=["(sentinel)"],
-            started_at=3.0, ended_at=3.1, exit_code=0,
-            sentinel=crossing("client", confirmed_over="agentnode-job")))
+            name="a crossing confirmed by a search", role="client", argv=["(a crossing)"],
+            started_at=3.0, ended_at=3.1, exit_code=0, run_id=A_RUN,
+            crossing=crossing(HERE, asked="grep -c -- abc /home/x/gateway.log")))
         found = evidence.check_file(path)
-        assert "same channel" in messages(found)
+        assert "searches rather than" in messages(found)
+
+    def test_a_crossing_that_could_not_be_decided_is_not_a_refutation(self, tmp_path):
+        """A channel that could not be reached has not said no. `EM3C-EVIDENCE-0002` cost an
+        external run to the two being the same answer."""
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        two_machines(recorder)
+        recorder.record(a_step(
+            name="a crossing nobody could decide", role="client", argv=["(a crossing)"],
+            started_at=3.0, ended_at=3.1, exit_code=0, run_id=A_RUN,
+            crossing=crossing(HERE, decidable=False, holds=False,
+                              why="the gateway could not be asked")))
+        found = evidence.check_file(path)
+        assert "could not be decided" in messages(found)
+        assert not [f for f in found if f.kind == evidence.FAIL
+                    and "could not be decided" in f.detail]
+
+    def test_a_crossing_about_another_run_is_refused(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        two_machines(recorder)
+        recorder.record(a_step(
+            name="a crossing about somebody else's run", role="client", argv=["(a crossing)"],
+            started_at=3.0, ended_at=3.1, exit_code=0, run_id=A_RUN,
+            crossing=crossing(HERE, run_id="q" * 32)))
+        found = evidence.check_file(path)
+        assert "says nothing about this one" in messages(found)
+
+    def test_a_payload_digest_that_is_not_of_the_payload_is_refused(self, tmp_path):
+        path = tmp_path / "e.jsonl"
+        recorder = evidence.Recorder(path, role="client", announce=False)
+        two_machines(recorder)
+        recorder.record(a_step(
+            name="a crossing whose digest is of something else", role="client",
+            argv=["(a crossing)"], started_at=3.0, ended_at=3.1, exit_code=0, run_id=A_RUN,
+            crossing=crossing(HERE, payload_sha256="e" * 64)))
+        found = evidence.check_file(path)
+        assert "not the digest of the payload it records" in messages(found)
 
     def test_a_label_that_disagrees_with_the_record_fails(self, tmp_path):
-        """The founder's concern, and the one that matters: a sentinel calling itself the
-gateway's while sitting in what the client sent is claiming its own provenance."""
+        """The founder's concern, and the one that matters: a value calling itself the far
+        machine's while sitting in what the client sent is claiming its own provenance."""
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client", announce=False)
         two_machines(recorder)
         recorder.record(a_step(
-            name="a value the client sent, calling itself the gateway's", role="gateway",
-            argv=["(sentinel)"], started_at=3.0, ended_at=3.1, exit_code=0,
-            # The label says gateway and the value IS in what the client sent, so the client
-            # could have produced it. The request in the record is what makes that visible.
-            sentinel=crossing("gateway", CLIENT_VALUE, in_request=True)))
+            name="a value the client sent, calling itself the far machine's", role="gateway",
+            argv=["(a crossing)"], started_at=3.0, ended_at=3.1, exit_code=0, run_id=A_RUN,
+            # The label says the far machine and the value IS in the payload the client sent, so
+            # the client could have produced it. The payload in the record makes that visible.
+            crossing=crossing(THERE, CLIENT_VALUE)))
         found = evidence.check_file(path)
-        assert "The label is not evidence" in messages(found)
+        assert "What is in the record decides" in messages(found)
 
     def test_a_client_value_that_was_never_sent_fails(self, tmp_path):
         """The mirror. A value the client did not send is not the client's."""
@@ -838,41 +894,40 @@ gateway's while sitting in what the client sent is claiming its own provenance."
         two_machines(recorder)
         recorder.record(a_step(
             name="a value the client never sent, calling itself the client's", role="client",
-            argv=["(sentinel)"], started_at=3.0, ended_at=3.1, exit_code=0,
-            # The label says client and the value was never in what the client sent.
-            sentinel=crossing("client", GATEWAY_VALUE, in_request=False)))
+            argv=["(a crossing)"], started_at=3.0, ended_at=3.1, exit_code=0, run_id=A_RUN,
+            crossing=crossing(HERE, GATEWAY_VALUE)))
         found = evidence.check_file(path)
-        assert "The label is not evidence" in messages(found)
+        assert "What is in the record decides" in messages(found)
 
-    def test_a_sentinel_with_no_provenance_fields_is_refused_when_read(self, tmp_path):
+    def test_a_crossing_missing_what_makes_it_one_is_refused_when_read(self, tmp_path):
         """Stronger than a finding: the shape requires the fields, so such a record cannot even
         be read. A recorder cannot produce one, so this is written as text."""
         path = tmp_path / "e.jsonl"
-        bare = {"generated_on": "client", "carried_over": "agentnode-job",
-                "confirmed_over": "ssh", "value_sha256": "6" * 64, "matched": True}
+        bare = {"what": "a value", "made_on": HERE, "value": "abc", "holds": True}
         document = {"schema": evidence.SCHEMA, "name": "x", "role": "client", "argv": [],
                     "started_at": 1.0, "ended_at": 2.0, "exit_code": 0,
                     "expected_exit": None, "expected_refusal": "", "expect_output": False,
                     "expect_cleanup": False, "expect_container_gone": False,
                     "expect_timeout": False,
-                    "sentinel": bare}
+                    "crossing": bare}
         path.write_text(json.dumps(document) + "\n", encoding="utf-8")
         with pytest.raises(evidence.EvidenceError) as caught:
             evidence.load(path)
-        assert "sentinel has no" in str(caught.value)
+        assert "crossing has no" in str(caught.value)
 
-    def test_a_value_not_seen_on_the_other_channel_fails(self, tmp_path):
+    def test_a_value_the_other_side_did_not_carry_fails(self, tmp_path):
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client", announce=False)
         two_machines(recorder)
         recorder.record(a_step(
-            name="a value only one channel saw", role="client", argv=["(sentinel)"],
-            started_at=3.0, ended_at=3.1, exit_code=0,
-            sentinel=crossing("client", in_other_channel=False)))
+            name="a value the far side's record did not carry", role="client",
+            argv=["(a crossing)"], started_at=3.0, ended_at=3.1, exit_code=0,
+            crossing=crossing(HERE, holds=False,
+                              why="the signed record of this run does not carry it")))
         found = evidence.check_file(path)
-        assert "not found over ssh" in messages(found)
+        assert "did not cross" in messages(found)
 
-    def test_a_sentinel_that_did_not_come_back_fails(self, tmp_path):
+    def test_a_crossing_that_could_not_be_asked_about_is_not_a_refutation(self, tmp_path):
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client", announce=False)
         recorder.record(a_step(
@@ -884,11 +939,14 @@ gateway's while sitting in what the client sent is claiming its own provenance."
             started_at=1.2, ended_at=1.3, exit_code=0,
             machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
         recorder.record(a_step(
-            name="a sentinel that never arrived", role="client", argv=["(sentinel)"],
+            name="a crossing nobody could decide", role="client", argv=["(a crossing)"],
             started_at=1.4, ended_at=1.5, exit_code=0,
-            sentinel=crossing("client", in_response=False, matched=False)))
+            crossing=crossing(HERE, decidable=False, holds=False,
+                              why="the gateway could not be asked")))
         found = evidence.check_file(path)
-        assert "never came back" in messages(found)
+        assert "could not be decided" in messages(found)
+        assert not [f for f in found
+                    if f.kind == evidence.FAIL and "could not be decided" in f.detail]
 
     def test_one_direction_only_is_an_evidence_error(self, tmp_path):
         path = tmp_path / "e.jsonl"
@@ -902,13 +960,13 @@ gateway's while sitting in what the client sent is claiming its own provenance."
             started_at=1.2, ended_at=1.3, exit_code=0,
             machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
         recorder.record(a_step(
-            name="only one direction", role="client", argv=["(sentinel)"],
+            name="only one direction", role="client", argv=["(a crossing)"],
             started_at=1.4, ended_at=1.5, exit_code=0,
-            sentinel=crossing("client", confirmed_over="ssh", matched=True)))
+            crossing=crossing(HERE)))
         found = evidence.check_file(path)
         assert "both directions" in messages(found)
 
-    def test_the_same_sentinel_value_both_ways_fails(self, tmp_path):
+    def test_the_same_value_both_ways_fails(self, tmp_path):
         path = tmp_path / "e.jsonl"
         recorder = evidence.Recorder(path, role="client", announce=False)
         recorder.record(a_step(
@@ -919,19 +977,18 @@ gateway's while sitting in what the client sent is claiming its own provenance."
             name="gateway identity", role="gateway", argv=["(identity)"],
             started_at=1.2, ended_at=1.3, exit_code=0,
             machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
-        for made, checked in (("client", "gateway"), ("gateway", "client")):
+        for made in (HERE, THERE):
             recorder.record(a_step(
-                name=f"sentinel {made}", role=made, argv=["(sentinel)"],
+                name=f"a crossing made on {made}", role="client", argv=["(a crossing)"],
                 started_at=1.4, ended_at=1.5, exit_code=0,
-                # The same value both ways. The gateway's copy records a request that does NOT
-                # contain it, so it still derives as the gateway's and the rule about two
-                # values being one is the rule that fires.
-                sentinel=crossing(made, CLIENT_VALUE,
-                                  **({} if made == "client"
-                                     else {"request_text": "print('nothing of the sort')",
-                                           "in_request": False}))))
+                # The same value both ways. The far machine's copy records a payload that does
+                # NOT contain it, so it still derives as the far machine's and the rule about
+                # two values being one is the rule that fires.
+                crossing=crossing(made, CLIENT_VALUE,
+                                  **({} if made == HERE
+                                     else {"payload_text": "print('nothing of the sort')"}))))
         found = evidence.check_file(path)
-        assert "generated independently" in messages(found)
+        assert "made independently" in messages(found)
 
     def test_the_same_operating_system_on_both_is_allowed(self, tmp_path):
         """Two distinct hosts may run the same operating system. Failing on that would be a rule
@@ -947,11 +1004,11 @@ gateway's while sitting in what the client sent is claiming its own provenance."
             name="gateway identity", role="gateway", argv=["(identity)"],
             started_at=1.2, ended_at=1.3, exit_code=0,
             machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
-        for made, checked in (("client", "gateway"), ("gateway", "client")):
+        for made in (HERE, THERE):
             recorder.record(a_step(
-                name=f"sentinel {made}", role=made, argv=["(sentinel)"],
+                name=f"a crossing made on {made}", role="client", argv=["(a crossing)"],
                 started_at=1.4, ended_at=1.5, exit_code=0,
-                sentinel=crossing(made)))
+                crossing=crossing(made)))
         bindings(recorder)
         found = evidence.check_file(path)
         assert "operating system" not in messages(found), messages(found)
@@ -1019,10 +1076,12 @@ class TestSecretsNeverReachTheRecord:
         {"container_query": {"ran": True, "exit_code": 1, "stdout": "",
                              "stderr": "docker: error response: {s}", "error_class": "",
                              "parsed": True, "command": "docker ps --filter {s}"}},
-        {"sentinel": {"generated_on": "client", "carried_over": "agentnode-job",
-                      "confirmed_over": "ssh", "value_sha256": "{s}", "in_request": True,
-                      "request_text": "sent {s}",
-                      "in_response": True, "in_other_channel": True, "matched": True}},
+        {"crossing": {"what": "a value made here", "made_on": "the client", "value": "{s}",
+                      "run_id": "r" * 32, "payload_text": "sent {s}",
+                      "payload_sha256": "b" * 64,
+                      "confirmed_by": "the gateway's signed answer",
+                      "asked": "GET /v1/jobs/{s}", "record_sha256": "d" * 64,
+                      "holds": True, "decidable": True, "why": "it carried {s}"}},
     ])
     def test_a_secret_inside_a_nested_structure_is_removed(self, tmp_path, where):
         filled = json.loads(json.dumps(where).replace("{s}", self.SECRET))
@@ -1328,9 +1387,9 @@ class TestAnIdentityBelongsToTheChannelThatCarriedIt:
                                    started_at=1.0 + index, ended_at=1.1 + index, exit_code=0,
                                    machine=machine))
         recorder.record(a_step(name="a crossing", role="client", argv=["x"], started_at=3.0,
-                               ended_at=3.1, exit_code=0, sentinel=crossing("client")))
+                               ended_at=3.1, exit_code=0, crossing=crossing(HERE)))
         recorder.record(a_step(name="the other way", role="gateway", argv=["x"], started_at=3.2,
-                               ended_at=3.3, exit_code=0, sentinel=crossing("gateway")))
+                               ended_at=3.3, exit_code=0, crossing=crossing(THERE)))
         return evidence.verify_two_machines(evidence.load(path))
 
     CLIENT = ("client", identity("client", "c" * 64, "cf" * 32, "Windows"))
@@ -1375,11 +1434,11 @@ class TestAnIdentityBelongsToTheChannelThatCarriedIt:
         assert found
 
 
-class TestASentinelsRequestIsRead:
-    """`EM3C-EVIDENCE-0009`: `in_request` decided which way a value travelled and was a boolean
-    the recorder asserted. What the client sent is in the record, and the claim is read from it."""
+class TestACrossingsPayloadIsRead:
+    """`EM3C-EVIDENCE-0009`: which way a value travelled was decided by a boolean the recorder
+    asserted. The payload is in the record, and the direction is read from it."""
 
-    PAYLOAD = "print('E3-FROM-CLIENT {v}')"
+    PAYLOAD = "print('SENT-FROM-HERE {v}')"
 
     def _pair(self, tmp_path, first, second):
         path = tmp_path / "e.jsonl"
@@ -1390,58 +1449,52 @@ class TestASentinelsRequestIsRead:
         recorder.record(a_step(name="gateway identity", role="gateway", argv=["x"],
                                started_at=1.2, ended_at=1.3, exit_code=0,
                                machine=identity("gateway", "g" * 64, "gf" * 32, "Linux")))
-        for index, sentinel in enumerate((first, second)):
-            recorder.record(a_step(name=f"sentinel {index + 1}", role="client", argv=["x"],
+        for index, one in enumerate((first, second)):
+            recorder.record(a_step(name=f"crossing {index + 1}", role="client", argv=["x"],
                                    started_at=2.0 + index, ended_at=2.1 + index, exit_code=0,
-                                   sentinel=sentinel))
+                                   crossing=one))
         return evidence.verify_two_machines(evidence.load(path))
 
-    def _sentinel(self, made_on, value, payload):
-        import hashlib
-
-        return {"generated_on": made_on, "carried_over": "agentnode-job",
-                "confirmed_over": "ssh",
-                "value_sha256": hashlib.sha256(value.encode()).hexdigest(),
-                "request_text": payload,
-                "in_request": made_on == "client", "in_response": True,
-                "in_other_channel": True, "matched": True}
+    def _crossing(self, made_on, value, payload):
+        return crossing(made_on, value=value, payload_text=payload)
 
     def test_a_real_crossing_is_accepted(self, tmp_path):
-        """The control. The client's value is in the payload; the gateway's is not."""
+        """The control. The value made here is in the payload; the far machine's is not."""
         mine, theirs = "a1b2c3d4e5f60718", "99887766554433221100"
         assert self._pair(tmp_path,
-                          self._sentinel("client", mine, self.PAYLOAD.format(v=mine)),
-                          self._sentinel("gateway", theirs, self.PAYLOAD.format(v=mine))) == []
+                          self._crossing(HERE, mine, self.PAYLOAD.format(v=mine)),
+                          self._crossing(THERE, theirs, self.PAYLOAD.format(v=mine))) == []
 
-    def test_a_client_value_that_is_not_in_what_was_sent_fails(self, tmp_path):
+    def test_a_value_said_to_be_ours_that_is_not_in_what_was_sent_fails(self, tmp_path):
         mine, theirs = "a1b2c3d4e5f60718", "99887766554433221100"
         found = self._pair(tmp_path,
-                           self._sentinel("client", mine, self.PAYLOAD.format(v="something-else")),
-                           self._sentinel("gateway", theirs, self.PAYLOAD.format(v=mine)))
-        assert "the recorded request says the opposite" in messages(found)
+                           self._crossing(HERE, mine, self.PAYLOAD.format(v="something-else")),
+                           self._crossing(THERE, theirs, self.PAYLOAD.format(v=mine)))
+        assert "What is in the record decides" in messages(found)
 
-    def test_a_gateway_value_that_was_in_what_was_sent_fails(self, tmp_path):
-        """The client could have produced it, so it establishes nothing about the gateway."""
+    def test_a_far_value_that_was_in_what_was_sent_fails(self, tmp_path):
+        """The client could have produced it, so it establishes nothing about the far side."""
         mine, theirs = "a1b2c3d4e5f60718", "99887766554433221100"
         found = self._pair(tmp_path,
-                           self._sentinel("client", mine, self.PAYLOAD.format(v=mine)),
-                           self._sentinel("gateway", theirs, self.PAYLOAD.format(v=theirs)))
-        assert "the recorded request says the opposite" in messages(found)
+                           self._crossing(HERE, mine, self.PAYLOAD.format(v=mine)),
+                           self._crossing(THERE, theirs, self.PAYLOAD.format(v=theirs)))
+        assert "What is in the record decides" in messages(found)
 
-    def test_a_sentinel_with_no_record_of_the_request_cannot_be_read(self, tmp_path):
+    def test_a_crossing_with_no_value_cannot_be_read(self, tmp_path):
         mine, theirs = "a1b2c3d4e5f60718", "99887766554433221100"
         found = self._pair(tmp_path,
-                           self._sentinel("client", mine, ""),
-                           self._sentinel("gateway", theirs, self.PAYLOAD.format(v=mine)))
-        assert "records nothing of what the client sent" in messages(found)
+                           self._crossing(HERE, "", self.PAYLOAD.format(v=mine)),
+                           self._crossing(THERE, theirs, self.PAYLOAD.format(v=mine)))
+        assert "carries no value" in messages(found)
 
-    def test_a_sentinel_whose_value_is_not_a_digest_cannot_be_read(self, tmp_path):
+    def test_a_crossing_that_records_no_question_cannot_be_read(self, tmp_path):
+        """What confirmed it is the question that was asked. A crossing that does not say what
+        was asked cannot be held to whether the question could have been answered."""
         mine, theirs = "a1b2c3d4e5f60718", "99887766554433221100"
-        broken = {**self._sentinel("client", mine, self.PAYLOAD.format(v=mine)),
-                  "value_sha256": "not-a-digest"}
-        found = self._pair(tmp_path, broken,
-                           self._sentinel("gateway", theirs, self.PAYLOAD.format(v=mine)))
-        assert "is not a digest" in messages(found)
+        blank = {**self._crossing(HERE, mine, self.PAYLOAD.format(v=mine)), "asked": ""}
+        found = self._pair(tmp_path, blank,
+                           self._crossing(THERE, theirs, self.PAYLOAD.format(v=mine)))
+        assert "does not record what was asked" in messages(found)
 
 
 class TestTheOutsideOfAnAnswerIsTiedToItsInside:

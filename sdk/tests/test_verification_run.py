@@ -29,7 +29,7 @@ from agentnode_sdk.gateway.connections import ConnectionStore, SavedGateway
 pytest_plugins = ("tests.real_answers",)
 from agentnode_sdk.tools import evidence
 from agentnode_sdk.verification import config
-from agentnode_sdk.tools import external_run as driver
+from agentnode_sdk.verification import run as driver
 
 
 CLIENT_HOST = "a-client-machine"

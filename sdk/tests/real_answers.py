@@ -40,8 +40,16 @@ class Backend(StandInBackend):
     def __init__(self):
         super().__init__()
         self.stop_next_at_the_limit = False
+        #: What this sandbox prints, when something wants it to print something in particular.
+        #: A crossing is established from what the GATEWAY'S SIGNED RECORD carries, so a test
+        #: about one needs the record to carry what the payload would have printed. Left unset,
+        #: this behaves as it always did.
+        self.answers = None
 
     def run_process(self, spec, input_text=None, timeout=120.0):
+        if self.answers is not None and not self.stop_next_at_the_limit:
+            self.specs.append(spec)
+            return self.answers(spec, input_text)
         result = super().run_process(spec, input_text=input_text, timeout=timeout)
         if self.stop_next_at_the_limit:
             self.stop_next_at_the_limit = False
