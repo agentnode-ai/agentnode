@@ -511,7 +511,12 @@ class TestARealContainer:
                 assert settled is True, record
                 assert record["state"] == "cancelled"
                 assert record["cleanup_verified"] is True
-                answered, names = service._containers_named(record["container_name"])
+                # The container's name is the gateway's own business and is not in what a
+                # client may see, so it is asked of the gateway rather than recomputed here --
+                # a formula copied into a test is a second definition waiting to disagree.
+                named = service.runs["real-cancel"].container_name
+                assert named, "the gateway never gave this run a container name"
+                answered, names = service._containers_named(named)
                 assert answered and names == [], names
             finally:
                 server.shutdown()
