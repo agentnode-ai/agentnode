@@ -139,7 +139,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -rs -p no:randomly tests/test_cancel_consistency.py 2>&1 | tee cancel.txt
-          grep -qE "^37 passed, 1 skipped" cancel.txt || {
+          grep -qE "^39 passed, 1 skipped" cancel.txt || {
             echo "the cancellation tests did not come out as this lane expects"; exit 1; }
           grep -q "needs a container runtime" cancel.txt || {
             echo "the skipped case is not the one this lane expects"; tail -5 cancel.txt; exit 1; }

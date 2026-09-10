@@ -116,7 +116,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -rs -p no:randomly tests/test_cancel_consistency.py 2>&1 | tee em3c-cancel.txt
-          grep -qE "^38 passed" em3c-cancel.txt || {
+          grep -qE "^40 passed" em3c-cancel.txt || {
             echo "the cancellation tests did not come out as this lane expects"; exit 1; }
 
       # What a channel may be asked, what an answer can be made by, and what a crossing is tied
