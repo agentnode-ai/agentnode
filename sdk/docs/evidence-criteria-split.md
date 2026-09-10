@@ -77,26 +77,26 @@ absent gateway records, and any value reconstructed outside the record.
 
 ## What the post-run half is not
 
-It is not weakened, not waived, and not satisfiable by anything at the pre-run stage. A pre-run
-PASS is about machinery. The facts the original V5 and V6 asked for remain mandatory, in full, and
-are decided only against the record of the real run. Missing, contradictory or unobserved facts go
-red there.
+The decision recorded that it is not weakened, not waived, and not satisfiable by anything at the
+pre-run stage: a pre-run pass is about machinery, the facts the original V5 and V6 asked for remain
+mandatory in full, and they are decided only against the record of the real run, where missing,
+contradictory or unobserved facts are red.
 
-## What a pre-run pass may be called
+## What the decision said a pre-run pass is
 
 One thing: **"PASS — pre-run evidence machinery readiness."**
 
-It may not be called a V5 or V6 pass, an external-evidence pass, a finding that two machines exist,
-a finding that any policy was in force, or authorisation of anything. A verdict reading as though
-two machines had been established, when no machine was involved, would be worse than the
-circularity it resolved.
+The decision recorded that such a verdict is not a V5 or V6 pass, not an external-evidence pass,
+not a finding that two machines exist, not a finding that any policy was in force, and not
+authorisation of anything. Its reasoning was that a verdict reading as though two machines had been
+established, when no machine was involved, would be worse than the circularity it resolved.
 
-## Review and authorisation are different things
+## Review and authorisation were held to be different things
 
-No verdict here authorises the external run, a merge, a release or a deployment. The review
-establishes what is true of the code; the run is authorised by the founder, separately and
-explicitly. The split exists so that a review can say something true at the moment it is asked,
-not so that a review can grant something it was never able to grant.
+The decision recorded that no verdict at either stage authorises the external run, a merge, a
+release or a deployment: a review establishes what is true of the code, and the run is authorised
+separately and explicitly by the founder. The split exists so that a review can say something true
+at the moment it is asked, rather than granting something it was never able to grant.
 
 ## Who adopted it, and when
 
@@ -107,14 +107,15 @@ the approved commit and identify it by SHA-256; prepare both machines demonstrab
 exactly one run over the full A–J matrix; have the unchanged real record judged under the post-run
 profile.
 
-## How a later verdict connects to the record
+## How the decision tied a later verdict to the record
 
-The post-run review is about one file: the evidence the driver wrote during that run. Its verdict
-must name that file by digest, so that the record it judged and the record that exists are the same
-record. A post-run verdict that cannot be tied to a specific file establishes nothing, and a record
-altered after the run is not the record of the run.
+The post-run review is about one file: the evidence the driver wrote during that run. The decision
+recorded that its verdict names that file by digest, so that the record judged and the record that
+exists are the same record -- its reasoning being that a post-run verdict which cannot be tied to a
+specific file establishes nothing, and that a record altered after the run is not the record of the
+run.
 
-## What would make this dishonest
+## What the decision named as ways of being dishonest about it
 
 Applying it backwards. Describing either criterion as unchanged. Using it to turn the earlier BLOCK
 into a factual pass. Omitting the post-run review. Deriving what was expected from what was
