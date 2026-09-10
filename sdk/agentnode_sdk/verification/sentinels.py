@@ -28,6 +28,9 @@ import hashlib
 import secrets
 from dataclasses import asdict, dataclass
 
+from agentnode_sdk.gateway import protocol as wire
+from agentnode_sdk.verification import channels
+
 
 class SentinelError(Exception):
     """This crossing cannot be decided, which is not the same as deciding it did not happen."""
@@ -72,21 +75,48 @@ def _digest(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def from_the(channel, expected) -> None:
+    """Refuse anything that is not the channel this half of a crossing has to come from.
+
+    `EM3C-VERIFY-0002`: these functions took whatever was passed and read the channel's name off
+    the answer, so attribution was data. What a half of a crossing is confirmed by is now the type
+    of the thing that answered -- an object that merely behaves like a gateway is not one, and
+    something that is one cannot be told to call itself otherwise, because `Channel.said` writes
+    its own class's name.
+    """
+    if not isinstance(channel, expected):
+        raise SentinelError(
+            "this half of a crossing has to be confirmed by " + expected.name + ", and what was "
+            "given is a " + type(channel).__name__ + ". A thing that answers like a channel is "
+            "not the channel: which one answered is what the crossing rests on")
+
+
+def named(*answers) -> str:
+    """How the channels that confirmed a crossing are written down.
+
+    Built from the answers, never from literals: each name comes off an `Answer`, which only a
+    channel can have made. The string is a rendering of what was established, not the record of it
+    -- what establishes it is `from_the` above, before anything is asked.
+    """
+    return " and ".join(dict.fromkeys(a.channel for a in answers))
+
+
 def _record_of(gateway, run_id: str, payload: bytes, what: str, made_on: str, value: str):
     """The signed record for this run, or a Crossing saying why there is none to read."""
     answer = gateway.record_of(run_id)
     common = dict(what=what, made_on=made_on, value=value, run_id=run_id,
                   payload_text=payload.decode("utf-8", "replace"),
-                  payload_sha256=_digest(payload), confirmed_by=answer.channel,
+                  payload_sha256=_digest(payload), confirmed_by=named(answer),
                   asked=answer.asked)
     if not answer.answered:
         return None, Crossing(record_sha256="", holds=False, decidable=False,
                               why="the gateway could not be asked: " + answer.trouble, **common)
     record = answer.value or {}
-    if str(record.get("run_id") or "") != run_id:
+    if str(record.get(wire.RUN_ID_FIELD) or "") != run_id:
         return None, Crossing(
             record_sha256=answer.digest(), holds=False, decidable=False,
-            why=("the signed record is about run " + str(record.get("run_id")) + ", not " + run_id
+            why=("the signed record is about run " + str(record.get(wire.RUN_ID_FIELD))
+                 + ", not " + run_id
                  + ". An answer about another run says nothing about this one"), **common)
     return (record, answer), Crossing(record_sha256=answer.digest(), holds=False, decidable=True,
                                       why="", **common)
@@ -98,6 +128,7 @@ def what_the_client_made(gateway, run_id: str, payload: bytes, value: str) -> Cr
     Read out of the gateway's own signed record of the run, which is where a sandbox job's output
     is. Nothing greps anything, and nothing asks a shell about a run.
     """
+    from_the(gateway, channels.TheGatewayItself)
     if value.encode("utf-8") not in payload:
         raise SentinelError(
             "this value is not in the payload it is said to have travelled in, so whatever finding "
@@ -107,7 +138,7 @@ def what_the_client_made(gateway, run_id: str, payload: bytes, value: str) -> Cr
     if got is None:
         return unfinished
     record, answer = got
-    where = str(record.get("stdout") or "")
+    where = str(record.get(wire.STDOUT_FIELD) or "")
     found = value in where
     return Crossing(
         **{k: v for k, v in unfinished.as_dict().items()
@@ -127,6 +158,8 @@ def what_the_far_machine_is(gateway, machine, run_id: str, payload: bytes) -> Cr
     that arrived on one cannot be credited to the other -- an `Answer` is made only by the channel
     that produced it, so the two are different objects with different names on them.
     """
+    from_the(gateway, channels.TheGatewayItself)
+    from_the(machine, channels.TheFarMachineItself)
     said = machine.identity()
     got, unfinished = _record_of(gateway, run_id, payload, "the far machine's own identity",
                                  "the far machine", str(said.value or ""))
@@ -142,11 +175,11 @@ def what_the_far_machine_is(gateway, machine, run_id: str, payload: bytes) -> Cr
     if not identity:
         return Crossing(**base, confirmed_by=said.channel, holds=False, decidable=False,
                         why="the far machine answered, and said nothing about what it is")
-    carried = str(record.get("stdout") or "")
+    carried = str(record.get(wire.STDOUT_FIELD) or "")
     found = identity in carried
     return Crossing(
         **base,
-        confirmed_by=answer.channel + " and " + said.channel,
+        confirmed_by=named(answer, said),
         holds=found, decidable=True,
         why=("what ran inside the sandbox printed the identity this machine gives over a separate "
              "channel, and the gateway's signed record of the run carries it" if found else

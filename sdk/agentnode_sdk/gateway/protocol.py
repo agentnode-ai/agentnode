@@ -232,6 +232,14 @@ OUTCOME_FIELDS = ("state", "exit_code", "termination_reason", "native_status", "
                   "cleanup_verified", "refusal", "stdout", "stderr", "policy_deltas",
                   "started_at", "finished_at")
 
+#: Which run an answer is about, and where what it ran printed. Named here because this is where
+#: the format is defined: anything that needs to reach into an answer for one of these asks for
+#: the name rather than spelling it, so a rename here breaks its callers instead of leaving them
+#: quietly reading a field that no longer exists.
+RUN_ID_FIELD = "run_id"
+STDOUT_FIELD = "stdout"
+assert STDOUT_FIELD in OUTCOME_FIELDS
+
 
 def outcome_digest(body: dict[str, Any]) -> str:
     """A digest over what an answer says happened.

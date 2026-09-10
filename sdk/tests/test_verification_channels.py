@@ -47,7 +47,7 @@ class AnAnsweringMachine:
         return True, 0, "", ""
 
 
-class AnAnsweringGateway:
+class AnAnsweringGateway(channels.TheGatewayItself):
     """A stand-in for the SERVER, not for the channel.
 
     It goes through the real `TheGatewayItself` to produce an `Answer`, because an `Answer` can
@@ -58,22 +58,27 @@ class AnAnsweringGateway:
     """
 
     def __init__(self, record=None, trouble=""):
-        self.inner = channels.TheGatewayItself(connection=None)
+        super().__init__(connection=None)
         self.record = record
         self.trouble = trouble
-        self.name = self.inner.name
 
     def record_of(self, run_id):
+        """The real channel's own `record_of`, with only the SERVER replaced.
+
+        `EM3C-VERIFY-0002`: a crossing now refuses anything that is not the channel it has to be
+        confirmed by, so this IS one -- it inherits everything the channel does and swaps out the
+        one call that would reach a machine. What is doubled is what answers, not what asks."""
+        from agentnode_sdk.gateway import client as gc
+
         def instead(connection, wanted, verify=True):
             if self.trouble:
                 raise RuntimeError(self.trouble)
             return self.record
-        from agentnode_sdk.gateway import client as gc
 
         was = gc.status_of
         gc.status_of = instead
         try:
-            return self.inner.record_of(run_id)
+            return channels.TheGatewayItself.record_of(self, run_id)
         finally:
             gc.status_of = was
 
@@ -171,6 +176,35 @@ class TestAChannelIsAskedWhatItKnows:
         assert hasattr(channels.TheGatewayItself, "record_of")
         assert not hasattr(channels.TheFarMachineItself, "record_of")
 
+    def test_a_crossing_refuses_a_channel_that_is_only_channel_shaped(self, a_record):
+        """`EM3C-VERIFY-0002`: which channel answered was read off the answer, so a thing that
+        merely behaved like a gateway was credited as one. It has to BE the channel."""
+        class ShapedLikeOne:
+            name = channels.TheGatewayItself.name
+
+            def record_of(self, run_id):
+                return channels.ThisMachine().said("nothing", {"run_id": run_id, "stdout": "x"})
+
+        with pytest.raises(sentinels.SentinelError) as caught:
+            sentinels.what_the_client_made(ShapedLikeOne(), "r" * 32, b"x", "x")
+        assert "is not the channel" in str(caught.value)
+
+    def test_and_the_other_direction_needs_both_of_the_right_ones(self, a_record):
+        gateway = AnAnsweringGateway(a_record("anything"))
+        with pytest.raises(sentinels.SentinelError):
+            sentinels.what_the_far_machine_is(gateway, channels.ThisMachine(),
+                                              gateway.record["run_id"], b"x")
+
+    def test_how_the_channels_are_written_down_comes_off_the_answers(self):
+        """Never a literal. `named` reads `.channel` off each `Answer`, and only a channel can
+        have made one."""
+        import inspect
+
+        source = inspect.getsource(sentinels.named)
+        assert "a.channel for a in answers" in source
+        one = channels.ThisMachine().identity()
+        assert sentinels.named(one, one) == channels.ThisMachine.name
+
     def test_the_gateway_channel_restates_no_wire_format(self, a_record):  # noqa: D401
         """It calls the production client and returns what came back. A field list here would be
         a second definition of the protocol -- so the fields are taken FROM a record production
@@ -185,6 +219,20 @@ class TestAChannelIsAskedWhatItKnows:
         for field in fields:
             for reaching in ('.get("%s"' % field, '["%s"]' % field, "['%s']" % field):
                 assert reaching not in source, (field, reaching)
+
+    def test_and_what_does_reach_in_asks_the_protocol_for_the_name(self, a_record):
+        """`EM3C-VERIFY-0002`: the crossing spelled `run_id` and `stdout` itself, which is a
+        second definition of the format. It asks the module that defines it."""
+        import inspect
+
+        from agentnode_sdk.gateway import protocol as wire
+
+        source = inspect.getsource(sentinels)
+        assert "wire.RUN_ID_FIELD" in source and "wire.STDOUT_FIELD" in source
+        for field in (wire.RUN_ID_FIELD, wire.STDOUT_FIELD):
+            assert '.get("%s"' % field not in source, field
+        record = a_record("something")
+        assert wire.RUN_ID_FIELD in record and wire.STDOUT_FIELD in record
 
 
 # ---------------------------------------------------------------- what a crossing is tied to
