@@ -118,6 +118,20 @@ def _cidfile(tmp_path, value=CID):
 # --------------------------------------------------------------------- R1: the payload must end
 
 class TestTimeoutEndsThePayload:
+    def test_a_killed_container_has_no_exit_code_only_a_reason(self, tmp_path, monkeypatch):
+        """`EM3C-E4-CLASSIFY-0001`, on its own and about nothing else.
+
+        The timeout used to be reported as exit code -1, which a Windows client read as
+        4294967295 and could not tell from an ordinary failure. Nothing exited here, so there
+        is no exit code to report -- there is a reason, and the runtime's own number beside it.
+        """
+        monkeypatch.setattr(cb, "_run_runtime", FakeRuntime(exists={"run-x", CID}))
+        outcome = cb.ContainerBackend(runtime="docker")._end_timed_out_run(
+            FakeProc(), "docker", "run-x", _cidfile(tmp_path), 5.0)
+        assert outcome[0] is None, f"a killed container reported an exit code: {outcome[0]!r}"
+        assert outcome.reason == "timeout"
+        assert outcome.native_status == -9 and outcome.platform == "linux-container"
+
     def test_the_timed_out_container_is_removed_by_its_exact_id(self, tmp_path, monkeypatch):
         fake = FakeRuntime(exists={"run-x", CID})
         monkeypatch.setattr(cb, "_run_runtime", fake)
