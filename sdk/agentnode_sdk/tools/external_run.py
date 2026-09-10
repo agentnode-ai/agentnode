@@ -156,10 +156,28 @@ def ssh_argv():
             "-o", "StrictHostKeyChecking=yes", SERVER]
 
 
+def path_like(argv) -> list[str]:
+    """Which of these arguments have the shape a shell rewrites. Says nothing about where.
+
+    Separate from `check_argv` on purpose: the SHAPE is the same everywhere and can be checked
+    anywhere, while whether anything acts on it depends on the machine. Keeping them apart means
+    the rule itself is testable on a Linux runner, where nothing would ever act on it.
+    """
+    return [a for a in argv if a.startswith("/") or a.startswith("\\\\")]
+
+
 def check_argv(argv=None) -> list[str]:
-    """Which arguments a shell environment could rewrite. Empty means none of them."""
-    return [a for a in (argv if argv is not None else ssh_argv())
-            if a.startswith("/") or a.startswith("\\\\")]
+    """Which arguments a shell environment could rewrite HERE. Empty means none of them.
+
+    Only a Windows client has a layer that rewrites them. On a POSIX client an absolute POSIX
+    path is simply what a path IS -- the key really does live at `/home/somebody/.ssh/something`
+    and nothing is going to change it on the way to ssh -- so reporting one there would be
+    reporting correctness, and a driver that refused to send anything on a Linux client is a
+    driver that does not run on Linux. The platform is asked, and said, rather than assumed.
+    """
+    if os.name != "nt":
+        return []
+    return path_like(argv if argv is not None else ssh_argv())
 
 
 def one_command(command: str) -> str:

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 
 import pytest
 
@@ -487,6 +488,14 @@ class TestRemoteWorkArrivesUnchanged:
         assert driver.check_argv() == [], driver.check_argv()
         assert not any(str(a).startswith("/") for a in driver.ssh_argv())
 
+    def test_the_shape_it_looks_for_is_the_shape_a_shell_rewrites(self):
+        """The rule itself, apart from any platform, so a Linux runner establishes it too."""
+        assert driver.path_like(["/c/Users/somebody/.ssh/a-key"]) ==             ["/c/Users/somebody/.ssh/a-key"]
+        assert driver.path_like([chr(92) * 2 + "server" + chr(92) + "share"])             == [chr(92) * 2 + "server" + chr(92) + "share"]
+        assert driver.path_like(["ssh", "-T", "-i", "C:/Users/somebody/a-key", "-o",
+                                 "BatchMode=yes", "someone@somewhere"]) == []
+
+    @pytest.mark.skipif(os.name != "nt", reason="only this platform rewrites such an argument")
     def test_a_path_like_argument_is_refused_rather_than_sent(self, world, monkeypatch):
         """The guarantee is mechanical, not a habit: if one ever appears, nothing is sent."""
         monkeypatch.setattr(driver, "KEY", "/c/Users/somebody/.ssh/a-key")
@@ -495,6 +504,15 @@ class TestRemoteWorkArrivesUnchanged:
         assert answer["ran"] is False
         assert answer["error_class"] == "ArgumentWouldBeRewritten"
         assert answer["parsed"] is False and answer["complete"] is False
+
+    @pytest.mark.skipif(os.name == "nt", reason="this platform does rewrite it")
+    def test_and_on_a_machine_that_rewrites_nothing_it_is_not_reported(self, world, monkeypatch):
+        """Not a hole: an absolute POSIX path on a POSIX client is the path. Reporting it would
+        stop every run on Linux from sending anything at all."""
+        monkeypatch.setattr(driver, "KEY", "/home/somebody/.ssh/a-key")
+        assert driver.path_like(driver.ssh_argv()) == ["/home/somebody/.ssh/a-key"]
+        assert driver.check_argv() == []
+        assert driver.server_query("ls " + self.A_PATH)["ran"] is True
 
     def test_the_path_that_is_sent_is_the_path_that_was_asked_for(self, world):
         """What crosses is stdin, and stdin is what this reads back."""

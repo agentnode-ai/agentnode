@@ -94,9 +94,36 @@ jobs:
       - name: The external-run driver, over a described pair of machines
         run: |
           set -o pipefail
-          python -m pytest -q -p no:randomly tests/test_external_run.py 2>&1 | tee em3c-driver.txt
-          grep -qE "^39 passed" em3c-driver.txt || {
-            echo "the external-run driver tests did not all pass"; exit 1; }
+          python -m pytest -q -rs -p no:randomly tests/test_external_run.py 2>&1 | tee em3c-driver.txt
+          grep -qE "^33 passed, 1 skipped" em3c-driver.txt || {
+            echo "the external-run driver tests did not come out as expected"; exit 1; }
+          # The one skip is the Windows-only case, named rather than tolerated. The opposite skip
+          # belongs to the Windows lane; between the two every case runs somewhere.
+          grep -q "only this platform rewrites such an argument" em3c-driver.txt || {
+            echo "the skipped case is not the one this lane expects"; tail -5 em3c-driver.txt
+            exit 1; }
+
+      # How that driver is told where it is happening, and the whole start it does before it
+      # reaches a network. EM3C-E5-CLASSIFY-0001 happened between two processes on Windows, so
+      # the parts of these that can only fail there are skipped here and required on the Windows
+      # lane. What Linux does establish is everything about the configuration itself, and the
+      # skips are counted rather than tolerated: a collection loss would otherwise read as a pass.
+      - name: How a run is told where it is happening
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_external_config.py 2>&1 | tee em3c-config.txt
+          grep -qE "^54 passed" em3c-config.txt || {
+            echo "the configuration tests did not all pass"; exit 1; }
+          python -m pytest -q -rs -p no:randomly tests/test_start_rehearsal.py tests/test_start_boundary.py 2>&1 | tee em3c-start.txt
+          grep -qE "^37 passed, 4 skipped" em3c-start.txt || {
+            echo "the start tests did not come out as this lane expects on Linux"; exit 1; }
+          # All four skips are the same one thing: this machine has no layer that rewrites a
+          # POSIX path, so it cannot establish that the boundary holds against one. The Windows
+          # lane runs exactly those four and is required.
+          test "$(grep -c "the conversion is a Windows shell.s doing" em3c-start.txt)" = "3" || {
+            echo "the skipped cases are not the three this lane expects"; exit 1; }
+          grep -q "only Windows has the other kind of path" em3c-start.txt || {
+            echo "the fourth skipped case is not the one this lane expects"; exit 1; }
 
       - name: The vertical flow, for real
         env:
@@ -182,3 +209,6 @@ jobs:
           path: |
             sdk/em3c-admission.txt
             sdk/em3c-vertical.txt
+            sdk/em3c-driver.txt
+            sdk/em3c-config.txt
+            sdk/em3c-start.txt
