@@ -1901,6 +1901,18 @@ class TestTheOperatorIsToldWhatTheRecordKeeps:
         for overclaim in ("all secrets are removed", "no credential", "guarantee"):
             assert overclaim not in text
 
+    def test_the_notice_tells_its_reader_nothing_to_do(self, tmp_path):
+        """`EM3C-E5-CLASSIFY-0001`, F-UNTRUSTED-OPERATIVE-INSTRUCTION. The run captures its own
+        output, so this notice lands inside the evidence. Anything imperative in it becomes an
+        instruction sitting in untrusted material, which a reviewer has to stop and report."""
+        seen = []
+        evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=seen.append)
+        text = seen[0].lower()
+        for directive in ("treat the", "you should", "you must", "make sure", "do not ",
+                          "please ", "note that", "ensure ", "consider "):
+            assert directive not in text, directive
+        assert "carries the same exposure" in text
+
     def test_suppressing_the_notice_is_recorded_as_suppressed(self, tmp_path):
         """A run that did not show it says so, rather than looking like one that did."""
         recorder = evidence.Recorder(tmp_path / "e.jsonl", role="client", announce=False)
