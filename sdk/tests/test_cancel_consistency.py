@@ -485,6 +485,34 @@ class TestWhatTheCommandLineShows:
         assert "has not stopped yet" in out
         assert "It stopped" not in out
 
+    def test_an_unverified_answer_is_remembered_by_nothing(self, waiting_gateway):
+        """`EM3C-CANCEL-0004`: an unverified body went through the same memory as a verified one,
+        so an unauthenticated state could be remembered and a later authentic answer refused on
+        the strength of it."""
+        base, state, service, backend = waiting_gateway
+        conn = a_running_job(base, state, service, backend)
+        before = dict(gc._FURTHEST)
+        gc.status_of(conn, "run-under-test", verify=False)
+        assert dict(gc._FURTHEST) == before
+        backend.let_go.set()
+
+    def test_and_nothing_in_the_package_asks_for_one(self):
+        """It exists so a test can establish that a refusal about the transport or the gateway's
+        identity happens BEFORE anything is verified. No product path wants it."""
+        import pathlib
+
+        import agentnode_sdk
+
+        root = pathlib.Path(agentnode_sdk.__file__).parent
+        # Where it is DECLARED is the one place it may be named. Anywhere else in the package
+        # would be a caller, and there are none.
+        asking = [p.name for p in root.rglob("*.py")
+                  if "verify=False" in p.read_text(encoding="utf-8")
+                  and p.name != "client.py"]
+        assert asking == [], asking
+        declared = (root / "gateway" / "client.py").read_text(encoding="utf-8")
+        assert declared.count("verify=False") == 1, "it is named more than once where it lives"
+
     def test_nothing_unverified_reaches_it(self):
         """A source check, because the defect was a missing call rather than a wrong value."""
         import inspect

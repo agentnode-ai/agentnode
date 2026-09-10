@@ -396,7 +396,18 @@ def status_of(connection: GatewayConnection, run_id: str, verify: bool = True) -
         raise GatewayClientError(f"the gateway does not know a run {run_id}")
     if status != 200:
         raise GatewayClientError(body.get("error", f"the gateway answered {status}"))
-    return not_backwards(connection, verify_answer(connection, body) if verify else body)
+    # Only a VERIFIED answer is remembered, and only a verified answer is passed through the
+    # thing that decides what a client may show. `EM3C-CANCEL-0004`: an unverified body used to
+    # go through `not_backwards` too, so an unauthenticated state could enter the memory and a
+    # later authentic answer be refused on the strength of it.
+    #
+    # `verify=False` exists so a test can establish that a refusal about the TRANSPORT or the
+    # gateway's IDENTITY happens before anything is verified -- those refusals are the subject,
+    # and verifying first would hide them. Nothing in this package asks for it, and a test says
+    # so.
+    if not verify:
+        return body
+    return not_backwards(connection, verify_answer(connection, body))
 
 
 def cancel(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
