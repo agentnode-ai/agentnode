@@ -353,6 +353,36 @@ def rotate(connection: GatewayConnection) -> GatewayConnection:
     )
 
 
+#: The furthest along each run has been seen to be, by gateway and by run.
+#:
+#: `EM3C-E6-RECORD-0001`: an answer that moves a run backwards is late, out of order, or about
+#: something else. Nothing is ever DISPLAYED from here -- this is not a store of states to show,
+#: which is the thing that must never happen; it is the memory that makes a regression
+#: recognisable, so that one can be refused instead of shown.
+_FURTHEST: dict = {}
+
+
+def not_backwards(connection: GatewayConnection, answer: dict[str, Any]) -> dict[str, Any]:
+    """The answer, or a refusal because it would move this run backwards."""
+    from agentnode_sdk.gateway.protocol import may_move, stage_of
+
+    run_id = str(answer.get("run_id") or "")
+    state = str(answer.get("state") or "")
+    if not run_id or not state:
+        return answer
+    key = (str(connection.gateway_id), run_id)
+    before = _FURTHEST.get(key)
+    if before is not None and not may_move(before, state):
+        raise GatewayClientError(
+            f"the gateway answered {state!r} for a run this client has already seen as {before!r}."
+            " An answer that moves a run backwards is late, out of order, or about something else,"
+            " and it is refused rather than shown: a reader cannot tell which of two disagreeing"
+            " answers is the one that is now")
+    if before is None or stage_of(state) >= stage_of(before):
+        _FURTHEST[key] = state
+    return answer
+
+
 def status_of(connection: GatewayConnection, run_id: str, verify: bool = True) -> dict[str, Any]:
     """Idempotent: asking twice gives the same answer, and asking is free."""
     status, body = _get(f"{connection.base_url}/v1/jobs/{run_id}", token=connection.token)
@@ -366,7 +396,7 @@ def status_of(connection: GatewayConnection, run_id: str, verify: bool = True) -
         raise GatewayClientError(f"the gateway does not know a run {run_id}")
     if status != 200:
         raise GatewayClientError(body.get("error", f"the gateway answered {status}"))
-    return verify_answer(connection, body) if verify else body
+    return not_backwards(connection, verify_answer(connection, body) if verify else body)
 
 
 def cancel(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
@@ -380,9 +410,14 @@ def cancel(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
     }
     status, answer = _post(f"{connection.base_url}/v1/jobs/{run_id}/cancel", body)
     assert_same_gateway(connection, answer)
-    if status != 200:
+    # 200: it stopped. 202: it was asked to and had not stopped yet. Anything else is not an
+    # answer about this run.
+    if status not in (200, 202):
         raise GatewayClientError(answer.get("error", f"the gateway answered {status}"))
-    return answer
+    # `EM3C-E6-RECORD-0001`: this used to return the body unverified, while `status_of` right
+    # above it verified. What a person was shown after a cancellation was therefore the one state
+    # in this client that nothing had checked.
+    return not_backwards(connection, verify_answer(connection, answer)), status == 200
 
 
 def wait_for(connection: GatewayConnection, run_id: str, timeout: float = 120.0,

@@ -107,6 +107,27 @@ class RunRecord:
     finished_at: float | None = None
     cancel_requested: threading.Event = field(default_factory=threading.Event)
 
+    def move_to(self, new_state: str) -> None:
+        """Change this run's state, or refuse to.
+
+        `EM3C-E6-RECORD-0001`: a client was shown a run as running after the gateway had cancelled
+        it and removed its container. Nothing had ever stopped a state going backwards, because
+        every place that set one simply assigned the field. There is one place now, and it fails
+        closed: a move that is not forward raises rather than being ignored, so a caller that
+        would have written the wrong state finds out instead of the reader finding out later.
+        """
+        from agentnode_sdk.gateway.protocol import refuse_move
+
+        refuse_move(self.state, new_state)
+        self.state = new_state
+
+    @property
+    def outcome(self) -> str:
+        """What this run's end amounts to, or "" while it has none."""
+        from agentnode_sdk.gateway.protocol import outcome_of
+
+        return outcome_of(self.state, self.termination_reason)
+
     def public(self) -> dict[str, Any]:
         """What a client may see. No secrets, and no fields that only mean something inside."""
         return {
@@ -587,6 +608,8 @@ class GatewayService:
                 request_sha256=str(entry.get("request_sha256", "")),
                 owner_client_id=str(entry.get("owner_client_id", "")),
             )
+            # A record rebuilt from the ledger begins where it is; this is its first state
+            # rather than a move away from one, which is why it is set and not moved.
             record.state = "interrupted"
             record.refusal = (
                 "the gateway restarted while this job was running, so it did not finish. It has "
@@ -871,7 +894,7 @@ class GatewayService:
             granted, _props, req_shape, eff_shape, deltas = self.admit(
                 request, artifact, token)
         except Exception as exc:                              # noqa: BLE001 - refusal is an answer
-            record.state = "refused"
+            record.move_to("refused")
             record.refusal = str(exc)
             record.finished_at = time.time()
             # Recorded, so a refused job cannot be retried into an acceptance by resending it.
@@ -935,7 +958,7 @@ class GatewayService:
             try:
                 egress = start_egress_proxy(domains)
             except Exception as exc:                          # noqa: BLE001
-                record.state = "refused"
+                record.move_to("refused")
                 record.refusal = (
                     "the restricted network this job asked for could not be set up, so it was "
                     f"not started: {exc}"
@@ -944,7 +967,7 @@ class GatewayService:
                 return
 
         record.container_name = f"agentnode-em3c-{record.run_id[:16]}"
-        record.state = "running"
+        record.move_to("running")
         payload = base64.b64encode(artifact).decode("ascii")
         command = list(request.command) or [
             "python", "-c",
@@ -1024,7 +1047,7 @@ class GatewayService:
                     "what ran is not in question, what was left behind is."
                 )
             # A reader that sees a terminal state must be seeing a complete record.
-            record.state = terminal
+            record.move_to(terminal)
             self.ledger.note_state(record.run_id, terminal)
 
     def _containers_named(self, prefix: str) -> tuple[bool, list[str]]:
@@ -1126,15 +1149,45 @@ class GatewayService:
         if not answered:
             return None
         return not names
-    def cancel(self, run_id: str) -> RunRecord | None:
+    #: How long a cancellation waits for the run to actually stop before it answers. The worker
+    #: publishes the terminal state LAST, after cleanup -- so waiting for that state is waiting
+    #: for the abort to be established and the cleanup to be done, which is the only moment at
+    #: which a cancellation is true.
+    CANCEL_SETTLE_SECONDS = 45.0
+
+    #: How long removing a container waits for one to appear. A cancel can arrive between the
+    #: worker marking a run running and the runtime creating the container; removing nothing in
+    #: that instant would leave the payload to run to its wall clock. Named rather than buried,
+    #: because a test that has no runtime at all should not wait the length of one.
+    CONTAINER_APPEAR_SECONDS = 20.0
+
+    def cancel(self, run_id: str, settle: float | None = None):
+        """Stop a run and answer once it has stopped. Returns `(record, settled)`.
+
+        `EM3C-E6-RECORD-0001`: this used to remove the container and return immediately, while the
+        worker had not yet published the terminal state. The answer said `running` about a run
+        whose container had already been destroyed -- true of the record at that instant, and
+        false about the world. So it waits, and `settled` says whether the waiting was enough. An
+        unsettled cancellation is answered honestly rather than called terminal by default.
+
+        Idempotent from the first line: a run that has already ended is not ended again, nothing
+        is looked for, and the answer is the one the previous cancellation gave.
+        """
+        from agentnode_sdk.gateway.protocol import is_terminal
+
         record = self.runs.get(run_id)
         if record is None:
-            return None
+            return None, False
+        if is_terminal(record.state):
+            return record, True
+        deadline = time.monotonic() + (self.CANCEL_SETTLE_SECONDS if settle is None else settle)
         record.cancel_requested.set()
-        if record.state in ("finished", "refused", "cancelled"):
-            return record
         self._end_container(record)
-        return record
+        while time.monotonic() < deadline:
+            if is_terminal(record.state):
+                return record, True
+            time.sleep(0.05)
+        return record, is_terminal(record.state)
 
     def _end_container(self, record: RunRecord) -> None:
         """Remove this run's container by the identity the backend actually gave it.
@@ -1153,7 +1206,7 @@ class GatewayService:
         # returning would leave the payload to run to its wall clock, which is not what the client
         # asked for -- so wait briefly for it to appear. Bounded, because a container that never
         # appears is a run that never started, and the record already says so.
-        deadline = time.monotonic() + 20.0
+        deadline = time.monotonic() + self.CONTAINER_APPEAR_SECONDS
         names: list[str] = []
         while time.monotonic() < deadline:
             answered, names = self._containers_named(record.container_name)
@@ -1334,12 +1387,18 @@ class _Handler(BaseHTTPRequestHandler):
             # cannot stop a run and then be told it was not theirs.
             if self.service.owned_run(run_id, token) is None:
                 return self._send(404, self.service.stamp(refusal("no such run")))
-            record = self.service.cancel(run_id)
+            record, settled = self.service.cancel(run_id)
             if record is None:
                 return self._send(404, self.service.stamp(refusal("no such run")))
             # Signed with the token that authenticated, not with whatever a header claimed. The
             # two were different variables, and only one of them had been checked.
-            return self._send(200, self.service.sign_answer(
+            #
+            # 200 means it stopped; 202 means it was asked to and had not stopped by the time this
+            # gateway would wait no longer. The record is signed either way and says which state
+            # it is really in -- the status is what keeps an unsettled cancellation from reading
+            # like a finished one. No field of the answer changed, so this protocol version still
+            # says everything a client of it needs.
+            return self._send(200 if settled else 202, self.service.sign_answer(
                 self.service.stamp(record.public()), token))
 
         return self._send(404, refusal("no such endpoint"))

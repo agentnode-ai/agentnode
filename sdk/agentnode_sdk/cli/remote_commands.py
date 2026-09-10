@@ -346,14 +346,27 @@ def cmd_cancel(args) -> int:
     saved, connection = _connection(args)
     if saved is None:
         return _no_gateway()
+    from agentnode_sdk.gateway.protocol import outcome_of
+
     try:
-        record = gc.cancel(connection, str(args.run))
+        record, settled = gc.cancel(connection, str(args.run))
     except Exception as exc:                                  # noqa: BLE001
         print(f"  Could not stop it: {exc}")
         return 1
     print()
     print(f"  Asked {bold(saved.name)} to stop {args.run}.")
-    print(f"  It is now: {record.get('state')}")
+    # Every word below comes out of the answer the gateway signed and this client verified, and
+    # the outcome is derived from two of its signed fields rather than carried as a third.
+    # `EM3C-E6-RECORD-0001`: what stood here was read off an unverified body, and it told somebody
+    # a run was running after the gateway had destroyed its container.
+    if not settled:
+        print(f"  It has not stopped yet: the gateway waited, and it was still "
+              f"{record.get('state')}.")
+        print(f"  Ask again, or look:  agentnode remote status --run {args.run}")
+        return 1
+    outcome = outcome_of(str(record.get("state") or ""),
+                         str(record.get("termination_reason") or "exited"))
+    print(f"  It stopped. State: {record.get('state')} ({outcome}).")
     return 0
 
 

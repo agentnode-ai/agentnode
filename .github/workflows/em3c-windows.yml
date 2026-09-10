@@ -134,6 +134,16 @@ jobs:
           grep -qE "^[0-9]+ passed" evidence.txt || {
             echo "the evidence tests did not all pass on Windows"; exit 1; }
 
+      - name: What state a run is in, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs -p no:randomly tests/test_cancel_consistency.py 2>&1 | tee cancel.txt
+          grep -qE "^35 passed, 1 skipped" cancel.txt || {
+            echo "the cancellation tests did not come out as this lane expects"; exit 1; }
+          grep -q "needs a container runtime" cancel.txt || {
+            echo "the skipped case is not the one this lane expects"; tail -5 cancel.txt; exit 1; }
+
       - name: What this lane established
         if: always()
         shell: bash
@@ -153,4 +163,5 @@ jobs:
             sdk/config.txt
             sdk/driver.txt
             sdk/evidence.txt
+            sdk/cancel.txt
           retention-days: 14

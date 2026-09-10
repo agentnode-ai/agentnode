@@ -533,7 +533,9 @@ class TestEveryAnswerNamesTheGatewayThatGaveIt:
         answers["submit"] = gc.submit(conn, b"x", granted=_granted(service), run_id="stamped")
         gc.wait_for(conn, "stamped", timeout=20)
         answers["status"] = gc.status_of(conn, "stamped")
-        answers["cancel"] = gc.cancel(conn, "stamped")
+        # A cancellation answers with the record AND whether it settled; the record is the part
+        # that carries an identity.
+        answers["cancel"], _settled = gc.cancel(conn, "stamped")
 
         for name, answer in answers.items():
             assert answer.get("protocol") == PROTOCOL_VERSION, name

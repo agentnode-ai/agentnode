@@ -103,6 +103,22 @@ jobs:
             echo "the skipped case is not the one this lane expects"; tail -5 em3c-driver.txt
             exit 1; }
 
+      # EM3C-E6-RECORD-0001 found the first defect in the product rather than in the harness: a
+      # run was displayed as running after the gateway had cancelled it and removed its
+      # container. The fast cases replace only the sandbox; the container case at the end of the
+      # file replaces nothing and runs on this lane, which has a runtime.
+      - name: What state a run is in, and who may say so
+        env:
+          # This lane has a runtime, so the case that replaces nothing runs here. Every other
+          # case replaces only the sandbox; that one replaces neither the sandbox nor anything
+          # else, which is why the count below is one higher than the Windows lane's.
+          AGENTNODE_SANDBOX_E2E: "1"
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs -p no:randomly tests/test_cancel_consistency.py 2>&1 | tee em3c-cancel.txt
+          grep -qE "^36 passed" em3c-cancel.txt || {
+            echo "the cancellation tests did not come out as this lane expects"; exit 1; }
+
       # How that driver is told where it is happening, and the whole start it does before it
       # reaches a network. EM3C-E5-CLASSIFY-0001 happened between two processes on Windows, so
       # the parts of these that can only fail there are skipped here and required on the Windows
@@ -212,3 +228,4 @@ jobs:
             sdk/em3c-driver.txt
             sdk/em3c-config.txt
             sdk/em3c-start.txt
+            sdk/em3c-cancel.txt

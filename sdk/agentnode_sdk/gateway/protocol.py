@@ -71,6 +71,81 @@ TIMEOUT_EXIT_STATUS = 124
 #: first met: the run had ended and the client polled until it timed out.
 TERMINAL_STATES = ("finished", "refused", "cancelled", "unverified", "interrupted")
 
+#: Where a run starts, and the one place it can be before it is terminal.
+QUEUED = "accepted"
+RUNNING = "running"
+STATES = (QUEUED, RUNNING) + TERMINAL_STATES
+
+#: How far along a state is. `EM3C-E6-RECORD-0001` found a client showing a run as running after
+#: the gateway had already cancelled it and removed its container. Nothing was stopping a state
+#: from going backwards, because nothing had ever been asked to: every place that set one just
+#: assigned it. A state may raise this number and may never lower it, and nothing leaves the top.
+_STAGE = {QUEUED: 0, RUNNING: 1}
+_STAGE.update({state: 2 for state in TERMINAL_STATES})
+
+
+def stage_of(state: str) -> int:
+    """How far along a state is, or a refusal. An unknown state is not quietly ranked lowest."""
+    if state not in _STAGE:
+        raise ProtocolError(
+            f"{state!r} is not a state this build knows, and a state it cannot place is one it "
+            "cannot say anything about the order of")
+    return _STAGE[state]
+
+
+def is_terminal(state: str) -> bool:
+    return stage_of(state) == 2
+
+
+def may_move(old: str, new: str) -> bool:
+    """Whether a run in `old` may become `new`. Forward only, and never out of a terminal state.
+
+    Staying put is allowed: the same state arriving twice is not a move. What is refused is going
+    backwards -- and going anywhere at all once a run is terminal, because a terminal state that
+    can be replaced is not one a reader can act on.
+    """
+    before, after = stage_of(old), stage_of(new)
+    if before == 2:
+        return old == new
+    return after >= before
+
+
+def refuse_move(old: str, new: str) -> None:
+    """Raise unless this move is allowed. Fails closed: nothing is silently kept or dropped."""
+    if not may_move(old, new):
+        raise ProtocolError(
+            f"a run in {old!r} cannot become {new!r}. A state moves forward or stays where it is, "
+            "and a terminal state is where it stops; anything else means two answers about the "
+            "same run disagree and a reader cannot tell which one is now")
+
+
+#: What a run's end amounts to, said the way a person says it. The wire carries a state and a
+#: reason; these four are what those two together mean, and they exist so the distinction is
+#: answerable from the record rather than reconstructed by whoever is reading it.
+SUCCEEDED = "succeeded"
+CANCELLED_OUTCOME = "cancelled"
+TIMED_OUT_OUTCOME = "timed_out"
+FAILED = "failed"
+OUTCOMES = (SUCCEEDED, CANCELLED_OUTCOME, TIMED_OUT_OUTCOME, FAILED)
+
+
+def outcome_of(state: str, termination_reason: str = EXITED) -> str:
+    """The outcome of a run in this state, or "" while it still has none.
+
+    About the RUN, not about the program it carried: a run that completed and delivered a result
+    succeeded, whatever number the program returned. Every terminal state maps to exactly one of
+    the four, and a state that is not terminal maps to none of them.
+    """
+    if not is_terminal(state):
+        return ""
+    if state == "cancelled":
+        return CANCELLED_OUTCOME
+    if termination_reason == TIMED_OUT:
+        return TIMED_OUT_OUTCOME
+    if state == "finished":
+        return SUCCEEDED
+    return FAILED
+
 #: How far apart the two clocks may be before a request is refused as stale. Wide enough for an
 #: ordinary skew, narrow enough that a captured request stops being useful quickly.
 CLOCK_SKEW_SECONDS = 120
