@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -361,6 +362,13 @@ def rotate(connection: GatewayConnection) -> GatewayConnection:
 #: recognisable, so that one can be refused instead of shown.
 _FURTHEST: dict = {}
 
+#: Reading it, deciding on it and writing it are one thing. `EM3C-CANCEL-0005`: they
+#: were three, and two answers arriving at once could both be judged against the same
+#: older value and then written in the wrong order, leaving the memory regressed and
+#: both answers accepted. A client polling in one thread while cancelling in another
+#: is the ordinary case, not an exotic one.
+_REMEMBERING = threading.Lock()
+
 
 def not_backwards(connection: GatewayConnection, answer: dict[str, Any]) -> dict[str, Any]:
     """The answer, or a refusal because it would move this run backwards."""
@@ -371,19 +379,20 @@ def not_backwards(connection: GatewayConnection, answer: dict[str, Any]) -> dict
     if not run_id or not state:
         return answer
     key = (str(connection.gateway_id), run_id)
-    before = _FURTHEST.get(key)
-    if before is not None and not may_move(before, state):
-        raise GatewayClientError(
-            f"the gateway answered {state!r} for a run this client has already seen as {before!r}."
-            " An answer that moves a run backwards is late, out of order, or about something else,"
-            " and it is refused rather than shown: a reader cannot tell which of two disagreeing"
-            " answers is the one that is now")
-    if before is None or stage_of(state) >= stage_of(before):
-        _FURTHEST[key] = state
+    with _REMEMBERING:
+        before = _FURTHEST.get(key)
+        if before is not None and not may_move(before, state):
+            raise GatewayClientError(
+                f"the gateway answered {state!r} for a run this client has already seen as "
+                f"{before!r}. An answer that moves a run backwards is late, out of order, or "
+                "about something else, and it is refused rather than shown: a reader cannot tell "
+                "which of two disagreeing answers is the one that is now")
+        if before is None or stage_of(state) >= stage_of(before):
+            _FURTHEST[key] = state
     return answer
 
 
-def status_of(connection: GatewayConnection, run_id: str, verify: bool = True) -> dict[str, Any]:
+def status_of(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
     """Idempotent: asking twice gives the same answer, and asking is free."""
     status, body = _get(f"{connection.base_url}/v1/jobs/{run_id}", token=connection.token)
     # Before any field of this response is used, including the status. Not before the body is
@@ -396,17 +405,12 @@ def status_of(connection: GatewayConnection, run_id: str, verify: bool = True) -
         raise GatewayClientError(f"the gateway does not know a run {run_id}")
     if status != 200:
         raise GatewayClientError(body.get("error", f"the gateway answered {status}"))
-    # Only a VERIFIED answer is remembered, and only a verified answer is passed through the
-    # thing that decides what a client may show. `EM3C-CANCEL-0004`: an unverified body used to
-    # go through `not_backwards` too, so an unauthenticated state could enter the memory and a
-    # later authentic answer be refused on the strength of it.
-    #
-    # `verify=False` exists so a test can establish that a refusal about the TRANSPORT or the
-    # gateway's IDENTITY happens before anything is verified -- those refusals are the subject,
-    # and verifying first would hide them. Nothing in this package asks for it, and a test says
-    # so.
-    if not verify:
-        return body
+    # Only a verified answer, and there is no way to ask for anything else. `EM3C-CANCEL-0004`
+    # found a flag that returned the body unverified and let its state into the memory above;
+    # `EM3C-CANCEL-0005` held that showing no caller used it is not the same as its not being
+    # callable. The refusals that have to happen BEFORE verification -- the transport, the
+    # gateway's identity, a run this gateway does not know -- happen above, which is what that
+    # flag was really for.
     return not_backwards(connection, verify_answer(connection, body))
 
 

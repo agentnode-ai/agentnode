@@ -846,7 +846,7 @@ class TestARedirectIsASecondDestination:
         conn = gc.GatewayConnection(base_url=base, token="s3cret-token", gateway_id="g")
         try:
             with pytest.raises(gc.GatewayClientError):
-                gc.status_of(conn, "some-run", verify=False)
+                gc.status_of(conn, "some-run")
         finally:
             server.shutdown()
             recorder.shutdown()
@@ -892,7 +892,7 @@ class TestTheAnswerMustComeFromTheGatewayYouPairedWith:
                                          gateway_id="a-different-gateway",
                                          fingerprint=conn.fingerprint)
         with pytest.raises(gc.GatewayClientError, match="not the sandbox you paired with"):
-            gc.status_of(elsewhere, "pinned", verify=False)
+            gc.status_of(elsewhere, "pinned")
 
     def test_a_changed_fingerprint_is_refused(self, gateway):
         base, state, service, _ = gateway
@@ -904,7 +904,7 @@ class TestTheAnswerMustComeFromTheGatewayYouPairedWith:
                                      gateway_id=conn.gateway_id,
                                      fingerprint="0" * 64)
         with pytest.raises(gc.GatewayClientError, match="no longer identifies itself"):
-            gc.status_of(moved, "pinned-print", verify=False)
+            gc.status_of(moved, "pinned-print")
 
     def test_submitting_to_the_wrong_gateway_is_refused_too(self, gateway):
         base, state, service, _ = gateway
@@ -1084,7 +1084,7 @@ class TestNobodyReadsSomebodyElsesRun:
         answer = gc.submit(conn, b"x", network="none")
         anonymous = gc.GatewayConnection(base_url=base, token="", gateway_id=conn.gateway_id)
         with pytest.raises(gc.GatewayClientError) as e:
-            gc.status_of(anonymous, answer["run_id"], verify=False)
+            gc.status_of(anonymous, answer["run_id"])
         assert "not paired" in str(e.value)
 
     def test_status_with_a_token_this_gateway_never_issued_is_refused(self, gateway):
@@ -1094,7 +1094,7 @@ class TestNobodyReadsSomebodyElsesRun:
         forged = gc.GatewayConnection(base_url=base, token="not-a-real-token",
                                       gateway_id=conn.gateway_id)
         with pytest.raises(gc.GatewayClientError):
-            gc.status_of(forged, answer["run_id"], verify=False)
+            gc.status_of(forged, answer["run_id"])
 
     def test_another_clients_run_is_reported_exactly_like_one_that_does_not_exist(self, gateway):
         """Distinguishing them would let any paired client enumerate real run ids."""
@@ -1139,7 +1139,7 @@ class TestNobodyReadsSomebodyElsesRun:
 
         assert state.revoke(conn.token) is True
         with pytest.raises(gc.GatewayClientError):
-            gc.status_of(conn, "before-revocation", verify=False)
+            gc.status_of(conn, "before-revocation")
         with pytest.raises(gc.GatewayClientError):
             gc.submit(conn, b"x", network="none", run_id="after-revocation")
         with pytest.raises(gc.GatewayClientError):
@@ -1421,10 +1421,14 @@ class TestRotationReplacesTheSecretAndNothingElse:
         assert replacement and replacement != conn.token
 
         with pytest.raises(gc.GatewayClientError):
-            gc.status_of(conn, "pre-rotation", verify=False)
+            gc.status_of(conn, "pre-rotation")
+        # With the fingerprint, so the answer verifies: `EM3C-CANCEL-0005` removed the way to
+        # ask for an unverified one, and this was never about verification -- it is about the
+        # rotated credential being the one that works.
         rotated = gc.GatewayConnection(base_url=base, token=replacement,
-                                       gateway_id=conn.gateway_id)
-        assert gc.status_of(rotated, "pre-rotation", verify=False)["state"] == "finished"
+                                       gateway_id=conn.gateway_id,
+                                       fingerprint=conn.fingerprint)
+        assert gc.status_of(rotated, "pre-rotation")["state"] == "finished"
 
     def test_what_the_client_may_reach_travels_with_it(self, gateway):
         base, state, service, _ = gateway

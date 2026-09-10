@@ -485,33 +485,52 @@ class TestWhatTheCommandLineShows:
         assert "has not stopped yet" in out
         assert "It stopped" not in out
 
-    def test_an_unverified_answer_is_remembered_by_nothing(self, waiting_gateway):
-        """`EM3C-CANCEL-0004`: an unverified body went through the same memory as a verified one,
-        so an unauthenticated state could be remembered and a later authentic answer refused on
-        the strength of it."""
-        base, state, service, backend = waiting_gateway
-        conn = a_running_job(base, state, service, backend)
-        before = dict(gc._FURTHEST)
-        gc.status_of(conn, "run-under-test", verify=False)
-        assert dict(gc._FURTHEST) == before
-        backend.let_go.set()
-
-    def test_and_nothing_in_the_package_asks_for_one(self):
-        """It exists so a test can establish that a refusal about the transport or the gateway's
-        identity happens BEFORE anything is verified. No product path wants it."""
+    def test_there_is_no_way_to_ask_for_an_unverified_answer(self):
+        """`EM3C-CANCEL-0005`: showing that no caller used the flag is not the same as its not
+        being callable. There is no flag."""
+        import inspect
         import pathlib
 
         import agentnode_sdk
 
+        assert list(inspect.signature(gc.status_of).parameters) == ["connection", "run_id"]
         root = pathlib.Path(agentnode_sdk.__file__).parent
-        # Where it is DECLARED is the one place it may be named. Anywhere else in the package
-        # would be a caller, and there are none.
-        asking = [p.name for p in root.rglob("*.py")
-                  if "verify=False" in p.read_text(encoding="utf-8")
-                  and p.name != "client.py"]
-        assert asking == [], asking
-        declared = (root / "gateway" / "client.py").read_text(encoding="utf-8")
-        assert declared.count("verify=False") == 1, "it is named more than once where it lives"
+        naming = [p.name for p in root.rglob("*.py")
+                  if "verify=False" in p.read_text(encoding="utf-8")]
+        assert naming == [], naming
+
+    def test_reading_deciding_and_writing_are_one_thing(self):
+        """`EM3C-CANCEL-0005`: they were three, so two answers arriving at once could both be
+        judged against the same older value and then written in the wrong order. A client polling
+        in one thread while cancelling in another is the ordinary case.
+
+        Hammered rather than argued: many pairs, each a terminal answer and an earlier one, and
+        afterwards the memory must never hold the earlier of the two."""
+        conn = gc.GatewayConnection(base_url="http://127.0.0.1:1", token="t",
+                                    gateway_id="racing", fingerprint="f")
+        refused: list = []
+        for round_number in range(200):
+            run = "run-%d" % round_number
+            done = threading.Barrier(2)
+
+            def one(state, run=run, done=done):
+                done.wait(timeout=5)
+                try:
+                    gc.not_backwards(conn, {"run_id": run, "state": state})
+                except gc.GatewayClientError:
+                    refused.append(state)
+
+            # Both orders, so the case where the earlier answer LOSES the race really happens.
+            # Whichever way round they go, the memory must end terminal and the loser refused.
+            pair = [threading.Thread(target=one, args=("cancelled",)),
+                    threading.Thread(target=one, args=(RUNNING,))]
+            threads = pair if round_number % 2 else list(reversed(pair))
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+            assert gc._FURTHEST[("racing", run)] == "cancelled", round_number
+        assert refused, "no interleaving ever put the two in the order that has to be refused"
 
     def test_nothing_unverified_reaches_it(self):
         """A source check, because the defect was a missing call rather than a wrong value."""
