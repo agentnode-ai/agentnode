@@ -27,6 +27,7 @@ from agentnode_sdk.gateway.connections import ConnectionStore, SavedGateway
 
 pytest_plugins = ("tests.real_answers",)
 from agentnode_sdk.tools import evidence
+from agentnode_sdk.tools import external_config as config
 from agentnode_sdk.tools import external_run as driver
 
 
@@ -43,18 +44,24 @@ CONFORMANCE = "c" * 64
 PORT = "18099"
 
 #: Everything the driver needs to be told. Nothing is defaulted in the driver itself, so this is
-#: also the list a real operator has to supply.
-SETTINGS = {
-    "EM3C_AGENTNODE": "agentnode",
-    "EM3C_WORK": "work",
-    "EM3C_SSH_KEY": "a-key",
-    "EM3C_SERVER": "someone@a-gateway-machine",
-    "EM3C_GATEWAY_BIN": "agentnode",
-    "EM3C_GATEWAY_STATE": "/somewhere/state",
-    "EM3C_GATEWAY_LOG": "/somewhere/gateway.log",
-    "EM3C_GATEWAY_USER": "a-service-account",
-    "EM3C_GATEWAY_PORT": PORT,
+#: also what a real operator has to write down. It is a DOCUMENT now, not a set of exported shell
+#: variables: `EM3C-E5-CLASSIFY-0001` found a shell rewriting three of those on the way to the
+#: process that needed them, and a document has no shell between it and its reader.
+DOCUMENT = {
+    "version": config.CONFIG_VERSION,
+    "client_home": "home",
+    "agentnode": "agentnode",
+    "work": "work",
+    "evidence": "record.jsonl",
+    "ssh_key": "a-key",
+    "server": "someone@a-gateway-machine",
+    "gateway_bin": "/usr/local/bin/agentnode",
+    "gateway_state": "/somewhere/state",
+    "gateway_log": "/somewhere/gateway.log",
+    "gateway_user": "a-service-account",
+    "gateway_port": PORT,
 }
+SETTINGS = config.parse(DOCUMENT)
 
 
 class World:
@@ -292,14 +299,12 @@ def world(monkeypatch, tmp_path, real_gateway):
                               gateway_id=real_gateway.connection.gateway_id,
                               fingerprint=real_gateway.connection.fingerprint))
 
-    # The settings are read when the module is loaded, so they are set and the module is
-    # re-read before anything is patched onto it. Setting the environment alone would leave the
-    # driver holding the values it was imported with, and the suite would then be testing a
-    # driver configured by nobody.
-    for name, value in SETTINGS.items():
-        monkeypatch.setenv(name, value)
+    # The driver is told where it is happening the way a real run tells it: by handing it a
+    # configuration. Nothing is read from the environment, so nothing has to be set in it, and
+    # the assertion below is what a run gets rather than what a shell happened to leave behind.
     importlib.reload(driver)
-    assert driver.PORT == PORT and driver.SERVER == SETTINGS["EM3C_SERVER"]
+    driver.configure(SETTINGS)
+    assert driver.PORT == PORT and driver.SERVER == SETTINGS.server
 
     monkeypatch.setattr(driver, "launch", fake_launch)
     monkeypatch.setattr(driver.subprocess, "Popen", Popen)
@@ -570,34 +575,43 @@ class TestNothingLocalLeaksIntoThePackagedDriver:
         lines = inspect.getsource(driver).splitlines()
         assert not [line for line in lines if "8099" in line], "a port is written into the driver"
         assert not [line for line in lines if "sudo -u em" in line]
-        assert 'PORT = _setting("EM3C_GATEWAY_PORT", "")' in lines
+        assert any("PORT = str(settings.gateway_port)" in line for line in lines), (
+            "the port no longer comes from the configuration this run was handed")
 
-    def test_a_run_that_was_not_told_where_it_is_happening_refuses(self, tmp_path,
-                                                                   monkeypatch):
-        """No setting has a default that describes one pair of machines, so a run that is not
-        told refuses instead of quietly using somebody else's."""
-        for name in driver.REQUIRED_SETTINGS:
-            monkeypatch.delenv(name, raising=False)
+    def test_a_run_that_was_not_told_where_it_is_happening_refuses(self, tmp_path):
+        """Nothing has a default that describes one pair of machines, so a run that was not told
+        refuses instead of quietly using somebody else's."""
+        importlib.reload(driver)
+        assert driver.configured() is False
         assert driver.main(tmp_path / "e.jsonl") == 2
         assert not (tmp_path / "e.jsonl").exists()
 
-    @pytest.mark.parametrize("left_out", list(driver.REQUIRED_SETTINGS))
-    def test_leaving_out_any_one_setting_refuses_and_names_it(self, monkeypatch, left_out):
-        for name, value in SETTINGS.items():
-            monkeypatch.setenv(name, value)
-        monkeypatch.delenv(left_out)
-        assert left_out in driver.unset_settings()
-
-    def test_every_setting_comes_from_the_environment(self, monkeypatch):
-        import importlib
-
-        monkeypatch.setenv("EM3C_SERVER", "someone@somewhere")
-        monkeypatch.setenv("EM3C_GATEWAY_STATE", "/somewhere/state")
-        reloaded = importlib.reload(driver)
-        assert reloaded.SERVER == "someone@somewhere"
-        assert reloaded.STATE == "/somewhere/state"
-        monkeypatch.undo()
+    def test_every_setting_comes_from_the_configuration(self):
         importlib.reload(driver)
+        driver.configure(config.parse(dict(DOCUMENT, server="someone@somewhere",
+                                           gateway_state="/elsewhere/state")))
+        assert driver.SERVER == "someone@somewhere"
+        assert driver.STATE == "/elsewhere/state"
+        importlib.reload(driver)
+
+    def test_and_none_of_it_from_the_environment(self, monkeypatch):
+        """`EM3C-E5-CLASSIFY-0001`: this is the exact thing that broke. The environment says one
+        place, the configuration says another, and what runs is what the configuration says."""
+        importlib.reload(driver)
+        for name in config.SUPERSEDED_ENVIRONMENT:
+            monkeypatch.setenv(name, "/somewhere/a-shell-decided")
+        driver.configure(SETTINGS)
+        assert driver.STATE == "/somewhere/state"
+        assert driver.SERVER == "someone@a-gateway-machine"
+        importlib.reload(driver)
+
+    def test_a_run_started_with_that_environment_set_refuses(self, tmp_path, monkeypatch):
+        """And it does not merely prefer the configuration: it stops, because somebody who set
+        those believes they are in effect."""
+        monkeypatch.setenv("EM3C_GATEWAY_STATE", "/somewhere/a-shell-decided")
+        path = tmp_path / "run-config.json"
+        path.write_text(json.dumps(DOCUMENT), encoding="utf-8")
+        assert driver.run(["--config", str(path), "--preflight"]) == 2
 
 
 def test_the_record_carries_no_hand_built_dictionary(world, tmp_path):

@@ -26,55 +26,50 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
 import re
 import secrets as secretslib
-import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-def _setting(name: str, fallback: str) -> str:
-    """One setting, from the environment or from its documented default.
+#: Where this run was told it is happening. Set once, by `configure`, from a file -- never from
+#: the environment. `EM3C-E5-CLASSIFY-0001`: the fifth external run took these from exported
+#: shell variables, and the MSYS layer rewrote the three remote ones between the shell and this
+#: process. The runner could not have noticed: it checked its command line, and its command line
+#: was fine.
+SETTINGS = None
 
-    Nothing here is read at import beyond the environment, and nothing is written. The previous
-    version set `AGENTNODE_HOME` and edited `sys.path` while being imported, which made the file
-    impossible to load in a test without changing the process it was loaded into.
-    """
-    return os.environ.get(name, fallback)
-
-
-BASE = Path(_setting("EM3C_BASE", str(Path.home() / "em3c")))
-HOME = Path(_setting("EM3C_CLIENT_HOME", str(BASE / "clienthome")))
-AN = _setting("EM3C_AGENTNODE", "agentnode")
-WORK = Path(_setting("EM3C_WORK", str(BASE / "work")))
-EVIDENCE = Path(_setting("EM3C_EVIDENCE", str(BASE / "client-evidence.jsonl")))
-KEY = _setting("EM3C_SSH_KEY", "")
-SERVER = _setting("EM3C_SERVER", "")
-GW = _setting("EM3C_GATEWAY_BIN", "agentnode")
-STATE = _setting("EM3C_GATEWAY_STATE", "")
-LOG = _setting("EM3C_GATEWAY_LOG", "")
-#: The unprivileged account the gateway runs as, and the loopback port it listens on. Settings
-#: rather than literals: a driver carrying one operator's account name is a driver about that
-#: operator's machine, and this one has to be about whichever two machines it is pointed at.
-GATEWAY_USER = _setting("EM3C_GATEWAY_USER", "")
-PORT = _setting("EM3C_GATEWAY_PORT", "")
-
-#: Nothing here has a default that describes one particular pair of machines. A port carried in
-#: the source is a port belonging to whoever wrote it (`EM3C-EVIDENCE-0007`), and a driver that
-#: silently used it would be about that machine while claiming to be about whichever two it was
-#: pointed at. Every one of these has to be supplied, and a run that is not told refuses.
-REQUIRED_SETTINGS = ("EM3C_AGENTNODE", "EM3C_WORK", "EM3C_SSH_KEY", "EM3C_SERVER",
-                     "EM3C_GATEWAY_BIN", "EM3C_GATEWAY_STATE", "EM3C_GATEWAY_LOG",
-                     "EM3C_GATEWAY_USER", "EM3C_GATEWAY_PORT")
+BASE = HOME = WORK = EVIDENCE = None
+AN = KEY = SERVER = GW = STATE = LOG = GATEWAY_USER = PORT = ""
 
 
-def unset_settings() -> list[str]:
-    """Which of the settings this run needs were never given."""
-    return [name for name in REQUIRED_SETTINGS if not os.environ.get(name, "").strip()]
+def configure(settings) -> None:
+    """Take the settings this run was given. Nothing reads them before this has happened."""
+    global SETTINGS, BASE, HOME, WORK, EVIDENCE, AN, KEY, SERVER, GW, STATE, LOG
+    global GATEWAY_USER, PORT
+
+    SETTINGS = settings
+    HOME = Path(settings.client_home)
+    BASE = HOME.parent
+    WORK = Path(settings.work)
+    EVIDENCE = Path(settings.evidence)
+    AN = settings.agentnode
+    KEY = settings.ssh_key
+    SERVER = settings.server
+    GW = settings.gateway_bin
+    STATE = settings.gateway_state
+    LOG = settings.gateway_log
+    GATEWAY_USER = settings.gateway_user
+    PORT = str(settings.gateway_port)
+
+
+def configured() -> bool:
+    return SETTINGS is not None
+
 
 from agentnode_sdk.gateway import client as gc                     # noqa: E402
+from agentnode_sdk.tools import external_config as config          # noqa: E402
 from agentnode_sdk.gateway.connections import ConnectionStore      # noqa: E402
 from agentnode_sdk.tools import evidence                            # noqa: E402
 
@@ -474,7 +469,7 @@ def sentinels():
 
 def binding_now(label):
     """The operator-policy binding, read from the active authenticated snapshot."""
-    show = server_query(f"sudo -u {GATEWAY_USER} {GW} gateway egress --dir {STATE} --verbose")
+    show = server_query(first_remote_command())
     text = show["stdout"]
 
     def field(pattern):
@@ -609,13 +604,107 @@ def container_gone(run_id, container, sought_id):
         **asked))
 
 
+def first_remote_command() -> str:
+    """The first thing this run asks the far machine, built from the settings as they arrived.
+
+    Named and reachable on its own so the whole start can be rehearsed without a network: the
+    three remote paths are in here, and if any of them was changed on the way it is visible in
+    the bytes rather than in a failure five steps later.
+    """
+    return (f"sudo -u {GATEWAY_USER} {GW} gateway egress --dir {STATE} --verbose")
+
+
+def check_start(argv=None) -> list[str]:
+    """Everything that could have changed a remote value before this process existed.
+
+    `EM3C-E5-CLASSIFY-0001`: `check_argv` looked at the ssh command line, and the ssh command line
+    was fine. The values had been rewritten in the shell environment before this process started,
+    so the one place that was inspected was the one place nothing had happened. Four places are
+    inspected here, and the run stops before its first step if any of them says so.
+
+    * the environment this process was started in, refused rather than ignored;
+    * this process's own command line, which carries a local path and a digest and must carry no
+      remote value at all -- if one is there, something outside the file decided it;
+    * the three remote paths as they now sit in this module, checked again by the same rule the
+      configuration was checked by, because between reading and using them is where a value that
+      was fine on arrival could stop being fine;
+    * the bytes of the command the far machine will actually be given.
+
+    Returns what it found. Empty means nothing between the configuration and the wire touched it.
+    """
+    found: list[str] = []
+    try:
+        config.refuse_environment()
+    except config.ConfigError as exc:
+        found.append(str(exc))
+    mine = list(sys.argv[1:] if argv is None else argv)
+    for value in (GW, STATE, LOG):
+        for arg in mine:
+            if value and value in arg:
+                found.append(
+                    "a remote path is on this run's own command line (" + arg + "), and a value "
+                    "that is on a command line is one something outside the configuration decided")
+    for name, value in zip(config.REMOTE_PATHS, (GW, STATE, LOG)):
+        try:
+            config.check_remote_path(name, value)
+        except config.ConfigError as exc:
+            found.append(str(exc))
+        if SETTINGS is not None and value != getattr(SETTINGS, name):
+            found.append(
+                name + " is no longer what the configuration said: " + repr(value) + " against "
+                + repr(getattr(SETTINGS, name)))
+    # Two texts, and they are not checked by the same rule. The COMMAND is built entirely out of
+    # the settings, so nothing in it may be backslashed. The SCRIPT wraps that command in a few
+    # lines of shell, and those lines carry a printf format with a backslash in it on purpose --
+    # checking the wrapper by the command's rule would be refusing this driver's own punctuation.
+    command = first_remote_command()
+    if chr(92) in command:
+        found.append("the command the far machine would be given contains a backslash: " + command)
+    script = one_command(command)
+    for text, what in ((command, "command"), (script, "script")):
+        lowered = text.lower()
+        for prefix in config._SHELL_PREFIXES:
+            if prefix in lowered:
+                found.append("the " + what + " the far machine would be given contains "
+                             + repr(prefix) + ", which is a shell's own installation")
+        drive = config._DRIVE_ANYWHERE.search(text)
+        if drive:
+            found.append("the " + what + " the far machine would be given names a drive on THIS "
+                         "machine: " + drive.group(0))
+    for arg in check_argv():
+        found.append("an ssh argument a shell could rewrite: " + arg)
+    return found
+
+
+def preflight() -> int:
+    """Say where this run believes it is happening, and stop. No network, no gateway, no file.
+
+    This is the real entry point with the real configuration; what it prints is what the run
+    would use. A rehearsal reads it, and so does a person who wants to know before starting.
+    """
+    print("  This run was told:")
+    for line in config.describe(SETTINGS):
+        print(line)
+    script = one_command(first_remote_command())
+    print("  the first remote command, as bytes it will send:")
+    print("    " + script.encode(WIRE).hex())
+    print("  and as text:")
+    print("    " + first_remote_command())
+    found = check_start()
+    print("  arguments a shell could rewrite: " + (", ".join(found) if found else "none"))
+    return 0 if not found else 2
+
+
 def main(path=None) -> int:
     global rec
-    missing = unset_settings()
-    if missing:
-        print("  This run has not been told where it is happening. Missing: "
-              + ", ".join(missing))
-        print("  Set each of them and run again. Nothing was recorded.")
+    if not configured():
+        print("  This run has not been told where it is happening.")
+        return 2
+    found = check_start()
+    if found:
+        print("  This run will not start, and nothing was recorded:")
+        for complaint in found:
+            print("    " + complaint)
         return 2
     os.environ.setdefault("AGENTNODE_HOME", str(HOME))
     destination = Path(path) if path else EVIDENCE
@@ -630,6 +719,10 @@ def main(path=None) -> int:
     print(f"  recording to {destination}")
     print(f"  live secrets that must never appear: {len(secrets)}")
 
+    observed("the configuration this run was told to use",
+             ["(the configuration file)"], True,
+             chr(10).join(line.strip() for line in config.describe(SETTINGS)) + chr(10),
+             role="client")
     machines()
     # BEFORE anything runs. The sentinels are jobs, and a job recorded before any binding has
     # nothing in the record saying what the machine allowed while it ran -- which is an evidence
@@ -795,5 +888,37 @@ def main(path=None) -> int:
     return 0
 
 
+def run(argv=None) -> int:
+    """The entry point. A local path to a configuration, and a digest of it. Nothing else.
+
+    Started by the native Windows interpreter, so nothing stands between what the configuration
+    says and what this process reads. A local path may be converted on the way here and still
+    name the same file; a hex digest cannot be converted at all. The values that must not change
+    are inside the file, where nothing on the way has an opinion about them.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="agentnode-external-run", add_help=True)
+    parser.add_argument("--config", required=True,
+                        help="local path to the configuration file for this run")
+    parser.add_argument("--expect", default="",
+                        help="the digest the launcher computed for that file")
+    parser.add_argument("--preflight", action="store_true",
+                        help="say where this run believes it is happening, and stop")
+    parser.add_argument("--evidence", default="",
+                        help="where to write the record, overriding the configuration")
+    args = parser.parse_args(argv)
+    try:
+        configure(config.load(args.config, args.expect))
+    except config.ConfigError as exc:
+        print("  This run will not start:")
+        print("    " + str(exc))
+        print("  Nothing has run and nothing was recorded.")
+        return 2
+    if args.preflight:
+        return preflight()
+    return main(args.evidence or None)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run())
