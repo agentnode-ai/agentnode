@@ -22,8 +22,8 @@ import sys
 
 import pytest
 
-from agentnode_sdk.tools import external_config as config
-from agentnode_sdk.tools import external_launch as launcher
+from agentnode_sdk.verification import config
+from agentnode_sdk.verification import launcher
 
 #: The three the fifth external run was given, verbatim.
 E5_PATHS = {

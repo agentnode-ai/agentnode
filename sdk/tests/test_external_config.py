@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from agentnode_sdk.tools import external_config as config
+from agentnode_sdk.verification import config
 
 
 def a_document(**changes) -> dict:

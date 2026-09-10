@@ -27,7 +27,7 @@ import sys
 import pytest
 
 import agentnode_sdk  # noqa: F401  -- imported so `IMPORTABLE` can be derived
-from agentnode_sdk.tools import external_config as config
+from agentnode_sdk.verification import config
 
 
 #: The three paths the fifth external run was given, verbatim. Using the real ones means this

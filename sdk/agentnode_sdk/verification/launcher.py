@@ -20,12 +20,18 @@ import os
 import subprocess
 import sys
 
-from agentnode_sdk.tools import external_config as config
+from agentnode_sdk.verification import config
 
 #: How this process talks to the one it starts. Bytes, like everything else that crosses a
 #: boundary here -- see `external_run.launch` and `EM3C-E4-CLASSIFY-0001`.
 WIRE = "utf-8"
 
+#: The module this launcher starts. It is still the previous runner: the configuration and
+#: this launcher have moved into this package ahead of it, because they are the parts the
+#: sixth external run established and the parts a replacement has to inherit rather than
+#: rewrite. The name changes in the commit that lands `verification.run` and freezes the
+#: old one -- not before, because a launcher that starts a module nobody has written yet
+#: is a worse state to leave a repository in than an honest sentence.
 RUNNER = "agentnode_sdk.tools.external_run"
 
 

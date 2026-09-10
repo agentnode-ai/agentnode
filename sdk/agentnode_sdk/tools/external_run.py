@@ -69,7 +69,7 @@ def configured() -> bool:
 
 
 from agentnode_sdk.gateway import client as gc                     # noqa: E402
-from agentnode_sdk.tools import external_config as config          # noqa: E402
+from agentnode_sdk.verification import config          # noqa: E402
 from agentnode_sdk.gateway.connections import ConnectionStore      # noqa: E402
 from agentnode_sdk.tools import evidence                            # noqa: E402
 
