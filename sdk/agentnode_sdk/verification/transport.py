@@ -81,10 +81,14 @@ class OverSsh:
     answers, and collapsing them is what `EM3C-EVIDENCE-0002` cost an external run to.
     """
 
-    def __init__(self, settings, timeout: float = 300.0) -> None:
+    def __init__(self, settings, timeout: float = 300.0, launcher=None) -> None:
         self.key = settings.ssh_key
         self.server = settings.server
         self.timeout = timeout
+        #: How a process is started. Named rather than reached for, so that a caller which has
+        #: already been given one -- a run whose own launcher is under test, say -- uses the one
+        #: it has instead of this module reaching past it for another.
+        self.launcher = launcher or launch
 
     def argv(self) -> list[str]:
         return ["ssh", "-T", "-i", self.key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
@@ -102,7 +106,7 @@ class OverSsh:
         if rewritable:
             return False, None, "", ("this run would be sent with an argument a shell could "
                                      "rewrite: " + ", ".join(rewritable))
-        code, out, err, trouble = launch(
+        code, out, err, trouble = self.launcher(
             self.argv(), timeout=self.timeout if timeout is None else timeout,
             script=one_command(command))
         if trouble:

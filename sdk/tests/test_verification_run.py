@@ -35,6 +35,10 @@ from agentnode_sdk.verification import run as driver
 CLIENT_HOST = "a-client-machine"
 GATEWAY_HOST = "a-gateway-machine"
 CONTAINER_ID = "0f1e2d3c4b5a"
+#: What the far machine says it is. One value, used both by the shell channel that is asked what
+#: the machine is and by what the sandbox prints from inside it -- a crossing holds exactly when
+#: those two agree, and this file is where they are made to.
+MACHINE_ID = "9c5c1e0a11d24f0b8b6f2e2f8a3c4d5e"
 
 
 def container_for(run_id: str) -> str:
@@ -84,6 +88,10 @@ class World:
         self.truncate = ()            # substrings of commands whose answers lose their marker
         self.fail = ()                # substrings of commands that cannot run at all
         self.client_sentinel = ""
+        #: What the sandbox prints for a crossing job. Empty means "what the payload would have
+        #: printed". A test that wants the far side to carry something else sets it, and then
+        #: only the crossing changes -- every other step of the matrix is untouched.
+        self.crossing_prints = ""
         self.gateway_sentinel = ""
         #: Set by the fixture from the real gateway this world stands beside. The world answers
         #: for the LINUX HOST over ssh; it does not answer for the gateway, which answers for
@@ -151,6 +159,8 @@ class World:
         if asked and not reachable and self.allowlist:
             return 1, ("refused: this job named no host it may reach ("
                        + ", ".join(asked) + " is not allowed)" + chr(10)), "", ""
+        if any("crossing.py" in str(part) for part in parts):
+            return self.a_crossing_job(parts)
         # The payload that ignores signals is the one the sandbox has to stop at its limit.
         stubborn = any("stubborn" in part for part in parts)
         out = "run: " + self.submit(ends_at_its_limit=stubborn) + chr(10)
@@ -167,19 +177,36 @@ class World:
             source = open(payload, encoding="utf-8").read()
         except OSError:
             source = ""
-        if "E3-FROM-CLIENT" in source:
-            # The value the client put in its payload comes back, and the gateway makes its own.
-            for line in source.splitlines():
-                if "E3-FROM-CLIENT" in line and "'" in line:
-                    self.client_sentinel = line.split("E3-FROM-CLIENT ")[1].strip("')\" ")
-            self.gateway_sentinel = "f" * 32
-            out += f"E3-FROM-CLIENT {self.client_sentinel}\n"
-            out += f"E3-FROM-GATEWAY {self.gateway_sentinel}\n"
-            # Both values are on the gateway: one arrived with the job, one was made there.
-            self.gateway_log += f"{self.client_sentinel}\n{self.gateway_sentinel}\n"
-        else:
-            out += "it ran\n"
+        out += "it ran\n"
         return 0, out, "", ""
+
+    def a_crossing_job(self, parts):
+        """The job a crossing travels in.
+
+        What decides a crossing is the GATEWAY'S SIGNED RECORD, not what this command echoed --
+        which is the whole difference between this tool and the one it replaced. So the sandbox
+        is told, for this job only, what the payload prints; the job then goes through the real
+        gateway and comes back signed, and the crossing is read out of that.
+        """
+        source = ""
+        for part in parts:
+            if str(part).endswith("crossing.py"):
+                try:
+                    source = open(part, encoding="utf-8").read()
+                except OSError:
+                    source = ""
+        for line in source.splitlines():
+            if "SENT-FROM-HERE" in line and "'" in line:
+                self.client_sentinel = line.split("SENT-FROM-HERE ")[1].strip("')\" ")
+        self.gateway_sentinel = MACHINE_ID
+        printed = self.crossing_prints or (
+            f"SENT-FROM-HERE {self.client_sentinel}\n{MACHINE_ID}\n")
+        self.gateway.backend.answers = lambda spec, payload: (0, printed, "")
+        try:
+            run_id = self.submit()
+        finally:
+            self.gateway.backend.answers = None
+        return 0, "run: " + run_id + chr(10) + printed, "", ""
 
     # -- what the LINUX HOST answers over ssh -------------------------------------------------
     def over_ssh(self, script):
@@ -434,22 +461,28 @@ class TestTheDriverReactsToTheWorldRatherThanAsserting:
         problems = evidence.verify_two_machines(steps)
         assert problems, "an unreachable gateway still produced a machine identity"
 
-    def test_a_sentinel_that_never_reached_the_other_channel_fails(self, world, tmp_path):
-        real_query = driver.server_query
+    def test_a_value_the_far_side_never_carried_fails(self, world, tmp_path):
+        """The sandbox prints something else, so the gateway's signed record of the run does not
+        carry what the client sent. Nothing about the machines has changed and every other step
+        still holds -- what fails is the one claim that was never true."""
+        world.crossing_prints = "SENT-FROM-HERE something-the-client-never-sent\nand-not-an-id\n"
+        _code, steps = drive(tmp_path)
+        found = evidence.verify_two_machines(steps)
+        assert found, "a value that never appeared on the other machine was taken as crossed"
+        assert "did not cross" in str(found), str(found)
 
-        def never_found(command, timeout=300.0):
-            if command.startswith("grep -c"):
-                answer = real_query(command, timeout)
-                return {**answer, "exit_code": 1, "stdout": driver.MARKER + "\n"}
-            return real_query(command, timeout)
+    def test_a_far_machine_that_says_nothing_about_itself_is_not_a_refutation(self, world,
+                                                                              tmp_path):
+        """A channel that answered and said nothing has not said no. `EM3C-EVIDENCE-0002` cost an
+        external run to the two being one answer, and this is the crossing's version of it.
 
-        driver.server_query = never_found
-        try:
-            _code, steps = drive(tmp_path)
-        finally:
-            driver.server_query = real_query
-        assert evidence.verify_two_machines(steps), \
-            "a value that never appeared on the other machine was accepted as having crossed"
+        Only the crossing's own question is emptied -- the identity steps still ask the same
+        machine the same thing and still get an answer, so what fails here is one claim rather
+        than the world."""
+        world.crossing_prints = "SENT-FROM-HERE nothing-in-particular\n"
+        _code, steps = drive(tmp_path)
+        found = evidence.verify_two_machines(steps)
+        assert "did not cross" in str(found) or "could not be decided" in str(found),             str(found)
 
     def test_an_identity_attached_to_the_wrong_channel_is_caught(self, world, tmp_path):
         """`EM3C-EVIDENCE-0011`: the suite proved a good world passes and several broken ones

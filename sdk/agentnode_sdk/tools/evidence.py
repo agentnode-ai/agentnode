@@ -1373,10 +1373,6 @@ def _crossing_findings(step: dict, crossing: dict, crossed: dict) -> list[Findin
         return [Finding(where, FAIL,
                         "a crossing's payload digest is not the digest of the payload it records, "
                         "so which of the two a reader should believe is not decidable")]
-    if not str(crossing.get("record_sha256") or "").strip():
-        return [Finding(where, EVIDENCE_ERROR,
-                        "a crossing does not identify the record it was decided from")]
-
     # The origin, derived rather than believed. A value the client put in the payload is the
     # client's. One the payload never carried was made where the job ran, because the client
     # could not have produced it. A record whose own contents disagree with its label is refused,
@@ -1390,12 +1386,19 @@ def _crossing_findings(step: dict, crossing: dict, crossed: dict) -> list[Findin
                         + f" the payload it records, which makes it {derived!r}'s. What is in the "
                         "record decides, not what the record calls itself")]
 
+    # Before the record it was decided from is asked for: a crossing nobody could decide has no
+    # record to identify, and reporting the missing digest instead of the reason it is missing
+    # tells a reader about the shape of the finding rather than about what happened.
     if crossing.get("decidable") is not True:
         # Not a failure. `EM3C-EVIDENCE-0002`: a channel that could not be reached has not said
         # no, and the two were once the same answer here.
         return [Finding(where, EVIDENCE_ERROR,
                         f"a crossing made on {made} could not be decided: "
                         + (str(crossing.get("why") or "") or "no reason recorded"))]
+    if not str(crossing.get("record_sha256") or "").strip():
+        return [Finding(where, EVIDENCE_ERROR,
+                        "a crossing was decided, and does not identify the record it was decided "
+                        "from")]
     if crossing.get("holds") is not True:
         return [Finding(where, FAIL,
                         f"the value made on {made} did not cross: "

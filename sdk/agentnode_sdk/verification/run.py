@@ -355,8 +355,14 @@ def crossings():
     machine is asked what IT is, over ssh, which is a question a shell can answer. Neither
     channel vouches for itself and no file is searched.
     """
-    gateway = channels.TheGatewayItself(connection())
-    machine = channels.TheFarMachineItself(transport.OverSsh(SETTINGS).ask)
+    # `connection()` hands back the connection AND what the store had saved; the channel wants
+    # the first of those, and naming it here is cheaper than a tuple index a reader has to count.
+    conn, _saved = connection()
+    gateway = channels.TheGatewayItself(conn)
+    # The launcher this run uses, not the one the transport module would reach for: a run whose
+    # process starting is under test has to be the same process starting all the way down.
+    machine = channels.TheFarMachineItself(
+        transport.OverSsh(SETTINGS, launcher=launch).ask)
 
     made_here = sentinels.a_fresh_value()
     payload = WORK / "crossing.py"

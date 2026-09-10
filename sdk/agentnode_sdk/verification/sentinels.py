@@ -48,6 +48,10 @@ class Crossing:
     made_on: str
     value: str
     run_id: str
+    #: What the client sent, as it was sent. The direction a value travelled is DERIVED from
+    #: this by whoever reads the record -- a value in the payload is the client's, one the
+    #: payload never carried was made where the job ran -- so it is here rather than summarised.
+    payload_text: str
     payload_sha256: str
     #: The channel that carried the confirmation, taken from the answer itself.
     confirmed_by: str
@@ -72,6 +76,7 @@ def _record_of(gateway, run_id: str, payload: bytes, what: str, made_on: str, va
     """The signed record for this run, or a Crossing saying why there is none to read."""
     answer = gateway.record_of(run_id)
     common = dict(what=what, made_on=made_on, value=value, run_id=run_id,
+                  payload_text=payload.decode("utf-8", "replace"),
                   payload_sha256=_digest(payload), confirmed_by=answer.channel,
                   asked=answer.asked)
     if not answer.answered:
