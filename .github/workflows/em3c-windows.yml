@@ -149,7 +149,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_verification_channels.py 2>&1 | tee channels.txt
-          grep -qE "^25 passed" channels.txt || {
+          grep -qE "^29 passed" channels.txt || {
             echo "the channel tests did not all pass"; exit 1; }
 
       - name: What this lane established
