@@ -145,7 +145,11 @@ class GatewayService:
         nobody else, so it is not evidence a third party can check.
 
         The binding covers the whole tuple: gateway identity and version, protocol, job and run
-        id, artifact digest, both policy digests, and the result itself. An answer lifted out of
+        id, artifact digest, both policy digests, the result, and a digest over everything the
+        answer says HAPPENED -- state, exit code, why it stopped, the native status and its
+        platform, cleanup, refusal, both streams, the narrowing and the timestamps.
+        `EM3C-EVIDENCE-0020` found that last part missing: an answer's outcome could be changed
+        on the way to the client and the binding still recomputed to what had been signed. An answer lifted out of
         its context fails verification because the context is what is signed.
         """
         secret = self.state.token_secret(token)
@@ -159,6 +163,7 @@ class GatewayService:
             request_policy_sha256=body.get("request_policy_sha256", ""),
             effective_policy_sha256=body.get("effective_policy_sha256", ""),
             result=body.get("stdout", ""),
+            outcome=body,
         )
         return {**body, "binding": binding, "signature": sign(secret, binding)}
 

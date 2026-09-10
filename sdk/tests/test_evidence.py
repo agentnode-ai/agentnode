@@ -1483,6 +1483,39 @@ class TestTheOutsideOfAnAnswerIsTiedToItsInside:
         found = self._found(tmp_path, {**real_answer, "binding": other["binding"]})
         assert "do not produce the binding it carries" in messages(found)
 
+    #: A different value of the type the gateway declares for that field, so what fails is the
+    #: tie and not the reader refusing a value the answer could never have carried.
+    OTHERWISE = {"state": "cancelled", "exit_code": 7, "termination_reason": "cancelled",
+                 "native_status": 137, "native_platform": "linux-container",
+                 "cleanup_verified": False, "refusal": "something else", "stderr": "noise",
+                 "started_at": 1.0, "finished_at": 2.0}
+
+    @pytest.mark.parametrize("field", list(OTHERWISE))
+    def test_changing_what_the_answer_says_happened_is_refused(self, tmp_path, real_answer,
+                                                               field):
+        """`EM3C-EVIDENCE-0020`: the signature covered the identifiers, both policy digests and a
+        digest of stdout -- so everything an answer said about what HAPPENED could be changed on
+        the way to the client and the binding still recomputed to what had been signed."""
+        assert real_answer.get(field) != self.OTHERWISE[field], field
+        changed = {**real_answer, field: self.OTHERWISE[field]}
+        found = self._found(tmp_path, changed)
+        assert "do not produce the binding it carries" in messages(found), messages(found)
+
+    def test_removing_what_the_answer_says_happened_is_refused(self, tmp_path, real_answer):
+        """Absent is not the same as empty."""
+        changed = {k: v for k, v in real_answer.items() if k != "cleanup_verified"}
+        found = self._found(tmp_path, changed)
+        assert "do not produce the binding it carries" in messages(found)
+
+    def test_the_production_client_refuses_it_too(self, tmp_path, real_gateway, real_answer):
+        """Not only this reader: the client that receives an answer refuses the same change."""
+        from agentnode_sdk.gateway.client import GatewayClientError
+
+        changed = {**real_answer, "termination_reason": "timeout"}
+        with pytest.raises(GatewayClientError):
+            real_gateway.accepted(changed)
+        assert real_gateway.accepted(dict(real_answer)) == real_answer
+
     def test_an_answer_with_no_binding_is_refused(self, tmp_path, real_answer):
         answer = {k: v for k, v in real_answer.items() if k != "binding"}
         found = self._found(tmp_path, answer)

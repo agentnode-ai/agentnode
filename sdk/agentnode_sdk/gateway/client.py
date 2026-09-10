@@ -261,10 +261,12 @@ def verify_answer(connection: GatewayConnection, answer: dict[str, Any]) -> dict
         request_policy_sha256=answer.get("request_policy_sha256", ""),
         effective_policy_sha256=answer.get("effective_policy_sha256", ""),
         result=answer.get("stdout", ""),
+        outcome=answer,
     )
     if expected != binding:
         raise GatewayClientError(
-            "this answer does not describe the job it claims to. It was discarded."
+            "this answer does not describe the job it claims to, or what it says happened is not "
+            "what the gateway signed. It was discarded."
         )
     if connection.gateway_id and binding.get("gateway_id") != connection.gateway_id:
         raise GatewayClientError(

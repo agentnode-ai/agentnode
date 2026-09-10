@@ -1439,7 +1439,8 @@ def verify_answers(steps) -> list[Finding]:
             artifact_sha256=record.get("artifact_sha256", ""),
             request_policy_sha256=record.get("request_policy_sha256", ""),
             effective_policy_sha256=record.get("effective_policy_sha256", ""),
-            result=record.get("stdout", ""))
+            result=record.get("stdout", ""),
+            outcome=record)
         if expected != binding:
             differing = sorted(k for k in set(expected) | set(binding)
                                if expected.get(k) != binding.get(k))

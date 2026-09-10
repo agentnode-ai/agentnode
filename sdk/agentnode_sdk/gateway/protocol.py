@@ -147,9 +147,31 @@ def binding_fields() -> tuple[str, ...]:
         request_policy_sha256="", effective_policy_sha256="", result=""))
 
 
+#: Everything an answer says about what HAPPENED, as opposed to which job it was about. One
+#: list, because the signature covers it and the reader recomputes it, and two lists of the same
+#: thing drift. `EM3C-EVIDENCE-0020`: the signature covered the identifiers, both policy digests
+#: and a digest of stdout -- so the state, the exit code, the reason a run stopped, the native
+#: status, the cleanup and the timestamps could all be changed on the way to the client and the
+#: binding still recomputed to what was signed.
+OUTCOME_FIELDS = ("state", "exit_code", "termination_reason", "native_status", "native_platform",
+                  "cleanup_verified", "refusal", "stdout", "stderr", "policy_deltas",
+                  "started_at", "finished_at")
+
+
+def outcome_digest(body: dict[str, Any]) -> str:
+    """A digest over what an answer says happened.
+
+    Absent is not the same as empty: a field the answer does not carry is recorded as absent, so
+    removing one changes the digest rather than looking like a field that was there and blank.
+    """
+    return digest(canonical_bytes(
+        {name: body[name] if name in body else None for name in OUTCOME_FIELDS}))
+
+
 def response_binding(*, gateway_id: str, version: str, job_id: str, run_id: str,
                      artifact_sha256: str, request_policy_sha256: str,
-                     effective_policy_sha256: str, result: Any) -> dict[str, Any]:
+                     effective_policy_sha256: str, result: Any,
+                     outcome: dict[str, Any] | None = None) -> dict[str, Any]:
     """The exact tuple a response is authenticated over.
 
     Everything a client needs in order to know that THIS answer belongs to THIS job on THIS
@@ -167,6 +189,9 @@ def response_binding(*, gateway_id: str, version: str, job_id: str, run_id: str,
         "request_policy_sha256": request_policy_sha256,
         "effective_policy_sha256": effective_policy_sha256,
         "result_sha256": digest(canonical_bytes({"result": result})),
+        # What happened, not only which job it was. Without this, an answer's outcome is
+        # unauthenticated and the binding recomputes to what was signed anyway.
+        "outcome_sha256": outcome_digest(outcome or {}),
     }
 
 
