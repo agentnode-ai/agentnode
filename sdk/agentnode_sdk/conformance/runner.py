@@ -30,7 +30,9 @@ ABSENT_RUNTIME = "agentnode-conformance-absent-runtime"
 
 #: The signal ``run_process`` documents for a run it stopped: this return code AND this marker
 #: on stderr. Both together are what attributes an ending to the ceiling rather than to chance.
-TIMEOUT_RC = -1
+#: What a backend used to return for a timeout. Kept only so a reader of an OLD report knows
+#: what that number was; nothing decides anything by it (`EM3C-E4-CLASSIFY-0001`).
+SUPERSEDED_TIMEOUT_RC = -1
 TIMEOUT_MARKER = "[sandbox timed out after"
 
 #: 128 + SIGKILL: what a container runtime reports when the kernel stops a process for
@@ -92,9 +94,22 @@ def _probe_spec(backend, options: SuiteOptions, name: str) -> ProcessSpec:
 
 
 def _run(backend, spec, timeout):
+    """One run, with WHY it stopped kept beside what it produced.
+
+    `EM3C-E4-CLASSIFY-0001`: the verdict on the wall clock rested on the backend returning -1,
+    which is the number a Windows client read as 4294967295 -- so the signal that was supposed to
+    attribute a stop to the ceiling was the same kind of thing the defect was made of. The backend
+    says why now, and this keeps the saying.
+    """
+    from agentnode_sdk.sandbox.backend import why_it_stopped
+
     started = time.time()
-    rc, out, err = backend.run_process(spec, timeout=timeout)
-    return {"rc": rc, "stdout": out, "stderr": err, "elapsed": round(time.time() - started, 2)}
+    result = backend.run_process(spec, timeout=timeout)
+    rc, out, err = result
+    reason, native, platform = why_it_stopped(result)
+    return {"rc": rc, "stdout": out, "stderr": err, "reason": reason,
+            "native_status": native, "native_platform": platform,
+            "elapsed": round(time.time() - started, 2)}
 
 
 def _gather_probe(backend, options, name):
@@ -157,14 +172,20 @@ def _stress(backend, options, run_id):
             network="none", clean_home=True, name=f"agentnode-conformance-{run_id}-clock")
         r = _run(backend, spec, options.wallclock_timeout)
         # EM3B review: a duration is not evidence -- an unrelated early exit produces the same
-        # elapsed time. The verdict rests on the backend's own timeout signal: the return code it
-        # documents for a timeout AND the marker it writes. The elapsed time stays as diagnosis.
+        # elapsed time. The verdict rests on the backend SAYING it stopped the run at the ceiling,
+        # and on the marker it writes. The elapsed time stays as diagnosis, and no number is read
+        # as the signal any more (`EM3C-E4-CLASSIFY-0001`).
+        from agentnode_sdk.gateway.protocol import TIMED_OUT
+
         marker = TIMEOUT_MARKER in (r["stderr"] or "")
+        said_so = r.get("reason") == TIMED_OUT
         out["wallclock"] = {
             "sleep": options.wallclock_sleep, "timeout": options.wallclock_timeout,
             "elapsed": r["elapsed"], "rc": r["rc"],
+            "reason": r.get("reason"), "native_status": r.get("native_status"),
+            "native_platform": r.get("native_platform"),
             "timeout_marker_seen": marker,
-            "timeout_signal": bool(marker and r["rc"] == TIMEOUT_RC),
+            "timeout_signal": bool(marker and said_so),
             "stderr_tail": (r["stderr"] or "")[-120:].strip(),
         }
     except Exception as exc:                                        # noqa: BLE001

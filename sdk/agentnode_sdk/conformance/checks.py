@@ -462,7 +462,9 @@ def check_limit_wallclock(ctx: Context) -> CheckResult:
     """The stop has to be attributable to the ceiling, never inferred from how long it took.
 
     A duration is a diagnosis, not evidence: an unrelated early exit produces the same elapsed
-    time. What carries this check is the backend's own timeout signal.
+    time. What carries this check is the backend SAYING it stopped the run at the ceiling --
+    which used to be a return code of -1, the same number a Windows client read as 4294967295
+    (`EM3C-E4-CLASSIFY-0001`). A reason cannot be produced by an unrelated early exit.
     """
     s = ctx.stress.get("wallclock")
     if not isinstance(s, dict) or "_error" in s:
@@ -474,12 +476,13 @@ def check_limit_wallclock(ctx: Context) -> CheckResult:
     return CheckResult.measured(
         "limit-wallclock", "A run that will not finish is stopped", "limits",
         attributed, Vantage.OUTSIDE,
-        (f"a payload asked to sleep {s.get('sleep')}s under a {s.get('timeout')}s ceiling returned "
-         f"the backend's own timeout signal (rc={s.get('rc')}, marker present); the "
+        (f"a payload asked to sleep {s.get('sleep')}s under a {s.get('timeout')}s ceiling, and "
+         f"the backend reported it stopped for {s.get('reason')!r} with its marker present; the "
          f"{s.get('elapsed')}s it took is diagnosis rather than evidence"
          if attributed else
-         f"the run ended with rc={s.get('rc')} and no timeout signal from the backend, so nothing "
-         f"attributes the ending to the ceiling. It took {s.get('elapsed')}s"),
+         f"the run ended for {s.get('reason')!r} with marker "
+         f"{'present' if s.get('timeout_marker_seen') else 'absent'}, so nothing attributes the "
+         f"ending to the ceiling. It took {s.get('elapsed')}s"),
         detail=dict(s))
 
 

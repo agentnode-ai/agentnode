@@ -141,7 +141,15 @@ class GoodBackendDouble(_DoubleBase):
     def run_process(self, spec, input_text=None, timeout=120.0):
         joined = " ".join(spec.command)
         if "time.sleep" in joined:
-            return -1, "", f"\n[sandbox timed out after {timeout}s]"
+            # What the container backend really returns: no exit code, because nothing
+            # exited, and the reason beside it (EM3C-E4-CLASSIFY-0001). A double
+            # returning the old -1 would not produce what the real thing produces.
+            from agentnode_sdk.gateway.protocol import TIMED_OUT
+            from agentnode_sdk.sandbox.backend import Outcome
+
+            return Outcome(None, "", "\n[sandbox timed out after " + str(timeout) + "s]",
+                           reason=TIMED_OUT, native_status=-9,
+                           platform="linux-container")
         if "held.append" in joined:
             return 137, "ALLOCATING\n", "Killed"
         return 0, MARKER + json.dumps(self._readings) + "\n", ""

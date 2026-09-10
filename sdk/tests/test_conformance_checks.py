@@ -43,7 +43,12 @@ GOOD_HOST = {
                              "leftovers": []},
 }
 GOOD_STRESS = {
-    "wallclock": {"sleep": 30, "timeout": 5.0, "elapsed": 5.1, "rc": -1,
+    # `EM3C-E4-CLASSIFY-0001`: this sample carried rc=-1, the number that used to mean "the
+    # ceiling stopped it" and that a Windows client read as 4294967295. What a backend reports
+    # now is a REASON, and no exit code, because nothing exited.
+    "wallclock": {"sleep": 30, "timeout": 5.0, "elapsed": 5.1, "rc": None,
+                  "reason": "timeout", "native_status": -9,
+                  "native_platform": "linux-container",
                   "timeout_marker_seen": True, "timeout_signal": True,
                   "stderr_tail": "[sandbox timed out after 5.0s]"},
     "memory": {"requested_mb": 768, "rc": 137, "killed": True, "stdout_tail": ""},
