@@ -602,15 +602,17 @@ class GatewayService:
         """
         for run_id in self.ledger.unfinished_runs():
             entry = self.ledger.run_entry(run_id) or {}
+            # A record rebuilt from the ledger begins where it is. It is CONSTRUCTED there
+            # rather than constructed elsewhere and then assigned, so that no state in this
+            # module is ever written except through `move_to`, and the test that reads this
+            # source can require exactly that rather than name an exception.
             record = RunRecord(
                 run_id=run_id,
                 job_id=str(entry.get("job_id", "")),
                 request_sha256=str(entry.get("request_sha256", "")),
                 owner_client_id=str(entry.get("owner_client_id", "")),
+                state="interrupted",
             )
-            # A record rebuilt from the ledger begins where it is; this is its first state
-            # rather than a move away from one, which is why it is set and not moved.
-            record.state = "interrupted"
             record.refusal = (
                 "the gateway restarted while this job was running, so it did not finish. It has "
                 "not been started again -- submit it as a new job if you still want it run."

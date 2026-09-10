@@ -214,15 +214,37 @@ class TestTheRecordWillNotGoBackwards:
         assert record.outcome == "timed_out"
 
     def test_there_is_one_place_a_state_is_set(self):
-        """A guard everything routes around is not a guard. The one exception is a record
-        rebuilt from the ledger, which begins where it is rather than moving there."""
+        """A guard everything routes around is not a guard, and an exception written into the
+        test that checks for exceptions is the same thing with extra steps. There are none: a
+        record rebuilt from the ledger is CONSTRUCTED in the state it is in."""
         import inspect
 
         from agentnode_sdk.gateway import server
 
-        assignments = [line.strip() for line in inspect.getsource(server).splitlines()
-                       if "record.state = " in line]
-        assert assignments == ['record.state = "interrupted"'], assignments
+        # A RUN's state, which is what this is about. `GatewayService.__init__` also writes
+        # `self.state`, and that one is a `GatewayState` -- the directory the gateway keeps its
+        # things in. Two different words spelled the same way, and a check that cannot tell them
+        # apart would be reporting the name rather than the property.
+        written = [line.strip() for line in inspect.getsource(server).splitlines()
+                   if ".state = " in line and "self.state = state" not in line]
+        assert written == ["self.state = new_state"], written
+
+    def test_and_the_one_place_is_the_guarded_one(self):
+        import inspect
+
+        from agentnode_sdk.gateway.server import RunRecord
+
+        assert "self.state = new_state" in inspect.getsource(RunRecord.move_to)
+        assert "refuse_move(self.state, new_state)" in inspect.getsource(RunRecord.move_to)
+
+    def test_a_record_rebuilt_from_the_ledger_begins_where_it_is(self):
+        """Constructing a record in a terminal state is not a move out of one -- there was no
+        earlier state to move from. What must not happen is constructing it at the start and
+        then writing over that."""
+        record = RunRecord(run_id="r", job_id="j", state="interrupted")
+        assert record.state == "interrupted"
+        with pytest.raises(ProtocolError):
+            record.move_to(RUNNING)
 
 
 # ---------------------------------------------------------------- a real gateway
@@ -507,7 +529,36 @@ class TestARealContainer:
                     if gc.status_of(conn, "real-cancel")["state"] == RUNNING:
                         break
                     time.sleep(0.5)
-                record, settled = gc.cancel(conn, "real-cancel")
+                # A poll running at the same time, against a REAL container. `EM3C-CANCEL-0001`
+                # found the concurrent case and the container case were two different tests, so
+                # a container-specific ordering defect had nowhere to show. They are one test.
+                seen: list = []
+                trouble: list = []
+                stop = threading.Event()
+
+                def poll():
+                    while not stop.is_set():
+                        try:
+                            seen.append(gc.status_of(conn, "real-cancel")["state"])
+                        except Exception as exc:              # noqa: BLE001
+                            trouble.append(exc)
+                            return
+                        time.sleep(0.05)
+
+                eye = threading.Thread(target=poll, daemon=True)
+                eye.start()
+                try:
+                    record, settled = gc.cancel(conn, "real-cancel")
+                    time.sleep(0.5)
+                finally:
+                    stop.set()
+                    eye.join(timeout=10)
+
+                assert not trouble, trouble
+                assert seen, "the watcher never got an answer"
+                for before, after in zip(seen, seen[1:]):
+                    assert may_move(before, after), (before, after, seen)
+                assert seen[-1] == record["state"]
                 assert settled is True, record
                 assert record["state"] == "cancelled"
                 assert record["cleanup_verified"] is True
