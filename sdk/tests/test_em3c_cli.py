@@ -665,6 +665,63 @@ class TestTheCommandsSayWhatWasGrantedNotWhatWasAsked:
             "removal was asserted rather than read from the record"
 
 
+class TestARunItsLimitEndedIsReportedAsThat:
+    """`EM3C-E4-CLASSIFY-0001`: the command returned the gateway's exit code, which for a run the
+    sandbox stopped was -1 -- and Windows reported that as 4294967295, a status no caller could
+    tell from an ordinary failure."""
+
+    def _timed_out(self, running_gateway, home, monkeypatch):
+        from agentnode_sdk.gateway.protocol import TIMED_OUT
+        from agentnode_sdk.sandbox.backend import Outcome
+
+        url, state, service = running_gateway
+        monkeypatch.setattr(
+            service.backend, "run_process",
+            lambda spec, input_text=None, timeout=120.0: Outcome(
+                None, "", "[sandbox timed out after %ss]" % timeout,
+                reason=TIMED_OUT, native_status=137, platform="linux-container"),
+            raising=False)
+        main(["remote", "connect", url, "--code", state.start_pairing(), "--as", "gw"])
+        return url
+
+    def test_the_command_exits_with_the_documented_status(self, home, tmp_path, capsys,
+                                                          running_gateway, monkeypatch):
+        from agentnode_sdk.gateway.protocol import TIMEOUT_EXIT_STATUS
+
+        self._timed_out(running_gateway, home, monkeypatch)
+        job = tmp_path / "slow.py"
+        job.write_text("print('never mind')", encoding="utf-8")
+        capsys.readouterr()
+        code = main(["remote", "run", str(job)])
+        out = capsys.readouterr().out
+        assert code == TIMEOUT_EXIT_STATUS, out
+        assert "ran out of time" in out, out
+        assert "4294967295" not in out and "-1" not in out.split("reported")[0], out
+
+    def test_it_says_which_platform_the_native_number_came_from(self, home, tmp_path, capsys,
+                                                               running_gateway, monkeypatch):
+        self._timed_out(running_gateway, home, monkeypatch)
+        job = tmp_path / "slow.py"
+        job.write_text("print('never mind')", encoding="utf-8")
+        capsys.readouterr()
+        main(["remote", "run", str(job)])
+        out = capsys.readouterr().out
+        assert "linux-container reported 137" in out, out
+
+    def test_a_run_that_really_exits_is_not_reported_as_a_timeout(self, home, tmp_path, capsys,
+                                                                  running_gateway):
+        """The control: this command does not say that about every run."""
+        url, state, _service = running_gateway
+        main(["remote", "connect", url, "--code", state.start_pairing(), "--as", "gw"])
+        job = tmp_path / "ok.py"
+        job.write_text("print('fine')", encoding="utf-8")
+        capsys.readouterr()
+        code = main(["remote", "run", str(job)])
+        out = capsys.readouterr().out
+        assert code == 0, out
+        assert "ran out of time" not in out
+
+
 class TestAnOperatorCanOpenEgressFromTheCommandLine:
     """The other half of EM3C-EGRESS-CLASSIFY-0001: `--allow` on the client was unreachable
     because no published gateway command could raise the operator ceiling that denies it.

@@ -95,22 +95,47 @@ def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+#: Everything that crosses to the far machine, and everything that comes back, in this encoding.
+#: Chosen here and applied by hand, because the alternative is whatever the platform would have
+#: chosen -- and on Windows that includes rewriting every line ending on the way out.
+WIRE = "utf-8"
+
+
+def decode(raw) -> str:
+    """Bytes from the far side, read as the encoding this end chose.
+
+    `errors="replace"`, because a remote command may print anything and a record that stopped at
+    the first undecodable byte would be a record of this function rather than of what happened.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):                     # nothing asked for text, but be sure of it
+        return raw
+    return raw.decode(WIRE, "replace")
+
+
 def launch(argv, timeout=600.0, script=None):
     """Run a command and always return (exit_code, stdout, stderr, error_class). Never raises.
 
     `script`, when given, is what the process reads on stdin -- which is how remote work travels,
     because an argument can be rewritten before the process starts and stdin cannot.
+
+    NOTHING HERE IS TEXT. `EM3C-E4-CLASSIFY-0001`: this handed `subprocess` a string with
+    `text=True`, and on Windows that writes through a wrapper which turns every LF into CRLF. The
+    far side's shell received `$'hostname\r'` and said so, and the whole observation channel went
+    with it. The script is encoded here, once, deliberately; the two streams come back as bytes
+    and are decoded here, once, deliberately. No `text`, no `encoding`, no `universal_newlines`:
+    each of those puts a translating wrapper on a stream that must carry what it was given.
     """
+    payload = None if script is None else script.encode(WIRE)
     try:
-        done = subprocess.run(list(argv), capture_output=True, text=True,
-                              timeout=timeout, check=False, input=script)
-        return done.returncode, done.stdout or "", done.stderr or "", ""
+        done = subprocess.run(list(argv), capture_output=True,
+                              timeout=timeout, check=False, input=payload)
+        return done.returncode, decode(done.stdout), decode(done.stderr), ""
     except FileNotFoundError as exc:
         return None, "", str(exc), "FileNotFoundError"
     except subprocess.TimeoutExpired as exc:
-        out, err = exc.stdout or "", exc.stderr or ""
-        return None, (out.decode("utf-8", "replace") if isinstance(out, bytes) else out), \
-            (err.decode("utf-8", "replace") if isinstance(err, bytes) else err), "TimeoutExpired"
+        return None, decode(exc.stdout), decode(exc.stderr), "TimeoutExpired"
     except OSError as exc:
         return None, "", str(exc), type(exc).__name__
 
@@ -188,7 +213,8 @@ def server_step(name, command, *, expected_exit=0, timeout=600.0, **fields):
 #: refuses -- so every step built through it would have raised on the first call, and the whole
 #: matrix with it. Stating them here is a decision recorded once, not a default applied silently.
 NOTHING_EXPECTED = {"expected_exit": None, "expected_refusal": "", "expect_output": False,
-                    "expect_cleanup": False, "expect_container_gone": False}
+                    "expect_cleanup": False, "expect_container_gone": False,
+                    "expect_timeout": False}
 
 
 def step(**values):
@@ -520,7 +546,7 @@ def from_record(record):
 
 
 def cli(name, args, *, expected_exit=0, expected_refusal="", expect_cleanup=False,
-        want_container=False):
+        want_container=False, expect_timeout=False):
     argv = [AN, *args]
     started = time.time()
     code, out, err, error_class = launch(argv)
@@ -538,7 +564,8 @@ def cli(name, args, *, expected_exit=0, expected_refusal="", expect_cleanup=Fals
         name=name, role="client", argv=evidence.redact_argv(argv),
         started_at=started, ended_at=time.time(), exit_code=code, stdout=out, stderr=err,
         expected_exit=expected_exit, expected_refusal=expected_refusal,
-        expect_cleanup=expect_cleanup, expect_output=True, error_class=error_class,
+        expect_cleanup=expect_cleanup, expect_timeout=expect_timeout,
+        expect_output=True, error_class=error_class,
         run_id=run_id, container=container, **asked))
 
 
@@ -668,21 +695,22 @@ def main(path=None) -> int:
                  "--timeout", "300"]
     run_id, slow, launch_error = "", None, ""
     try:
-        slow = subprocess.Popen(slow_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True)
+        # Bytes here too. The run id is read out of this stream, and a stream that translates
+        # its line endings has already changed what it carries.
+        slow = subprocess.Popen(slow_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError as exc:
         launch_error = f"{type(exc).__name__}: {exc}"
     if slow is not None:
         deadline = time.time() + 120
         while time.time() < deadline:
             try:
-                line = slow.stdout.readline()
+                raw_line = slow.stdout.readline()
             except Exception as exc:                               # noqa: BLE001
                 launch_error = f"{type(exc).__name__}: {exc}"
                 break
-            if not line:
+            if not raw_line:
                 break
-            found = RUN_ID.search(line)
+            found = RUN_ID.search(decode(raw_line))
             if found:
                 run_id = found.group(1)
                 break
@@ -720,9 +748,15 @@ def main(path=None) -> int:
                     pass
         container_gone(run_id, container, sought_id)
 
+    # The status the CLI documents for a run its limit ended, and the REASON the gateway
+    # recorded -- which is what the rule reads. `EM3C-E4-CLASSIFY-0001`: this expected 0, got
+    # -1 through a Windows process boundary as 4294967295, and no number could have been right.
+    from agentnode_sdk.gateway.protocol import TIMEOUT_EXIT_STATUS
+
     cli("H4: a payload that ignores signals is still ended by the timeout",
         ["remote", "run", str(WORK / "stubborn.py"), "--max-seconds", "15",
-         "--timeout", "240"], want_container=True)
+         "--timeout", "240"], want_container=True, expected_exit=TIMEOUT_EXIT_STATUS,
+        expect_timeout=True, expect_cleanup=True)
 
     before_token = connection()[1].token
     code, out, err, cls = launch([AN, "remote", "rotate"])

@@ -308,9 +308,28 @@ def cmd_run(args) -> int:
             print(f"    {delta.get('field')}: asked {delta.get('requested')!r}, "
                   f"got {delta.get('effective')!r}")
 
+    from agentnode_sdk.gateway.protocol import EXITED, TIMED_OUT, TIMEOUT_EXIT_STATUS
+
     state = final.get("state")
+    reason = str(final.get("termination_reason") or EXITED)
+    if reason == TIMED_OUT:
+        # Read from what it MEANS, never from a number. `EM3C-E4-CLASSIFY-0001`: this returned
+        # the gateway's exit code, which for a timeout was -1, which Windows then reported as
+        # 4294967295 -- a status no caller could tell from an ordinary failure.
+        native = final.get("native_status")
+        where = final.get("native_platform") or "the sandbox"
+        print()
+        print(f"  {bold('It ran out of time.')} The sandbox stopped it at its limit.")
+        if native is not None:
+            print(f"  ({where} reported {native} for the stopped container.)")
+        return TIMEOUT_EXIT_STATUS
     if state == "finished":
-        return int(final.get("exit_code") or 0)
+        code = final.get("exit_code")
+        if code is None:
+            print()
+            print(f"  {bold('Did not finish.')} Nothing exited, and no reason was given.")
+            return 1
+        return int(code)
     if state == "unverified":
         print()
         print(f"  {bold('It ran, but not everything could be confirmed.')}")

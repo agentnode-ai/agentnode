@@ -93,7 +93,7 @@ def accepted(**changes) -> dict:
 
 
 STATED = {"expected_exit": None, "expected_refusal": "", "expect_output": False,
-          "expect_cleanup": False, "expect_container_gone": False}
+          "expect_cleanup": False, "expect_container_gone": False, "expect_timeout": False}
 
 
 def a_step(**values):
@@ -301,6 +301,8 @@ def wrong_values() -> dict:
                            "gateway_record": resigned(cleanup_verified=None),
                            "cleanup_verified": None},
         "expect_container_gone": {"expect_container_gone": True},
+        # A step that says the run was stopped at its limit, over an answer that says it exited.
+        "expect_timeout": {"expect_timeout": True},
     }
 
 
@@ -481,7 +483,7 @@ a test. It is a stronger outcome than a test noticing, so it gets its own cover.
                  if mark.name == "parametrize"]
         assert len(cases) == 1
         assert list(cases[0].args[1]) == list(evidence.MANDATORY)
-        assert len(evidence.MANDATORY) == 11
+        assert len(evidence.MANDATORY) == 12
 
     # -- the shapes inside a nested list ------------------------------------------------------
 
@@ -852,6 +854,7 @@ gateway's while sitting in what the client sent is claiming its own provenance."
                     "started_at": 1.0, "ended_at": 2.0, "exit_code": 0,
                     "expected_exit": None, "expected_refusal": "", "expect_output": False,
                     "expect_cleanup": False, "expect_container_gone": False,
+                    "expect_timeout": False,
                     "sentinel": bare}
         path.write_text(json.dumps(document) + "\n", encoding="utf-8")
         with pytest.raises(evidence.EvidenceError) as caught:
@@ -1568,6 +1571,60 @@ class TestTheOutsideOfAnAnswerIsTiedToItsInside:
             recorder.record(good_step(gateway_record=dict(one), run_id=one["run_id"],
                                       container=container_for(one["run_id"])))
         assert "more than one gateway" in messages(evidence.check_file(path))
+
+
+class TestATimeoutIsAReasonNotANumber:
+    """`EM3C-E4-CLASSIFY-0001`: a run its limit ended was reported as exit code -1, a Windows
+    client observed 4294967295, and the two had to be called equal for anything to work."""
+
+    def _found(self, tmp_path, record, **step):
+        return _recorded(tmp_path, [good_step(gateway_record=record, run_id=RUN(),
+                                              container=container_for(RUN()),
+                                              answer=accepted(over=record), **step)])
+
+    def test_a_real_timed_out_run_is_read_as_one(self, tmp_path, real_gateway):
+        """A real submission the sandbox stopped, answered by the real gateway."""
+        answer = real_gateway.a_run_its_limit_ended()
+        assert answer["termination_reason"] == "timeout"
+        assert answer["exit_code"] is None
+        assert answer["native_status"] is not None and answer["native_platform"]
+        found = _recorded(tmp_path, [good_step(
+            gateway_record=answer, run_id=answer["run_id"],
+            container=container_for(answer["run_id"]), answer=accepted(over=answer),
+            expect_timeout=True, expected_exit=None,
+            job_id=answer["job_id"], cleanup_verified=answer["cleanup_verified"],
+            request_policy_sha256=answer["request_policy_sha256"],
+            effective_policy_sha256=answer["effective_policy_sha256"],
+            policy_deltas=answer["policy_deltas"])])
+        assert found == [], messages(found)
+
+    def test_a_run_that_exited_is_not_a_timeout(self, tmp_path, real_answer):
+        found = self._found(tmp_path, dict(real_answer), expect_timeout=True)
+        assert "the gateway records it as 'exited'" in messages(found)
+
+    def test_a_reason_this_build_does_not_know_is_an_evidence_error(self, tmp_path):
+        found = self._found(tmp_path, resigned(termination_reason="vanished"))
+        assert "not a reason this build knows" in messages(found)
+
+    def test_a_run_cannot_be_stopped_and_have_exited(self, tmp_path):
+        found = self._found(tmp_path, resigned(termination_reason="timeout", exit_code=0))
+        assert "Nothing that was stopped chose a status" in messages(found)
+
+    def test_a_native_status_must_say_whose_it_is(self, tmp_path):
+        found = self._found(tmp_path, resigned(native_status=137, native_platform=""))
+        assert "without saying which platform" in messages(found)
+
+    def test_a_stopped_run_still_has_to_show_its_cleanup(self, tmp_path):
+        found = self._found(tmp_path,
+                            resigned(termination_reason="timeout", exit_code=None,
+                                     cleanup_verified=None),
+                            expect_timeout=True, expected_exit=None)
+        assert "not a reason for what was left behind to be unknown" in messages(found)
+
+    def test_no_number_can_stand_in_for_the_reason(self, tmp_path):
+        """The defect exactly: an answer carrying the old sentinel and nothing else."""
+        found = self._found(tmp_path, resigned(exit_code=-1), expect_timeout=True)
+        assert "the gateway records it as 'exited'" in messages(found)
 
 
 class TestAHashOfNothingIsNotAnIdentity:

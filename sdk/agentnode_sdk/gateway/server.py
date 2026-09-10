@@ -91,6 +91,13 @@ class RunRecord:
     signature: str = ""
     state: str = "accepted"          # accepted | running | finished | refused | cancelled
     exit_code: int | None = None
+    #: WHY it stopped, not what number came back. `EM3C-E4-CLASSIFY-0001`: a run ended by its own
+    #: wall clock was reported as exit code -1, a Windows client read 4294967295, and the two had
+    #: to be called equal for anything to work. A killed process has no exit code; it has a
+    #: reason. The runtime's own number is kept beside it, with the platform it belongs to.
+    termination_reason: str = "exited"
+    native_status: int | None = None
+    native_platform: str = ""
     stdout: str = ""
     stderr: str = ""
     refusal: str = ""
@@ -107,6 +114,9 @@ class RunRecord:
             "job_id": self.job_id,
             "state": self.state,
             "exit_code": self.exit_code,
+            "termination_reason": self.termination_reason,
+            "native_status": self.native_status,
+            "native_platform": self.native_platform,
             "stdout": self.stdout,
             "stderr": self.stderr,
             "refusal": self.refusal,
@@ -952,15 +962,25 @@ class GatewayService:
             # client decided how long its code could run -- the operator ceiling bound one and
             # not the other, and the policy digest could not catch it because the digested value
             # was not the enforced one. EM3C-GATEWAY-0004 found it.
-            rc, out, err = self.backend.run_process(
+            outcome = self.backend.run_process(
                 spec, input_text=payload, timeout=float(granted.limits.wall_clock_s)
             )
+            rc, out, err = outcome
+            from agentnode_sdk.sandbox.backend import why_it_stopped
+
+            reason, native, platform = why_it_stopped(outcome)
+            record.termination_reason = reason
+            record.native_status = native
+            record.native_platform = platform
             record.exit_code = rc
             record.stdout = out or ""
             record.stderr = err or ""
             terminal = "cancelled" if record.cancel_requested.is_set() else "finished"
         except _Cancelled:
+            from agentnode_sdk.gateway.protocol import CANCELLED
+
             terminal = "cancelled"
+            record.termination_reason = CANCELLED
             record.refusal = "cancelled by the client before it started"
         except Exception as exc:                              # noqa: BLE001
             terminal = "refused"

@@ -366,8 +366,10 @@ class ContainerBackend(SandboxBackend):
     ) -> tuple[int, str, str]:
         """Build the hardened argv and run it once, capturing stdout/stderr.
 
-        Returns ``(returncode, stdout, stderr)``. A timeout returns
-        ``(-1, partial_stdout, stderr + marker)`` so callers can distinguish it. Used for BOTH the
+        Returns ``(returncode, stdout, stderr)``. A timeout returns an
+        :class:`~agentnode_sdk.sandbox.backend.Outcome` whose exit code is None and whose reason
+        says so -- it used to return -1, which a Windows client read as 4294967295 and could not
+        tell from an ordinary failure (`EM3C-E4-CLASSIFY-0001`). Used for BOTH the
         toolpack build (pip install into the volume) and the per-call run.
 
         **EM-3B-R1.** Killing the ``docker run`` client does not stop the container -- the client
@@ -490,7 +492,16 @@ class ContainerBackend(SandboxBackend):
                 raise SandboxContainmentError(
                     f"no identity could be resolved for this run and the runtime reports "
                     f"{name} as {state}, so it cannot be shown to have stopped")
-            return -1, out or "", (err or "") + f"\n[sandbox timed out after {timeout}s]"
+            # No exit code: this container was killed, it did not exit. The runtime's own
+            # number is kept beside the reason and said whose it is, because a number that
+            # does not say that is a number a reader will guess about.
+            from agentnode_sdk.gateway.protocol import TIMED_OUT
+            from agentnode_sdk.sandbox.backend import Outcome
+
+            return Outcome(None, out or "",
+                           (err or "") + "\n[sandbox timed out after " + str(timeout) + "s]",
+                           reason=TIMED_OUT, native_status=proc.returncode,
+                           platform="linux-container")
 
         removed = _run_runtime([runtime, "rm", "-f", ident], timeout=_KILL_TIMEOUT)
         if removed is None:
@@ -510,7 +521,16 @@ class ContainerBackend(SandboxBackend):
         while time.monotonic() < deadline:
             states = (self._presence(runtime, ident), self._presence(runtime, name))
             if states == (ABSENT, ABSENT):
-                return -1, out or "", (err or "") + f"\n[sandbox timed out after {timeout}s]"
+                # No exit code: this container was killed, it did not exit. The runtime's own
+                # number is kept beside the reason and said whose it is, because a number that
+                # does not say that is a number a reader will guess about.
+                from agentnode_sdk.gateway.protocol import TIMED_OUT
+                from agentnode_sdk.sandbox.backend import Outcome
+
+                return Outcome(None, out or "",
+                               (err or "") + "\n[sandbox timed out after " + str(timeout) + "s]",
+                               reason=TIMED_OUT, native_status=proc.returncode,
+                               platform="linux-container")
             time.sleep(0.1)
         raise SandboxContainmentError(
             f"container {ident[:12]} (resolved by {how}) could not be shown to be gone after being "

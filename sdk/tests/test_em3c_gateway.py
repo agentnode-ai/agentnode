@@ -259,7 +259,11 @@ class TestPairing:
 
     def test_hello_works_before_pairing(self, gateway):
         base, _, _, _ = gateway
-        assert gc.hello(base)["protocol"] == "em3c/1"
+        from agentnode_sdk.gateway.protocol import PROTOCOL_VERSION
+
+        # The version this build speaks, not a version written down here: a test that names
+        # the number states the number rather than the property.
+        assert gc.hello(base)["protocol"] == PROTOCOL_VERSION
 
     def test_the_token_file_never_holds_a_usable_token(self, gateway):
         base, state, _, _ = gateway
@@ -394,7 +398,9 @@ class TestNothingRunsUntilItIsAdmitted:
                 "signature": sign(client_token_secret(conn.token), payload),
                 "artifact_b64": base64.b64encode(b"x").decode()}
         status, answer = gc._post(base + "/v1/jobs", body)
-        assert status == 403 and "em3c/1" in answer["error"]
+        from agentnode_sdk.gateway.protocol import PROTOCOL_VERSION
+
+        assert status == 403 and PROTOCOL_VERSION in answer["error"]
         assert backend.specs == [], "an unknown protocol version must not reach a container"
 
 
@@ -517,6 +523,8 @@ class TestEveryAnswerNamesTheGatewayThatGaveIt:
     """T-C: an answer a client cannot tie to a build is not a measurement of that build."""
 
     def test_hello_pair_submit_status_and_cancel_all_carry_the_identity(self, gateway):
+        from agentnode_sdk.gateway.protocol import PROTOCOL_VERSION
+
         base, state, service, _ = gateway
         conn = _paired(base, state)
         expected = state.identity
@@ -528,7 +536,7 @@ class TestEveryAnswerNamesTheGatewayThatGaveIt:
         answers["cancel"] = gc.cancel(conn, "stamped")
 
         for name, answer in answers.items():
-            assert answer.get("protocol") == "em3c/1", name
+            assert answer.get("protocol") == PROTOCOL_VERSION, name
             assert answer.get("gateway", {}).get("gateway_id") == expected.gateway_id, name
             assert answer.get("gateway", {}).get("version") == expected.version, name
             assert answer.get("fingerprint") == expected.fingerprint, name
@@ -545,6 +553,7 @@ class TestEveryAnswerNamesTheGatewayThatGaveIt:
 
 class TestMandatoryAndOptionalNarrowing:
     """EM3C-DIGEST-DECISION-0001 chose A1/B1/C1/D1/E1. This is that decision, checked."""
+
 
     def _serve(self, state, wall_clock_s=180):
         from agentnode_sdk.sandbox.contract import Limits, SandboxPolicy

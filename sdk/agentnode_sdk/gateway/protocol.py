@@ -42,7 +42,29 @@ from typing import Any
 
 #: Bumped when the meaning of a field changes. A gateway refuses a version it does not implement
 #: rather than guessing, because guessing is how a client ends up believing a property holds.
-PROTOCOL_VERSION = "em3c/1"
+PROTOCOL_VERSION = "em3c/2"
+
+#: What this build used to speak. Kept so a refusal can say what changed rather than only that
+#: something did. `em3c/1` carried a timeout as the exit code -1, and a client speaking it would
+#: read a killed run as one that exited -- so this version is refused rather than accommodated,
+#: which is the safe direction when the difference is "did this finish or was it stopped".
+SUPERSEDED_VERSIONS = ("em3c/1",)
+
+#: Why a run stopped, as a meaning rather than as a number. `EM3C-E4-CLASSIFY-0001`: a run ended
+#: by its own wall clock was reported as exit code -1, which a Windows client then observed as
+#: 4294967295 -- so the client could not tell a timeout from an ordinary failure, and two numbers
+#: had to be treated as the same thing to make it work. A process that was killed did not exit,
+#: and has no exit code; what it has is a reason.
+EXITED = "exited"
+TIMED_OUT = "timeout"
+CANCELLED = "cancelled"
+TERMINATION_REASONS = (EXITED, TIMED_OUT, CANCELLED)
+
+#: The CLI's own status when a run ended on its limit. 124 is what `timeout(1)` uses, it fits in
+#: the range every platform can carry, and it is a documented constant rather than a sentinel
+#: that happens to survive the trip.
+TIMEOUT_EXIT_STATUS = 124
+
 
 #: Every state from which a run will never move again. One list, shared, because a client that
 #: does not recognise a terminal state waits for it forever -- which is how "unverified" was

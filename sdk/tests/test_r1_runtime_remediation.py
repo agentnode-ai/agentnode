@@ -93,6 +93,10 @@ class FakeProc:
     def __init__(self, alive_after_kill=False):
         self._alive = alive_after_kill
         self.killed = False
+        #: A real `Popen` always has one, and the timeout path keeps it beside the reason as
+        #: the runtime's own number. A double without it is a double that does not produce
+        #: what the real thing produces.
+        self.returncode = -9
 
     def kill(self):
         self.killed = True
@@ -118,9 +122,15 @@ class TestTimeoutEndsThePayload:
         fake = FakeRuntime(exists={"run-x", CID})
         monkeypatch.setattr(cb, "_run_runtime", fake)
         backend = cb.ContainerBackend(runtime="docker")
-        rc, out, err = backend._end_timed_out_run(FakeProc(), "docker", "run-x",
-                                                  _cidfile(tmp_path), 5.0)
-        assert rc == -1 and "timed out after 5.0s" in err
+        # `EM3C-E4-CLASSIFY-0001`: this asserted rc == -1, which a Windows client read as
+        # 4294967295 and could not tell from an ordinary failure. Nothing exited, so there is
+        # no exit code -- there is a reason, and the runtime's own number beside it.
+        outcome = backend._end_timed_out_run(FakeProc(), "docker", "run-x",
+                                             _cidfile(tmp_path), 5.0)
+        rc, _out, err = outcome
+        assert rc is None and "timed out after 5.0s" in err
+        assert outcome.reason == "timeout"
+        assert outcome.native_status == -9 and outcome.platform == "linux-container"
         removals = [c for c in fake.calls if c[1] == "rm"]
         assert removals == [["docker", "rm", "-f", CID]], (
             "the timeout must remove exactly the container this run created, by its id")
@@ -184,7 +194,7 @@ class TestTimeoutEndsThePayload:
         monkeypatch.setattr(cb, "_run_runtime", fake)
         rc, _out, err = cb.ContainerBackend(runtime="docker")._end_timed_out_run(
             FakeProc(), "docker", "run-x", str(tmp_path / "cid"), 5.0)
-        assert rc == -1 and "timed out" in err
+        assert rc is None and "timed out" in err
         assert not [c for c in fake.calls if c[1] == "rm"]
 
     def test_a_name_that_exists_without_a_resolvable_identity_is_a_containment_error(
@@ -231,7 +241,7 @@ class TestTimeoutEndsThePayload:
             rc, _out, err = backend._end_timed_out_run(FakeProc(), "docker", name, cidfile, 5.0)
         finally:
             cb._remove_quietly(cidfile, tmpdir)
-        assert rc == -1 and "timed out" in err
+        assert rc is None and "timed out" in err
         assert not [c for c in fake.calls if c[1] == "rm"], (
             "a pre-existing container with the caller name was addressed")
         assert pre_existing in fake._exists, "it must still be there"
@@ -476,7 +486,7 @@ class TestTheResistantPayloadForReal:
 
             # (3)(9) the wall clock was reached, and the timeout is what came back -- AFTER the
             # backend verified absence, which is why the checks below hold the moment it returns.
-            assert rc == -1, f"expected the documented timeout code, got {rc}"
+            assert rc is None, f"a killed container has no exit code, got {rc}"
             assert "timed out" in err
 
             # (4)(5)(6) not merely the client: the exact container of this run is gone, by BOTH

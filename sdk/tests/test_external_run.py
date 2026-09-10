@@ -120,10 +120,11 @@ class World:
             return 0, "rotated" + chr(10), "", ""
         return 0, "ok\n", "", ""
 
-    def submit(self) -> str:
+    def submit(self, ends_at_its_limit: bool = False) -> str:
         """A real job, on the real gateway, over its real transport. What comes back is the
         gateway's answer, and nothing in this file has an opinion about its shape."""
-        answer = self.gateway.a_finished_run()
+        answer = (self.gateway.a_run_its_limit_ended() if ends_at_its_limit
+                  else self.gateway.a_finished_run())
         self.run_id = answer["run_id"]
         return self.run_id
 
@@ -142,7 +143,16 @@ class World:
         if asked and not reachable and self.allowlist:
             return 1, ("refused: this job named no host it may reach ("
                        + ", ".join(asked) + " is not allowed)" + chr(10)), "", ""
-        out = "run: " + self.submit() + chr(10)
+        # The payload that ignores signals is the one the sandbox has to stop at its limit.
+        stubborn = any("stubborn" in part for part in parts)
+        out = "run: " + self.submit(ends_at_its_limit=stubborn) + chr(10)
+        if stubborn:
+            # What the real CLI exits with for a run its limit ended. `test_em3c_cli.py` runs
+            # the real command against a real gateway and holds it to the same number, so this
+            # is a model of something checked rather than a number chosen here.
+            from agentnode_sdk.gateway.protocol import TIMEOUT_EXIT_STATUS
+
+            return TIMEOUT_EXIT_STATUS, out + "it ran out of time" + chr(10), "", ""
         payload = parts[-3] if len(parts) >= 3 else ""
         source = ""
         try:

@@ -1,0 +1,90 @@
+# The Windows gate.
+#
+# EM3C-E4-CLASSIFY-0001: the external run E4 died because `subprocess.run(input=<str>, text=True)`
+# on Windows turns every LF into CRLF, and the far side's shell received `$'hostname\r'`. Every
+# test that was meant to establish "remote work arrives unchanged" stopped at the argument handed
+# to a replaced transport, so the string never crossed a real process boundary -- and the boundary
+# was where it was rewritten.
+#
+# Linux cannot catch that. There is no translation there to catch, so the transport tests pass on
+# a Linux runner whether the defect is present or not. This lane exists so the property is
+# established where it can fail, and it is required rather than advisory: an external run is not
+# permitted on green Linux CI alone.
+name: EM-3C Windows boundary
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "sdk/agentnode_sdk/tools/**"
+      - "sdk/agentnode_sdk/gateway/**"
+      - "sdk/agentnode_sdk/sandbox/**"
+      - "sdk/tests/test_transport_bytes.py"
+      - "sdk/tests/test_evidence.py"
+      - "sdk/tests/test_external_run.py"
+      - ".github/workflows/em3c-windows.yml"
+  push:
+    branches:
+      - main
+      - "em3c/**"
+      - "em3c-*/**"
+
+jobs:
+  the-boundary:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
+
+      # The one that matters: a real child process on a real Windows machine, given the real
+      # payload through the real code, answering with the hex of what it actually received.
+      - name: What crosses a real Windows process boundary
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_transport_bytes.py 2>&1 | tee bytes.txt
+          grep -qE "^19 passed" bytes.txt || {
+            echo "the transport tests did not all pass"; exit 1; }
+
+      # And the same property as the driver exercises it, so the two cannot drift apart.
+      - name: The external-run driver, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_external_run.py 2>&1 | tee driver.txt
+          grep -qE "^39 passed" driver.txt || {
+            echo "the driver tests did not all pass on Windows"; exit 1; }
+
+      # The evidence contract too: it decides what a timeout means, and the number that used to
+      # stand for one is exactly what Windows reported differently.
+      - name: The evidence contract, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_evidence.py 2>&1 | tee evidence.txt
+          grep -qE "^[0-9]+ passed" evidence.txt || {
+            echo "the evidence tests did not all pass on Windows"; exit 1; }
+
+      - name: What this lane established
+        if: always()
+        shell: bash
+        run: |
+          echo "Windows boundary lane on ${{ github.sha }}"
+          tail -2 bytes.txt driver.txt evidence.txt 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: em3c-windows-boundary
+          path: |
+            sdk/bytes.txt
+            sdk/driver.txt
+            sdk/evidence.txt
+          retention-days: 14

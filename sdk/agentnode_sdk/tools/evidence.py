@@ -131,6 +131,9 @@ class Step:
     expect_output: Any = UNSET
     expect_cleanup: Any = UNSET
     expect_container_gone: Any = UNSET
+    #: That the run this step is about was ended by its own limit. A MEANING, checked against
+    #: the reason the gateway recorded -- never against an exit code (`EM3C-E4-CLASSIFY-0001`).
+    expect_timeout: Any = UNSET
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -138,7 +141,7 @@ class Step:
 
 #: Declared before the step ran. Nothing may write these from what happened.
 EXPECTATIONS = ("expected_exit", "expected_refusal", "expect_output", "expect_cleanup",
-                "expect_container_gone")
+                "expect_container_gone", "expect_timeout")
 
 #: Written by the recorder from what happened. A caller may not supply these to `run()`.
 OBSERVED_BY_RUNNING = ("exit_code", "stdout", "stderr", "error_class")
@@ -149,7 +152,7 @@ OBSERVED_BY_RUNNING = ("exit_code", "stdout", "stderr", "error_class")
 #: and "nobody said" the same thing. `EM3C-EVIDENCE-0001` named that ambiguity.
 MANDATORY = ("name", "role", "argv", "started_at", "ended_at", "exit_code",
              "expected_exit", "expected_refusal", "expect_output", "expect_cleanup",
-             "expect_container_gone")
+             "expect_container_gone", "expect_timeout")
 
 #: Fields the verifier reads. `EM3C-EVIDENCE-0009`: this used to be a subset, with the remainder
 #: named in a `RECORDED_ONLY` list and defended as a decision rather than an oversight. But an
@@ -162,7 +165,7 @@ READ_BY_RULES = (
     "error_class", "run_id", "gateway_record", "container", "container_query", "machine",
     "sentinel", "binding", "answer", "request_policy_sha256", "effective_policy_sha256",
     "expected_exit", "expected_refusal", "expect_output", "expect_cleanup",
-    "expect_container_gone",
+    "expect_container_gone", "expect_timeout",
     "job_id", "client_id", "policy_deltas", "cleanup_verified",
 )
 
@@ -239,8 +242,8 @@ def _production() -> dict:
     if not _PRODUCTION:
         from agentnode_sdk.gateway.policy_paths import policy_shape
         from agentnode_sdk.gateway.protocol import (
-            ERROR_FIELDS, PROTOCOL_VERSION, SIGNATURE_FIELDS, STAMP_FIELDS, binding_fields,
-            refusal, response_binding,
+            ERROR_FIELDS, EXITED, PROTOCOL_VERSION, SIGNATURE_FIELDS, STAMP_FIELDS,
+            TERMINATION_REASONS, TIMED_OUT, binding_fields, refusal, response_binding,
         )
         from agentnode_sdk.gateway.server import RunRecord
 
@@ -272,6 +275,9 @@ def _production() -> dict:
             "policy": tuple(policy_shape(None)),
             "protocol": PROTOCOL_VERSION,
             "error": tuple(ERROR_FIELDS),
+            "reasons": tuple(TERMINATION_REASONS),
+            "exited": EXITED,
+            "timed_out": TIMED_OUT,
             "response_binding": response_binding,
             "types": types,
             "seal": lambda answer: digest(canonical_bytes(answer)),
@@ -378,6 +384,7 @@ _TYPES: dict[str, tuple] = {
     "expected_exit": (int, type(None)),
     "expected_refusal": (str,),
     "expect_output": (bool,), "expect_cleanup": (bool,), "expect_container_gone": (bool,),
+    "expect_timeout": (bool,),
 }
 
 FIELD_NAMES = tuple(f.name for f in fields(Step))
@@ -862,6 +869,39 @@ def _run_findings(step, where) -> list[Finding]:
             where, FAIL,
             f"the step recorded cleanup as {claimed_cleanup!r} and the gateway says "
             f"{held_cleanup!r}"))
+
+    # Why the run stopped. `EM3C-E4-CLASSIFY-0001`: this was an integer, and the two integers
+    # that meant "stopped by its own limit" on the two platforms had to be treated as equal.
+    production = _production()
+    reason = record.get("termination_reason", production["exited"])
+    if reason not in production["reasons"]:
+        problems.append(Finding(
+            where, EVIDENCE_ERROR,
+            f"the record says this run stopped for {str(reason)[:24]!r}, which is not a reason "
+            "this build knows, so what happened to it cannot be read"))
+    elif reason != production["exited"] and record.get("exit_code") is not None:
+        problems.append(Finding(
+            where, FAIL,
+            f"this run is recorded as {reason} AND as having exited {record.get('exit_code')!r}. "
+            "Nothing that was stopped chose a status, so one of the two is not what happened"))
+    if record.get("native_status") is not None and not str(record.get("native_platform") or ""):
+        problems.append(Finding(
+            where, EVIDENCE_ERROR,
+            "a native status was recorded without saying which platform produced it, so the "
+            "number cannot be read as anything"))
+
+    if step.get("expect_timeout"):
+        if reason != production["timed_out"]:
+            problems.append(Finding(
+                where, FAIL,
+                "this step is about a run that should have been stopped at its limit, and the "
+                f"gateway records it as {str(reason)[:24]!r}"))
+        elif record.get("cleanup_verified") is not True:
+            problems.append(Finding(
+                where, EVIDENCE_ERROR,
+                "the run was stopped at its limit and its cleanup is "
+                f"{record.get('cleanup_verified')!r}. Being stopped is not a reason for what was "
+                "left behind to be unknown"))
 
     for field_name in ("request_policy_sha256", "effective_policy_sha256"):
         claimed = (step.get(field_name) or "").strip()

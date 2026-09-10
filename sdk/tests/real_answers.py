@@ -22,9 +22,32 @@ import pytest
 
 from agentnode_sdk.gateway import client as gc
 from agentnode_sdk.gateway.identity import GatewayState
+from agentnode_sdk.gateway.protocol import TIMED_OUT
+from agentnode_sdk.sandbox.backend import Outcome
 from agentnode_sdk.gateway.server import GatewayService, make_server
 
 from tests.test_em3c_gateway import StandInBackend, _granted, _store_measurement
+
+
+class Backend(StandInBackend):
+    """The stand-in, able to report a run its limit ended.
+
+    It builds that report with the production `Outcome`, the same class the container backend
+    returns, so what the gateway records is what the gateway would record. Nothing here writes
+    a run record or an answer.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.stop_next_at_the_limit = False
+
+    def run_process(self, spec, input_text=None, timeout=120.0):
+        result = super().run_process(spec, input_text=input_text, timeout=timeout)
+        if self.stop_next_at_the_limit:
+            self.stop_next_at_the_limit = False
+            return Outcome(None, "", f"[sandbox timed out after {timeout}s]",
+                           reason=TIMED_OUT, native_status=137, platform="linux-container")
+        return result
 
 
 class RealGateway:
@@ -32,7 +55,7 @@ class RealGateway:
 
     def __init__(self, root):
         self.state = GatewayState(str(root), version="test")
-        self.backend = StandInBackend()
+        self.backend = Backend()
         self.service = GatewayService(self.state, backend=self.backend)
         _store_measurement(self.service)
         self.server = make_server(self.service, port=0)
@@ -49,6 +72,11 @@ class RealGateway:
                            granted=_granted(self.service, token=self.connection.token))
         run_id = answer["run_id"]
         return gc.wait_for(self.connection, run_id, timeout=30.0)
+
+    def a_run_its_limit_ended(self, artifact: bytes = b"print('never mind')") -> dict:
+        """A real submission the sandbox stops at its limit, answered by the real gateway."""
+        self.backend.stop_next_at_the_limit = True
+        return self.a_finished_run(artifact)
 
     def resigned(self, answer: dict, **changes) -> dict:
         """A real answer with something changed, signed and stamped by the production code.
