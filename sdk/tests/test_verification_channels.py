@@ -23,6 +23,8 @@ import inspect
 
 import pytest
 
+pytest_plugins = ("tests.real_answers",)
+
 from agentnode_sdk.verification import TOOL, channels, sentinels
 
 
@@ -46,11 +48,13 @@ class AnAnsweringMachine:
 
 
 class AnAnsweringGateway:
-    """A stand-in for `TheGatewayItself` -- and, deliberately, one that cannot fake provenance.
+    """A stand-in for the SERVER, not for the channel.
 
-    It has to go through a real channel to produce an `Answer`, so a test double here is a double
-    of the SERVER, not of the channel. That is the difference the founder asked for: no test
-    double returns an answer this tool built for itself.
+    It goes through the real `TheGatewayItself` to produce an `Answer`, because an `Answer` can
+    only be produced by a channel. And what it hands back is a record a REAL gateway really gave:
+    `EM3C-VERIFY-0001` found this file writing `{"run_id": ..., "stdout": ..., "state": ...}` by
+    hand, which is a second definition of the wire format sitting in a test, waiting to keep
+    agreeing with itself after production has moved on.
     """
 
     def __init__(self, record=None, trouble=""):
@@ -74,8 +78,21 @@ class AnAnsweringGateway:
             gc.status_of = was
 
 
-def a_record(run_id="r" * 32, stdout=""):
-    return {"run_id": run_id, "stdout": stdout, "state": "finished"}
+@pytest.fixture(scope="module")
+def a_record(real_gateway):
+    """A record a real gateway really gave, with the sandbox told what to print.
+
+    Nothing here writes a field of it. `real_gateway` starts a real `GatewayService`, pairs a
+    real client, and answers through the production client -- so what comes back is whatever the
+    production serializer produced, and a change to it reaches these tests by breaking them.
+    """
+    def made(stdout=""):
+        real_gateway.backend.answers = lambda spec, payload: (0, stdout, "")
+        try:
+            return real_gateway.a_finished_run()
+        finally:
+            real_gateway.backend.answers = None
+    return made
 
 
 # ---------------------------------------------------------------- provenance is structural
@@ -90,7 +107,12 @@ class TestAnAnswerIsMadeByAChannel:
         assert "produced by one" in str(caught.value)
 
     def test_and_carries_the_name_of_the_one_that_made_it(self):
-        said = channels.ThisMachine().identity()
+        """The name comes off the class of the thing that spoke. Not off an argument, and not
+        off an attribute a caller could set -- `EM3C-VERIFY-0001` found provenance still being,
+        in the end, a string somebody supplied."""
+        one = channels.ThisMachine()
+        one.claimed = "the gateway's signed answer"        # a caller trying to say otherwise
+        said = one.identity()
         assert said.channel == channels.ThisMachine.name
         assert said.answered is True
 
@@ -122,10 +144,13 @@ class TestAnAnswerIsMadeByAChannel:
 class TestAChannelIsAskedWhatItKnows:
 
     def test_the_far_machine_has_no_way_to_be_asked_about_a_run(self):
-        """Not a rule it follows. There is no method that takes one."""
-        for name, method in inspect.getmembers(channels.TheFarMachineItself,
-                                               inspect.isfunction):
-            if name.startswith("_"):
+        """Not a rule it follows. There is no method that takes one.
+
+        Its OWN methods, which are the questions. `said` is inherited from `Channel` and is how a
+        channel speaks rather than how it is asked -- a channel that could not produce an answer
+        would not be one."""
+        for name, method in vars(channels.TheFarMachineItself).items():
+            if name.startswith("_") or not callable(method):
                 continue
             taken = list(inspect.signature(method).parameters)[1:]
             assert taken == [], (name, taken)
@@ -146,13 +171,20 @@ class TestAChannelIsAskedWhatItKnows:
         assert hasattr(channels.TheGatewayItself, "record_of")
         assert not hasattr(channels.TheFarMachineItself, "record_of")
 
-    def test_the_gateway_channel_restates_no_wire_format(self):
+    def test_the_gateway_channel_restates_no_wire_format(self, a_record):  # noqa: D401
         """It calls the production client and returns what came back. A field list here would be
-        a second definition of the protocol, waiting to disagree with the first."""
+        a second definition of the protocol -- so the fields are taken FROM a record production
+        made, and none of them may appear in the channel's source."""
         source = inspect.getsource(channels.TheGatewayItself)
         assert "gc.status_of" in source
-        for field in ("stdout", "state", "termination_reason", "binding", "signature"):
-            assert field not in source, field
+        # The record is returned whole and never reached into. `run_id` is how a run is ASKED
+        # for -- a parameter name, not a field this channel reads -- so what is checked is
+        # reaching in, which is the thing that would make this a second reader of the format.
+        fields = [f for f in a_record()]
+        assert len(fields) > 5, fields
+        for field in fields:
+            for reaching in ('.get("%s"' % field, '["%s"]' % field, "['%s']" % field):
+                assert reaching not in source, (field, reaching)
 
 
 # ---------------------------------------------------------------- what a crossing is tied to
@@ -163,40 +195,42 @@ class TestACrossingIsTiedToWhatItProves:
     VALUE = "a1b2c3d4e5f60718"
     PAYLOAD = b"print('SENT-FROM-HERE a1b2c3d4e5f60718')"
 
-    def test_a_value_that_is_not_in_the_payload_is_refused_outright(self):
+    def test_a_value_that_is_not_in_the_payload_is_refused_outright(self, a_record):
         with pytest.raises(sentinels.SentinelError):
             sentinels.what_the_client_made(AnAnsweringGateway(a_record()), "r" * 32,
                                            b"print('something else')", self.VALUE)
 
-    def test_a_crossing_that_holds(self):
-        gateway = AnAnsweringGateway(a_record(stdout="SENT-FROM-HERE " + self.VALUE))
-        one = sentinels.what_the_client_made(gateway, "r" * 32, self.PAYLOAD, self.VALUE)
+    def test_a_crossing_that_holds(self, a_record):
+        gateway = AnAnsweringGateway(a_record("SENT-FROM-HERE " + self.VALUE))
+        one = sentinels.what_the_client_made(gateway, gateway.record["run_id"],
+                                             self.PAYLOAD, self.VALUE)
         assert one.holds is True and one.decidable is True
         assert one.made_on == "the client"
-        assert one.run_id == "r" * 32
+        assert one.run_id == gateway.record["run_id"]
         assert one.payload_text == self.PAYLOAD.decode()
         assert one.payload_sha256 == hashlib.sha256(self.PAYLOAD).hexdigest()
         assert one.confirmed_by == channels.TheGatewayItself.name
-        assert one.asked.endswith("r" * 32)
+        assert one.asked.endswith(gateway.record["run_id"])
         assert len(one.record_sha256) == 64
 
-    def test_a_record_about_another_run_decides_nothing(self):
+    def test_a_record_about_another_run_decides_nothing(self, a_record):
         """Not a refutation: an answer about a different run says nothing either way."""
-        gateway = AnAnsweringGateway(a_record(run_id="q" * 32,
-                                              stdout="SENT-FROM-HERE " + self.VALUE))
-        one = sentinels.what_the_client_made(gateway, "r" * 32, self.PAYLOAD, self.VALUE)
+        # A real record about a real run; what differs is the run being ASKED about, so nothing
+        # here edits a record to make the case.
+        gateway = AnAnsweringGateway(a_record("SENT-FROM-HERE " + self.VALUE))
+        one = sentinels.what_the_client_made(gateway, "q" * 32, self.PAYLOAD, self.VALUE)
         assert one.decidable is False and one.holds is False
         assert "says nothing about this one" in one.why
 
     def test_a_gateway_that_could_not_be_asked_decides_nothing(self):
         gateway = AnAnsweringGateway(trouble="connection refused")
-        one = sentinels.what_the_client_made(gateway, "r" * 32, self.PAYLOAD, self.VALUE)
+        one = sentinels.what_the_client_made(gateway, "q" * 32, self.PAYLOAD, self.VALUE)
         assert one.decidable is False and one.holds is False
         assert "could not be asked" in one.why
 
-    def test_a_record_that_does_not_carry_it_is_a_refutation(self):
-        gateway = AnAnsweringGateway(a_record(stdout="nothing of the sort"))
-        one = sentinels.what_the_client_made(gateway, "r" * 32, self.PAYLOAD, self.VALUE)
+    def test_a_record_that_does_not_carry_it_is_a_refutation(self, a_record):
+        gateway = AnAnsweringGateway(a_record("nothing of the sort"))
+        one = sentinels.what_the_client_made(gateway, gateway.record["run_id"], self.PAYLOAD, self.VALUE)
         assert one.decidable is True and one.holds is False
         assert "does not carry it" in one.why
 
@@ -211,34 +245,34 @@ class TestTheOtherDirectionNeedsTwoChannels:
             {"machine-id": answer} if answer else {},
             {"machine-id": trouble} if trouble else {}))
 
-    def test_it_holds_when_both_channels_say_the_same_thing(self):
-        gateway = AnAnsweringGateway(a_record(stdout=self.IDENTITY))
+    def test_it_holds_when_both_channels_say_the_same_thing(self, a_record):
+        gateway = AnAnsweringGateway(a_record(self.IDENTITY))
         one = sentinels.what_the_far_machine_is(
-            gateway, self.machine((True, 0, self.IDENTITY, "")), "r" * 32, self.PAYLOAD)
+            gateway, self.machine((True, 0, self.IDENTITY, "")), gateway.record["run_id"], self.PAYLOAD)
         assert one.holds is True and one.decidable is True
         assert one.made_on == "the far machine"
         # Both channels are named, and neither of them named itself.
         assert channels.TheGatewayItself.name in one.confirmed_by
         assert channels.TheFarMachineItself.name in one.confirmed_by
 
-    def test_it_fails_when_what_ran_was_somewhere_else(self):
-        gateway = AnAnsweringGateway(a_record(stdout="some-other-machine"))
+    def test_it_fails_when_what_ran_was_somewhere_else(self, a_record):
+        gateway = AnAnsweringGateway(a_record("some-other-machine"))
         one = sentinels.what_the_far_machine_is(
-            gateway, self.machine((True, 0, self.IDENTITY, "")), "r" * 32, self.PAYLOAD)
+            gateway, self.machine((True, 0, self.IDENTITY, "")), gateway.record["run_id"], self.PAYLOAD)
         assert one.decidable is True and one.holds is False
         assert "not on the machine that was asked" in one.why
 
-    def test_a_machine_that_could_not_be_asked_decides_nothing(self):
-        gateway = AnAnsweringGateway(a_record(stdout=self.IDENTITY))
+    def test_a_machine_that_could_not_be_asked_decides_nothing(self, a_record):
+        gateway = AnAnsweringGateway(a_record(self.IDENTITY))
         one = sentinels.what_the_far_machine_is(
-            gateway, self.machine(trouble=OSError("no route")), "r" * 32, self.PAYLOAD)
+            gateway, self.machine(trouble=OSError("no route")), gateway.record["run_id"], self.PAYLOAD)
         assert one.decidable is False and one.holds is False
         assert "could not be asked" in one.why
 
-    def test_a_machine_that_says_nothing_decides_nothing(self):
-        gateway = AnAnsweringGateway(a_record(stdout=self.IDENTITY))
+    def test_a_machine_that_says_nothing_decides_nothing(self, a_record):
+        gateway = AnAnsweringGateway(a_record(self.IDENTITY))
         one = sentinels.what_the_far_machine_is(
-            gateway, self.machine((True, 0, "   ", "")), "r" * 32, self.PAYLOAD)
+            gateway, self.machine((True, 0, "   ", "")), gateway.record["run_id"], self.PAYLOAD)
         assert one.decidable is False and one.holds is False
 
 

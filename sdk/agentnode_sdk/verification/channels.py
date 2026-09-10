@@ -58,19 +58,34 @@ class Answer:
                        default=str).encode("utf-8")).hexdigest()
 
 
-def _answer(channel: str, asked: str, value: Any, answered: bool, trouble: str = "") -> Answer:
-    made = Answer.__new__(Answer)
-    object.__setattr__(made, "_made_by", _ONLY_A_CHANNEL)
-    object.__setattr__(made, "channel", channel)
-    object.__setattr__(made, "asked", asked)
-    object.__setattr__(made, "value", value)
-    object.__setattr__(made, "answered", answered)
-    object.__setattr__(made, "trouble", trouble)
-    made.__post_init__()
-    return made
+class Channel:
+    """Something that can be asked, and the only thing that can produce an `Answer`.
+
+    `EM3C-VERIFY-0001`: what stood here was a module-level factory taking the channel's name as
+    an argument. The private token made ordinary construction impossible and left the factory
+    open, so provenance was still, in the end, a string a caller supplied. It is not a string
+    anybody supplies now: `said` takes no name, and the name it writes comes off the class of the
+    object doing the saying. To produce an `Answer` claiming to be a channel, one has to BE a
+    channel -- which is the honest boundary, because a class that answers questions about a
+    machine is a channel whatever it is called.
+    """
+
+    #: What this channel is, on every answer it gives.
+    name = ""
+
+    def said(self, asked: str, value: Any, answered: bool = True, trouble: str = "") -> Answer:
+        made = Answer.__new__(Answer)
+        object.__setattr__(made, "_made_by", _ONLY_A_CHANNEL)
+        object.__setattr__(made, "channel", type(self).name)
+        object.__setattr__(made, "asked", asked)
+        object.__setattr__(made, "value", value)
+        object.__setattr__(made, "answered", answered)
+        object.__setattr__(made, "trouble", trouble)
+        made.__post_init__()
+        return made
 
 
-class TheGatewayItself:
+class TheGatewayItself(Channel):
     """The gateway's own transport. It knows about runs, and it signs what it says.
 
     Nothing about the wire format is written here. `status_of` is the production client, the
@@ -92,11 +107,11 @@ class TheGatewayItself:
         try:
             record = gc.status_of(self.connection, run_id)
         except Exception as exc:                              # noqa: BLE001
-            return _answer(self.name, asked, None, False, f"{type(exc).__name__}: {exc}")
-        return _answer(self.name, asked, record, True)
+            return self.said(asked, None, False, f"{type(exc).__name__}: {exc}")
+        return self.said(asked, record)
 
 
-class TheFarMachineItself:
+class TheFarMachineItself(Channel):
     """A shell on the far machine. It knows what the machine is. It is not asked anything else.
 
     There is no method here that takes a run id, a value to look for, or a path to search, and
@@ -115,13 +130,12 @@ class TheFarMachineItself:
         try:
             ran, code, out, err = self.ask(command)
         except Exception as exc:                              # noqa: BLE001
-            return _answer(self.name, command, None, False, f"{type(exc).__name__}: {exc}")
+            return self.said(command, None, False, f"{type(exc).__name__}: {exc}")
         if not ran:
-            return _answer(self.name, command, None, False, err or "the command did not run")
+            return self.said(command, None, False, err or "the command did not run")
         if code != 0:
-            return _answer(self.name, command, None, False,
-                           f"exit {code}: {(err or out).strip()[:200]}")
-        return _answer(self.name, command, out.strip(), True)
+            return self.said(command, None, False, f"exit {code}: {(err or out).strip()[:200]}")
+        return self.said(command, out.strip())
 
     def identity(self) -> Answer:
         """What this machine calls itself, in a form a machine does not share with another."""
@@ -137,7 +151,7 @@ class TheFarMachineItself:
         return self._one("listening sockets", "ss -ltn")
 
 
-class ThisMachine:
+class ThisMachine(Channel):
     """The client this tool is running on. It knows what IT is, and nothing about the far side."""
 
     name = "this machine"
@@ -146,5 +160,5 @@ class ThisMachine:
         import platform
         import socket
 
-        return _answer(self.name, "platform.node()+platform.platform()",
-                       {"node": socket.gethostname(), "platform": platform.platform()}, True)
+        return self.said("platform.node()+platform.platform()",
+                         {"node": socket.gethostname(), "platform": platform.platform()})
