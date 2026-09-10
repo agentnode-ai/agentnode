@@ -113,7 +113,7 @@ class TestTheChildReceivesWhatWasWritten:
     """A real child, the real entry point, and what IT got -- not what the parent held."""
 
     def start(self, config_path, expect="", extra=(), env=None):
-        argv = [sys.executable, "-m", "agentnode_sdk.tools.external_run",
+        argv = [sys.executable, "-m", "agentnode_sdk.verification.run",
                 "--config", config_path, *extra]
         if expect:
             argv += ["--expect", expect]
@@ -167,7 +167,7 @@ class TestTheChildReceivesWhatWasWritten:
         path = written(tmp_path, document)
         done = subprocess.run(
             [shell, "-lc",
-             '"%s" -m agentnode_sdk.tools.external_run --config "%s" --expect %s --preflight'
+             '"%s" -m agentnode_sdk.verification.run --config "%s" --expect %s --preflight'
              % (sys.executable.replace("\\", "/"), path.replace("\\", "/"),
                 config.digest_of(settings))],
             capture_output=True, timeout=300,
@@ -181,7 +181,7 @@ class TestTheChildReceivesWhatWasWritten:
 class TestTheRunRefusesBeforeItStarts:
 
     def start(self, config_path, expect="", env=None):
-        argv = [sys.executable, "-m", "agentnode_sdk.tools.external_run",
+        argv = [sys.executable, "-m", "agentnode_sdk.verification.run",
                 "--config", config_path, "--preflight"]
         if expect:
             argv += ["--expect", expect]
@@ -258,7 +258,7 @@ class TestNothingIsAskedOfTheShell:
     def test_no_conversion_exclusion_is_relied_on(self):
         import inspect
 
-        from agentnode_sdk.tools import external_run as driver
+        from agentnode_sdk.verification import run as driver
 
         for module in (config, driver):
             assert "MSYS2_ARG_CONV_EXCL" not in inspect.getsource(module).replace(
@@ -267,7 +267,7 @@ class TestNothingIsAskedOfTheShell:
     def test_the_runner_takes_nothing_from_the_environment(self):
         import inspect
 
-        from agentnode_sdk.tools import external_run as driver
+        from agentnode_sdk.verification import run as driver
 
         source = inspect.getsource(driver)
         for name in config.SUPERSEDED_ENVIRONMENT:

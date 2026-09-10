@@ -89,7 +89,7 @@ class TestTheSequenceRuns:
     def test_the_launcher_hands_over_a_path_and_a_digest_and_nothing_else(self, tmp_path,
                                                                          written):
         _, _, _, settings, digest, argv = rehearse(written(a_configuration(tmp_path)))
-        assert argv[1:3] == ["-m", "agentnode_sdk.tools.external_run"]
+        assert argv[1:3] == ["-m", "agentnode_sdk.verification.run"]
         for value in E5_PATHS.values():
             assert not any(value in arg for arg in argv), (value, argv)
         assert digest in argv and len(digest) == 64
@@ -167,7 +167,7 @@ class TestTheSequenceStopsWhenItShould:
         path = written(a_configuration(tmp_path, gateway_state="C:/home/em3ce1/state"))
         import subprocess
         done = subprocess.run(
-            [sys.executable, "-m", "agentnode_sdk.tools.external_run",
+            [sys.executable, "-m", "agentnode_sdk.verification.run",
              "--config", path, "--preflight"],
             capture_output=True, timeout=300, env={**os.environ, "PYTHONPATH": IMPORTABLE})
         assert done.returncode == 2
@@ -179,7 +179,7 @@ class TestTheSequenceStopsWhenItShould:
         path = written(a_configuration(tmp_path, gateway_state="/home/em3ce1/elsewhere"))
         import subprocess
         done = subprocess.run(
-            [sys.executable, "-m", "agentnode_sdk.tools.external_run",
+            [sys.executable, "-m", "agentnode_sdk.verification.run",
              "--config", path, "--expect", digest, "--preflight"],
             capture_output=True, timeout=300, env={**os.environ, "PYTHONPATH": IMPORTABLE})
         assert done.returncode == 2
@@ -211,13 +211,13 @@ class TestWhatTheRunnerChecksBeforeItStarts:
     fifth run proved that looking in one was looking in the wrong one."""
 
     def test_a_clean_start_finds_nothing(self, tmp_path):
-        from agentnode_sdk.tools import external_run as driver
+        from agentnode_sdk.verification import run as driver
 
         driver.configure(config.parse(a_configuration(tmp_path)))
         assert driver.check_start(argv=["--config", "C:/x/run-config.json"]) == []
 
     def test_a_remote_value_on_its_own_command_line_is_refused(self, tmp_path):
-        from agentnode_sdk.tools import external_run as driver
+        from agentnode_sdk.verification import run as driver
 
         driver.configure(config.parse(a_configuration(tmp_path)))
         found = driver.check_start(argv=["--state", E5_PATHS["gateway_state"]])
@@ -226,7 +226,7 @@ class TestWhatTheRunnerChecksBeforeItStarts:
     def test_a_value_changed_after_it_was_read_is_refused(self, tmp_path):
         """Between reading the configuration and using it is its own boundary, so it is its own
         check. Nothing is trusted because it was fine earlier."""
-        from agentnode_sdk.tools import external_run as driver
+        from agentnode_sdk.verification import run as driver
 
         driver.configure(config.parse(a_configuration(tmp_path)))
         driver.STATE = "C:/Program Files/Git/home/em3ce1/em3c-state-e5"
