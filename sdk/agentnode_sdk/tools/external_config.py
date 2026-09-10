@@ -143,7 +143,7 @@ def check_remote_path(name: str, value: Any) -> str:
     if normalised != value:
         raise ConfigError(
             f"{name} is not in its normal form: {value!r} would be written {normalised!r}, and a "
-            "path that can be written two ways is one a reader has to guess about. What runs is "
+            "path that can be written two ways is one whose meaning is guessed at. What runs is "
             "what the configuration says, so the configuration says it once")
     return normalised
 

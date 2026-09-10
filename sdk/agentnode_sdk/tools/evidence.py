@@ -626,11 +626,10 @@ def redact_deep(value, secrets, *, under_secret_key=False):
 #: then, to the person doing it.
 #:
 #: `EM3C-E5-CLASSIFY-0001`, F-UNTRUSTED-OPERATIVE-INSTRUCTION: this used to end with a sentence
-#: telling its reader what to do with the file. The run captures its own output, so that sentence
-#: ended up inside the evidence, where it read as an instruction to whoever was reviewing it -- and
-#: a reviewer who is handed an instruction inside untrusted material has to report it, which two
-#: of them did. It states the exposure now and directs nobody. Everything here is in the
-#: indicative, and a test holds it there.
+#: telling its reader what to do with the file. A run captures its own output, so that sentence
+#: ended up inside the evidence, and two independent reviews stopped and named it as operative
+#: wording in untrusted material. It states the exposure now and directs nobody: everything here
+#: is in the indicative, and a test holds it there.
 RUN_NOTICE = (
     "This recording keeps the real output of every command it runs.\n"
     "  Values you name as secrets are removed wherever they appear, values under a key "
