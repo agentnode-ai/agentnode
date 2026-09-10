@@ -19,7 +19,7 @@ import sys
 
 import pytest
 
-from agentnode_sdk.tools import external_run as driver
+from agentnode_sdk.verification import transport as driver
 
 
 #: A child that answers with exactly what it was given, as bytes, and never as text.
@@ -94,7 +94,12 @@ class TestTheCodeItselfAsksForBytes:
         import inspect
         import re
 
-        source = inspect.getsource(driver)
+        # From after the module's own docstring, which NAMES the defect verbatim -- a sentence
+        # about `subprocess.run(input=<str>, text=True)` is a description of what went wrong, not
+        # a call that does it, and a check that cannot tell those apart is a check about prose.
+        whole = inspect.getsource(driver)
+        opened = whole.index('"""')
+        source = whole[whole.index('"""', opened + 3) + 3:]
         calls = re.findall(r"subprocess\.(?:run|Popen|call|check_output)\((?:[^()]|\([^()]*\))*\)",
                            source, re.S)
         assert calls, "no subprocess call was found at all"

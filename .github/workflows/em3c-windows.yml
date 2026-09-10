@@ -29,7 +29,7 @@ on:
       - "sdk/tests/test_start_boundary.py"
       - "sdk/tests/test_start_rehearsal.py"
       - "sdk/tests/test_evidence.py"
-      - "sdk/tests/test_external_run.py"
+      - "sdk/tests/test_verification_run.py"
       - ".github/workflows/em3c-windows.yml"
   push:
     branches:
@@ -116,8 +116,8 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python -m pytest -q -rs -p no:randomly tests/test_external_run.py 2>&1 | tee driver.txt
-          grep -qE "^33 passed, 1 skipped" driver.txt || {
+          python -m pytest -q -rs -p no:randomly tests/test_verification_run.py 2>&1 | tee driver.txt
+          grep -qE "^34 passed, 1 skipped" driver.txt || {
             echo "the driver tests did not come out as this lane expects"; exit 1; }
           # The one skip is the POSIX-only case, and it is named rather than tolerated: the
           # opposite skip belongs to the Linux lane, and between them every case runs somewhere.
@@ -144,6 +144,14 @@ jobs:
           grep -q "needs a container runtime" cancel.txt || {
             echo "the skipped case is not the one this lane expects"; tail -5 cancel.txt; exit 1; }
 
+      - name: What a channel knows, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_verification_channels.py 2>&1 | tee channels.txt
+          grep -qE "^25 passed" channels.txt || {
+            echo "the channel tests did not all pass"; exit 1; }
+
       - name: What this lane established
         if: always()
         shell: bash
@@ -164,4 +172,5 @@ jobs:
             sdk/driver.txt
             sdk/evidence.txt
             sdk/cancel.txt
+            sdk/channels.txt
           retention-days: 14

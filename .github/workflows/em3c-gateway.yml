@@ -85,17 +85,17 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_evidence.py 2>&1 | tee em3c-evidence.txt
-          grep -qE "^299 passed" em3c-evidence.txt || {
+          grep -qE "^302 passed" em3c-evidence.txt || {
             echo "the evidence-runner tests did not all pass"; exit 1; }
 
-      # And the driver that produces the external record, driven offline over the whole matrix.
+      # And the tool that produces the external record, driven offline over the whole matrix.
       # Three external runs have died inside it rather than in the product; none of those
       # defects was findable by reading it, and all three are findable by running it.
       - name: The external-run driver, over a described pair of machines
         run: |
           set -o pipefail
-          python -m pytest -q -rs -p no:randomly tests/test_external_run.py 2>&1 | tee em3c-driver.txt
-          grep -qE "^33 passed, 1 skipped" em3c-driver.txt || {
+          python -m pytest -q -rs -p no:randomly tests/test_verification_run.py 2>&1 | tee em3c-driver.txt
+          grep -qE "^34 passed, 1 skipped" em3c-driver.txt || {
             echo "the external-run driver tests did not come out as expected"; exit 1; }
           # The one skip is the Windows-only case, named rather than tolerated. The opposite skip
           # belongs to the Windows lane; between the two every case runs somewhere.
@@ -118,6 +118,16 @@ jobs:
           python -m pytest -q -rs -p no:randomly tests/test_cancel_consistency.py 2>&1 | tee em3c-cancel.txt
           grep -qE "^36 passed" em3c-cancel.txt || {
             echo "the cancellation tests did not come out as this lane expects"; exit 1; }
+
+      # What a channel may be asked, what an answer can be made by, and what a crossing is tied
+      # to. EM3C-E6-RECORD-0001 found the previous tool confirming a sentinel by grepping the
+      # gateway's log for a sandbox job's output; these are the properties that replace it.
+      - name: What a channel knows, and what a crossing is tied to
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_verification_channels.py 2>&1 | tee em3c-channels.txt
+          grep -qE "^25 passed" em3c-channels.txt || {
+            echo "the channel tests did not all pass"; exit 1; }
 
       # How that driver is told where it is happening, and the whole start it does before it
       # reaches a network. EM3C-E5-CLASSIFY-0001 happened between two processes on Windows, so
@@ -229,3 +239,4 @@ jobs:
             sdk/em3c-config.txt
             sdk/em3c-start.txt
             sdk/em3c-cancel.txt
+            sdk/em3c-channels.txt
