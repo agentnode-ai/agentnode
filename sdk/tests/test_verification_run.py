@@ -257,25 +257,20 @@ class World:
             # what `cmd_challenge` does, including deciding whether the client that is asking is
             # the one that submitted the run. Modelling that here would be a second copy of the
             # rule, and a second copy is a thing that can disagree with the first.
-            import contextlib
-            import io as _io
-            import sys as _sys
-            import types
+            import json
 
             from agentnode_sdk.cli import gateway_commands
 
             asked = command.rsplit("--run", 1)[-1].strip()
             token = command.split("printf '%s' '", 1)[-1].split("'", 1)[0]
-            printed = _io.StringIO()
-            was = _sys.stdin
-            _sys.stdin = _io.StringIO(token)
-            try:
-                with contextlib.redirect_stdout(printed):
-                    self.command_code = gateway_commands.cmd_challenge(
-                        types.SimpleNamespace(dir=str(self.gateway.state.root), run=asked))
-            finally:
-                _sys.stdin = was
-            return printed.getvalue()
+            # The production rule for who may read this, asked with the gateway's LIVE state and
+            # ledger. Not a second reader of the same files: this world stands in for the
+            # transport, and a second `GatewayState` here would be a second opener of the state
+            # directory inside the process already running the gateway.
+            binding = gateway_commands.binding_for_the_client(
+                self.gateway.state, self.gateway.service.ledger, asked, token)
+            self.command_code = 0 if binding else 1
+            return "" if binding is None else json.dumps(binding, sort_keys=True, indent=2) + chr(10)
         if "machine-id" in command:
             return "9c5c1e0a11d24f0b8b6f2e2f8a3c4d5e\n"
         if command.startswith("uname"):

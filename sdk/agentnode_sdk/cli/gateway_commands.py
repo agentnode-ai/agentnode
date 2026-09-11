@@ -569,6 +569,23 @@ def cmd_verify(args) -> int:
     return external_check.main(["--role", "gateway"])
 
 
+def binding_for_the_client(state, ledger, run_id: str, token: str) -> dict | None:
+    """The binding this gateway wrote down for one run, for the client that submitted that run.
+
+    `EM3C-CROSSING-0001`, F-C5-CROSS-CLIENT-READ: holding a run id was enough, whoever was
+    holding it. The rule lives here, in one function, rather than inside the command -- so that
+    anything else which has to answer this question asks the same rule instead of writing its own.
+
+    None covers both "no such run" and "not yours". Separating them would let anybody holding a
+    token learn which run ids are real, which is the thing the check is for.
+    """
+    asking = state.client_id_for(token)
+    owner = str((ledger.run_entry(run_id) or {}).get("owner_client_id") or "")
+    if not asking or not owner or asking != owner:
+        return None
+    return ledger.challenge_for(run_id)
+
+
 def cmd_challenge(args) -> int:
     """What this gateway wrote down about the challenge it issued for ONE run.
 
@@ -617,13 +634,9 @@ def cmd_challenge(args) -> int:
         print("  token on standard input -- never as an argument.")
         return 2
 
-    entry = Ledger(root / "ledger.json").run_entry(run_id) or {}
-    asking = GatewayState(root, version=str(version)).client_id_for(token)
-    owner = str(entry.get("owner_client_id") or "")
-    binding = Ledger(root / "ledger.json").challenge_for(run_id)
-    # A run belonging to somebody else is answered exactly like a run that does not exist. Telling
-    # them apart would let anyone with a token find out which run ids are real.
-    if binding is None or not asking or not owner or asking != owner:
+    binding = binding_for_the_client(
+        GatewayState(root, version=str(version)), Ledger(root / "ledger.json"), run_id, token)
+    if binding is None:
         print()
         print(f"  This gateway has nothing written down for a run {run_id}.")
         return 1
