@@ -169,7 +169,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -rs -p no:randomly tests/test_socket_worker.py 2>&1 | tee socket.txt
-          grep -qE "^78 passed, 10 skipped" socket.txt || {
+          grep -qE "^108 passed, 10 skipped" socket.txt || {
             echo "the socket tests did not come out as this lane expects"; exit 1; }
           # All six skips are one thing: this machine has no unix sockets. The Linux lane runs
           # exactly those six and is required.

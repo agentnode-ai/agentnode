@@ -1643,3 +1643,36 @@ class TestTheConformanceReportBindsWhereItWasMeasured:
         assert "self.worker.image_digest()" in built
         assert "self.worker.topology" in built
         assert "self.worker.configuration_sha256()" in built
+
+
+class TestWhatTheWorkerIsToldAndWhatItIsNot:
+    """It gets the job. It does not get the things that would make an escape worth more.
+
+    The worker runs foreign code, so what reaches it is what an escape reaches. This gateway's
+    signing identity, any client's token and the ledger are the three that would turn a contained
+    escape into a compromise of everything the gateway has ever said, and none of them is a field
+    of anything that crosses.
+    """
+
+    FORBIDDEN = ("token", "signing", "identity", "ledger", "secret", "private")
+
+    def test_a_job_carries_the_job_and_nothing_else(self):
+        carried = set(a_job().as_message())
+        assert carried == {"run_id", "container_name", "command", "artifact", "stdin",
+                           "network", "allowed_domains", "limits"}, carried
+
+    def test_and_no_field_of_it_is_named_like_a_secret(self):
+        for field in a_job().as_message():
+            for bad in self.FORBIDDEN:
+                assert bad not in field.lower(), f"a job carries a field called {field}"
+
+    def test_nor_does_what_is_actually_sent(self):
+        sent = _a_request_body()
+        for field in sent.get("job", {}):
+            for bad in self.FORBIDDEN:
+                assert bad not in field.lower(), f"the wire carries a field called {field}"
+
+    def test_and_the_check_would_see_one_if_it_were_there(self):
+        """The counter-case for the check itself."""
+        pretend = dict(a_job().as_message(), client_token="abc")
+        assert any(bad in f.lower() for f in pretend for bad in self.FORBIDDEN)
