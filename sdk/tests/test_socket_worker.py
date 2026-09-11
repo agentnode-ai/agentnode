@@ -1597,11 +1597,18 @@ class TestAWorkerLostAtCleanupStillEndsTheRun:
 
         from agentnode_sdk.gateway import server
 
-        text = inspect.getsource(server.GatewayService._run)
-        guarded = text.split("finally:")[-1]
-        assert "try:" in guarded, "the cleanup question is unguarded inside a finally"
-        assert 'terminal = "unverified"' in guarded
-        assert "not turned into a job that failed" in guarded
+        # The line BEFORE the cleanup question must be the `try:` that guards it. Asserting
+        # only that some `try:` exists in the block stopped discriminating the moment a second
+        # guard was added beside it -- the meter's -- and a check that any guard exists is not
+        # a check that THIS one does.
+        lines = inspect.getsource(server.GatewayService._run).splitlines()
+        asking = next(i for i, l in enumerate(lines) if "self.worker.gone(" in l)
+        assert lines[asking - 1].strip() == "try:", (
+            "the cleanup question is not the thing that try guards: "
+            + lines[asking - 1].strip())
+        after = "\n".join(lines[asking:asking + 12])
+        assert 'terminal = "unverified"' in after
+        assert "record.cleanup_verified = None" in after
 
     def test_a_refusal_that_was_already_decided_is_not_overwritten(self):
         """A job that genuinely failed keeps saying so, even if cleanup then could not be asked."""
