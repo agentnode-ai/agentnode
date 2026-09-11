@@ -49,6 +49,10 @@ SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
 
+# It has no container runtime and no way to get one: not in the docker group, not in any group
+# that reaches a runtime socket, and nothing on this machine will run a container for it except
+# the worker, which answers one socket and checks who is calling.
+#
 # Its own state and nothing more. The state directory is where the secrets are, and the gateway
 # stops itself if that directory ever stops being private -- see gateway/securedir.py.
 StateDirectory=agentnode

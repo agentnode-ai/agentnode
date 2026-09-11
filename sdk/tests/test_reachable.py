@@ -414,8 +414,43 @@ class TestItRunsAsAServiceUnderItsOwnAccount:
 
     def test_and_the_worker_is_the_one_that_can(self):
         _gateway, worker = self.units()
-        assert "SupplementaryGroups=docker" in worker
         assert "User=agentnode-worker" in worker
+
+    def test_and_it_does_it_without_a_root_equivalent_group(self):
+        """The worker used to be in the docker group. That was the wrong shape.
+
+        Membership of the docker group is root on the host: anything in it can start a
+        privileged container bind-mounting `/`. Giving it to the one account whose entire job is
+        running foreign code means a sandbox escape owns the machine in a single step -- and the
+        machine is where the control plane's signing identity and every client's token are.
+
+        Rootless podman does the same work with no such group, so neither account has one.
+        """
+        gateway, worker = self.units()
+        for unit, which in ((worker, "worker"), (gateway, "gateway")):
+            for group in ("docker", "wheel", "sudo", "root"):
+                assert f"SupplementaryGroups={group}" not in unit, (
+                    f"the {which} unit puts its account in the {group} group")
+                assert ("Group=" + group) not in unit.replace("agentnode-", "")
+
+    def test_and_the_worker_keeps_its_own_primary_group(self):
+        """Not the shared one, however tempting: rootless podman stops working outright.
+
+        newuidmap refuses to map subordinate ids when the calling process's gid is not the one
+        in the account's passwd entry -- "Target process is owned by a different user" -- and
+        then no container starts. The shared group has to be supplementary, and the socket gets
+        it from its directory's setgid bit instead.
+        """
+        _gateway, worker = self.units()
+        assert "Group=agentnode-worker" in worker
+        assert "SupplementaryGroups=agentnode-bridge" in worker
+
+    def test_and_the_socket_directory_is_not_left_to_systemd(self):
+        """RuntimeDirectory= would recreate it with the unit's own group, which is the wrong one."""
+        _gateway, worker = self.units()
+        # A SETTING, not the word: the comment above it in the unit explains why it is absent.
+        settings = [l for l in worker.splitlines() if l and not l.startswith("#")]
+        assert not [l for l in settings if l.startswith("RuntimeDirectory")], settings
 
     def test_neither_runs_as_a_person_who_has_to_be_logged_in(self):
         for unit in self.units():

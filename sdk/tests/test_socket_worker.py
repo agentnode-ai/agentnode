@@ -579,8 +579,24 @@ class TestTheSocketIsNarrowedBeforeAnythingCanReachIt:
 
     def test_owner_and_group_and_nobody_else(self):
         assert SOCKET_MODE == 0o660
-        assert DIRECTORY_MODE == 0o750
+        assert DIRECTORY_MODE & 0o777 == 0o750
         assert not (SOCKET_MODE & 0o007), "anyone on the machine could reach this socket"
+        assert not (DIRECTORY_MODE & 0o007), "anyone on the machine could reach into this directory"
+
+    def test_the_directory_is_setgid_so_the_socket_inherits_its_group(self):
+        """Without this bit the gateway cannot reach the worker at all, and it is easy to lose.
+
+        A unix socket takes the primary group of whoever binds it. The worker's primary group
+        must stay its own -- rootless podman maps subordinate ids through newuidmap, which
+        refuses when the process gid is not the one in the account's passwd entry -- so the
+        group the two accounts share cannot come from the binding process. Setgid on the
+        directory is what puts it on the socket.
+        """
+        import stat
+
+        assert DIRECTORY_MODE & stat.S_ISGID, (
+            "the socket would be created with the worker's own group, and the gateway is not "
+            "in it")
 
 
 # ------------------------------------------------------------------------ the socket itself
@@ -822,3 +838,108 @@ class TestTheProofIsTheSuitesOwn:
         # It began, stopped short, and the kernel is why.
         held = memory_ceiling_proof(Backend("ALLOCATING\n"), megabytes=768, run_id="t")
         assert held["killed"] is True
+
+
+class TestFindingARuntimeTheAccountCanActuallyUse:
+    """Installed first is not the same as usable, and a worker account makes them differ.
+
+    The account that runs foreign code must NOT be in the docker group -- that group is
+    root-equivalent, so an escape from the sandbox would get the host. On a machine with both
+    runtimes installed that is exactly the shape where docker is found and unusable while podman
+    works perfectly, and stopping at the first one found meant the worker refused to serve on a
+    host that could have held every one of its ceilings.
+    """
+
+    def _backend(self, monkeypatch, present, reachable):
+        from agentnode_sdk.sandbox import container_backend as cb
+
+        monkeypatch.setattr(cb.shutil, "which",
+                            lambda name: f"/usr/bin/{name}" if name in present else None)
+        backend = cb.ContainerBackend()
+        monkeypatch.setattr(backend, "_runtime_ok",
+                            lambda path: (any(r in path for r in reachable), "unreachable"))
+        monkeypatch.setattr(backend, "_engine_facts", lambda path: ("linux", True))
+        monkeypatch.setattr(backend, "_image_present", lambda path: True)
+        return backend
+
+    def test_it_goes_on_to_the_next_one(self, monkeypatch):
+        backend = self._backend(monkeypatch, present={"docker", "podman"}, reachable={"podman"})
+        found = backend.check_available(force=True)
+        assert found.available is True
+        assert found.backend == "podman"
+
+    def test_and_still_refuses_when_none_of_them_work(self, monkeypatch):
+        """Looking further must not become finding something that is not there."""
+        backend = self._backend(monkeypatch, present={"docker", "podman"}, reachable=set())
+        found = backend.check_available(force=True)
+        assert found.available is False
+
+    def test_and_says_what_the_first_thing_to_fix_is(self, monkeypatch):
+        """"no runtime" would be wrong and unhelpful: one is installed, and it is not answering."""
+        backend = self._backend(monkeypatch, present={"docker", "podman"}, reachable=set())
+        found = backend.check_available(force=True)
+        assert found.backend == "docker"
+        assert "not reachable" in found.reason
+
+    def test_a_pinned_runtime_is_still_the_only_one_tried(self, monkeypatch):
+        """A deployment that names its runtime means it, and must not get a silent substitute."""
+        from agentnode_sdk.sandbox import container_backend as cb
+
+        monkeypatch.setattr(cb.shutil, "which", lambda name: f"/usr/bin/{name}")
+        backend = cb.ContainerBackend(runtime="docker")
+        monkeypatch.setattr(backend, "_runtime_ok", lambda path: ("podman" in path, "no"))
+        found = backend.check_available(force=True)
+        assert found.available is False
+        assert found.backend == "docker"
+
+
+class TestAskingARuntimeWhetherItHoldsACeiling:
+    """Asked in the wrong words, and answered with an error, is not answered "no".
+
+    The backend asks in Docker's vocabulary first. Podman does not have those fields and does not
+    politely return nothing for them -- it exits non-zero. Reading that as "this runtime cannot
+    enforce a memory ceiling" made every podman host unusable, and on a worker that refuses to
+    serve without an enforceable ceiling, unusable means it never starts at all.
+    """
+
+    def _facts(self, monkeypatch, answers):
+        from agentnode_sdk.sandbox import container_backend as cb
+
+        class Reply:
+            def __init__(self, rc, out):
+                self.returncode, self.stdout, self.stderr = rc, out, ""
+
+        def fake(argv):
+            for pattern, reply in answers.items():
+                if pattern in " ".join(argv):
+                    return Reply(*reply)
+            return Reply(1, "")
+
+        monkeypatch.setattr(cb, "_run_runtime", fake)
+        return cb.ContainerBackend()._engine_facts("/usr/bin/podman")
+
+    def test_it_asks_again_in_the_runtimes_own_words(self, monkeypatch):
+        engine_os, enforceable = self._facts(monkeypatch, {
+            "MemoryLimit": (125, ""),                      # podman: unknown field, non-zero exit
+            "CgroupsVersion": (0, "v2\n"),
+        })
+        assert enforceable is True
+        assert engine_os == "linux"
+
+    def test_and_a_runtime_on_cgroup_v1_still_cannot(self, monkeypatch):
+        """Looking further must not turn into finding what one hoped for."""
+        _, enforceable = self._facts(monkeypatch, {
+            "MemoryLimit": (125, ""),
+            "CgroupsVersion": (0, "v1\n"),
+        })
+        assert enforceable is False
+
+    def test_and_when_neither_question_lands_the_answer_is_not_yes(self, monkeypatch):
+        _, enforceable = self._facts(monkeypatch, {"MemoryLimit": (125, "")})
+        assert enforceable is None, "a runtime that answered nothing must not read as enforcing"
+
+    def test_dockers_own_answer_is_still_taken_when_it_gives_one(self, monkeypatch):
+        _, enforceable = self._facts(monkeypatch, {"MemoryLimit": (0, "linux|true|true")})
+        assert enforceable is True
+        _, no_swap = self._facts(monkeypatch, {"MemoryLimit": (0, "linux|true|false")})
+        assert no_swap is False, "a ceiling without swap accounting is not a ceiling"

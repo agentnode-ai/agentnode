@@ -52,7 +52,18 @@ SOCKET_MODE = 0o660
 
 #: And the directory it sits in. A socket with careful permissions inside a directory anybody can
 #: write to is a socket anybody can replace.
-DIRECTORY_MODE = 0o750
+#: Owner and group only -- and SETGID, which is the part that matters and is easy to miss.
+#:
+#: A unix socket is created with the primary group of whatever process binds it. The worker's
+#: primary group cannot be the group it shares with the gateway: rootless podman needs the
+#: account's real passwd group, and `newuidmap` refuses outright when the process's gid is
+#: anything else ("Target process is owned by a different user"). So the socket cannot get the
+#: shared group from the process, and it has to come from the directory.
+#:
+#: Setgid on the directory is what does that: the socket bound inside it inherits the directory's
+#: group rather than the binder's. The deployment creates the directory owned by the worker with
+#: the shared group; this keeps the bit, so the socket the gateway has to reach carries it too.
+DIRECTORY_MODE = 0o2750
 
 
 class Bench:

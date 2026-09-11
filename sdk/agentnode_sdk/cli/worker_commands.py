@@ -58,6 +58,18 @@ def cmd_key(args) -> int:
     return 0
 
 
+def _this_account() -> str:
+    """The account this process is running as, for a message that tells an operator what to fix."""
+    try:
+        import getpass
+
+        return getpass.getuser()
+    except Exception:                                         # noqa: BLE001 - never worth failing
+        import os
+
+        return str(getattr(os, "getuid", lambda: "?")())
+
+
 def cmd_serve(args) -> int:
     """Serve one socket, for one account, until something stops this process."""
     from agentnode_sdk.worker.service import CannotHoldItsLimits, serve
@@ -109,11 +121,14 @@ def cmd_serve(args) -> int:
         print("  worker whose ceilings are not applied runs foreign code with no ceiling at")
         print("  all, on a host that believes it has one.")
         print()
-        print("  With a rootless runtime this is usually one missing thing -- the account has")
-        print("  no systemd user session, so the runtime falls back to cgroupfs and drops the")
-        print("  limit. Give it one, then start the worker again:")
-        print(f"    loginctl enable-linger {for_whom}")
-        print("  and check that the unit's XDG_RUNTIME_DIR is that session's directory.")
+        if not refusal.evidence.get("isolation"):
+            print("  With a rootless runtime this is usually one missing thing -- the account has")
+            print("  no systemd user session, so the runtime falls back to cgroupfs and drops the")
+            print("  limit. Give it one, then start the worker again:")
+            # The account that needs a session is the one THIS process runs as -- the worker. Not
+            # --for-user, which is the account allowed to send it jobs.
+            print(f"    loginctl enable-linger {_this_account()}")
+            print("  and check that the unit's XDG_RUNTIME_DIR is that session's directory.")
         return 1
     except Exception as exc:                                  # noqa: BLE001
         print(f"  It did not start: {exc}")

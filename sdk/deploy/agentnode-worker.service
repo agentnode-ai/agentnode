@@ -1,24 +1,54 @@
 [Unit]
-# The account that runs foreign code. On a deployed gateway this is the ONLY account that may
-# drive a container runtime, and it is not the account the gateway runs as.
+# The account that runs foreign code. It is the ONLY account here that drives a container
+# runtime, and it is not the account the gateway runs as.
 #
 # ALPHA-BOUNDARY-0001 decided that foreign code belongs on a different machine from the process
 # holding every client's token material and this gateway's signing identity. Until it gets there,
-# this is two accounts on one kernel. That is not isolation: this account can drive a container
-# runtime, and on a machine where that means the `docker` group it is root-equivalent -- so an
-# escape from a sandbox reaches the host, and the host is where the control plane is. The unit
-# below narrows what this process can do; it does not and cannot change that.
+# this is two accounts on one kernel, and two accounts on one kernel are not isolation: an escape
+# from the sandbox reaches the host, and the host is where the control plane is. This unit
+# narrows what the process can do. It does not change that, and nothing here should be read as
+# claiming it does.
+#
+# What it is NOT in, deliberately: the docker group. That group is root-equivalent, and putting
+# the account that runs foreign code into it would hand a sandbox escape the whole machine. This
+# worker drives podman ROOTLESS instead, as itself, with its own subordinate uid range.
 Description=AgentNode sandbox worker (single-host development topology)
 Documentation=https://agentnode.ai/docs/sandbox
-After=network-online.target docker.service
-Wants=docker.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=agentnode-worker
+# The primary group must be the account's OWN group and nothing else. Rootless podman maps
+# subordinate ids through newuidmap, which refuses when the process's gid is not the one in the
+# account's passwd entry -- "Target process is owned by a different user" -- and then no
+# container starts at all. Measured here, not assumed.
+#
+# The group shared with the gateway is therefore supplementary, and the socket gets it from its
+# directory's setgid bit instead of from this process. That group has no reach of its own: its
+# whole membership is these two accounts and its whole purpose is one socket. SO_PEERCRED then
+# narrows the socket again to a single uid, so being in the group gets an attacker as far as
+# connect() and no further.
 Group=agentnode-worker
-# The one thing this account has that the gateway's does not.
-SupplementaryGroups=docker
+SupplementaryGroups=agentnode-bridge
+
+# Rootless podman puts every container the worker starts under this account's own systemd slice,
+# which is where the memory and pid ceilings are actually applied. Without a session for the
+# account the runtime falls back to the cgroupfs manager and SILENTLY DROPS the limits -- the
+# flag is accepted, nothing enforces it, and an allocation walks straight past the ceiling.
+#
+#   loginctl enable-linger agentnode-worker
+#
+# is therefore not optional, and this must be that session's directory. The worker checks by
+# hitting a ceiling before it opens its socket, and refuses to serve if the ceiling does not
+# hold, so a mistake here fails closed rather than quietly.
+# %U is NOT usable here: in a system unit it resolves to the manager's uid (0), not to the
+# account in User=. Verified on the host rather than assumed -- it expanded to /run/user/0 while
+# the process ran as 990. The account's real uid is a fact about the machine, so it goes in a
+# file the deployment writes, which is also the file that would point this worker at a different
+# runtime on a different host.
+EnvironmentFile=/etc/agentnode/worker.env
 
 ExecStart=/opt/agentnode/venv/bin/agentnode worker serve \
     --socket unix:///run/agentnode/worker.sock \
@@ -26,43 +56,63 @@ ExecStart=/opt/agentnode/venv/bin/agentnode worker serve \
     --for-user agentnode-gateway
 
 Restart=always
-RestartSec=2
+RestartSec=5
 
-# Where the socket goes. systemd makes it, owns it to this account, and gives the group the
-# gateway is in the only other way in.
-RuntimeDirectory=agentnode
-RuntimeDirectoryMode=0750
+# Where the socket goes is created by tmpfiles.d, not by RuntimeDirectory=: it has to be owned by
+# this account but GROUPED to the bridge, and RuntimeDirectory would recreate it with this unit's
+# group on every start. See agentnode-worker.tmpfiles.conf.
 
-NoNewPrivileges=yes
+# NOT set, and this is the one setting here that is a deliberate trade rather than a tightening.
+#
+# Rootless podman creates its user namespace through newuidmap, which is setuid-root. Under
+# NoNewPrivileges=yes the kernel refuses the uid_map write ("Operation not permitted") and no
+# container starts at all. So this unit can have NoNewPrivileges, or it can have rootless
+# containers. It cannot have both.
+#
+# The alternative is the worker in the docker group with NoNewPrivileges=yes. That is worse, and
+# not by a little: the docker group is root-equivalent, so a process that reaches it can start a
+# privileged container bind-mounting the host root, and an escape from the sandbox owns the
+# machine immediately. Against that, what NoNewPrivileges=no costs here is that this account may
+# execute setuid binaries -- which does not make it root, while the docker group effectively does.
+#
+# What is gained: every container runs in a user namespace where root inside maps to an
+# unprivileged uid outside. That is the boundary worth having, and it is the one that would carry
+# over unchanged when the worker moves to its own machine.
+NoNewPrivileges=no
 PrivateTmp=yes
-PrivateDevices=no
 ProtectSystem=strict
-ProtectHome=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
-ProtectControlGroups=yes
-ProtectHostname=yes
+ProtectControlGroups=no
 ProtectClock=yes
 ProtectProc=invisible
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
-RestrictNamespaces=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=no
-CapabilityBoundingSet=
-AmbientCapabilities=
-
-# A unix socket to the container runtime, a unix socket of its own, and the network the runtime
-# needs to pull an image. Nothing else, and no port of its own.
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-SystemCallFilter=@system-service
-SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
 
-# It writes nowhere except its own runtime directory. In particular it cannot reach the
-# gateway's state directory, which is where the pairing state, the signing identity, the client
-# tokens and the ledger are.
+# ProtectHome=yes would hide /run/user, and /run/user is where this account's session -- and so
+# every ceiling it applies -- lives. The two directories ProtectHome exists to close are closed
+# by name instead, which leaves the session reachable and /home no more reachable than before.
+ProtectHome=no
+InaccessiblePaths=-/home
+InaccessiblePaths=-/root
+
+# ProtectHostname and RestrictNamespaces are NOT set, and cannot be: creating namespaces is the
+# entire job of a container runtime. With ProtectHostname the runtime cannot set the hostname
+# inside its own UTS namespace and every container fails to start.
+
+# Its own state, its own runtime directory, and the account session that holds the cgroups.
+ReadWritePaths=/var/lib/agentnode-worker
 ReadWritePaths=/run/agentnode
+# The whole tree rather than one directory, because a unit cannot expand the account's uid and
+# a static path would be wrong on the next machine. It grants nothing extra: every session
+# directory under /run/user is already 0700 to its own owner, so this account can still write
+# only its own.
+ReadWritePaths=/run/user
+
+# The control plane's directory is where the pairing state, the signing identity, the client
+# tokens and the ledger are. This account has no business in it.
 InaccessiblePaths=-/var/lib/agentnode
 
 [Install]
