@@ -17,10 +17,14 @@ Group=agentnode-gateway
 # socket. Not docker, and not anything else.
 SupplementaryGroups=agentnode-bridge
 
-# Where the worker is, and where this listens, are both deployment configuration and nothing
-# else. Moving the worker to its own machine is one value in this file becoming a tls:// address;
-# no product code knows or asks which host it is on, and the topology in every record is derived
-# from that address rather than declared beside it.
+# Where the worker is, and where this listens, are both deployment configuration and nothing else.
+# No product code knows or asks which host the worker is on, and the topology in every record is
+# derived from the address rather than declared beside it.
+#
+# That is the SEAM, and it is not the same as the move being done. This build reaches a worker
+# over a unix socket AND NOTHING ELSE -- `from_address` refuses any other scheme and says so.
+# Moving the worker to its own machine needs a transport that does not exist yet; what has been
+# built is that when it does, it is this value that changes and not the product.
 #
 # The bind address defaults to 127.0.0.1 there: a gateway is reachable from this machine only
 # until somebody decides otherwise, and deciding otherwise is editing that file and opening a

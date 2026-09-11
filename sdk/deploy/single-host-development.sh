@@ -197,7 +197,9 @@ say "where the gateway looks for a worker"
 # This file is the whole of "moving the worker is deployment configuration". Nothing in the
 # product names a socket, a host or an account; the gateway reads an address, and the topology in
 # every record it writes is derived from that address rather than declared beside it. Putting the
-# worker on its own machine is this one value becoming a tls:// address.
+# worker on its own machine needs a transport this build does not have: `from_address` speaks
+# unix sockets and refuses everything else, in as many words. What exists is the seam -- when a
+# remote transport is written, this value is what changes, and no product code does.
 python3 - "$STATE/state/config.json" "unix://$SOCKET" "$CONF/worker.key" <<'PY'
 import json, os, sys
 path, address, key = sys.argv[1], sys.argv[2], sys.argv[3]
