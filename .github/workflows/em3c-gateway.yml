@@ -119,6 +119,15 @@ jobs:
           grep -qE "^40 passed" em3c-cancel.txt || {
             echo "the cancellation tests did not come out as this lane expects"; exit 1; }
 
+      # Reaching a gateway without a tunnel, and knowing which one answered. The one case
+      # that needs a kernel with real file modes is required here.
+      - name: A gateway a client can reach, and tell from anything else
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_reachable.py 2>&1 | tee em3c-reach.txt
+          grep -qE "^35 passed" em3c-reach.txt || {
+            echo "the reachability tests did not all run here"; exit 1; }
+
       # The line between the control plane and the worker. On Linux the socket itself is
       # real, so the six cases a machine without unix sockets cannot run are required here.
       - name: The socket between the control plane and the worker
