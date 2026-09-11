@@ -17,6 +17,21 @@ Documentation=https://agentnode.ai/docs/sandbox
 After=network-online.target
 Wants=network-online.target
 
+# The account's user manager owns the cgroups that hold this worker's ceilings, and the unit that
+# names it is written by the deployment because the uid is a fact about the machine. See the
+# drop-in at agentnode-worker.service.d/session.conf.
+#
+# Without that ordering this starts during boot before the session exists, the runtime falls back
+# to cgroupfs, the ceiling does not bind, and the worker refuses to serve -- correctly, but for a
+# reason that would have gone away on its own a second later.
+
+# A worker that refuses because its ceilings do not bind should keep trying for a while: the
+# usual cause is a session that is still coming up. Long enough to outlast that, and still
+# bounded, because a worker that can never hold a ceiling must end up stopped and visible rather
+# than restarting forever.
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
 [Service]
 Type=simple
 User=agentnode-worker
@@ -56,7 +71,7 @@ ExecStart=/opt/agentnode/venv/bin/agentnode worker serve \
     --for-user agentnode-gateway
 
 Restart=always
-RestartSec=5
+RestartSec=10
 
 # Where the socket goes is created by tmpfiles.d, not by RuntimeDirectory=: it has to be owned by
 # this account but GROUPED to the bridge, and RuntimeDirectory would recreate it with this unit's

@@ -232,7 +232,25 @@ esac
 
 install -m 0644 "$HERE/agentnode-worker.service"  /etc/systemd/system/agentnode-worker.service
 install -m 0644 "$HERE/agentnode-gateway.service" /etc/systemd/system/agentnode-gateway.service
+# The worker must start after the account's user manager: that manager owns the cgroups its
+# ceilings live in, and starting first means falling back to cgroupfs and refusing to serve. The
+# uid is a fact about this machine, so this is written here rather than carried in the unit.
+install -d -m 0755 /etc/systemd/system/agentnode-worker.service.d
+cat > /etc/systemd/system/agentnode-worker.service.d/session.conf <<EOF
+# Written by single-host-development.sh for uid $WORKER_UID.
+[Unit]
+After=user@$WORKER_UID.service
+Wants=user@$WORKER_UID.service
+EOF
+
 systemctl daemon-reload
+systemctl start "user@$WORKER_UID.service" 2>/dev/null || true
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  grep -q memory "/sys/fs/cgroup/user.slice/user-$WORKER_UID.slice/cgroup.controllers" 2>/dev/null && break
+  sleep 1
+done
+grep -q memory "/sys/fs/cgroup/user.slice/user-$WORKER_UID.slice/cgroup.controllers" 2>/dev/null   || die "the worker's session has no delegated memory controller, so its ceilings would not bind"
+ok "the session's memory controller is delegated, which is what makes a ceiling bind"
 ok "units installed"
 
 systemctl enable --now agentnode-worker.service
