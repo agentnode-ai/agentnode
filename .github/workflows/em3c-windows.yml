@@ -144,12 +144,20 @@ jobs:
           grep -q "needs a container runtime" cancel.txt || {
             echo "the skipped case is not the one this lane expects"; tail -5 cancel.txt; exit 1; }
 
+      - name: The challenge a gateway issues, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_challenge.py 2>&1 | tee challenge.txt
+          grep -qE "^37 passed" challenge.txt || {
+            echo "the challenge tests did not all pass"; exit 1; }
+
       - name: What a channel knows, on Windows
         shell: bash
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_verification_channels.py 2>&1 | tee channels.txt
-          grep -qE "^29 passed" channels.txt || {
+          grep -qE "^37 passed" channels.txt || {
             echo "the channel tests did not all pass"; exit 1; }
 
       - name: What this lane established
@@ -173,4 +181,5 @@ jobs:
             sdk/evidence.txt
             sdk/cancel.txt
             sdk/channels.txt
+            sdk/challenge.txt
           retention-days: 14

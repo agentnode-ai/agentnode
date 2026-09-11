@@ -151,6 +151,49 @@ class TheFarMachineItself(Channel):
         return self._one("listening sockets", "ss -ltn")
 
 
+class TheGatewaysOwnRecord(Channel):
+    """What the gateway wrote down about a run, read from its own durable ledger over ssh.
+
+    A third channel, and deliberately not the second one. `TheFarMachineItself` is asked what the
+    MACHINE is and has no method that takes a run; this one is asked what the GATEWAY recorded for
+    one run, through the gateway's own read-only command. It cannot list, it cannot search, and
+    it takes one run id because a document about one run is the only thing it answers with.
+
+    What it cannot return is the challenge itself. The ledger holds the digest and never held the
+    value, so somebody holding this channel's output cannot produce a value -- they can only be
+    told whether a value they already have is the one that was issued. That is what makes this a
+    second channel rather than a second copy of the first.
+    """
+
+    name = "the gateway's own record, over ssh"
+
+    def __init__(self, ask, gateway_bin: str, state_dir: str, as_user: str) -> None:
+        self.ask = ask
+        self.gateway_bin = gateway_bin
+        self.state_dir = state_dir
+        self.as_user = as_user
+
+    def for_run(self, run_id: str) -> Answer:
+        """The binding this gateway wrote down for one run, as it wrote it."""
+        import json
+
+        command = ("sudo -u %s %s gateway challenge --dir %s --run %s"
+                   % (self.as_user, self.gateway_bin, self.state_dir, run_id))
+        try:
+            ran, code, out, err = self.ask(command)
+        except Exception as exc:                              # noqa: BLE001
+            return self.said(command, None, False, f"{type(exc).__name__}: {exc}")
+        if not ran:
+            return self.said(command, None, False, err or "the command did not run")
+        if code != 0:
+            return self.said(command, None, False,
+                             f"exit {code}: {(err or out).strip()[:200]}")
+        try:
+            return self.said(command, json.loads(out))
+        except ValueError as exc:
+            return self.said(command, None, False, f"what came back is not readable: {exc}")
+
+
 class ThisMachine(Channel):
     """The client this tool is running on. It knows what IT is, and nothing about the far side."""
 

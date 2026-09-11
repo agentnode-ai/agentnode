@@ -256,6 +256,12 @@ def main(argv: list[str] | None = None) -> int:
     gw_start.add_argument("--port", type=int, default=None, help="Port (default 8099)")
     gw_start.add_argument("--tls-cert", dest="tls_cert", default=None)
     gw_start.add_argument("--tls-key", dest="tls_key", default=None)
+    gw_challenge = gw_sub.add_parser(
+        "challenge",
+        help="What this gateway wrote down about the challenge it issued for one run")
+    gw_challenge.add_argument("--dir", default=None)
+    gw_challenge.add_argument("--run", default="", metavar="ID",
+                              help="The run to answer about. One run; there is no listing.")
     gw_egress = gw_sub.add_parser(
         "egress", help="What the code this gateway runs is allowed to reach")
     gw_egress.add_argument("--dir", default=None)

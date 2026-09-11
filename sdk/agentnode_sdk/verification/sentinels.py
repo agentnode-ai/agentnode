@@ -25,6 +25,7 @@ And two directions, which are not the same claim:
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 from dataclasses import asdict, dataclass
 
@@ -150,41 +151,65 @@ def what_the_client_made(gateway, run_id: str, payload: bytes, value: str) -> Cr
              "the output of the job the client sent is"))
 
 
-def what_the_far_machine_is(gateway, machine, run_id: str, payload: bytes) -> Crossing:
-    """The job printed the far machine's own identity. Do the record and the machine agree?
+def what_the_gateway_issued(gateway, ledger, run_id: str, payload: bytes,
+                            gateway_id: str, now=None) -> Crossing:
+    """The gateway made a value for this run. Did what came back turn out to be it?
 
-    Two channels and neither vouches for itself: the identity comes back inside the gateway's
-    signed record of the run, and the machine is asked separately what its identity is. A value
-    that arrived on one cannot be credited to the other -- an `Answer` is made only by the channel
-    that produced it, so the two are different objects with different names on them.
+    `EM3C-E7-RECORD-0001` killed the attempt before this one: the job printed the identity of the
+    machine it was running on, and a container does not share that with its host, so two correct
+    answers disagreed. `EM3C-CROSSING-DECISION-0001` chose this instead.
+
+    Two channels and neither vouches for itself. The VALUE arrives only inside the gateway's signed
+    record of the run, because the job echoed it. The DIGEST arrives only from the gateway's own
+    durable record, read over ssh through its read-only command -- and that record never held the
+    value, so this channel could not have supplied it even if it wanted to.
+
+    Everything the binding is checked against is something the asker establishes for itself: the
+    run it submitted, the gateway it paired with, and the policy digest the SIGNED ANSWER carries.
+    A document agreeing only with itself would establish nothing.
     """
+    from agentnode_sdk.gateway import challenge as ch
+
     from_the(gateway, channels.TheGatewayItself)
-    from_the(machine, channels.TheFarMachineItself)
-    said = machine.identity()
-    got, unfinished = _record_of(gateway, run_id, payload, "the far machine's own identity",
-                                 "the far machine", str(said.value or ""))
+    from_the(ledger, channels.TheGatewaysOwnRecord)
+
+    said = ledger.for_run(run_id)
+    got, unfinished = _record_of(gateway, run_id, payload, "the challenge this gateway issued",
+                                 "the far machine", "")
     if got is None:
         return unfinished
     record, answer = got
     base = {k: v for k, v in unfinished.as_dict().items()
-            if k not in ("holds", "why", "decidable", "confirmed_by")}
+            if k not in ("holds", "why", "decidable", "confirmed_by", "value")}
+    both = named(answer, said)
     if not said.answered:
-        return Crossing(**base, confirmed_by=said.channel, holds=False, decidable=False,
-                        why="the far machine could not be asked what it is: " + said.trouble)
-    identity = str(said.value or "").strip()
-    if not identity:
-        return Crossing(**base, confirmed_by=said.channel, holds=False, decidable=False,
-                        why="the far machine answered, and said nothing about what it is")
+        return Crossing(**base, value="", confirmed_by=both, holds=False, decidable=False,
+                        why="the gateway's own record could not be read: " + said.trouble)
+
+    # What came back, taken out of the job's own output. A marked line rather than a bare value,
+    # so that finding it is finding something the job put there on purpose.
     carried = str(record.get(wire.STDOUT_FIELD) or "")
-    found = identity in carried
-    return Crossing(
-        **base,
-        confirmed_by=named(answer, said),
-        holds=found, decidable=True,
-        why=("what ran inside the sandbox printed the identity this machine gives over a separate "
-             "channel, and the gateway's signed record of the run carries it" if found else
-             "the gateway's signed record of this run does not carry the identity this machine "
-             "gives, so what ran was not on the machine that was asked"))
+    found = re.search(ch.ECHO + r"\s+([0-9a-f]{8,})", carried)
+    value = found.group(1) if found else ""
+
+    # The half that makes it a crossing at all: a value the client could have written into its own
+    # payload establishes nothing about the far side. This one must NOT be in what was sent.
+    if value and value.encode("utf-8") in payload:
+        return Crossing(**base, value=value, confirmed_by=both, holds=False, decidable=True,
+                        why=("this value is in the payload the client sent, so the client could "
+                             "have produced it and it says nothing about where the job ran"))
+    try:
+        binding = ch.read(said.value)
+    except ch.ChallengeError as exc:
+        return Crossing(**base, value=value, confirmed_by=both, holds=False, decidable=False,
+                        why="the gateway's own record could not be read: " + str(exc))
+    why = ch.why_it_does_not_hold(
+        binding, run_id=run_id, gateway_id=gateway_id,
+        effective_policy_sha256=str(record.get("effective_policy_sha256") or ""),
+        value=value, now=now)
+    return Crossing(**base, value=value, confirmed_by=both, holds=not why, decidable=True,
+                    why=(why or ("what came back is the value this gateway wrote down the digest "
+                                 "of before the job started, and the client never had it")))
 
 
 def both_ways(client_side: Crossing, machine_side: Crossing) -> tuple[bool, str]:

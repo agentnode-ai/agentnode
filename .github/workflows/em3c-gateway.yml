@@ -119,6 +119,16 @@ jobs:
           grep -qE "^40 passed" em3c-cancel.txt || {
             echo "the cancellation tests did not come out as this lane expects"; exit 1; }
 
+      # The value this gateway makes for one run: what it is bound to, where it travels, and
+      # what is kept. EM3C-E7-RECORD-0001 found the crossing before this one comparing a
+      # container's identity with its host's, which are correctly different.
+      - name: The challenge a gateway issues for a run
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_challenge.py 2>&1 | tee em3c-challenge.txt
+          grep -qE "^37 passed" em3c-challenge.txt || {
+            echo "the challenge tests did not all pass"; exit 1; }
+
       # What a channel may be asked, what an answer can be made by, and what a crossing is tied
       # to. EM3C-E6-RECORD-0001 found the previous tool confirming a sentinel by grepping the
       # gateway's log for a sandbox job's output; these are the properties that replace it.
@@ -126,7 +136,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_verification_channels.py 2>&1 | tee em3c-channels.txt
-          grep -qE "^29 passed" em3c-channels.txt || {
+          grep -qE "^37 passed" em3c-channels.txt || {
             echo "the channel tests did not all pass"; exit 1; }
 
       # How that driver is told where it is happening, and the whole start it does before it
@@ -240,3 +250,4 @@ jobs:
             sdk/em3c-start.txt
             sdk/em3c-cancel.txt
             sdk/em3c-channels.txt
+            sdk/em3c-challenge.txt

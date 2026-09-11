@@ -357,18 +357,23 @@ def crossings():
     # `connection()` hands back the connection AND what the store had saved; the channel wants
     # the first of those, and naming it here is cheaper than a tuple index a reader has to count.
     conn, _saved = connection()
+    from agentnode_sdk.gateway import challenge as ch
+
     gateway = channels.TheGatewayItself(conn)
     # The launcher this run uses, not the one the transport module would reach for: a run whose
     # process starting is under test has to be the same process starting all the way down.
-    machine = channels.TheFarMachineItself(
-        transport.OverSsh(SETTINGS, launcher=launch).ask)
+    ask = transport.OverSsh(SETTINGS, launcher=launch).ask
+    ledger = channels.TheGatewaysOwnRecord(ask, GW, STATE, GATEWAY_USER)
 
     made_here = sentinels.a_fresh_value()
     payload = WORK / "crossing.py"
-    source = ("import subprocess\n"
+    # The job says its own value back, and says back the one the GATEWAY put in its environment.
+    # `EM3C-E7-RECORD-0001`: this used to print the identity of the machine it was running on, and
+    # a container does not share that with its host -- two correct answers that could never agree.
+    # What it prints now is a value the client has never seen.
+    source = ("import os\n"
               "print('SENT-FROM-HERE " + made_here + "')\n"
-              "print(subprocess.run(['cat', '/etc/machine-id'],"
-              " capture_output=True, text=True).stdout.strip())\n")
+              "print('" + ch.ECHO + " ' + os.environ.get('" + ch.INSIDE_THE_SANDBOX + "', ''))\n")
     payload.write_text(source, encoding="utf-8")
     sent = source.encode("utf-8")
 
@@ -378,7 +383,8 @@ def crossings():
     asked = about(run_id)
 
     ours = sentinels.what_the_client_made(gateway, run_id, sent, made_here)
-    theirs = sentinels.what_the_far_machine_is(gateway, machine, run_id, sent)
+    theirs = sentinels.what_the_gateway_issued(gateway, ledger, run_id, sent,
+                                               gateway_id=conn.gateway_id)
     held, why = sentinels.both_ways(ours, theirs)
 
     rec.record(step(
@@ -389,8 +395,9 @@ def crossings():
         run_id=run_id, **asked, crossing=ours.as_dict()))
 
     rec.record(step(
-        name="what the far machine is, carried back and confirmed on a separate channel",
-        role="gateway", argv=["(the gateway's signed answer, and the far machine over ssh)"],
+        name="the challenge this gateway issued, carried back and confirmed separately",
+        role="gateway",
+        argv=["(the gateway's signed answer, and the gateway's own record over ssh)"],
         started_at=time.time(), ended_at=time.time(),
         exit_code=0 if theirs.holds else 1, expected_exit=None,
         stdout=theirs.why + chr(10), stderr="",

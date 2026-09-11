@@ -569,6 +569,38 @@ def cmd_verify(args) -> int:
     return external_check.main(["--role", "gateway"])
 
 
+def cmd_challenge(args) -> int:
+    """What this gateway wrote down about the challenge it issued for ONE run.
+
+    Read-only in the strongest sense available: it opens the ledger, takes one entry, prints it,
+    and writes nothing. `EM3C-CROSSING-DECISION-0001`, F-A-READ-SURFACE -- so it answers about the
+    run it is asked about and about nothing else. There is no listing, no way to ask for every
+    run, and no field of another client's work in what it prints.
+
+    What it CANNOT print is the challenge itself. The value is not in the ledger: only its digest
+    was ever written there, and the value is dropped when the run ends. That is what makes this a
+    second channel rather than a second copy of the first -- somebody holding this output cannot
+    produce the value, they can only be told whether a value they already hold is the right one.
+    """
+    import json
+
+    from agentnode_sdk.gateway.ledger import Ledger
+
+    root = _root(args)
+    run_id = str(getattr(args, "run", "") or "")
+    if not run_id:
+        print()
+        print("  Which run? Pass --run <id>. This answers about one run and never lists them.")
+        return 2
+    binding = Ledger(root / "ledger.json").challenge_for(run_id)
+    if binding is None:
+        print()
+        print(f"  This gateway has nothing written down for a run {run_id}.")
+        return 1
+    print(json.dumps(binding, sort_keys=True, indent=2))
+    return 0
+
+
 def dispatch(args) -> int:
     action = getattr(args, "gateway_command", None)
     handlers = {
@@ -581,6 +613,7 @@ def dispatch(args) -> int:
         "clients": cmd_clients,
         "revoke": cmd_revoke,
         "verify": cmd_verify,
+        "challenge": cmd_challenge,
     }
     handler = handlers.get(action)
     if handler is None:

@@ -28,6 +28,7 @@ import base64
 import hmac
 import json
 import os
+import secrets
 import sys
 import threading
 import time
@@ -37,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
+from agentnode_sdk.gateway import challenge as ch
 from agentnode_sdk.gateway.ledger import Ledger
 from agentnode_sdk.gateway.readiness import (
     Readiness,
@@ -106,6 +108,10 @@ class RunRecord:
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     cancel_requested: threading.Event = field(default_factory=threading.Event)
+    #: The value this gateway issued for this run, while the run is alive. It is NOT in `public`,
+    #: it is not in the ledger, and it is dropped when the run reaches a terminal state -- what
+    #: survives is its digest, in the binding the ledger holds.
+    challenge: str = ""
 
     def move_to(self, new_state: str) -> None:
         """Change this run's state, or refuse to.
@@ -211,6 +217,9 @@ class GatewayService:
         # What must survive this process. In-memory replay protection has a documented way
         # around it: restart the gateway, which on a server happens on its own.
         self.ledger = Ledger(self.state.root / "ledger.json")
+        #: Which gateway process, and which sandbox behind it. A restart is a different instance,
+        #: and a challenge says which one issued it.
+        self.instance = "%s:%s" % (type(self.backend).__name__, secrets.token_hex(8))
         self.readiness = ReadinessGate(self.state.root)
         self._restore_interrupted()
         self._lock = threading.Lock()
@@ -915,6 +924,12 @@ class GatewayService:
         record.deltas = deltas
         record.artifact_sha256 = request.artifact_sha256
 
+        # Admitted, so the effective policy is settled -- which is one of the things the challenge
+        # is bound to. Issued here, once, and never again for this run: `issue_challenge` writes
+        # the binding to the ledger below, after the claim, so what it says is on disk before the
+        # container is.
+        record.challenge = ch.a_fresh_challenge()
+
         # Admitted -- so now claim it, atomically and durably, before anything starts. One
         # critical section covers both the look and the write, so two identical requests arriving
         # together cannot both be told they are the first; and the claim is on disk before the
@@ -933,6 +948,23 @@ class GatewayService:
             )
             refused.finished_at = time.time()
             return refused
+
+        # The binding goes down BEFORE the job starts, so that what this gateway wrote about
+        # the challenge predates anything the run could produce. It carries the digest; the value
+        # is not in it, and `note_challenge` has no way to be handed one.
+        #
+        # A job that brought its own command is not given a challenge: its standard input is its
+        # own, and putting something on it would be altering the job. The binding says that in
+        # words rather than leaving a crossing to fail without a reason.
+        carried = not bool(request.command)
+        if not carried:
+            record.challenge = ""
+        self.ledger.note_challenge(request.run_id, ch.bind(
+            run_id=request.run_id, gateway_id=self.state.identity.gateway_id,
+            backend_instance=self.instance,
+            effective_policy_sha256=record.effective_policy_sha256,
+            value=record.challenge, delivered=carried,
+            because="" if carried else ch.BROUGHT_ITS_OWN_COMMAND).as_dict())
 
         with self._lock:
             self.runs[request.run_id] = record
@@ -971,10 +1003,14 @@ class GatewayService:
         record.container_name = f"agentnode-em3c-{record.run_id[:16]}"
         record.move_to("running")
         payload = base64.b64encode(artifact).decode("ascii")
-        command = list(request.command) or [
-            "python", "-c",
-            "import base64,sys;exec(base64.b64decode(sys.stdin.read()).decode())",
-        ]
+        # The client's own command if it brought one, otherwise this gateway's bootstrap -- which
+        # reads the challenge off the first line of standard input and puts it in its own process
+        # environment before running the job. On stdin rather than in an argument because
+        # `EM3C-CROSSING-DECISION-0001`, F-A-ARGV-EXPOSURE: a value on the container runtime's
+        # command line is one anybody listing processes on this host can read.
+        command = list(request.command) or ch.bootstrap(command_was_given=False)
+        if record.challenge:
+            payload = ch.on_stdin(record.challenge, payload)
         spec = ProcessSpec(
             command=command,
             network=mode,
@@ -1048,6 +1084,11 @@ class GatewayService:
                     "could not confirm the container was removed. Treat the result as unproven: "
                     "what ran is not in question, what was left behind is."
                 )
+            # The value is dropped here. What survives is the digest, in the binding the
+            # ledger holds -- so a challenge is worth nothing once its run has ended, and there is
+            # nowhere left to read it from. It was never a credential; this is what makes it also
+            # not a leftover.
+            record.challenge = ""
             # A reader that sees a terminal state must be seeing a complete record.
             record.move_to(terminal)
             self.ledger.note_state(record.run_id, terminal)

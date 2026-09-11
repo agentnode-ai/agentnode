@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 
 import pytest
 
@@ -192,8 +193,11 @@ class TestAChannelIsAskedWhatItKnows:
     def test_and_the_other_direction_needs_both_of_the_right_ones(self, a_record):
         gateway = AnAnsweringGateway(a_record("anything"))
         with pytest.raises(sentinels.SentinelError):
-            sentinels.what_the_far_machine_is(gateway, channels.ThisMachine(),
-                                              gateway.record["run_id"], b"x")
+            sentinels.what_the_gateway_issued(gateway, channels.ThisMachine(),
+                                              gateway.record["run_id"], b"x", gateway_id="g")
+        with pytest.raises(sentinels.SentinelError):
+            sentinels.what_the_gateway_issued(channels.ThisMachine(), AGatewaysOwnRecord(),
+                                              gateway.record["run_id"], b"x", gateway_id="g")
 
     def test_how_the_channels_are_written_down_comes_off_the_answers(self):
         """Never a literal. `named` reads `.channel` off each `Answer`, and only a channel can
@@ -283,45 +287,183 @@ class TestACrossingIsTiedToWhatItProves:
         assert "does not carry it" in one.why
 
 
-class TestTheOtherDirectionNeedsTwoChannels:
+class AGatewaysOwnRecord(channels.TheGatewaysOwnRecord):
+    """A stand-in for the far machine's SHELL, not for the channel.
 
-    PAYLOAD = b"print(open('/etc/machine-id').read())"
-    IDENTITY = "9c5c1e0a11d24f0b8b6f2e2f8a3c4d5e"
+    It is the real `TheGatewaysOwnRecord` -- a crossing refuses anything that is not -- with only
+    the thing that would open an ssh session replaced. What it hands back is a binding document
+    the production `challenge` module built, never one written here.
+    """
 
-    def machine(self, answer=None, trouble=None):
-        return channels.TheFarMachineItself(AnAnsweringMachine(
-            {"machine-id": answer} if answer else {},
-            {"machine-id": trouble} if trouble else {}))
+    def __init__(self, binding=None, trouble="", answers_with=None):
+        super().__init__(ask=self._instead, gateway_bin="/gw", state_dir="/state", as_user="gw")
+        self.binding = binding
+        self.trouble = trouble
+        self.answers_with = answers_with
+        self.asked_for: list = []
 
-    def test_it_holds_when_both_channels_say_the_same_thing(self, a_record):
-        gateway = AnAnsweringGateway(a_record(self.IDENTITY))
-        one = sentinels.what_the_far_machine_is(
-            gateway, self.machine((True, 0, self.IDENTITY, "")), gateway.record["run_id"], self.PAYLOAD)
-        assert one.holds is True and one.decidable is True
+    def _instead(self, command):
+        self.asked_for.append(command)
+        if self.trouble:
+            return False, None, "", self.trouble
+        if self.answers_with is not None:
+            return True, 0, self.answers_with, ""
+        return True, 0, json.dumps(self.binding.as_dict() if self.binding else {}), ""
+
+
+class TestTheOtherDirectionIsAChallengeThisGatewayIssued:
+    """`EM3C-E7-RECORD-0001` killed the attempt before this one: the job printed the identity of
+    the machine it was running on, and a container does not share that with its host. Two correct
+    answers that could never agree. `EM3C-CROSSING-DECISION-0001` chose this."""
+
+    PAYLOAD = b"print(os.environ['AGENTNODE_RUN_CHALLENGE'])"
+    GATEWAY = "gw-1"
+
+    def issued(self, value, **changes):
+        from agentnode_sdk.gateway import challenge as ch
+
+        made = dict(run_id="r" * 32, gateway_id=self.GATEWAY, backend_instance="Backend:abcd",
+                    effective_policy_sha256="p" * 64, value=value, delivered=True)
+        made.update({k: v for k, v in changes.items() if k in made})
+        binding = ch.bind(**made)
+        for field, value_of in changes.items():
+            if field not in made:
+                binding = ch.Binding(**{**binding.as_dict(), field: value_of})
+        return binding
+
+    def answered(self, a_record, value, run_id=None, policy="p" * 64):
+        from agentnode_sdk.gateway import challenge as ch
+
+        record = a_record(ch.ECHO + " " + value if value else "nothing came back")
+        record = dict(record)
+        record["effective_policy_sha256"] = policy
+        if run_id:
+            record["run_id"] = run_id
+        return AnAnsweringGateway(record)
+
+    def crossing(self, gateway, ledger, **changes):
+        run = changes.pop("run_id", gateway.record["run_id"])
+        return sentinels.what_the_gateway_issued(
+            gateway, ledger, run, changes.pop("payload", self.PAYLOAD),
+            gateway_id=changes.pop("gateway_id", self.GATEWAY), **changes)
+
+    def test_it_holds_when_the_value_is_the_one_that_was_issued(self, a_record):
+        value = "a1b2c3d4e5f60718"
+        gateway = self.answered(a_record, value)
+        ledger = AGatewaysOwnRecord(self.issued(value, run_id=gateway.record["run_id"]))
+        one = self.crossing(gateway, ledger)
+        assert one.holds is True and one.decidable is True, one.why
         assert one.made_on == "the far machine"
         # Both channels are named, and neither of them named itself.
         assert channels.TheGatewayItself.name in one.confirmed_by
-        assert channels.TheFarMachineItself.name in one.confirmed_by
+        assert channels.TheGatewaysOwnRecord.name in one.confirmed_by
+        assert one.value == value
 
-    def test_it_fails_when_what_ran_was_somewhere_else(self, a_record):
-        gateway = AnAnsweringGateway(a_record("some-other-machine"))
-        one = sentinels.what_the_far_machine_is(
-            gateway, self.machine((True, 0, self.IDENTITY, "")), gateway.record["run_id"], self.PAYLOAD)
+    def test_the_digest_channel_is_asked_about_one_run_and_nothing_else(self, a_record):
+        value = "a1b2c3d4e5f60718"
+        gateway = self.answered(a_record, value)
+        ledger = AGatewaysOwnRecord(self.issued(value, run_id=gateway.record["run_id"]))
+        self.crossing(gateway, ledger)
+        assert len(ledger.asked_for) == 1
+        asked = ledger.asked_for[0]
+        assert "--run " + gateway.record["run_id"] in asked
+        assert "gateway challenge" in asked
+        for shape in ("grep", "|", "--all", "list"):
+            assert shape not in asked, shape
+
+    def test_a_value_that_is_not_the_one_issued_fails(self, a_record):
+        gateway = self.answered(a_record, "ffffffffffffffff")
+        ledger = AGatewaysOwnRecord(
+            self.issued("a1b2c3d4e5f60718", run_id=gateway.record["run_id"]))
+        one = self.crossing(gateway, ledger)
         assert one.decidable is True and one.holds is False
-        assert "not on the machine that was asked" in one.why
+        assert "not what this gateway issued" in one.why
 
-    def test_a_machine_that_could_not_be_asked_decides_nothing(self, a_record):
-        gateway = AnAnsweringGateway(a_record(self.IDENTITY))
-        one = sentinels.what_the_far_machine_is(
-            gateway, self.machine(trouble=OSError("no route")), gateway.record["run_id"], self.PAYLOAD)
-        assert one.decidable is False and one.holds is False
-        assert "could not be asked" in one.why
+    def test_a_binding_about_another_run_fails(self, a_record):
+        value = "a1b2c3d4e5f60718"
+        gateway = self.answered(a_record, value)
+        ledger = AGatewaysOwnRecord(self.issued(value, run_id="q" * 32))
+        one = self.crossing(gateway, ledger)
+        assert one.decidable is True and one.holds is False
+        assert "says nothing about this one" in one.why
 
-    def test_a_machine_that_says_nothing_decides_nothing(self, a_record):
-        gateway = AnAnsweringGateway(a_record(self.IDENTITY))
-        one = sentinels.what_the_far_machine_is(
-            gateway, self.machine((True, 0, "   ", "")), gateway.record["run_id"], self.PAYLOAD)
+    def test_a_binding_naming_another_gateway_fails(self, a_record):
+        value = "a1b2c3d4e5f60718"
+        gateway = self.answered(a_record, value)
+        ledger = AGatewaysOwnRecord(
+            self.issued(value, run_id=gateway.record["run_id"], gateway_id="somebody-else"))
+        one = self.crossing(gateway, ledger)
+        assert one.decidable is True and one.holds is False
+        assert "was paired with" in one.why
+
+    def test_a_binding_under_another_policy_fails(self, a_record):
+        """The policy digest comes off the SIGNED ANSWER, not from the same place as the
+        binding. A document that agrees only with itself establishes nothing."""
+        value = "a1b2c3d4e5f60718"
+        gateway = self.answered(a_record, value, policy="q" * 64)
+        ledger = AGatewaysOwnRecord(self.issued(value, run_id=gateway.record["run_id"]))
+        one = self.crossing(gateway, ledger)
+        assert one.decidable is True and one.holds is False
+        assert "under policy" in one.why
+
+    def test_an_expired_binding_fails(self, a_record):
+        from agentnode_sdk.gateway import challenge as ch
+
+        value = "a1b2c3d4e5f60718"
+        gateway = self.answered(a_record, value)
+        binding = self.issued(value, run_id=gateway.record["run_id"])
+        old = ch.Binding(**{**binding.as_dict(), "expires_at": 1000.0})
+        one = self.crossing(gateway, AGatewaysOwnRecord(old), now=1000.0 + 10_000)
+        assert one.decidable is True and one.holds is False
+        assert "expired" in one.why
+
+    def test_a_challenge_that_never_reached_the_job_says_so(self, a_record):
+        """A job that brought its own command is not given one. The binding says that in words
+        rather than leaving the crossing to fail without a reason."""
+        from agentnode_sdk.gateway import challenge as ch
+
+        gateway = self.answered(a_record, "")
+        binding = ch.bind(run_id=gateway.record["run_id"], gateway_id=self.GATEWAY,
+                          backend_instance="Backend:abcd", effective_policy_sha256="p" * 64,
+                          value="", delivered=False, because=ch.BROUGHT_ITS_OWN_COMMAND)
+        one = self.crossing(gateway, AGatewaysOwnRecord(binding))
+        assert one.holds is False
+        assert "brought its own command" in one.why
+
+    def test_a_value_the_client_could_have_written_is_refused(self, a_record):
+        """The half that makes it a crossing. A value that was in what the client sent could
+        have been produced by the client, and says nothing about where the job ran."""
+        value = "a1b2c3d4e5f60718"
+        gateway = self.answered(a_record, value)
+        ledger = AGatewaysOwnRecord(self.issued(value, run_id=gateway.record["run_id"]))
+        one = self.crossing(gateway, ledger,
+                            payload=b"print('" + value.encode() + b"')")
+        assert one.decidable is True and one.holds is False
+        assert "could have produced it" in one.why
+
+    def test_a_record_that_cannot_be_read_decides_nothing(self, a_record):
+        value = "a1b2c3d4e5f60718"
+        gateway = self.answered(a_record, value)
+        one = self.crossing(gateway, AGatewaysOwnRecord(trouble="no route to host"))
         assert one.decidable is False and one.holds is False
+        assert "could not be read" in one.why
+
+    def test_a_record_that_is_not_a_binding_decides_nothing(self, a_record):
+        value = "a1b2c3d4e5f60718"
+        gateway = self.answered(a_record, value)
+        ledger = AGatewaysOwnRecord(answers_with='{"surprise": 1}')
+        one = self.crossing(gateway, ledger)
+        assert one.decidable is False and one.holds is False
+        assert "could not be read" in one.why
+
+    def test_the_digest_channel_cannot_return_the_value(self):
+        """Not a convention: the binding has no field for it, and the ledger never held one."""
+        from agentnode_sdk.gateway import challenge as ch
+
+        assert "challenge" not in ch.FIELD_NAMES
+        assert "value" not in ch.FIELD_NAMES
+        binding = self.issued("a1b2c3d4e5f60718")
+        assert "a1b2c3d4e5f60718" not in json.dumps(binding.as_dict())
 
 
 class TestBothWaysOrNeither:

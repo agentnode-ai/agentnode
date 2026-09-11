@@ -198,15 +198,29 @@ class World:
         for line in source.splitlines():
             if "SENT-FROM-HERE" in line and "'" in line:
                 self.client_sentinel = line.split("SENT-FROM-HERE ")[1].strip("')\" ")
-        self.gateway_sentinel = MACHINE_ID
-        printed = self.crossing_prints or (
-            f"SENT-FROM-HERE {self.client_sentinel}\n{MACHINE_ID}\n")
-        self.gateway.backend.answers = lambda spec, payload: (0, printed, "")
+        from agentnode_sdk.gateway import challenge as ch
+
+        # What a sandbox really does with what it is given: the challenge is the FIRST LINE of
+        # what arrives on standard input, and the job says it back. Nothing here invents the
+        # value -- the real gateway made it, and this reads it off the real input.
+        def what_the_sandbox_prints(spec, arriving):
+            if self.crossing_prints:
+                return 0, self.crossing_prints, ""
+            issued = str(arriving or "").split(chr(10))[0].strip()
+            self.gateway_sentinel = issued
+            return 0, ("SENT-FROM-HERE %s%s%s %s%s"
+                       % (self.client_sentinel, chr(10), ch.ECHO, issued, chr(10))), ""
+
+        self.gateway.backend.answers = what_the_sandbox_prints
         try:
             run_id = self.submit()
         finally:
             self.gateway.backend.answers = None
-        return 0, "run: " + run_id + chr(10) + printed, "", ""
+        # What the COMMAND printed locally. It is not what decides the crossing -- that is read
+        # out of the gateway's signed record -- so it carries only the client's own half, which
+        # is the half the client already had.
+        return 0, ("run: %s%sSENT-FROM-HERE %s%s"
+                   % (run_id, chr(10), self.client_sentinel, chr(10))), "", ""
 
     # -- what the LINUX HOST answers over ssh -------------------------------------------------
     def over_ssh(self, script):
@@ -230,6 +244,17 @@ class World:
     def _answer(self, command):
         if command.startswith("hostname"):
             return GATEWAY_HOST + "\n"
+        if "gateway challenge" in command:
+            # The gateway's own durable record, read by its own read-only command. The
+            # world stands in for the TRANSPORT; what comes back is what the real ledger
+            # holds, and nothing here writes any part of it.
+            import json
+
+            asked = command.rsplit("--run", 1)[-1].strip()
+            written = self.gateway.service.ledger.challenge_for(asked)
+            if written is None:
+                return ""
+            return json.dumps(written, sort_keys=True, indent=2) + chr(10)
         if "machine-id" in command:
             return "9c5c1e0a11d24f0b8b6f2e2f8a3c4d5e\n"
         if command.startswith("uname"):
