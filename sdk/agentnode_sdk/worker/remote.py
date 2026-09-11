@@ -28,6 +28,7 @@ import time
 from urllib.parse import urlparse
 
 from agentnode_sdk.worker import (
+    Ceilings,
     SEPARATE_WORKER_HOST,
     SINGLE_HOST_DEVELOPMENT,
     CouldNotRestrictTheNetwork,
@@ -161,6 +162,21 @@ class SocketWorker(Worker):
 
     def configuration_sha256(self) -> str:
         return str(self._describe().get("configuration_sha256") or "")
+
+    def prove_its_ceilings(self, *, megabytes: int = 0, run_id: str = "") -> Ceilings:
+        """Not this object's to answer.
+
+        The runtime is on the worker's machine, and so is the only place an allocation can
+        actually hit a ceiling. The worker process proves it there before it agrees to listen
+        (`worker/service.py`), which is the point at which a failing proof can still refuse
+        somebody's job. Answering True from here would be this side guessing about a machine it
+        cannot see; answering False would refuse a worker that is enforcing perfectly well.
+        """
+        return Ceilings(
+            held=None,
+            reason=("the runtime is on the worker's machine, which proves its ceilings there "
+                    "before it listens"),
+            evidence={"worker_topology": self.topology})
 
     def runtime_version(self) -> str:
         return str(self._describe().get("runtime_version") or "")

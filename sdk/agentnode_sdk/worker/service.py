@@ -275,6 +275,20 @@ class Bench:
             raise wire.ProtocolError(wire.BAD_PARAMS, str(exc)) from exc
 
 
+class CannotHoldItsLimits(RuntimeError):
+    """Raised instead of listening, when a ceiling was not shown to bind.
+
+    A separate exception rather than a message, so that the thing which starts a worker can tell
+    "this host does not hold its limits" apart from "the socket path was wrong" -- they need
+    different actions from an operator, and one of them means no job may be accepted here.
+    """
+
+    def __init__(self, reason: str, evidence: dict | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.evidence = dict(evidence or {})
+
+
 def serve(address: str, key_path: str, only_uid: int | None, worker=None) -> None:
     """Start a worker on this machine and answer until something stops the process."""
     from agentnode_sdk.sandbox.container_backend import ContainerBackend
@@ -285,12 +299,29 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None) -> Non
             "a worker is started for one account. Without one, anything that can reach the "
             "socket could ask it to run code, which is the thing the socket's permissions and "
             "this check exist to prevent.")
-    bench = Bench(worker or LocalWorker(ContainerBackend()), address,
-                  wire.read_key(key_path), only_uid)
+    the_worker = worker or LocalWorker(ContainerBackend())
+
+    # Before it agrees to run anybody's code, it shows that a ceiling binds -- by hitting one.
+    # A worker whose limits are quietly not applied is worse than one that is down: down is
+    # visible, and a job that runs with no memory limit on a host that believes it has one is
+    # not. So this refuses rather than warning, and there is deliberately no flag to skip it.
+    proof = the_worker.prove_its_ceilings()
+    if proof.held is False:
+        raise CannotHoldItsLimits(proof.reason, proof.evidence)
+    if proof.held is None:
+        # Only a worker that is somewhere else answers this, and a worker that is somewhere else
+        # is not the one being started here.
+        raise CannotHoldItsLimits(
+            "this worker could not say whether its ceilings bind, and a worker that cannot say "
+            "is not one to hand foreign code to: " + (proof.reason or "no reason given"),
+            proof.evidence)
+
+    bench = Bench(the_worker, address, wire.read_key(key_path), only_uid)
     path = bench.open()
     print("  listening at " + path + " for uid " + str(only_uid))
     print("  this worker holds no pairing state, no signing identity and no client's token.")
     print("  On one host, two accounts are not isolation: see ALPHA-BOUNDARY-0001.")
+    print("  a ceiling was hit here before this socket opened, and it held.")
     bench.serve_forever()
 
 

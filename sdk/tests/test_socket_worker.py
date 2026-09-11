@@ -19,10 +19,12 @@ import socket
 import struct
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from agentnode_sdk.worker import (
+    Ceilings,
     SEPARATE_WORKER_HOST,
     SINGLE_HOST_DEVELOPMENT,
     CouldNotRestrictTheNetwork,
@@ -37,6 +39,7 @@ from agentnode_sdk.worker import (
 )
 from agentnode_sdk.worker import protocol as wire
 from agentnode_sdk.worker.remote import SocketWorker, topology_of
+from agentnode_sdk.worker import service
 from agentnode_sdk.worker.service import DIRECTORY_MODE, SOCKET_MODE, Bench
 
 HAS_UNIX = hasattr(socket, "AF_UNIX")
@@ -63,6 +66,15 @@ class AWorkerThatAnswers(Worker):
         self.ran: list[Job] = []
         self.stopped: list[tuple] = []
         self.raises: Exception | None = None
+
+    #: What this double says when asked to show a ceiling binds. A double that answered True
+    #: unconditionally would make every test here pass through the gate without exercising it,
+    #: so it is a field: one test sets it to False and expects to be refused.
+    ceilings = True
+
+    def prove_its_ceilings(self, *, megabytes=0, run_id=""):
+        return Ceilings(held=self.ceilings,
+                        reason="" if self.ceilings else "nothing stopped the allocation")
 
     def instance_label(self):
         return "AWorkerThatAnswers"
@@ -670,3 +682,143 @@ class TestTheKey:
         made = tmp_path / "key"
         made.write_bytes(wire.new_key())
         assert len(wire.read_key(made)) >= 32
+
+
+class TestAWorkerShowsItsCeilingsBindBeforeItServes:
+    """The gap this closes is the one that looks exactly like success.
+
+    A runtime can be installed, reachable, and reporting that this host can hold a memory
+    ceiling -- and still not apply the ceiling to anything it runs. A rootless runtime does
+    precisely that when the account has no systemd user session: it accepts the flag, falls back
+    to cgroupfs, and the allocation walks straight past the limit. Every check that ASKS comes
+    back clean. Only hitting the ceiling tells you.
+    """
+
+    def test_a_worker_that_cannot_stop_an_allocation_does_not_listen(self, tmp_path):
+        worker = AWorkerThatAnswers()
+        worker.ceilings = False
+        key = tmp_path / "k"
+        key.write_bytes(wire.new_key())
+        with pytest.raises(service.CannotHoldItsLimits):
+            service.serve("unix://" + str(tmp_path / "s.sock"), str(key), os.getuid()
+                          if hasattr(os, "getuid") else 0, worker=worker)
+
+    def test_and_nothing_is_listening_afterwards(self, tmp_path):
+        """A refusal that left a socket open would be a refusal in name only."""
+        worker = AWorkerThatAnswers()
+        worker.ceilings = False
+        key = tmp_path / "k"
+        key.write_bytes(wire.new_key())
+        where = tmp_path / "s.sock"
+        with pytest.raises(service.CannotHoldItsLimits):
+            service.serve("unix://" + str(where), str(key),
+                          os.getuid() if hasattr(os, "getuid") else 0, worker=worker)
+        assert not where.exists(), "it refused, and then opened the socket anyway"
+
+    def test_a_worker_that_cannot_say_is_treated_as_one_that_cannot(self):
+        """None is not a pass. A worker that cannot answer is not one to hand foreign code to."""
+        worker = AWorkerThatAnswers()
+        worker.ceilings = None
+        with pytest.raises(service.CannotHoldItsLimits) as refused:
+            service.serve("unix:///tmp/never", "/nonexistent", 0, worker=worker)
+        assert "could not say" in str(refused.value)
+
+    def test_there_is_no_flag_that_skips_it(self):
+        """An operator in a hurry must not be able to turn this off from the command line.
+
+        The check is worth having only if it cannot be waived at the moment it fails, which is
+        the moment somebody most wants to waive it.
+        """
+        import inspect
+
+        from agentnode_sdk.cli import worker_commands
+
+        serving = inspect.getsource(worker_commands.cmd_serve)
+        for wording in ("--no-prove", "--skip-ceiling", "--unsafe", "--insecure", "--no-check"):
+            assert wording not in serving, f"a way around the ceiling check appeared: {wording}"
+        # And the parser for `serve` takes no argument that could carry one.
+        adding = inspect.getsource(worker_commands.add_parser)
+        after = adding.split('actions.add_parser("serve"')[-1]
+        assert "--no-" not in after and "--skip" not in after
+
+        # The gate is not something serve() can be talked out of: it runs before the socket is
+        # made, and the only path past it is the proof holding.
+        serve_text = inspect.getsource(service.serve)
+        assert serve_text.index("prove_its_ceilings") < serve_text.index("bench.open()")
+
+    def test_the_refusal_says_what_to_do_about_it(self, capsys):
+        """A refusal an operator cannot act on gets worked around rather than fixed."""
+        from agentnode_sdk.cli import worker_commands
+
+        class Args:
+            socket = "unix:///tmp/x.sock"
+            key = "/tmp/x.key"
+            for_user = "0"
+
+        def refuse(*_a, **_k):
+            raise service.CannotHoldItsLimits("an allocation of 768 MB ran to completion")
+
+        worker_commands.serve = refuse                       # the import is inside the function
+        import agentnode_sdk.worker.service as real
+
+        original, real.serve = real.serve, refuse
+        try:
+            assert worker_commands.cmd_serve(Args()) == 1
+        finally:
+            real.serve = original
+        said = capsys.readouterr().out
+        assert "will not serve" in said
+        assert "enable-linger" in said, "it did not name the thing that fixes this"
+        assert "768 MB" in said, "it did not say what was actually measured"
+
+
+class TestTheProofIsTheSuitesOwn:
+    """One definition of "enforced", not two.
+
+    If the worker's gate and the conformance report each had their own idea of what counts as a
+    ceiling binding, the weaker one would be the one standing between a client's job and the
+    host -- and nobody would notice, because the stronger one would still be in the report.
+    """
+
+    def test_the_worker_uses_the_suites_measurement(self):
+        import inspect
+
+        from agentnode_sdk.worker.local import LocalWorker
+
+        text = inspect.getsource(LocalWorker.prove_its_ceilings)
+        assert "memory_ceiling_proof" in text
+
+    def test_and_that_measurement_needs_all_three_conditions(self):
+        """Began, did not complete, and ended in a way the ceiling accounts for."""
+        from agentnode_sdk.conformance.runner import memory_ceiling_proof
+
+        class AResult(tuple):
+            """What a backend hands back: a triple that also answers why it stopped."""
+
+            def __new__(cls, rc, out, err):
+                self = super().__new__(cls, (rc, out, err))
+                self.reason, self.native_status, self.platform = "exited", rc, "linux-container"
+                return self
+
+        class Backend:
+            native_platform = "linux-container"
+
+            def __init__(self, stdout, stderr="", rc=137):
+                self.out, self.err, self.rc = stdout, stderr, rc
+
+            def run_process(self, spec, timeout=None):
+                return AResult(self.rc, self.out, self.err)
+
+        # It never began: an image that will not start is not evidence about a ceiling.
+        never = memory_ceiling_proof(Backend(""), megabytes=768, run_id="t")
+        assert never["killed"] is False
+
+        # It ran the whole way: the ceiling was accepted and then not applied.
+        through = memory_ceiling_proof(
+            Backend("ALLOCATING\nALLOCATED 768\n", rc=0), megabytes=768, run_id="t")
+        assert through["killed"] is False
+        assert through["completed"] is True
+
+        # It began, stopped short, and the kernel is why.
+        held = memory_ceiling_proof(Backend("ALLOCATING\n"), megabytes=768, run_id="t")
+        assert held["killed"] is True

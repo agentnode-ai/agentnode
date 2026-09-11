@@ -26,6 +26,7 @@ import subprocess
 import time
 
 from agentnode_sdk.worker import (
+    Ceilings,
     SINGLE_HOST_DEVELOPMENT,
     CouldNotRestrictTheNetwork,
     Gone,
@@ -87,6 +88,51 @@ class LocalWorker(Worker):
             reason=str(getattr(availability, "reason", "") or ""),
             measured=tuple(getattr(availability, "measured", ()) or ()),
         )
+
+    #: Deliberately above the ceiling the backend declares and far below any host's, so what
+    #: stops the allocation is the limit rather than the machine running out.
+    PROOF_MEGABYTES = 768
+
+    def prove_its_ceilings(self, *, megabytes: int = 0, run_id: str = "") -> Ceilings:
+        """Hit the ceiling and report whether it held.
+
+        The measurement is the conformance suite's own -- `memory_ceiling_proof` -- so that a
+        worker deciding whether to serve and a report saying what a worker enforces cannot drift
+        into two different ideas of "enforced". If they could, the weaker one would be the one
+        standing between a client's job and this host.
+        """
+        from agentnode_sdk.conformance.runner import memory_ceiling_proof
+
+        can = self.can_it_isolate()
+        if not can.available:
+            return Ceilings(held=False, reason=can.reason or "there is no runtime here to ask",
+                            evidence={"isolation": can.as_message()})
+        try:
+            got = memory_ceiling_proof(self.backend, megabytes=megabytes or self.PROOF_MEGABYTES,
+                                       run_id=run_id or "startup")
+        except Exception as exc:                                    # noqa: BLE001
+            # An error is not a pass. Whatever went wrong, nothing here showed a ceiling binding.
+            return Ceilings(held=False,
+                            reason=f"the ceiling could not be measured: "
+                                   f"{type(exc).__name__}: {str(exc)[:160]}")
+        if got.get("killed"):
+            return Ceilings(held=True, reason="", evidence=got)
+        if not got.get("started"):
+            return Ceilings(
+                held=False, evidence=got,
+                reason=("the run that was meant to hit the ceiling never started, so nothing "
+                        "here says anything about the ceiling: " + str(got.get("stderr_tail"))))
+        if got.get("completed"):
+            return Ceilings(
+                held=False, evidence=got,
+                reason=(f"an allocation of {got.get('requested_mb')} MB ran to completion inside "
+                        f"a ceiling below it -- the runtime accepted the limit and did not apply "
+                        f"it. On a rootless runtime this is what a missing systemd cgroup "
+                        f"manager looks like."))
+        return Ceilings(
+            held=False, evidence=got,
+            reason=(f"the allocation ended (rc={got.get('rc')}) but not in a way the ceiling "
+                    f"accounts for, so it is not evidence that the ceiling binds"))
 
     def runtime_version(self) -> str:
         """The runtime's own version, asked once per process.

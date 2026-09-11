@@ -60,7 +60,7 @@ def cmd_key(args) -> int:
 
 def cmd_serve(args) -> int:
     """Serve one socket, for one account, until something stops this process."""
-    from agentnode_sdk.worker.service import serve
+    from agentnode_sdk.worker.service import CannotHoldItsLimits, serve
 
     address = str(getattr(args, "socket", "") or "")
     key = str(getattr(args, "key", "") or "")
@@ -89,12 +89,32 @@ def cmd_serve(args) -> int:
     print()
     print(f"  {bold('AgentNode sandbox worker')}")
     print("  This account is the only one that drives a container runtime. It holds no pairing")
+    print("  Before it opens the socket it hits a memory ceiling, to see whether one binds.")
     print("  state, no signing identity and no client's token.")
     try:
         serve(address, key, uid)
     except KeyboardInterrupt:                                 # pragma: no cover - operator
         print("\n  stopped.")
         return 0
+    except CannotHoldItsLimits as refusal:
+        # Told at length, because the operator has to change the deployment and the failure is
+        # one that otherwise looks like success: the runtime is up, the flag is accepted, and
+        # nothing applies it.
+        print()
+        print(f"  {bold('This worker will not serve: its limits do not bind.')}")
+        print()
+        print("  " + str(refusal.reason))
+        print()
+        print("  Nothing was opened and no job can reach this machine. That is deliberate: a")
+        print("  worker whose ceilings are not applied runs foreign code with no ceiling at")
+        print("  all, on a host that believes it has one.")
+        print()
+        print("  With a rootless runtime this is usually one missing thing -- the account has")
+        print("  no systemd user session, so the runtime falls back to cgroupfs and drops the")
+        print("  limit. Give it one, then start the worker again:")
+        print(f"    loginctl enable-linger {for_whom}")
+        print("  and check that the unit's XDG_RUNTIME_DIR is that session's directory.")
+        return 1
     except Exception as exc:                                  # noqa: BLE001
         print(f"  It did not start: {exc}")
         return 1

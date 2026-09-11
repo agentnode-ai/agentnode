@@ -236,6 +236,36 @@ class Gone:
         return _plain({"answered": self.answered, "left": list(self.left)}, "gone")
 
 
+@dataclass(frozen=True)
+class Ceilings:
+    """Whether this worker's limits were shown to BIND, here, as it is configured.
+
+    Kept apart from `Isolation` on purpose, because they answer different questions and the
+    first has been mistaken for the second. `Isolation` asks whether a runtime is present and
+    whether this host could in principle hold a ceiling -- for podman that is read off the
+    cgroup version. This asks whether an allocation past the ceiling was actually STOPPED, on
+    this machine, by this account, under the unit this worker is running in.
+
+    The distance between those two is not theoretical. A rootless runtime on a cgroup-v2 host
+    reports that it can hold a ceiling, accepts the flag, and then silently does not apply it
+    when it has no systemd cgroup manager to delegate through: the allocation walks past the
+    limit and finishes normally. Every claim in the first question is true in that state, and a
+    job running under it has no memory limit at all.
+    """
+
+    #: True when an allocation past the ceiling was stopped BY the ceiling. False when it ran
+    #: straight through. None when the runtime is somewhere else and this object is not the one
+    #: that can answer -- never as a stand-in for "probably fine".
+    held: bool | None
+    #: Why, in words an operator can act on.
+    reason: str = ""
+    #: What was measured, so a refusal can be read rather than believed.
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+    def as_message(self) -> dict[str, Any]:
+        return _plain(asdict(self), "ceilings")
+
+
 class Worker(ABC):
     """Whatever runs foreign code. It may be here, and it may not be.
 
@@ -266,6 +296,14 @@ class Worker(ABC):
     @abstractmethod
     def can_it_isolate(self) -> Isolation:
         """What runs code there and whether it can isolate it."""
+
+    @abstractmethod
+    def prove_its_ceilings(self, *, megabytes: int = 0, run_id: str = "") -> Ceilings:
+        """Show that a ceiling BINDS here, by hitting it.
+
+        A measurement, not a lookup -- because the lookup is the part that has been wrong.
+        A worker answers this before it agrees to run anybody's code.
+        """
 
     @abstractmethod
     def runtime_version(self) -> str:
